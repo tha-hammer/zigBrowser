@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "zigBrowser",
+  "project_id": "4733ee98-abaa-43e7-8491-e162a693bd65"
+}
