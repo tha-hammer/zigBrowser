@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "source_manifest": "tests/harness/corpus/manifest.json",
+  "pages": [
+    {
+      "id": "page01",
+      "css": "page01.css",
+      "source_html": "harness/corpus/pages/page01.html"
+    },
+    {
+      "id": "page02",
+      "css": "page02.css",
+      "source_html": "harness/corpus/pages/page02.html"
+    },
+    {
+      "id": "page03",
+      "css": "page03.css",
+      "source_html": "harness/corpus/pages/page03.html"
+    },
+    {
+      "id": "page04",
+      "css": "page04.css",
+      "source_html": "harness/corpus/pages/page04.html"
+    },
+    {
+      "id": "page05",
+      "css": "page05.css",
+      "source_html": "harness/corpus/pages/page05.html"
+    },
+    {
+      "id": "page06",
+      "css": "page06.css",
+      "source_html": "harness/corpus/pages/page06.html"
+    },
+    {
+      "id": "page07",
+      "css": "page07.css",
+      "source_html": "harness/corpus/pages/page07.html"
+    },
+    {
+      "id": "page08",
+      "css": "page08.css",
+      "source_html": "harness/corpus/pages/page08.html"
+    },
+    {
+      "id": "page09",
+      "css": "page09.css",
+      "source_html": "harness/corpus/pages/page09.html"
+    },
+    {
+      "id": "page10",
+      "css": "page10.css",
+      "source_html": "harness/corpus/pages/page10.html"
+    },
+    {
+      "id": "page11",
+      "css": "page11.css",
+      "source_html": "harness/corpus/pages/page11.html"
+    },
+    {
+      "id": "page12",
+      "css": "page12.css",
+      "source_html": "harness/corpus/pages/page12.html"
+    },
+    {
+      "id": "page13",
+      "css": "page13.css",
+      "source_html": "harness/corpus/pages/page13.html"
+    },
+    {
+      "id": "page14",
+      "css": "page14.css",
+      "source_html": "harness/corpus/pages/page14.html"
+    },
+    {
+      "id": "page15",
+      "css": "page15.css",
+      "source_html": "harness/corpus/pages/page15.html"
+    },
+    {
+      "id": "page16",
+      "css": "page16.css",
+      "source_html": "harness/corpus/pages/page16.html"
+    },
+    {
+      "id": "page17",
+      "css": "page17.css",
+      "source_html": "harness/corpus/pages/page17.html"
+    },
+    {
+      "id": "page18",
+      "css": "page18.css",
+      "source_html": "harness/corpus/pages/page18.html"
+    },
+    {
+      "id": "page19",
+      "css": "page19.css",
+      "source_html": "harness/corpus/pages/page19.html"
+    },
+    {
+      "id": "page20",
+      "css": "page20.css",
+      "source_html": "harness/corpus/pages/page20.html"
+    },
+    {
+      "id": "page21",
+      "css": "page21.css",
+      "source_html": "harness/corpus/pages/page21.html"
+    },
+    {
+      "id": "page22",
+      "css": "page22.css",
+      "source_html": "harness/corpus/pages/page22.html"
+    },
+    {
+      "id": "page23",
+      "css": "page23.css",
+      "source_html": "harness/corpus/pages/page23.html"
+    },
+    {
+      "id": "page24",
+      "css": "page24.css",
+      "source_html": "harness/corpus/pages/page24.html"
+    },
+    {
+      "id": "page25",
+      "css": "page25.css",
+      "source_html": "harness/corpus/pages/page25.html"
+    },
+    {
+      "id": "page26",
+      "css": "page26.css",
+      "source_html": "harness/corpus/pages/page26.html"
+    },
+    {
+      "id": "page27",
+      "css": "page27.css",
+      "source_html": "harness/corpus/pages/page27.html"
+    },
+    {
+      "id": "page28",
+      "css": "page28.css",
+      "source_html": "harness/corpus/pages/page28.html"
+    },
+    {
+      "id": "page29",
+      "css": "page29.css",
+      "source_html": "harness/corpus/pages/page29.html"
+    },
+    {
+      "id": "page30",
+      "css": "page30.css",
+      "source_html": "harness/corpus/pages/page30.html"
+    },
+    {
+      "id": "page31",
+      "css": "page31.css",
+      "source_html": "harness/corpus/pages/page31.html"
+    },
+    {
+      "id": "page32",
+      "css": "page32.css",
+      "source_html": "harness/corpus/pages/page32.html"
+    },
+    {
+      "id": "page33",
+      "css": "page33.css",
+      "source_html": "harness/corpus/pages/page33.html"
+    },
+    {
+      "id": "page34",
+      "css": "page34.css",
+      "source_html": "harness/corpus/pages/page34.html"
+    },
+    {
+      "id": "page35",
+      "css": "page35.css",
+      "source_html": "harness/corpus/pages/page35.html"
+    },
+    {
+      "id": "page36",
+      "css": "page36.css",
+      "source_html": "harness/corpus/pages/page36.html"
+    },
+    {
+      "id": "page37",
+      "css": "page37.css",
+      "source_html": "harness/corpus/pages/page37.html"
+    },
+    {
+      "id": "page38",
+      "css": "page38.css",
+      "source_html": "harness/corpus/pages/page38.html"
+    },
+    {
+      "id": "page39",
+      "css": "page39.css",
+      "source_html": "harness/corpus/pages/page39.html"
+    },
+    {
+      "id": "page40",
+      "css": "page40.css",
+      "source_html": "harness/corpus/pages/page40.html"
+    },
+    {
+      "id": "page41",
+      "css": "page41.css",
+      "source_html": "harness/corpus/pages/page41.html"
+    },
+    {
+      "id": "page42",
+      "css": "page42.css",
+      "source_html": "harness/corpus/pages/page42.html"
+    },
+    {
+      "id": "page43",
+      "css": "page43.css",
+      "source_html": "harness/corpus/pages/page43.html"
+    },
+    {
+      "id": "page44",
+      "css": "page44.css",
+      "source_html": "harness/corpus/pages/page44.html"
+    },
+    {
+      "id": "page45",
+      "css": "page45.css",
+      "source_html": "harness/corpus/pages/page45.html"
+    },
+    {
+      "id": "page46",
+      "css": "page46.css",
+      "source_html": "harness/corpus/pages/page46.html"
+    },
+    {
+      "id": "page47",
+      "css": "page47.css",
+      "source_html": "harness/corpus/pages/page47.html"
+    },
+    {
+      "id": "page48",
+      "css": "page48.css",
+      "source_html": "harness/corpus/pages/page48.html"
+    },
+    {
+      "id": "page49",
+      "css": "page49.css",
+      "source_html": "harness/corpus/pages/page49.html"
+    },
+    {
+      "id": "page50",
+      "css": "page50.css",
+      "source_html": "harness/corpus/pages/page50.html"
+    }
+  ]
+}

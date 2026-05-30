@@ -226,6 +226,48 @@ fn isIdentChar(ch: u8) bool {
     return isIdentStart(ch) or std.ascii.isDigit(ch);
 }
 
+const CorpusPageMeta = struct {
+    id: []const u8,
+    css: []const u8,
+    source_html: []const u8,
+};
+
+const CorpusManifestMeta = struct {
+    version: u32,
+    source_manifest: []const u8,
+    pages: []CorpusPageMeta,
+};
+
+fn loadCorpusManifestFromDisk(arena: std.mem.Allocator) !std.json.Parsed(CorpusManifestMeta) {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "tests/corpus_css/manifest.json",
+        arena,
+        .limited(1024 * 1024),
+    );
+    return std.json.parseFromSlice(CorpusManifestMeta, arena, raw, .{ .allocate = .alloc_always });
+}
+
+fn loadCorpusCssSourcesFromDisk(arena: std.mem.Allocator, pages: []const CorpusPageMeta) ![]const []const u8 {
+    var out = std.ArrayList([]const u8).empty;
+    errdefer out.deinit(arena);
+
+    for (pages) |page| {
+        _ = page.id;
+        _ = page.source_html;
+        const path = try std.mem.concat(arena, u8, &.{ "tests/corpus_css/", page.css });
+        const css = try std.Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            path,
+            arena,
+            .limited(1024 * 1024),
+        );
+        try out.append(arena, css);
+    }
+
+    return out.toOwnedSlice(arena);
+}
+
 test "cycle 3.1 parse selector chain and declaration" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -295,17 +337,17 @@ test "cycle 3.2 malformed blocks and at-rules do not crash parser" {
     }
 }
 
-test "phase 3 corpus hook: parseCssCorpusNoCrash accepts mixed css samples" {
+test "phase 3 corpus hook: parseCssCorpusNoCrash parses curated 50-page corpus" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const css_samples = [_][]const u8{
-        "body { margin: 0; color: #111; }",
-        ".card > h2.title, .card > p { line-height: 1.4; }",
-        "@media screen and (min-width: 640px) { .grid { gap: 16px; } }",
-        "a { good: 1; broken ; also-good: 2 }",
-        "table td { padding: 4px 8px; } tr > td + td { border-left: 1px solid #ddd; }",
-    };
-    try parseCssCorpusNoCrash(arena, &css_samples);
+    const parsed_manifest = try loadCorpusManifestFromDisk(arena);
+    defer parsed_manifest.deinit();
+    try std.testing.expectEqual(@as(usize, 50), parsed_manifest.value.pages.len);
+
+    const css_sources = try loadCorpusCssSourcesFromDisk(arena, parsed_manifest.value.pages);
+    try std.testing.expectEqual(@as(usize, 50), css_sources.len);
+
+    try parseCssCorpusNoCrash(arena, css_sources);
 }

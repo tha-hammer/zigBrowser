@@ -260,6 +260,28 @@ fn walkAll(root: *dom.Node, f: *const fn (*dom.Node) anyerror!void) !void {
     if (root.next_sibling) |sib| try walkAll(sib, f);
 }
 
+const CuratedTreeCase = struct {
+    name: []const u8,
+    input: []const u8,
+    required_tags: []const []const u8,
+};
+
+const CuratedTreeSuite = struct {
+    version: u32,
+    suite: []const u8,
+    cases: []CuratedTreeCase,
+};
+
+fn loadCuratedTreeSuite(arena: std.mem.Allocator) !std.json.Parsed(CuratedTreeSuite) {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "tests/html5lib/tree_construction_curated.json",
+        arena,
+        .limited(1024 * 1024),
+    );
+    return std.json.parseFromSlice(CuratedTreeSuite, arena, raw, .{ .allocate = .alloc_always });
+}
+
 test "cycle 2.3 script captured raw and trailing paragraph parses" {
     const spy_mod = @import("spy_engine");
 
@@ -398,6 +420,115 @@ test "phase 2 conformance: curated misnest adoption subset remains stable" {
         const outer = firstElementByTag(res.root, case.required_outer) orelse return error.TestExpectedEqual;
         const inner = firstElementByTag(outer, case.required_inner) orelse return error.TestExpectedEqual;
         _ = inner;
+    }
+}
+
+test "phase 2 conformance: html5lib curated suite required tags all present" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const parsed_suite = try loadCuratedTreeSuite(arena);
+    defer parsed_suite.deinit();
+    try std.testing.expectEqual(@as(u32, 1), parsed_suite.value.version);
+    try std.testing.expectEqualStrings("tree-construction-curated", parsed_suite.value.suite);
+
+    for (parsed_suite.value.cases) |case| {
+        const res = try parseDocument(arena, case.input, null);
+        for (case.required_tags) |required_tag| {
+            const node = firstElementByTag(res.root, required_tag) orelse {
+                std.log.err("missing required tag '{s}' in case '{s}'", .{ required_tag, case.name });
+                return error.TestExpectedEqual;
+            };
+            _ = node;
+        }
+    }
+}
+
+test "phase 2 conformance: implicit close for li siblings" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const res = try parseDocument(arena, "<ul><li>one<li>two</ul>", null);
+    const ul = firstElementByTag(res.root, "ul") orelse return error.TestExpectedEqual;
+    const li1 = ul.first_child orelse return error.TestExpectedEqual;
+    const li2 = li1.next_sibling orelse return error.TestExpectedEqual;
+    try std.testing.expect(li2.next_sibling == null);
+    switch (li1.kind) {
+        .element => |el| try std.testing.expectEqualStrings("li", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+    switch ((li1.first_child orelse return error.TestExpectedEqual).kind) {
+        .text => |txt| try std.testing.expectEqualStrings("one", txt),
+        else => return error.TestExpectedEqual,
+    }
+    switch ((li2.first_child orelse return error.TestExpectedEqual).kind) {
+        .text => |txt| try std.testing.expectEqualStrings("two", txt),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "phase 2 conformance: implicit close for dt and dd siblings" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const res = try parseDocument(arena, "<dl><dt>a<dd>b<dt>c</dl>", null);
+    const dl = firstElementByTag(res.root, "dl") orelse return error.TestExpectedEqual;
+
+    const n1 = dl.first_child orelse return error.TestExpectedEqual;
+    const n2 = n1.next_sibling orelse return error.TestExpectedEqual;
+    const n3 = n2.next_sibling orelse return error.TestExpectedEqual;
+    try std.testing.expect(n3.next_sibling == null);
+
+    switch (n1.kind) {
+        .element => |el| try std.testing.expectEqualStrings("dt", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+    switch (n2.kind) {
+        .element => |el| try std.testing.expectEqualStrings("dd", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+    switch (n3.kind) {
+        .element => |el| try std.testing.expectEqualStrings("dt", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "phase 2 conformance: whitespace inside table context is not foster parented" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const res = try parseDocument(arena, "<table> \n</table>", null);
+    const first = res.body.first_child orelse return error.TestExpectedEqual;
+    switch (first.kind) {
+        .element => |el| try std.testing.expectEqualStrings("table", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+    const table_text = first.first_child orelse return error.TestExpectedEqual;
+    switch (table_text.kind) {
+        .text => |txt| try std.testing.expectEqualStrings(" \n", txt),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "phase 2 conformance: non-whitespace character in tr context is foster parented" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const res = try parseDocument(arena, "<table><tr>x<td>1</td></tr></table>", null);
+    const first = res.body.first_child orelse return error.TestExpectedEqual;
+    switch (first.kind) {
+        .text => |txt| try std.testing.expectEqualStrings("x", txt),
+        else => return error.TestExpectedEqual,
+    }
+    const second = first.next_sibling orelse return error.TestExpectedEqual;
+    switch (second.kind) {
+        .element => |el| try std.testing.expectEqualStrings("table", el.tag_name),
+        else => return error.TestExpectedEqual,
     }
 }
 
