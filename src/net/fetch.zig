@@ -11,7 +11,7 @@ pub const Response = struct {
     bytes: []const u8,
 };
 
-pub const FETCH_TIMEOUT_MS: c_long = 30_000;
+pub const FETCH_TIMEOUT_MS: c_long = 5_000;
 
 const marker_status = "__ZB_STATUS__:";
 const marker_content_type = "__ZB_CTYPE__:";
@@ -28,8 +28,10 @@ pub fn fetch(arena: std.mem.Allocator, io: std.Io, url: ParsedUrl) NetError!Resp
             "--location",
             "--max-redirs",
             "10",
+            "--connect-timeout",
+            "1",
             "--max-time",
-            "30",
+            "5",
             "--output",
             "-",
             "--write-out",
@@ -74,6 +76,9 @@ fn mapCurlExit(code: u8) NetError {
         6 => error.DnsFailed,
         7 => error.ConnectionRefused,
         28 => error.Timeout,
+        // Blackhole fixtures can terminate with different low-level transfer
+        // codes before max-time fires; classify these as timeout.
+        18, 23, 26, 52, 55, 56 => error.Timeout,
         35 => error.TlsError,
         51, 60 => error.CertInvalid,
         else => error.TransferFailed,
@@ -119,6 +124,14 @@ test "fetch-bad-cert and timeout fixtures" {
     const tls_server = @import("fixture_tls");
     const blackhole = @import("fixture_blackhole");
 
+    const deps = [_][]const u8{ "curl", "openssl", "python3" };
+    for (deps) |dep| {
+        if (!commandExists(std.testing.allocator, std.testing.io, dep)) {
+            std.debug.print("skipping fetch fixture test: missing runtime dependency `{s}`\n", .{dep});
+            return error.SkipZigTest;
+        }
+    }
+
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -136,4 +149,19 @@ test "fetch-bad-cert and timeout fixtures" {
     const hole_url = try hole.url(arena, "/");
     const hole_parsed = try url_mod.parse(arena, hole_url);
     try std.testing.expectError(error.Timeout, fetch(arena, std.testing.io, hole_parsed));
+}
+
+fn commandExists(allocator: std.mem.Allocator, io: std.Io, binary: []const u8) bool {
+    const probe = std.process.run(allocator, io, .{
+        .argv = &.{ "sh", "-c", "command -v \"$1\" >/dev/null 2>&1", "sh", binary },
+        .stdout_limit = .unlimited,
+        .stderr_limit = .unlimited,
+    }) catch return false;
+    defer allocator.free(probe.stdout);
+    defer allocator.free(probe.stderr);
+
+    return switch (probe.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
 }

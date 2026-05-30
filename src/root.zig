@@ -70,14 +70,14 @@ test "teardown-order reserved seam executes in exact order" {
     var test_page = page.Page.init(std.testing.allocator, spy_engine);
     defer test_page.deinit();
 
-    const first_url = try net.url.parse(arena, "http://127.0.0.1:38981/index.html");
-    const second_url = try net.url.parse(arena, "http://127.0.0.1:38981/next.html");
-
     var server = @import("fixture_static").Server.init(std.testing.allocator, std.testing.io) catch |err| {
         std.debug.print("failed to start static fixture: {s}\n", .{@errorName(err)});
         return err;
     };
     defer server.deinit();
+
+    const first_url = try net.url.parse(arena, try server.url(arena, "/index.html"));
+    const second_url = try net.url.parse(arena, try server.url(arena, "/next.html"));
 
     try test_page.navigate(std.testing.io, first_url);
     try test_page.navigate(std.testing.io, second_url);

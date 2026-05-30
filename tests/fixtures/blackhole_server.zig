@@ -6,24 +6,35 @@ pub const Server = struct {
     port: u16,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !Server {
-        const port: u16 = 38983;
-        const script = try std.fmt.allocPrint(
-            allocator,
-            "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', {d})); s.listen(16); time.sleep(60)",
-            .{port},
-        );
-        defer allocator.free(script);
+        var attempt: usize = 0;
+        while (attempt < 32) : (attempt += 1) {
+            const port: u16 = @as(u16, 39100) + @as(u16, @intCast(attempt));
+            const script = try std.fmt.allocPrint(
+                allocator,
+                "import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', {d})); s.listen(16); time.sleep(120)",
+                .{port},
+            );
+            defer allocator.free(script);
 
-        const child = try std.process.spawn(io, .{
-            .argv = &.{ "python3", "-c", script },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
+            var child = std.process.spawn(io, .{
+                .argv = &.{ "python3", "-c", script },
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch |err| switch (err) {
+                error.FileNotFound => return error.FileNotFound,
+                else => continue,
+            };
 
-        try waitUntilReady(allocator, io, port);
+            waitUntilReady(allocator, io, port) catch {
+                child.kill(io);
+                continue;
+            };
 
-        return .{ .io = io, .child = child, .port = port };
+            return .{ .io = io, .child = child, .port = port };
+        }
+
+        return error.ConnectionRefused;
     }
 
     pub fn deinit(self: *Server) void {
@@ -41,9 +52,9 @@ fn waitUntilReady(allocator: std.mem.Allocator, io: std.Io, port: u16) !void {
     defer allocator.free(probe_url);
 
     var attempts: usize = 0;
-    while (attempts < 30) : (attempts += 1) {
+    while (attempts < 50) : (attempts += 1) {
         const result = std.process.run(allocator, io, .{
-            .argv = &.{ "curl", "--silent", "--output", "/dev/null", "--max-time", "1", probe_url },
+            .argv = &.{ "curl", "--silent", "--output", "/dev/null", "--connect-timeout", "1", "--max-time", "2", probe_url },
             .stdout_limit = .unlimited,
             .stderr_limit = .unlimited,
         }) catch continue;
