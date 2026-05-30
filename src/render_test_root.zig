@@ -6,6 +6,7 @@ test "track-c module reachability hooks" {
     _ = @import("paint/display_list.zig");
     _ = @import("paint/pipeline_integration.zig");
     _ = @import("paint/raster.zig");
+    _ = @import("paint/snapshot_gate.zig");
     _ = @import("paint/text.zig");
     _ = @import("platform/window.zig");
     _ = @import("platform/event_loop.zig");
