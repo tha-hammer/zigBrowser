@@ -33,13 +33,22 @@ pub fn parseDocument(arena: std.mem.Allocator, input: []const u8, _: ?script_mod
             },
             .character => |text| {
                 if (text.len == 0) continue;
-                const node = try createText(arena, text);
-                appendChild(currentParent(&stack), node);
+                if (shouldFosterParentCharacter(&stack, text)) {
+                    const node = try createText(arena, text);
+                    fosterParentInsert(&stack, node);
+                } else {
+                    const node = try createText(arena, text);
+                    appendChild(currentParent(&stack), node);
+                }
             },
             .start_tag => |tag| {
                 try maybeImplicitClose(&stack, tag.name);
                 const node = try createElement(arena, tag.name, tag.attrs);
-                appendChild(currentParent(&stack), node);
+                if (shouldFosterParentStartTag(&stack, tag.name)) {
+                    fosterParentInsert(&stack, node);
+                } else {
+                    appendChild(currentParent(&stack), node);
+                }
                 if (!tag.self_closing and !isVoidTag(tag.name)) {
                     try stack.append(arena, node);
                 }
@@ -116,6 +125,82 @@ fn appendChild(parent: *dom.Node, child: *dom.Node) void {
         last = next;
     }
     last.next_sibling = child;
+}
+
+fn insertBefore(parent: *dom.Node, reference: *dom.Node, child: *dom.Node) void {
+    child.parent = parent;
+    if (parent.first_child == null or parent.first_child.? == reference) {
+        child.next_sibling = reference;
+        parent.first_child = child;
+        return;
+    }
+
+    var cursor = parent.first_child.?;
+    while (cursor.next_sibling) |next| {
+        if (next == reference) {
+            cursor.next_sibling = child;
+            child.next_sibling = reference;
+            return;
+        }
+        cursor = next;
+    }
+
+    // Reference wasn't found among parent's children; append as a safe fallback.
+    appendChild(parent, child);
+}
+
+fn fosterParentInsert(stack: *std.ArrayList(*dom.Node), node: *dom.Node) void {
+    var i = stack.items.len;
+    while (i > 0) : (i -= 1) {
+        const candidate = stack.items[i - 1];
+        if (candidate.kind != .element) continue;
+        const tag = candidate.kind.element.tag_name;
+        if (std.mem.eql(u8, tag, "table")) {
+            if (candidate.parent) |p| {
+                insertBefore(p, candidate, node);
+                return;
+            }
+        }
+    }
+    appendChild(currentParent(stack), node);
+}
+
+fn shouldFosterParentCharacter(stack: *const std.ArrayList(*dom.Node), text: []const u8) bool {
+    if (!isInTableInsertionContext(stack)) return false;
+    for (text) |ch| {
+        if (!std.ascii.isWhitespace(ch)) return true;
+    }
+    return false;
+}
+
+fn shouldFosterParentStartTag(stack: *const std.ArrayList(*dom.Node), tag: []const u8) bool {
+    if (!isInTableInsertionContext(stack)) return false;
+    return !isTableStructuralTag(tag);
+}
+
+fn isInTableInsertionContext(stack: *const std.ArrayList(*dom.Node)) bool {
+    if (stack.items.len == 0) return false;
+    const top = stack.items[stack.items.len - 1];
+    if (top.kind != .element) return false;
+    const tag = top.kind.element.tag_name;
+    return std.mem.eql(u8, tag, "table") or
+        std.mem.eql(u8, tag, "tbody") or
+        std.mem.eql(u8, tag, "tfoot") or
+        std.mem.eql(u8, tag, "thead") or
+        std.mem.eql(u8, tag, "tr");
+}
+
+fn isTableStructuralTag(tag: []const u8) bool {
+    return std.mem.eql(u8, tag, "table") or
+        std.mem.eql(u8, tag, "caption") or
+        std.mem.eql(u8, tag, "colgroup") or
+        std.mem.eql(u8, tag, "col") or
+        std.mem.eql(u8, tag, "tbody") or
+        std.mem.eql(u8, tag, "thead") or
+        std.mem.eql(u8, tag, "tfoot") or
+        std.mem.eql(u8, tag, "tr") or
+        std.mem.eql(u8, tag, "td") or
+        std.mem.eql(u8, tag, "th");
 }
 
 fn createElement(arena: std.mem.Allocator, tag_name: []const u8, attrs: []const dom.Attribute) !*dom.Node {
@@ -249,6 +334,71 @@ test "cycle 2.5 misnest recovery subset preserves nested formatting nodes" {
     const b = firstElementByTag(res.root, "b") orelse return error.TestExpectedEqual;
     const i = firstElementByTag(b, "i") orelse return error.TestExpectedEqual;
     _ = i;
+}
+
+test "phase 2 conformance: foster parenting moves stray table text before table" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const res = try parseDocument(arena, "<table>1</table>", null);
+    const first = res.body.first_child orelse return error.TestExpectedEqual;
+    switch (first.kind) {
+        .text => |txt| try std.testing.expectEqualStrings("1", txt),
+        else => return error.TestExpectedEqual,
+    }
+    const second = first.next_sibling orelse return error.TestExpectedEqual;
+    switch (second.kind) {
+        .element => |el| try std.testing.expectEqualStrings("table", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "phase 2 conformance: foster parenting moves non-structural tags before table" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const res = try parseDocument(arena, "<table><b>x</b></table>", null);
+    const first = res.body.first_child orelse return error.TestExpectedEqual;
+    switch (first.kind) {
+        .element => |el| try std.testing.expectEqualStrings("b", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+    const b_text = first.first_child orelse return error.TestExpectedEqual;
+    switch (b_text.kind) {
+        .text => |txt| try std.testing.expectEqualStrings("x", txt),
+        else => return error.TestExpectedEqual,
+    }
+    const second = first.next_sibling orelse return error.TestExpectedEqual;
+    switch (second.kind) {
+        .element => |el| try std.testing.expectEqualStrings("table", el.tag_name),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "phase 2 conformance: curated misnest adoption subset remains stable" {
+    const Case = struct {
+        input: []const u8,
+        required_outer: []const u8,
+        required_inner: []const u8,
+    };
+    const cases = [_]Case{
+        .{ .input = "<b><i>z</b>t</i>", .required_outer = "b", .required_inner = "i" },
+        .{ .input = "<i><b>x</i>y</b>", .required_outer = "i", .required_inner = "b" },
+        .{ .input = "<p><b>x</p>y</b>", .required_outer = "p", .required_inner = "b" },
+    };
+
+    for (cases) |case| {
+        var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        const res = try parseDocument(arena, case.input, null);
+        const outer = firstElementByTag(res.root, case.required_outer) orelse return error.TestExpectedEqual;
+        const inner = firstElementByTag(outer, case.required_inner) orelse return error.TestExpectedEqual;
+        _ = inner;
+    }
 }
 
 test "cycle 2.6 every node kind has null script wrapper slot" {

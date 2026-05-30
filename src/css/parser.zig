@@ -47,6 +47,12 @@ pub fn parseStylesheet(arena: std.mem.Allocator, input: []const u8) ParseError![
     return rules.toOwnedSlice(arena);
 }
 
+pub fn parseCssCorpusNoCrash(arena: std.mem.Allocator, sources: []const []const u8) ParseError!void {
+    for (sources) |source| {
+        _ = try parseStylesheet(arena, source);
+    }
+}
+
 fn parseSelectorList(arena: std.mem.Allocator, src: []const u8) ParseError![][]cssom.SelectorPart {
     var selectors = std.ArrayList([]cssom.SelectorPart).empty;
     errdefer selectors.deinit(arena);
@@ -287,4 +293,19 @@ test "cycle 3.2 malformed blocks and at-rules do not crash parser" {
     for (samples) |sample| {
         _ = try parseStylesheet(arena, sample);
     }
+}
+
+test "phase 3 corpus hook: parseCssCorpusNoCrash accepts mixed css samples" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const css_samples = [_][]const u8{
+        "body { margin: 0; color: #111; }",
+        ".card > h2.title, .card > p { line-height: 1.4; }",
+        "@media screen and (min-width: 640px) { .grid { gap: 16px; } }",
+        "a { good: 1; broken ; also-good: 2 }",
+        "table td { padding: 4px 8px; } tr > td + td { border-left: 1px solid #ddd; }",
+    };
+    try parseCssCorpusNoCrash(arena, &css_samples);
 }
