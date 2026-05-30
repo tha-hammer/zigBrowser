@@ -19,11 +19,16 @@ pub const security = struct {
 
 pub const html = struct {
     pub const dom = @import("html/dom.zig");
+    pub const entities = @import("html/entities.zig");
     pub const tokenizer = @import("html/tokenizer.zig");
+    pub const tree_builder = @import("html/tree_builder.zig");
 };
 
 pub const css = struct {
     pub const cascade = @import("css/cascade.zig");
+    pub const cssom = @import("css/cssom.zig");
+    pub const tokenizer = @import("css/tokenizer.zig");
+    pub const parser = @import("css/parser.zig");
 };
 
 pub const layout = struct {
@@ -32,6 +37,15 @@ pub const layout = struct {
 
 test "scaffold sanity" {
     try std.testing.expect(true);
+}
+
+// Track-owned test aggregators keep this file as a stable coordination seam.
+test {
+    _ = @import("html/test_root.zig");
+}
+
+test {
+    _ = @import("render_test_root.zig");
 }
 
 test "teardown-order reserved seam executes in exact order" {
