@@ -3,3 +3,8 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Local build/tooling artifacts
+.zig-cache/
+.cw9/
+.ntm/

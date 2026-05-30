@@ -1,8 +1,12 @@
-const cascade = @import("css/cascade.zig");
-const layout_box = @import("layout/box.zig");
-
-// Aggregates Track C tests behind a single stable root import.
-test {
-    _ = cascade.ComputedStyle;
-    _ = layout_box.Box;
+test "track-c module reachability hooks" {
+    _ = @import("css/cascade.zig");
+    _ = @import("layout/block.zig");
+    _ = @import("layout/inline.zig");
+    _ = @import("layout/float.zig");
+    _ = @import("paint/display_list.zig");
+    _ = @import("paint/raster.zig");
+    _ = @import("paint/text.zig");
+    _ = @import("platform/window.zig");
+    _ = @import("platform/event_loop.zig");
+    _ = @import("image/decode.zig");
 }
