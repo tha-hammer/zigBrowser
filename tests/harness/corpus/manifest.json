@@ -1,0 +1,404 @@
+{
+  "pages": [
+    {
+      "id": "page01",
+      "html": "corpus/pages/page01.html",
+      "snapshot_png": "corpus/snapshots/page01.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page02",
+      "html": "corpus/pages/page02.html",
+      "snapshot_png": "corpus/snapshots/page02.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page03",
+      "html": "corpus/pages/page03.html",
+      "snapshot_png": "corpus/snapshots/page03.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page04",
+      "html": "corpus/pages/page04.html",
+      "snapshot_png": "corpus/snapshots/page04.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page05",
+      "html": "corpus/pages/page05.html",
+      "snapshot_png": "corpus/snapshots/page05.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page06",
+      "html": "corpus/pages/page06.html",
+      "snapshot_png": "corpus/snapshots/page06.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page07",
+      "html": "corpus/pages/page07.html",
+      "snapshot_png": "corpus/snapshots/page07.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page08",
+      "html": "corpus/pages/page08.html",
+      "snapshot_png": "corpus/snapshots/page08.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page09",
+      "html": "corpus/pages/page09.html",
+      "snapshot_png": "corpus/snapshots/page09.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page10",
+      "html": "corpus/pages/page10.html",
+      "snapshot_png": "corpus/snapshots/page10.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page11",
+      "html": "corpus/pages/page11.html",
+      "snapshot_png": "corpus/snapshots/page11.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page12",
+      "html": "corpus/pages/page12.html",
+      "snapshot_png": "corpus/snapshots/page12.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page13",
+      "html": "corpus/pages/page13.html",
+      "snapshot_png": "corpus/snapshots/page13.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page14",
+      "html": "corpus/pages/page14.html",
+      "snapshot_png": "corpus/snapshots/page14.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page15",
+      "html": "corpus/pages/page15.html",
+      "snapshot_png": "corpus/snapshots/page15.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page16",
+      "html": "corpus/pages/page16.html",
+      "snapshot_png": "corpus/snapshots/page16.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page17",
+      "html": "corpus/pages/page17.html",
+      "snapshot_png": "corpus/snapshots/page17.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page18",
+      "html": "corpus/pages/page18.html",
+      "snapshot_png": "corpus/snapshots/page18.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page19",
+      "html": "corpus/pages/page19.html",
+      "snapshot_png": "corpus/snapshots/page19.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page20",
+      "html": "corpus/pages/page20.html",
+      "snapshot_png": "corpus/snapshots/page20.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page21",
+      "html": "corpus/pages/page21.html",
+      "snapshot_png": "corpus/snapshots/page21.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page22",
+      "html": "corpus/pages/page22.html",
+      "snapshot_png": "corpus/snapshots/page22.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page23",
+      "html": "corpus/pages/page23.html",
+      "snapshot_png": "corpus/snapshots/page23.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page24",
+      "html": "corpus/pages/page24.html",
+      "snapshot_png": "corpus/snapshots/page24.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page25",
+      "html": "corpus/pages/page25.html",
+      "snapshot_png": "corpus/snapshots/page25.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page26",
+      "html": "corpus/pages/page26.html",
+      "snapshot_png": "corpus/snapshots/page26.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page27",
+      "html": "corpus/pages/page27.html",
+      "snapshot_png": "corpus/snapshots/page27.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page28",
+      "html": "corpus/pages/page28.html",
+      "snapshot_png": "corpus/snapshots/page28.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page29",
+      "html": "corpus/pages/page29.html",
+      "snapshot_png": "corpus/snapshots/page29.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page30",
+      "html": "corpus/pages/page30.html",
+      "snapshot_png": "corpus/snapshots/page30.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page31",
+      "html": "corpus/pages/page31.html",
+      "snapshot_png": "corpus/snapshots/page31.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page32",
+      "html": "corpus/pages/page32.html",
+      "snapshot_png": "corpus/snapshots/page32.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page33",
+      "html": "corpus/pages/page33.html",
+      "snapshot_png": "corpus/snapshots/page33.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page34",
+      "html": "corpus/pages/page34.html",
+      "snapshot_png": "corpus/snapshots/page34.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page35",
+      "html": "corpus/pages/page35.html",
+      "snapshot_png": "corpus/snapshots/page35.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page36",
+      "html": "corpus/pages/page36.html",
+      "snapshot_png": "corpus/snapshots/page36.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page37",
+      "html": "corpus/pages/page37.html",
+      "snapshot_png": "corpus/snapshots/page37.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page38",
+      "html": "corpus/pages/page38.html",
+      "snapshot_png": "corpus/snapshots/page38.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page39",
+      "html": "corpus/pages/page39.html",
+      "snapshot_png": "corpus/snapshots/page39.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page40",
+      "html": "corpus/pages/page40.html",
+      "snapshot_png": "corpus/snapshots/page40.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page41",
+      "html": "corpus/pages/page41.html",
+      "snapshot_png": "corpus/snapshots/page41.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page42",
+      "html": "corpus/pages/page42.html",
+      "snapshot_png": "corpus/snapshots/page42.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page43",
+      "html": "corpus/pages/page43.html",
+      "snapshot_png": "corpus/snapshots/page43.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page44",
+      "html": "corpus/pages/page44.html",
+      "snapshot_png": "corpus/snapshots/page44.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page45",
+      "html": "corpus/pages/page45.html",
+      "snapshot_png": "corpus/snapshots/page45.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page46",
+      "html": "corpus/pages/page46.html",
+      "snapshot_png": "corpus/snapshots/page46.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page47",
+      "html": "corpus/pages/page47.html",
+      "snapshot_png": "corpus/snapshots/page47.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page48",
+      "html": "corpus/pages/page48.html",
+      "snapshot_png": "corpus/snapshots/page48.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page49",
+      "html": "corpus/pages/page49.html",
+      "snapshot_png": "corpus/snapshots/page49.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "id": "page50",
+      "html": "corpus/pages/page50.html",
+      "snapshot_png": "corpus/snapshots/page50.png",
+      "threshold": 0.02,
+      "width": 8,
+      "height": 8
+    }
+  ]
+}

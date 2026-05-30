@@ -6,5 +6,6 @@
 
 # Local build/tooling artifacts
 .zig-cache/
+zig-out/
 .cw9/
 .ntm/
