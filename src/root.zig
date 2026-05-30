@@ -19,16 +19,11 @@ pub const security = struct {
 
 pub const html = struct {
     pub const dom = @import("html/dom.zig");
-    pub const entities = @import("html/entities.zig");
     pub const tokenizer = @import("html/tokenizer.zig");
-    pub const tree_builder = @import("html/tree_builder.zig");
 };
 
 pub const css = struct {
     pub const cascade = @import("css/cascade.zig");
-    pub const cssom = @import("css/cssom.zig");
-    pub const tokenizer = @import("css/tokenizer.zig");
-    pub const parser = @import("css/parser.zig");
 };
 
 pub const layout = struct {
