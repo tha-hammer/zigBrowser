@@ -4,12 +4,12 @@ This directory owns the Track-C snapshot baseline and tolerance workflow.
 
 ## One-step regenerate + approve (real pipeline)
 
-When `Page.navigate`-based rendering is available and writes candidate PNGs to
+`src/paint/snapshot_gate.zig` now drives the real `Page.navigate` pipeline and writes candidate PNGs to
 `.zig-cache/snapshot_actual/<page-id>.png`, run:
 
 ```bash
 python3 tests/snapshots/reapprove_snapshots.py \
-  --render-cmd 'zig test src/paint/snapshot_gate.zig --test-filter "corpus render gate reaches 90% threshold"' \
+  --render-cmd 'zig build test' \
   --allow-render-fail \
   --tune-thresholds --apply-thresholds \
   --approve

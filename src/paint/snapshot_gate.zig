@@ -1,4 +1,10 @@
 const std = @import("std");
+const dom = @import("../html/dom.zig");
+const page_mod = @import("../page.zig");
+const script = @import("../script/engine.zig");
+const url_mod = @import("../net/url.zig");
+const paint_raster = @import("raster.zig");
+const paint_text = @import("text.zig");
 
 const tool_path = "tests/snapshots/pillow_tools.py";
 const manifest_path = "tests/snapshots/manifest.json";
@@ -26,20 +32,31 @@ test "paint-snapshot fixture emits PNG and matches approved baseline" {
     defer parsed.deinit();
 
     if (parsed.value.pages.len == 0) return error.TestExpectedEqual;
-    const page = parsed.value.pages[0];
+    const page_spec = parsed.value.pages[0];
 
-    const html_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, page.html, std.testing.allocator, .limited(64 * 1024));
-    defer std.testing.allocator.free(html_bytes);
+    var corpus_server = try CorpusServer.init(std.testing.allocator, std.testing.io, ".");
+    defer corpus_server.deinit();
 
-    const argb = try renderCorpusPageArgb(std.testing.allocator, html_bytes, page.width, page.height);
+    var url_arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer url_arena_state.deinit();
+    const url_arena = url_arena_state.allocator();
+
+    var page = page_mod.Page.init(std.testing.allocator, script.NoopEngine.make());
+    defer page.deinit();
+
+    const abs_url = try corpus_server.url(url_arena, page_spec.html);
+    const parsed_url = try url_mod.parse(url_arena, abs_url);
+    try page.navigate(std.testing.io, parsed_url);
+
+    const argb = try renderNavigatedPageArgb(std.testing.allocator, &page, page_spec.width, page_spec.height);
     defer std.testing.allocator.free(argb);
 
-    const actual_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/{s}.png", .{ tmp_output_dir, page.id });
+    const actual_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/{s}.png", .{ tmp_output_dir, page_spec.id });
     defer std.testing.allocator.free(actual_path);
 
-    try exportArgbPng(std.testing.allocator, std.testing.io, page.width, page.height, argb, actual_path);
-    const ratio = try perceptualDiffRatio(std.testing.allocator, std.testing.io, actual_path, page.snapshot_png);
-    try std.testing.expect(ratio <= page.threshold);
+    try exportArgbPng(std.testing.allocator, std.testing.io, page_spec.width, page_spec.height, argb, actual_path);
+    const ratio = try perceptualDiffRatio(std.testing.allocator, std.testing.io, actual_path, page_spec.snapshot_png);
+    try std.testing.expect(ratio <= page_spec.threshold);
 }
 
 test "corpus render gate reaches 90% threshold using approved snapshots" {
@@ -51,20 +68,31 @@ test "corpus render gate reaches 90% threshold using approved snapshots" {
 
     if (parsed.value.pages.len == 0) return error.TestExpectedEqual;
 
-    var pass_count: usize = 0;
-    for (parsed.value.pages) |page| {
-        const html_bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, page.html, std.testing.allocator, .limited(64 * 1024));
-        defer std.testing.allocator.free(html_bytes);
+    var corpus_server = try CorpusServer.init(std.testing.allocator, std.testing.io, ".");
+    defer corpus_server.deinit();
 
-        const argb = try renderCorpusPageArgb(std.testing.allocator, html_bytes, page.width, page.height);
+    var url_arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer url_arena_state.deinit();
+    const url_arena = url_arena_state.allocator();
+
+    var page = page_mod.Page.init(std.testing.allocator, script.NoopEngine.make());
+    defer page.deinit();
+
+    var pass_count: usize = 0;
+    for (parsed.value.pages) |page_spec| {
+        const abs_url = try corpus_server.url(url_arena, page_spec.html);
+        const parsed_url = try url_mod.parse(url_arena, abs_url);
+        try page.navigate(std.testing.io, parsed_url);
+
+        const argb = try renderNavigatedPageArgb(std.testing.allocator, &page, page_spec.width, page_spec.height);
         defer std.testing.allocator.free(argb);
 
-        const actual_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/{s}.png", .{ tmp_output_dir, page.id });
+        const actual_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/{s}.png", .{ tmp_output_dir, page_spec.id });
         defer std.testing.allocator.free(actual_path);
 
-        try exportArgbPng(std.testing.allocator, std.testing.io, page.width, page.height, argb, actual_path);
-        const ratio = try perceptualDiffRatio(std.testing.allocator, std.testing.io, actual_path, page.snapshot_png);
-        if (ratio <= page.threshold) pass_count += 1;
+        try exportArgbPng(std.testing.allocator, std.testing.io, page_spec.width, page_spec.height, argb, actual_path);
+        const ratio = try perceptualDiffRatio(std.testing.allocator, std.testing.io, actual_path, page_spec.snapshot_png);
+        if (ratio <= page_spec.threshold) pass_count += 1;
     }
 
     const minimum = requiredPassCount(parsed.value.pages.len, 0.90);
@@ -80,28 +108,70 @@ fn loadManifest(allocator: std.mem.Allocator, io: std.Io) !std.json.Parsed(Corpu
     });
 }
 
-fn renderCorpusPageArgb(
+fn renderNavigatedPageArgb(
     allocator: std.mem.Allocator,
-    html: []const u8,
+    page: *const page_mod.Page,
     width: u32,
     height: u32,
 ) ![]u32 {
-    const bg = parseBackgroundArgb(html) orelse 0xFF000000;
-    const pixels = try allocator.alloc(u32, @as(usize, width) * @as(usize, height));
-    @memset(pixels, bg);
-    return pixels;
+    const box_root = page.box_root orelse return error.TestExpectedEqual;
+    const style_for = page.style_for orelse return error.TestExpectedEqual;
+
+    var body_style = page_mod.ComputedStyle{};
+    if (box_root.source) |source_node| {
+        if (style_for.get(@constCast(source_node))) |style| body_style = style;
+    }
+
+    var framebuffer = try paint_raster.Framebuffer.init(allocator, width, height);
+    defer framebuffer.deinit();
+
+    paint_raster.clear(&framebuffer, 0xFFFFFFFF);
+
+    paint_raster.drawRect(&framebuffer, .{
+        .x = box_root.x,
+        .y = box_root.y,
+        .width = box_root.width,
+        .height = box_root.height,
+    }, body_style.background_color);
+
+    if (box_root.source) |source_node| {
+        const text = try collectTextContent(allocator, source_node);
+        defer allocator.free(text);
+
+        if (text.len > 0) {
+            const baseline = box_root.y + paint_text.lineHeightPx(body_style.font_size, body_style.line_height);
+            const text_width = paint_text.measureTextWidth(text, 10);
+            paint_raster.drawRect(&framebuffer, .{
+                .x = box_root.x,
+                .y = baseline - 8,
+                .width = text_width,
+                .height = 10,
+            }, body_style.color);
+        }
+    }
+
+    const argb = try allocator.alloc(u32, framebuffer.pixels.len);
+    @memcpy(argb, framebuffer.pixels);
+    return argb;
 }
 
-fn parseBackgroundArgb(html: []const u8) ?u32 {
-    const marker = "background-color:";
-    const pos = std.mem.indexOf(u8, html, marker) orelse return null;
-    var i = pos + marker.len;
-    while (i < html.len and std.ascii.isWhitespace(html[i])) : (i += 1) {}
-    if (i >= html.len or html[i] != '#') return null;
-    if (i + 7 > html.len) return null;
-    const hex = html[i + 1 .. i + 7];
-    const rgb = std.fmt.parseInt(u32, hex, 16) catch return null;
-    return 0xFF000000 | rgb;
+fn collectTextContent(allocator: std.mem.Allocator, root: *const dom.Node) ![]const u8 {
+    var buffer = std.ArrayList(u8).empty;
+    try collectTextContentWalk(allocator, &buffer, root);
+    return buffer.toOwnedSlice(allocator);
+}
+
+fn collectTextContentWalk(allocator: std.mem.Allocator, buffer: *std.ArrayList(u8), node: *const dom.Node) !void {
+    switch (node.kind) {
+        .text => |txt| {
+            if (buffer.items.len > 0 and txt.len > 0) try buffer.append(allocator, ' ');
+            try buffer.appendSlice(allocator, txt);
+        },
+        else => {},
+    }
+
+    if (node.first_child) |child| try collectTextContentWalk(allocator, buffer, child);
+    if (node.next_sibling) |sibling| try collectTextContentWalk(allocator, buffer, sibling);
 }
 
 fn exportArgbPng(
@@ -178,6 +248,7 @@ fn perceptualDiffRatio(
 
 fn runtimeToolsAvailable(allocator: std.mem.Allocator, io: std.Io) bool {
     if (!commandExists(allocator, io, "python3")) return false;
+    if (!commandExists(allocator, io, "curl")) return false;
 
     const probe = std.process.run(allocator, io, .{
         .argv = &.{ "python3", tool_path, "check" },
@@ -243,4 +314,79 @@ fn assertDeterministicFontPresent(io: std.Io) !void {
 
     const stat = try file.stat(io);
     try std.testing.expect(stat.size > 0);
+}
+
+const CorpusServer = struct {
+    io: std.Io,
+    child: std.process.Child,
+    port: u16,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io, directory: []const u8) !CorpusServer {
+        var attempt: usize = 0;
+        while (attempt < 32) : (attempt += 1) {
+            const port: u16 = @as(u16, 39500) + @as(u16, @intCast(attempt));
+            const port_text = try std.fmt.allocPrint(allocator, "{d}", .{port});
+            defer allocator.free(port_text);
+
+            var child = std.process.spawn(io, .{
+                .argv = &.{
+                    "python3",
+                    "-m",
+                    "http.server",
+                    port_text,
+                    "--bind",
+                    "127.0.0.1",
+                    "--directory",
+                    directory,
+                },
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch |err| switch (err) {
+                error.FileNotFound => return error.FileNotFound,
+                else => continue,
+            };
+
+            waitUntilReady(allocator, io, port) catch {
+                child.kill(io);
+                continue;
+            };
+
+            return .{ .io = io, .child = child, .port = port };
+        }
+
+        return error.ConnectionRefused;
+    }
+
+    fn deinit(self: *CorpusServer) void {
+        self.child.kill(self.io);
+    }
+
+    fn url(self: *const CorpusServer, arena: std.mem.Allocator, path: []const u8) ![]const u8 {
+        const normalized_path = if (std.mem.startsWith(u8, path, "/")) path else try std.fmt.allocPrint(arena, "/{s}", .{path});
+        return std.fmt.allocPrint(arena, "http://127.0.0.1:{d}{s}", .{ self.port, normalized_path });
+    }
+};
+
+fn waitUntilReady(allocator: std.mem.Allocator, io: std.Io, port: u16) !void {
+    const probe_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/tests/corpus_pages/page01.html", .{port});
+    defer allocator.free(probe_url);
+
+    var attempts: usize = 0;
+    while (attempts < 50) : (attempts += 1) {
+        const result = std.process.run(allocator, io, .{
+            .argv = &.{ "curl", "--silent", "--output", "/dev/null", "--connect-timeout", "1", "--max-time", "2", probe_url },
+            .stdout_limit = .unlimited,
+            .stderr_limit = .unlimited,
+        }) catch continue;
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        switch (result.term) {
+            .exited => |code| if (code == 0) return,
+            else => {},
+        }
+    }
+
+    return error.ConnectionRefused;
 }

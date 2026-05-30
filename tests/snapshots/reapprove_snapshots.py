@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Snapshot re-approval and tolerance tuning flow for Track-C corpus gates.
 
-Typical real-render flow once Page.navigate pipeline lands:
+Typical real-render flow:
 
   python3 tests/snapshots/reapprove_snapshots.py \
-    --render-cmd 'zig test src/paint/snapshot_gate.zig --test-filter "corpus render gate reaches 90% threshold"' \
+    --render-cmd 'zig build test' \
     --allow-render-fail \
     --tune-thresholds --apply-thresholds \
     --approve

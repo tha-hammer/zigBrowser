@@ -5,400 +5,400 @@
       "html": "tests/corpus_pages/page01.html",
       "snapshot_png": "tests/snapshots/approved/page01.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page02",
       "html": "tests/corpus_pages/page02.html",
       "snapshot_png": "tests/snapshots/approved/page02.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page03",
       "html": "tests/corpus_pages/page03.html",
       "snapshot_png": "tests/snapshots/approved/page03.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page04",
       "html": "tests/corpus_pages/page04.html",
       "snapshot_png": "tests/snapshots/approved/page04.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page05",
       "html": "tests/corpus_pages/page05.html",
       "snapshot_png": "tests/snapshots/approved/page05.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page06",
       "html": "tests/corpus_pages/page06.html",
       "snapshot_png": "tests/snapshots/approved/page06.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page07",
       "html": "tests/corpus_pages/page07.html",
       "snapshot_png": "tests/snapshots/approved/page07.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page08",
       "html": "tests/corpus_pages/page08.html",
       "snapshot_png": "tests/snapshots/approved/page08.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page09",
       "html": "tests/corpus_pages/page09.html",
       "snapshot_png": "tests/snapshots/approved/page09.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page10",
       "html": "tests/corpus_pages/page10.html",
       "snapshot_png": "tests/snapshots/approved/page10.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page11",
       "html": "tests/corpus_pages/page11.html",
       "snapshot_png": "tests/snapshots/approved/page11.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page12",
       "html": "tests/corpus_pages/page12.html",
       "snapshot_png": "tests/snapshots/approved/page12.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page13",
       "html": "tests/corpus_pages/page13.html",
       "snapshot_png": "tests/snapshots/approved/page13.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page14",
       "html": "tests/corpus_pages/page14.html",
       "snapshot_png": "tests/snapshots/approved/page14.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page15",
       "html": "tests/corpus_pages/page15.html",
       "snapshot_png": "tests/snapshots/approved/page15.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page16",
       "html": "tests/corpus_pages/page16.html",
       "snapshot_png": "tests/snapshots/approved/page16.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page17",
       "html": "tests/corpus_pages/page17.html",
       "snapshot_png": "tests/snapshots/approved/page17.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page18",
       "html": "tests/corpus_pages/page18.html",
       "snapshot_png": "tests/snapshots/approved/page18.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page19",
       "html": "tests/corpus_pages/page19.html",
       "snapshot_png": "tests/snapshots/approved/page19.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page20",
       "html": "tests/corpus_pages/page20.html",
       "snapshot_png": "tests/snapshots/approved/page20.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page21",
       "html": "tests/corpus_pages/page21.html",
       "snapshot_png": "tests/snapshots/approved/page21.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page22",
       "html": "tests/corpus_pages/page22.html",
       "snapshot_png": "tests/snapshots/approved/page22.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page23",
       "html": "tests/corpus_pages/page23.html",
       "snapshot_png": "tests/snapshots/approved/page23.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page24",
       "html": "tests/corpus_pages/page24.html",
       "snapshot_png": "tests/snapshots/approved/page24.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page25",
       "html": "tests/corpus_pages/page25.html",
       "snapshot_png": "tests/snapshots/approved/page25.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page26",
       "html": "tests/corpus_pages/page26.html",
       "snapshot_png": "tests/snapshots/approved/page26.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page27",
       "html": "tests/corpus_pages/page27.html",
       "snapshot_png": "tests/snapshots/approved/page27.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page28",
       "html": "tests/corpus_pages/page28.html",
       "snapshot_png": "tests/snapshots/approved/page28.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page29",
       "html": "tests/corpus_pages/page29.html",
       "snapshot_png": "tests/snapshots/approved/page29.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page30",
       "html": "tests/corpus_pages/page30.html",
       "snapshot_png": "tests/snapshots/approved/page30.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page31",
       "html": "tests/corpus_pages/page31.html",
       "snapshot_png": "tests/snapshots/approved/page31.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page32",
       "html": "tests/corpus_pages/page32.html",
       "snapshot_png": "tests/snapshots/approved/page32.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page33",
       "html": "tests/corpus_pages/page33.html",
       "snapshot_png": "tests/snapshots/approved/page33.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page34",
       "html": "tests/corpus_pages/page34.html",
       "snapshot_png": "tests/snapshots/approved/page34.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page35",
       "html": "tests/corpus_pages/page35.html",
       "snapshot_png": "tests/snapshots/approved/page35.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page36",
       "html": "tests/corpus_pages/page36.html",
       "snapshot_png": "tests/snapshots/approved/page36.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page37",
       "html": "tests/corpus_pages/page37.html",
       "snapshot_png": "tests/snapshots/approved/page37.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page38",
       "html": "tests/corpus_pages/page38.html",
       "snapshot_png": "tests/snapshots/approved/page38.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page39",
       "html": "tests/corpus_pages/page39.html",
       "snapshot_png": "tests/snapshots/approved/page39.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page40",
       "html": "tests/corpus_pages/page40.html",
       "snapshot_png": "tests/snapshots/approved/page40.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page41",
       "html": "tests/corpus_pages/page41.html",
       "snapshot_png": "tests/snapshots/approved/page41.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page42",
       "html": "tests/corpus_pages/page42.html",
       "snapshot_png": "tests/snapshots/approved/page42.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page43",
       "html": "tests/corpus_pages/page43.html",
       "snapshot_png": "tests/snapshots/approved/page43.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page44",
       "html": "tests/corpus_pages/page44.html",
       "snapshot_png": "tests/snapshots/approved/page44.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page45",
       "html": "tests/corpus_pages/page45.html",
       "snapshot_png": "tests/snapshots/approved/page45.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page46",
       "html": "tests/corpus_pages/page46.html",
       "snapshot_png": "tests/snapshots/approved/page46.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page47",
       "html": "tests/corpus_pages/page47.html",
       "snapshot_png": "tests/snapshots/approved/page47.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page48",
       "html": "tests/corpus_pages/page48.html",
       "snapshot_png": "tests/snapshots/approved/page48.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page49",
       "html": "tests/corpus_pages/page49.html",
       "snapshot_png": "tests/snapshots/approved/page49.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     },
     {
       "id": "page50",
       "html": "tests/corpus_pages/page50.html",
       "snapshot_png": "tests/snapshots/approved/page50.png",
       "threshold": 0.02,
-      "width": 8,
-      "height": 8
+      "width": 1024,
+      "height": 768
     }
   ]
 }
