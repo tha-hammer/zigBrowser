@@ -1,16 +1,11 @@
 #ifndef ZIG_BROWSER_SDL2_H
 #define ZIG_BROWSER_SDL2_H
 
-#if defined(__has_include)
-#if __has_include(<SDL2/SDL.h>)
+#if defined(ZB_ENABLE_SDL) && ZB_ENABLE_SDL
 #include <SDL2/SDL.h>
 #define ZB_HAS_SDL2 1
 #else
 #define ZB_HAS_SDL2 0
-#endif
-#else
-#include <SDL2/SDL.h>
-#define ZB_HAS_SDL2 1
 #endif
 
 #if !ZB_HAS_SDL2
