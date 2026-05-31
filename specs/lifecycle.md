@@ -1,24 +1,23 @@
-# Lifecycle Specification (WebKitGTK Slice 1)
+# Lifecycle Specification (WebKitGTK App Shell Slice 2)
 
 Grounding:
-- Plan: `thoughts/searchable/shared/plans/2026-05-31-12-48-ENG-0003-tdd-webkitgtk-browser-slice1.md`
+- Plan: `thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md`
 
 ## 1. Scope
 
-Defines runtime lifetime and teardown ordering for one browser run in the WebKitGTK slice.
+Defines runtime lifetime and teardown ordering for interactive app-shell runs.
 
 ## 2. Run lifecycle
 
-For `open` and `--screenshot` modes:
+For app-entry `open` mode:
 
 1. Validate URI (allowlist: `file`, `http`, `https`).
 2. Create GTK window + WebKitWebView with owned WebKit context.
 3. Connect load and failure callbacks.
 4. Enter GTK main loop.
-5. On successful terminal load:
-   - optionally emit `TITLE\t<title>`
-   - for screenshot mode, request snapshot and write PNG
-6. Exit main loop with success or mapped failure code.
+5. Apply navigation policy decisions and optional sub-window creation.
+6. Handle IPC requests through the `zbHost` bridge when page JS invokes host messages.
+7. Exit main loop only on last-window close or process signal.
 
 ## 3. Load state rule
 
@@ -31,7 +30,7 @@ Success requires:
 - not cancelled
 - not timed out
 
-Screenshot write is permitted only in this success state.
+Protocol `NAV` emission is pinned to this success state.
 
 ## 4. Teardown order
 
@@ -49,7 +48,7 @@ Clean-quit checks in E2E track child PIDs while process is alive, then assert th
 ## 5. Signal and timeout policy
 
 - SIGINT/SIGTERM must trigger graceful shutdown path (cancel + quit).
-- Timeouts must terminate stuck loads/snapshots with non-zero exit.
+- Timeouts/cancellation must suppress superseded terminal lines and prevent stale callback side effects.
 
 ## 6. Legacy note
 

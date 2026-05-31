@@ -1,0 +1,674 @@
+{
+  "epic": {
+    "title": "[Plan Review Epic] 2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2 — 13 critical, 31 warnings",
+    "description": "## Plan Review Epic — 2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2\n\n**Plan:** /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\n**Review report:** <substituted by CLI post-write>\n**Counts:** 13 critical, 31 warnings across 5 phases\n**Generated:** 2026-05-31T19:16:59.308Z\n\n## How to fix all issues\n\n```bash\nbd ready --label plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2\nbd show <issue-id>\nbd update <issue-id> --claim\n# ...edit the plan to address the recommendation...\nbd close <issue-id>\n# When all child issues close, this epic auto-unblocks.\n```\n\n## Issue list\n(substituted by CLI post-mint)",
+    "labels": [
+      "plan-review",
+      "plan-review-epic",
+      "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2"
+    ]
+  },
+  "issues": [
+    {
+      "phase": "contracts",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §contracts] C↔Zig extern boundary is unspecified for both nav_policy an…",
+      "description": "## Finding (severity: critical)\nC↔Zig extern boundary is unspecified for both nav_policy and ipc. The plan defines `nav_policy.decide` and `ipc.dispatch` as pure Zig functions with Zig-native types ([]const u8, IpcError![]const u8) and simultaneously declares C shim header symbols `zb_policy_decide(const char*, const char*, int)` and `zb_ipc_dispatch`. No `pub export fn` adapter with `callconv(.C)` is defined on the Zig side, and no C-compatible wrapper signature is given for the error-union-returning `dispatch`. The plan never resolves how webkit_shim.c — a C file — actually calls across to Zig.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C10 — NavPolicy contract (the app-vs-browser boundary)  ~line 148\n```\n\nSingle source of truth; behaviors reference these and never re-define them. Continues Slice 1 §C1–§C9.\n\n### C10 — NavPolicy contract (the app-vs-browser boundary)\nPure, side-effect-free decision in Zig (`src/nav_policy.zig`), called from the C `decide-policy` cb:\n```zig\npub const Decision = enum { use, ignore, open_in_subwindow };\npub const DecisionType = enum { navigation_action, new_window_action, response };\n```\n\n## Impact\nThe C shim cannot call Zig functions with slice and error-union types via ordinary C linkage. The build will fail at link time or require undocumented calling-convention assumptions. The entire nav-policy and IPC contract is untestable and unimplementable until the C-callable adapter layer is specified.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:c439f729\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:c439f729"
+      ],
+      "fingerprint": "c439f729"
+    },
+    {
+      "phase": "contracts",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §contracts] ipc.dispatch return-slice lifetime vs WebKit JSC string con…",
+      "description": "## Finding (severity: critical)\nipc.dispatch return-slice lifetime vs WebKit JSC string construction is unspecified. `dispatch` returns `[]const u8` allocated in an arena. The C shim must then construct a JSCValue (via jsc_value_new_string or equivalent) and call webkit_script_message_reply_return_value. The contract does not specify whether jsc_value_new_string copies the bytes before the arena is freed, nor who frees the arena and when. A wrong ordering produces a use-after-free that silently corrupts the IPC reply or crashes the process.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C12 — IPC bridge contract (the differentiator, minimal)  ~line 184\n```\n- C reads the message via `webkit_javascript_result_get_js_value` → `JSCValue` → `jsc_value_to_string`\n  (javascriptcoregtk-4.1, linked in Slice 1), parses the JSON envelope, and calls Zig:\n  ```zig\n  // src/ipc.zig — pure dispatch, unit-testable\n  pub const IpcError = error{ UnknownCommand, BadArgs };\n  pub fn dispatch(arena, cmd: []const u8, args_json: []const u8) IpcError![]const u8; // returns JSON\n  ```\n- Minimal command set (all return values JS cannot fabricate on its own — independent oracle):\n```\n\n## Impact\nUnspecified memory ownership at the Zig→C→WebKit boundary makes every IPC reply unsafe by default. Any implementation that frees the arena before jsc_value_new_string copies the string produces a use-after-free with no compile-time signal, directly breaking the 'js-calls-zig-and-sees-result' differentiator behavior.\n\n## Recommendation\nDocument the mandatory ordering with an inline comment in webkit_shim.c's IPC callback: (1) call zb_ipc_dispatch into a local buffer or arena; (2) immediately call jsc_value_new_string — which copies the bytes; (3) free the arena/buffer; (4) call webkit_script_message_reply_return_value with the now-owned JSCValue. No library change needed; a one-line comment pins the contract.\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:87e2e8bd\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:87e2e8bd"
+      ],
+      "fingerprint": "87e2e8bd"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] IpcError → JS: no mechanism is specified for returning erro…",
+      "description": "## Finding (severity: warning)\nIpcError → JS: no mechanism is specified for returning errors to the JS caller. §C12 says 'structured JS rejection' and 'handler returns an error value' but never names the WebKit API used (webkit_script_message_reply_return_value with an error-shaped JSON string vs. a JSCValue error object) nor the JSON shape of the error payload. The JS fixture cannot handle the error path without a pinned contract here.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §(no enclosing heading)  ~line 2\n```\n---\ntitle: \"WebKitGTK App Shell — Slice 2: navigation control + JS↔Zig bridge (TDD)\"\ndate: 2026-05-31\nstatus: draft — written via TddPlanPipeline (Mode A); awaiting PlanReview\ntype: tdd-plan\nproject: zigBrowser\nengine: WebKitGTK (webkit2gtk-4.1 + GTK3)\nzig_version: \"0.16.0\"\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:b1ef82f7\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:b1ef82f7"
+      ],
+      "fingerprint": "b1ef82f7"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] load-failed has no C8+ protocol line. The reload edge-case …",
+      "description": "## Finding (severity: warning)\nload-failed has no C8+ protocol line. The reload edge-case 'reload of now-deleted file → load-failed → app stays alive' requires E2E observability, but C8+ defines only NAV / BLOCKED / SUBWIN / IPC. There is no LOAD_FAIL\\t<uri> line, so the harness has no signal to assert the app survived rather than exited.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Observable Behaviors  ~line 116\n```\nbehaves like an **app**: it renders only what the shell permits, external links pop a second\napp-owned window, a button on the page calls Zig and shows a Zig-computed value, and reloading picks\nup edits. Verified through the E2E stdout protocol below + Zig unit tests.\n\n### Observable Behaviors\n- **reload:** Given the app shows `index.html`; when the file changes and the host reloads; then the\n  window shows the new content.\n- **allow:** Given the allowlist = the app's `file://` base; when an in-app link goes to a page under\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:b9cc88c8\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:b9cc88c8"
+      ],
+      "fingerprint": "b9cc88c8"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] [VERIFY] Main-frame vs sub-frame detection: §C10 states 'Sl…",
+      "description": "## Finding (severity: warning)\n[VERIFY] Main-frame vs sub-frame detection: §C10 states 'Slice 2 enforces policy on the main frame only' but cites no WebKit API for determining whether a policy decision targets the main frame. The verified API surface table (WebKitWebView.h, WebKitPolicyDecision.h, WebKitNavigationAction.h) includes no frame-type accessor. Without this, the main-frame-only invariant and the documented sub-frame permissive stance cannot be distinguished in the shim callback.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C10 — NavPolicy contract (the app-vs-browser boundary)  ~line 159\n```\nRules (Slice 2):\n- `new_window_action` (target=_blank / window.open) → **open_in_subwindow** (M4).\n- `navigation_action`, candidate under `app_base` (same-origin `file://` subtree) → **use** (M2).\n- `navigation_action`, candidate is a foreign origin (any http/https, or `file://` outside base) →\n  **ignore** (M3). Main-frame only (sub-frame stance documented below).\n- `response` → **use** for allowed origins (kept minimal; download deferred).\n- Hash/fragment navigation within the same document → **use** (no policy churn).\n- **Sub-frame policy (documented stance):** Slice 2 enforces policy on the **main frame only**;\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:d5514823\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:d5514823"
+      ],
+      "fingerprint": "d5514823"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] JSCValue NULL guard absent from C12 boundary. §C12 says 'C …",
+      "description": "## Finding (severity: warning)\nJSCValue NULL guard absent from C12 boundary. §C12 says 'C reads the message via … jsc_value_to_string; keep C dumb.' If the JS caller sends a non-string value, jsc_value_to_string returns NULL. No guard is specified — passing NULL to Zig's dispatch is a boundary normalization failure that lets a malformed foreign shape propagate into business logic.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §(no enclosing heading)  ~line 2\n```\n---\ntitle: \"WebKitGTK App Shell — Slice 2: navigation control + JS↔Zig bridge (TDD)\"\ndate: 2026-05-31\nstatus: draft — written via TddPlanPipeline (Mode A); awaiting PlanReview\ntype: tdd-plan\nproject: zigBrowser\nengine: WebKitGTK (webkit2gtk-4.1 + GTK3)\nzig_version: \"0.16.0\"\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:a672194f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:a672194f"
+      ],
+      "fingerprint": "a672194f"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] app_base derivation from the CLI argument is unspecified. §…",
+      "description": "## Finding (severity: warning)\napp_base derivation from the CLI argument is unspecified. §C10 references 'canonical file:// dir prefix of the app (from uri.zig)' but never documents the exact transformation: is app_base the directory component of the URI path (everything up to and including the final '/'), the full URI minus the filename, or something else? Without this, the containment check in nav_policy.decide and the B2/B3 unit test vectors cannot be pinned.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §CLI / Run Contract (delta from Slice 1)  ~line 419\n```\n- E2E flows (all under `xvfb-run`, `--e2e-protocol`): reload (NAV×2), allow (NAV page-b), block\n  (BLOCKED + get_uri unchanged), sub-window (SUBWIN + count 2), IPC round-trip (IPC + DOM value).\n- Harness reuses Slice 1 §C8 helper-PID tracking to confirm children/helpers are reaped on quit.\n\n## CLI / Run Contract (delta from Slice 1)\n| Invocation | behavior |\n|---|---|\n| `zigBrowser <app-index file://…>` | opens the app window (interactive; does not exit on load-failed) |\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:c2bc5651\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:c2bc5651"
+      ],
+      "fingerprint": "c2bc5651"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] webkit_web_view_new_with_related_view sharing semantics und…",
+      "description": "## Finding (severity: warning)\nwebkit_web_view_new_with_related_view sharing semantics undocumented. §C11 notes the child 'shares the session/context with the parent' without enumerating what that entails (shared web process, cookies, localStorage, HTTP cache). For a Tauri-like shell this may be intentional, but the contract does not confirm it, leaving the sub-window isolation model ambiguous for implementers and test authors.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §The product turn (why this slice exists)  ~line 38\n```\n> not and should be sanity-checked with a search before it appears in public docs (M6).\n\nConsequence: an app shell has **no editable address bar, no tabs, no bookmarks**. Its \"navigation\"\nis **navigation _control_** — the shell decides what the embedded webview may load, external links\nopen in an **app-owned sub-window**, and a web button can call a **Zig** function and show the\nresult. That last behavior is the whole reason to build a shell at all; this slice ships a minimal,\nreal version of it.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:e707c217\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:e707c217"
+      ],
+      "fingerprint": "e707c217"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §interfaces] ipc.dispatch arena parameter has no type annotation — 'pub …",
+      "description": "## Finding (severity: critical)\nipc.dispatch arena parameter has no type annotation — 'pub fn dispatch(arena, cmd: []const u8, args_json: []const u8)' is not valid Zig syntax; the allocator type is missing, the returned []const u8 slice has no defined owner, and memory-management responsibility between dispatch and its callers is unspecified\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §The product turn (why this slice exists)  ~line 38\n```\n> not and should be sanity-checked with a search before it appears in public docs (M6).\n\nConsequence: an app shell has **no editable address bar, no tabs, no bookmarks**. Its \"navigation\"\nis **navigation _control_** — the shell decides what the embedded webview may load, external links\nopen in an **app-owned sub-window**, and a web button can call a **Zig** function and show the\nresult. That last behavior is the whole reason to build a shell at all; this slice ships a minimal,\nreal version of it.\n\n```\n\n## Impact\nipc.zig cannot be compiled; ipc_test.zig cannot call dispatch; the C-ABI wrapper (zb_ipc_dispatch) cannot be written because the allocator strategy is unknown; B5 (the differentiator) is entirely unimplementable from this plan\n\n## Recommendation\nFix §C12 to read: pub fn dispatch(arena: std.mem.Allocator, cmd: []const u8, args_json: []const u8) IpcError![]const u8. Add one sentence stating the caller owns the returned slice and must free it with the same allocator. This is the minimal change that unblocks both ipc_test.zig and the C-ABI wrapper.\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:52d9cb3a\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:52d9cb3a"
+      ],
+      "fingerprint": "52d9cb3a"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §interfaces] zb_ipc_dispatch C-ABI export has no parameter list or retur…",
+      "description": "## Finding (severity: critical)\nzb_ipc_dispatch C-ABI export has no parameter list or return type — listed only as 'extern' in the shim header note; Zig error unions (IpcError![]const u8) are not C-ABI-compatible and require an explicit export wrapper, but neither the Zig export fn nor its C-compatible signature is defined anywhere in the plan\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Test Specification  ~line 249\n```\n\n**Property:** for any sequence of (edit, reload) pairs, the post-reload `document.title` equals the\ntitle in the current on-disk file — never a cached prior value.\n\n**Files touched:** `src/webkit_shim.c` (reload entry + reuse cancel/teardown), `src/webkit_shim.h`\n(`zb_reload(ZbWindow*, int bypass_cache)`), `src/app.zig` (host trigger seam), `tests/e2e/reload_test.*`,\n`tests/fixtures/app/index.html`.\n\n```\n\n## Impact\nThe C shim cannot call into ipc.zig; the entire command-dispatch path is broken at the FFI seam; without this bridge B5 cannot be implemented and the Slice-4 IPC extension point ('table is the Slice-4 seam') has no defined interface to extend\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:507b90a7\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:507b90a7"
+      ],
+      "fingerprint": "507b90a7"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §interfaces] zb_ipc_reply C signature is literally '(...)' — the functio…",
+      "description": "## Finding (severity: critical)\nzb_ipc_reply C signature is literally '(...)' — the function that wraps webkit_script_message_reply_return_value has no defined parameter list; neither the WebKitScriptMessageReply* handle nor the result/error string parameters are specified\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C12 — IPC bridge contract (the differentiator, minimal)  ~line 185\n```\n  (javascriptcoregtk-4.1, linked in Slice 1), parses the JSON envelope, and calls Zig:\n  ```zig\n  // src/ipc.zig — pure dispatch, unit-testable\n  pub const IpcError = error{ UnknownCommand, BadArgs };\n  pub fn dispatch(arena, cmd: []const u8, args_json: []const u8) IpcError![]const u8; // returns JSON\n  ```\n- Minimal command set (all return values JS cannot fabricate on its own — independent oracle):\n  - `ping` → `\"pong\"`.\n```\n\n## Impact\nThe C shim cannot implement the reply path; the Zig extern declaration for zb_ipc_reply cannot be written; error-reply behaviour (unknown command → structured JS rejection) has no defined calling convention, so the 'no crash on unknown command' edge case in B5 is unverifiable\n\n## Recommendation\nReplace '(...)' in §C12 and webkit_shim.h with a concrete signature, e.g.: void zb_ipc_reply(WebKitScriptMessageReply* reply, const char* result_json, const char* error_msg) — where exactly one of result_json/error_msg is non-NULL. Document which WebKit call handles each branch (webkit_script_message_reply_return_value vs the error path).\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:2fd42cfd\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:2fd42cfd"
+      ],
+      "fingerprint": "2fd42cfd"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] int zb_policy_decide return value ↔ Decision enum ordinal m…",
+      "description": "## Finding (severity: warning)\nint zb_policy_decide return value ↔ Decision enum ordinal mapping undocumented — the integer values 0/1/2 are not explicitly mapped to use/ignore/open_in_subwindow; any off-by-one or reordering silently misroutes policy\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §§C continuation — new canonical contracts (PIN BEFORE ANY BEHAVIOR)  ~line 143\n```\n  tracking, the `xvfb-run` E2E harness, `tests/fixtures/`.\n- **NOT reused:** archived `url.zig` (host-required), `gtk_show_uri_on_window` (replaced by M4\n  sub-window).\n\n## §C continuation — new canonical contracts (PIN BEFORE ANY BEHAVIOR)\n\nSingle source of truth; behaviors reference these and never re-define them. Continues Slice 1 §C1–§C9.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:c3c23f0a\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:c3c23f0a"
+      ],
+      "fingerprint": "c3c23f0a"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] app.zig public interface entirely absent — referenced as 'h…",
+      "description": "## Finding (severity: warning)\napp.zig public interface entirely absent — referenced as 'host trigger seam' (B1) and 'UCM wiring per window' (B5) but no function names, parameter types, return types, or visibility modifiers are given\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Test Specification  ~line 249\n```\n\n**Property:** for any sequence of (edit, reload) pairs, the post-reload `document.title` equals the\ntitle in the current on-disk file — never a cached prior value.\n\n**Files touched:** `src/webkit_shim.c` (reload entry + reuse cancel/teardown), `src/webkit_shim.h`\n(`zb_reload(ZbWindow*, int bypass_cache)`), `src/app.zig` (host trigger seam), `tests/e2e/reload_test.*`,\n`tests/fixtures/app/index.html`.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nAdd a short §C14 block enumerating app.zig's public functions — at minimum: the entry point (pub fn run or main), the reload trigger (pub fn reload(win: *ZbWindow, bypass: bool) void), and confirmation that UCM wiring is done inside the window-creation routine rather than as a separate call. Without this, the 'host trigger seam' and 'UCM wiring per window' references in B1/B5 are unimplementable.\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:51df498a\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:51df498a"
+      ],
+      "fingerprint": "51df498a"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] ZbApp.children container type undeclared — C array with fix…",
+      "description": "## Finding (severity: warning)\nZbApp.children container type undeclared — C array with fixed cap, GPtrArray*, or GList*? Teardown iteration order (§C5/§C13) and E2E window-count assertion depend on this\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §The product turn (why this slice exists)  ~line 38\n```\n> not and should be sanity-checked with a search before it appears in public docs (M6).\n\nConsequence: an app shell has **no editable address bar, no tabs, no bookmarks**. Its \"navigation\"\nis **navigation _control_** — the shell decides what the embedded webview may load, external links\nopen in an **app-owned sub-window**, and a web button can call a **Zig** function and show the\nresult. That last behavior is the whole reason to build a shell at all; this slice ships a minimal,\nreal version of it.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nSpecify the container type in §C11 — a fixed C array with a small cap (e.g. ZbWindow* children[16]; size_t n_children) is the simplest L1-appropriate choice. State the maximum number of simultaneous child windows and what happens when the cap is exceeded (emit a warning, refuse the create signal). This unblocks both the teardown loop in §C13 and the E2E window-count assertion in B4.\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:fc25b238\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:fc25b238"
+      ],
+      "fingerprint": "fc25b238"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] zb_window_new(app, view) mentioned only in B4 refactor — pa…",
+      "description": "## Finding (severity: warning)\nzb_window_new(app, view) mentioned only in B4 refactor — parameter types and return type never stated in any §C contract section; the shared window-build routine has no defined interface\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §TDD Cycle  ~line 258\n```\n- 🔴 **Red:** E2E (xvfb) loads a copied fixture, asserts initial `NAV…<title-A>`, rewrites the file to\n  `<title-B>`, calls reload, asserts a second `NAV…<title-B>`. Fails (no reload entry).\n- 🟢 **Green:** shim `zb_reload` → cancel in-flight (§C5) → `webkit_web_view_reload[_bypass_cache]`;\n  on COMMITTED/FINISHED emit `NAV`.\n- 🔵 **Refactor:** one `reload_current(win, bypass)` routine; share the FINISHED→NAV emit with B2/B4.\n- **VISIBLE ARTIFACT:** the edited text appears in the window after reload.\n- **ORACLE:** the on-disk file (title before ≠ after); WebKit `get_title`.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:bb0822dc\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:bb0822dc"
+      ],
+      "fingerprint": "bb0822dc"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] [VERIFY] C shim main-frame detection mechanism not specifie…",
+      "description": "## Finding (severity: warning)\n[VERIFY] C shim main-frame detection mechanism not specified — §C10 states main-frame-only enforcement but neither decide() nor zb_policy_decide has an is_main_frame parameter; the WebKit API call the C callback uses to identify main-frame navigations is absent from the verified API surface table\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C10 — NavPolicy contract (the app-vs-browser boundary)  ~line 159\n```\nRules (Slice 2):\n- `new_window_action` (target=_blank / window.open) → **open_in_subwindow** (M4).\n- `navigation_action`, candidate under `app_base` (same-origin `file://` subtree) → **use** (M2).\n- `navigation_action`, candidate is a foreign origin (any http/https, or `file://` outside base) →\n  **ignore** (M3). Main-frame only (sub-frame stance documented below).\n- `response` → **use** for allowed origins (kept minimal; download deferred).\n- Hash/fragment navigation within the same document → **use** (no policy churn).\n- **Sub-frame policy (documented stance):** Slice 2 enforces policy on the **main frame only**;\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:5e7f5eef\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:5e7f5eef"
+      ],
+      "fingerprint": "5e7f5eef"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] --e2e-protocol flag propagation interface undefined — the m…",
+      "description": "## Finding (severity: warning)\n--e2e-protocol flag propagation interface undefined — the mechanism by which webkit_shim.c emit functions read this flag (C global set by app.zig, ZbApp field, shim init parameter) is never stated\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §CLI / Run Contract (delta from Slice 1)  ~line 419\n```\n- E2E flows (all under `xvfb-run`, `--e2e-protocol`): reload (NAV×2), allow (NAV page-b), block\n  (BLOCKED + get_uri unchanged), sub-window (SUBWIN + count 2), IPC round-trip (IPC + DOM value).\n- Harness reuses Slice 1 §C8 helper-PID tracking to confirm children/helpers are reaped on quit.\n\n## CLI / Run Contract (delta from Slice 1)\n| Invocation | behavior |\n|---|---|\n| `zigBrowser <app-index file://…>` | opens the app window (interactive; does not exit on load-failed) |\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:ddcd43c3\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:ddcd43c3"
+      ],
+      "fingerprint": "ddcd43c3"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] B4 property directly contradicts C10 and B3. C10 states: `n…",
+      "description": "## Finding (severity: critical)\nB4 property directly contradicts C10 and B3. C10 states: `navigation_action` + foreign origin → `ignore`. B3's property confirms: 'for all `c` not within `app_base` and `dtype == navigation_action`, `decide(...) == .ignore`'. Yet B4's property states: 'every `navigation_action` to a foreign http/https origin resolves to exactly one new tracked child window.' A `navigation_action` to a foreign origin cannot simultaneously be `.ignore` and `.open_in_subwindow`. The fixture makes this concrete: `index.html` includes 'an external link' (a plain href without `target=_blank`, which WebKit classifies as `navigation_action`). An implementer who follows C10 satisfies B3 and fails B4; one who follows B4's property satisfies B4 and fails B3.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Verified API surface (grepped from installed headers)  ~line 93\n```\n| reload (no cache) | `webkit_web_view_reload_bypass_cache` | `WebKitWebView.h:418` |\n| current URI (oracle) | `webkit_web_view_get_uri` | `WebKitWebView.h:442` |\n| title (oracle) | `webkit_web_view_get_title` | `WebKitWebView.h:412` |\n| load events | `WEBKIT_LOAD_STARTED/REDIRECTED/COMMITTED/FINISHED` | `WebKitWebView.h:131-134` |\n| policy decision types | `…NAVIGATION_ACTION / …NEW_WINDOW_ACTION / …RESPONSE` | `WebKitWebView.h:107-109` |\n| allow / refuse / download | `webkit_policy_decision_use / _ignore / _download` | `WebKitPolicyDecision.h:53-63` |\n| nav action (URI) | `webkit_navigation_action_get_request` (+ `webkit_uri_request_get_uri`) | `WebKitNavigationAction.h:77` |\n| nav action type | `webkit_navigation_action_get_navigation_type` | `WebKitNavigationAction.h:68` |\n```\n\n## Impact\nB3 and B4 cannot both pass as written. Whichever rule the implementer follows, one behavior will silently be wrong at runtime, and the contradiction will not be surfaced until integration testing.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:fbe582e5\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:fbe582e5"
+      ],
+      "fingerprint": "fbe582e5"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] `NAV` stdout line emit point is ambiguously pinned to 'COMM…",
+      "description": "## Finding (severity: critical)\n`NAV` stdout line emit point is ambiguously pinned to 'COMMITTED/FINISHED'. These are distinct WebKit load states. At `WEBKIT_LOAD_COMMITTED` the HTML has not yet been parsed, so `webkit_web_view_get_title` typically returns NULL or an empty string — the `NAV\\t<uri>\\t<title>` line would have no title, breaking the reload and allow-navigation test oracles. If the intent is 'emit at either state', two `NAV` lines are emitted per navigation, which breaks all harness assertions expecting exactly one. The emit point must be pinned to one named state.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Overview  ~line 50\n```\nreconciliation:\n\n1. **programmatic-reload** — host-triggered reload picks up on-disk changes (the dev loop).\n2. **app-origin-navigation-allowed** — in-app navigation within the app's own origin renders.\n3. **disallowed-navigation-blocked** — main-frame navigation to a foreign origin is refused.\n4. **external-link-opens-in-app-subwindow** — an external/`target=_blank` link opens a **new\n   app-owned window** (NOT the system browser).\n5. **js-calls-zig-and-sees-result** — a web button invokes a Zig function over an IPC bridge and the\n```\n\n## Impact\nEvery E2E reload and navigation-allowed test is either unconditionally flaky (empty title at COMMITTED) or structurally broken (double emission), making the plan's primary E2E oracle non-functional.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:1723c2d7\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:1723c2d7"
+      ],
+      "fingerprint": "1723c2d7"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] UCM GObject caller-reference cleanup is unspecified. `webki…",
+      "description": "## Finding (severity: critical)\nUCM GObject caller-reference cleanup is unspecified. `webkit_user_content_manager_new()` returns a GObject with ref-count 1. After passing the pointer to `webkit_web_view_new_with_user_content_manager()` (which adds its own ref), the caller must call `g_object_unref(ucm)` to release the initial reference. The plan specifies neither this release nor who is responsible for it. In a multi-window session (main window + one UCM per child sub-window), every unhandled reference leaks one GObject for the process lifetime.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Verified API surface (grepped from installed headers)  ~line 99\n```\n| nav action (URI) | `webkit_navigation_action_get_request` (+ `webkit_uri_request_get_uri`) | `WebKitNavigationAction.h:77` |\n| nav action type | `webkit_navigation_action_get_navigation_type` | `WebKitNavigationAction.h:68` |\n| **create (new window)** | `GtkWidget *(* create)(WebKitWebView*, WebKitNavigationAction*)` | `WebKitWebView.h:260` |\n| related sub-view | `webkit_web_view_new_with_related_view` | `WebKitWebView.h:334` |\n| user content mgr ctor | `webkit_user_content_manager_new` | `WebKitUserContentManager.h:51` |\n| view w/ UCM | `webkit_web_view_new_with_user_content_manager` | `WebKitWebView.h:343` |\n| get UCM | `webkit_web_view_get_user_content_manager` | `WebKitWebView.h:629` |\n| **IPC handler (reply)** | `webkit_user_content_manager_register_script_message_handler_with_reply` | `WebKitUserContentManager.h:119` |\n```\n\n## Impact\nMemory leak of one GObject per window opened. In apps that open many sub-windows (e.g., Behavior 4 grandchild edge case), growth is unbounded for the session lifetime.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:a4ad09f5\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:a4ad09f5"
+      ],
+      "fingerprint": "a4ad09f5"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] The `arena` parameter to `ipc.dispatch` has no specified ow…",
+      "description": "## Finding (severity: critical)\nThe `arena` parameter to `ipc.dispatch` has no specified owner, lifetime, or cleanup responsibility. The signature `pub fn dispatch(arena, cmd, args_json) IpcError![]const u8` returns a slice backed by the arena, but the plan does not state who supplies the arena, who resets or frees it after the reply is consumed, or what happens on re-entrant calls. Without this, the C shim cannot correctly sequence: call dispatch → use returned slice to build JSCValue → free the arena.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C12 — IPC bridge contract (the differentiator, minimal)  ~line 183\n```\n  JS calls `await window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd, args}))`.\n- C reads the message via `webkit_javascript_result_get_js_value` → `JSCValue` → `jsc_value_to_string`\n  (javascriptcoregtk-4.1, linked in Slice 1), parses the JSON envelope, and calls Zig:\n  ```zig\n  // src/ipc.zig — pure dispatch, unit-testable\n  pub const IpcError = error{ UnknownCommand, BadArgs };\n  pub fn dispatch(arena, cmd: []const u8, args_json: []const u8) IpcError![]const u8; // returns JSON\n  ```\n```\n\n## Impact\nMemory leak on every IPC call if the arena is never freed; use-after-free if it is freed before `webkit_script_message_reply_return_value` consumes the slice. Either defect is silent — no compile-time or runtime indicator in the plan as written.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:3f596395\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:3f596395"
+      ],
+      "fingerprint": "3f596395"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Retryability not declared for any error category. The plan …",
+      "description": "## Finding (severity: warning)\nRetryability not declared for any error category. The plan surfaces `load-failed` (WebKit), `IpcError.UnknownCommand`, and `IpcError.BadArgs` but never states — even as a boolean false — whether any should be retried. The implied 'log + continue / show error page' behavior is correct for this tier but is unstated, leaving implementers to guess.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C13 — Interactive lifetime (model shift from Slice 1)  ~line 198\n```\n- **Threading:** the handler runs on the WebKit main loop; replies are issued synchronously inside the\n  callback (no cross-thread hop). Any future async command must hop back via `g_idle_add`.\n\n### C13 — Interactive lifetime (model shift from Slice 1)\n- Process does **not** exit on `load-failed` (interactive). The failing view shows WebKit's real error\n  page (window mode, per Slice 1 §C4 returns FALSE) and the app stays alive.\n- Exit on **last window closed** (main + all children gone) or SIGINT/SIGTERM (Slice 1 §C5),\n  exit 0 (or 130 on signal). Per-window teardown reuses Slice 1 §C5 order; the app tracks all windows\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:0f8f3819\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:0f8f3819"
+      ],
+      "fingerprint": "0f8f3819"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] `create`-signal child policy and IPC wiring mechanism is un…",
+      "description": "## Finding (severity: warning)\n`create`-signal child policy and IPC wiring mechanism is unspecified. §C11 states the child 'inherits the same decide-policy handler' and 'the same IPC handler', but WebKit policy-decision signals and UCM handlers are per-view — they are not inherited via `webkit_web_view_new_with_related_view`. The plan does not state that the shim must explicitly call `g_signal_connect` and re-register the `zbHost` handler on the child's UCM inside the `create` callback before returning.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C11 — Sub-window contract (the `create` signal)  ~line 165\n```\n- Hash/fragment navigation within the same document → **use** (no policy churn).\n- **Sub-frame policy (documented stance):** Slice 2 enforces policy on the **main frame only**;\n  sub-frame loads inside an allowed app page are permitted. (Tightening sub-frames is a later slice.)\n\n### C11 — Sub-window contract (the `create` signal)\nThe C shim handles the `create` signal (`WebKitWebView.h:260`):\n- Build a **new owned `GtkWindow`** + a related WebView via `webkit_web_view_new_with_related_view`\n  (shares the session/context with the parent), attach it, return the GtkWidget per the signal ABI.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:59c7ec40\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:59c7ec40"
+      ],
+      "fingerprint": "59c7ec40"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] E2E 'window-count == 2' oracle has no specified observation…",
+      "description": "## Finding (severity: warning)\nE2E 'window-count == 2' oracle has no specified observation mechanism. The §C8+ protocol emits only `SUBWIN\\t<uri>` — no count line. How the harness derives a count of 2 (count SUBWIN lines? a separate `WINCOUNT\\t<n>` line?) is unspecified.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Observable Behaviors  ~line 116\n```\nbehaves like an **app**: it renders only what the shell permits, external links pop a second\napp-owned window, a button on the page calls Zig and shows a Zig-computed value, and reloading picks\nup edits. Verified through the E2E stdout protocol below + Zig unit tests.\n\n### Observable Behaviors\n- **reload:** Given the app shows `index.html`; when the file changes and the host reloads; then the\n  window shows the new content.\n- **allow:** Given the allowlist = the app's `file://` base; when an in-app link goes to a page under\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:954ed66f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:954ed66f"
+      ],
+      "fingerprint": "954ed66f"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] `window.open()` from JS triggering the `create` signal is l…",
+      "description": "## Finding (severity: warning)\n`window.open()` from JS triggering the `create` signal is listed as an edge case ('same path') but the verified API symbol table does not explicitly confirm that `window.open()` fires the `create` signal in webkit2gtk-4.1. `WebKitWebView.h:260` shows the signal signature but does not document which JS constructs trigger it.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Observable Behaviors  ~line 116\n```\nbehaves like an **app**: it renders only what the shell permits, external links pop a second\napp-owned window, a button on the page calls Zig and shows a Zig-computed value, and reloading picks\nup edits. Verified through the E2E stdout protocol below + Zig unit tests.\n\n### Observable Behaviors\n- **reload:** Given the app shows `index.html`; when the file changes and the host reloads; then the\n  window shows the new content.\n- **allow:** Given the allowlist = the app's `file://` base; when an in-app link goes to a page under\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:5356467a\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:5356467a"
+      ],
+      "fingerprint": "5356467a"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Cancelled-in-flight load during reload may fire a spurious …",
+      "description": "## Finding (severity: warning)\nCancelled-in-flight load during reload may fire a spurious `load-failed` event. When `zb_reload` cancels the prior in-flight load, WebKit typically delivers a `load-failed` (or `load-changed` with FINISHED) for the cancelled request. The plan does not specify whether this fires a `NAV` or error stdout line, nor whether the E2E harness must ignore it.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Observable Behaviors  ~line 116\n```\nbehaves like an **app**: it renders only what the shell permits, external links pop a second\napp-owned window, a button on the page calls Zig and shows a Zig-computed value, and reloading picks\nup edits. Verified through the E2E stdout protocol below + Zig unit tests.\n\n### Observable Behaviors\n- **reload:** Given the app shows `index.html`; when the file changes and the host reloads; then the\n  window shows the new content.\n- **allow:** Given the allowlist = the app's `file://` base; when an in-app link goes to a page under\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:2337ac5b\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:2337ac5b"
+      ],
+      "fingerprint": "2337ac5b"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Main window membership in the all-windows tracking set is u…",
+      "description": "## Finding (severity: warning)\nMain window membership in the all-windows tracking set is unspecified. §C13 says 'quits gtk_main when the set is empty', but §C11 defines `ZbApp.children` as the child structure. If the main window is not also in `ZbApp.children`, the quit-on-empty logic requires special-casing that is undocumented.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C11 — Sub-window contract (the `create` signal)  ~line 170\n```\nThe C shim handles the `create` signal (`WebKitWebView.h:260`):\n- Build a **new owned `GtkWindow`** + a related WebView via `webkit_web_view_new_with_related_view`\n  (shares the session/context with the parent), attach it, return the GtkWidget per the signal ABI.\n- The child inherits the **same** `decide-policy` handler (C10) and the **same** IPC handler (C12).\n- The child is **tracked** in the shim's window list (`ZbApp.children`) for §C5-ordered teardown;\n  closing a child destroys only that window; closing the last window quits (C13).\n- E2E emits `SUBWIN\\t<uri>` when a child commits its load.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:23a26a2d\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:23a26a2d"
+      ],
+      "fingerprint": "23a26a2d"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] `ZbApp.children` data structure and its allocator are unspe…",
+      "description": "## Finding (severity: warning)\n`ZbApp.children` data structure and its allocator are unspecified. The plan names the field but does not state the Zig container (ArrayList? fixed-size array? linked list?) or which allocator backs it, leaving cleanup-on-quit undefined.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C11 — Sub-window contract (the `create` signal)  ~line 170\n```\nThe C shim handles the `create` signal (`WebKitWebView.h:260`):\n- Build a **new owned `GtkWindow`** + a related WebView via `webkit_web_view_new_with_related_view`\n  (shares the session/context with the parent), attach it, return the GtkWidget per the signal ABI.\n- The child inherits the **same** `decide-policy` handler (C10) and the **same** IPC handler (C12).\n- The child is **tracked** in the shim's window list (`ZbApp.children`) for §C5-ordered teardown;\n  closing a child destroys only that window; closing the last window quits (C13).\n- E2E emits `SUBWIN\\t<uri>` when a child commits its load.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:4a7a7777\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:4a7a7777"
+      ],
+      "fingerprint": "4a7a7777"
+    },
+    {
+      "phase": "data_models",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §data_models] ZbWindow struct fields are never defined anywhere in this p…",
+      "description": "## Finding (severity: critical)\nZbWindow struct fields are never defined anywhere in this plan — the struct is named and referenced throughout but carries no field list\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Test Specification  ~line 279\n```\ncanonical path is within `app_base` (else `.ignore`); proven over a vector table incl. path-traversal\n(`…/../outside.html`) which must NOT be treated as in-base.\n\n**Files touched:** `src/nav_policy.zig` (new, C10), `src/webkit_shim.c` (`decide-policy` cb →\n`zb_policy_decide`), `src/webkit_shim.h` (`int zb_policy_decide(const char* base, const char* uri, int dtype)`),\n`tests/nav_policy_test.zig`, `tests/e2e/nav_allow_test.*`, `tests/fixtures/app/page-b.html`.\n\n### TDD Cycle\n```\n\n## Impact\nThe C shim and every Zig caller must agree on memory layout at compile time. Without a field list, B1 (reload), B2/B3 (policy decision), B4 (child tracking and sub-window build), and B5 (UCM wiring) each have an unresolved struct dependency; implementors will independently invent incompatible layouts, breaking the C↔Zig boundary silently at runtime rather than at compile time\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:b6a7d6d8\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:b6a7d6d8"
+      ],
+      "fingerprint": "b6a7d6d8"
+    },
+    {
+      "phase": "data_models",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §data_models] ZbApp.children field type is unspecified — the plan names t…",
+      "description": "## Finding (severity: critical)\nZbApp.children field type is unspecified — the plan names the field and mandates it be iterated for teardown and queried for window-count, but gives no concrete type\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C11 — Sub-window contract (the `create` signal)  ~line 170\n```\nThe C shim handles the `create` signal (`WebKitWebView.h:260`):\n- Build a **new owned `GtkWindow`** + a related WebView via `webkit_web_view_new_with_related_view`\n  (shares the session/context with the parent), attach it, return the GtkWidget per the signal ABI.\n- The child inherits the **same** `decide-policy` handler (C10) and the **same** IPC handler (C12).\n- The child is **tracked** in the shim's window list (`ZbApp.children`) for §C5-ordered teardown;\n  closing a child destroys only that window; closing the last window quits (C13).\n- E2E emits `SUBWIN\\t<uri>` when a child commits its load.\n\n```\n\n## Impact\nTeardown iteration order (§C5/C13), the last-window-close quit condition (C13), and the B4 window-count oracle all depend on the concrete collection type (C array with capacity, GPtrArray, fixed-size sentinel array, etc.). The choice affects allocation strategy, maximum child count, and whether the count is O(1) or O(n); without it the shim and the E2E harness will be coded against incompatible assumptions\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:3f7fcf1e\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:3f7fcf1e"
+      ],
+      "fingerprint": "3f7fcf1e"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] os.info return JSON schema not specified — field names, nes…",
+      "description": "## Finding (severity: warning)\nos.info return JSON schema not specified — field names, nesting, and string vs object shape are absent\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Test Specification  ~line 359\n```\nresolved reply into `#zb-out`.\n**When** the button is clicked.\n**Then** the IPC handler (C12) reads the message, calls Zig `ipc.dispatch(\"os.info\", …)`, returns the\nreal `uname` values via `webkit_script_message_reply_return_value`; the page displays a value **only\nZig could produce**; `IPC\\tos.info\\t<result>` emitted.\n\n**Edge Cases:** `ping`→`pong` and `add {a,b}`→sum also covered; unknown command → `IpcError`/structured\nJS rejection (handler returns an error value, page shows the error, **no crash**); malformed envelope →\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:0e9762b1\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:0e9762b1"
+      ],
+      "fingerprint": "0e9762b1"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] add command return type ambiguity — unit test shows string …",
+      "description": "## Finding (severity: warning)\nadd command return type ambiguity — unit test shows string `\"5\"` but whether the canonical return is a JSON string or JSON number is never stated\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §TDD Cycle  ~line 375\n```\n`src/webkit_shim.h` (`zb_ipc_reply(...)`/`zb_ipc_dispatch` extern), `src/app.zig` (UCM wiring per\nwindow), `tests/ipc_test.zig`, `tests/e2e/ipc_roundtrip_test.*`, `tests/fixtures/app/index.html`.\n\n### TDD Cycle\n- 🔴 **Red:** unit — `dispatch(\"add\", \"{\\\"a\\\":2,\\\"b\\\":3}\")` → `\"5\"`; `dispatch(\"os.info\", \"{}\")`\n  contains the real `uname().sysname`; `dispatch(\"nope\", …)` → `error.UnknownCommand`. E2E — click the\n  button, assert `#zb-out` text == Zig value AND `IPC\\tos.info\\t…`. Fails (no handler).\n- 🟢 **Green:** shim creates a UCM per WebView, registers `zbHost` with reply, reads the `JSCValue`\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:a94d853f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:a94d853f"
+      ],
+      "fingerprint": "a94d853f"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] IPC message envelope `args` field has no per-command schema…",
+      "description": "## Finding (severity: warning)\nIPC message envelope `args` field has no per-command schema — shape for zero-arg commands (ping, os.info) vs two-int command (add) is never tabulated\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C12 — IPC bridge contract (the differentiator, minimal)  ~line 179\n```\n- One `WebKitUserContentManager` per WebView (`webkit_user_content_manager_new`,\n  `webkit_web_view_new_with_user_content_manager`).\n- Register handler **`zbHost`** with reply:\n  `webkit_user_content_manager_register_script_message_handler_with_reply(ucm, \"zbHost\", NULL)`.\n  JS calls `await window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd, args}))`.\n- C reads the message via `webkit_javascript_result_get_js_value` → `JSCValue` → `jsc_value_to_string`\n  (javascriptcoregtk-4.1, linked in Slice 1), parses the JSON envelope, and calls Zig:\n  ```zig\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:ea20e493\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:ea20e493"
+      ],
+      "fingerprint": "ea20e493"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] DecisionType ↔ C WebKitPolicyDecisionType integer mapping n…",
+      "description": "## Finding (severity: warning)\nDecisionType ↔ C WebKitPolicyDecisionType integer mapping not defined — the shim signature `int zb_policy_decide(…, int dtype)` passes a raw C enum integer but the mapping to Zig `DecisionType` variants is implicit\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Test Specification  ~line 279\n```\ncanonical path is within `app_base` (else `.ignore`); proven over a vector table incl. path-traversal\n(`…/../outside.html`) which must NOT be treated as in-base.\n\n**Files touched:** `src/nav_policy.zig` (new, C10), `src/webkit_shim.c` (`decide-policy` cb →\n`zb_policy_decide`), `src/webkit_shim.h` (`int zb_policy_decide(const char* base, const char* uri, int dtype)`),\n`tests/nav_policy_test.zig`, `tests/e2e/nav_allow_test.*`, `tests/fixtures/app/page-b.html`.\n\n### TDD Cycle\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:57b23418\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:57b23418"
+      ],
+      "fingerprint": "57b23418"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] E2E protocol `<result>` field in IPC lines has no tab-escap…",
+      "description": "## Finding (severity: warning)\nE2E protocol `<result>` field in IPC lines has no tab-escaping rule — os.info's JSON-object return will contain braces/colons and may contain tabs, breaking the tab-delimited parser\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C12 — IPC bridge contract (the differentiator, minimal)  ~line 193\n```\n  - `os.info` → real `uname` fields (sysname/release/machine) read in Zig.\n  - `add` → `{a,b}` → integer sum computed in Zig.\n- C returns the result with `webkit_script_message_reply_return_value` (a `JSCValue` string); the JS\n  promise resolves and the page writes it into a known DOM element (`#zb-out`).\n- E2E emits `IPC\\t<cmd>\\t<result>` when a reply is sent.\n- **Threading:** the handler runs on the WebKit main loop; replies are issued synchronously inside the\n  callback (no cross-thread hop). Any future async command must hop back via `g_idle_add`.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:de5a602b\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:de5a602b"
+      ],
+      "fingerprint": "de5a602b"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] ipc.dispatch `arena` parameter has no declared type in the …",
+      "description": "## Finding (severity: warning)\nipc.dispatch `arena` parameter has no declared type in the plan\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C12 — IPC bridge contract (the differentiator, minimal)  ~line 185\n```\n  (javascriptcoregtk-4.1, linked in Slice 1), parses the JSON envelope, and calls Zig:\n  ```zig\n  // src/ipc.zig — pure dispatch, unit-testable\n  pub const IpcError = error{ UnknownCommand, BadArgs };\n  pub fn dispatch(arena, cmd: []const u8, args_json: []const u8) IpcError![]const u8; // returns JSON\n  ```\n- Minimal command set (all return values JS cannot fabricate on its own — independent oracle):\n  - `ping` → `\"pong\"`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:42dd99c3\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:42dd99c3"
+      ],
+      "fingerprint": "42dd99c3"
+    },
+    {
+      "phase": "apis",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §apis] zb_ipc_reply and zb_ipc_dispatch C signatures are written a…",
+      "description": "## Finding (severity: critical)\nzb_ipc_reply and zb_ipc_dispatch C signatures are written as '...' (literal ellipsis) in the shim-header entry — no parameter types, no return type, no stated lifetime for the returned char*; the C translation unit cannot be compiled, and the Zig↔C ABI boundary (how IpcError and []const u8 surface across the FFI) is entirely unspecified\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Test Specification  ~line 249\n```\n\n**Property:** for any sequence of (edit, reload) pairs, the post-reload `document.title` equals the\ntitle in the current on-disk file — never a cached prior value.\n\n**Files touched:** `src/webkit_shim.c` (reload entry + reuse cancel/teardown), `src/webkit_shim.h`\n(`zb_reload(ZbWindow*, int bypass_cache)`), `src/app.zig` (host trigger seam), `tests/e2e/reload_test.*`,\n`tests/fixtures/app/index.html`.\n\n```\n\n## Impact\nThe C shim cannot be written or compiled; the IPC bridge — the plan's stated differentiator and the only behavior that proves Zig does real work — is unbuildable until both signatures are pinned\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:cac5490c\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:cac5490c"
+      ],
+      "fingerprint": "cac5490c"
+    },
+    {
+      "phase": "apis",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §apis] Decision enum integer encoding for the C↔Zig ABI boundary i…",
+      "description": "## Finding (severity: critical)\nDecision enum integer encoding for the C↔Zig ABI boundary is never defined — zb_policy_decide returns int and the C decide-policy callback must map that int to webkit_policy_decision_use / _ignore / the sub-window branch, but the mapping (use=?, ignore=?, open_in_subwindow=?) is absent; the same gap affects how a raw WebKitPolicyDecisionType integer (from the C callback parameter) is mapped to Zig's DecisionType enum\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §§C continuation — new canonical contracts (PIN BEFORE ANY BEHAVIOR)  ~line 143\n```\n  tracking, the `xvfb-run` E2E harness, `tests/fixtures/`.\n- **NOT reused:** archived `url.zig` (host-required), `gtk_show_uri_on_window` (replaced by M4\n  sub-window).\n\n## §C continuation — new canonical contracts (PIN BEFORE ANY BEHAVIOR)\n\nSingle source of truth; behaviors reference these and never re-define them. Continues Slice 1 §C1–§C9.\n\n```\n\n## Impact\nnav_policy.zig and the C shim will compile in isolation but silently mis-route decisions at the boundary — allow/block/subwindow behaviors could be inverted or produce undefined behavior with no compile-time or test-time signal\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:9cb01c61\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:critical",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:9cb01c61"
+      ],
+      "fingerprint": "9cb01c61"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] os.info response JSON shape is unspecified — plan names 'sy…",
+      "description": "## Finding (severity: warning)\nos.info response JSON shape is unspecified — plan names 'sysname/release/machine' fields but never defines the envelope ({} object? flat string? key order?); B5 E2E and unit assertions against #zb-out cannot be written without a canonical shape\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §The product turn (why this slice exists)  ~line 39\n```\n\nConsequence: an app shell has **no editable address bar, no tabs, no bookmarks**. Its \"navigation\"\nis **navigation _control_** — the shell decides what the embedded webview may load, external links\nopen in an **app-owned sub-window**, and a web button can call a **Zig** function and show the\nresult. That last behavior is the whole reason to build a shell at all; this slice ships a minimal,\nreal version of it.\n\n## Overview\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nDefine the exact object in C12: e.g. '{\"sysname\":\"Linux\",\"release\":\"6.x\",\"machine\":\"x86_64\"}'. Use this as the canonical fixture against which B5 unit vectors and the #zb-out E2E assertion are written.\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:158326aa\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:158326aa"
+      ],
+      "fingerprint": "158326aa"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] IPC error response format on the JS side is undefined — pla…",
+      "description": "## Finding (severity: warning)\nIPC error response format on the JS side is undefined — plan says 'structured JS rejection / page shows the error' for UnknownCommand/BadArgs but does not specify what value webkit_script_message_reply_return_value delivers on failure (error string? JSON {error:...}? a WebKit rejection?); B5 edge-case tests cannot assert the correct DOM state\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §What We're NOT Doing  ~line 130\n```\n  Zig computed (e.g. real `uname`).\n\n## What We're NOT Doing\nEditable address bar; tabs (former Slice 3 — **cut**); bookmarks; host-level back/forward buttons\n(SPA routing lives inside the webview — only needed for MPA, deferred); the full multi-command IPC\nAPI and the Windows (WebView2) / macOS (WKWebView) backends (Slice 4); persistent history; download\nhandling (`…_download` left as a documented seam, not implemented).\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:5e378baa\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:5e378baa"
+      ],
+      "fingerprint": "5e378baa"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] NAV and SUBWIN protocol-line emit point is ambiguous — §C8+…",
+      "description": "## Finding (severity: warning)\nNAV and SUBWIN protocol-line emit point is ambiguous — §C8+ says 'on a main-frame COMMITTED/FINISHED success', naming two distinct WebKit load states; get_title is only stable after FINISHED; a test waiting for NAV at COMMITTED may read a stale or empty title\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §C8+ — E2E observation protocol extension  ~line 204\n```\n- Exit on **last window closed** (main + all children gone) or SIGINT/SIGTERM (Slice 1 §C5),\n  exit 0 (or 130 on signal). Per-window teardown reuses Slice 1 §C5 order; the app tracks all windows\n  and quits `gtk_main` when the set is empty.\n\n### C8+ — E2E observation protocol extension\nExtends Slice 1 §C8 (stdout = protocol only, stderr = diagnostics). On the relevant events the shim\nprints exactly one tab-separated line:\n- `NAV\\t<uri>\\t<title>` — on a main-frame COMMITTED/FINISHED success.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:679ef388\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:679ef388"
+      ],
+      "fingerprint": "679ef388"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] dispatch arena/allocator parameter type is not specified — …",
+      "description": "## Finding (severity: warning)\ndispatch arena/allocator parameter type is not specified — the C12 Zig signature writes 'arena' without a type annotation; callers (the C shim extern) and unit tests (ipc_test.zig) cannot be written without knowing whether it is std.mem.Allocator, *std.heap.ArenaAllocator, or another type\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §§C continuation — new canonical contracts (PIN BEFORE ANY BEHAVIOR)  ~line 143\n```\n  tracking, the `xvfb-run` E2E harness, `tests/fixtures/`.\n- **NOT reused:** archived `url.zig` (host-required), `gtk_show_uri_on_window` (replaced by M4\n  sub-window).\n\n## §C continuation — new canonical contracts (PIN BEFORE ANY BEHAVIOR)\n\nSingle source of truth; behaviors reference these and never re-define them. Continues Slice 1 §C1–§C9.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:85d3d162\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:85d3d162"
+      ],
+      "fingerprint": "85d3d162"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] No E2E protocol line for IPC error paths — §C8+ defines IPC…",
+      "description": "## Finding (severity: warning)\nNo E2E protocol line for IPC error paths — §C8+ defines IPC\\t<cmd>\\t<result> for success only; an UnknownCommand or BadArgs case emits nothing observable, so the E2E harness cannot distinguish a real error response from a silent no-op or crash\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Key Discoveries  ~line 70\n```\n- **Slice 1 is unimplemented — plan only.** `git ls-files | grep -E '\\.(zig|c|h)$'` → **NONE**; no\n  `src/` dir. HEAD `a49bc22` is the revised Slice-1 *plan*; `20b741d \"Clean slate\"` deleted all\n  engine code. **Slice 2 therefore has a HARD prerequisite: Slice 1 must land first.** This plan is a\n  delta on Slice 1's artifacts (window, `WebKitWebView`, owned `WebKitWebContext`, §C4 load state\n  machine, `uri.zig`, the C shim, §C8 stdout protocol).\n- **`zig-out/bin/zigBrowser` is an orphan** — a stale binary from the *deleted* custom engine, built\n  before the clean slate. It is NOT a WebKitGTK build and proves nothing about Slice 1.\n- **Task text said \"reuse `url.zig`\"; reality says reuse `uri.zig`.** Slice 1 dropped the archived\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:95d2ab4f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:95d2ab4f"
+      ],
+      "fingerprint": "95d2ab4f"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] IPC\\t<cmd>\\t<result> is tab-delimited but the result field …",
+      "description": "## Finding (severity: warning)\nIPC\\t<cmd>\\t<result> is tab-delimited but the result field is unbounded and may itself contain tab characters (e.g. pretty-printed JSON, or an os.info value with embedded whitespace); no escaping, quoting, or length-prefixing rule is defined, leaving the harness parser underspecified\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md  §Key Discoveries  ~line 70\n```\n- **Slice 1 is unimplemented — plan only.** `git ls-files | grep -E '\\.(zig|c|h)$'` → **NONE**; no\n  `src/` dir. HEAD `a49bc22` is the revised Slice-1 *plan*; `20b741d \"Clean slate\"` deleted all\n  engine code. **Slice 2 therefore has a HARD prerequisite: Slice 1 must land first.** This plan is a\n  delta on Slice 1's artifacts (window, `WebKitWebView`, owned `WebKitWebContext`, §C4 load state\n  machine, `uri.zig`, the C shim, §C8 stdout protocol).\n- **`zig-out/bin/zigBrowser` is an orphan** — a stale binary from the *deleted* custom engine, built\n  before the clean slate. It is NOT a WebKitGTK build and proves nothing about Slice 1.\n- **Task text said \"reuse `url.zig`\"; reality says reuse `uri.zig`.** Slice 1 dropped the archived\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:7dea8d0d\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2",
+        "review-fp:7dea8d0d"
+      ],
+      "fingerprint": "7dea8d0d"
+    }
+  ],
+  "plan_stem": "2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2"
+}

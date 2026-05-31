@@ -43,7 +43,7 @@ browser shell + product around it.
 
 ### What was genuinely real (and what survives WebKitGTK).
 - `src/net/fetch.zig` — real curl HTTPS, real cert validation, real error mapping. **But WebKitGTK does its own networking/TLS → dead weight under WebKit.**
-- `src/net/url.zig` — real RFC 3986 via `std.Uri`. **Survives** as address-bar/CLI input validation before `webkit_web_view_load_uri`.
+- `src/net/url.zig` — real RFC 3986 via `std.Uri`. **Survives** as app-entry/CLI URI validation before `webkit_web_view_load_uri`.
 - `src/cli.zig`, `src/errors.zig` — clean, real, backend-agnostic. **Survive.**
 - `src/page.zig` arena-per-page + teardown lifecycle — sound **app-state scaffolding** around a `WebKitWebView`. Survives (gut the pipeline).
 
@@ -57,7 +57,7 @@ tag** when rebuilding; "delete" means leave them in the archive only.
 |---|---|
 | `src/cli.zig` | Entry point, command/flag parsing (`open <url>`, `--version`) |
 | `src/errors.zig` | Error taxonomy; map to WebKit `load-failed` / `WebKitNetworkError` |
-| `src/net/url.zig` (`parse`/`ParsedUrl`/`serialize`) | Validate/normalize the address-bar/CLI URL before `webkit_web_view_load_uri` |
+| `src/net/url.zig` (`parse`/`ParsedUrl`/`serialize`) | Validate/normalize app-entry/CLI URI input before `webkit_web_view_load_uri` |
 | `src/page.zig` (arena + `navigate`/`teardown` lifecycle ONLY) | Per-tab app-state container around a `WebKitWebView` |
 | `tests/snapshots/pillow_tools.py` schema/diff tooling | Renderer-agnostic screenshot-diff harness (rebuild baselines from `webkit_web_view_get_snapshot` output) |
 
@@ -77,14 +77,16 @@ tag** when rebuilding; "delete" means leave them in the archive only.
 - **Dependency weight:** a system dev package (`libwebkit2gtk-4.1-dev`), not a ~1GB redistributable. Lighter than CEF.
 - **Platform:** Linux/GTK-first. macOS would use `WKWebView` (different API surface) — defer; keep the engine behind a thin Zig seam so the macOS backend can swap in later.
 
-## Vertical slices (each: URL-in → real-pixels-out → human sees it)
-**Slice 1 — A real page on screen.** Install `libwebkit2gtk-4.1-dev`; translate-c the webkit2gtk + GTK C API; new `build.zig` links via pkg-config; `main` wires `gtk_init` → window → `WebKitWebView` → `load_uri(CLI url)` → GTK main loop. Cherry-pick `cli.zig`/`url.zig`/`errors.zig` from the archive for URL handling. **Gate: `zigBrowser <url>` opens a GTK window showing the real page with real text; capture via `webkit_web_view_get_snapshot` for the record.**
+## Vertical slices (each: URL-in -> real-pixels-out -> human sees it)
+**Slice 1 — Real page on screen.** WebKitGTK window with `load_uri` and visible text.
 
-**Slice 2 — Navigation.** Address-bar input (reuse `url.zig` to validate) → `load_uri`; back/forward/reload (`webkit_web_view_go_back`/`go_forward`/`reload`); wire `load-changed`/`load-failed`. **Gate: navigate between two real sites live.**
+**Slice 2 — App-shell control surface.** Navigation policy allow/block, app-owned sub-windows, and JS<->Zig IPC roundtrip. **Gate: protocol-observed `NAV/BLOCKED/SUBWIN/WINCOUNT/IPC/IPCERR`.**
 
-**Slice 3 — Tabs.** Multiple `WebKitWebView`s in a `GtkNotebook`; map `page.zig` arena lifecycle to per-tab state. **Gate: two real pages in two tabs.**
+**Slice 3 — Hardened app-shell UX/runtime.** Reload workflow, deterministic teardown/process hygiene, and policy/IPC error handling under interactive lifetime.
 
-**Slice 4 — The differentiator.** Whatever makes it *yours* (TBD with overseer) — the reason to build a shell at all.
+**Slice 4 — Full differentiator.** Expand host command surface and cross-OS backends (WebKitGTK/WebView2/WKWebView) behind one Zig app-shell model.
+
+Tabs/address-bar/bookmarks are not active product commitments in this app-shell pivot.
 
 ## Sequencing / ownership (3 halted codex agents, on the formal plan's dispatch)
 - Slice 1 is **not** parallelizable across 3 agents cleanly (single integration spine). Proposal: ONE agent drives WebKitGTK bring-up (the spine: `build.zig` translate-c/link + `main` window/webview/loop); a second cherry-picks + reintegrates the salvage (`cli`/`url`/`errors`/`page`-lifecycle); the third handles the `build.zig`/deps + the snapshot-capture gate harness around `get_snapshot`. Coordinate `build.zig` + `main.zig` via the single-integrator discipline that worked before.

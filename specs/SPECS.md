@@ -1,11 +1,11 @@
-# zigBrowser Specifications Index (WebKitGTK Pivot)
+# zigBrowser Specifications Index (WebKitGTK App Shell Pivot)
 
 Pivot date: 2026-05-31  
-Authoritative plan: `thoughts/searchable/shared/plans/2026-05-31-12-48-ENG-0003-tdd-webkitgtk-browser-slice1.md`
+Authoritative plan: `thoughts/searchable/shared/plans/2026-05-31-14-41-ENG-0004-tdd-webkitgtk-appshell-slice2.md`
 
-## Active Slice-1 specs
+## Active specs
 
-- [architecture.md](architecture.md) — active, WebKitGTK+GTK3 slice architecture and runtime contracts.
+- [architecture.md](architecture.md) — active, app-shell navigation policy, sub-window, and IPC model.
 - [lifecycle.md](lifecycle.md) — active, load/snapshot lifecycle and teardown order.
 - [networking.md](networking.md) — active, URI allowlist and WebKit load-failure surface.
 

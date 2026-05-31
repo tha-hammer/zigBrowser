@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>App Index A</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 24px;
+        line-height: 1.45;
+      }
+      h1 {
+        margin: 0 0 8px 0;
+      }
+      .row {
+        margin: 10px 0;
+      }
+      button,
+      a {
+        margin-right: 10px;
+      }
+      #zb-out {
+        border: 1px solid #bbb;
+        border-radius: 6px;
+        min-height: 28px;
+        padding: 8px;
+        margin-top: 8px;
+        white-space: pre-wrap;
+      }
+      code {
+        background: #f3f4f6;
+        padding: 2px 4px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Hello App Shell</h1>
+    <p>
+      Slice 2 fixture for navigation policy, sub-window routing, and JS-to-host IPC.
+    </p>
+
+    <div class="row">
+      <button id="btn-os-info" type="button">IPC: os.info</button>
+      <button id="btn-unknown" type="button">IPC: unknown cmd</button>
+    </div>
+
+    <div id="zb-out">(waiting)</div>
+
+    <div class="row">
+      <a id="link-allow" href="page-b.html">Go to page-b (allowed)</a>
+      <a id="link-foreign" href="https://example.com/">Plain foreign link (block)</a>
+      <a id="link-foreign-blank" href="https://example.org/" target="_blank" rel="noopener">
+        Foreign _blank link (sub-window)
+      </a>
+    </div>
+
+    <script>
+      const zbOut = document.getElementById("zb-out");
+
+      function writeOut(value) {
+        if (typeof value === "string") {
+          zbOut.textContent = value;
+          return;
+        }
+        try {
+          zbOut.textContent = JSON.stringify(value);
+        } catch (_err) {
+          zbOut.textContent = String(value);
+        }
+      }
+
+      function hostCall(payload) {
+        const handler = window.webkit?.messageHandlers?.zbHost;
+        if (!handler || typeof handler.postMessage !== "function") {
+          return Promise.reject(new Error("zbHost unavailable"));
+        }
+        return handler
+          .postMessage(JSON.stringify(payload))
+          .then((reply) => {
+            writeOut(reply);
+            return reply;
+          })
+          .catch((err) => {
+            const msg = err && err.message ? err.message : String(err);
+            writeOut("ERR:" + msg);
+            throw err;
+          });
+      }
+
+      function triggerScenarioFromHash() {
+        const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const auto = params.get("auto");
+        if (!auto) return;
+
+        window.setTimeout(() => {
+          switch (auto) {
+            case "allow":
+              document.getElementById("link-allow").click();
+              break;
+            case "block":
+              document.getElementById("link-foreign").click();
+              break;
+            case "subwindow":
+              document.getElementById("link-foreign-blank").click();
+              break;
+            case "ipc":
+              document.getElementById("btn-os-info").click();
+              break;
+            case "ipcerr":
+              document.getElementById("btn-unknown").click();
+              break;
+            default:
+              writeOut("ERR:unknown-auto:" + auto);
+              break;
+          }
+        }, 30);
+      }
+
+      document.getElementById("btn-os-info").addEventListener("click", () => {
+        hostCall({ cmd: "os.info" });
+      });
+
+      document.getElementById("btn-unknown").addEventListener("click", () => {
+        hostCall({ cmd: "nope" });
+      });
+
+      triggerScenarioFromHash();
+    </script>
+  </body>
+</html>

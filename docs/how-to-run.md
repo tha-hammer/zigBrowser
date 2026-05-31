@@ -1,4 +1,4 @@
-# How to run zigBrowser (WebKitGTK Slice 1)
+# How to run zigBrowser (WebKitGTK App Shell Slice 2)
 
 ## Prerequisites
 
@@ -13,34 +13,33 @@
 ./zig-out/bin/zigBrowser --version
 ```
 
-## Open a page in a real window
-
-```bash
-DISPLAY="${DISPLAY:-:1}" ./zig-out/bin/zigBrowser https://example.com
-```
-
-## Run against the live local fixture
+## Open an app entry page in a real window
 
 ```bash
 DISPLAY="${DISPLAY:-:1}" \
-  ./zig-out/bin/zigBrowser "file://$(pwd)/tests/fixtures/live.html" --print-title
+  ./zig-out/bin/zigBrowser "file://$(pwd)/tests/fixtures/app/index.html"
 ```
 
-Expected protocol line on success:
+## Enable E2E protocol lines
+
+```bash
+DISPLAY="${DISPLAY:-:1}" \
+  ./zig-out/bin/zigBrowser "file://$(pwd)/tests/fixtures/app/index.html#auto=allow" --e2e-protocol
+```
+
+Expected protocol lines include:
 
 ```text
-TITLE	WebKitGTK Live
+NAV	<uri>	<title>
+BLOCKED	<uri>
+SUBWIN	<uri>
+WINCOUNT	<n>
+IPC	<cmd>	<result>
+IPCERR	<cmd>	<message>
+LOAD_FAIL	<uri>	<message>
 ```
 
-## Screenshot mode
+## Notes on product scope
 
-```bash
-DISPLAY="${DISPLAY:-:1}" \
-  ./zig-out/bin/zigBrowser --screenshot /tmp/live.png "file://$(pwd)/tests/fixtures/live.html" --print-title
-```
-
-For CI/headless hosts:
-
-```bash
-xvfb-run -a ./zig-out/bin/zigBrowser --screenshot /tmp/live.png "file://$(pwd)/tests/fixtures/live.html" --print-title
-```
+- This runtime is an app shell pivot, not a tabbed browser product.
+- Active Slice 2 keeps legacy browser-chrome controls out of scope.

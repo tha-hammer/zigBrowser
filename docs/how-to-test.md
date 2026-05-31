@@ -1,4 +1,4 @@
-# How to test zigBrowser (WebKitGTK Slice 1)
+# How to test zigBrowser (WebKitGTK App Shell Slice 2)
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@
 zig build test --summary all
 ```
 
-## E2E protocol harness (§C8)
+## Slice 1 harness (baseline)
 
 Run all harness checks:
 
@@ -29,10 +29,31 @@ Force xvfb path:
 python3 tests/e2e/webkitgtk_slice1_e2e.py --mode all --prefer-xvfb
 ```
 
-## Harness semantics
+## Slice 2 harness tests (§C8+)
 
-- Oracle 1: stdout title line `TITLE\t<title>`
-- Oracle 2: screenshot PNG non-uniformity via `tests/snapshots/pillow_tools.py nonuniform`
-- Clean quit: records child PIDs while alive, then asserts those exact PIDs exit
+Local display path (this workstation):
+
+```bash
+DISPLAY="${DISPLAY:-:1}" python3 tests/e2e/reload_test.py
+DISPLAY="${DISPLAY:-:1}" python3 tests/e2e/nav_allow_test.py
+DISPLAY="${DISPLAY:-:1}" python3 tests/e2e/nav_block_test.py
+DISPLAY="${DISPLAY:-:1}" python3 tests/e2e/subwindow_test.py
+DISPLAY="${DISPLAY:-:1}" python3 tests/e2e/ipc_roundtrip_test.py
+```
+
+CI/headless path:
+
+```bash
+python3 tests/e2e/reload_test.py --prefer-xvfb
+python3 tests/e2e/nav_allow_test.py --prefer-xvfb
+python3 tests/e2e/nav_block_test.py --prefer-xvfb
+python3 tests/e2e/subwindow_test.py --prefer-xvfb
+python3 tests/e2e/ipc_roundtrip_test.py --prefer-xvfb
+```
+
+Slice 2 protocol checks:
+
+- `NAV`, `BLOCKED`, `SUBWIN`, `WINCOUNT`, `IPC`, `IPCERR`, `LOAD_FAIL`
+- helper-PID tracking while process is alive, then exact-PID exit assertion on shutdown
 
 If required tools are missing (binary, Pillow, display/xvfb), the harness exits with code `77` and a loud skip reason on stderr.

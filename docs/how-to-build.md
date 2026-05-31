@@ -1,6 +1,6 @@
-# How to build zigBrowser (WebKitGTK Slice 1)
+# How to build zigBrowser (WebKitGTK App Shell)
 
-This project now targets an embedded **WebKitGTK** engine (not the archived custom renderer).
+This project targets an embedded **WebKitGTK** app shell (not the archived custom renderer).
 
 ## Prerequisites
 
