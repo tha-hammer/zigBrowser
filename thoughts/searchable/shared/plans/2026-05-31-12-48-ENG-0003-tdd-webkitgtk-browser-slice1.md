@@ -1,263 +1,296 @@
 ---
 title: "WebKitGTK Browser — Slice 1: real page in a real window (TDD)"
 date: 2026-05-31
-status: ready-for-implementation
+status: revised — all 8 critical + warnings from REVIEW resolved (see §Review Resolution)
 type: tdd-plan
 project: zigBrowser
 engine: WebKitGTK (webkit2gtk-4.1 + GTK3)
 zig_version: "0.16.0"
 audit_source: thoughts/searchable/shared/plans/2026-05-31-webkitgtk-pivot-audit-and-replan.md
+review_source: thoughts/searchable/shared/plans/2026-05-31-12-48-ENG-0003-tdd-webkitgtk-browser-slice1-REVIEW.md
 archive_tag: archive/custom-engine-pre-webkit
 laws:
   - "LAW 1 — real working software, no scaffolding: every behavior produces real, user-observable output."
-  - "LAW 2 — hostile audit before planning: built against verified reality (below)."
+  - "LAW 2 — hostile audit before planning: built against verified reality."
   - "VISIBLE-OUTPUT GATE — every milestone ends in a human-observable artifact, not 'tests green'."
 ---
 
-# WebKitGTK Browser — Slice 1 TDD Implementation Plan
+# WebKitGTK Browser — Slice 1 TDD Implementation Plan (revised per review)
 
 ## Overview
 
-Build the **first real, working vertical slice** of the browser by **embedding WebKitGTK**
-(webkit2gtk-4.1 + GTK3): a GTK top-level window hosts a `WebKitWebView` that loads a
-CLI-provided URL and renders the **real page with real text** via real WebKit + JavaScriptCore.
+Build the first real vertical slice by **embedding WebKitGTK** (webkit2gtk-4.1 + GTK3): a GTK
+window hosts a `WebKitWebView` that loads a CLI URL and renders the **real page with real text**.
+URL in → real pixels out. Every milestone ends in a human-observable artifact; tests assert against
+**independent oracles** (WebKit's own DOM parse + known `file://` fixtures + OS checks).
 
-This is a single end-to-end slice — **URL in → real pixels out** — not a layer. Every milestone
-ends in a human-observable artifact: a version line produced by the linked library, a window
-showing real text, a PNG of real text, a clean exit. Tests assert against **independent oracles**
-(WebKit's own DOM parse + known `file://` fixtures + OS-level checks) — never against our own output.
+**Architecture decision forced by the review (verified):** Zig 0.16 `translate-c` of
+`webkit2/webkit2.h` is **not viable** — `zig translate-c $(pkg-config --cflags webkit2gtk-4.1)`
+fails with `error: unrecognized parameter: '-pthread'`, and the header's GLib macros/pragmas break
+the translate. **All GTK/WebKit/GObject/cairo work lives in a thin C shim** (`src/webkit_shim.c`
++ `.h`), where the GLib/GTK macros (`g_signal_connect`, `GTK_WINDOW`, …) work natively. Zig calls a
+**small plain-C API** with signatures we control. This also resolves the "macros not exposed by
+translate-c" and "callback ABI" problems — signal wiring happens in C.
 
 ## Current State Analysis (verified hostile audit — LAW 2)
 
-This plan was built against what the box and tree **actually contain**, not prior claims.
-
 ### Key Discoveries
-- **Clean slate is real:** `git ls-files | grep -E '\.(zig|h)$'` → **0 files**. Working tree is docs/config only (`docs/`, `specs/`, `Plans/`, `thoughts/`, `.beads`, `CLAUDE.md`).
-- **WebKitGTK is actually installed and linkable here** (the decisive LAW-2 check): `pkg-config webkit2gtk-4.1` → **v2.52.3**, link line `-lwebkit2gtk-4.1 -lgtk-3 … -ljavascriptcoregtk-4.1`; header `/usr/include/webkitgtk-4.1/webkit2/webkit2.h`; `/usr/lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so` dev symlink present. **Not a named-but-missing dependency.**
-- **Version path forced by reality:** only **webkit2gtk-4.1 + GTK3 (3.24.49)** has a dev package. `gtk4` and `webkitgtk-6.0` dev are **absent** (only a runtime `libwebkitgtk-6.0.so.4`). → Target 4.1 + GTK3.
-- **JavaScript is built in:** `-ljavascriptcoregtk-4.1` — no separate JS engine to vendor.
-- **Display available:** `DISPLAY=:1` is set → a real window can open (visible-output gate achievable here).
-- **Salvage verified real in tag `archive/custom-engine-pre-webkit`:** `src/net/url.zig:15-31` real `std.Uri.parse`/`resolveInPlace`/serialize; `src/cli.zig:14` clean `parseArgs` union; `src/errors.zig` `NetError` taxonomy; `src/page.zig` arena + ordered teardown; `build.zig.zon` zig-0.16 manifest (name `zigBrowser`, fingerprint preserved).
-- **Toolchain:** zig 0.16.0 — `b.addTranslateC` + `linkSystemLibrary(use_pkg_config = .yes)` is the build path.
+- **Clean slate real:** `git ls-files | grep -E '\.(zig|h)$'` → 0 files.
+- **WebKitGTK linkable here:** `pkg-config webkit2gtk-4.1` → 2.52.3 (`-lwebkit2gtk-4.1 -lgtk-3 … -ljavascriptcoregtk-4.1`); header `/usr/include/webkitgtk-4.1/webkit2/webkit2.h`; `libwebkit2gtk-4.1.so` dev symlink present.
+- **Version path forced:** only **webkit2gtk-4.1 + GTK3 (3.24.49)**; gtk4 / webkitgtk-6.0 dev absent.
+- **translate-c broken (verified):** fails on `-pthread` → **C shim** mandatory (not broad translate-c).
+- **`.use_pkg_config = .yes` does NOT fail loudly:** Zig 0.16 falls back to `-l<name>` (`std/Build/Step/TranslateC.zig:240-264`). → use `.force` + an explicit `pkg-config --exists` build check.
+- **`WEBKIT_LOAD_FINISHED` is terminal, not success** (`WebKitWebView.h:113-135`) — fires after errors too → a load **state machine** is required.
+- **Owned context available:** `webkit_web_context_new` / `webkit_web_context_new_ephemeral` exist → own the context so helper-process disposal is ours.
+- **Signal handling available:** `g_unix_signal_add` (`glib-unix.h`) → SIGINT/SIGTERM graceful shutdown in the shim.
+- **Salvage caveats (verified):** `archive:src/cli.zig:3-15` clean `parseArgs` (reusable). `archive:src/net/url.zig:6-18,33-49` requires a **host** and serializes `{scheme}://{host}{path}` — **cannot represent `file:///abs/...`** and has no scheme allowlist → **not reused as-is** (new `uri.zig` validator). `archive:src/page.zig:3-17,60-79` **imports/owns the deleted custom pipeline** — **not cherry-pickable**; only the arena+ordered-teardown *idea* is reused. `archive:src/errors.zig:1-13` is too small (`NetError` only) → new `BrowserError`.
+- **`pillow_tools.py` (archive) has only `check`/`write`/`diff`** — no non-uniformity command → add `nonuniform`.
+- **Display present:** `DISPLAY=:1` set → window can open; CI uses Xvfb.
 
-### Hard-but-essential realities kept IN SCOPE (LAW 1 — not dropped)
-- `translate-c` must digest the macro-heavy `webkit2/webkit2.h` (pulls GTK/GLib/GObject). Confirmed in M1.
-- **`g_signal_connect`, `G_CALLBACK`, `GTK_WINDOW`, `WEBKIT_WEB_VIEW` are C macros that zig `translate-c` does NOT expose.** Embedding must call `g_signal_connect_data` and do GObject pointer casts directly, with `callconv(.C)` callbacks. This is the single most likely place a naive plan silently fails — it is an explicit behavior here.
-- `webkit_web_view_get_snapshot` is **async** — always await the `load-changed` `FINISHED` state before snapshot/title.
+---
 
-## Desired End State
+# §C — Slice-1 Canonical Contracts (PIN BEFORE ANY BEHAVIOR)
 
-`zigBrowser <url>` opens a GTK window rendering the real page with real text; `zigBrowser
---screenshot out.png <url>` writes a PNG of the real rendered text; closing the window exits 0
-cleanly; bad URLs surface real errors without crashing.
+Single source of truth (mirrors the §C2 pattern the reviewer endorsed). Every behavior references §C; none re-defines it. Resolves all 8 critical findings.
 
-### Observable Behaviors
-1. `zigBrowser --version` → real `WebKitGTK 2.52.3, GTK 3.24.49` printed from the linked libs.
-2. `zigBrowser file://…/live.html` → a window shows the real page (real text).
-3. Closing the window → process exits 0, no orphaned WebKit helpers.
-4. `zigBrowser --screenshot out.png file://…/live.html` → an openable PNG of real text.
-5. Bad URL → real stderr error / WebKit error page, non-zero exit, no bogus PNG.
-
-## What We're NOT Doing (later vertical slices)
-Address bar + interactive navigation, back/forward/reload, tabs (`GtkNotebook` + multi-WebView),
-the product differentiator, and the macOS/`WKWebView` backend (a thin Zig seam is left in M2 so it
-can be added later). No custom rendering/layout/CSS/HTML/JS — WebKit owns all of that.
-
-## Salvage Manifest (cherry-pick from the archive tag, then adapt)
-```bash
-git checkout archive/custom-engine-pre-webkit -- \
-  src/cli.zig src/net/url.zig src/errors.zig src/page.zig build.zig.zon
+## C1 — `NavigationUri` contract (resolves CRIT #1: file:// vs scheme rejection)
+A new `src/uri.zig` (NOT the archived host-required `url.zig`). Validates a CLI string for WebKit:
+```zig
+pub const UriError = error{ InvalidUri, UnsupportedScheme, RelativeUri };
+// Allowed schemes for Slice 1: file, http, https. Rejected: javascript, ftp, data, mailto, and
+// any relative/scheme-less input. file:// MAY be hostless (file:///abs/path) — host is optional.
+pub fn validate(arena, input: []const u8) UriError![:0]const u8; // returns a sentinel-terminated
+// canonical URI string ready for webkit_web_view_load_uri; ownership: arena (page lifetime).
 ```
-- `cli.zig` — `parseArgs` entry (repurpose the `.screenshot` arm to WebKit `get_snapshot`).
-- `url.zig` — validate/normalize the URL before `webkit_web_view_load_uri`.
-- `errors.zig` — `NetError` taxonomy; map WebKit `load-failed` codes onto it.
-- `page.zig` — arena + ordered teardown as the per-window state container.
-Everything else stays archived (not restored).
+- Uses `std.Uri.parse` for structure, then an explicit scheme allowlist (file/http/https). Hostless `file://` is valid; http/https require a host. Canonical serialization documented; round-trip property `validate(canonical(x)) == canonical(x)`.
+
+## C2 — `BrowserError` + exit-code table (resolves CRIT #7, warnings on errors)
+`src/errors.zig` (extend the salvaged `NetError`; add a Slice-1 set):
+```zig
+pub const BrowserError = error{
+    Usage, InvalidUri, UnsupportedScheme, DisplayUnavailable, GtkInitFailed,
+    LoadFailed, SnapshotFailed, WriteFailed, Timeout, Cancelled,
+};
+pub const LoadFailure = struct { domain: i32, code: i32, message: []const u8 }; // preserves WebKit GError
+```
+| Exit | Meaning | Trigger |
+|---|---|---|
+| 0 | success | page loaded / PNG written |
+| 1 | Usage | bad args/arity |
+| 2 | InvalidUri / UnsupportedScheme | C1 rejection |
+| 3 | DisplayUnavailable | no DISPLAY for window/screenshot |
+| 4 | GtkInitFailed | gtk_init_check failed |
+| 5 | LoadFailed | WebKit load-failed (DNS/TLS/HTTP/file) |
+| 6 | SnapshotFailed | get_snapshot async error |
+| 7 | WriteFailed | PNG write/rename failed |
+| 8 | Timeout | load/snapshot exceeded budget |
+| 130 | Cancelled | SIGINT/SIGTERM during op |
+
+## C3 — WebKit operation state schema (resolves CRIT #5, DATA-MODEL crit)
+Owned by the C shim (`ZbPage`), one per window/run:
+```c
+typedef struct {
+  GtkWidget *window; WebKitWebView *view; WebKitWebContext *context; // OWNED context (C5)
+  char *uri;                  // sentinel-terminated, owned
+  char *out_path;             // screenshot only, owned; NULL otherwise
+  int   want_screenshot;      // 0/1
+  /* per-load state machine (C4) */
+  int finished, failed, cancelled, timed_out;
+  int load_error_domain, load_error_code; char *load_error_message; // from load-failed
+  /* async lifetime (C5) */
+  GCancellable *cancellable; guint timeout_source_id;
+  gulong sig_load_changed, sig_load_failed, sig_destroy; // handler IDs for clean disconnect
+  int exit_code;
+} ZbPage;
+```
+Zig side mirrors only what it needs via the shim API; the C struct owns all GObject/cairo refs.
+
+## C4 — Per-load state machine (resolves CRIT #4: FINISHED ≠ success)
+`WEBKIT_LOAD_FINISHED` is terminal even on error. Therefore:
+- `load-failed` cb sets `failed=1` + records `LoadFailure` (domain/code/message) and (screenshot mode) returns `TRUE` to suppress WebKit's default error page; (window mode) returns `FALSE` so WebKit's real error page is shown (a real visible artifact).
+- `load-changed == FINISHED` triggers success actions **only if** `finished && !failed && !cancelled && !timed_out`. Otherwise the run resolves to the recorded failure/timeout/cancel exit code.
+- Screenshot success (title read + snapshot) runs **only** in the success state → **no PNG of an error page** (kills the bogus-PNG risk).
+
+## C5 — Async lifetime / cancellation / timeout / context ownership (resolves CRIT #5, promise warnings)
+- **Owned context:** create via `webkit_web_context_new()` (or `_ephemeral` for screenshot) so we control disposal; `webkit_web_view_new_with_context`. Helper (Network/Web) processes are reaped when our context is disposed.
+- **GCancellable:** snapshots pass a **non-null** `GCancellable`; on destroy/SIGINT we `g_cancellable_cancel` before freeing anything.
+- **Timeouts:** a `g_timeout_add`-backed source (load budget default 15s, snapshot budget 5s) sets `timed_out=1`, calls `webkit_web_view_stop_loading`, cancels async, resolves the run with exit 8.
+- **Teardown order (documented):** cancel async → remove timeout source → disconnect signal handlers (stored IDs) → free `cairo_surface` (if any) → `gtk_widget_destroy(window)` → `g_object_unref(context)` → free owned strings.
+- **Signals:** `g_unix_signal_add(SIGINT/SIGTERM, …)` → graceful: cancel + `gtk_main_quit`, exit 130.
+
+## C6 — Build interface (resolves CRIT #3: translate-c + fail-loud)
+- **No broad translate-c.** `src/webkit_shim.c` + `src/webkit_shim.h` (plain-C API). `build.zig`: `exe.addCSourceFile(.{ .file = b.path("src/webkit_shim.c"), .flags = pkgConfigCFlags })`; `exe.linkSystemLibrary2("webkit2gtk-4.1", .{ .use_pkg_config = .force })`; `exe.linkLibC()`.
+- **Fail loudly:** a build step runs `pkg-config --exists webkit2gtk-4.1 gtk+-3.0` and `@panic`/`std.process.exit(1)` with a clear message if absent (because `.force` still must be guarded — the explicit check is the loud failure). Document the apt deps (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`).
+- Zig imports the shim via `@cImport(@cInclude("webkit_shim.h"))` (small, macro-free) — translate-c only ever sees OUR header.
+
+## C7 — Callback ABI (resolves INTERFACE crit: callback signatures)
+All callbacks live in C (exact GTK/WebKit signatures), registered with `g_signal_connect_data` in the shim:
+```c
+static void on_load_changed(WebKitWebView*, WebKitLoadEvent, gpointer /*ZbPage* */);
+static gboolean on_load_failed(WebKitWebView*, WebKitLoadEvent, const char *uri, GError*, gpointer);
+static void on_snapshot_ready(GObject *source, GAsyncResult*, gpointer); // -> get_snapshot_finish
+static void on_destroy(GtkWidget*, gpointer);
+static gboolean on_timeout(gpointer); // returns G_SOURCE_REMOVE
+static gboolean on_unix_signal(gpointer);
+```
+The shim exposes to Zig only: `int zb_run_open(const char *uri, int print_title);` `int zb_run_screenshot(const char *uri, const char *out_path, int print_title);` `void zb_version_line(char *buf, size_t len);` — returning exit codes per C2.
+
+## C8 — E2E observation protocol (resolves CRIT #6 + API warnings: machine-readable oracle)
+The CLI exposes a stable, machine-readable observation surface (no private hooks):
+- `--print-title` flag (valid with `<url>` and `--screenshot`): on a **successful** load, print exactly one line to **stdout**: `TITLE\t<document.title>`; on failure print nothing to stdout (diagnostics to stderr) and exit non-zero.
+- `--screenshot out.png <url>`: the PNG is the snapshot oracle.
+- All diagnostics/errors → **stderr** only; stdout carries only the protocol line(s).
+- **Helper-PID tracking (replaces weak `pgrep -P`):** the E2E harness records the browser's child PIDs *while it is alive* (`pgrep -P <pid>` sampled during the run, or `/proc/<pid>/task/*/children`), then asserts those exact PIDs are gone within a bounded timeout after exit (orphans reparent to init, so a post-exit `pgrep -P` is invalid).
+
+## C9 — Display contract (resolves CRIT #8: headless contradiction)
+Slice 1 has **no true no-display path**. Both window and `--screenshot` **require a GTK display**:
+- `DISPLAY` unset → exit `DisplayUnavailable` (3), write no file. (No "offscreen fallback" claim.)
+- CI runs everything under **`xvfb-run`**. `--screenshot` is "non-interactive," not "headless."
+
+---
+
+## Salvage Manifest (revised — corrected paths, no broken cherry-picks)
+```bash
+git checkout archive/custom-engine-pre-webkit -- src/cli.zig build.zig.zon
+```
+- `cli.zig` — reuse `parseArgs`; **extend** the union with `--print-title`; the `.screenshot` `w/h` defaults (1024×768) **survive** as the snapshot viewport size (documented, not dead).
+- `build.zig.zon` — reuse package identity (name `zigBrowser`, fingerprint, min zig 0.16).
+- **NOT salvaged:** `src/page.zig` (owns deleted pipeline — rewrite as the §C3 WebKit state, salvaging only the arena/teardown *idea*); `src/net/url.zig` (host-required, no file:// — replaced by new `src/uri.zig`, C1); `src/errors.zig` (replaced/extended by §C2 `BrowserError`).
+- `tests/snapshots/pillow_tools.py` — restore and **add a `nonuniform <png>` subcommand** (M4).
 
 ## Testing Strategy
-- **Framework:** Zig 0.16 built-in test runner (`zig build test`) for unit behaviors; a **spawn-the-real-binary E2E harness** (under `DISPLAY=:1`, Xvfb in CI) for window/render/screenshot/quit/bad-url.
-- **Test types:** UNIT — `url.zig` vectors, `cli.parseArgs`, `--version` composition from `webkit_get_*_version`. E2E — load `file://` fixtures, await WebKit `FINISHED`, assert `get_title()`==fixture title + snapshot PNG non-uniform; exit codes; orphaned-process check.
-- **Independent oracles only:** WebKit's own `get_title`/`get_snapshot` + the known fixture + OS checks. **No self-referential tests** (we never assert our output against our own output).
-- **Fixtures:** `tests/fixtures/live.html` (`<title>WebKitGTK Live</title>`, `<h1>Hello Real Text</h1>`) — deterministic, no network.
-- **Build:** `addTranslateC(webkit2/webkit2.h)` + `linkSystemLibrary("webkit2gtk-4.1", .{ .use_pkg_config = .yes })`, no hardcoded paths; build fails loudly if pkg-config is absent.
+- **Framework:** Zig 0.16 `zig build test` for unit (uri.zig validation + property test, cli.parseArgs, version-line regex); a **spawn-the-binary E2E harness** under `xvfb-run` using the C8 protocol (`--print-title`, PNG) and C8 PID tracking.
+- **Independent oracles only:** WebKit `get_title` (via `--print-title`) + `get_snapshot` PNG + known `file://` fixtures + OS process checks. No self-referential assertions.
+- **Fixtures:** `tests/fixtures/live.html` (`<title>WebKitGTK Live</title>`, `<h1>Hello Real Text</h1>`); `tests/fixtures/missing` (nonexistent → load-failed). Deterministic, no network.
+- **CI deps (in scope to document):** `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `xvfb`, `python3`, `python3-pil`; skip-vs-fail policy stated.
 
 ---
 
-## Behavior 1: link-proof-version  (bootstraps project + build + salvage)
-
-### Test Specification
-**Given**: webkit2gtk-4.1 (v2.52.3) + GTK3 installed; the build translate-c's `webkit2.h` and links via pkg-config.
-**When**: `zigBrowser --version`.
-**Then**: prints a real version line whose numbers come **from the linked libraries** — e.g. `zigBrowser — WebKitGTK 2.52.3, GTK 3.24.49` (via `webkit_get_major/minor/micro_version` + `gtk_get_major/minor/micro_version`), exit 0.
-
-**Edge Cases**: build fails loudly if `pkg-config webkit2gtk-4.1` absent (no silent fallback); print **runtime** version (may differ from build-time header); `--version` with trailing args still prints.
-
-**Files touched**: `build.zig.zon` (from tag), `build.zig` (new), `src/webkit.zig` (new — the single C-import module), `src/cli.zig` (from tag), `src/errors.zig` (from tag), `src/main.zig` (new), `tests/version_test.zig` (new). Healthy blast radius (project bootstrap).
-
-### TDD Cycle
-#### 🔴 Red
-**File**: `tests/version_test.zig` (+ an E2E assertion script)
-```zig
-// Unit: the version line is composed from the lib getters, not a literal.
-test "version string is sourced from linked webkit/gtk getters" {
-    const v = @import("../src/webkit.zig").versionLine(std.testing.allocator);
-    defer std.testing.allocator.free(v);
-    // webkit_get_major_version() is comptime-unknowable → must be >0 at runtime
-    try std.testing.expect(std.mem.indexOf(u8, v, "WebKitGTK ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, v, "GTK ") != null);
-}
-```
-E2E: `zig build && ./zig-out/bin/zigBrowser --version` exits 0 and stdout contains `WebKitGTK ` + `GTK `. Fails: no project/binary yet.
-
-#### 🟢 Green
-- `build.zig.zon` from tag; `build.zig`: `const wk = b.addTranslateC(.{ .root_source_file = b.path("src/webkit2.h") , ... });` (`webkit2.h` = `#include <webkit2/webkit2.h>`), `exe.root_module.addImport("c", wk.createModule()); exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{ .use_pkg_config = .yes });`
-- `src/webkit.zig`: `pub const c = @import("c");` + `pub fn versionLine(a) []u8` calling `c.webkit_get_major_version()` etc. and `c.gtk_get_major_version()`.
-- `src/cli.zig`, `src/errors.zig` from tag; `src/main.zig` dispatch `.version` → print `versionLine`.
-
-#### 🔵 Refactor
-All WebKit/GTK C access funnels through `src/webkit.zig` (deep module; the rest of the code never imports `c` directly). Assert (in code review) the version numbers are getter-derived, not string literals. Confirm `translate-c` digested `webkit2.h` cleanly.
-
-### Success Criteria
-**Automated:** Red fails for the right reason (no binary); `zig build` succeeds and links webkit2gtk-4.1 (`ldd zig-out/bin/zigBrowser | grep webkit2gtk-4.1`); `zig build test` green.
-**Manual / VISIBLE ARTIFACT:** real stdout `zigBrowser — WebKitGTK 2.52.3, GTK 3.24.49` from a genuinely-linked binary. **ORACLE:** printed versions == `pkg-config --modversion webkit2gtk-4.1` and `gtk+-3.0`.
-
----
+## Behavior 1: link-proof-version  (bootstraps project + C-shim build + salvage)
+**Given** webkit2gtk-4.1 + GTK3 installed; build uses the §C6 C-shim path.
+**When** `zigBrowser --version`.
+**Then** prints `zigBrowser — WebKitGTK <maj.min.mic>, GTK <maj.min.mic>` from the linked libs (shim `zb_version_line` calling `webkit_get_*_version`/`gtk_get_*_version`), exit 0.
+**Edge cases:** build fails loudly if `pkg-config --exists` fails (§C6); runtime version may differ from header — print runtime; `--version` with extra args still prints (arity per C8/CLI table).
+**Files touched:** `build.zig.zon`, `build.zig`, `src/webkit_shim.h`, `src/webkit_shim.c`, `src/webkit.zig` (thin extern binding), `src/cli.zig`, `src/errors.zig`, `src/main.zig`, `tests/version_test.zig`.
+- 🔴 Red: unit test asserts version line matches regex `^zigBrowser — WebKitGTK \d+\.\d+\.\d+, GTK \d+\.\d+\.\d+$` (NOT exact local numbers); E2E `zig build && zigBrowser --version` exit 0. Fails (no project).
+- 🟢 Green: build.zig with explicit `pkg-config --exists` guard + C-shim compile/link (§C6); shim `zb_version_line`; main dispatch `.version`.
+- 🔵 Refactor: all GTK/WebKit access confined to `webkit_shim.c`; `src/webkit.zig` is the only Zig file importing the shim header.
+- **VISIBLE ARTIFACT:** real stdout version line from a genuinely-linked binary. **ORACLE:** matches `pkg-config --modversion` (regex-stable).
 
 ## Behavior 2: real-page-in-window
-
-### Test Specification
-**Given**: `tests/fixtures/live.html` (`<title>WebKitGTK Live</title>`, `<h1>Hello Real Text</h1>`) and `DISPLAY=:1`.
-**When**: `zigBrowser file:///abs/tests/fixtures/live.html`.
-**Then**: a GTK top-level window opens hosting a `WebKitWebView` that renders the **real page with real text glyphs**, after the `load-changed` `FINISHED` signal.
-
-**Edge Cases**: `DISPLAY` unset → fail loudly (clear message, not a silent no-window); missing fixture → WebKit `load-failed` surfaced; no `<title>` → still renders (title oracle falls back to body innerText); **await `FINISHED` before asserting** (no race); macros → `g_signal_connect_data` + GObject casts + `callconv(.C)`.
-
-**Files touched**: `src/webkit.zig` (web view + window + signal wiring), `src/main.zig` (`.open` path). Two files — healthy.
-
-### TDD Cycle
-#### 🔴 Red
-**File**: `tests/e2e/window_test.zig` (spawns the binary)
-```
-DISPLAY=:1 ./zig-out/bin/zigBrowser file:///abs/tests/fixtures/live.html &
-# harness waits for FINISHED, then queries title via a test hook / the --screenshot title capture
-assert get_title == "WebKitGTK Live"
-```
-Fails: no window code.
-
-#### 🟢 Green (real embedding — the hard part, in scope)
-```zig
-// src/webkit.zig (sketch — real calls, macros expanded manually)
-_ = c.gtk_init_check(0, null);
-const win = c.gtk_window_new(c.GTK_WINDOW_TOPLEVEL);          // GTK_WINDOW_TOPLEVEL is an enum const (ok)
-const view = c.webkit_web_view_new();                          // returns *GtkWidget
-_ = c.g_signal_connect_data(view, "load-changed", @ptrCast(&onLoadChanged), null, null, 0); // macro→_data
-c.gtk_container_add(@ptrCast(win), view);                      // GTK_CONTAINER cast = pointer cast
-c.webkit_web_view_load_uri(@ptrCast(view), url_z);             // WEBKIT_WEB_VIEW cast
-c.gtk_widget_show_all(win);
-c.gtk_main();
-// fn onLoadChanged(view, load_event, user) callconv(.C) void { if (load_event == FINISHED) {...} }
-```
-`src/main.zig` `.open` → validate URL (B5 salvage) → `webkit.openWindow(url)`.
-
-#### 🔵 Refactor
-Extract a thin `WebView`/`Window` seam in `src/webkit.zig` (all GTK/WebKit calls live here) so a future macOS `WKWebView` backend swaps in behind the same Zig interface. No logic duplicated with M4's load path.
-
-### Success Criteria
-**Automated:** E2E asserts `get_title()` == `"WebKitGTK Live"`; snapshot PNG non-uniform.
-**Manual / VISIBLE ARTIFACT:** a real GTK window on `:1` showing **Hello Real Text** + a `get_snapshot` PNG. **ORACLE:** `webkit_web_view_get_title()` (WebKit's real parse of the known fixture) + non-uniform text pixels — both WebKit-produced, checked vs the fixture.
-
----
+**Given** `tests/fixtures/live.html` and `DISPLAY` set.
+**When** `zigBrowser file:///abs/tests/fixtures/live.html` (optionally `--print-title`).
+**Then** a GTK window renders the real page with real text after a **successful** terminal load (§C4); with `--print-title`, stdout prints `TITLE\tWebKitGTK Live`.
+**Edge cases:** `DISPLAY` unset → exit 3 `DisplayUnavailable` (§C9); missing fixture → load-failed → exit 5, window shows WebKit error page (§C4 window mode returns FALSE); no `<title>` → prints empty title line; success gated on `FINISHED && !failed && !cancelled && !timed_out` (§C4).
+**Files touched:** `src/webkit_shim.c` (window/view/owned-context/signals/state machine), `src/webkit.zig`, `src/uri.zig` (validate before load), `src/main.zig`.
+- 🔴 Red: E2E under `xvfb-run` spawn with `--print-title`; assert stdout == `TITLE\tWebKitGTK Live`. Fails (no window).
+- 🟢 Green: shim `zb_run_open` → owned context, `gtk_init_check` (→ GtkInitFailed/DisplayUnavailable), window, `webkit_web_view_new_with_context`, `g_signal_connect_data` for load-changed/load-failed/destroy (§C7), `webkit_web_view_load_uri`, `gtk_main`; on success FINISHED read `get_title` and (if `--print-title`) print.
+- 🔵 Refactor: a single `load_then(uri, action)` flow in the shim shared with M4; document the WebView/Window seam for a future macOS backend.
+- **VISIBLE ARTIFACT:** real GTK window on the display showing "Hello Real Text". **ORACLE:** `get_title()` == fixture title (via `--print-title`).
 
 ## Behavior 3: clean-quit
+**Given** the window open with a loaded page.
+**When** the user closes it (`destroy`) — or SIGINT/SIGTERM (§C5).
+**Then** async ops cancel, signal handlers disconnect, the owned context is unref'd (helpers reaped), `gtk_main` returns, exit 0 (or 130 on signal).
+**Edge cases:** close before load finishes (cancel in-flight); destroy during snapshot (GCancellable); SIGINT/SIGTERM mid-load (§C5).
+**Files touched:** `src/webkit_shim.c` (teardown order §C5).
+- 🔴 Red: E2E launch under xvfb, record child PIDs (§C8), send destroy, assert exit 0 AND the **recorded** helper PIDs exit within a bounded timeout. Fails (hang/no teardown).
+- 🟢 Green: `on_destroy` → cancel + `gtk_main_quit`; teardown in the documented §C5 order; `g_unix_signal_add` handlers.
+- 🔵 Refactor: encode teardown as one ordered routine; reuse the §C3 state for the arena/teardown idea.
+- **VISIBLE ARTIFACT:** shell returns exit 0; recorded helper PIDs gone. **ORACLE:** exit code + tracked-PID exit (not post-exit `pgrep -P`).
 
-### Test Specification
-**Given**: the window is open and a page has loaded.
-**When**: the user closes the window (`destroy` signal).
-**Then**: `gtk_main` returns, the process exits 0, WebKit Network/Web helper processes are reaped — no hang, no crash, no zombies.
+## Behavior 4: screenshot (non-interactive, display-required)
+**Given** `tests/fixtures/live.html`, a display (or `xvfb-run`), and `--screenshot out.png <url>`.
+**When** `zigBrowser --screenshot /tmp/live.png file:///abs/tests/fixtures/live.html [--print-title]`.
+**Then** on a **successful** terminal load (§C4) it calls `get_snapshot` (non-null GCancellable, §C5), writes a real PNG of real text to a temp file in the **destination directory**, atomically renames to `out.png`, exit 0.
+**Edge cases:** unwritable path → exit 7 `WriteFailed`, no partial/leftover file (failure preserves any existing output); snapshot before FINISHED waits (async); snapshot/load error → no PNG (exit 6/5); timeout → exit 8; no DISPLAY → exit 3 (§C9); SIGINT mid-snapshot → cancel, no file, exit 130.
+**Files touched:** `src/webkit_shim.c` (snapshot + cairo PNG + atomic write), `src/main.zig` (`.screenshot`), `tests/snapshots/pillow_tools.py` (add `nonuniform`).
+- 🔴 Red: E2E `--screenshot --print-title`; assert PNG decodes to viewport dims, `pillow_tools.py nonuniform out.png` passes, AND stdout title == fixture. Fails (no screenshot path).
+- 🟢 Green: shim `zb_run_screenshot` → load_then(FINISHED-success) → `webkit_web_view_get_snapshot(view, FULL_DOCUMENT, NONE, cancellable, on_snapshot_ready, page)`; `get_snapshot_finish` → `cairo_surface_t*` → `cairo_surface_write_to_png(tmp)` → rename; map errors→exit codes (§C2).
+- 🔵 Refactor: share `load_then` with M2; add the `nonuniform` PIL command (stddev/distinct-color threshold).
+- **VISIBLE ARTIFACT:** an openable PNG of the real page text. **ORACLE:** PNG non-uniform (`pillow_tools nonuniform`) + title match — both WebKit-produced.
 
-**Edge Cases**: close before load finishes; double-close / destroy during snapshot; SIGINT/SIGTERM mid-load also exits cleanly; no orphaned `WebKitNetworkProcess`/`WebKitWebProcess`.
+## Behavior 5: bad-uri-real-error
+**Given** a malformed/unsupported URI (`http://`, `ftp://x`, `javascript:…`, relative) or unreachable host (`http://127.0.0.1:9/`).
+**When** `zigBrowser <bad>` or `--screenshot out.png <bad>`.
+**Then** malformed/unsupported → `src/uri.zig` (§C1) rejects pre-load → stderr message, exit 2, no window/PNG; unreachable/TLS/DNS → WebKit `load-failed` (§C4) → exit 5, screenshot writes no file, window shows WebKit's real error page.
+**Edge cases:** `file://` to missing file → load-failed exit 5; TLS/DNS failures → exit 5 with preserved `LoadFailure` domain/code on stderr; `--screenshot` on any failure writes NO file.
+**Property:** for all inputs, `uri.validate` returns a value or a `UriError` — never panics, never loads an unsupported scheme.
+**Files touched:** `src/uri.zig`, `src/main.zig` (validate-before-load), `src/webkit_shim.c` (`on_load_failed` → record §C3/C4), `tests/uri_test.zig`.
+- 🔴 Red: unit — `uri.validate` accepts file/http/https, rejects javascript/ftp/relative; E2E — `zigBrowser http://127.0.0.1:9/` exits 5, prints a real network error to stderr, writes no PNG. Fails.
+- 🟢 Green: `src/uri.zig` (C1); main validates first; shim `on_load_failed` records failure + (screenshot) returns TRUE / (window) FALSE.
+- 🔵 Refactor: one `reportError(BrowserError, ?LoadFailure)`; map WebKit `GError` domains → §C2.
+- **VISIBLE ARTIFACT:** real stderr error / WebKit error page; correct non-zero exit; no bogus PNG. **ORACLE:** `uri.zig` vectors + WebKit's real `load-failed` GError.
 
-**Files touched**: `src/webkit.zig` (destroy wiring + teardown), `src/page.zig` (from tag — lifecycle).
-
-### TDD Cycle
-#### 🔴 Red
-E2E: launch, wait for load, send window close (or `xdotool`/`gtk` destroy), assert `exit code == 0` AND `pgrep -P <pid>` empty after exit. Fails: hangs / no quit wiring.
-#### 🟢 Green
-`_ = c.g_signal_connect_data(win, "destroy", @ptrCast(&c.gtk_main_quit), null, null, 0);` `main` returns 0 after `gtk_main`. Ensure the `WebKitWebContext` disposes so helpers exit.
-#### 🔵 Refactor
-Adopt salvaged `page.zig` arena + ordered teardown as the per-window state container; teardown runs in a `defer` chain in the documented order.
-
-### Success Criteria
-**VISIBLE ARTIFACT:** shell prompt returns with exit 0 after close; no zombie WebKit helpers. **ORACLE:** exit code 0 + clean process table (independent OS check).
-
----
-
-## Behavior 4: headless-screenshot
-
-### Test Specification
-**Given**: `tests/fixtures/live.html` and `--screenshot out.png <url>`.
-**When**: `zigBrowser --screenshot /tmp/live.png file:///abs/tests/fixtures/live.html`.
-**Then**: loads the real page, awaits `FINISHED`, calls `webkit_web_view_get_snapshot`, writes a real PNG of the rendered page (with real text) to `out.png`, exits 0.
-
-**Edge Cases**: unwritable path → `error.WriteFailed`, non-zero exit, no partial file; snapshot before `FINISHED` must wait (async cb); async snapshot error → clean failure; offscreen/unmapped window path when no DISPLAY.
-
-**Files touched**: `src/webkit.zig` (snapshot + async cb + cairo PNG write), `src/main.zig` (`.screenshot` path), `tests/snapshots/pillow_tools.py` (salvage — assertion helper).
-
-### TDD Cycle
-#### 🔴 Red
-E2E: run `--screenshot`, assert PNG decodes to expected dims, is non-blank, and the captured title == fixture title. Fails: no screenshot path.
-#### 🟢 Green
-`.screenshot` → load + await `FINISHED` → `c.webkit_web_view_get_snapshot(view, FULL_DOCUMENT, NONE, null, &onSnapshot, ctx)`; in finish cb `webkit_web_view_get_snapshot_finish` → `cairo_surface_t*` → `cairo_surface_write_to_png(surface, tmp)`; atomic temp+rename with `defer` cleanup; map errors → exit codes (0 ok / 1 url / 2 load / 3 snapshot / 4 write).
-#### 🔵 Refactor
-Share the load-then-act flow with M2 (one `loadThen(url, action)` in `webkit.zig`). Reuse salvaged `pillow_tools.py` (`diff`/non-uniformity) for the harness assertion.
-
-### Success Criteria
-**VISIBLE ARTIFACT:** an openable PNG showing the real page with readable text. **ORACLE:** PNG non-uniform with text-like pixels + captured `get_title()` == fixture — WebKit produced both.
-
----
-
-## Behavior 5: bad-url-real-error
-
-### Test Specification
-**Given**: a malformed URL (`http://`) or unreachable host (`http://127.0.0.1:9/`).
-**When**: `zigBrowser <bad-url>` or `--screenshot out.png <bad-url>`.
-**Then**: malformed → rejected up front by salvaged `url.zig` (clear stderr, non-zero exit, no window/PNG); unreachable → WebKit's real `load-failed` surfaced as a clean stderr message / WebKit error page in-window; never crashes; writes no bogus PNG.
-
-**Edge Cases**: non-http(s) scheme (`ftp://`, `javascript:`) rejected by `url.zig` before load; TLS/cert failure → `load-failed` TLS error; DNS failure → `load-failed`; `--screenshot` on failed load writes **no** file.
-
-**Property**: `parse(serialize(x)) == x` for all valid URLs (property test on salvaged `url.zig`); all non-http(s)/malformed inputs → `error.InvalidUrl` (never a panic, never a load).
-
-**Files touched**: `src/url.zig` (from tag), `src/main.zig` (validate-before-load), `src/webkit.zig` (`load-failed` cb → `errors.zig` map), `tests/url_test.zig`.
-
-### TDD Cycle
-#### 🔴 Red
-Unit: `url.zig` rejects `http://`, `ftp://x`, `javascript:alert(1)` → `error.InvalidUrl`. E2E: `zigBrowser http://127.0.0.1:9/` exits non-zero, prints a real network error, opens no PNG. Fails: crash/silent.
-#### 🟢 Green
-Cherry-pick `url.zig`; in `main` parse+normalize, reject non-http(s)/malformed → stderr + non-zero exit before any window/load. `g_signal_connect_data(view, "load-failed", &onLoadFailed, …)` → map `WebKitNetworkError` via `errors.zig` → stderr; `--screenshot` writes nothing on failure.
-#### 🔵 Refactor
-Unify error surfacing (one `reportError(NetError)`); map WebKit error domains onto `errors.zig` taxonomy.
-
-### Success Criteria
-**VISIBLE ARTIFACT:** real stderr error message (and WebKit's real error page in-window); non-zero exit; no bogus PNG. **ORACLE:** `url.zig` `std.Uri` vectors (malformed) + WebKit's real `load-failed` `WebKitNetworkError` (unreachable) — both independent of our code.
-
----
+## Behavior 6: docs/specs reconciled to WebKitGTK (resolves INTERFACE warning)
+**Given** `docs/how-to-build.md`, `how-to-run.md`, `how-to-test.md`, `specs/architecture.md|lifecycle.md|networking.md` still describe the deleted custom-engine/libcurl path.
+**When** Slice 1 lands.
+**Then** those docs are updated to the WebKitGTK + C-shim reality (build deps, run, test/xvfb) **or** clearly marked "obsolete — superseded by WebKitGTK Slice 1" with a pointer to this plan.
+**Files touched:** `docs/how-to-build.md`, `docs/how-to-run.md`, `docs/how-to-test.md`, `specs/architecture.md`, `specs/lifecycle.md`, `specs/networking.md`.
+- 🔴 Red: a docs-lint test asserting no active how-to references `libcurl`/`drawRect`/custom-engine build steps (greps the doc set). Fails.
+- 🟢 Green: update build/run/test docs to webkit2gtk-4.1 + xvfb; mark stale engine specs obsolete.
+- 🔵 Refactor: one "WebKitGTK Slice 1" doc index.
+- **VISIBLE ARTIFACT:** a human following `how-to-build.md` builds and sees a page — the docs match reality.
 
 ## Integration & E2E Testing
-- **Integration:** the `loadThen(url, action)` flow shared by window-display (M2) and screenshot (M4), each awaiting `FINISHED`.
-- **E2E user flows:** (a) `zigBrowser <file-url>` → window with real text; (b) close → exit 0; (c) `--screenshot` → PNG of real text; (d) bad URL → real error, no PNG. Run under `DISPLAY=:1` locally, **Xvfb** in CI.
-- **CI note:** install `libwebkit2gtk-4.1-dev` + `libgtk-3-dev`; run E2E under `xvfb-run`. (CI workflow is a later slice; flagged here.)
+- One `load_then(uri, action)` flow drives both window (M2) and screenshot (M4), each gated on §C4 success.
+- E2E flows (all under `xvfb-run`): window+`--print-title` title oracle; clean quit + tracked-PID exit; `--screenshot` PNG non-uniformity + title; bad-URI exit/stderr/no-PNG.
+- Harness tools (required, documented): `xvfb-run`, `python3`, `python3-pil`; missing tools → **skip with a loud notice**, never a vacuous pass.
+
+## CLI Contract Table (resolves API arity warnings)
+| Invocation | stdout | stderr | exit |
+|---|---|---|---|
+| `--version [extra]` | version line | — | 0 |
+| `<file/http/https url> [--print-title]` | `TITLE\t<title>` (if flag, on success) | diagnostics | 0 / 3 / 4 / 5 / 8 / 130 |
+| `--screenshot out url [--print-title]` | title line (if flag, on success) | diagnostics | 0 / 2 / 3 / 5 / 6 / 7 / 8 / 130 |
+| (no args) / unknown flag / output path starting with `-` / missing screenshot args | — | usage | 1 |
+| unsupported/malformed URI | — | error | 2 |
+
+## What We're NOT Doing (later slices)
+Address bar + interactive navigation, back/forward/reload, tabs, the differentiator, macOS/WKWebView (seam left in M2), a true no-display rendering path.
 
 ## Risks & Mitigations
 | Risk | Mitigation |
 |---|---|
-| `translate-c` chokes on macro-heavy `webkit2.h` | Prove it compiles in M1 (the bootstrap slice); isolate all C in `src/webkit.zig` |
-| `g_signal_connect`/cast macros not exposed | Call `g_signal_connect_data` + GObject pointer casts directly; `callconv(.C)` callbacks — explicit in M2 |
-| async `get_snapshot` race | Always await `load-changed` `FINISHED` before snapshot/title (M2/M4) |
-| headless CI (no DISPLAY) | Xvfb; offscreen/unmapped window fallback for `--screenshot` |
-| orphaned WebKit helper processes | Dispose `WebKitWebContext`; assert clean process table (M3) |
+| Broad translate-c of webkit2.h (verified to fail on -pthread) | C shim owns all GTK/WebKit; Zig sees only our macro-free header (§C6) |
+| `.use_pkg_config=.yes` silent fallback | `.force` + explicit `pkg-config --exists` build guard (§C6) |
+| FINISHED after a failed load → bogus PNG | load state machine; success only on FINISHED && !failed && !cancelled && !timed_out (§C4) |
+| async snapshot races on close/SIGINT | non-null GCancellable + timeout source + ordered teardown + signal handler (§C5) |
+| helper-process orphan check unreliable | track child PIDs while alive; assert their bounded exit (§C8), not post-exit pgrep |
+| display vs headless ambiguity | Slice 1 requires DISPLAY/xvfb; no DISPLAY → exit 3 (§C9) |
+| E2E has no machine oracle | `--print-title` + PNG protocol (§C8) |
+
+## Review Resolution (REVIEW 2026-05-31 — 8 critical + warnings)
+| Finding | Resolution |
+|---|---|
+| CRIT #1 URL/file:// conflict | §C1 new `uri.zig` allows file/http/https, hostless file://; archived url.zig dropped |
+| CRIT #2 page.zig salvage invalid | Not cherry-picked; §C3 WebKit state container; salvage only arena/teardown idea |
+| CRIT #3 build interface unproven (+verified -pthread fail) | §C6 C shim + `.force` + explicit pkg-config check |
+| CRIT #4 FINISHED ≠ success | §C4 load state machine; success-gated actions |
+| CRIT #5 async lifetime/cancellation | §C5 GCancellable, timeouts, owned context, teardown order, signals |
+| CRIT #6 no external E2E API | §C8 `--print-title` + PNG protocol |
+| CRIT #7 CLI/error contract incomplete | §C2 BrowserError + exit table + CLI Contract Table |
+| CRIT #8 display/headless contradiction | §C9 display required; no-DISPLAY→exit 3; xvfb in CI |
+| WARN errors absent from errors.zig | §C2 BrowserError + LoadFailure |
+| WARN DISPLAY inconsistency | §C9 |
+| WARN E2E observation undefined | §C8 |
+| WARN url path `src/url.zig` vs `src/net/url.zig` | replaced by `src/uri.zig`; all refs corrected |
+| WARN pillow_tools lacks nonuniformity | add `nonuniform` cmd (M4) |
+| WARN stale docs/specs (libcurl/custom) | Behavior 6 reconciles/obsoletes them |
+| WARN callback ABI sketchy | §C7 exact C signatures (callbacks live in C) |
+| WARN load-failed return policy | §C4: screenshot returns TRUE (no error PNG); window returns FALSE (show error page) |
+| WARN helper cleanup via default context | §C5 owned context; §C8 tracked-PID exit |
+| WARN destroy lacks signal cleanup | §C5 g_unix_signal_add SIGINT/SIGTERM |
+| WARN screenshot w/h dead fields | survive as snapshot viewport size (documented) |
+| WARN url round-trip under-tested | §C1 property test incl scheme allowlist |
+| WARN async ownership undefined | §C3/§C5 ownership + teardown order |
+| WARN CI deps/skip policy | Testing Strategy + Integration list deps + skip-loud policy |
+| WARN --version hard-codes versions | regex assertion, not exact numbers (B1) |
+| WARN CLI arity undocumented | CLI Contract Table |
 
 ## References
-- Audit + engine direction: `thoughts/searchable/shared/plans/2026-05-31-webkitgtk-pivot-audit-and-replan.md`
-- Salvage source: git tag `archive/custom-engine-pre-webkit` (`src/cli.zig`, `src/net/url.zig:15-31`, `src/errors.zig`, `src/page.zig`, `build.zig.zon`)
-- WebKitGTK API: `webkit_web_view_new`, `webkit_web_view_load_uri`, `webkit_web_view_get_title`, `webkit_web_view_get_snapshot`/`_finish`, signals `load-changed`/`load-failed`; GTK3 `gtk_init`/`gtk_window_new`/`gtk_main`/`gtk_main_quit`; `g_signal_connect_data`.
-- Toolchain: zig 0.16 `b.addTranslateC` + `linkSystemLibrary(.{ .use_pkg_config = .yes })`.
+- Audit: `thoughts/searchable/shared/plans/2026-05-31-webkitgtk-pivot-audit-and-replan.md`
+- Review: `…-slice1-REVIEW.md` (+ `/tmp/zigBrowser-review-*.md` evidence)
+- Salvage: tag `archive/custom-engine-pre-webkit` (`src/cli.zig:3-15`, `build.zig.zon`)
+- WebKit API: `/usr/include/webkitgtk-4.1/webkit/WebKitWebView.h` (load_uri/get_title :364-412; snapshot :616-626; load events :113-135; signals :253-258); `webkit_web_context_new[_ephemeral]`; `glib-unix.h` `g_unix_signal_add`
+- Build: Zig 0.16 `addCSourceFile` + `linkSystemLibrary2(.use_pkg_config=.force)` + `linkLibC`; translate-c only on our shim header
