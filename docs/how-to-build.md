@@ -1,29 +1,36 @@
-# How to build zigBrowser
+# How to build zigBrowser (WebKitGTK Slice 1)
 
-This guide builds the `zigBrowser` executable from source with the project's Zig toolchain requirement.
+This project now targets an embedded **WebKitGTK** engine (not the archived custom renderer).
 
 ## Prerequisites
 
-- A clone of this repository.
-- Zig `0.16.0` available on `PATH`.
-- `libcurl` available at `/usr/lib/x86_64-linux-gnu/libcurl.so.4` (this path is referenced directly in `build.zig`).
+- Zig `0.16.0` on `PATH`
+- `pkg-config`
+- WebKitGTK + GTK3 development packages
+- E2E tool dependencies for screenshot/title protocol checks
 
-## Steps
+Debian/Ubuntu:
 
-1. Install Zig `0.16.0` for your platform and put `zig` on your `PATH`.
-2. Verify the pinned version:
-   ```bash
-   zig version
-   ```
-3. Build the project from the repository root:
-   ```bash
-   zig build
-   ```
-4. Confirm the executable exists:
-   ```bash
-   ls -l zig-out/bin/zigBrowser
-   ```
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libwebkit2gtk-4.1-dev \
+  libgtk-3-dev \
+  xvfb \
+  python3 \
+  python3-pil \
+  pkg-config
+```
 
-## Result
+## Build
 
-You now have a built executable at `zig-out/bin/zigBrowser`.
+```bash
+zig version
+zig build
+ls -l zig-out/bin/zigBrowser
+```
+
+## Notes
+
+- Build wiring is expected to resolve WebKit/GTK via `pkg-config`.
+- If dependencies are missing, build should fail loudly rather than silently fallback.

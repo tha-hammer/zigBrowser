@@ -1,12 +1,20 @@
-# zigBrowser v1 Specifications Index
+# zigBrowser Specifications Index (WebKitGTK Pivot)
 
-Baseline: commit `3d43b1d`.
+Pivot date: 2026-05-31  
+Authoritative plan: `thoughts/searchable/shared/plans/2026-05-31-12-48-ENG-0003-tdd-webkitgtk-browser-slice1.md`
 
-- [architecture.md](architecture.md) - System overview, end-to-end pipeline, lifecycle, and scripting seam.
-- [parsing.md](parsing.md) - HTML and CSS parsing behavior and canonical data types.
-- [networking.md](networking.md) - URL parsing/resolution, fetch behavior, origin/store, and error discipline.
-- [style-layout.md](style-layout.md) - Owned by PurpleGate.
-- [paint-platform.md](paint-platform.md) - Owned by PurpleGate.
-- [images.md](images.md) - Owned by PurpleGate.
-- [scripting-seams.md](scripting-seams.md) - Owned by PurpleGate.
-- [lifecycle.md](lifecycle.md) - Owned by PurpleGate.
+## Active Slice-1 specs
+
+- [architecture.md](architecture.md) — active, WebKitGTK+GTK3 slice architecture and runtime contracts.
+- [lifecycle.md](lifecycle.md) — active, load/snapshot lifecycle and teardown order.
+- [networking.md](networking.md) — active, URI allowlist and WebKit load-failure surface.
+
+## Legacy custom-engine specs (obsolete)
+
+The files below describe the archived custom renderer/JS effort (tag `archive/custom-engine-pre-webkit`) and are retained for historical trace only:
+
+- [parsing.md](parsing.md)
+- [style-layout.md](style-layout.md)
+- [paint-platform.md](paint-platform.md)
+- [images.md](images.md)
+- [scripting-seams.md](scripting-seams.md)

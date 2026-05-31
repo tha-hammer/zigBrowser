@@ -1,77 +1,56 @@
-# Page Lifecycle Specification
+# Lifecycle Specification (WebKitGTK Slice 1)
 
-Grounding: commit `3d43b1d`.
+Grounding:
+- Plan: `thoughts/searchable/shared/plans/2026-05-31-12-48-ENG-0003-tdd-webkitgtk-browser-slice1.md`
 
 ## 1. Scope
-This file defines page ownership, allocator lifetime boundaries, and end-to-end `Page.navigate` behavior.
 
-## 2. Ownership Model
-Implementation anchor: `src/page.zig`.
+Defines runtime lifetime and teardown ordering for one browser run in the WebKitGTK slice.
 
-`Page` owns:
-- process allocator handle (`process_allocator`)
-- page arena (`arena: std.heap.ArenaAllocator`)
-- page state (`dom_root`, `style_for`, `box_root`, `render_checksum`, `origin`, `current_url`)
-- script engine seam (`engine`)
+## 2. Run lifecycle
 
-Rule:
-- document-scoped objects are page-lifetime and are invalidated on navigation teardown.
+For `open` and `--screenshot` modes:
 
-## 3. Navigation Flow
-Implementation anchor: `Page.navigate` in `src/page.zig`.
+1. Validate URI (allowlist: `file`, `http`, `https`).
+2. Create GTK window + WebKitWebView with owned WebKit context.
+3. Connect load and failure callbacks.
+4. Enter GTK main loop.
+5. On successful terminal load:
+   - optionally emit `TITLE\t<title>`
+   - for screenshot mode, request snapshot and write PNG
+6. Exit main loop with success or mapped failure code.
 
-For first load:
-1. fetch URL
-2. set `origin` and `current_url`
-3. build render pipeline
-4. publish page state and checksum
+## 3. Load state rule
 
-For subsequent loads:
-1. run ordered teardown of old page
-2. reinitialize arena
-3. fetch and rebuild pipeline
-4. publish new page state
+`WEBKIT_LOAD_FINISHED` is terminal but not sufficient for success.
 
-## 4. Ordered Teardown Responsibilities
-Implementation anchor: `Page.teardown`.
+Success requires:
 
-Teardown performs:
-- engine stop/sever/drain/teardown hooks in fixed order
-- page arena deallocation
-- nulling all page-owned pointers/maps
-- reset of `has_loaded`, checksum, and current URL
+- finished
+- not failed
+- not cancelled
+- not timed out
 
-## 5. End-to-End Render Pipeline
-Implementation anchor: `buildRenderPipeline` in `src/page.zig`.
+Screenshot write is permitted only in this success state.
 
-Pipeline stages:
-1. parse HTML DOM (`tree_builder.parseDocument`)
-2. collect inline style sources (`<style>` text)
-3. parse CSS sources and build cascade rules
-4. compute style map per node
-5. compute block geometry and inline line boxes
-6. build display list (background + text)
-7. rasterize framebuffer and compute checksum
+## 4. Teardown order
 
-Published outputs:
-- `dom_root`
-- `style_for`
-- `box_root`
-- `render_checksum`
+Required ordered teardown:
 
-## 6. Link Navigation Integration
-Implementation anchors:
-- `Page.navigateLink` in `src/page.zig`
-- `Window.clickNavigate` in `src/platform/window.zig`
+1. cancel in-flight async operation
+2. stop timeout sources
+3. disconnect signal handlers
+4. destroy window/view resources
+5. unref owned WebKit context
+6. free run-owned strings/state
 
-`navigateLink` behavior:
-- absolute hrefs: parse and navigate directly
-- relative hrefs: resolve against current URL, then navigate
+Clean-quit checks in E2E track child PIDs while process is alive, then assert those same PIDs exit within a timeout.
 
-Window click routing delegates navigation to this shared lifecycle path; teardown is not duplicated in platform code.
+## 5. Signal and timeout policy
 
-## 7. Current 3d43b1d Status
-- arena-per-page lifecycle: implemented
-- ordered teardown + state reset: implemented
-- fetch -> parse -> cascade -> layout -> paint pipeline: implemented
-- link navigation through shared `Page.navigate` path: implemented and tested
+- SIGINT/SIGTERM must trigger graceful shutdown path (cancel + quit).
+- Timeouts must terminate stuck loads/snapshots with non-zero exit.
+
+## 6. Legacy note
+
+This lifecycle supersedes the archived custom-engine `Page.navigate` arena lifecycle for active runtime behavior.

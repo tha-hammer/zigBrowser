@@ -1,30 +1,46 @@
-# How to run zigBrowser on a URL
-
-This guide runs the browser entrypoint in `src/main.zig` against a URL.
+# How to run zigBrowser (WebKitGTK Slice 1)
 
 ## Prerequisites
 
-- Build completed (`zig build`).
+- Build completed (`zig build`)
+- A display server:
+  - local: `DISPLAY` (for example `:1`)
+  - CI/headless: `xvfb-run -a`
 
-## Steps
+## Version check
 
-1. Run the built executable directly with a URL:
-   ```bash
-   ./zig-out/bin/zigBrowser https://example.com
-   ```
-2. Or run through the build step:
-   ```bash
-   zig build run -- https://example.com
-   ```
-3. Check the version path handled by `main.zig`:
-   ```bash
-   zig build run -- --version
-   ```
-4. If you pass no URL and no `--version`, expect:
-   ```text
-   usage: zigBrowser [--version|URL]
-   ```
+```bash
+./zig-out/bin/zigBrowser --version
+```
 
-## Result
+## Open a page in a real window
 
-The browser fetches and processes the URL via `Page.navigate` and exits.
+```bash
+DISPLAY="${DISPLAY:-:1}" ./zig-out/bin/zigBrowser https://example.com
+```
+
+## Run against the live local fixture
+
+```bash
+DISPLAY="${DISPLAY:-:1}" \
+  ./zig-out/bin/zigBrowser "file://$(pwd)/tests/fixtures/live.html" --print-title
+```
+
+Expected protocol line on success:
+
+```text
+TITLE	WebKitGTK Live
+```
+
+## Screenshot mode
+
+```bash
+DISPLAY="${DISPLAY:-:1}" \
+  ./zig-out/bin/zigBrowser --screenshot /tmp/live.png "file://$(pwd)/tests/fixtures/live.html" --print-title
+```
+
+For CI/headless hosts:
+
+```bash
+xvfb-run -a ./zig-out/bin/zigBrowser --screenshot /tmp/live.png "file://$(pwd)/tests/fixtures/live.html" --print-title
+```

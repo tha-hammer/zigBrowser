@@ -1,28 +1,38 @@
-# How to run the test suites
-
-This guide runs the project's test step defined in `build.zig`.
+# How to test zigBrowser (WebKitGTK Slice 1)
 
 ## Prerequisites
 
-- Zig `0.16.0`.
-- Runtime dependencies used by fixture tests: `curl`, `openssl`, and `python3`.
+- Zig `0.16.0`
+- WebKitGTK/GTK3 dev deps (see `docs/how-to-build.md`)
+- `python3` + `python3-pil`
+- Display for runtime checks:
+  - `xvfb-run` for CI
+  - or local `DISPLAY` (for example `:1`)
 
-## Steps
+## Unit/integration suite
 
-1. Run all tests:
-   ```bash
-   zig build test
-   ```
-2. Run all tests with a full build summary:
-   ```bash
-   zig build test --summary all
-   ```
-3. Run tests continuously while editing (watch + incremental):
-   ```bash
-   zig build test --watch -fincremental --summary all
-   ```
-4. Stop watch mode with `Ctrl+C`.
+```bash
+zig build test --summary all
+```
 
-## Result
+## E2E protocol harness (§C8)
 
-You have executed both suites wired in `build.zig`: the root test suite and the harness test suite.
+Run all harness checks:
+
+```bash
+python3 tests/e2e/webkitgtk_slice1_e2e.py --mode all
+```
+
+Force xvfb path:
+
+```bash
+python3 tests/e2e/webkitgtk_slice1_e2e.py --mode all --prefer-xvfb
+```
+
+## Harness semantics
+
+- Oracle 1: stdout title line `TITLE\t<title>`
+- Oracle 2: screenshot PNG non-uniformity via `tests/snapshots/pillow_tools.py nonuniform`
+- Clean quit: records child PIDs while alive, then asserts those exact PIDs exit
+
+If required tools are missing (binary, Pillow, display/xvfb), the harness exits with code `77` and a loud skip reason on stderr.
