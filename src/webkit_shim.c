@@ -70,7 +70,9 @@ struct ZbWindow {
   WebKitUserContentManager *ucm;
   WebKitWebContext *context;
   char *current_uri;
+  char *seed_uri;
   int load_superseded;
+  int seed_pending;
 
   int finished;
   int failed;
@@ -80,12 +82,16 @@ struct ZbWindow {
   int load_error_code;
   char *load_error_message;
   int suppress_success_emit;
+  int pending_nav_emit;
+  char *pending_nav_uri;
 
   GCancellable *cancellable;
   guint timeout_source_id;
+  guint pending_nav_fallback_source_id;
 
   gulong sig_load_changed;
   gulong sig_load_failed;
+  gulong sig_title_notify;
   gulong sig_decide_policy;
   gulong sig_create;
   gulong sig_destroy;
@@ -101,6 +107,7 @@ struct ZbApp {
   int e2e_protocol;
   int print_title;
   int exit_code;
+  char *pending_subwindow_seed_uri;
 
   guint sigint_source_id;
   guint sigterm_source_id;
@@ -112,6 +119,9 @@ static gboolean on_ipc_message_received(WebKitUserContentManager *ucm,
                                         JSCValue *value,
                                         WebKitScriptMessageReply *reply,
                                         gpointer user_data);
+static void on_window_title_notify(WebKitWebView *view, GParamSpec *pspec,
+                                   gpointer user_data);
+static gboolean on_window_nav_fallback(gpointer user_data);
 static GtkWidget *on_window_create(WebKitWebView *parent_view,
                                    WebKitNavigationAction *navigation,
                                    gpointer user_data);
@@ -168,6 +178,46 @@ static void remove_source(guint *source_id) {
   }
 }
 
+static ZbWindow *app_find_window_by_view(ZbApp *app, WebKitWebView *view) {
+  if (app == NULL || view == NULL) {
+    return NULL;
+  }
+
+  for (int i = 0; i < app->n_windows; i++) {
+    if (app->windows[i] != NULL && app->windows[i]->view == view) {
+      return app->windows[i];
+    }
+  }
+  return NULL;
+}
+
+static void window_clear_pending_nav(ZbWindow *win) {
+  if (win == NULL) {
+    return;
+  }
+
+  win->pending_nav_emit = 0;
+  remove_source(&win->pending_nav_fallback_source_id);
+  g_free(win->pending_nav_uri);
+  win->pending_nav_uri = NULL;
+}
+
+static void window_emit_main_success(ZbWindow *win, const char *uri,
+                                     const char *title) {
+  if (win == NULL || win->app == NULL) {
+    return;
+  }
+
+  const char *safe_uri = uri != NULL ? uri : "";
+  const char *safe_title = title != NULL ? title : "";
+  if (win->app->print_title) {
+    printf("TITLE\t%s\n", safe_title);
+    fflush(stdout);
+  }
+  emit_protocol2(win->app, "NAV", safe_uri, safe_title);
+  window_clear_pending_nav(win);
+}
+
 static void window_set_load_error(ZbWindow *win, GError *error) {
   if (win == NULL) {
     return;
@@ -197,6 +247,7 @@ static void window_reset_load_state(ZbWindow *win) {
   win->timed_out = 0;
   win->cancelled = 0;
   window_set_load_error(win, NULL);
+  window_clear_pending_nav(win);
   remove_source(&win->timeout_source_id);
 
   if (win->cancellable != NULL) {
@@ -251,6 +302,7 @@ static void window_free(ZbWindow *win) {
   }
 
   remove_source(&win->timeout_source_id);
+  remove_source(&win->pending_nav_fallback_source_id);
 
   if (win->cancellable != NULL) {
     g_object_unref(win->cancellable);
@@ -268,6 +320,8 @@ static void window_free(ZbWindow *win) {
   }
 
   g_free(win->current_uri);
+  g_free(win->seed_uri);
+  g_free(win->pending_nav_uri);
   g_free(win->load_error_message);
   g_free(win);
 }
@@ -655,6 +709,14 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
     return NULL;
   }
 
+  if (app->pending_subwindow_seed_uri != NULL) {
+    g_free(child_win->seed_uri);
+    child_win->seed_uri = g_strdup(app->pending_subwindow_seed_uri);
+    child_win->seed_pending = 1;
+    g_free(app->pending_subwindow_seed_uri);
+    app->pending_subwindow_seed_uri = NULL;
+  }
+
   return GTK_WIDGET(child_win->view);
 }
 
@@ -666,6 +728,7 @@ static gboolean on_window_timeout(gpointer user_data) {
 
   win->timed_out = 1;
   win->failed = 1;
+  win->suppress_success_emit = 1;
   g_free(win->load_error_message);
   win->load_error_message = g_strdup("Timed out");
 
@@ -677,6 +740,36 @@ static gboolean on_window_timeout(gpointer user_data) {
   emit_protocol2(win->app, "LOAD_FAIL", webkit_web_view_get_uri(win->view),
                  "Timed out");
   return G_SOURCE_REMOVE;
+}
+
+static gboolean on_window_nav_fallback(gpointer user_data) {
+  ZbWindow *win = (ZbWindow *)user_data;
+  if (win == NULL) {
+    return G_SOURCE_REMOVE;
+  }
+  if (!win->pending_nav_emit) {
+    return G_SOURCE_REMOVE;
+  }
+
+  const char *title = webkit_web_view_get_title(win->view);
+  window_emit_main_success(win, win->pending_nav_uri,
+                           title != NULL ? title : "");
+  return G_SOURCE_REMOVE;
+}
+
+static void on_window_title_notify(WebKitWebView *view, GParamSpec *pspec,
+                                   gpointer user_data) {
+  (void)pspec;
+  ZbWindow *win = (ZbWindow *)user_data;
+  if (win == NULL || !win->pending_nav_emit) {
+    return;
+  }
+
+  const char *title = webkit_web_view_get_title(view);
+  if (title == NULL || title[0] == '\0') {
+    return;
+  }
+  window_emit_main_success(win, win->pending_nav_uri, title);
 }
 
 static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
@@ -694,6 +787,10 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     if (win->sig_load_failed != 0) {
       g_signal_handler_disconnect(win->view, win->sig_load_failed);
       win->sig_load_failed = 0;
+    }
+    if (win->sig_title_notify != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_title_notify);
+      win->sig_title_notify = 0;
     }
     if (win->sig_decide_policy != 0) {
       g_signal_handler_disconnect(win->view, win->sig_decide_policy);
@@ -777,15 +874,19 @@ static void on_window_load_changed(WebKitWebView *view,
       g_free(win->current_uri);
       win->current_uri = g_strdup(uri != NULL ? uri : "");
 
-      if (win->app != NULL && win->app->print_title && !win->is_child) {
-        printf("TITLE\t%s\n", title != NULL ? title : "");
-        fflush(stdout);
-      }
-
       if (win->is_child) {
         emit_protocol1(win->app, "SUBWIN", uri);
       } else {
-        emit_protocol2(win->app, "NAV", uri, title != NULL ? title : "");
+        if (title != NULL && title[0] != '\0') {
+          window_emit_main_success(win, uri, title);
+        } else {
+          win->pending_nav_emit = 1;
+          g_free(win->pending_nav_uri);
+          win->pending_nav_uri = g_strdup(uri != NULL ? uri : "");
+          remove_source(&win->pending_nav_fallback_source_id);
+          win->pending_nav_fallback_source_id =
+              g_timeout_add(75, on_window_nav_fallback, win);
+        }
       }
       break;
     }
@@ -798,11 +899,11 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
                                         WebKitPolicyDecision *decision,
                                         WebKitPolicyDecisionType type,
                                         gpointer user_data) {
-  (void)view;
   ZbApp *app = (ZbApp *)user_data;
   if (app == NULL) {
     return FALSE;
   }
+  ZbWindow *win = app_find_window_by_view(app, view);
 
   int dtype = map_decision_type(type);
   if (dtype < 0) {
@@ -816,15 +917,18 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
     return TRUE;
   }
 
+  if (win != NULL && win->seed_pending && win->is_child &&
+      dtype == ZB_DTYPE_NAVIGATION) {
+    win->seed_pending = 0;
+    webkit_policy_decision_use(decision);
+    return TRUE;
+  }
+
   int action = call_policy_decide(app->app_base, candidate, dtype);
   if (action == ZB_DECISION_USE) {
-    if (dtype == ZB_DTYPE_NAVIGATION || dtype == ZB_DTYPE_NEW_WINDOW) {
-      for (int i = 0; i < app->n_windows; i++) {
-        if (app->windows[i] != NULL && app->windows[i]->view == view) {
-          app->windows[i]->suppress_success_emit = 0;
-          break;
-        }
-      }
+    if (win != NULL &&
+        (dtype == ZB_DTYPE_NAVIGATION || dtype == ZB_DTYPE_NEW_WINDOW)) {
+      win->suppress_success_emit = 0;
     }
     webkit_policy_decision_use(decision);
     return TRUE;
@@ -832,6 +936,8 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
 
   if (action == ZB_DECISION_OPEN_SUBWINDOW) {
     if (dtype == ZB_DTYPE_NEW_WINDOW) {
+      g_free(app->pending_subwindow_seed_uri);
+      app->pending_subwindow_seed_uri = g_strdup(candidate);
       webkit_policy_decision_use(decision);
       return TRUE;
     }
@@ -888,6 +994,9 @@ ZbWindow *zb_window_new(ZbApp *app, WebKitWebView *view) {
   win->sig_load_failed =
       g_signal_connect_data(view, "load-failed", G_CALLBACK(on_window_load_failed),
                             win, NULL, 0);
+  win->sig_title_notify =
+      g_signal_connect_data(view, "notify::title",
+                            G_CALLBACK(on_window_title_notify), win, NULL, 0);
   win->sig_decide_policy = g_signal_connect_data(
       view, "decide-policy", G_CALLBACK(on_window_decide_policy), app, NULL, 0);
   win->sig_create =
@@ -912,6 +1021,7 @@ void zb_reload(ZbWindow *win, int bypass_cache) {
 
   win->load_superseded = 1;
   win->suppress_success_emit = 0;
+  window_clear_pending_nav(win);
 
   if (win->cancellable != NULL) {
     g_cancellable_cancel(win->cancellable);
@@ -1081,6 +1191,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   }
 
   g_free(app.app_base);
+  g_free(app.pending_subwindow_seed_uri);
   app.app_base = NULL;
   return app.exit_code;
 }
