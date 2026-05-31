@@ -4,7 +4,6 @@
 #include <webkit2/webkit2.h>
 #include <glib-unix.h>
 #include <glib/gstdio.h>
-#include <sys/utsname.h>
 #include <unistd.h>
 
 #include <errno.h>
@@ -12,13 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Track-B exports may not be linked yet while spine work lands first. */
-extern int zb_policy_decide(const char *base, const char *candidate,
-                            int dtype) __attribute__((weak));
-extern int zb_ipc_dispatch(const char *cmd, const char *args_json,
-                           const char **out_result,
-                           const char **out_err) __attribute__((weak));
 
 enum {
   ZB_DECISION_USE = 0,
@@ -326,39 +318,6 @@ static void window_free(ZbWindow *win) {
   g_free(win);
 }
 
-static int uri_has_prefix(const char *base, const char *candidate) {
-  if (base == NULL || candidate == NULL) {
-    return 0;
-  }
-  return g_str_has_prefix(candidate, base);
-}
-
-static int fallback_policy_decide(const char *base, const char *candidate,
-                                  int dtype) {
-  if (dtype == ZB_DTYPE_NEW_WINDOW) {
-    return ZB_DECISION_OPEN_SUBWINDOW;
-  }
-  if (dtype == ZB_DTYPE_RESPONSE) {
-    return ZB_DECISION_USE;
-  }
-  if (dtype != ZB_DTYPE_NAVIGATION) {
-    return ZB_DECISION_IGNORE;
-  }
-
-  if (uri_has_prefix(base, candidate)) {
-    return ZB_DECISION_USE;
-  }
-
-  return ZB_DECISION_IGNORE;
-}
-
-static int call_policy_decide(const char *base, const char *candidate, int dtype) {
-  if (zb_policy_decide != NULL) {
-    return zb_policy_decide(base, candidate, dtype);
-  }
-  return fallback_policy_decide(base, candidate, dtype);
-}
-
 static gboolean parse_json_string_field(const char *json, const char *field,
                                         char **out_value) {
   char key[64];
@@ -484,90 +443,6 @@ static gboolean parse_json_value_field(const char *json, const char *field,
   return TRUE;
 }
 
-static int parse_add_arg(const char *args_json, const char *name, long long *out_value) {
-  char key[32];
-  g_snprintf(key, sizeof(key), "\"%s\"", name);
-
-  const char *p = strstr(args_json, key);
-  if (p == NULL) {
-    return 0;
-  }
-  p += strlen(key);
-  while (*p != '\0' && g_ascii_isspace(*p)) {
-    p++;
-  }
-  if (*p != ':') {
-    return 0;
-  }
-  p++;
-  while (*p != '\0' && g_ascii_isspace(*p)) {
-    p++;
-  }
-
-  char *end = NULL;
-  errno = 0;
-  long long v = g_ascii_strtoll(p, &end, 10);
-  if (end == p || errno != 0) {
-    return 0;
-  }
-
-  *out_value = v;
-  return 1;
-}
-
-static int fallback_ipc_dispatch(const char *cmd, const char *args_json,
-                                 const char **out_result,
-                                 const char **out_err) {
-  static char add_buf[64];
-  static char os_buf[256];
-
-  *out_result = NULL;
-  *out_err = NULL;
-
-  if (g_strcmp0(cmd, "ping") == 0) {
-    *out_result = "\"pong\"";
-    return 0;
-  }
-
-  if (g_strcmp0(cmd, "add") == 0) {
-    long long a = 0;
-    long long b = 0;
-    if (!parse_add_arg(args_json, "a", &a) || !parse_add_arg(args_json, "b", &b)) {
-      *out_err = "BadArgs";
-      return 1;
-    }
-
-    g_snprintf(add_buf, sizeof(add_buf), "%lld", a + b);
-    *out_result = add_buf;
-    return 0;
-  }
-
-  if (g_strcmp0(cmd, "os.info") == 0) {
-    struct utsname info;
-    if (uname(&info) != 0) {
-      *out_err = "BadArgs";
-      return 1;
-    }
-
-    g_snprintf(os_buf, sizeof(os_buf),
-               "{\"sysname\":\"%s\",\"release\":\"%s\",\"machine\":\"%s\"}",
-               info.sysname, info.release, info.machine);
-    *out_result = os_buf;
-    return 0;
-  }
-
-  *out_err = "UnknownCommand";
-  return 1;
-}
-
-static int call_ipc_dispatch(const char *cmd, const char *args_json,
-                             const char **out_result, const char **out_err) {
-  if (zb_ipc_dispatch != NULL) {
-    return zb_ipc_dispatch(cmd, args_json, out_result, out_err);
-  }
-  return fallback_ipc_dispatch(cmd, args_json, out_result, out_err);
-}
-
 static const char *policy_uri_from_decision(WebKitPolicyDecision *decision,
                                             WebKitPolicyDecisionType type) {
   if (type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION ||
@@ -669,7 +544,7 @@ static gboolean on_ipc_message_received(WebKitUserContentManager *ucm,
 
   const char *result_json = NULL;
   const char *err_text = NULL;
-  int rc = call_ipc_dispatch(cmd, args_json, &result_json, &err_text);
+  int rc = zb_ipc_dispatch(cmd, args_json, &result_json, &err_text);
   if (rc == 0 && result_json != NULL) {
     JSCContext *ctx = jsc_value_get_context(value);
     JSCValue *reply_value = jsc_value_new_from_json(ctx, result_json);
@@ -924,7 +799,7 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
     return TRUE;
   }
 
-  int action = call_policy_decide(app->app_base, candidate, dtype);
+  int action = zb_policy_decide(app->app_base, candidate, dtype);
   if (action == ZB_DECISION_USE) {
     if (win != NULL &&
         (dtype == ZB_DTYPE_NAVIGATION || dtype == ZB_DTYPE_NEW_WINDOW)) {

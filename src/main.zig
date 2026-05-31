@@ -5,6 +5,11 @@ const errors = @import("errors.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
 
+comptime {
+    _ = @import("ipc.zig");
+    _ = @import("nav_policy.zig");
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);

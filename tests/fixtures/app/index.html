@@ -51,6 +51,7 @@
     <div class="row">
       <a id="link-allow" href="page-b.html">Go to page-b (allowed)</a>
       <a id="link-foreign" href="https://example.com/">Plain foreign link (block)</a>
+      <a id="link-traversal" href="../outside.html">Traversal link (block)</a>
       <a id="link-foreign-blank" href="https://example.org/" target="_blank" rel="noopener">
         Foreign _blank link (sub-window)
       </a>
@@ -101,6 +102,9 @@
               break;
             case "block":
               document.getElementById("link-foreign").click();
+              break;
+            case "traversal":
+              document.getElementById("link-traversal").click();
               break;
             case "subwindow":
               document.getElementById("link-foreign-blank").click();

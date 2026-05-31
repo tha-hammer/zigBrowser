@@ -46,8 +46,44 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     run_unit_tests.skip_foreign_checks = true;
 
+    const ipc_module = b.createModule(.{
+        .root_source_file = b.path("src/ipc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const ipc_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/ipc_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ipc_tests_module.addImport("ipc", ipc_module);
+    const ipc_tests = b.addTest(.{ .root_module = ipc_tests_module });
+    const run_ipc_tests = b.addRunArtifact(ipc_tests);
+    run_ipc_tests.skip_foreign_checks = true;
+
+    const nav_policy_module = b.createModule(.{
+        .root_source_file = b.path("src/nav_policy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const nav_policy_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/nav_policy_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    nav_policy_tests_module.addImport("nav_policy", nav_policy_module);
+    const nav_policy_tests = b.addTest(.{ .root_module = nav_policy_tests_module });
+    const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
+    run_nav_policy_tests.skip_foreign_checks = true;
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_ipc_tests.step);
+    test_step.dependOn(&run_nav_policy_tests.step);
 }
 
 fn configureWebKit(module: *std.Build.Module, b: *std.Build) void {
