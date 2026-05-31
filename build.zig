@@ -24,6 +24,7 @@ const harness_support_specs = [_]TestSupportSpec{
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const enable_sdl = b.option(bool, "enable_sdl", "Enable SDL2 window backend") orelse false;
 
     const browser_module = createBrowserModule(b, target, optimize);
 
@@ -42,6 +43,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addIncludePath(b.path("src"));
     linkCurl(exe.root_module);
+    maybeLinkSdl(exe.root_module, target, enable_sdl);
+    maybeDefineSdlMacro(exe.root_module, enable_sdl);
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the browser executable");
@@ -54,7 +57,7 @@ pub fn build(b: *std.Build) void {
     for (test_targets) |query| {
         const test_target = b.resolveTargetQuery(query);
 
-        const root_suite = buildRootTestSuite(b, test_target, optimize);
+        const root_suite = buildRootTestSuite(b, test_target, optimize, enable_sdl);
         const run_root = b.addRunArtifact(root_suite);
         run_root.skip_foreign_checks = true;
         test_step.dependOn(&run_root.step);
@@ -120,6 +123,7 @@ fn buildRootTestSuite(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    enable_sdl: bool,
 ) *std.Build.Step.Compile {
     const curl_c_module = createCurlModule(b, target, optimize);
     const browser_module = createBrowserModule(b, target, optimize);
@@ -149,6 +153,8 @@ fn buildRootTestSuite(
     });
     test_root.addIncludePath(b.path("src"));
     linkCurl(test_root);
+    maybeLinkSdl(test_root, target, enable_sdl);
+    maybeDefineSdlMacro(test_root, enable_sdl);
 
     return b.addTest(.{ .root_module = test_root });
 }
@@ -325,4 +331,18 @@ fn absolutePathExists(path: []const u8) bool {
     const io = std.Io.Threaded.global_single_threaded.io();
     std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     return true;
+}
+
+fn maybeDefineSdlMacro(module: anytype, enable_sdl: bool) void {
+    if (!enable_sdl) return;
+    module.addCMacro("ZB_ENABLE_SDL", "1");
+}
+
+fn maybeLinkSdl(module: anytype, target: std.Build.ResolvedTarget, enable_sdl: bool) void {
+    if (!enable_sdl) return;
+
+    switch (target.result.os.tag) {
+        .macos => module.linkFramework("SDL2", .{}),
+        else => module.linkSystemLibrary("SDL2", .{ .use_pkg_config = .yes }),
+    }
 }
