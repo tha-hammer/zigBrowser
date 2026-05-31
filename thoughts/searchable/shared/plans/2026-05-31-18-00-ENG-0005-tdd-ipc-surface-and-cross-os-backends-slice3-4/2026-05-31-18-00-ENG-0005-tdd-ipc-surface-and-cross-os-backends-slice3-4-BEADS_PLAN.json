@@ -1,0 +1,584 @@
+{
+  "epic": {
+    "title": "[Plan Review Epic] 2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4 — 11 critical, 27 warnings",
+    "description": "## Plan Review Epic — 2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4\n\n**Plan:** /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\n**Review report:** <substituted by CLI post-write>\n**Counts:** 11 critical, 27 warnings across 5 phases\n**Generated:** 2026-05-31T22:19:13.818Z\n\n## How to fix all issues\n\n```bash\nbd ready --label plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4\nbd show <issue-id>\nbd update <issue-id> --claim\n# ...edit the plan to address the recommendation...\nbd close <issue-id>\n# When all child issues close, this epic auto-unblocks.\n```\n\n## Issue list\n(substituted by CLI post-mint)",
+    "labels": [
+      "plan-review",
+      "plan-review-epic",
+      "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4"
+    ]
+  },
+  "issues": [
+    {
+      "phase": "contracts",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §contracts] zb_window_new seam signature contains a GTK-specific type. …",
+      "description": "## Finding (severity: critical)\nzb_window_new seam signature contains a GTK-specific type. webkit_shim.h:40 declares ZbWindow *zb_window_new(ZbApp *app, WebKitWebView *view). The second parameter is a concrete GTK-WebKit type. New backends cannot implement this exact signature — WebView2's view handle is ICoreWebView2 * and WKWebView's is an Objective-C class pointer. The plan simultaneously says 'new backends must match it exactly' and 'the zb_* seam is the stable contract'; those two claims are mutually exclusive given the current header.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 40\n```\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n```\n\n## Impact\nwebview2_shim.c and wkwebview_shim.m cannot compile against webkit_shim.h as written without including GTK-WebKit headers. Either the seam must change (requiring a coordinated update to the GTK shim and every backend) or each backend gets its own header — which invalidates the 'single stable seam' thesis and leaves no contract to test against in M4/M5.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:556894f7\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:556894f7"
+      ],
+      "fingerprint": "556894f7"
+    },
+    {
+      "phase": "contracts",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §contracts] RuntimeMissing (M8) and WebViewInitFailed (M9) are named as…",
+      "description": "## Finding (severity: critical)\nRuntimeMissing (M8) and WebViewInitFailed (M9) are named as observable error exits but are absent from errors.zig:22-31. The else => 1 fallback silently coerces both to exit code 1 — the same code as Usage. Callers and CI scripts cannot distinguish 'wrong invocation' from 'WebView2 runtime not installed' or 'WKWebView init failure'. Neither errors.zig nor any other file is named in M8/M9's 'Files touched' list for this addition, and no exit-code values are assigned.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Key Discoveries  ~line 61\n```\n  plus the engine→host exports `zb_policy_decide`/`zb_ipc_dispatch`.\n- `build.zig:53-63` — `configureWebKit()` links GTK/WebKit unconditionally; **the place\n  backend selection must be introduced**.\n- `src/main.zig:32-43` — `.open` path calls `c.zb_app_run(...)`; backend-agnostic at this layer.\n- `src/errors.zig:22-31` — exit-code table (Usage 1 … Cancelled 130) reused across backends.\n- `tests/e2e/*.py` + `tests/snapshots/pillow_tools.py` — the real-binary E2E harness\n  (`--e2e-protocol` tab-separated lines) and the PNG `nonuniform` screenshot oracle.\n- Commits `994f7a2`/`3c8dbe8` — remediation that made the seam real (nm-verified).\n```\n\n## Impact\nThe E2E exit-code oracle for M8/M9 has no correct expected value to assert. A CI runner missing the WebView2 runtime reports exit 1 indistinguishably from a bad command-line; automated triage is impossible. The success criterion 'pillow nonuniform + known pong' cannot be reached at all if the runtime is absent, so the only observable signal is the exit code — which is misdefined.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:5f086ec5\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:5f086ec5"
+      ],
+      "fingerprint": "5f086ec5"
+    },
+    {
+      "phase": "contracts",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §contracts] ipc.zig uses std.posix.uname() in the os.info branch (ipc.z…",
+      "description": "## Finding (severity: critical)\nipc.zig uses std.posix.uname() in the os.info branch (ipc.zig:28). The plan claims the Zig core is 'reused verbatim' on Windows (M8 Green: 'calling the unchanged Zig zb_ipc_dispatch'). std.posix.uname() is POSIX-only; it will not compile on a Windows target. The verbatim-reuse thesis is internally contradicted by the cited source for any zig build -Dtarget=x86_64-windows invocation.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 41\n```\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n- Navigation policy is the Zig `decide()` in `src/nav_policy.zig` (`file://`-only\n```\n\n## Impact\nzig build -Dtarget=x86_64-windows fails to compile ipc.zig. Either os.info must be conditioned on target OS (not verbatim reuse), or it must be excluded from the Windows command surface and its absence documented — neither path is specified, so M8 cannot reach a green build step.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:69abea30\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:69abea30"
+      ],
+      "fingerprint": "69abea30"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] [VERIFY] build.zig:53-63 cited code shows ipc_tests module …",
+      "description": "## Finding (severity: warning)\n[VERIFY] build.zig:53-63 cited code shows ipc_tests module setup, not configureWebKit(). The plan's claim that lines 53-63 are 'the place backend selection must be introduced' may point at the wrong location; the M4 Green step relies on this reference to locate the unconditional GTK linkage.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 36\n```\nproves the real `nav_policy.zig` is live (the deleted C prefix-check would have\nallowed it). The \"OS-agnostic Zig logic reused verbatim\" thesis is therefore now\n**true for the one backend that exists** — which is the precondition for adding more.\n\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:19ad5132\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:19ad5132"
+      ],
+      "fingerprint": "19ad5132"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] zb_run_open (webkit_shim.h:34) is part of the seam contract…",
+      "description": "## Finding (severity: warning)\nzb_run_open (webkit_shim.h:34) is part of the seam contract but absent from M8/M9 implementation scope. The Green steps for both milestones list zb_app_run, zb_window_new, zb_reload, zb_version_line, and zb_run_screenshot — but not zb_run_open. If new backends must satisfy the full seam, omitting it leaves the seam partially unimplemented. If it is GTK-only, the plan should say so explicitly.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 40\n```\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:df206056\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:df206056"
+      ],
+      "fingerprint": "df206056"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] UnsupportedTarget (M4) and NoBackendLinked (M5) error forms…",
+      "description": "## Finding (severity: warning)\nUnsupportedTarget (M4) and NoBackendLinked (M5) error forms are unspecified. The plan names the literal strings but does not say whether they are produced by @compileError, a build.zig panic, or stderr output from a build step. The build-test script's exit-code + string oracle depends on knowing the emission mechanism.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 245\n```\n**Given**: `build.zig` with target→backend selection.\n**When**: `zig build -Dtarget=x86_64-linux` (and, once implemented, `-Dtarget=x86_64-windows` / `aarch64-macos`).\n**Then**: exactly one backend is compiled+linked; the binary's `--version` reports the matching engine (e.g. `WebKitGTK x.y.z, GTK a.b.c` on Linux).\n\n**Edge Cases**: unknown target triple → `UnsupportedTarget` build error; two backends accidentally linked → build error (exactly-one invariant).\n\n**Files touched**: `build.zig`, `src/webkit.zig` (version line per backend), a build-test script under `tests/`.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:a38706c2\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:a38706c2"
+      ],
+      "fingerprint": "a38706c2"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] M2 unit-test red phase cannot be genuinely red. The cited i…",
+      "description": "## Finding (severity: warning)\nM2 unit-test red phase cannot be genuinely red. The cited ipc.zig:37 already returns error.UnknownCommand for all unrecognised commands; the test 'try std.testing.expectError(error.UnknownCommand, ...)' passes immediately on the existing code. Only the E2E IPCERR assertion is a real discriminator for M2.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 134\n```\n\n**Property**: for any UTF-8 string `s` within the buffer bound, `echo({msg:s}) == s`\n(round-trip identity) — add a property test over a generated string domain alongside the example.\n\n**Files touched**: `src/ipc.zig`, `tests/ipc_test.zig`, `tests/e2e/ipc_roundtrip_test.py`,\n`tests/fixtures/app/index.html` (echo render hook). Healthy blast radius (one impl + tests).\n\n### TDD Cycle\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:f7c0536f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:f7c0536f"
+      ],
+      "fingerprint": "f7c0536f"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] M8/M9 foreign error ingestion points are unnamed. HRESULT c…",
+      "description": "## Finding (severity: warning)\nM8/M9 foreign error ingestion points are unnamed. HRESULT codes from the WebView2 COM layer and NSError domains from WKWebView will be raw OS-shaped errors. The plan does not identify where in each shim these are mapped to ZB_EXIT_* codes before being returned from zb_app_run / zb_run_screenshot; raw HRESULT / NSError shapes must not propagate past the shim boundary.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 303\n```\n\n**Edge Cases**: each backend mirrors gtk's 15s timeout + `GCancellable` (WebView2\nnav-timeout/cancel; WKWebView `WKNavigationDelegate` + `stopLoading`); reload after failure recovers.\n\n**Files touched**: `src/webkit_shim.c` (GTK, exists), future `src/webview2_shim.c` /\n`src/wkwebview_shim.m`, `tests/e2e/reload_test.py` (+ per-OS variants).\n\n### TDD Cycle\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:a7b2e9a3\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:a7b2e9a3"
+      ],
+      "fingerprint": "a7b2e9a3"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §interfaces] `zb_window_new(ZbApp *app, WebKitWebView *view)` embeds a G…",
+      "description": "## Finding (severity: critical)\n`zb_window_new(ZbApp *app, WebKitWebView *view)` embeds a GTK-specific type (`WebKitWebView`) in what the plan calls 'the stable contract; new backends must match it exactly.' `WebKitWebView` is a GObject type from `webkit2gtk-4.1`; it does not exist on Windows (WebView2) or macOS (WKWebView). M8 and M9 cannot implement this signature as-stated. Either the seam must be changed before M8/M9 (e.g. `void *native_view`, a per-backend opaque alias, or the parameter removed in favor of internal construction), or each backend gets its own header — but neither path is specified in the plan. Implementing M8/M9 against the current cited seam will produce a link/type error on every non-GTK target.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 40\n```\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n```\n\n## Impact\nM8 (`webview2_shim.c`) and M9 (`wkwebview_shim.m`) cannot satisfy the cited seam signature without a prior seam-breaking change that is unplanned; any implementation that works around this silently (e.g. typedef `WebKitWebView` to `void`) diverges from the 'match exactly' contract and makes the cross-OS reuse claim unverifiable.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:022f5b87\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:022f5b87"
+      ],
+      "fingerprint": "022f5b87"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §interfaces] `RuntimeMissing` (M8) and `WebViewInitFailed` (M9) exit pat…",
+      "description": "## Finding (severity: critical)\n`RuntimeMissing` (M8) and `WebViewInitFailed` (M9) exit paths have no exit-code values assigned and are absent from `errors.zig:22-31`. The cited `errors.exitCode()` switch has no branch for either error tag; the `else => 1` catch-all would silently map both to `Usage` (exit 1). M8's test oracle asserts `RuntimeMissing exit` and M9's asserts `WebViewInitFailed exit` with no stated code, so the E2E harness has nothing to assert against and the `errors.zig` interface is incomplete for the new backends.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 122\n```\n---\n\n## Behavior M1: echo command roundtrip\n\n### Test Specification\n**Given**: a real WebKitGTK window loaded with the app fixture, `src/ipc.zig` linked\n(`nm` shows `zb_ipc_dispatch` defined), with a new `echo` branch in `dispatch()`.\n**When**: JS calls `window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd:\"echo\",args:{msg:\"hi-42\"}}))`.\n```\n\n## Impact\nWithout explicit exit-code assignments in `errors.zig`, both failure modes alias to exit 1 (Usage), making them indistinguishable from a bad CLI invocation; E2E oracles cannot be written and the plan's own 'independent oracle' discipline is violated for these two behaviors.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:8e357f69\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:8e357f69"
+      ],
+      "fingerprint": "8e357f69"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] build.zig:53-63 citation contradicts cited ground truth: pl…",
+      "description": "## Finding (severity: warning)\nbuild.zig:53-63 citation contradicts cited ground truth: plan claims this range contains `configureWebKit()` (the unconditional GTK linker call and the 'place backend selection must be introduced'), but the cited ground truth at those exact lines shows the IPC test module setup (`ipc_tests_module`, `b.addTest`, `run_ipc_tests`). The actual location of backend selection in build.zig is therefore unverified from the cited code.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 47\n```\n  the Python E2E harness against the real binary.\n- Navigation policy is the Zig `decide()` in `src/nav_policy.zig` (`file://`-only\n  canonical-path containment with POSIX `./..` normalization), now live.\n- The build links `webkit2gtk-4.1`/`gtk+-3.0`/`gio-unix-2.0` **unconditionally**\n  in `build.zig:53-63` — there is no target/OS branch and no backend selection.\n\n### Key Discoveries\n- `src/ipc.zig:14-38` — `dispatch()` command if-chain; extension point for new commands.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:c41ea588\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:c41ea588"
+      ],
+      "fingerprint": "c41ea588"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] `parseEchoArg` (M1 Green) — return type and full signature …",
+      "description": "## Finding (severity: warning)\n`parseEchoArg` (M1 Green) — return type and full signature not stated anywhere in the plan. The existing pattern is `parseAddArgs` returning a struct `{a: i64, b: i64}`. It is unclear whether `parseEchoArg` returns `[]const u8` (a slice into the arena), a parsed struct, or something else; callers of `dispatch()` cannot reason about ownership or error propagation without this.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 41\n```\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n- Navigation policy is the Zig `decide()` in `src/nav_policy.zig` (`file://`-only\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:bdb804bc\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:bdb804bc"
+      ],
+      "fingerprint": "bdb804bc"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] `configure<Backend>()` build-step function signatures are n…",
+      "description": "## Finding (severity: warning)\n`configure<Backend>()` build-step function signatures are not specified. M4 introduces `configureWebKit`, `configureWebView2`, and an implied `configureWKWebView` as replacements for the current unconditional call, but no parameter list (`*std.Build`, `*std.Build.Step.Compile`, target triple?) or return type is stated. M5 and M4's test oracle depend on these being callable in a defined way.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §🔵 Refactor  ~line 159\n```\n    return std.fmt.allocPrint(allocator, \"{f}\", .{std.json.fmt(msg, .{})}) catch return error.BadArgs;\n}\n```\n\n#### 🔵 Refactor\nExtract the single-string-arg parse shared with future commands; keep `dispatch()`\na flat readable if-chain (matches `ping`/`add` style at `ipc.zig:14-38`). No new branches beyond the command.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:8ad8ecb2\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:8ad8ecb2"
+      ],
+      "fingerprint": "8ad8ecb2"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] `NoBackendLinked` (M5) and `UnsupportedTarget` (M4) build-e…",
+      "description": "## Finding (severity: warning)\n`NoBackendLinked` (M5) and `UnsupportedTarget` (M4) build-error emission interface is unspecified: is it a `@compileError(\"NoBackendLinked\")` inside a Zig source file, a `std.Build.Step.fail(\"...\")` call, or stderr text from a shell wrapper? The build-test oracle asserts `literal NoBackendLinked text` on stderr but the mechanism that produces that text is not defined.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 122\n```\n---\n\n## Behavior M1: echo command roundtrip\n\n### Test Specification\n**Given**: a real WebKitGTK window loaded with the app fixture, `src/ipc.zig` linked\n(`nm` shows `zb_ipc_dispatch` defined), with a new `echo` branch in `dispatch()`.\n**When**: JS calls `window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd:\"echo\",args:{msg:\"hi-42\"}}))`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:b6c0c2b1\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:b6c0c2b1"
+      ],
+      "fingerprint": "b6c0c2b1"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] [VERIFY] `ZbApp *` and `ZbWindow *` portability: the cited …",
+      "description": "## Finding (severity: warning)\n[VERIFY] `ZbApp *` and `ZbWindow *` portability: the cited seam (`webkit_shim.h:34-45`) forward-declares both types but their struct definitions are not shown in the cited range. If they are typedef'd to GTK types (e.g. `GtkApplication`, `GtkWindow`) in the unexposed part of the header, they are not portable to WebView2/WKWebView backends. Only `WebKitWebView *` is confirmed GTK-specific by the cited code; the opaqueness of `ZbApp`/`ZbWindow` needs verification before M8/M9 implementation.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 40\n```\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:e8804808\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:e8804808"
+      ],
+      "fingerprint": "e8804808"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] `zb_run_open` omitted from M8/M9 required seam enumeration.…",
+      "description": "## Finding (severity: warning)\n`zb_run_open` omitted from M8/M9 required seam enumeration. The plan lists `zb_app_run`, `zb_window_new`, `zb_reload`, `zb_version_line`, `zb_run_screenshot` as the functions new backends must implement, but `zb_run_open` (cited webkit_shim.h:34) is absent. If `zb_run_open` is not needed for the new backends it should be stated; if it is, the interface checklist is incomplete.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 40\n```\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:95b208bf\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:95b208bf"
+      ],
+      "fingerprint": "95b208bf"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] The behavioral promise 'ipc_core reused verbatim across all…",
+      "description": "## Finding (severity: critical)\nThe behavioral promise 'ipc_core reused verbatim across all backends' is directly broken by the existing os.info command. Cited ipc.zig:26-35 shows os.info calls std.posix.uname(), which is POSIX-only and will not compile for the x86_64-windows target. The plan makes no provision for this: no comptime platform guard, no platform branch, no exclusion of os.info from the Windows command surface, and no acknowledgment of the conflict anywhere in M8 or in the 'ipc_core verbatim' thesis.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Desired End State  ~line 66\n```\n- `tests/e2e/*.py` + `tests/snapshots/pillow_tools.py` — the real-binary E2E harness\n  (`--e2e-protocol` tab-separated lines) and the PNG `nonuniform` screenshot oracle.\n- Commits `994f7a2`/`3c8dbe8` — remediation that made the seam real (nm-verified).\n\n## Desired End State\n\nA single Zig app-shell model with **three real backends** selectable at build time,\nall reusing the same `ipc_core`/`nav_core`. The IPC command surface is extended with\n```\n\n## Impact\nThe Windows backend (M8) cannot compile ipc_core verbatim as promised. Either the verbatim-reuse guarantee is false and must be qualified, or os.info requires a platform branch the plan never specifies. Without resolution, M8 has no valid implementation path and the cross-OS thesis that underpins the entire plan is unsupported.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:bcb7a11d\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:bcb7a11d"
+      ],
+      "fingerprint": "bcb7a11d"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] No per-error-category retryability declared for any error t…",
+      "description": "## Finding (severity: warning)\nNo per-error-category retryability declared for any error the plan emits. BadArgs, UnknownCommand, Timeout, Cancelled, LoadFailed, RuntimeMissing, and WebViewInitFailed are all left without a retryable: yes/no statement. The JS promise-rejection handler and CI harness have no documented guidance on whether a call should be retried.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Observable Behaviors  ~line 76\n```\nWKWebView window opens, renders a real page, and answers a real `zbHost` roundtrip.\n\n### Observable Behaviors\n- New IPC command (`echo`) returns its exact payload as a typed JS value rendered in a real window.\n- Unknown/malformed commands reject the JS promise with typed `UnknownCommand`/`BadArgs`.\n- A `..`-traversal navigation is BLOCKED identically on every backend via the shared `nav_core`.\n- `zig build -Dtarget=…` links exactly one backend; an unmapped target hard-fails the build.\n- A hanging load recovers (error page + `LOAD_FAIL`, window stays alive) on each backend.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:f4f80220\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:f4f80220"
+      ],
+      "fingerprint": "f4f80220"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] RuntimeMissing (M8) and WebViewInitFailed (M9) are new erro…",
+      "description": "## Finding (severity: warning)\nRuntimeMissing (M8) and WebViewInitFailed (M9) are new error categories with no entry in the errors.zig exit-code table. The cited errors.zig:22-31 has no mapping for them; the else=>1 fallback would silently misreport both as Usage errors. The plan does not declare what exit codes these produce or how the E2E oracle should assert them.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Key Discoveries  ~line 61\n```\n  plus the engine→host exports `zb_policy_decide`/`zb_ipc_dispatch`.\n- `build.zig:53-63` — `configureWebKit()` links GTK/WebKit unconditionally; **the place\n  backend selection must be introduced**.\n- `src/main.zig:32-43` — `.open` path calls `c.zb_app_run(...)`; backend-agnostic at this layer.\n- `src/errors.zig:22-31` — exit-code table (Usage 1 … Cancelled 130) reused across backends.\n- `tests/e2e/*.py` + `tests/snapshots/pillow_tools.py` — the real-binary E2E harness\n  (`--e2e-protocol` tab-separated lines) and the PNG `nonuniform` screenshot oracle.\n- Commits `994f7a2`/`3c8dbe8` — remediation that made the seam real (nm-verified).\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:f53a4264\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:f53a4264"
+      ],
+      "fingerprint": "f53a4264"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] [VERIFY] build.zig:53-63 is cited in the plan as the locati…",
+      "description": "## Finding (severity: warning)\n[VERIFY] build.zig:53-63 is cited in the plan as the location of the unconditional configureWebKit() call ('the place backend selection must be introduced'). The cited ground truth for build.zig:53-63 shows IPC test module setup (ipc_tests_module / run_ipc_tests), not configureWebKit(). M4/M5's implementation prescription to add backend selection 'instead of the unconditional configureWebKit at build.zig:53-63' targets a wrong location; developers following the plan will not find configureWebKit there.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 36\n```\nproves the real `nav_policy.zig` is live (the deleted C prefix-check would have\nallowed it). The \"OS-agnostic Zig logic reused verbatim\" thesis is therefore now\n**true for the one backend that exists** — which is the precondition for adding more.\n\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:2464ef1a\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:2464ef1a"
+      ],
+      "fingerprint": "2464ef1a"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] M7 promises the process exits 130 'within a bounded time' a…",
+      "description": "## Finding (severity: warning)\nM7 promises the process exits 130 'within a bounded time' after SIGINT during a load, but the bound is never quantified. The E2E test has no numeric timeout to assert against, making the liveness check unimplementable as written.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Overview  ~line 23\n```\nExpand the JS↔Zig IPC command surface and add **real** Windows (WebView2) and macOS\n(WKWebView) backends that reuse the same OS-agnostic Zig core (`ipc.zig`,\n`nav_policy.zig`) verbatim. Every milestone ends in a human-observable artifact —\nrendered text in a real window, a real-pixel screenshot, a protocol line on stdout,\nor a process exit code — never \"tests green\" alone.\n\nThis plan builds on a **now-live seam**. The hostile audit that opened this plan\nfound the headline Slice-2 modules were never linked into the binary (the live IPC\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:6c26a260\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:6c26a260"
+      ],
+      "fingerprint": "6c26a260"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Race condition in M6 unaddressed: if a page-load completion…",
+      "description": "## Finding (severity: warning)\nRace condition in M6 unaddressed: if a page-load completion event and the per-backend timeout fire simultaneously, which promise wins? The plan does not specify whether LOAD_FAIL is still emitted, whether the window shows the error page or the real page, or whether the window state is consistent afterward.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Overview  ~line 34\n```\nfallbacks are deleted, the build hard-fails if the Zig core is unlinked, the Zig\nunit tests run under `zig build test` (24/24), and a `..`-traversal E2E discriminator\nproves the real `nav_policy.zig` is live (the deleted C prefix-check would have\nallowed it). The \"OS-agnostic Zig logic reused verbatim\" thesis is therefore now\n**true for the one backend that exists** — which is the precondition for adding more.\n\n## Current State Analysis\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:da62eead\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:da62eead"
+      ],
+      "fingerprint": "da62eead"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Thread ownership of the threadlocal IPC buffers (dispatch_s…",
+      "description": "## Finding (severity: warning)\nThread ownership of the threadlocal IPC buffers (dispatch_scratch, dispatch_result_cstr, dispatch_err_cstr) for new backends is undeclared. The buffers are threadlocal (confirmed in cited ipc.zig:11-12), so concurrent callers from different threads each get their own instance. The plan does not document which thread WebView2 / WKWebView script-message callbacks will invoke zb_ipc_dispatch on, nor whether the seam contract requires single-thread dispatch.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §🟢 Green  ~line 362\n```\n#### 🔴 Red\nA Windows-CI E2E: open window, render fixture, `ping`→`pong`; fails (no `win_backend`).\n#### 🟢 Green\nImplement `win_backend`: WebView2 host, host message channel (`zbHost` equivalent),\n`zb_app_run`/`zb_window_new`/`zb_reload`/`zb_version_line`/`zb_run_screenshot`, calling the **unchanged** Zig `zb_ipc_dispatch`/`zb_policy_decide`.\n#### 🔵 Refactor\nFactor common host-channel glue shared with M9; keep platform calls in the shim.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:cd1b3218\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:cd1b3218"
+      ],
+      "fingerprint": "cd1b3218"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] SIGHUP → reload windows[0] is stated as a behavioral promis…",
+      "description": "## Finding (severity: warning)\nSIGHUP → reload windows[0] is stated as a behavioral promise in M7 edge cases but has no test case, no implementation path in the plan, and no success criterion. It is a dangling guarantee with no verification path.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 327\n```\n**Given**: a backend with a load in flight.\n**When**: the window is closed via SIGINT.\n**Then**: the in-flight load is cancelled and the process exits 130 cleanly within a bounded time (no hang, no zombie).\n\n**Edge Cases**: SIGTERM → 130; SIGHUP → reload `windows[0]` (not exit); close during IPC reply dispatch.\n\n**Files touched**: `src/webkit_shim.c` (GTK signal handlers exist), new backend shims, `tests/e2e/` lifecycle test.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:e7b309ab\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:e7b309ab"
+      ],
+      "fingerprint": "e7b309ab"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] [VERIFY] The 'stable seam' cited at webkit_shim.h:40 declar…",
+      "description": "## Finding (severity: warning)\n[VERIFY] The 'stable seam' cited at webkit_shim.h:40 declares zb_window_new(ZbApp *app, WebKitWebView *view) with a WebKit-specific parameter type. The plan promises 'new backends must match it exactly.' WebView2 and WKWebView backends cannot implement a function whose signature names WebKitWebView*; the cross-OS seam completeness guarantee may be unsatisfiable for this entry point.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Risks / Constraints  ~line 415\n```\n- **Win/macOS CI availability** gates M8/M9; absent it, they split to a\n  hardware-provisioned Slice 4 (not stubbed, not dropped).\n- **Per-backend recovery is platform-specific** (shared spec, not shared code) — change\n  amplification risk if a new failure mode appears: add it to the contract first.\n- The `zb_*` C-ABI seam (`webkit_shim.h:34-45`) is the stable contract; new backends\n  must match it exactly and consume the Zig exports unchanged.\n\n## References\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:0ec08a2a\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:0ec08a2a"
+      ],
+      "fingerprint": "0ec08a2a"
+    },
+    {
+      "phase": "data_models",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §data_models] Exit code table in errors.zig is missing integer assignment…",
+      "description": "## Finding (severity: critical)\nExit code table in errors.zig is missing integer assignments for 'RuntimeMissing' (M8) and 'WebViewInitFailed' (M9). Both are named as error conditions with explicit 'exit' semantics in the M8/M9 specifications, but neither appears in the cited errors.zig:22-31 switch table. The catch-all 'else => 1' would silently alias them to the same code as 'Usage', making them indistinguishable. Any E2E test that asserts on the process exit code for these failure modes would be testing against an unspecified and almost certainly wrong value.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Observable Behaviors  ~line 74\n```\nat least one new command proven to run through the linked Zig dispatch (negative\ncontrol: absent from any non-Zig path). On Windows and macOS CI, a real WebView2 /\nWKWebView window opens, renders a real page, and answers a real `zbHost` roundtrip.\n\n### Observable Behaviors\n- New IPC command (`echo`) returns its exact payload as a typed JS value rendered in a real window.\n- Unknown/malformed commands reject the JS promise with typed `UnknownCommand`/`BadArgs`.\n- A `..`-traversal navigation is BLOCKED identically on every backend via the shared `nav_core`.\n```\n\n## Impact\nE2E exit-code oracles for M8/M9 failure paths are untestable without an assigned code; a Windows binary that fails to find the WebView2 runtime exits 1 (same as a bad CLI invocation), making the failure mode invisible to any automated gate.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:b9e793f1\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:b9e793f1"
+      ],
+      "fingerprint": "b9e793f1"
+    },
+    {
+      "phase": "data_models",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §data_models] os.info command response schema ({sysname, release, machine…",
+      "description": "## Finding (severity: critical)\nos.info command response schema ({sysname, release, machine}) is definitionally POSIX-only: it is produced by std.posix.uname() (ipc.zig:28, cited), which does not exist on Windows. The plan repeatedly asserts 'the same OS-agnostic Zig core reused verbatim' including on the Windows M8 target. If ipc.zig is compiled for Windows unchanged, os.info either fails to compile (std.posix is unavailable) or fails at link time. The plan neither documents os.info as POSIX-only nor provides a Windows-compatible schema for that command's three fields. The schema is therefore inconsistent across the platforms the plan claims to support.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Overview  ~line 33\n```\n`3c8dbe8`): the Zig modules are hard-linked (`nm` shows them **defined**), the C\nfallbacks are deleted, the build hard-fails if the Zig core is unlinked, the Zig\nunit tests run under `zig build test` (24/24), and a `..`-traversal E2E discriminator\nproves the real `nav_policy.zig` is live (the deleted C prefix-check would have\nallowed it). The \"OS-agnostic Zig logic reused verbatim\" thesis is therefore now\n**true for the one backend that exists** — which is the precondition for adding more.\n\n## Current State Analysis\n```\n\n## Impact\nWindows (M8) build of ipc.zig fails or the 'verbatim reuse' invariant is silently violated by a conditional-compile patch that is never planned. If omitted from Windows builds, the IPC command surface is inconsistent across OS targets, breaking any cross-OS E2E test that calls os.info.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:1a53e8a7\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:1a53e8a7"
+      ],
+      "fingerprint": "1a53e8a7"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] Echo command args JSON schema has no formal field constrain…",
+      "description": "## Finding (severity: warning)\nEcho command args JSON schema has no formal field constraints: only '{msg: string}' appears in prose. The required/optional status of the 'msg' key, behaviour on empty-string vs. absent key, and the effective max byte length (implied by the 4 KB result buffer but never stated as a schema bound) are unspecified. M1 edge cases mention 'empty args → BadArgs' but that tests missing args, not an empty string value.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Observable Behaviors  ~line 74\n```\nat least one new command proven to run through the linked Zig dispatch (negative\ncontrol: absent from any non-Zig path). On Windows and macOS CI, a real WebView2 /\nWKWebView window opens, renders a real page, and answers a real `zbHost` roundtrip.\n\n### Observable Behaviors\n- New IPC command (`echo`) returns its exact payload as a typed JS value rendered in a real window.\n- Unknown/malformed commands reject the JS promise with typed `UnknownCommand`/`BadArgs`.\n- A `..`-traversal navigation is BLOCKED identically on every backend via the shared `nav_core`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nAdd a one-line schema comment to the echo branch in ipc.zig specifying: 'msg' is a required string key, empty string is valid, max byte length equals the 4 KB result buffer minus JSON quoting overhead. Update the M1 edge-case list to cover empty-string-value (distinct from missing key).\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:bc077df5\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:bc077df5"
+      ],
+      "fingerprint": "bc077df5"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] Backend selection table schema is informal: M4 refactor nam…",
+      "description": "## Finding (severity: warning)\nBackend selection table schema is informal: M4 refactor names 'target.os → {csource, libs, version_fn}' as the target shape but never defines key type (OS string vs. full target triple), whether architecture is part of the key (x86_64-linux vs. aarch64-linux), the exhaustive list of valid entries, or whether the table is a comptime switch or a runtime map. M5's 'NoBackendLinked' guard depends on this table being exhaustive, so ambiguity here directly affects what 'unmapped' means.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Observable Behaviors  ~line 74\n```\nat least one new command proven to run through the linked Zig dispatch (negative\ncontrol: absent from any non-Zig path). On Windows and macOS CI, a real WebView2 /\nWKWebView window opens, renders a real page, and answers a real `zbHost` roundtrip.\n\n### Observable Behaviors\n- New IPC command (`echo`) returns its exact payload as a typed JS value rendered in a real window.\n- Unknown/malformed commands reject the JS promise with typed `UnknownCommand`/`BadArgs`.\n- A `..`-traversal navigation is BLOCKED identically on every backend via the shared `nav_core`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nIn the M4 specification, define the mapping as a concrete comptime table keyed on target triple strings (e.g. 'x86_64-linux', 'x86_64-windows-msvc', 'aarch64-macos') with value fields {c_source: []const u8, link_libs: []const []const u8}. State explicitly that any triple not in the table triggers the NoBackendLinked build error defined in M5.\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:1b203d2f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:1b203d2f"
+      ],
+      "fingerprint": "1b203d2f"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] New-backend recovery tracking structs (WebView2/WKWebView) …",
+      "description": "## Finding (severity: warning)\nNew-backend recovery tracking structs (WebView2/WKWebView) are never named or schematized. The GTK backend's ZbShot struct is visible in cited code (fields: sig_load_failed, window, sig_destroy, timeout_source_id, sigint_source_id, sigterm_source_id, cancellable, load_error_domain, load_error_code). The plan says M8/M9 're-implement with their APIs' but provides no field inventory for the equivalent WebView2 or WKWebView tracking structs, leaving implementers without a schema to satisfy the shared recovery shape described in M6.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Observable Behaviors  ~line 74\n```\nat least one new command proven to run through the linked Zig dispatch (negative\ncontrol: absent from any non-Zig path). On Windows and macOS CI, a real WebView2 /\nWKWebView window opens, renders a real page, and answers a real `zbHost` roundtrip.\n\n### Observable Behaviors\n- New IPC command (`echo`) returns its exact payload as a typed JS value rendered in a real window.\n- Unknown/malformed commands reject the JS promise with typed `UnknownCommand`/`BadArgs`.\n- A `..`-traversal navigation is BLOCKED identically on every backend via the shared `nav_core`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:3305da65\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:3305da65"
+      ],
+      "fingerprint": "3305da65"
+    },
+    {
+      "phase": "apis",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §apis] The zb_window_new seam signature (cited webkit_shim.h:40) c…",
+      "description": "## Finding (severity: critical)\nThe zb_window_new seam signature (cited webkit_shim.h:40) contains a WebKitWebView* parameter — a GTK/libwebkit2gtk-specific type unavailable on Windows or macOS. The plan simultaneously declares this seam 'the stable contract any backend must satisfy' and requires new backends to 'match it exactly'. Those two statements are mutually exclusive: webview2_shim.c cannot include WebKitWebView* without importing GTK headers, and wkwebview_shim.m has WKWebView*, not WebKitWebView*. Neither M8 nor M9 can compile against the current seam without either changing the signature (a breaking change the plan does not acknowledge) or linking GTK on every platform (defeating the purpose of backend selection).\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Current State Analysis  ~line 40\n```\n## Current State Analysis\n\n**What exists (verified reality, post-remediation):**\n- A single live backend: WebKitGTK + GTK3, all platform code in the 1616-line\n  `src/webkit_shim.c` behind the plain-C `zb_*` seam in `src/webkit_shim.h`.\n- The IPC command surface is the Zig `dispatch()` if-chain in `src/ipc.zig`\n  (`ping`/`add`/`os.info`), now linked and exercised by both `zig build test` and\n  the Python E2E harness against the real binary.\n```\n\n## Impact\nwebview2_shim.c and wkwebview_shim.m cannot satisfy the stated seam. Either the seam must be changed before M8/M9 (breaking the 'match it exactly' claim) or both milestones are blocked at compile time. The plan provides no resolution path.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:cdea8ffd\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:cdea8ffd"
+      ],
+      "fingerprint": "cdea8ffd"
+    },
+    {
+      "phase": "apis",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §apis] The JS→backend Promise resolution/rejection mechanism is sp…",
+      "description": "## Finding (severity: critical)\nThe JS→backend Promise resolution/rejection mechanism is specified only for GTK (webkit_script_message_reply_return_value / webkit_script_message_reply_return_error_message). WebView2 and WKWebView use completely different async-script-eval patterns (WebView2: ExecuteScript on the UI thread; WKWebView: evaluateJavaScript:completionHandler:). Without specifying these per-backend APIs, M8 and M9 have no normative contract for how the Zig dispatch result travels back to the JS Promise. The fixture HTML's postMessage call will have no counterpart reply path on either new backend.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 125\n```\n\n### Test Specification\n**Given**: a real WebKitGTK window loaded with the app fixture, `src/ipc.zig` linked\n(`nm` shows `zb_ipc_dispatch` defined), with a new `echo` branch in `dispatch()`.\n**When**: JS calls `window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd:\"echo\",args:{msg:\"hi-42\"}}))`.\n**Then**: the Promise resolves to the typed JS string `\"hi-42\"`, rendered into the DOM; stdout emits an `IPC` line for `echo`.\n\n**Edge Cases**: empty args → `BadArgs`; result larger than the 4KB threadlocal result\n```\n\n## Impact\nM8 and M9 implementers must independently discover WebView2 / WKWebView callback patterns. Without a stated contract, the cross-backend 'zbHost ping→pong' test (M8/M9 Success Criteria) cannot be written or verified until the implementation already exists — inverting TDD order.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:0c1e2c90\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:0c1e2c90"
+      ],
+      "fingerprint": "0c1e2c90"
+    },
+    {
+      "phase": "apis",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §apis] New error conditions RuntimeMissing (M8) and WebViewInitFai…",
+      "description": "## Finding (severity: critical)\nNew error conditions RuntimeMissing (M8) and WebViewInitFailed (M9) are not present in errors.zig's exitCode() switch (cited errors.zig:22-31). The else => 1 catch-all means both silently map to exit code 1 (Usage). The M8/M9 E2E tests assert 'RuntimeMissing exit' and 'WebViewInitFailed exit' but have no distinct code to assert against; any exit would satisfy the test, making the error-path coverage illusory.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Key Discoveries  ~line 61\n```\n  plus the engine→host exports `zb_policy_decide`/`zb_ipc_dispatch`.\n- `build.zig:53-63` — `configureWebKit()` links GTK/WebKit unconditionally; **the place\n  backend selection must be introduced**.\n- `src/main.zig:32-43` — `.open` path calls `c.zb_app_run(...)`; backend-agnostic at this layer.\n- `src/errors.zig:22-31` — exit-code table (Usage 1 … Cancelled 130) reused across backends.\n- `tests/e2e/*.py` + `tests/snapshots/pillow_tools.py` — the real-binary E2E harness\n  (`--e2e-protocol` tab-separated lines) and the PNG `nonuniform` screenshot oracle.\n- Commits `994f7a2`/`3c8dbe8` — remediation that made the seam real (nm-verified).\n```\n\n## Impact\nM8/M9 backend error paths are untestable at the exit-code level. A backend that crashes with exit 1 for any reason (including unrelated failures) passes the same assertion as one that correctly detects a missing runtime. The discriminating signal the plan promises does not exist.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:85c431c6\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:critical",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:85c431c6"
+      ],
+      "fingerprint": "85c431c6"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] E2E protocol line schema is never formally enumerated. Each…",
+      "description": "## Finding (severity: warning)\nE2E protocol line schema is never formally enumerated. Each type (IPC, IPCERR, BLOCKED, LOAD_FAIL, SUBWIN, WINCOUNT) is mentioned in prose but the exact field sequence, tab-delimiter count, and field semantics are not written down. M8 and M9 implementers must independently reproduce the GTK shim's line format with no normative reference.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Testing Strategy  ~line 104\n```\n  hardware-provisioned Slice 4 — they are **not** stubbed and **not** dropped.\n- **C fallbacks: removed** (already done in remediation); the build hard-fails if the\n  Zig core is unlinked, so there is nothing to mask whether Zig runs.\n\n## Testing Strategy\n- **Framework**: Zig 0.16 `std.testing` via `zig build test`; Python E2E harness in\n  `tests/e2e/` driving the **real compiled binary** with `--e2e-protocol`\n  (tab-separated `NAV`/`IPC`/`IPCERR`/`BLOCKED`/`SUBWIN`/`LOAD_FAIL`/`WINCOUNT` lines);\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:fc9e7d5d\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:fc9e7d5d"
+      ],
+      "fingerprint": "fc9e7d5d"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] JS Promise rejection value shape is unspecified. M2 says 'r…",
+      "description": "## Finding (severity: warning)\nJS Promise rejection value shape is unspecified. M2 says 'rejects with UnknownCommand (code 1)' and the refactor says '@errorName is the single source of the reply string', implying the rejection payload is a bare string. But whether JS receives a string, an Error object, or a structured object is never stated — cross-backend consistency cannot be verified without this.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 122\n```\n---\n\n## Behavior M1: echo command roundtrip\n\n### Test Specification\n**Given**: a real WebKitGTK window loaded with the app fixture, `src/ipc.zig` linked\n(`nm` shows `zb_ipc_dispatch` defined), with a new `echo` branch in `dispatch()`.\n**When**: JS calls `window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd:\"echo\",args:{msg:\"hi-42\"}}))`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:357936f3\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:357936f3"
+      ],
+      "fingerprint": "357936f3"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] --version output format is specified only for the GTK backe…",
+      "description": "## Finding (severity: warning)\n--version output format is specified only for the GTK backend ('WebKitGTK x.y.z, GTK a.b.c'). The analogous format for WebView2 and WKWebView version lines is not defined, so M4's 'the binary --version reports the matching engine' success criterion is untestable for M8/M9.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 122\n```\n---\n\n## Behavior M1: echo command roundtrip\n\n### Test Specification\n**Given**: a real WebKitGTK window loaded with the app fixture, `src/ipc.zig` linked\n(`nm` shows `zb_ipc_dispatch` defined), with a new `echo` branch in `dispatch()`.\n**When**: JS calls `window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd:\"echo\",args:{msg:\"hi-42\"}}))`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:78d9e99e\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:78d9e99e"
+      ],
+      "fingerprint": "78d9e99e"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] echo property-test domain upper bound is imprecisely stated…",
+      "description": "## Finding (severity: warning)\necho property-test domain upper bound is imprecisely stated as 'UTF-8 string s within the buffer bound'. The actual constraint is: JSON-encoded length of s + 2 (quotes) + 1 (NUL) ≤ 4096 bytes (dispatch_result_cstr). The test spec does not state this computed ceiling, so a property generator cannot be written without reading the source.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Test Specification  ~line 122\n```\n---\n\n## Behavior M1: echo command roundtrip\n\n### Test Specification\n**Given**: a real WebKitGTK window loaded with the app fixture, `src/ipc.zig` linked\n(`nm` shows `zb_ipc_dispatch` defined), with a new `echo` branch in `dispatch()`.\n**When**: JS calls `window.webkit.messageHandlers.zbHost.postMessage(JSON.stringify({cmd:\"echo\",args:{msg:\"hi-42\"}}))`.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:de6ce4bf\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:de6ce4bf"
+      ],
+      "fingerprint": "de6ce4bf"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] [VERIFY] Plan attributes configureWebKit() unconditional GT…",
+      "description": "## Finding (severity: warning)\n[VERIFY] Plan attributes configureWebKit() unconditional GTK/WebKit linking to build.zig:53-63, but the cited code at those exact lines is the IPC test module setup (.link_libc = true, ipc_tests_module creation). The configureWebKit() call does not appear in the cited block. If the line numbers are wrong, M4/M5 implementers will modify the wrong location.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md  §Key Discoveries  ~line 49\n```\n  canonical-path containment with POSIX `./..` normalization), now live.\n- The build links `webkit2gtk-4.1`/`gtk+-3.0`/`gio-unix-2.0` **unconditionally**\n  in `build.zig:53-63` — there is no target/OS branch and no backend selection.\n\n### Key Discoveries\n- `src/ipc.zig:14-38` — `dispatch()` command if-chain; extension point for new commands.\n- `src/ipc.zig:40-72` — `zb_ipc_dispatch` C-ABI adapter; threadlocal 8KB scratch /\n  4KB result / 128B err buffers (`copyToCStr` fails closed on oversize).\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:ef218044\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4",
+        "review-fp:ef218044"
+      ],
+      "fingerprint": "ef218044"
+    }
+  ],
+  "plan_stem": "2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4"
+}
