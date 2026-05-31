@@ -1,0 +1,114 @@
+- id: cli
+  container: host
+  purpose: Parse CLI args and invoke the linked backend's entry points.
+  data_model:
+    - {name: AppRunSpec, type: record, invariants: ["uri validated", "e2e_protocol in {0,1}"]}
+  verbs:
+    - {name: parse_args, input: "argv", output: Command, errors: ["Usage"]}
+    - {name: run, input: AppRunSpec, output: exit_code, errors: ["InvalidUri"]}
+  errors: [Usage, InvalidUri]
+  events_start: silmari.flow.app_run.create
+  events_progress: silmari.flow.app_run.send
+  events_stop: silmari.flow.app_run.settle
+  dependencies: [build_sel, gtk_backend]
+
+- id: ipc_core
+  container: zig_core
+  purpose: OS-agnostic JS<->Zig IPC command dispatch table (the command surface).
+  data_model:
+    - {name: IpcExchange, type: record, invariants: ["cmd non-empty", "result_json XOR err_code"]}
+  verbs:
+    - {name: dispatch, input: IpcExchange, output: IpcExchange, errors: ["UnknownCommand", "BadArgs"]}
+  errors: [UnknownCommand, BadArgs]
+  events_start: silmari.flow.ipc_post.create
+  events_progress: silmari.flow.ipc_post.receive
+  events_stop: silmari.flow.ipc_post.process
+  dependencies: []
+
+- id: nav_core
+  container: zig_core
+  purpose: OS-agnostic navigation-policy decision (containment + sub-window routing).
+  data_model:
+    - {name: NavExchange, type: record, invariants: ["dtype in {0,1,2}", "decision in {use,ignore,open_in_subwindow}"]}
+  verbs:
+    - {name: decide, input: NavExchange, output: NavExchange, errors: ["fail-closed-ignore"]}
+  errors: [Ignore]
+  events_start: silmari.flow.nav_decide.create
+  events_progress: silmari.flow.nav_decide.receive
+  events_stop: silmari.flow.nav_decide.process
+  dependencies: []
+
+- id: gtk_backend
+  container: native_backends
+  purpose: WebKitGTK backend (live) - owns GTK/WebKit/JSC, registers zbHost, calls Zig core. Implements the zb_* contract (zb_app_run/zb_window_new/zb_reload/zb_run_screenshot/zb_version_line).
+  data_model: []
+  verbs:
+    - {name: zb_app_run, input: AppRunSpec, output: exit_code}
+    - {name: install_ipc_handler, output: "zbHost reply channel"}
+  errors: [DisplayUnavailable, GtkInitFailed, LoadFailed, Timeout]
+  events_start: silmari.flow.app_run.create
+  events_progress: silmari.flow.ipc_post.send
+  events_stop: silmari.flow.app_run.settle
+  dependencies: [ipc_core, nav_core, webview_rt]
+
+- id: win_backend
+  container: native_backends
+  purpose: WebView2 backend (NEW) - owns WebView2 host, posts to host channel, calls same Zig core. Implements the same zb_* contract.
+  data_model: []
+  verbs:
+    - {name: zb_app_run, input: AppRunSpec, output: exit_code}
+  errors: [RuntimeMissing, LoadFailed, Timeout]
+  events_start: silmari.flow.app_run.create
+  events_progress: silmari.flow.ipc_post.send
+  events_stop: silmari.flow.app_run.settle
+  dependencies: [ipc_core, nav_core, webview_rt]
+
+- id: macos_backend
+  container: native_backends
+  purpose: WKWebView backend (NEW) - owns WKWebView host + script message handler, calls same Zig core. Implements the same zb_* contract.
+  data_model: []
+  verbs:
+    - {name: zb_app_run, input: AppRunSpec, output: exit_code}
+  errors: [WebViewInitFailed, LoadFailed, Timeout]
+  events_start: silmari.flow.app_run.create
+  events_progress: silmari.flow.ipc_post.send
+  events_stop: silmari.flow.app_run.settle
+  dependencies: [ipc_core, nav_core, webview_rt]
+
+- id: build_sel
+  container: build_system
+  purpose: Select and link exactly one backend by target OS; hard-fail if none linked.
+  data_model:
+    - {name: BackendChoice, type: record, invariants: ["exactly one backend_id per target_os", "non-null"]}
+  verbs:
+    - {name: select_backend, input: TargetTriple, output: BackendChoice, errors: ["UnsupportedTarget"]}
+  errors: [UnsupportedTarget, NoBackendLinked]
+  events_start: silmari.flow.backend_select.create
+  events_progress: silmari.flow.backend_select.send
+  events_stop: silmari.flow.backend_select.settle
+  dependencies: []
+
+- id: web_app
+  container: webview_layer
+  purpose: JS page that posts IPC envelopes to zbHost and renders typed replies.
+  data_model: []
+  verbs:
+    - {name: postMessage, input: IpcExchange, output: "Promise IpcExchange"}
+  errors: [PromiseRejected]
+  events_start: silmari.flow.ipc_post.create
+  events_progress: silmari.flow.ipc_post.send
+  events_stop: silmari.flow.ipc_post.settle
+  dependencies: [gtk_backend, win_backend, macos_backend]
+
+- id: webview_rt
+  container: null
+  purpose: External OS webview runtime (libwebkit2gtk / WebView2 Runtime / WKWebView.framework).
+  data_model:
+    - {name: PageLoad, type: record, invariants: ["uri non-empty", "terminal status in {finished,failed}"]}
+  verbs:
+    - {name: load_uri, input: PageLoad, output: PageLoad, errors: ["LoadFailed"]}
+  errors: [LoadFailed]
+  events_start: silmari.flow.render.create
+  events_progress: silmari.flow.render.send
+  events_stop: silmari.flow.render.settle
+  dependencies: []

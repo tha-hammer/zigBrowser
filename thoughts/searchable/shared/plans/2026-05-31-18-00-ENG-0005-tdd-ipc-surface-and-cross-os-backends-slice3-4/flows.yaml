@@ -1,0 +1,129 @@
+- flow_id: app_run
+  trigger: user
+  producer: cli
+  consumer: gtk_backend            # inferred from behavior cross-os-backend-launch
+  payload_schema_ref: AppRunSpec
+  verb: command
+  hops: []
+  error_states: [InvalidUri, DisplayUnavailable, GtkInitFailed]
+  observability:
+    start_signal: silmari.flow.app_run.create
+    in_transit_signal: silmari.flow.app_run.send
+    terminal_signal: silmari.flow.app_run.process
+
+- flow_id: app_ack
+  trigger: sync
+  producer: gtk_backend
+  consumer: cli
+  payload_schema_ref: AppRunSpec
+  verb: event
+  hops: []
+  error_states: [LoadFailed, Timeout]
+  observability:
+    start_signal: silmari.flow.app_ack.create
+    in_transit_signal: silmari.flow.app_ack.receive
+    terminal_signal: silmari.flow.app_ack.settle
+
+- flow_id: ipc_post
+  trigger: user                    # inferred from behavior new-ipc-command-roundtrip
+  producer: web_app
+  consumer: ipc_core
+  payload_schema_ref: IpcExchange
+  verb: command
+  hops: [gtk_backend]
+  error_states: [BadArgs, UnknownCommand]
+  observability:
+    start_signal: silmari.flow.ipc_post.create
+    in_transit_signal: silmari.flow.ipc_post.send
+    terminal_signal: silmari.flow.ipc_post.process
+
+- flow_id: ipc_reply
+  trigger: sync
+  producer: ipc_core
+  consumer: web_app
+  payload_schema_ref: IpcExchange
+  verb: event
+  hops: [gtk_backend]
+  error_states: [BadArgs, UnknownCommand]
+  observability:
+    start_signal: silmari.flow.ipc_reply.create
+    in_transit_signal: silmari.flow.ipc_reply.receive
+    terminal_signal: silmari.flow.ipc_reply.settle
+
+- flow_id: nav_decide
+  trigger: sync                    # inferred from behavior traversal-block-discriminator
+  producer: gtk_backend
+  consumer: nav_core
+  payload_schema_ref: NavExchange
+  verb: command
+  hops: []
+  error_states: [Ignore]
+  observability:
+    start_signal: silmari.flow.nav_decide.create
+    in_transit_signal: silmari.flow.nav_decide.send
+    terminal_signal: silmari.flow.nav_decide.process
+
+- flow_id: nav_result
+  trigger: sync
+  producer: nav_core
+  consumer: gtk_backend
+  payload_schema_ref: NavExchange  # fixed: nav_core returns the decision (NavExchange), closing the read for NavExchange
+  verb: event
+  hops: []
+  error_states: [Ignore]
+  observability:
+    start_signal: silmari.flow.nav_result.create
+    in_transit_signal: silmari.flow.nav_result.receive
+    terminal_signal: silmari.flow.nav_result.settle
+
+- flow_id: backend_select
+  trigger: sync                    # inferred from behavior build-selects-backend-by-target
+  producer: build_sel
+  consumer: gtk_backend
+  payload_schema_ref: BackendChoice
+  verb: command
+  hops: []
+  error_states: [UnsupportedTarget]
+  observability:
+    start_signal: silmari.flow.backend_select.create
+    in_transit_signal: silmari.flow.backend_select.send
+    terminal_signal: silmari.flow.backend_select.process
+
+- flow_id: backend_link_check
+  trigger: sync                    # inferred from behavior hard-fail-if-no-backend-linked
+  producer: cli
+  consumer: build_sel
+  payload_schema_ref: BackendChoice
+  verb: query
+  hops: []
+  error_states: [NoBackendLinked]
+  observability:
+    start_signal: silmari.flow.backend_link_check.create
+    in_transit_signal: silmari.flow.backend_link_check.receive
+    terminal_signal: silmari.flow.backend_link_check.settle
+
+- flow_id: render_page
+  trigger: sync                    # inferred from behavior real-page-renders-in-real-window
+  producer: gtk_backend
+  consumer: webview_rt
+  payload_schema_ref: PageLoad
+  verb: command
+  hops: []
+  error_states: [LoadFailed, Timeout]
+  observability:
+    start_signal: silmari.flow.render_page.create
+    in_transit_signal: silmari.flow.render_page.send
+    terminal_signal: silmari.flow.render_page.process
+
+- flow_id: render_result
+  trigger: sync
+  producer: webview_rt
+  consumer: gtk_backend
+  payload_schema_ref: PageLoad
+  verb: event
+  hops: []
+  error_states: [LoadFailed, Timeout]
+  observability:
+    start_signal: silmari.flow.render_result.create
+    in_transit_signal: silmari.flow.render_result.receive
+    terminal_signal: silmari.flow.render_result.settle

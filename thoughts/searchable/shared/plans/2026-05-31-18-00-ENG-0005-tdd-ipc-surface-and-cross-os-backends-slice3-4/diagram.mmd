@@ -1,0 +1,25 @@
+C4Container
+title System topology
+
+Container(build_sel, "build_sel", "Select and link exactly one backend by target OS; hard-fail if none linked.")
+Container(cli, "cli", "Parse CLI args and invoke the linked backend's entry points.")
+Container(gtk_backend, "gtk_backend", "WebKitGTK backend (live) - owns GTK/WebKit/JSC, registers zbHost, calls Zig core. Implements the zb_* contract (zb_app_run/zb_window_new/zb_reload/zb_run_screenshot/zb_version_line).")
+Container(ipc_core, "ipc_core", "OS-agnostic JS<->Zig IPC command dispatch table (the command surface).")
+Container(macos_backend, "macos_backend", "WKWebView backend (NEW) - owns WKWebView host + script message handler, calls same Zig core. Implements the same zb_* contract.")
+Container(nav_core, "nav_core", "OS-agnostic navigation-policy decision (containment + sub-window routing).")
+Container(web_app, "web_app", "JS page that posts IPC envelopes to zbHost and renders typed replies.")
+Container_Ext(webview_rt, "webview_rt", "External OS webview runtime (libwebkit2gtk / WebView2 Runtime / WKWebView.framework).")
+Container(win_backend, "win_backend", "WebView2 backend (NEW) - owns WebView2 host, posts to host channel, calls same Zig core. Implements the same zb_* contract.")
+
+Rel(gtk_backend, cli, "event AppRunSpec")
+Rel(cli, gtk_backend, "command AppRunSpec")
+Rel(cli, build_sel, "query BackendChoice")
+Rel(build_sel, gtk_backend, "command BackendChoice")
+Rel(web_app, gtk_backend, "command IpcExchange")
+Rel(gtk_backend, ipc_core, "command IpcExchange")
+Rel(ipc_core, gtk_backend, "event IpcExchange")
+Rel(gtk_backend, web_app, "event IpcExchange")
+Rel(gtk_backend, nav_core, "command NavExchange")
+Rel(nav_core, gtk_backend, "event NavExchange")
+Rel(gtk_backend, webview_rt, "command PageLoad")
+Rel(webview_rt, gtk_backend, "event PageLoad")
