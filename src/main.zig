@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
             try writeStderr(
                 init,
                 "usage: zigBrowser --version\n" ++
-                    "       zigBrowser <URL> [--print-title]\n" ++
+                    "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
                     "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n",
             );
             std.process.exit(errors.exitCode(error.Usage));
@@ -35,7 +35,11 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(errors.exitCode(mapUriErr(err)));
             };
 
-            const code = webkit.runOpen(valid_uri, spec.print_title);
+            const code = webkit.c.zb_app_run(
+                valid_uri.ptr,
+                if (spec.print_title) 1 else 0,
+                if (spec.e2e_protocol) 1 else 0,
+            );
             std.process.exit(@intCast(code));
         },
         .screenshot => |spec| {

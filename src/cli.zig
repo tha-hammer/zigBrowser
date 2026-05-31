@@ -5,6 +5,7 @@ pub const Command = union(enum) {
     open: struct {
         url: []const u8,
         print_title: bool = false,
+        e2e_protocol: bool = false,
     },
     screenshot: struct {
         url: []const u8,
@@ -26,33 +27,60 @@ pub fn parseArgs(args: []const []const u8) Command {
     }
 
     if (std.mem.eql(u8, first, "--screenshot")) {
-        if (args.len != 4 and args.len != 5) return .usage;
-        if (std.mem.startsWith(u8, args[2], "-")) return .usage;
+        return parseScreenshotArgs(args[1..]);
+    }
 
-        var print_title = false;
-        if (args.len == 5) {
-            if (!std.mem.eql(u8, args[4], "--print-title")) return .usage;
+    return parseOpenArgs(args[1..]);
+}
+
+fn parseScreenshotArgs(tokens: []const []const u8) Command {
+    if (tokens.len != 3 and tokens.len != 4) return .usage;
+    if (!std.mem.eql(u8, tokens[0], "--screenshot")) return .usage;
+    if (std.mem.startsWith(u8, tokens[1], "-")) return .usage;
+
+    var print_title = false;
+    if (tokens.len == 4) {
+        if (!std.mem.eql(u8, tokens[3], "--print-title")) return .usage;
+        print_title = true;
+    }
+
+    return .{ .screenshot = .{
+        .out = tokens[1],
+        .url = tokens[2],
+        .print_title = print_title,
+    } };
+}
+
+fn parseOpenArgs(tokens: []const []const u8) Command {
+    var url: ?[]const u8 = null;
+    var print_title = false;
+    var e2e_protocol = false;
+
+    for (tokens) |token| {
+        if (std.mem.eql(u8, token, "--print-title")) {
             print_title = true;
+            continue;
         }
-
-        return .{ .screenshot = .{
-            .out = args[2],
-            .url = args[3],
-            .print_title = print_title,
-        } };
+        if (std.mem.eql(u8, token, "--e2e-protocol")) {
+            e2e_protocol = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "-")) {
+            return .usage;
+        }
+        if (url != null) {
+            return .usage;
+        }
+        url = token;
     }
 
-    if (std.mem.startsWith(u8, first, "-")) return .usage;
+    if (url == null) return .usage;
 
-    if (args.len == 2) {
-        return .{ .open = .{ .url = first } };
-    }
-
-    if (args.len == 3 and std.mem.eql(u8, args[2], "--print-title")) {
-        return .{ .open = .{ .url = first, .print_title = true } };
-    }
-
-    return .usage;
+    return .{ .open = .{
+        .url = url.?,
+        .print_title = print_title,
+        .e2e_protocol = e2e_protocol,
+    } };
 }
 
 test "parseArgs --version yields .version" {
@@ -65,11 +93,34 @@ test "parseArgs URL yields .open payload" {
     try std.testing.expect(cmd == .open);
     try std.testing.expectEqualStrings("https://example.com", cmd.open.url);
     try std.testing.expect(!cmd.open.print_title);
+    try std.testing.expect(!cmd.open.e2e_protocol);
 }
 
 test "parseArgs URL --print-title sets flag" {
     const cmd = parseArgs(&.{ "zigBrowser", "https://example.com", "--print-title" });
     try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.print_title);
+    try std.testing.expect(!cmd.open.e2e_protocol);
+}
+
+test "parseArgs --print-title URL is accepted" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--print-title", "https://example.com" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.print_title);
+    try std.testing.expectEqualStrings("https://example.com", cmd.open.url);
+}
+
+test "parseArgs URL --e2e-protocol sets protocol flag" {
+    const cmd = parseArgs(&.{ "zigBrowser", "https://example.com", "--e2e-protocol" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.e2e_protocol);
+    try std.testing.expect(!cmd.open.print_title);
+}
+
+test "parseArgs supports both open flags" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--e2e-protocol", "--print-title", "https://example.com" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.e2e_protocol);
     try std.testing.expect(cmd.open.print_title);
 }
 
