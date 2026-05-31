@@ -1,0 +1,63 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const pkg_guard = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
+    });
+
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    configureWebKit(root_module, b);
+
+    const exe = b.addExecutable(.{
+        .name = "zigBrowser",
+        .root_module = root_module,
+    });
+    exe.step.dependOn(&pkg_guard.step);
+    b.installArtifact(exe);
+
+    const run_step = b.step("run", "Run zigBrowser");
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.step.dependOn(&pkg_guard.step);
+    run_step.dependOn(&run_cmd.step);
+    if (b.args) |args| run_cmd.addArgs(args);
+
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    configureWebKit(test_module, b);
+
+    const unit_tests = b.addTest(.{ .root_module = test_module });
+    unit_tests.step.dependOn(&pkg_guard.step);
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    run_unit_tests.skip_foreign_checks = true;
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+}
+
+fn configureWebKit(module: *std.Build.Module, b: *std.Build) void {
+    module.addIncludePath(b.path("src"));
+    module.addCSourceFile(.{
+        .file = b.path("src/webkit_shim.c"),
+        .flags = &.{"-std=c11"},
+    });
+
+    module.linkSystemLibrary("webkit2gtk-4.1", .{ .use_pkg_config = .force });
+    module.linkSystemLibrary("gtk+-3.0", .{ .use_pkg_config = .force });
+    module.linkSystemLibrary("gio-unix-2.0", .{ .use_pkg_config = .force });
+}

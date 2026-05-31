@@ -1,0 +1,45 @@
+const std = @import("std");
+
+pub const UriError = error{ InvalidUri, UnsupportedScheme, RelativeUri };
+
+pub fn validate(arena: std.mem.Allocator, input: []const u8) UriError![:0]const u8 {
+    const parsed = std.Uri.parse(input) catch return error.InvalidUri;
+
+    if (parsed.scheme.len == 0) {
+        return error.RelativeUri;
+    }
+
+    if (std.mem.eql(u8, parsed.scheme, "http") or std.mem.eql(u8, parsed.scheme, "https")) {
+        if (parsed.host == null) return error.InvalidUri;
+    } else if (!std.mem.eql(u8, parsed.scheme, "file")) {
+        return error.UnsupportedScheme;
+    }
+
+    return arena.dupeZ(u8, input) catch return error.InvalidUri;
+}
+
+test "validate accepts file/http/https" {
+    const allocator = std.testing.allocator;
+
+    const file_uri = try validate(allocator, "file:///tmp/example.html");
+    defer allocator.free(file_uri);
+
+    const http_uri = try validate(allocator, "http://example.com/");
+    defer allocator.free(http_uri);
+
+    const https_uri = try validate(allocator, "https://example.com/");
+    defer allocator.free(https_uri);
+}
+
+test "validate rejects unsupported schemes" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.UnsupportedScheme, validate(allocator, "javascript:alert(1)"));
+    try std.testing.expectError(error.UnsupportedScheme, validate(allocator, "ftp://example.com"));
+}
+
+test "validate rejects malformed and relative URIs" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.InvalidUri, validate(allocator, "http://"));
+    try std.testing.expectError(error.InvalidUri, validate(allocator, "[bad"));
+    try std.testing.expectError(error.InvalidUri, validate(allocator, "./relative/path"));
+}
