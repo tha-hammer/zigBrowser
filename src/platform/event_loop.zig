@@ -4,8 +4,8 @@ const window_mod = @import("window.zig");
 
 pub const Event = union(enum) {
     scroll: f32,
-    click,
-    resize,
+    click: struct { x: f32, y: f32 },
+    resize: struct { w: f32, h: f32 },
     key,
 };
 
@@ -88,8 +88,8 @@ test "microtask pump is invoked once per turn after event drain and before paint
     var win = window_mod.Window.init(200, 800);
     const summary = runTurn(engine, &win, &.{
         .{ .scroll = 20 },
-        .click,
-        .resize,
+        .{ .click = .{ .x = 10, .y = 20 } },
+        .{ .resize = .{ .w = 1024, .h = 768 } },
     }, .{
         .ctx = @ptrCast(&state),
         .on_paint = State.paint,
