@@ -30,6 +30,10 @@ pub const layout = struct {
     pub const box = @import("layout/box.zig");
 };
 
+pub const render = struct {
+    pub const screenshot = @import("render/screenshot.zig");
+};
+
 test "scaffold sanity" {
     try std.testing.expect(true);
 }

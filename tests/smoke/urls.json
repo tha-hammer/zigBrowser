@@ -1,0 +1,19 @@
+{
+  "pages": [
+    {
+      "url": "https://www.wikipedia.org/",
+      "min_node_count": 10,
+      "timeout_ms": 10000
+    },
+    {
+      "url": "https://developer.mozilla.org/en-US/",
+      "min_node_count": 12,
+      "timeout_ms": 10000
+    },
+    {
+      "url": "https://news.ycombinator.com/",
+      "min_node_count": 8,
+      "timeout_ms": 10000
+    }
+  ]
+}

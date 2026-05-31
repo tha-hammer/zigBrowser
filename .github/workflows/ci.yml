@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  SDL_VIDEODRIVER: dummy
+  REQUIRE_SNAPSHOTS: "1"
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsdl2-dev libcurl4-openssl-dev pkg-config python3-pip
+
+      - name: Install macOS dependencies
+      if: runner.os == 'macOS'
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      run: |
+        brew install sdl2 curl pkg-config python
+
+      - name: Install Pillow
+      run: python3 -m pip install --user pillow
+
+      - name: Verify no hard-coded shared-object paths
+      run: |
+        if grep -nE 'cwd_relative\s*=\s*"/usr/lib/.+\.so' build.zig; then
+          echo "hard-coded shared library path found in build.zig"
+          exit 1
+        fi
+
+      - name: Build
+      run: zig build
+
+      - name: Test
+      run: zig build test
