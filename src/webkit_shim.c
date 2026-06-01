@@ -122,6 +122,7 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
                                    gpointer user_data);
 static gboolean on_signal_force_quit(gpointer user_data);
 static void request_app_shutdown(ZbApp *app, int with_deadline);
+static void terminate_window_web_process(ZbWindow *win);
 
 static void emit_safe_field(const char *text) {
   const char *p = text != NULL ? text : "";
@@ -190,6 +191,13 @@ static void emit_load_fail(const ZbWindow *win, const char *uri, int domain,
   g_snprintf(code_buf, sizeof(code_buf), "%d", code);
   emit_protocol3(win->app, "LOAD_FAIL", uri != NULL ? uri : "", domain_buf,
                  code_buf);
+}
+
+static void terminate_window_web_process(ZbWindow *win) {
+  if (win == NULL || win->view == NULL) {
+    return;
+  }
+  webkit_web_view_terminate_web_process(win->view);
 }
 
 static int is_cancelled_network_error(const GError *error) {
@@ -649,14 +657,17 @@ static gboolean on_window_timeout(gpointer user_data) {
   win->load_error_code = G_IO_ERROR_TIMED_OUT;
   g_free(win->load_error_message);
   win->load_error_message = g_strdup("Timed out");
+  char *timed_out_uri = g_strdup(webkit_web_view_get_uri(win->view));
 
   if (win->cancellable != NULL) {
     g_cancellable_cancel(win->cancellable);
   }
+  terminate_window_web_process(win);
   webkit_web_view_stop_loading(win->view);
 
-  emit_load_fail(win, webkit_web_view_get_uri(win->view), win->load_error_domain,
+  emit_load_fail(win, timed_out_uri, win->load_error_domain,
                  win->load_error_code);
+  g_free(timed_out_uri);
   return G_SOURCE_REMOVE;
 }
 
@@ -696,6 +707,8 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   if (win == NULL) {
     return;
   }
+
+  terminate_window_web_process(win);
 
   if (win->view != NULL) {
     if (win->sig_load_changed != 0) {
@@ -1045,6 +1058,7 @@ static void request_app_shutdown(ZbApp *app, int with_deadline) {
         g_cancellable_cancel(copy[i]->cancellable);
       }
       if (copy[i]->view != NULL) {
+        terminate_window_web_process(copy[i]);
         webkit_web_view_stop_loading(copy[i]->view);
       }
       GtkWidget *w = copy[i]->gtk_window;
@@ -1139,6 +1153,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
 
     for (int i = 0; i < n; i++) {
       if (copy[i] != NULL && copy[i]->gtk_window != NULL) {
+        terminate_window_web_process(copy[i]);
         GtkWidget *w = copy[i]->gtk_window;
         copy[i]->gtk_window = NULL;
         gtk_widget_destroy(w);
