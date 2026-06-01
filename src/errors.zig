@@ -8,6 +8,8 @@ pub const BrowserError = error{
     SnapshotFailed,
     WriteFailed,
     Timeout,
+    RuntimeMissing,
+    WebViewInitFailed,
     Cancelled,
 };
 
@@ -27,6 +29,8 @@ pub fn exitCode(err: anyerror) u8 {
         error.SnapshotFailed => 6,
         error.WriteFailed => 7,
         error.Timeout => 8,
+        error.RuntimeMissing => 9,
+        error.WebViewInitFailed => 10,
         error.Cancelled => 130,
         else => 1,
     };

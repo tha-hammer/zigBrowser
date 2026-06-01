@@ -6,8 +6,9 @@ pub const IpcError = error{
 };
 
 const AddArgs = struct { a: i64, b: i64 };
+const EchoArgs = struct { msg: []const u8 };
 
-threadlocal var dispatch_scratch: [8192]u8 = undefined;
+threadlocal var dispatch_scratch: [65536]u8 = undefined;
 threadlocal var dispatch_result_cstr: [4096]u8 = undefined;
 threadlocal var dispatch_err_cstr: [128]u8 = undefined;
 
@@ -21,6 +22,12 @@ pub fn dispatch(allocator: std.mem.Allocator, cmd: []const u8, args_json: []cons
         const add_args = try parseAddArgs(allocator, args_json);
         const sum: i128 = @as(i128, add_args.a) + @as(i128, add_args.b);
         return std.fmt.allocPrint(allocator, "{}", .{sum}) catch return error.BadArgs;
+    }
+
+    if (std.mem.eql(u8, cmd, "echo")) {
+        const msg = try parseEchoArg(allocator, args_json);
+        defer allocator.free(msg);
+        return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(msg, .{})}) catch return error.BadArgs;
     }
 
     if (std.mem.eql(u8, cmd, "os.info")) {
@@ -108,6 +115,16 @@ fn parseAddArgs(allocator: std.mem.Allocator, args_json: []const u8) IpcError!Ad
         .a = try valueToI64(a_value),
         .b = try valueToI64(b_value),
     };
+}
+
+fn parseEchoArg(allocator: std.mem.Allocator, args_json: []const u8) IpcError![]const u8 {
+    const trimmed = std.mem.trim(u8, args_json, &std.ascii.whitespace);
+    if (trimmed.len == 0) return error.BadArgs;
+
+    const parsed = std.json.parseFromSliceLeaky(EchoArgs, allocator, trimmed, .{
+        .allocate = .alloc_always,
+    }) catch return error.BadArgs;
+    return parsed.msg;
 }
 
 fn valueToI64(value: std.json.Value) IpcError!i64 {

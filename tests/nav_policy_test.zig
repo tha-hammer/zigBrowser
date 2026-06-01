@@ -39,6 +39,21 @@ test "decide rejects traversal outside app base" {
     );
 }
 
+test "decide blocks passwd traversal and handles file host containment edges" {
+    try std.testing.expectEqual(
+        nav_policy.Decision.ignore,
+        nav_policy.decide("file:///app/", "file:///app/../etc/passwd", .navigation_action),
+    );
+    try std.testing.expectEqual(
+        nav_policy.Decision.use,
+        nav_policy.decide("file://localhost/app/", "file://localhost/app/page-b.html", .navigation_action),
+    );
+    try std.testing.expectEqual(
+        nav_policy.Decision.use,
+        nav_policy.decide("file:///app/", "file:///app", .navigation_action),
+    );
+}
+
 test "decide rejects non-file candidates for navigation action" {
     const base = "file:///app/";
     try std.testing.expectEqual(
