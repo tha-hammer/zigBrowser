@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slice 2 Behavior 5 E2E: IPC success and error protocol lines."""
+"""Slice 3/4 M1/M2 GTK E2E: echo roundtrip success + bad-args rejection."""
 
 from __future__ import annotations
 
@@ -33,10 +33,12 @@ def run_case(
         print(f"FAIL\t{label}")
         print_fail_context(label, result)
         return False, 1
+
     ok_exit = result.returncode in (0, 130)
     ok_children, alive = assert_children_exit(result.tracked_children, 4.0)
     if ok_exit and ok_children:
         return True, 0
+
     print(f"FAIL\t{label}-clean-quit")
     if not ok_children:
         eprint(f"alive_children={alive}")
@@ -63,16 +65,26 @@ def main() -> int:
     prefix, env, runner_note = runner
     eprint(f"runner={runner_note}")
 
-    success_uri = index.resolve().as_uri() + "#auto=ipc"
-    error_uri = index.resolve().as_uri() + "#auto=ipcerr"
+    success_uri = index.resolve().as_uri() + "#auto=echo"
+    bad_args_uri = index.resolve().as_uri() + "#auto=echo-bad"
 
     def success_condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
         ipc_rows = protocol_rows(stdout_lines, "IPC")
-        return any(len(row) >= 3 and row[1] == "os.info" and len(row[2]) > 0 for row in ipc_rows)
+        ipcerr_rows = protocol_rows(stdout_lines, "IPCERR")
+        saw_success = any(
+            len(row) >= 3 and row[1] == "echo" and row[2] == '"hi-42"' for row in ipc_rows
+        )
+        saw_error = any(len(row) >= 3 and row[1] == "echo" for row in ipcerr_rows)
+        return saw_success and not saw_error
 
-    def error_condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
-        err_rows = protocol_rows(stdout_lines, "IPCERR")
-        return any(len(row) >= 3 and row[1] == "nope" and row[2] == "UnknownCommand" for row in err_rows)
+    def bad_args_condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
+        ipcerr_rows = protocol_rows(stdout_lines, "IPCERR")
+        ipc_rows = protocol_rows(stdout_lines, "IPC")
+        saw_bad_args = any(
+            len(row) >= 3 and row[1] == "echo" and row[2] == "BadArgs" for row in ipcerr_rows
+        )
+        saw_success = any(len(row) >= 3 and row[1] == "echo" for row in ipc_rows)
+        return saw_bad_args and not saw_success
 
     ok_success, code_success = run_case(
         browser,
@@ -81,24 +93,24 @@ def main() -> int:
         success_uri,
         args.timeout_sec,
         success_condition,
-        "ipc-roundtrip-success-not-observed",
+        "ipc-echo-success-not-observed",
     )
     if not ok_success:
         return code_success
 
-    ok_error, code_error = run_case(
+    ok_bad_args, code_bad_args = run_case(
         browser,
         env,
         prefix,
-        error_uri,
+        bad_args_uri,
         args.timeout_sec,
-        error_condition,
-        "ipc-roundtrip-error-not-observed",
+        bad_args_condition,
+        "ipc-echo-badargs-not-observed",
     )
-    if not ok_error:
-        return code_error
+    if not ok_bad_args:
+        return code_bad_args
 
-    print("PASS\tipc-roundtrip-success-and-error")
+    print("PASS\tipc-echo-success-and-badargs")
     return 0
 
 

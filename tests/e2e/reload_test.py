@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slice 2 Behavior 1 E2E: programmatic reload via SIGHUP emits a second NAV."""
+"""Slice 3/4 M7 GTK E2E: SIGHUP triggers reload and emits a second NAV."""
 
 from __future__ import annotations
 

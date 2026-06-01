@@ -34,15 +34,17 @@
         border-radius: 4px;
       }
     </style>
+    <script src="zbhost.js"></script>
   </head>
   <body>
     <h1>Hello App Shell</h1>
     <p>
-      Slice 2 fixture for navigation policy, sub-window routing, and JS-to-host IPC.
+      Fixture for app-shell IPC and navigation policy E2E.
     </p>
 
     <div class="row">
-      <button id="btn-os-info" type="button">IPC: os.info</button>
+      <button id="btn-echo" type="button">IPC: echo hi-42</button>
+      <button id="btn-echo-bad" type="button">IPC: echo bad args</button>
       <button id="btn-unknown" type="button">IPC: unknown cmd</button>
     </div>
 
@@ -72,13 +74,41 @@
         }
       }
 
-      function hostCall(payload) {
-        const handler = window.webkit?.messageHandlers?.zbHost;
-        if (!handler || typeof handler.postMessage !== "function") {
+      function callHost(cmd, args) {
+        if (typeof window.zbHost !== "function") {
           return Promise.reject(new Error("zbHost unavailable"));
         }
-        return handler
-          .postMessage(JSON.stringify(payload))
+        return window.zbHost(cmd, args);
+      }
+
+      function runEcho() {
+        return callHost("echo", { msg: "hi-42" })
+          .then((reply) => {
+            writeOut(reply);
+            return reply;
+          })
+          .catch((err) => {
+            const msg = err && err.message ? err.message : String(err);
+            writeOut("ERR:" + msg);
+            throw err;
+          });
+      }
+
+      function runEchoBadArgs() {
+        return callHost("echo", {})
+          .then((reply) => {
+            writeOut(reply);
+            return reply;
+          })
+          .catch((err) => {
+            const msg = err && err.message ? err.message : String(err);
+            writeOut("ERR:" + msg);
+            throw err;
+          });
+      }
+
+      function runUnknown() {
+        return callHost("frobnicate", {})
           .then((reply) => {
             writeOut(reply);
             return reply;
@@ -109,10 +139,13 @@
             case "subwindow":
               document.getElementById("link-foreign-blank").click();
               break;
-            case "ipc":
-              document.getElementById("btn-os-info").click();
+            case "echo":
+              document.getElementById("btn-echo").click();
               break;
-            case "ipcerr":
+            case "echo-bad":
+              document.getElementById("btn-echo-bad").click();
+              break;
+            case "unknown":
               document.getElementById("btn-unknown").click();
               break;
             default:
@@ -122,12 +155,16 @@
         }, 30);
       }
 
-      document.getElementById("btn-os-info").addEventListener("click", () => {
-        hostCall({ cmd: "os.info" });
+      document.getElementById("btn-echo").addEventListener("click", () => {
+        runEcho();
+      });
+
+      document.getElementById("btn-echo-bad").addEventListener("click", () => {
+        runEchoBadArgs();
       });
 
       document.getElementById("btn-unknown").addEventListener("click", () => {
-        hostCall({ cmd: "nope" });
+        runUnknown();
       });
 
       triggerScenarioFromHash();
