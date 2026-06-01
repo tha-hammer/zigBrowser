@@ -9,3 +9,6 @@
 zig-out/
 .cw9/
 .ntm/
+
+# E2E runtime-generated scratch fixtures
+tests/e2e/.tmp/
