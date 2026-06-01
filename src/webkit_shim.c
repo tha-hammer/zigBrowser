@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ZB_SIGINT_DEADLINE_S 3
+
 enum {
   ZB_DECISION_USE = 0,
   ZB_DECISION_IGNORE = 1,
@@ -104,6 +106,7 @@ struct ZbApp {
   guint sigint_source_id;
   guint sigterm_source_id;
   guint sighup_source_id;
+  guint sigint_deadline_source_id;
 };
 
 static gboolean on_window_timeout(gpointer user_data);
@@ -117,6 +120,8 @@ static gboolean on_window_nav_fallback(gpointer user_data);
 static GtkWidget *on_window_create(WebKitWebView *parent_view,
                                    WebKitNavigationAction *navigation,
                                    gpointer user_data);
+static gboolean on_signal_force_quit(gpointer user_data);
+static void request_app_shutdown(ZbApp *app, int with_deadline);
 
 static void emit_safe_field(const char *text) {
   const char *p = text != NULL ? text : "";
@@ -154,6 +159,37 @@ static void emit_protocol2(const ZbApp *app, const char *tag, const char *a,
   emit_safe_field(b);
   fputc('\n', stdout);
   fflush(stdout);
+}
+
+static void emit_protocol3(const ZbApp *app, const char *tag, const char *a,
+                           const char *b, const char *c) {
+  if (app == NULL || !app->e2e_protocol) {
+    return;
+  }
+
+  fputs(tag, stdout);
+  fputc('\t', stdout);
+  emit_safe_field(a);
+  fputc('\t', stdout);
+  emit_safe_field(b);
+  fputc('\t', stdout);
+  emit_safe_field(c);
+  fputc('\n', stdout);
+  fflush(stdout);
+}
+
+static void emit_load_fail(const ZbWindow *win, const char *uri, int domain,
+                           int code) {
+  if (win == NULL) {
+    return;
+  }
+
+  char domain_buf[32];
+  char code_buf[32];
+  g_snprintf(domain_buf, sizeof(domain_buf), "%d", domain);
+  g_snprintf(code_buf, sizeof(code_buf), "%d", code);
+  emit_protocol3(win->app, "LOAD_FAIL", uri != NULL ? uri : "", domain_buf,
+                 code_buf);
 }
 
 static int is_cancelled_network_error(const GError *error) {
@@ -600,10 +636,17 @@ static gboolean on_window_timeout(gpointer user_data) {
   if (win == NULL) {
     return G_SOURCE_REMOVE;
   }
+  if (win->finished || win->failed || win->cancelled || win->timed_out) {
+    return G_SOURCE_REMOVE;
+  }
 
   win->timed_out = 1;
   win->failed = 1;
+  win->cancelled = 1;
+  win->load_superseded = 1;
   win->suppress_success_emit = 1;
+  win->load_error_domain = G_IO_ERROR;
+  win->load_error_code = G_IO_ERROR_TIMED_OUT;
   g_free(win->load_error_message);
   win->load_error_message = g_strdup("Timed out");
 
@@ -612,8 +655,8 @@ static gboolean on_window_timeout(gpointer user_data) {
   }
   webkit_web_view_stop_loading(win->view);
 
-  emit_protocol2(win->app, "LOAD_FAIL", webkit_web_view_get_uri(win->view),
-                 "Timed out");
+  emit_load_fail(win, webkit_web_view_get_uri(win->view), win->load_error_domain,
+                 win->load_error_code);
   return G_SOURCE_REMOVE;
 }
 
@@ -709,9 +752,7 @@ static gboolean on_window_load_failed(WebKitWebView *view,
   win->suppress_success_emit = 1;
   window_set_load_error(win, error);
 
-  emit_protocol2(win->app, "LOAD_FAIL", uri,
-                 win->load_error_message != NULL ? win->load_error_message :
-                                                   "load failed");
+  emit_load_fail(win, uri, win->load_error_domain, win->load_error_code);
   return FALSE;
 }
 
@@ -828,7 +869,9 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
   return TRUE;
 }
 
-ZbWindow *zb_window_new(ZbApp *app, WebKitWebView *view) {
+ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
+  /* Seam passes a type-erased native view pointer; GTK backend casts locally. */
+  WebKitWebView *view = (WebKitWebView *)native_view;
   if (app == NULL || view == NULL) {
     return NULL;
   }
@@ -958,6 +1001,17 @@ static char *derive_app_base(const char *uri) {
   return g_strndup(uri, (gsize)(last_slash - uri + 1));
 }
 
+static gboolean on_signal_int(gpointer user_data) {
+  ZbApp *app = (ZbApp *)user_data;
+  if (app == NULL) {
+    return G_SOURCE_REMOVE;
+  }
+
+  app->exit_code = ZB_EXIT_CANCELLED;
+  request_app_shutdown(app, 1);
+  return G_SOURCE_REMOVE;
+}
+
 static gboolean on_signal_term(gpointer user_data) {
   ZbApp *app = (ZbApp *)user_data;
   if (app == NULL) {
@@ -965,6 +1019,19 @@ static gboolean on_signal_term(gpointer user_data) {
   }
 
   app->exit_code = ZB_EXIT_CANCELLED;
+  request_app_shutdown(app, 0);
+  return G_SOURCE_REMOVE;
+}
+
+static void request_app_shutdown(ZbApp *app, int with_deadline) {
+  if (app == NULL) {
+    return;
+  }
+
+  if (with_deadline && app->sigint_deadline_source_id == 0) {
+    app->sigint_deadline_source_id =
+        g_timeout_add_seconds(ZB_SIGINT_DEADLINE_S, on_signal_force_quit, app);
+  }
 
   ZbWindow *copy[ZB_MAX_WINDOWS];
   int n = app->n_windows;
@@ -974,6 +1041,12 @@ static gboolean on_signal_term(gpointer user_data) {
 
   for (int i = 0; i < n; i++) {
     if (copy[i] != NULL && copy[i]->gtk_window != NULL) {
+      if (copy[i]->cancellable != NULL) {
+        g_cancellable_cancel(copy[i]->cancellable);
+      }
+      if (copy[i]->view != NULL) {
+        webkit_web_view_stop_loading(copy[i]->view);
+      }
       GtkWidget *w = copy[i]->gtk_window;
       copy[i]->gtk_window = NULL;
       gtk_widget_destroy(w);
@@ -983,7 +1056,14 @@ static gboolean on_signal_term(gpointer user_data) {
   if (gtk_main_level() > 0) {
     gtk_main_quit();
   }
-  return G_SOURCE_REMOVE;
+}
+
+static gboolean on_signal_force_quit(gpointer user_data) {
+  ZbApp *app = (ZbApp *)user_data;
+  if (app != NULL) {
+    app->sigint_deadline_source_id = 0;
+  }
+  _exit(ZB_EXIT_CANCELLED);
 }
 
 static gboolean on_signal_hup(gpointer user_data) {
@@ -1038,7 +1118,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     return ZB_EXIT_GTK_INIT_FAILED;
   }
 
-  app.sigint_source_id = g_unix_signal_add(SIGINT, on_signal_term, &app);
+  app.sigint_source_id = g_unix_signal_add(SIGINT, on_signal_int, &app);
   app.sigterm_source_id = g_unix_signal_add(SIGTERM, on_signal_term, &app);
   app.sighup_source_id = g_unix_signal_add(SIGHUP, on_signal_hup, &app);
 
@@ -1048,6 +1128,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   remove_source(&app.sigint_source_id);
   remove_source(&app.sigterm_source_id);
   remove_source(&app.sighup_source_id);
+  remove_source(&app.sigint_deadline_source_id);
 
   if (app.n_windows > 0) {
     ZbWindow *copy[ZB_MAX_WINDOWS];

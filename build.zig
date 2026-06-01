@@ -1,14 +1,20 @@
 const std = @import("std");
+const Backend = enum {
+    gtk_backend,
+};
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const backend = resolveBackend(target);
 
-    const pkg_guard = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
-    });
+    const pkg_guard = switch (backend) {
+        .gtk_backend => b.addSystemCommand(&.{
+            "sh",
+            "-c",
+            "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
+        }),
+    };
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -16,7 +22,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureWebKit(root_module, b);
+    configureBackend(root_module, b, backend);
 
     const exe = b.addExecutable(.{
         .name = "zigBrowser",
@@ -38,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureWebKit(test_module, b);
+    configureBackend(test_module, b, backend);
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
     unit_tests.step.dependOn(&pkg_guard.step);
@@ -86,7 +92,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_nav_policy_tests.step);
 }
 
-fn configureWebKit(module: *std.Build.Module, b: *std.Build) void {
+fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
+    return switch (target.result.os.tag) {
+        .linux => .gtk_backend,
+        else => std.debug.panic("NoBackendLinked: no backend for target os '{s}'", .{@tagName(target.result.os.tag)}),
+    };
+}
+
+fn configureBackend(module: *std.Build.Module, b: *std.Build, backend: Backend) void {
+    switch (backend) {
+        .gtk_backend => configureGtkBackend(module, b),
+    }
+}
+
+fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     module.addIncludePath(b.path("src"));
     module.addCSourceFile(.{
         .file = b.path("src/webkit_shim.c"),

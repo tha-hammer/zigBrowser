@@ -13,20 +13,32 @@ test "module reachability" {
     _ = webkit;
 }
 
-test "--version line reports WebKitGTK and GTK runtime versions" {
+test "--version line reports backend runtime versions" {
     var buf: [160]u8 = undefined;
     const line = webkit.versionLine(&buf);
     try std.testing.expect(isVersionLine(line));
 }
 
 fn isVersionLine(line: []const u8) bool {
-    const prefix = "zigBrowser — WebKitGTK ";
+    const prefix = "zigBrowser — ";
     if (!std.mem.startsWith(u8, line, prefix)) return false;
 
     const rest = line[prefix.len..];
+    if (std.mem.startsWith(u8, rest, "WebKitGTK ")) {
+        return isGtkVersion(rest["WebKitGTK ".len ..]);
+    }
+    if (std.mem.startsWith(u8, rest, "WebView2 ")) {
+        return rest.len > "WebView2 ".len;
+    }
+    if (std.mem.startsWith(u8, rest, "WKWebView ")) {
+        return rest.len > "WKWebView ".len;
+    }
+    return false;
+}
+
+fn isGtkVersion(rest: []const u8) bool {
     const sep = ", GTK ";
     const idx = std.mem.indexOf(u8, rest, sep) orelse return false;
-
     return isSemverTriplet(rest[0..idx]) and isSemverTriplet(rest[idx + sep.len ..]);
 }
 
