@@ -13,6 +13,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const backend = resolveBackend(target);
+    const webview2_include = b.option(
+        []const u8,
+        "webview2_include",
+        "Directory containing WebView2.h (or set WEBVIEW2_INCLUDE)",
+    );
+    const webview2_lib = b.option(
+        []const u8,
+        "webview2_lib",
+        "Directory containing WebView2LoaderStatic.lib (or set WEBVIEW2_LIB)",
+    );
+    const webview2_paths: ?WebView2Paths = if (backend == .webview2_backend)
+        .{
+            .include_dir = webview2_include orelse envOrPanic(b, "WEBVIEW2_INCLUDE"),
+            .lib_dir = webview2_lib orelse envOrPanic(b, "WEBVIEW2_LIB"),
+        }
+    else
+        null;
 
     const pkg_guard = switch (backend) {
         .gtk_backend => b.addSystemCommand(&.{
@@ -20,7 +37,7 @@ pub fn build(b: *std.Build) void {
             "-c",
             "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
         }),
-        .webview2_backend => webView2PkgGuard(b, webView2Paths(b)),
+        .webview2_backend => webView2PkgGuard(b, webview2_paths.?),
     };
 
     const root_module = b.createModule(.{
@@ -29,7 +46,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureBackend(root_module, b, backend);
+    configureBackend(root_module, b, backend, webview2_paths);
 
     const exe = b.addExecutable(.{
         .name = "zigBrowser",
@@ -51,7 +68,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureBackend(test_module, b, backend);
+    configureBackend(test_module, b, backend, webview2_paths);
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
     unit_tests.step.dependOn(&pkg_guard.step);
@@ -121,10 +138,15 @@ fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
     };
 }
 
-fn configureBackend(module: *std.Build.Module, b: *std.Build, backend: Backend) void {
+fn configureBackend(
+    module: *std.Build.Module,
+    b: *std.Build,
+    backend: Backend,
+    webview2_paths: ?WebView2Paths,
+) void {
     switch (backend) {
         .gtk_backend => configureGtkBackend(module, b),
-        .webview2_backend => configureWebView2Backend(module, b, webView2Paths(b)),
+        .webview2_backend => configureWebView2Backend(module, b, webview2_paths.?),
     }
 }
 
@@ -149,30 +171,12 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
         .flags = &.{"-std=c++17"},
     });
 
-    module.linkSystemLibrary("WebView2Loader", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("WebView2LoaderStatic", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("ole32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("oleaut32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("user32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("gdi32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("shell32", .{ .use_pkg_config = .no });
-}
-
-fn webView2Paths(b: *std.Build) WebView2Paths {
-    const include_dir = b.option(
-        []const u8,
-        "webview2_include",
-        "Directory containing WebView2.h (or set WEBVIEW2_INCLUDE)",
-    ) orelse envOrPanic(b, "WEBVIEW2_INCLUDE");
-    const lib_dir = b.option(
-        []const u8,
-        "webview2_lib",
-        "Directory containing WebView2Loader.lib (or set WEBVIEW2_LIB)",
-    ) orelse envOrPanic(b, "WEBVIEW2_LIB");
-
-    return .{
-        .include_dir = include_dir,
-        .lib_dir = lib_dir,
-    };
 }
 
 fn envOrPanic(b: *std.Build, name: []const u8) []const u8 {
@@ -182,7 +186,7 @@ fn envOrPanic(b: *std.Build, name: []const u8) []const u8 {
 
 fn webView2PkgGuard(b: *std.Build, paths: WebView2Paths) *std.Build.Step.Run {
     const script = b.fmt(
-        "if not exist \"{s}\\WebView2.h\" (echo ERROR: missing WebView2.h under {s} 1>&2 & exit /b 1) else if not exist \"{s}\\WebView2Loader.lib\" (echo ERROR: missing WebView2Loader.lib under {s} 1>&2 & exit /b 1)",
+        "if not exist \"{s}\\WebView2.h\" (echo ERROR: missing WebView2.h under {s} 1>&2 & exit /b 1) else if not exist \"{s}\\WebView2LoaderStatic.lib\" (echo ERROR: missing WebView2LoaderStatic.lib under {s} 1>&2 & exit /b 1)",
         .{ paths.include_dir, paths.include_dir, paths.lib_dir, paths.lib_dir },
     );
     return b.addSystemCommand(&.{ "cmd.exe", "/C", script });
