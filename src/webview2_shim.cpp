@@ -234,7 +234,8 @@ bool create_host_window(AppState *app) {
   wc.lpfnWndProc = window_proc;
   wc.hInstance = app->instance;
   wc.lpszClassName = kWindowClassName;
-  wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  wc.hCursor =
+      LoadCursorW(static_cast<HINSTANCE>(nullptr), MAKEINTRESOURCEW(32512));
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 
   const ATOM atom = RegisterClassExW(&wc);

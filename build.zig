@@ -251,4 +251,5 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
     module.linkSystemLibrary("user32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("gdi32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("shell32", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("advapi32", .{ .use_pkg_config = .no });
 }
