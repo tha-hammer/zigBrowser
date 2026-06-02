@@ -133,6 +133,18 @@ bool webview2_runtime_version(char *buf, size_t len) {
   return written > 0;
 }
 
+void log_hresult(const char *stage, HRESULT hr) {
+  fprintf(stderr, "%s failed: HRESULT=0x%08lx\n", stage,
+          static_cast<unsigned long>(hr));
+  fflush(stderr);
+}
+
+void log_last_error(const char *stage) {
+  fprintf(stderr, "%s failed: GetLastError=%lu\n", stage,
+          static_cast<unsigned long>(GetLastError()));
+  fflush(stderr);
+}
+
 void request_quit(AppState *app, int exit_code) {
   if (app != nullptr) {
     app->exit_code = exit_code;
@@ -240,6 +252,7 @@ bool create_host_window(AppState *app) {
 
   const ATOM atom = RegisterClassExW(&wc);
   if (atom == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    log_last_error("RegisterClassExW");
     return false;
   }
 
@@ -248,6 +261,7 @@ bool create_host_window(AppState *app) {
                               CW_USEDEFAULT, 1024, 768, nullptr, nullptr,
                               app->instance, app);
   if (hwnd == nullptr) {
+    log_last_error("CreateWindowExW");
     return false;
   }
 
@@ -303,6 +317,7 @@ HRESULT create_controller(AppState *app) {
           [app](HRESULT result, ICoreWebView2Controller *controller)
               -> HRESULT {
             if (FAILED(result) || controller == nullptr) {
+              log_hresult("CreateCoreWebView2Controller", result);
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
               return S_OK;
             }
@@ -310,6 +325,7 @@ HRESULT create_controller(AppState *app) {
             app->controller = controller;
             HRESULT hr = app->controller->get_CoreWebView2(&app->webview);
             if (FAILED(hr) || !app->webview) {
+              log_hresult("get_CoreWebView2", hr);
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
               return S_OK;
             }
@@ -356,6 +372,7 @@ HRESULT create_controller(AppState *app) {
 
             hr = install_document_script_and_navigate(app);
             if (FAILED(hr)) {
+              log_hresult("AddScriptToExecuteOnDocumentCreated", hr);
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
             }
             return S_OK;
@@ -371,6 +388,8 @@ HRESULT create_environment(AppState *app) {
           [app](HRESULT result, ICoreWebView2Environment *environment)
               -> HRESULT {
             if (FAILED(result) || environment == nullptr) {
+              log_hresult("CreateCoreWebView2EnvironmentWithOptions callback",
+                          result);
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
               return S_OK;
             }
@@ -378,6 +397,7 @@ HRESULT create_environment(AppState *app) {
             app->environment = environment;
             HRESULT hr = create_controller(app);
             if (FAILED(hr)) {
+              log_hresult("CreateCoreWebView2Controller start", hr);
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
             }
             return S_OK;
@@ -406,6 +426,7 @@ extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
 
   const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(com_hr)) {
+    log_hresult("CoInitializeEx", com_hr);
     return ZB_EXIT_WEBVIEW_INIT_FAILED;
   }
 
@@ -417,10 +438,15 @@ extern "C" int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
 
   int rc = ZB_EXIT_SUCCESS;
   if (app.uri.empty() || !create_host_window(&app)) {
+    if (app.uri.empty()) {
+      fprintf(stderr, "utf8_to_wide(uri) failed\n");
+      fflush(stderr);
+    }
     rc = ZB_EXIT_WEBVIEW_INIT_FAILED;
   } else {
     HRESULT hr = create_environment(&app);
     if (FAILED(hr)) {
+      log_hresult("CreateCoreWebView2EnvironmentWithOptions start", hr);
       rc = ZB_EXIT_WEBVIEW_INIT_FAILED;
     } else {
       rc = run_message_loop(&app);
