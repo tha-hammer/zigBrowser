@@ -6,12 +6,14 @@ const Backend = enum {
 
 const WebView2Paths = struct {
     include_dir: ?[]const u8,
+    winrt_include_dir: ?[]const u8,
     lib_dir: ?[]const u8,
 };
 
 const CheckWebView2SdkStep = struct {
     step: std.Build.Step,
     include_dir: ?[]const u8,
+    winrt_include_dir: ?[]const u8,
     lib_dir: ?[]const u8,
 
     fn create(b: *std.Build, paths: WebView2Paths) *CheckWebView2SdkStep {
@@ -24,6 +26,7 @@ const CheckWebView2SdkStep = struct {
                 .makeFn = make,
             }),
             .include_dir = paths.include_dir,
+            .winrt_include_dir = paths.winrt_include_dir,
             .lib_dir = paths.lib_dir,
         };
         return self;
@@ -41,6 +44,10 @@ const CheckWebView2SdkStep = struct {
             try fail(step, "missing WebView2 library directory; pass -Dwebview2_lib=<dir> or set WEBVIEW2_LIB");
             return error.MakeFailed;
         };
+        const winrt_include_dir = self.winrt_include_dir orelse {
+            try fail(step, "missing WinRT include directory; pass -Dwinrt_include=<dir> or set WINRT_INCLUDE");
+            return error.MakeFailed;
+        };
 
         const header_path = step.owner.fmt("{s}/WebView2.h", .{include_dir});
         std.Io.Dir.cwd().access(step.owner.graph.io, header_path, .{}) catch {
@@ -51,6 +58,12 @@ const CheckWebView2SdkStep = struct {
         const loader_path = step.owner.fmt("{s}/WebView2LoaderStatic.lib", .{lib_dir});
         std.Io.Dir.cwd().access(step.owner.graph.io, loader_path, .{}) catch {
             try fail(step, step.owner.fmt("missing WebView2LoaderStatic.lib at {s}", .{loader_path}));
+            return error.MakeFailed;
+        };
+
+        const wrl_path = step.owner.fmt("{s}/wrl.h", .{winrt_include_dir});
+        std.Io.Dir.cwd().access(step.owner.graph.io, wrl_path, .{}) catch {
+            try fail(step, step.owner.fmt("missing wrl.h at {s}", .{wrl_path}));
             return error.MakeFailed;
         };
     }
@@ -74,8 +87,14 @@ pub fn build(b: *std.Build) void {
         "webview2_lib",
         "Directory containing WebView2LoaderStatic.lib (or set WEBVIEW2_LIB)",
     );
+    const winrt_include = b.option(
+        []const u8,
+        "winrt_include",
+        "Directory containing wrl.h (or set WINRT_INCLUDE)",
+    );
     const webview2_paths: WebView2Paths = .{
         .include_dir = webview2_include orelse b.graph.environ_map.get("WEBVIEW2_INCLUDE"),
+        .winrt_include_dir = winrt_include orelse b.graph.environ_map.get("WINRT_INCLUDE"),
         .lib_dir = webview2_lib orelse b.graph.environ_map.get("WEBVIEW2_LIB"),
     };
 
@@ -214,6 +233,9 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
     module.addIncludePath(b.path("src"));
     if (paths.include_dir) |include_dir| {
         module.addSystemIncludePath(.{ .cwd_relative = include_dir });
+    }
+    if (paths.winrt_include_dir) |winrt_include_dir| {
+        module.addSystemIncludePath(.{ .cwd_relative = winrt_include_dir });
     }
     if (paths.lib_dir) |lib_dir| {
         module.addLibraryPath(.{ .cwd_relative = lib_dir });
