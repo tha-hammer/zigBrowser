@@ -5,8 +5,59 @@ const Backend = enum {
 };
 
 const WebView2Paths = struct {
-    include_dir: []const u8,
-    lib_dir: []const u8,
+    include_dir: ?[]const u8,
+    lib_dir: ?[]const u8,
+};
+
+const CheckWebView2SdkStep = struct {
+    step: std.Build.Step,
+    include_dir: ?[]const u8,
+    lib_dir: ?[]const u8,
+
+    fn create(b: *std.Build, paths: WebView2Paths) *CheckWebView2SdkStep {
+        const self = b.allocator.create(CheckWebView2SdkStep) catch @panic("OOM");
+        self.* = .{
+            .step = std.Build.Step.init(.{
+                .id = .custom,
+                .name = "check WebView2 SDK",
+                .owner = b,
+                .makeFn = make,
+            }),
+            .include_dir = paths.include_dir,
+            .lib_dir = paths.lib_dir,
+        };
+        return self;
+    }
+
+    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) !void {
+        _ = options;
+        const self: *CheckWebView2SdkStep = @fieldParentPtr("step", step);
+
+        const include_dir = self.include_dir orelse {
+            try fail(step, "missing WebView2 include directory; pass -Dwebview2_include=<dir> or set WEBVIEW2_INCLUDE");
+            return error.MakeFailed;
+        };
+        const lib_dir = self.lib_dir orelse {
+            try fail(step, "missing WebView2 library directory; pass -Dwebview2_lib=<dir> or set WEBVIEW2_LIB");
+            return error.MakeFailed;
+        };
+
+        const header_path = step.owner.fmt("{s}/WebView2.h", .{include_dir});
+        std.Io.Dir.cwd().access(step.owner.graph.io, header_path, .{}) catch {
+            try fail(step, step.owner.fmt("missing WebView2.h at {s}", .{header_path}));
+            return error.MakeFailed;
+        };
+
+        const loader_path = step.owner.fmt("{s}/WebView2LoaderStatic.lib", .{lib_dir});
+        std.Io.Dir.cwd().access(step.owner.graph.io, loader_path, .{}) catch {
+            try fail(step, step.owner.fmt("missing WebView2LoaderStatic.lib at {s}", .{loader_path}));
+            return error.MakeFailed;
+        };
+    }
+
+    fn fail(step: *std.Build.Step, message: []const u8) !void {
+        try step.result_error_msgs.append(step.owner.allocator, message);
+    }
 };
 
 pub fn build(b: *std.Build) void {
@@ -23,21 +74,18 @@ pub fn build(b: *std.Build) void {
         "webview2_lib",
         "Directory containing WebView2LoaderStatic.lib (or set WEBVIEW2_LIB)",
     );
-    const webview2_paths: ?WebView2Paths = if (backend == .webview2_backend)
-        .{
-            .include_dir = webview2_include orelse envOrPanic(b, "WEBVIEW2_INCLUDE"),
-            .lib_dir = webview2_lib orelse envOrPanic(b, "WEBVIEW2_LIB"),
-        }
-    else
-        null;
+    const webview2_paths: WebView2Paths = .{
+        .include_dir = webview2_include orelse b.graph.environ_map.get("WEBVIEW2_INCLUDE"),
+        .lib_dir = webview2_lib orelse b.graph.environ_map.get("WEBVIEW2_LIB"),
+    };
 
-    const pkg_guard = switch (backend) {
-        .gtk_backend => b.addSystemCommand(&.{
+    const pkg_guard: *std.Build.Step = switch (backend) {
+        .gtk_backend => &b.addSystemCommand(&.{
             "sh",
             "-c",
             "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
-        }),
-        .webview2_backend => webView2PkgGuard(b, webview2_paths.?),
+        }).step,
+        .webview2_backend => &CheckWebView2SdkStep.create(b, webview2_paths).step,
     };
 
     const root_module = b.createModule(.{
@@ -52,13 +100,13 @@ pub fn build(b: *std.Build) void {
         .name = "zigBrowser",
         .root_module = root_module,
     });
-    exe.step.dependOn(&pkg_guard.step);
+    exe.step.dependOn(pkg_guard);
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    run_cmd.step.dependOn(&pkg_guard.step);
+    run_cmd.step.dependOn(pkg_guard);
     run_step.dependOn(&run_cmd.step);
     if (b.args) |args| run_cmd.addArgs(args);
 
@@ -71,7 +119,7 @@ pub fn build(b: *std.Build) void {
     configureBackend(test_module, b, backend, webview2_paths);
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
-    unit_tests.step.dependOn(&pkg_guard.step);
+    unit_tests.step.dependOn(pkg_guard);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     run_unit_tests.skip_foreign_checks = true;
@@ -142,11 +190,11 @@ fn configureBackend(
     module: *std.Build.Module,
     b: *std.Build,
     backend: Backend,
-    webview2_paths: ?WebView2Paths,
+    webview2_paths: WebView2Paths,
 ) void {
     switch (backend) {
         .gtk_backend => configureGtkBackend(module, b),
-        .webview2_backend => configureWebView2Backend(module, b, webview2_paths.?),
+        .webview2_backend => configureWebView2Backend(module, b, webview2_paths),
     }
 }
 
@@ -164,8 +212,12 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
 
 fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: WebView2Paths) void {
     module.addIncludePath(b.path("src"));
-    module.addSystemIncludePath(.{ .cwd_relative = paths.include_dir });
-    module.addLibraryPath(.{ .cwd_relative = paths.lib_dir });
+    if (paths.include_dir) |include_dir| {
+        module.addSystemIncludePath(.{ .cwd_relative = include_dir });
+    }
+    if (paths.lib_dir) |lib_dir| {
+        module.addLibraryPath(.{ .cwd_relative = lib_dir });
+    }
     module.addCSourceFile(.{
         .file = b.path("src/webview2_shim.cpp"),
         .flags = &.{"-std=c++17"},
@@ -177,17 +229,4 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
     module.linkSystemLibrary("user32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("gdi32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("shell32", .{ .use_pkg_config = .no });
-}
-
-fn envOrPanic(b: *std.Build, name: []const u8) []const u8 {
-    return b.graph.environ_map.get(name) orelse
-        std.debug.panic("missing {s}; pass -Dwebview2_include/-Dwebview2_lib or set WEBVIEW2_INCLUDE/WEBVIEW2_LIB", .{name});
-}
-
-fn webView2PkgGuard(b: *std.Build, paths: WebView2Paths) *std.Build.Step.Run {
-    const script = b.fmt(
-        "if not exist \"{s}\\WebView2.h\" (echo ERROR: missing WebView2.h under {s} 1>&2 & exit /b 1) else if not exist \"{s}\\WebView2LoaderStatic.lib\" (echo ERROR: missing WebView2LoaderStatic.lib under {s} 1>&2 & exit /b 1)",
-        .{ paths.include_dir, paths.include_dir, paths.lib_dir, paths.lib_dir },
-    );
-    return b.addSystemCommand(&.{ "cmd.exe", "/C", script });
 }
