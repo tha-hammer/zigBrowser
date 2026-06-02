@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const IpcError = error{
     UnknownCommand,
@@ -32,13 +33,7 @@ pub fn dispatch(allocator: std.mem.Allocator, cmd: []const u8, args_json: []cons
 
     if (std.mem.eql(u8, cmd, "os.info")) {
         try expectNoArgs(allocator, args_json);
-        const uts = std.posix.uname();
-        const info = .{
-            .sysname = std.mem.sliceTo(&uts.sysname, 0),
-            .release = std.mem.sliceTo(&uts.release, 0),
-            .machine = std.mem.sliceTo(&uts.machine, 0),
-        };
-        return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(info, .{})}) catch return error.BadArgs;
+        return osInfoJson(allocator);
     }
 
     return error.UnknownCommand;
@@ -125,6 +120,43 @@ fn parseEchoArg(allocator: std.mem.Allocator, args_json: []const u8) IpcError![]
         .allocate = .alloc_always,
     }) catch return error.BadArgs;
     return parsed.msg;
+}
+
+fn osInfoJson(allocator: std.mem.Allocator) IpcError![]const u8 {
+    switch (comptime builtin.os.tag) {
+        .windows => {
+            const windows = std.os.windows;
+            var version_info: windows.RTL_OSVERSIONINFOW = undefined;
+            version_info.dwOSVersionInfoSize = @sizeOf(windows.RTL_OSVERSIONINFOW);
+
+            switch (windows.ntdll.RtlGetVersion(&version_info)) {
+                .SUCCESS => {},
+                else => return error.BadArgs,
+            }
+
+            var release_buf: [64]u8 = undefined;
+            const release = std.fmt.bufPrint(&release_buf, "{}.{}.{}", .{
+                version_info.dwMajorVersion,
+                version_info.dwMinorVersion,
+                version_info.dwBuildNumber,
+            }) catch return error.BadArgs;
+            const info = .{
+                .sysname = "Windows",
+                .release = release,
+                .machine = @tagName(builtin.cpu.arch),
+            };
+            return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(info, .{})}) catch return error.BadArgs;
+        },
+        else => {
+            const uts = std.posix.uname();
+            const info = .{
+                .sysname = std.mem.sliceTo(&uts.sysname, 0),
+                .release = std.mem.sliceTo(&uts.release, 0),
+                .machine = std.mem.sliceTo(&uts.machine, 0),
+            };
+            return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(info, .{})}) catch return error.BadArgs;
+        },
+    }
 }
 
 fn valueToI64(value: std.json.Value) IpcError!i64 {

@@ -67,6 +67,19 @@ test "dispatch os.info returns uname-backed JSON object text" {
     try std.testing.expectEqualStrings(expected_machine, parsed.value.machine);
 }
 
+test "dispatch os.info returns platform-invariant shape" {
+    const allocator = std.testing.allocator;
+    const result = try ipc.dispatch(allocator, "os.info", "{}");
+    defer allocator.free(result);
+
+    var parsed = try std.json.parseFromSlice(OsInfo, allocator, result, .{});
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.sysname.len > 0);
+    try std.testing.expect(parsed.value.release.len > 0);
+    try std.testing.expect(parsed.value.machine.len > 0);
+}
+
 test "dispatch rejects unknown command and bad args" {
     const allocator = std.testing.allocator;
 
