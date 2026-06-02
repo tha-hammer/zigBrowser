@@ -250,11 +250,12 @@ function Get-VsWhere {
     return $null
 }
 
-function Get-WindowsSdk22621 {
+function Get-WindowsKitsRoots {
     $roots = @()
     if ($env:WindowsSdkDir) {
         $roots += $env:WindowsSdkDir
     }
+    $roots += "C:\Program Files (x86)\Windows Kits\10"
 
     $sdkKeys = @(
         "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots",
@@ -268,28 +269,49 @@ function Get-WindowsSdk22621 {
             }
         }
     }
+    return ($roots | Where-Object { $_ } | Select-Object -Unique)
+}
 
-    foreach ($root in ($roots | Where-Object { $_ } | Select-Object -Unique)) {
+function Get-WindowsSdkInfo {
+    foreach ($root in (Get-WindowsKitsRoots)) {
         $includeRoot = Join-Path $root "Include"
         if (-not (Test-Path -LiteralPath $includeRoot)) {
             continue
         }
 
         $versions = Get-ChildItem -LiteralPath $includeRoot -Directory |
-            Where-Object { $_.Name -like "10.0.22621.*" } |
-            Sort-Object Name -Descending
+            Sort-Object -Property @{
+                Expression = {
+                    try {
+                        [version]$_.Name
+                    } catch {
+                        [version]"0.0.0.0"
+                    }
+                }
+                Descending = $true
+            }
         foreach ($version in $versions) {
             $eventToken = Join-Path $version.FullName "um\EventToken.h"
-            if (Test-Path -LiteralPath $eventToken) {
+            $winrtInclude = Join-Path $version.FullName "winrt"
+            $wrl = Join-Path $winrtInclude "wrl.h"
+            if ((Test-Path -LiteralPath $eventToken) -and (Test-Path -LiteralPath $wrl)) {
                 return [pscustomobject]@{
                     Root = $root
                     Version = $version.Name
                     EventToken = $eventToken
+                    WinrtInclude = $winrtInclude
+                    Wrl = $wrl
                 }
             }
         }
     }
     return $null
+}
+
+function Set-WinrtIncludeEnvironment {
+    param([object]$Sdk)
+    [Environment]::SetEnvironmentVariable("WINRT_INCLUDE", $Sdk.WinrtInclude, "User")
+    $env:WINRT_INCLUDE = $Sdk.WinrtInclude
 }
 
 function Get-MsvcBuildToolsInstall {
@@ -301,7 +323,7 @@ function Get-MsvcBuildToolsInstall {
     $install = & $vswhere `
         -latest `
         -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.Windows11SDK.22621 `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         -property installationPath
     if ($install) {
         return ($install | Select-Object -First 1)
@@ -311,9 +333,13 @@ function Get-MsvcBuildToolsInstall {
 
 function Test-CppToolchain {
     $vsInstall = Get-MsvcBuildToolsInstall
-    $sdk = Get-WindowsSdk22621
+    $sdk = Get-WindowsSdkInfo
     if ($vsInstall -and $sdk) {
-        return "MSVC Build Tools at $vsInstall; Windows SDK $($sdk.Version)"
+        return [pscustomobject]@{
+            VsInstall = $vsInstall
+            Sdk = $sdk
+            Summary = "MSVC Build Tools at $vsInstall; Windows SDK $($sdk.Version)"
+        }
     }
     return $null
 }
@@ -322,8 +348,9 @@ function Install-CppToolchain {
     Write-Step "Ensuring MSVC Build Tools and Windows 11 SDK 22621 are installed"
     $existing = Test-CppToolchain
     if ($existing) {
-        Write-Host "C/C++ toolchain found: $existing"
-        return
+        Set-WinrtIncludeEnvironment -Sdk $existing.Sdk
+        Write-Host "C/C++ toolchain found: $($existing.Summary)"
+        return $existing
     }
     if ($SkipToolchainInstall) {
         throw "MSVC Build Tools with VC tools and Windows 11 SDK 22621 not found, and -SkipToolchainInstall was set"
@@ -344,8 +371,11 @@ function Install-CppToolchain {
 
     $installed = Test-CppToolchain
     if (-not $installed) {
-        throw "Build Tools install completed, but MSVC VC tools plus Windows 11 SDK 22621 were not detected. Open a new PowerShell or verify Visual Studio Build Tools installation."
+        throw "Build Tools install completed, but MSVC VC tools plus a Windows SDK with um\EventToken.h and winrt\wrl.h were not detected. Open a new PowerShell or verify Visual Studio Build Tools installation."
     }
+    Set-WinrtIncludeEnvironment -Sdk $installed.Sdk
+    Write-Host "C/C++ toolchain installed: $($installed.Summary)"
+    return $installed
 }
 
 function Sync-Repo {
@@ -379,7 +409,7 @@ function Sync-Repo {
 Enable-OpenSshServer
 $zig = Install-Zig
 $webview2 = Install-WebView2Sdk
-Install-CppToolchain
+$toolchain = Install-CppToolchain
 Sync-Repo
 
 $runtimeVersion = Get-WebView2RuntimeVersion
@@ -389,6 +419,7 @@ Write-Host "zig_version=$(& $zig version)"
 Write-Host "WEBVIEW2_INCLUDE=$($webview2.Include)"
 Write-Host "WEBVIEW2_LIB=$($webview2.Lib)"
 Write-Host "WEBVIEW2_LOADER_LIB=$($webview2.LoaderLib)"
+Write-Host "WINRT_INCLUDE=$($toolchain.Sdk.WinrtInclude)"
 if ($webview2.LoaderDll) {
     Write-Host "WEBVIEW2_LOADER_DLL=$($webview2.LoaderDll)"
 }
