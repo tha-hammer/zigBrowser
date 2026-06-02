@@ -250,50 +250,88 @@ function Get-VsWhere {
     return $null
 }
 
-function Test-CppToolchain {
-    if (Get-Command "cl.exe" -ErrorAction SilentlyContinue) {
-        return "cl.exe"
-    }
-    if (Get-Command "clang-cl.exe" -ErrorAction SilentlyContinue) {
-        return "clang-cl.exe"
+function Get-WindowsSdk22621 {
+    $roots = @()
+    if ($env:WindowsSdkDir) {
+        $roots += $env:WindowsSdkDir
     }
 
-    $zig = Get-Command "zig.exe" -ErrorAction SilentlyContinue
-    if ($null -ne $zig) {
-        try {
-            & $zig.Source "c++" "--version" | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                return "zig c++"
+    $sdkKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots"
+    )
+    foreach ($key in $sdkKeys) {
+        if (Test-Path -LiteralPath $key) {
+            $props = Get-ItemProperty -LiteralPath $key
+            if ($props.KitsRoot10) {
+                $roots += $props.KitsRoot10
             }
-        } catch {
-            # Fall through to MSVC Build Tools discovery/install.
         }
     }
 
-    $vswhere = Get-VsWhere
-    if ($vswhere) {
-        $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-        if ($install) {
-            return $install
+    foreach ($root in ($roots | Where-Object { $_ } | Select-Object -Unique)) {
+        $includeRoot = Join-Path $root "Include"
+        if (-not (Test-Path -LiteralPath $includeRoot)) {
+            continue
+        }
+
+        $versions = Get-ChildItem -LiteralPath $includeRoot -Directory |
+            Where-Object { $_.Name -like "10.0.22621.*" } |
+            Sort-Object Name -Descending
+        foreach ($version in $versions) {
+            $eventToken = Join-Path $version.FullName "um\EventToken.h"
+            if (Test-Path -LiteralPath $eventToken) {
+                return [pscustomobject]@{
+                    Root = $root
+                    Version = $version.Name
+                    EventToken = $eventToken
+                }
+            }
         }
     }
     return $null
 }
 
+function Get-MsvcBuildToolsInstall {
+    $vswhere = Get-VsWhere
+    if (-not $vswhere) {
+        return $null
+    }
+
+    $install = & $vswhere `
+        -latest `
+        -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.Windows11SDK.22621 `
+        -property installationPath
+    if ($install) {
+        return ($install | Select-Object -First 1)
+    }
+    return $null
+}
+
+function Test-CppToolchain {
+    $vsInstall = Get-MsvcBuildToolsInstall
+    $sdk = Get-WindowsSdk22621
+    if ($vsInstall -and $sdk) {
+        return "MSVC Build Tools at $vsInstall; Windows SDK $($sdk.Version)"
+    }
+    return $null
+}
+
 function Install-CppToolchain {
-    Write-Step "Ensuring a C/C++ toolchain is installed"
+    Write-Step "Ensuring MSVC Build Tools and Windows 11 SDK 22621 are installed"
     $existing = Test-CppToolchain
     if ($existing) {
         Write-Host "C/C++ toolchain found: $existing"
         return
     }
     if ($SkipToolchainInstall) {
-        throw "No cl.exe or clang-cl.exe found, and -SkipToolchainInstall was set"
+        throw "MSVC Build Tools with VC tools and Windows 11 SDK 22621 not found, and -SkipToolchainInstall was set"
     }
 
     $winget = Get-Command "winget.exe" -ErrorAction SilentlyContinue
     if ($null -eq $winget) {
-        throw "No C/C++ toolchain found and winget.exe is unavailable. Install Visual Studio Build Tools with the VC tools workload or install clang-cl, then rerun setup.ps1."
+        throw "MSVC Build Tools and Windows 11 SDK 22621 not found, and winget.exe is unavailable. Install Visual Studio Build Tools with VC tools and Windows11SDK.22621, then rerun setup.ps1."
     }
 
     & $winget.Source install `
@@ -302,11 +340,11 @@ function Install-CppToolchain {
         --silent `
         --accept-package-agreements `
         --accept-source-agreements `
-        --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --norestart"
+        --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended"
 
     $installed = Test-CppToolchain
     if (-not $installed) {
-        throw "C/C++ toolchain install completed, but cl.exe/clang-cl.exe was not found. Open a new Developer PowerShell or verify Visual Studio Build Tools installation."
+        throw "Build Tools install completed, but MSVC VC tools plus Windows 11 SDK 22621 were not detected. Open a new PowerShell or verify Visual Studio Build Tools installation."
     }
 }
 
