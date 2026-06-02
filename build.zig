@@ -1,6 +1,12 @@
 const std = @import("std");
 const Backend = enum {
     gtk_backend,
+    webview2_backend,
+};
+
+const WebView2Paths = struct {
+    include_dir: []const u8,
+    lib_dir: []const u8,
 };
 
 pub fn build(b: *std.Build) void {
@@ -14,6 +20,7 @@ pub fn build(b: *std.Build) void {
             "-c",
             "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
         }),
+        .webview2_backend => webView2PkgGuard(b, webView2Paths(b)),
     };
 
     const root_module = b.createModule(.{
@@ -69,6 +76,19 @@ pub fn build(b: *std.Build) void {
     const run_ipc_tests = b.addRunArtifact(ipc_tests);
     run_ipc_tests.skip_foreign_checks = true;
 
+    const windows_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+    });
+    const ipc_windows_compile_module = b.createModule(.{
+        .root_source_file = b.path("src/ipc.zig"),
+        .target = windows_target,
+        .optimize = optimize,
+    });
+    const ipc_windows_compile = b.addTest(.{ .root_module = ipc_windows_compile_module });
+    const ipc_windows_step = b.step("ipc-test-win", "Compile backend-free IPC module for x86_64-windows");
+    ipc_windows_step.dependOn(&ipc_windows_compile.step);
+
     const nav_policy_module = b.createModule(.{
         .root_source_file = b.path("src/nav_policy.zig"),
         .target = target,
@@ -90,11 +110,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
+    test_step.dependOn(&ipc_windows_compile.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
     return switch (target.result.os.tag) {
         .linux => .gtk_backend,
+        .windows => .webview2_backend,
         else => std.debug.panic("NoBackendLinked: no backend for target os '{s}'", .{@tagName(target.result.os.tag)}),
     };
 }
@@ -102,6 +124,7 @@ fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
 fn configureBackend(module: *std.Build.Module, b: *std.Build, backend: Backend) void {
     switch (backend) {
         .gtk_backend => configureGtkBackend(module, b),
+        .webview2_backend => configureWebView2Backend(module, b, webView2Paths(b)),
     }
 }
 
@@ -115,4 +138,52 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     module.linkSystemLibrary("webkit2gtk-4.1", .{ .use_pkg_config = .force });
     module.linkSystemLibrary("gtk+-3.0", .{ .use_pkg_config = .force });
     module.linkSystemLibrary("gio-unix-2.0", .{ .use_pkg_config = .force });
+}
+
+fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: WebView2Paths) void {
+    module.addIncludePath(b.path("src"));
+    module.addSystemIncludePath(.{ .cwd_relative = paths.include_dir });
+    module.addLibraryPath(.{ .cwd_relative = paths.lib_dir });
+    module.addCSourceFile(.{
+        .file = b.path("src/webview2_shim.cpp"),
+        .flags = &.{"-std=c++17"},
+    });
+
+    module.linkSystemLibrary("WebView2Loader", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("ole32", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("oleaut32", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("user32", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("gdi32", .{ .use_pkg_config = .no });
+    module.linkSystemLibrary("shell32", .{ .use_pkg_config = .no });
+}
+
+fn webView2Paths(b: *std.Build) WebView2Paths {
+    const include_dir = b.option(
+        []const u8,
+        "webview2_include",
+        "Directory containing WebView2.h (or set WEBVIEW2_INCLUDE)",
+    ) orelse envOrPanic(b, "WEBVIEW2_INCLUDE");
+    const lib_dir = b.option(
+        []const u8,
+        "webview2_lib",
+        "Directory containing WebView2Loader.lib (or set WEBVIEW2_LIB)",
+    ) orelse envOrPanic(b, "WEBVIEW2_LIB");
+
+    return .{
+        .include_dir = include_dir,
+        .lib_dir = lib_dir,
+    };
+}
+
+fn envOrPanic(b: *std.Build, name: []const u8) []const u8 {
+    return b.graph.environ_map.get(name) orelse
+        std.debug.panic("missing {s}; pass -Dwebview2_include/-Dwebview2_lib or set WEBVIEW2_INCLUDE/WEBVIEW2_LIB", .{name});
+}
+
+fn webView2PkgGuard(b: *std.Build, paths: WebView2Paths) *std.Build.Step.Run {
+    const script = b.fmt(
+        "if not exist \"{s}\\WebView2.h\" (echo ERROR: missing WebView2.h under {s} 1>&2 & exit /b 1) else if not exist \"{s}\\WebView2Loader.lib\" (echo ERROR: missing WebView2Loader.lib under {s} 1>&2 & exit /b 1)",
+        .{ paths.include_dir, paths.include_dir, paths.lib_dir, paths.lib_dir },
+    );
+    return b.addSystemCommand(&.{ "cmd.exe", "/C", script });
 }
