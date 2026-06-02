@@ -107,8 +107,17 @@ function Install-Zig {
         }
     }
 
+    $pathZig = Get-Command "zig.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $pathZig) {
+        $installed = & $pathZig.Source version
+        if ($installed -ne $ZigVersion) {
+            Write-Warning "Using zig on PATH at $($pathZig.Source) with version $installed; requested $ZigVersion"
+        }
+        return $pathZig.Source
+    }
+
     if (-not $ZigUrl) {
-        $ZigUrl = "https://ziglang.org/download/$ZigVersion/zig-windows-x86_64-$ZigVersion.zip"
+        $ZigUrl = "https://ziglang.org/download/$ZigVersion/zig-x86_64-windows-$ZigVersion.zip"
     }
 
     $archive = Join-Path $ToolsRoot "zig-$ZigVersion.zip"
@@ -179,8 +188,22 @@ function Install-WebView2Sdk {
     }
 
     $includeDir = Join-Path $packageDir.FullName "build\native\include"
-    $loaderLib = Get-ChildItem -LiteralPath $packageDir.FullName -Recurse -Filter "WebView2Loader.lib" |
-        Where-Object { $_.FullName -match "\\x64\\" } |
+    $loaderLibNames = @("WebView2Loader.lib", "WebView2Loader.dll.lib", "WebView2LoaderStatic.lib")
+    $loaderLib = Get-ChildItem -LiteralPath $packageDir.FullName -Recurse -File |
+        Where-Object {
+            $loaderLibNames -contains $_.Name -and
+            ($_.FullName -match "\\x64\\" -or $_.FullName -match "\\build\\native\\x64\\")
+        } |
+        Sort-Object @{
+            Expression = {
+                switch ($_.Name) {
+                    "WebView2Loader.lib" { 0 }
+                    "WebView2Loader.dll.lib" { 1 }
+                    "WebView2LoaderStatic.lib" { 2 }
+                    default { 3 }
+                }
+            }
+        } |
         Select-Object -First 1
     $loaderDll = Get-ChildItem -LiteralPath $packageDir.FullName -Recurse -Filter "WebView2Loader.dll" |
         Where-Object { $_.FullName -match "\\x64\\" } |
@@ -190,14 +213,16 @@ function Install-WebView2Sdk {
         throw "WebView2.h not found under $includeDir"
     }
     if ($null -eq $loaderLib) {
-        throw "WebView2Loader.lib x64 import library not found under $($packageDir.FullName)"
+        throw "WebView2Loader import library not found under $($packageDir.FullName); expected one of: $($loaderLibNames -join ', ')"
     }
 
     $libDir = Split-Path -Parent $loaderLib.FullName
     [Environment]::SetEnvironmentVariable("WEBVIEW2_INCLUDE", $includeDir, "User")
     [Environment]::SetEnvironmentVariable("WEBVIEW2_LIB", $libDir, "User")
+    [Environment]::SetEnvironmentVariable("WEBVIEW2_LOADER_LIB", $loaderLib.FullName, "User")
     $env:WEBVIEW2_INCLUDE = $includeDir
     $env:WEBVIEW2_LIB = $libDir
+    $env:WEBVIEW2_LOADER_LIB = $loaderLib.FullName
 
     if ($null -ne $loaderDll) {
         [Environment]::SetEnvironmentVariable("WEBVIEW2_LOADER_DLL", $loaderDll.FullName, "User")
@@ -207,6 +232,7 @@ function Install-WebView2Sdk {
     return [pscustomobject]@{
         Include = $includeDir
         Lib = $libDir
+        LoaderLib = $loaderLib.FullName
         LoaderDll = if ($null -ne $loaderDll) { $loaderDll.FullName } else { "" }
     }
 }
@@ -230,6 +256,18 @@ function Test-CppToolchain {
     }
     if (Get-Command "clang-cl.exe" -ErrorAction SilentlyContinue) {
         return "clang-cl.exe"
+    }
+
+    $zig = Get-Command "zig.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $zig) {
+        try {
+            & $zig.Source "c++" "--version" | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                return "zig c++"
+            }
+        } catch {
+            # Fall through to MSVC Build Tools discovery/install.
+        }
     }
 
     $vswhere = Get-VsWhere
@@ -312,6 +350,7 @@ Write-Host "zig=$zig"
 Write-Host "zig_version=$(& $zig version)"
 Write-Host "WEBVIEW2_INCLUDE=$($webview2.Include)"
 Write-Host "WEBVIEW2_LIB=$($webview2.Lib)"
+Write-Host "WEBVIEW2_LOADER_LIB=$($webview2.LoaderLib)"
 if ($webview2.LoaderDll) {
     Write-Host "WEBVIEW2_LOADER_DLL=$($webview2.LoaderDll)"
 }
