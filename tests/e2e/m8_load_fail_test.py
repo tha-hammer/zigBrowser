@@ -11,7 +11,15 @@ import threading
 import time
 from pathlib import Path
 
-from slice2_common import SKIP_EXIT, RunResult, eprint, protocol_rows, require_file, run_windows_interactive_to_exit
+from slice2_common import (
+    SKIP_EXIT,
+    RunResult,
+    eprint,
+    harness_exit_code,
+    protocol_rows,
+    require_file,
+    run_windows_interactive_cmd_until,
+)
 
 
 REQUIRED_ENV = "ZB_ENABLE_M8_E2E"
@@ -95,8 +103,8 @@ def closed_localhost_uri() -> str:
     return f"http://127.0.0.1:{port}/"
 
 
-def run_to_exit(cmd: list[str], env: dict[str, str], timeout_sec: float) -> RunResult:
-    return run_windows_interactive_to_exit(cmd, env, timeout_sec)
+def matching_load_fail_rows(stdout_lines: list[str], uri: str) -> list[list[str]]:
+    return [row for row in protocol_rows(stdout_lines, "LOAD_FAIL") if len(row) == 4 and row[1] == uri]
 
 
 def print_fail_context(label: str, result: RunResult) -> None:
@@ -140,7 +148,7 @@ def assert_failure_contract(label: str, result: RunResult, uri: str, expected_lo
         print_fail_context(label, result)
         return False
 
-    matching_rows = [row for row in load_fail_rows if len(row) == 4 and row[1] == uri]
+    matching_rows = matching_load_fail_rows(result.stdout_lines, uri)
     if not matching_rows:
         print(f"FAIL\t{label}-missing-4-field-load-fail")
         print_fail_context(label, result)
@@ -158,7 +166,17 @@ def assert_failure_contract(label: str, result: RunResult, uri: str, expected_lo
 
 def run_case(browser: Path, uri: str, expected_load_code: int, timeout_sec: float, label: str) -> bool:
     cmd = [str(browser), uri, "--e2e-protocol"]
-    result = run_to_exit(cmd, dict(os.environ), timeout_sec)
+    env = dict(os.environ)
+
+    def condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
+        code = harness_exit_code(stdout_lines)
+        if code is None:
+            return False
+        if code in RUNTIME_FAILURE_CODES:
+            return True
+        return code == expected_load_code and bool(matching_load_fail_rows(stdout_lines, uri))
+
+    _matched, result = run_windows_interactive_cmd_until(cmd, env, timeout_sec, condition)
     return assert_failure_contract(label, result, uri, expected_load_code)
 
 

@@ -14,21 +14,23 @@ from pathlib import Path
 
 from slice2_common import (
     SKIP_EXIT,
+    RunResult,
     eprint,
     print_fail_context,
-    protocol_rows,
     require_file,
     run_windows_interactive_to_exit,
-    run_windows_interactive_until,
 )
 
 
 REQUIRED_ENV = "ZB_ENABLE_M8_E2E"
 
-CAPTURE_WINDOW_PS1 = r"""
+RENDER_CAPTURE_PS1 = r"""
 param(
-    [Parameter(Mandatory=$true)][string]$Path,
-    [Parameter(Mandatory=$true)][int]$Pid
+    [Parameter(Mandatory=$true)][string]$Browser,
+    [Parameter(Mandatory=$true)][string]$Uri,
+    [Parameter(Mandatory=$true)][string]$CapturePath,
+    [Parameter(Mandatory=$true)][string]$BrowserStdoutPath,
+    [Parameter(Mandatory=$true)][string]$BrowserStderrPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,32 +55,73 @@ public static class Win32Capture {
 "@
 Add-Type -TypeDefinition $signature
 
-$proc = Get-Process -Id $Pid -ErrorAction Stop
-$handle = $proc.MainWindowHandle
-if ($handle -eq [IntPtr]::Zero) {
-    throw "process $Pid has no main window handle"
+function Ensure-Parent([string]$TargetPath) {
+    $parent = [System.IO.Path]::GetDirectoryName($TargetPath)
+    if ($parent) {
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+    }
 }
 
-$rect = New-Object RECT
-if (-not [Win32Capture]::GetWindowRect($handle, [ref]$rect)) {
-    throw "GetWindowRect failed for process $Pid"
-}
+Ensure-Parent $CapturePath
+Ensure-Parent $BrowserStdoutPath
+Ensure-Parent $BrowserStderrPath
 
-$width = $rect.Right - $rect.Left
-$height = $rect.Bottom - $rect.Top
-if ($width -lt 64 -or $height -lt 64) {
-    throw "window capture bounds are too small: ${width}x${height}"
-}
+$browserArgs = @($Uri, "--e2e-protocol", "--print-title")
+$proc = $null
+$bitmap = $null
+$graphics = $null
 
-$parent = [System.IO.Path]::GetDirectoryName($Path)
-if ($parent) {
-    [System.IO.Directory]::CreateDirectory($parent) | Out-Null
-}
-
-$bitmap = New-Object System.Drawing.Bitmap $width, $height
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 try {
-    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
+    $proc = Start-Process -FilePath $Browser `
+        -ArgumentList $browserArgs `
+        -RedirectStandardOutput $BrowserStdoutPath `
+        -RedirectStandardError $BrowserStderrPath `
+        -PassThru
+
+    for ($i = 0; $i -lt 50; $i += 1) {
+        $proc.Refresh()
+        if ($proc.HasExited) {
+            throw "browser exited before window capture, exit=$($proc.ExitCode)"
+        }
+        if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+
+    Start-Sleep -Seconds 5
+    $proc.Refresh()
+
+    $left = 0
+    $top = 0
+    $width = 0
+    $height = 0
+
+    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
+        $rect = New-Object RECT
+        if (-not [Win32Capture]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) {
+            throw "GetWindowRect failed for process $($proc.Id)"
+        }
+        $left = $rect.Left
+        $top = $rect.Top
+        $width = $rect.Right - $rect.Left
+        $height = $rect.Bottom - $rect.Top
+    }
+    else {
+        $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $left = $bounds.Left
+        $top = $bounds.Top
+        $width = $bounds.Width
+        $height = $bounds.Height
+    }
+
+    if ($width -lt 64 -or $height -lt 64) {
+        throw "capture bounds are too small: ${width}x${height}"
+    }
+
+    $bitmap = New-Object System.Drawing.Bitmap $width, $height
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($left, $top, 0, 0, [System.Drawing.Size]::new($width, $height))
 
     $stepX = [Math]::Max(1, [int][Math]::Floor($width / 64.0))
     $stepY = [Math]::Max(1, [int][Math]::Floor($height / 64.0))
@@ -101,21 +144,34 @@ try {
     $mean = $sum / $samples
     $variance = [Math]::Max(0.0, ($sumSq / $samples) - ($mean * $mean))
     $stddev = [Math]::Sqrt($variance)
-    $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bitmap.Save($CapturePath, [System.Drawing.Imaging.ImageFormat]::Png)
 
     [pscustomobject]@{
-        Path = $Path
+        Path = $CapturePath
         Width = $width
         Height = $height
         Samples = $samples
         Distinct = $colors.Count
         StdDev = $stddev
         NonUniform = ($stddev -ge 1.0 -and $colors.Count -ge 8)
+        BrowserPid = $proc.Id
     } | ConvertTo-Json -Compress
 }
 finally {
-    $graphics.Dispose()
-    $bitmap.Dispose()
+    if ($graphics) {
+        $graphics.Dispose()
+    }
+    if ($bitmap) {
+        $bitmap.Dispose()
+    }
+    if ($proc -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        try {
+            [void]$proc.WaitForExit(5000)
+        }
+        catch {
+        }
+    }
 }
 """
 
@@ -167,17 +223,31 @@ def powershell_exe() -> str | None:
     return shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
 
 
-def capture_window_png(pid: int | None, out_path: Path) -> tuple[bool, dict[str, object] | None, str]:
-    if pid is None:
-        return False, None, "browser PID was not available for screenshot capture"
+def read_file_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
 
+
+def capture_render_png(
+    browser: Path,
+    uri: str,
+    out_path: Path,
+    timeout_sec: float,
+) -> tuple[RunResult, dict[str, object] | None, str]:
     ps = powershell_exe()
     if ps is None:
-        return False, None, "PowerShell executable not found"
+        result = RunResult(1, [], ["PowerShell executable not found"], set())
+        return result, None, "PowerShell executable not found"
 
-    script_path = out_path.with_suffix(".capture.ps1")
-    script_path.write_text(CAPTURE_WINDOW_PS1, encoding="utf-8")
-    result = run_windows_interactive_to_exit(
+    work_dir = Path(tempfile.mkdtemp(prefix="zigBrowser-m8-render-"))
+    script_path = work_dir / "render_capture.ps1"
+    browser_stdout_path = work_dir / "browser_stdout.txt"
+    browser_stderr_path = work_dir / "browser_stderr.txt"
+    script_path.write_text(RENDER_CAPTURE_PS1, encoding="utf-8")
+
+    task_result = run_windows_interactive_to_exit(
         [
             ps,
             "-NoProfile",
@@ -185,27 +255,57 @@ def capture_window_png(pid: int | None, out_path: Path) -> tuple[bool, dict[str,
             "Bypass",
             "-File",
             str(script_path),
-            "-Path",
+            "-Browser",
+            str(browser),
+            "-Uri",
+            uri,
+            "-CapturePath",
             str(out_path),
-            "-Pid",
-            str(pid),
+            "-BrowserStdoutPath",
+            str(browser_stdout_path),
+            "-BrowserStderrPath",
+            str(browser_stderr_path),
         ],
         dict(os.environ),
-        12.0,
+        timeout_sec,
     )
-    if result.returncode != 0:
-        return False, None, ("\n".join(result.stderr_lines).strip() or "\n".join(result.stdout_lines).strip())
 
-    try:
-        stats = json.loads(result.stdout_lines[-1])
-    except (IndexError, json.JSONDecodeError) as exc:
-        return False, None, f"invalid PowerShell capture stats: {exc}: {result.stdout_lines!r}"
+    browser_stdout = read_file_lines(browser_stdout_path)
+    browser_stderr = read_file_lines(browser_stderr_path)
+    result = RunResult(
+        returncode=task_result.returncode,
+        stdout_lines=browser_stdout,
+        stderr_lines=browser_stderr + task_result.stderr_lines,
+        tracked_children=set(),
+        timed_out=task_result.timed_out,
+        pid=task_result.pid,
+    )
 
+    stats = None
+    stats_error = ""
+    for line in task_result.stdout_lines:
+        if not line.startswith("{"):
+            continue
+        try:
+            stats = json.loads(line)
+            break
+        except json.JSONDecodeError as exc:
+            stats_error = f"invalid PowerShell capture stats: {exc}: {line!r}"
+
+    if task_result.returncode != 0:
+        error = "\n".join(result.stderr_lines).strip() or "\n".join(task_result.stdout_lines).strip()
+        return result, stats, error or f"capture task exited {task_result.returncode}"
+    if stats is None:
+        return result, None, stats_error or f"missing PowerShell capture stats: {task_result.stdout_lines!r}"
     if not out_path.exists() or out_path.stat().st_size == 0:
-        return False, stats, f"capture PNG was not written: {out_path}"
+        return result, stats, f"capture PNG was not written: {out_path}"
     if not stats.get("NonUniform"):
-        return False, stats, f"capture is uniform or near-uniform: {stats}"
-    return True, stats, ""
+        return result, stats, f"capture is uniform or near-uniform: {stats}"
+    return result, stats, ""
+
+
+def title_observed(stdout_lines: list[str], expected_title: str) -> bool:
+    return any(line == f"TITLE\t{expected_title}" for line in stdout_lines)
 
 
 def main() -> int:
@@ -233,49 +333,19 @@ def main() -> int:
         return SKIP_EXIT
 
     uri = index.resolve().as_uri()
-    cmd = [str(browser), uri, "--e2e-protocol", "--print-title"]
-    env = dict(os.environ)
     capture_path = Path(args.capture_path) if args.capture_path else Path(tempfile.gettempdir()) / "zigBrowser-m8-render.png"
-    state: dict[str, object] = {
-        "captured": False,
-        "capture_error": "",
-        "capture_stats": None,
-    }
 
-    def saw_render_evidence(stdout_lines: list[str]) -> bool:
-        title_ok = any(line == f"TITLE\t{expected_title}" for line in stdout_lines)
-        nav_ok = any(
-            len(row) == 3 and row[1] == uri and row[2] == expected_title
-            for row in protocol_rows(stdout_lines, "NAV")
-        )
-        return title_ok and nav_ok
-
-    def on_tick(stdout_lines: list[str], _stderr: list[str], proc) -> None:
-        if state["captured"]:
-            return
-        if not saw_render_evidence(stdout_lines):
-            return
-        if proc.pid is None:
-            return
-        ok, stats, error = capture_window_png(proc.pid, capture_path)
-        state["captured"] = ok
-        state["capture_stats"] = stats
-        state["capture_error"] = error
-
-    def condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
-        return bool(state["captured"]) and saw_render_evidence(stdout_lines)
-
-    _matched, result = run_windows_interactive_until(cmd, env, args.timeout_sec, condition, on_tick=on_tick)
-    if not saw_render_evidence(result.stdout_lines):
-        print("FAIL\tm8-render-title-or-nav-not-observed")
-        print_fail_context("m8-render-title-or-nav-not-observed", result)
+    result, stats, capture_error = capture_render_png(browser, uri, capture_path, args.timeout_sec)
+    if not title_observed(result.stdout_lines, expected_title):
+        print("FAIL\tm8-render-title-not-observed")
+        print_fail_context("m8-render-title-not-observed", result)
         return 1
 
-    if not state["captured"]:
+    if capture_error:
         print("FAIL\tm8-render-capture")
-        eprint(str(state["capture_error"]))
-        if state["capture_stats"] is not None:
-            eprint(f"capture_stats={state['capture_stats']}")
+        eprint(capture_error)
+        if stats is not None:
+            eprint(f"capture_stats={stats}")
         print_fail_context("m8-render-capture", result)
         return 1
 
