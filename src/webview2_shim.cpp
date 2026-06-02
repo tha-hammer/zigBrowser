@@ -7,7 +7,9 @@
 #include <wrl.h>
 #include <WebView2.h>
 
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <string>
 
@@ -20,6 +22,8 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"zigBrowserWebView2Host";
 constexpr int kWebView2LoadFailDomain = 2;
+constexpr UINT_PTR kNavigationTimerId = 1;
+constexpr UINT kNavigationTimeoutMs = 15000;
 
 struct AppState {
   HWND hwnd = nullptr;
@@ -76,6 +80,201 @@ void emit_protocol3(const AppState *app, const char *tag, const char *a,
   emit_safe_field(c);
   fputc('\n', stdout);
   fflush(stdout);
+}
+
+size_t skip_ws(const std::string &json, size_t pos) {
+  while (pos < json.size() &&
+         isspace(static_cast<unsigned char>(json[pos])) != 0) {
+    pos++;
+  }
+  return pos;
+}
+
+bool find_field_value(const std::string &json, const char *field,
+                      size_t *out_pos) {
+  const std::string key = std::string("\"") + field + "\"";
+  size_t pos = json.find(key);
+  if (pos == std::string::npos) {
+    return false;
+  }
+
+  pos = skip_ws(json, pos + key.size());
+  if (pos >= json.size() || json[pos] != ':') {
+    return false;
+  }
+
+  *out_pos = skip_ws(json, pos + 1);
+  return *out_pos < json.size();
+}
+
+bool parse_json_string_at(const std::string &json, size_t pos,
+                          std::string *out_value, size_t *out_end) {
+  if (pos >= json.size() || json[pos] != '"') {
+    return false;
+  }
+
+  std::string value;
+  pos++;
+  while (pos < json.size()) {
+    char ch = json[pos++];
+    if (ch == '"') {
+      if (out_value != nullptr) {
+        *out_value = value;
+      }
+      if (out_end != nullptr) {
+        *out_end = pos;
+      }
+      return true;
+    }
+    if (ch == '\\' && pos < json.size()) {
+      char escaped = json[pos++];
+      switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        value.push_back(escaped);
+        break;
+      case 'b':
+        value.push_back('\b');
+        break;
+      case 'f':
+        value.push_back('\f');
+        break;
+      case 'n':
+        value.push_back('\n');
+        break;
+      case 'r':
+        value.push_back('\r');
+        break;
+      case 't':
+        value.push_back('\t');
+        break;
+      default:
+        value.push_back(escaped);
+        break;
+      }
+      continue;
+    }
+    value.push_back(ch);
+  }
+
+  return false;
+}
+
+bool parse_json_string_field(const std::string &json, const char *field,
+                             std::string *out_value) {
+  size_t pos = 0;
+  return find_field_value(json, field, &pos) &&
+         parse_json_string_at(json, pos, out_value, nullptr);
+}
+
+bool parse_json_number_field(const std::string &json, const char *field,
+                             long long *out_value) {
+  size_t pos = 0;
+  if (!find_field_value(json, field, &pos)) {
+    return false;
+  }
+
+  const char *start = json.c_str() + pos;
+  char *end = nullptr;
+  long long value = strtoll(start, &end, 10);
+  if (end == start) {
+    return false;
+  }
+
+  *out_value = value;
+  return true;
+}
+
+bool parse_json_value_field(const std::string &json, const char *field,
+                            std::string *out_value) {
+  size_t pos = 0;
+  if (!find_field_value(json, field, &pos)) {
+    return false;
+  }
+
+  const size_t start = pos;
+  if (json[pos] == '{' || json[pos] == '[') {
+    const char open = json[pos];
+    const char close = open == '{' ? '}' : ']';
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+
+    while (pos < json.size()) {
+      const char ch = json[pos++];
+      if (in_string) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch == '\\') {
+          escaped = true;
+        } else if (ch == '"') {
+          in_string = false;
+        }
+        continue;
+      }
+
+      if (ch == '"') {
+        in_string = true;
+      } else if (ch == open) {
+        depth++;
+      } else if (ch == close) {
+        depth--;
+        if (depth == 0) {
+          break;
+        }
+      }
+    }
+  } else if (json[pos] == '"') {
+    if (!parse_json_string_at(json, pos, nullptr, &pos)) {
+      return false;
+    }
+  } else {
+    while (pos < json.size() && json[pos] != ',' && json[pos] != '}') {
+      pos++;
+    }
+  }
+
+  if (pos <= start) {
+    return false;
+  }
+
+  size_t end = pos;
+  while (end > start && isspace(static_cast<unsigned char>(json[end - 1])) != 0) {
+    end--;
+  }
+
+  *out_value = json.substr(start, end - start);
+  return true;
+}
+
+std::string json_quote(const char *text) {
+  std::string out = "\"";
+  const char *p = text != nullptr ? text : "";
+  for (; *p != '\0'; ++p) {
+    switch (*p) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      out.push_back(*p);
+      break;
+    }
+  }
+  out.push_back('"');
+  return out;
 }
 
 std::wstring utf8_to_wide(const char *text) {
@@ -157,6 +356,9 @@ void close_webview(AppState *app) {
     return;
   }
 
+  if (app->hwnd != nullptr) {
+    KillTimer(app->hwnd, kNavigationTimerId);
+  }
   if (app->controller) {
     app->controller->Close();
   }
@@ -207,6 +409,59 @@ void emit_navigation_success(AppState *app) {
   emit_protocol2(app, "NAV", uri.c_str(), title.c_str());
 }
 
+void handle_web_message(AppState *app,
+                        ICoreWebView2WebMessageReceivedEventArgs *args) {
+  if (app == nullptr || !app->webview || args == nullptr) {
+    return;
+  }
+
+  LPWSTR message_wide = nullptr;
+  HRESULT hr = args->TryGetWebMessageAsString(&message_wide);
+  if (FAILED(hr) || message_wide == nullptr) {
+    emit_protocol2(app, "IPCERR", "invalid", "BadArgs");
+    return;
+  }
+
+  const std::string message = wide_to_utf8(message_wide);
+  CoTaskMemFree(message_wide);
+
+  long long id = 0;
+  std::string cmd;
+  std::string args_json;
+  if (!parse_json_number_field(message, "id", &id) ||
+      !parse_json_string_field(message, "cmd", &cmd)) {
+    emit_protocol2(app, "IPCERR", "invalid", "BadArgs");
+    return;
+  }
+
+  if (!parse_json_value_field(message, "args", &args_json)) {
+    args_json = "{}";
+  }
+
+  const char *result_json = nullptr;
+  const char *err_text = nullptr;
+  const int rc =
+      zb_ipc_dispatch(cmd.c_str(), args_json.c_str(), &result_json, &err_text);
+
+  std::string reply = "{\"id\":" + std::to_string(id);
+  if (rc == 0 && result_json != nullptr) {
+    emit_protocol2(app, "IPC", cmd.c_str(), result_json);
+    reply += ",\"result\":";
+    reply += result_json;
+  } else {
+    const char *msg = err_text != nullptr ? err_text : "UnknownCommand";
+    emit_protocol2(app, "IPCERR", cmd.c_str(), msg);
+    reply += ",\"error\":";
+    reply += json_quote(msg);
+  }
+  reply.push_back('}');
+
+  const std::wstring reply_wide = utf8_to_wide(reply.c_str());
+  if (!reply_wide.empty()) {
+    app->webview->PostWebMessageAsString(reply_wide.c_str());
+  }
+}
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
                              LPARAM lparam) {
   AppState *app =
@@ -225,6 +480,19 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   case WM_SIZE:
     resize_controller(app);
     return 0;
+  case WM_TIMER:
+    if (app != nullptr && wparam == kNavigationTimerId &&
+        !app->navigation_completed) {
+      app->navigation_completed = true;
+      KillTimer(hwnd, kNavigationTimerId);
+      if (app->webview) {
+        app->webview->Stop();
+      }
+      emit_load_fail(app, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT);
+      request_quit(app, ZB_EXIT_TIMEOUT);
+      return 0;
+    }
+    break;
   case WM_DESTROY:
     if (app != nullptr) {
       app->hwnd = nullptr;
@@ -276,8 +544,10 @@ void navigate(AppState *app) {
     return;
   }
 
+  SetTimer(app->hwnd, kNavigationTimerId, kNavigationTimeoutMs, nullptr);
   const HRESULT hr = app->webview->Navigate(app->uri.c_str());
   if (FAILED(hr)) {
+    KillTimer(app->hwnd, kNavigationTimerId);
     request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
   }
 }
@@ -353,6 +623,9 @@ HRESULT create_controller(AppState *app) {
                       }
 
                       app->navigation_completed = true;
+                      if (app->hwnd != nullptr) {
+                        KillTimer(app->hwnd, kNavigationTimerId);
+                      }
                       if (!is_success) {
                         COREWEBVIEW2_WEB_ERROR_STATUS status =
                             COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
@@ -369,6 +642,19 @@ HRESULT create_controller(AppState *app) {
                     })
                     .Get(),
                 &nav_token);
+
+            EventRegistrationToken web_message_token = {};
+            app->webview->add_WebMessageReceived(
+                Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                    [app](ICoreWebView2 *sender,
+                          ICoreWebView2WebMessageReceivedEventArgs *args)
+                        -> HRESULT {
+                      (void)sender;
+                      handle_web_message(app, args);
+                      return S_OK;
+                    })
+                    .Get(),
+                &web_message_token);
 
             hr = install_document_script_and_navigate(app);
             if (FAILED(hr)) {
