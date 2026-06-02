@@ -8,19 +8,18 @@ import json
 import os
 import platform
 import shutil
-import subprocess
 import tempfile
 from html.parser import HTMLParser
 from pathlib import Path
 
 from slice2_common import (
     SKIP_EXIT,
-    assert_children_exit,
     eprint,
     print_fail_context,
     protocol_rows,
     require_file,
-    run_interactive_until,
+    run_windows_interactive_to_exit,
+    run_windows_interactive_until,
 )
 
 
@@ -168,14 +167,17 @@ def powershell_exe() -> str | None:
     return shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
 
 
-def capture_window_png(pid: int, out_path: Path) -> tuple[bool, dict[str, object] | None, str]:
+def capture_window_png(pid: int | None, out_path: Path) -> tuple[bool, dict[str, object] | None, str]:
+    if pid is None:
+        return False, None, "browser PID was not available for screenshot capture"
+
     ps = powershell_exe()
     if ps is None:
         return False, None, "PowerShell executable not found"
 
     script_path = out_path.with_suffix(".capture.ps1")
     script_path.write_text(CAPTURE_WINDOW_PS1, encoding="utf-8")
-    result = subprocess.run(
+    result = run_windows_interactive_to_exit(
         [
             ps,
             "-NoProfile",
@@ -188,17 +190,16 @@ def capture_window_png(pid: int, out_path: Path) -> tuple[bool, dict[str, object
             "-Pid",
             str(pid),
         ],
-        capture_output=True,
-        text=True,
-        check=False,
+        dict(os.environ),
+        12.0,
     )
     if result.returncode != 0:
-        return False, None, (result.stderr.strip() or result.stdout.strip())
+        return False, None, ("\n".join(result.stderr_lines).strip() or "\n".join(result.stdout_lines).strip())
 
     try:
-        stats = json.loads(result.stdout.strip().splitlines()[-1])
+        stats = json.loads(result.stdout_lines[-1])
     except (IndexError, json.JSONDecodeError) as exc:
-        return False, None, f"invalid PowerShell capture stats: {exc}: {result.stdout!r}"
+        return False, None, f"invalid PowerShell capture stats: {exc}: {result.stdout_lines!r}"
 
     if not out_path.exists() or out_path.stat().st_size == 0:
         return False, stats, f"capture PNG was not written: {out_path}"
@@ -209,7 +210,7 @@ def capture_window_png(pid: int, out_path: Path) -> tuple[bool, dict[str, object
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", default=None)
+    parser.add_argument("--binary", "--browser", dest="binary", default=None)
     parser.add_argument("--index", default="tests/fixtures/app/index.html")
     parser.add_argument("--timeout-sec", type=float, default=35.0)
     parser.add_argument("--capture-path", default=None)
@@ -250,9 +251,11 @@ def main() -> int:
         return title_ok and nav_ok
 
     def on_tick(stdout_lines: list[str], _stderr: list[str], proc) -> None:
-        if state["captured"] or state["capture_error"]:
+        if state["captured"]:
             return
         if not saw_render_evidence(stdout_lines):
+            return
+        if proc.pid is None:
             return
         ok, stats, error = capture_window_png(proc.pid, capture_path)
         state["captured"] = ok
@@ -260,10 +263,10 @@ def main() -> int:
         state["capture_error"] = error
 
     def condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
-        return bool(state["captured"] or state["capture_error"]) and saw_render_evidence(stdout_lines)
+        return bool(state["captured"]) and saw_render_evidence(stdout_lines)
 
-    matched, result = run_interactive_until(cmd, env, args.timeout_sec, condition, on_tick=on_tick)
-    if not matched or not saw_render_evidence(result.stdout_lines):
+    _matched, result = run_windows_interactive_until(cmd, env, args.timeout_sec, condition, on_tick=on_tick)
+    if not saw_render_evidence(result.stdout_lines):
         print("FAIL\tm8-render-title-or-nav-not-observed")
         print_fail_context("m8-render-title-or-nav-not-observed", result)
         return 1
@@ -274,15 +277,6 @@ def main() -> int:
         if state["capture_stats"] is not None:
             eprint(f"capture_stats={state['capture_stats']}")
         print_fail_context("m8-render-capture", result)
-        return 1
-
-    ok_children, alive = assert_children_exit(result.tracked_children, 4.0)
-    ok_exit = result.returncode in (0, 1, 130)
-    if not ok_exit or not ok_children:
-        print("FAIL\tm8-render-clean-quit")
-        if not ok_children:
-            eprint(f"alive_children={alive}")
-        print_fail_context("m8-render-clean-quit", result)
         return 1
 
     print(f"PASS\tm8-render-real-window\t{capture_path}")

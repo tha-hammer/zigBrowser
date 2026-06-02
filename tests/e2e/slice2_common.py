@@ -7,11 +7,13 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 SKIP_EXIT = 77
 
@@ -113,14 +115,25 @@ class RunResult:
     stdout_lines: list[str]
     stderr_lines: list[str]
     tracked_children: set[int]
+    timed_out: bool = False
+    pid: int | None = None
+
+
+@dataclass
+class ScheduledTaskProcess:
+    pid: int | None
+    returncode: int | None
+
+    def poll(self) -> int | None:
+        return self.returncode
 
 
 def run_interactive_until(
     cmd: list[str],
     env: dict[str, str],
     timeout_sec: float,
-    condition: Callable[[list[str], list[str], subprocess.Popen[str]], bool],
-    on_tick: Callable[[list[str], list[str], subprocess.Popen[str]], None] | None = None,
+    condition: Callable[[list[str], list[str], Any], bool],
+    on_tick: Callable[[list[str], list[str], Any], None] | None = None,
 ) -> tuple[bool, RunResult]:
     proc = subprocess.Popen(
         cmd,
@@ -172,6 +185,218 @@ def run_interactive_until(
         tracked_children=tracked_children,
     )
     return matched, result
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _read_file_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
+
+
+def _read_int_file(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    try:
+        return int(raw, 10)
+    except ValueError:
+        return None
+
+
+def _write_windows_task_wrapper(
+    script_path: Path,
+    cmd: list[str],
+    env: dict[str, str],
+    stdout_path: Path,
+    stderr_path: Path,
+    exit_path: Path,
+    pid_path: Path,
+    cwd: Path,
+) -> None:
+    if not cmd:
+        raise ValueError("scheduled task command must not be empty")
+
+    env_lines = []
+    for key, value in sorted(env.items()):
+        if not (key.startswith("ZB_") or key.startswith("WEBVIEW2_") or key == "WINRT_INCLUDE"):
+            continue
+        if not key.replace("_", "").isalnum():
+            continue
+        env_lines.append(f"$env:{key} = {_ps_quote(value)}")
+
+    file_path = str(cmd[0])
+    arg_string = subprocess.list2cmdline([str(item) for item in cmd[1:]])
+    script = "\r\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$stdoutPath = {_ps_quote(str(stdout_path))}",
+            f"$stderrPath = {_ps_quote(str(stderr_path))}",
+            f"$exitPath = {_ps_quote(str(exit_path))}",
+            f"$pidPath = {_ps_quote(str(pid_path))}",
+            "try {",
+            f"  Set-Location -LiteralPath {_ps_quote(str(cwd))}",
+            *[f"  {line}" for line in env_lines],
+            (
+                f"  $p = Start-Process -FilePath {_ps_quote(file_path)} "
+                f"-ArgumentList {_ps_quote(arg_string)} "
+                "-RedirectStandardOutput $stdoutPath "
+                "-RedirectStandardError $stderrPath "
+                "-PassThru"
+            ),
+            "  $p.Id | Set-Content -LiteralPath $pidPath -Encoding ASCII",
+            "  $p.WaitForExit()",
+            "  $p.ExitCode | Set-Content -LiteralPath $exitPath -Encoding ASCII",
+            "} catch {",
+            "  $_ | Out-String | Add-Content -LiteralPath $stderrPath -Encoding UTF8",
+            "  1 | Set-Content -LiteralPath $exitPath -Encoding ASCII",
+            "  throw",
+            "}",
+            "",
+        ]
+    )
+    script_path.write_text(script, encoding="utf-8", newline="\r\n")
+
+
+def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def _stop_windows_task(task_name: str, pid: int | None) -> None:
+    if pid is not None:
+        _run_schtasks(["taskkill", "/PID", str(pid), "/T", "/F"])
+    _run_schtasks(["schtasks", "/end", "/tn", task_name])
+
+
+def _delete_windows_task(task_name: str) -> None:
+    _run_schtasks(["schtasks", "/delete", "/tn", task_name, "/f"])
+
+
+def run_windows_interactive_until(
+    cmd: list[str],
+    env: dict[str, str],
+    timeout_sec: float,
+    condition: Callable[[list[str], list[str], ScheduledTaskProcess], bool],
+    on_tick: Callable[[list[str], list[str], ScheduledTaskProcess], None] | None = None,
+    cwd: Path | None = None,
+) -> tuple[bool, RunResult]:
+    if os.name != "nt":
+        raise RuntimeError("interactive scheduled-task runner is Windows-only")
+
+    task_name = f"zb_m8_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    work_dir = Path(tempfile.mkdtemp(prefix="zb_m8_task_"))
+    stdout_path = work_dir / "stdout.txt"
+    stderr_path = work_dir / "stderr.txt"
+    exit_path = work_dir / "exit.txt"
+    pid_path = work_dir / "pid.txt"
+    script_path = work_dir / "run.ps1"
+    cwd_path = (cwd or Path.cwd()).resolve()
+    _write_windows_task_wrapper(script_path, cmd, env, stdout_path, stderr_path, exit_path, pid_path, cwd_path)
+
+    task_cmd = f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{script_path}"'
+    create = _run_schtasks(
+        [
+            "schtasks",
+            "/create",
+            "/tn",
+            task_name,
+            "/tr",
+            task_cmd,
+            "/sc",
+            "once",
+            "/st",
+            "23:59",
+            "/it",
+            "/rl",
+            "highest",
+            "/f",
+        ]
+    )
+    if create.returncode != 0:
+        return False, RunResult(
+            returncode=create.returncode,
+            stdout_lines=create.stdout.splitlines(),
+            stderr_lines=create.stderr.splitlines(),
+            tracked_children=set(),
+        )
+
+    run = _run_schtasks(["schtasks", "/run", "/tn", task_name])
+    if run.returncode != 0:
+        _delete_windows_task(task_name)
+        return False, RunResult(
+            returncode=run.returncode,
+            stdout_lines=run.stdout.splitlines(),
+            stderr_lines=run.stderr.splitlines(),
+            tracked_children=set(),
+        )
+
+    matched = False
+    timed_out = False
+    deadline = time.monotonic() + timeout_sec
+    pid: int | None = None
+    returncode: int | None = None
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    try:
+        while time.monotonic() < deadline:
+            stdout_lines = _read_file_lines(stdout_path)
+            stderr_lines = _read_file_lines(stderr_path)
+            pid = _read_int_file(pid_path) or pid
+            returncode = _read_int_file(exit_path)
+            proc = ScheduledTaskProcess(pid=pid, returncode=returncode)
+            if on_tick is not None:
+                on_tick(stdout_lines, stderr_lines, proc)
+            if condition(stdout_lines, stderr_lines, proc):
+                matched = True
+                break
+            if returncode is not None:
+                break
+            time.sleep(0.1)
+        else:
+            timed_out = True
+    finally:
+        if returncode is None:
+            _stop_windows_task(task_name, pid)
+            time.sleep(0.2)
+            returncode = _read_int_file(exit_path)
+        _delete_windows_task(task_name)
+
+    stdout_lines = _read_file_lines(stdout_path)
+    stderr_lines = _read_file_lines(stderr_path)
+    pid = _read_int_file(pid_path) or pid
+    result = RunResult(
+        returncode=returncode if returncode is not None else (0 if matched else 1),
+        stdout_lines=stdout_lines,
+        stderr_lines=stderr_lines,
+        tracked_children=set(),
+        timed_out=timed_out,
+        pid=pid,
+    )
+    return matched, result
+
+
+def run_windows_interactive_to_exit(
+    cmd: list[str],
+    env: dict[str, str],
+    timeout_sec: float,
+    cwd: Path | None = None,
+) -> RunResult:
+    matched, result = run_windows_interactive_until(
+        cmd,
+        env,
+        timeout_sec,
+        lambda _stdout, _stderr, proc: proc.poll() is not None,
+        cwd=cwd,
+    )
+    if not matched and result.returncode == 0:
+        result.returncode = 1
+    return result
 
 
 def print_fail_context(label: str, result: RunResult) -> None:

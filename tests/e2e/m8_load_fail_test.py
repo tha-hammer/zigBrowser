@@ -7,27 +7,17 @@ import argparse
 import os
 import platform
 import socket
-import subprocess
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
-from slice2_common import SKIP_EXIT, eprint, protocol_rows, require_file
+from slice2_common import SKIP_EXIT, RunResult, eprint, protocol_rows, require_file, run_windows_interactive_to_exit
 
 
 REQUIRED_ENV = "ZB_ENABLE_M8_E2E"
 LOAD_FAIL_CODES = {5, 8}
 RUNTIME_FAILURE_CODES = {9, 10}
 EXPECTED_CODES = LOAD_FAIL_CODES | RUNTIME_FAILURE_CODES
-
-
-@dataclass
-class CompletedRun:
-    returncode: int
-    stdout_lines: list[str]
-    stderr_lines: list[str]
-    timed_out: bool
 
 
 class HangingTcpServer:
@@ -105,34 +95,11 @@ def closed_localhost_uri() -> str:
     return f"http://127.0.0.1:{port}/"
 
 
-def run_to_exit(cmd: list[str], env: dict[str, str], timeout_sec: float) -> CompletedRun:
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout_sec)
-        return CompletedRun(
-            returncode=proc.returncode,
-            stdout_lines=stdout.splitlines(),
-            stderr_lines=stderr.splitlines(),
-            timed_out=False,
-        )
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate(timeout=5)
-        return CompletedRun(
-            returncode=proc.returncode,
-            stdout_lines=stdout.splitlines(),
-            stderr_lines=stderr.splitlines(),
-            timed_out=True,
-        )
+def run_to_exit(cmd: list[str], env: dict[str, str], timeout_sec: float) -> RunResult:
+    return run_windows_interactive_to_exit(cmd, env, timeout_sec)
 
 
-def print_fail_context(label: str, result: CompletedRun) -> None:
+def print_fail_context(label: str, result: RunResult) -> None:
     eprint(f"{label}: return={result.returncode} timed_out={result.timed_out}")
     eprint("stdout:\n" + "\n".join(result.stdout_lines))
     eprint("stderr:\n" + "\n".join(result.stderr_lines))
@@ -146,7 +113,7 @@ def valid_int(text: str) -> bool:
         return False
 
 
-def assert_failure_contract(label: str, result: CompletedRun, uri: str, expected_load_code: int) -> bool:
+def assert_failure_contract(label: str, result: RunResult, uri: str, expected_load_code: int) -> bool:
     if result.timed_out:
         print(f"FAIL\t{label}-harness-timeout")
         print_fail_context(label, result)
@@ -197,7 +164,7 @@ def run_case(browser: Path, uri: str, expected_load_code: int, timeout_sec: floa
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", default=None)
+    parser.add_argument("--binary", "--browser", dest="binary", default=None)
     parser.add_argument("--timeout-sec", type=float, default=45.0)
     parser.add_argument("--mode", choices=["all", "load-fail", "timeout"], default="all")
     parser.add_argument("--fail-uri", default=None)

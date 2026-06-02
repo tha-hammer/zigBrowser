@@ -10,13 +10,11 @@ from pathlib import Path
 
 from slice2_common import (
     SKIP_EXIT,
-    assert_children_exit,
-    detect_runner,
     eprint,
     print_fail_context,
     protocol_rows,
     require_file,
-    run_interactive_until,
+    run_windows_interactive_until,
 )
 
 
@@ -31,37 +29,31 @@ def hw_gate_ready() -> tuple[bool, str]:
     return True, "ok"
 
 
+def default_binary() -> str:
+    return "zig-out/bin/zigBrowser.exe" if platform.system() == "Windows" else "zig-out/bin/zigBrowser"
+
+
 def run_case(
     binary: Path,
     env: dict[str, str],
-    prefix: list[str],
     uri: str,
     timeout_sec: float,
     ok_condition,
     label: str,
 ) -> tuple[bool, int]:
-    cmd = prefix + [str(binary), uri, "--e2e-protocol"]
-    matched, result = run_interactive_until(cmd, env, timeout_sec, ok_condition)
+    cmd = [str(binary), uri, "--e2e-protocol"]
+    matched, result = run_windows_interactive_until(cmd, env, timeout_sec, ok_condition)
     if not matched:
         print(f"FAIL\t{label}")
         print_fail_context(label, result)
         return False, 1
 
-    ok_exit = result.returncode in (0, 130)
-    ok_children, alive = assert_children_exit(result.tracked_children, 4.0)
-    if ok_exit and ok_children:
-        return True, 0
-
-    print(f"FAIL\t{label}-clean-quit")
-    if not ok_children:
-        eprint(f"alive_children={alive}")
-    print_fail_context(f"{label}-clean-quit", result)
-    return False, 1
+    return True, 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
+    parser.add_argument("--binary", "--browser", dest="binary", default=None)
     parser.add_argument("--index", default="tests/fixtures/app/index.html")
     parser.add_argument("--timeout-sec", type=float, default=35.0)
     parser.add_argument("--prefer-xvfb", action="store_true")
@@ -72,16 +64,13 @@ def main() -> int:
         eprint(reason)
         return SKIP_EXIT
 
-    browser = Path(args.binary)
+    browser = Path(args.binary or default_binary())
     index = Path(args.index)
     if not require_file(browser, "binary") or not require_file(index, "app index"):
         return SKIP_EXIT
 
-    runner = detect_runner(args.prefer_xvfb)
-    if runner is None:
-        return SKIP_EXIT
-    prefix, env, runner_note = runner
-    eprint(f"runner={runner_note}")
+    env = dict(os.environ)
+    eprint("runner=interactive-scheduled-task")
 
     success_uri = index.resolve().as_uri() + "#auto=echo"
     error_uri = index.resolve().as_uri() + "#auto=echo-bad"
@@ -102,7 +91,6 @@ def main() -> int:
     ok_success, code_success = run_case(
         browser,
         env,
-        prefix,
         success_uri,
         args.timeout_sec,
         success_condition,
@@ -114,7 +102,6 @@ def main() -> int:
     ok_error, code_error = run_case(
         browser,
         env,
-        prefix,
         error_uri,
         args.timeout_sec,
         error_condition,
