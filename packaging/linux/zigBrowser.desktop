@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=zigBrowser
+Comment=Zig browser shell
+Exec=/usr/bin/zigBrowser %u
+Icon=zigBrowser
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;

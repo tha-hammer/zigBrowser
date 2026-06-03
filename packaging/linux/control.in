@@ -1,0 +1,9 @@
+Package: zigbrowser
+Version: 0.1.0
+Section: web
+Priority: optional
+Architecture: amd64
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Maintainer: zigBrowser Maintainers <maintainers@example.invalid>
+Description: Zig browser shell
+ zigBrowser is a WebKitGTK-based browser shell built with Zig.
