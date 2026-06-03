@@ -2,6 +2,7 @@ const std = @import("std");
 const Backend = enum {
     gtk_backend,
     webview2_backend,
+    macos_backend,
 };
 
 const WebView2Paths = struct {
@@ -73,6 +74,34 @@ const CheckWebView2SdkStep = struct {
     }
 };
 
+const CheckMacosBackendStep = struct {
+    step: std.Build.Step,
+
+    fn create(b: *std.Build) *CheckMacosBackendStep {
+        const self = b.allocator.create(CheckMacosBackendStep) catch @panic("OOM");
+        self.* = .{
+            .step = std.Build.Step.init(.{
+                .id = .custom,
+                .name = "check macOS WKWebView backend",
+                .owner = b,
+                .makeFn = make,
+            }),
+        };
+        return self;
+    }
+
+    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) !void {
+        _ = options;
+        std.Io.Dir.cwd().access(step.owner.graph.io, "src/wkwebview_shim.m", .{}) catch {
+            try step.result_error_msgs.append(
+                step.owner.allocator,
+                "missing wkwebview_shim.m at src/wkwebview_shim.m; macOS backend selected but the WKWebView shim has not landed",
+            );
+            return error.MakeFailed;
+        };
+    }
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -105,6 +134,7 @@ pub fn build(b: *std.Build) void {
             "pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo 'ERROR: missing required packages: webkit2gtk-4.1 gtk+-3.0 (install libwebkit2gtk-4.1-dev libgtk-3-dev)' >&2; exit 1; }",
         }).step,
         .webview2_backend => &CheckWebView2SdkStep.create(b, webview2_paths).step,
+        .macos_backend => &CheckMacosBackendStep.create(b).step,
     };
 
     const root_module = b.createModule(.{
@@ -201,6 +231,7 @@ fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
     return switch (target.result.os.tag) {
         .linux => .gtk_backend,
         .windows => .webview2_backend,
+        .macos => .macos_backend,
         else => std.debug.panic("NoBackendLinked: no backend for target os '{s}'", .{@tagName(target.result.os.tag)}),
     };
 }
@@ -214,6 +245,7 @@ fn configureBackend(
     switch (backend) {
         .gtk_backend => configureGtkBackend(module, b),
         .webview2_backend => configureWebView2Backend(module, b, webview2_paths),
+        .macos_backend => configureMacosBackend(module, b),
     }
 }
 
@@ -252,4 +284,16 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
     module.linkSystemLibrary("gdi32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("shell32", .{ .use_pkg_config = .no });
     module.linkSystemLibrary("advapi32", .{ .use_pkg_config = .no });
+}
+
+fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
+    module.addIncludePath(b.path("src"));
+    module.addCSourceFile(.{
+        .file = b.path("src/wkwebview_shim.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+
+    module.linkFramework("WebKit", .{});
+    module.linkFramework("Cocoa", .{});
+    module.linkFramework("Foundation", .{});
 }
