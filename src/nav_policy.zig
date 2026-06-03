@@ -27,7 +27,7 @@ pub fn decide(app_base: []const u8, candidate: []const u8, dtype: DecisionType) 
         .response => .use,
         .navigation_action => blk: {
             var base_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const base_path = canonicalBaseDirPath(app_base, &base_buf) orelse break :blk .ignore;
+            const base_path = canonicalBaseDirPath(app_base, &base_buf) orelse break :blk .use;
 
             var candidate_buf: [std.fs.max_path_bytes]u8 = undefined;
             const candidate_path = canonicalFilePath(candidate, &candidate_buf) orelse break :blk .ignore;

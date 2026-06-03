@@ -66,6 +66,22 @@ test "decide rejects non-file candidates for navigation action" {
     );
 }
 
+test "decide allows navigation when app base is normal web browsing" {
+    try std.testing.expectEqual(
+        nav_policy.Decision.use,
+        nav_policy.decide(
+            "https://team-server.nolme.ai/",
+            "https://team-server.nolme.ai/",
+            .navigation_action,
+        ),
+    );
+
+    try std.testing.expectEqual(
+        nav_policy.Decision.ignore,
+        nav_policy.decide("file:///app/", "https://example.com", .navigation_action),
+    );
+}
+
 test "zb_policy_decide ABI mapping stays pinned" {
     const base = "file:///app/";
     const inside = "file:///app/page-b.html";
