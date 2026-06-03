@@ -1,0 +1,20 @@
+C4Container
+title M8 — Windows WebView2 backend topology
+
+Container(build_sel, "build_sel", "Select and link exactly one backend by target OS; hard-fail if none linked.")
+Container(cli, "cli", "Parse CLI args and invoke the linked backend's entry points.")
+Container(ipc_core, "ipc_core", "OS-agnostic JS<->Zig IPC command dispatch (ping/add/echo/os.info); cross-OS after os.info comptime branch.")
+Container(web_app, "web_app", "JS page (zbhost.js) that posts IPC envelopes via chrome.webview and resolves id-correlated replies.")
+Container_Ext(webview_rt, "webview_rt", "External WebView2 Runtime (Edge Chromium) that renders the real page.")
+Container(win_backend, "win_backend", "WebView2 backend (NEW): host window, bridges chrome.webview to the Zig core, posts id-correlated replies; implements the zb_* seam.")
+
+Rel(win_backend, cli, "event AppRunSpec")
+Rel(cli, win_backend, "command AppRunSpec")
+Rel(cli, build_sel, "query BackendChoice")
+Rel(build_sel, win_backend, "command BackendChoice")
+Rel(web_app, win_backend, "command IpcExchange")
+Rel(win_backend, ipc_core, "command IpcExchange")
+Rel(ipc_core, win_backend, "event IpcExchange")
+Rel(win_backend, web_app, "event IpcExchange")
+Rel(win_backend, webview_rt, "command PageLoad")
+Rel(webview_rt, win_backend, "event PageLoad")

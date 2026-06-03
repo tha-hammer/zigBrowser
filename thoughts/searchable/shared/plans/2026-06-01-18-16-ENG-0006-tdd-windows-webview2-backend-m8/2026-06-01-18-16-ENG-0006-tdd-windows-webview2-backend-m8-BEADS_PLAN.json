@@ -1,0 +1,449 @@
+{
+  "epic": {
+    "title": "[Plan Review Epic] 2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8 — 2 critical, 27 warnings",
+    "description": "## Plan Review Epic — 2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8\n\n**Plan:** /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\n**Review report:** <substituted by CLI post-write>\n**Counts:** 2 critical, 27 warnings across 5 phases\n**Generated:** 2026-06-02T01:00:36.719Z\n\n## How to fix all issues\n\n```bash\nbd ready --label plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8\nbd show <issue-id>\nbd update <issue-id> --claim\n# ...edit the plan to address the recommendation...\nbd close <issue-id>\n# When all child issues close, this epic auto-unblocks.\n```\n\n## Issue list\n(substituted by CLI post-mint)",
+    "labels": [
+      "plan-review",
+      "plan-review-epic",
+      "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8"
+    ]
+  },
+  "issues": [
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] [VERIFY] installWebViewListener receive-side reply shape is…",
+      "description": "## Finding (severity: warning)\n[VERIFY] installWebViewListener receive-side reply shape is unspecified in cited code. Plan asserts zbhost.js 'already written' resolves/rejects via {id,result}/{id,error} messages (M5), but cited zbhost.js:82-108 shows only the send path. installWebViewListener is called at line 88 but its body is not cited. If its message-event handler expects a different shape than the native PostWebMessageAsString output, M5 silently fails.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:1b9a6eb3\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:1b9a6eb3"
+      ],
+      "fingerprint": "1b9a6eb3"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] [VERIFY] out_err content → JSON {id, error: <value>} mappin…",
+      "description": "## Finding (severity: warning)\n[VERIFY] out_err content → JSON {id, error: <value>} mapping is implicit. M5 expects echo BadArgs to produce {id, error:'BadArgs'} and an IPCERR row, but the cited ipc.zig only shows lines 33-38 (the os.info branch). The string zb_ipc_dispatch writes to out_err for argument errors is not shown. If out_err contains a human-readable message rather than the token 'BadArgs', the m8_reply_channel_test.py oracle fails.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §What We're NOT Doing  ~line 49\n```\n- **M9 (macOS / WKWebView)** — deferred, HW-gated (bead `zigBrowser-8g7`); no Apple hardware.\n- **No new IPC commands** beyond the existing `ping`/`add`/`echo`/`os.info` surface.\n- **No GTK behavior changes** — the Linux path must remain byte-identical.\n- **No cross-compile-from-Linux build path** — COM/MSVC import-lib linkage forces an in-guest build (documented in M0).\n- **No new navigation/traversal behavior** on windows this slice (nav-policy reuse is implicit; not a tested M8 behavior).\n\n## Testing Strategy\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:3f721717\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:3f721717"
+      ],
+      "fingerprint": "3f721717"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] LOAD_FAIL <domain> column mapping from WebView2 error statu…",
+      "description": "## Finding (severity: warning)\nLOAD_FAIL <domain> column mapping from WebView2 error statuses is unspecified. GTK/WebKit uses its own error domain enum; WebView2 uses COREWEBVIEW2_WEB_ERROR_STATUS. Plan says M6 emits 4-field LOAD_FAIL rows 'matching the GTK contract' and defers to PROTOCOL.md, but never states how WebView2 error statuses map to the domain column. The implementer must guess, risking a mismatch against the PROTOCOL.md oracle.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Desired End State  ~line 32\n```\n- **Clean slate (verified `git ls-files`)** — zero `webview2`/`win32` files; `src/` is GTK-only. M8 builds the backend from nothing (no stub to lean on).\n\n## Desired End State\n\nIn the Win11 guest, over SSH, with `ZB_ENABLE_M8_E2E=1`: `zigBrowser.exe --version` prints a WebView2 + runtime-version line; `zigBrowser.exe file:///…/index.html` opens a real WebView2 window rendering the real page (verifiable by screenshot); `zbHost('ping'|'echo'|'os.info')` round-trips over `chrome.webview` and resolves/rejects the correct id-correlated promise; load failures emit a 4-field `LOAD_FAIL` row with the right exit code. Linux `zig build test` stays green (no regression).\n\n### Observable Behaviors\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nAdd a short table mapping COREWEBVIEW2_WEB_ERROR_STATUS values (or value ranges) to the LOAD_FAIL <domain> column string so the WebView2 backend has an authoritative oracle to emit against and the test can verify it.\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:58bb6b42\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:58bb6b42"
+      ],
+      "fingerprint": "58bb6b42"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] RuntimeMissing vs WebViewInitFailed discrimination conditio…",
+      "description": "## Finding (severity: warning)\nRuntimeMissing vs WebViewInitFailed discrimination condition is not specified. Both fire 'before any window opens' (M6) but the triggering condition for each is unnamed: absent WebView2 runtime vs failed CreateCoreWebView2Environment callback vs some other failure mode. Without an explicit mapping, the implementer may emit the wrong exit code (9 vs 10) and the test oracle will disagree.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:554894db\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:554894db"
+      ],
+      "fingerprint": "554894db"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] webkit_shim.h declares six shim functions (zb_run_open, zb_…",
+      "description": "## Finding (severity: warning)\nwebkit_shim.h declares six shim functions (zb_run_open, zb_app_run, zb_run_screenshot, zb_version_line, zb_reload, zb_window_new) that any backend must implement. The plan only covers zb_app_run (M3) and zb_version_line (M2). The other four are absent from the milestone plan. If webkit.zig references any of them via extern, the windows link step fails with undefined-symbol errors. Even a stub requirement must be stated.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:f7ca0874\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:f7ca0874"
+      ],
+      "fingerprint": "f7ca0874"
+    },
+    {
+      "phase": "contracts",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §contracts] os.info JSON key names ({sysname, release, machine}) are no…",
+      "description": "## Finding (severity: warning)\nos.info JSON key names ({sysname, release, machine}) are not declared platform-invariant. The plan specifies this shape for both Linux (from uname) and Windows (from RtlGetVersion/builtin), but never states the JSON keys are stable across platforms. If any consumer parses the JSON response and the windows branch uses different key names, M4 protocol rows would pass while downstream consumers silently break.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 1 — os.info compiles + returns real Windows values cross-OS  (flow: `ipc_post`)  ~line 75\n```\n- **VISIBLE ARTIFACT:** real Windows stdout over SSH (`zig version` + WebView2 runtime version).\n\n## Milestone 1 — os.info compiles + returns real Windows values cross-OS  (flow: `ipc_post`)\n\n- 🔴 **Red:** `zig build test -Dtarget=x86_64-windows` FAILS today at `ipc.zig:35`. Add a unit asserting `os.info` returns a `{sysname,release,machine}`-shaped result for the windows target.\n- 🟢 **Green:** replace the unconditional `uname` with `comptime switch (builtin.os.tag)` — windows: derive `sysname`/`release`/`machine` from `builtin` + a Windows API (`RtlGetVersion`/`GetVersionEx` via the shim, or comptime arch + runtime version); else: keep `uname`. `ipc.zig` now compiles for windows.\n- 🔵 **Refactor:** keep dispatch flat; isolate the platform branch in one helper; Linux behavior byte-identical (existing GTK os.info test stays green).\n- **Property:** for the linux target, `os.info` output is unchanged from the pre-M8 value (regression guard).\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ncontracts\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:9c4f28ac\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:contracts",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:9c4f28ac"
+      ],
+      "fingerprint": "9c4f28ac"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] os.info Windows API call mechanism is plan-internally contr…",
+      "description": "## Finding (severity: warning)\nos.info Windows API call mechanism is plan-internally contradictory: M1 describes calling RtlGetVersion/GetVersionEx 'via the shim', but M1's Files-touched list is ipc.zig + tests/ipc_test.zig only — webview2_shim.c[pp] is not created until M2. No C helper function signature is declared anywhere. If Zig stdlib (std.os.windows) is the actual path, the 'via the shim' text is a false interface promise; if a shim helper is required, M1's file list is incomplete.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:07092ab1\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:07092ab1"
+      ],
+      "fingerprint": "07092ab1"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] webview2_shim source file extension is never resolved: plan…",
+      "description": "## Finding (severity: warning)\nwebview2_shim source file extension is never resolved: plan writes 'src/webview2_shim.c[pp]' in every milestone. WebView2 COM interfaces (ICoreWebView2*, ICoreWebView2Environment*, AddWebMessageReceived) cannot be used from C — the file must be .cpp from creation. A mid-slice rename from .c → .cpp between M2 and M3 is a silent breaking change in the build graph.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:6130dccb\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:6130dccb"
+      ],
+      "fingerprint": "6130dccb"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] [VERIFY] zb_run_open, zb_reload, zb_window_new, and zb_run_…",
+      "description": "## Finding (severity: warning)\n[VERIFY] zb_run_open, zb_reload, zb_window_new, and zb_run_screenshot are declared in webkit_shim.h (lines 30-36) but none appear in any WebView2 backend milestone task list. If webkit.zig exports wrappers for these that are force-linked via main.zig:8-11 comptime block, the windows binary will contain undefined symbols and fail to link.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:ab025886\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:ab025886"
+      ],
+      "fingerprint": "ab025886"
+    },
+    {
+      "phase": "interfaces",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §interfaces] [VERIFY] ZbApp and ZbWindow opaque type definitions are abs…",
+      "description": "## Finding (severity: warning)\n[VERIFY] ZbApp and ZbWindow opaque type definitions are absent from the cited webkit_shim.h fragment. If they are defined inside a GTK-specific header that webview2_shim.cpp must transitively include, the WebView2 backend will fail to compile. The plan does not specify whether webkit_shim.h will be extended with backend-neutral forward declarations or whether a separate webview2_shim.h introduces its own definitions.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ninterfaces\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:4ca015dc\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:interfaces",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:4ca015dc"
+      ],
+      "fingerprint": "4ca015dc"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] CoreWebView2 environment creation is asynchronous COM callb…",
+      "description": "## Finding (severity: critical)\nCoreWebView2 environment creation is asynchronous COM callback and the Win32 message pump integration is never stated as a behavioral requirement. CreateCoreWebView2EnvironmentWithOptions fires its completion callback only when the calling thread's message queue is being pumped (GetMessage/DispatchMessage loop). The plan promises 'a real WebView2 window opens' (M3) and says 'create the CoreWebView2 environment+controller' without identifying this as an async operation or guaranteeing that the Win32 message loop runs during initialization. Without a pump, the callback never fires, zb_app_run blocks indefinitely, and M3's visible artifact (screenshot) is permanently unreachable.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §M8 — Windows WebView2 Backend — TDD Implementation Plan  ~line 4\n```\n# M8 — Windows WebView2 Backend — TDD Implementation Plan\n\n**Plan:** ENG-0006 · 2026-06-01 · Tier L3\n**Beads:** closes `zigBrowser-182` (os.info comptime + windows backend wired) and `zigBrowser-2nb` (WebView2 renders + answers ping); under epic `zigBrowser-ml4`.\n**Topology:** see sibling dir `2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8/` (`components.yaml`, `flows.yaml`, `diagram.mmd`) — closure-lint green (6 components, 8 flows, 0 diagnostics).\n\n## Overview\n\n```\n\n## Impact\nM3 milestone hangs rather than producing its observable artifact; M4–M6 are entirely blocked. The behavioral promise 'real WebView2 window opens' cannot be fulfilled without a running Win32 message pump during async COM initialization — there is no timeout or error path, only an indefinite stall.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:039b27d0\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:039b27d0"
+      ],
+      "fingerprint": "039b27d0"
+    },
+    {
+      "phase": "promises",
+      "severity": "critical",
+      "priority": 0,
+      "title": "[Plan Review §promises] COM apartment initialization (CoInitializeEx) is not stated…",
+      "description": "## Finding (severity: critical)\nCOM apartment initialization (CoInitializeEx) is not stated as a required precondition for zb_app_run on the windows path. WebView2 requires a Single-Threaded Apartment (COINIT_APARTMENTTHREADED) before any COM interface is invoked. Omitting CoInitializeEx causes WebView2 environment creation to return a COM error whose symptom is indistinguishable from a genuinely absent runtime: the process exits via RuntimeMissing(9) or WebViewInitFailed(10) even when the runtime is fully installed. This undermines M6's exit-code discriminating oracle and makes runtime-present vs. COM-uninitialized failures impossible to distinguish without an explicit precondition promise.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 3 — real page renders in a real WebView2 window  (flow: `render_page`)  ~line 93\n```\n\n## Milestone 3 — real page renders in a real WebView2 window  (flow: `render_page`)\n\n- 🔴 **Red:** a render/screenshot E2E (new, in-guest) is RED — no window opens.\n- 🟢 **Green:** `webview2_shim` `zb_app_run`: create a Win32 host window, create the CoreWebView2 environment+controller, inject `zbhost.js` (`AddScriptToExecuteOnDocumentCreated`), `Navigate` to the `file://` URI; implement `--print-title` from the document title; emit `NAV`/protocol rows on stdout matching the GTK contract.\n- 🔵 **Refactor:** share the e2e protocol-emit helper shape with the GTK backend; clean window lifecycle.\n- **Files touched:** `src/webview2_shim.c[pp]`, `tests/e2e/m8_render_test.py` (new), `tests/e2e/PROTOCOL.md` (note windows parity).\n- **VISIBLE ARTIFACT:** a screenshot captured in the guest of the rendered fixture in a real WebView2 window. **Oracle:** non-uniform PNG + `--print-title` == fixture `<title>` (parsed from source).\n```\n\n## Impact\nOn any thread that omits CoInitializeEx, M3 always exits through the M6 failure path even when the runtime is present; the M6 discriminating oracle becomes ambiguous; the 'real window' behavioral promise is permanently broken with no TDD-visible signal.\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:e8336ffe\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:critical",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:e8336ffe"
+      ],
+      "fingerprint": "e8336ffe"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] out_result / out_err pointer lifetime across the C/Zig ABI …",
+      "description": "## Finding (severity: warning)\nout_result / out_err pointer lifetime across the C/Zig ABI boundary in the WebView2 shim is unspecified. zb_ipc_dispatch (webkit_shim.h:40-41) writes pointers the Zig allocator owns; the C++ shim must copy them before returning from AddWebMessageReceived, but the handoff timing and ownership rule are never stated.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:5f031e17\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:5f031e17"
+      ],
+      "fingerprint": "5f031e17"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Win32 navigation timeout mechanism is unspecified. M6 says …",
+      "description": "## Finding (severity: warning)\nWin32 navigation timeout mechanism is unspecified. M6 says 'timeout reap mirroring GTK' but Win32/COM message pump timers (SetTimer/WM_TIMER) are meaningfully different from GLib timeout_add. The behavioral promise that a hung navigation exits with code 8 depends on a named timeout source that the plan never identifies.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 6 — load-failure recovery + runtime-missing exit codes  (flow: `app_ack`)  ~line 118\n```\n\n## Milestone 6 — load-failure recovery + runtime-missing exit codes  (flow: `app_ack`)\n\n- 🔴 **Red:** a load-failure E2E is RED (no 4-field `LOAD_FAIL` / wrong exit code on windows).\n- 🟢 **Green:** `NavigationCompleted(failed)` → emit 4-field `LOAD_FAIL\\t<uri>\\t<domain>\\t<code>` + exit `LoadFailed(5)`/`Timeout(8)` with a timeout reap mirroring GTK; CoreWebView2 environment creation failure / runtime absent → exit `RuntimeMissing(9)`/`WebViewInitFailed(10)` before any window opens (`errors.zig` codes already wired).\n- 🔵 **Refactor:** align the recovery state machine with the GTK backend so the contract is shared.\n- **Files touched:** `src/webview2_shim.c[pp]`, `tests/e2e/m8_load_fail_test.py` (new).\n- **VISIBLE ARTIFACT:** guest stdout 4-field `LOAD_FAIL` row + process exit code 5/8/9/10. **Oracle:** `PROTOCOL.md` 4-field contract + `errors.zig` exitCode table.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:d35d4787\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:d35d4787"
+      ],
+      "fingerprint": "d35d4787"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] PostWebMessageAsString threading model is not stated as the…",
+      "description": "## Finding (severity: warning)\nPostWebMessageAsString threading model is not stated as the basis for the id-correlation guarantee. M5 asserts concurrent ids don't cross-talk, but whether this rests on the WebView2 UI-thread serial dispatch model (true today) or on an explicit synchronization primitive is undocumented. A future async dispatch path would silently break the invariant.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 5 — id-correlated reply resolves/rejects the JS promise  (flow: `ipc_reply`)  ~line 109\n```\n\n## Milestone 5 — id-correlated reply resolves/rejects the JS promise  (flow: `ipc_reply`)\n\n- 🔴 **Red:** `m8_reply_channel` error/correlation path RED (dispatch result never returns to JS).\n- 🟢 **Green:** shim `PostWebMessageAsString({id, result})` on success and `({id, error:code})` on failure; `zbhost.js` `sendViaWebView2` (already written) resolves/rejects the matching pending id. echo BadArgs → `{id,error:'BadArgs'}` → promise rejects + `IPCERR` row.\n- 🔵 **Refactor:** ensure concurrent in-flight ids don't cross-talk; ignore replies for unknown ids.\n- **Property:** for any set of concurrent request ids, each reply resolves exactly the promise whose id it carries (no cross-talk); replies for unknown ids are dropped.\n- **Files touched:** `src/webview2_shim.c[pp]`; possibly a small `tests/fixtures/app/` page for the correlation case.\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:1c783fad\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:1c783fad"
+      ],
+      "fingerprint": "1c783fad"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] Win32 window + CoreWebView2 controller cleanup guarantee is…",
+      "description": "## Finding (severity: warning)\nWin32 window + CoreWebView2 controller cleanup guarantee is absent. M3 says 'clean window lifecycle' in the Refactor note but names no COM Release ordering, no DestroyWindow call site, and no RAII boundary. Resource cleanup promise is informal only.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §M8 — Windows WebView2 Backend — TDD Implementation Plan  ~line 4\n```\n# M8 — Windows WebView2 Backend — TDD Implementation Plan\n\n**Plan:** ENG-0006 · 2026-06-01 · Tier L3\n**Beads:** closes `zigBrowser-182` (os.info comptime + windows backend wired) and `zigBrowser-2nb` (WebView2 renders + answers ping); under epic `zigBrowser-ml4`.\n**Topology:** see sibling dir `2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8/` (`components.yaml`, `flows.yaml`, `diagram.mmd`) — closure-lint green (6 components, 8 flows, 0 diagnostics).\n\n## Overview\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:79a130fb\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:79a130fb"
+      ],
+      "fingerprint": "79a130fb"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] M1 unit test is a shape assertion on a Linux host: zig buil…",
+      "description": "## Finding (severity: warning)\nM1 unit test is a shape assertion on a Linux host: zig build test -Dtarget=x86_64-windows can verify {sysname, release, machine} fields exist but cannot execute RtlGetVersion or any Windows API; the test passes even if the windows branch returns comptime-constant strings. The real correctness oracle is the in-guest E2E (M4 vs cmd /c ver), but the plan does not warn that M1 green is shape-only, not value-correct.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 1 — os.info compiles + returns real Windows values cross-OS  (flow: `ipc_post`)  ~line 75\n```\n- **VISIBLE ARTIFACT:** real Windows stdout over SSH (`zig version` + WebView2 runtime version).\n\n## Milestone 1 — os.info compiles + returns real Windows values cross-OS  (flow: `ipc_post`)\n\n- 🔴 **Red:** `zig build test -Dtarget=x86_64-windows` FAILS today at `ipc.zig:35`. Add a unit asserting `os.info` returns a `{sysname,release,machine}`-shaped result for the windows target.\n- 🟢 **Green:** replace the unconditional `uname` with `comptime switch (builtin.os.tag)` — windows: derive `sysname`/`release`/`machine` from `builtin` + a Windows API (`RtlGetVersion`/`GetVersionEx` via the shim, or comptime arch + runtime version); else: keep `uname`. `ipc.zig` now compiles for windows.\n- 🔵 **Refactor:** keep dispatch flat; isolate the platform branch in one helper; Linux behavior byte-identical (existing GTK os.info test stays green).\n- **Property:** for the linux target, `os.info` output is unchanged from the pre-M8 value (regression guard).\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:4140ec0c\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:4140ec0c"
+      ],
+      "fingerprint": "4140ec0c"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] IPC scratch buffer bound for the WebView2 shim is unquantif…",
+      "description": "## Finding (severity: warning)\nIPC scratch buffer bound for the WebView2 shim is unquantified. M4 says 'bounded scratch like the GTK path' without stating the actual bound. If the GTK bound is implicit (e.g., a stack-allocated fixed array), an implementer has no stated constraint and could allocate unboundedly.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 4 — IPC request reaches zb_ipc_dispatch over chrome.webview  (flow: `ipc_post`)  ~line 102\n```\n## Milestone 4 — IPC request reaches zb_ipc_dispatch over chrome.webview  (flow: `ipc_post`)\n\n- 🔴 **Red:** `tests/e2e/m8_reply_channel_test.py` success path RED (no reply channel).\n- 🟢 **Green:** `webview2_shim` `AddWebMessageReceived` → parse the `{id,cmd,args}` envelope → call the **same** `zb_ipc_dispatch(cmd, args_json, &out, &err)` → emit `IPC`/`IPCERR` protocol rows. ping→pong, echo→echo, os.info→real Windows values all flow through.\n- 🔵 **Refactor:** dedupe envelope parsing; bounded scratch like the GTK path.\n- **Files touched:** `src/webview2_shim.c[pp]`.\n- **VISIBLE ARTIFACT:** IPC protocol rows on guest stdout (ping/echo/os.info) + page DOM updates. **Oracle:** `m8_reply_channel_test.py` success_condition (`ZB_ENABLE_M8_E2E=1`) + os.info vs real OS values.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:e932f3f0\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:e932f3f0"
+      ],
+      "fingerprint": "e932f3f0"
+    },
+    {
+      "phase": "promises",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §promises] [VERIFY] zb_run_open (webkit_shim.h:30) has no implementati…",
+      "description": "## Finding (severity: warning)\n[VERIFY] zb_run_open (webkit_shim.h:30) has no implementation slot in M2-M6: the plan lists zb_app_run, zb_run_screenshot, and zb_version_line as required shim functions but omits zb_run_open. If main.zig dispatches to it on windows (not visible in the cited main.zig slice), the linker will fail at a milestone the plan marks green.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\npromises\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:d85ce9c1\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:promises",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:d85ce9c1"
+      ],
+      "fingerprint": "d85ce9c1"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] os.info Windows struct: field value format for sysname, rel…",
+      "description": "## Finding (severity: warning)\nos.info Windows struct: field value format for sysname, release, and machine on Windows is not specified. The plan says 'derive from builtin + RtlGetVersion/GetVersionEx' but gives no concrete mapping — e.g., is release '10.0.19041', '10.0 Build 19041', or the raw DWORD tuple? The M1 unit test oracle and the M4 E2E oracle ('os.info → real Windows values vs cmd /c ver') cannot be written without this contract.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Key Discoveries (hostile audit, claim vs truth)  ~line 25\n```\n- **`src/webkit_shim.h:30-41`** — the C seam is generic (`zb_app_run`/`zb_run_screenshot`/`zb_version_line`/`zb_window_new(ZbApp*, void*)`/`zb_reload` + Zig-owned `zb_policy_decide`/`zb_ipc_dispatch`). Reusable as-is by a WebView2 implementation; only the *.c* file is GTK-specific.\n- **`src/ipc.zig:35`** — `os.info` calls `std.posix.uname()` **unconditionally**. Combined with `src/main.zig:8-11`'s `comptime { _ = @import(\"ipc.zig\"); … }` (which force-links the exports), this means **the whole binary cannot compile for windows today**. This is the sole Zig-graph compile blocker. (Verified: `zig build -Dtarget=x86_64-windows-gnu` aborts.)\n- **`build.zig:2-4,95-118`** — `Backend` enum has only `gtk_backend`; `resolveBackend` `std.debug.panic(\"NoBackendLinked…\")` at **configure time** for non-linux; no windows arm in `pkg_guard`/`configureBackend`/`configureGtkBackend`. These three sites are the exact insertion points.\n- **`tests/fixtures/app/zbhost.js:82-108`** — `sendViaWebView2` already defines the id-correlated `{id,cmd,args}` → `message` event `{id,result|error}` protocol, but **no native host implements it** and **no passing test exercises it** (written-but-dead contract). The GTK path (`:24-34`) uses a different mechanism, so the transports are not symmetric — M8 must make the native side honor *this* protocol.\n- **`tests/e2e/m8_reply_channel_test.py:22-28`** — real test body (asserts echo + BadArgs reply rows) but **HW-gated**: returns SKIP unless `platform.system()=='Windows'` AND `ZB_ENABLE_M8_E2E=1`. Off-Windows it passes vacuously. This is the honest deferral **and** the discriminating oracle for M8.\n- **`src/errors.zig:11-12,32-33`** — `RuntimeMissing=9` / `WebViewInitFailed=10` already wired and OS-agnostic. Reusable.\n- **`src/main.zig:43-61`** — driver calls `webkit.c.zb_app_run`/`runScreenshot`/`versionLine`; OS-agnostic, no change for a windows backend.\n- **Clean slate (verified `git ls-files`)** — zero `webview2`/`win32` files; `src/` is GTK-only. M8 builds the backend from nothing (no stub to lean on).\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nAdd a one-line table in M1 specifying the concrete source and string format for each field on Windows: e.g., sysname = 'Windows' (literal), release = major.minor.build from RtlGetVersion (formatted as '10.0.19041'), machine = @tagName(builtin.cpu.arch) lowercased. The M1 unit test and M4 E2E oracle both require this to assert against an independent value ('cmd /c ver' or registry).\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:8a79470b\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:8a79470b"
+      ],
+      "fingerprint": "8a79470b"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] [VERIFY] machine field presence in os.info struct: the cite…",
+      "description": "## Finding (severity: warning)\n[VERIFY] machine field presence in os.info struct: the cited ipc.zig:35-38 snippet is truncated after the release assignment. If machine is absent from the existing Linux struct, then adding it for Windows would break the plan's stated property 'Linux os.info output is unchanged from the pre-M8 value'. If it is present, the Windows source (GetSystemInfo vs comptime builtin.cpu.arch) is unspecified.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:e484c6fa\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:e484c6fa"
+      ],
+      "fingerprint": "e484c6fa"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] [VERIFY] LoadFailed exit code 5: the plan references 'exit …",
+      "description": "## Finding (severity: warning)\n[VERIFY] LoadFailed exit code 5: the plan references 'exit LoadFailed(5)' in M6, but LoadFailed does not appear in the cited errors.zig:11-12 snippet — only SnapshotFailed, WriteFailed, Timeout, RuntimeMissing, WebViewInitFailed, Cancelled are shown. If the variant is missing, the M6 load-failure test cannot assert the correct exit code.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\nConfirm whether LoadFailed is already in errors.zig (the cited snippet covers only lines 11-12). If absent, M2/M6 must add it with an explicit numeric value; if present, cite the line so reviewers can verify the '5' claim without reading the full file.\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:1a179dbd\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:1a179dbd"
+      ],
+      "fingerprint": "1a179dbd"
+    },
+    {
+      "phase": "data_models",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §data_models] IPC reply result field type is unspecified per command. For…",
+      "description": "## Finding (severity: warning)\nIPC reply result field type is unspecified per command. For ping the result is presumably the string 'pong'; for echo it mirrors the input; for os.info it is an object. The serialization format (flat JSON object vs nested, field names) that the native shim must PostWebMessageAsString is not defined, leaving the M4/M5 native-side implementation without a schema to match zbhost.js's promise resolution.\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Overview  ~line 11\n```\n## Overview\n\nThe first non-Linux vertical slice. A **real WebView2 window** opens in the live Win11 KVM guest, renders a **real fixture page**, and answers IPC `ping`/`echo`/`os.info` over the `chrome.webview` **id-correlated reply channel**, with `build.zig` auto-selecting the windows backend by target.\n\nThe Zig core (`src/ipc.zig` dispatch, `src/nav_policy.zig`, `src/errors.zig` codes 9/10), the generic `zb_*` C seam (`src/webkit_shim.h`), and the cross-OS-clean `@cImport` layer (`src/webkit.zig`) are **reused**. The only genuinely new code is: the `os.info` comptime branch, the `build.zig` windows arm, and `src/webview2_shim` (the native host that implements the reply channel `zbhost.js` already expects).\n\nEvery milestone ends in a **human-observable artifact**, never \"tests green\". A **provenance gate** runs throughout: `dumpbin`/`nm` must show `zb_ipc_dispatch` + the WebView2 symbols **DEFINED** (cross-OS reuse proven), and `os.info` returning **real Windows values** is the discriminating test that the *same* Zig dispatch ran — the Linux `std.posix.uname` path cannot even compile for windows.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\ndata_models\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:4d3bdb8d\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:data_models",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:4d3bdb8d"
+      ],
+      "fingerprint": "4d3bdb8d"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] zb_version_line Windows output format unspecified — plan sa…",
+      "description": "## Finding (severity: warning)\nzb_version_line Windows output format unspecified — plan says 'WebView2 + runtime version line' with no exact string shape; E2E tests asserting this output have no documented format to write a parse/assert against\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:04f663e5\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:04f663e5"
+      ],
+      "fingerprint": "04f663e5"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] os.info Windows field value mapping not documented — plan r…",
+      "description": "## Finding (severity: warning)\nos.info Windows field value mapping not documented — plan references RtlGetVersion/GetVersionEx but does not commit to what sysname/release/machine resolve to (e.g. 'Windows' vs 'Windows_NT', full build string vs dotted version, 'AMD64' vs 'x86_64'); JS clients parsing these fields have no stable contract and the E2E oracle ('cmd /c ver') does not fully constrain the three-field shape\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:a1e68df3\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:a1e68df3"
+      ],
+      "fingerprint": "a1e68df3"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] zb_ipc_dispatch int return value semantics not documented —…",
+      "description": "## Finding (severity: warning)\nzb_ipc_dispatch int return value semantics not documented — Milestone 4 shim must decide whether to call PostWebMessageAsString with result or error based on either the int return or out_err non-null; neither the plan nor the cited header defines which signal governs routing; implementer must reverse-engineer the GTK backend\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:351a2201\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:351a2201"
+      ],
+      "fingerprint": "351a2201"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] [VERIFY] zb_run_screenshot Windows implementation not menti…",
+      "description": "## Finding (severity: warning)\n[VERIFY] zb_run_screenshot Windows implementation not mentioned in any Milestone file list — main.zig:61 (cited) calls webkit.runScreenshot which links zb_run_screenshot from the C shim; if webkit.zig calls it unconditionally the Windows build fails to link at M2/M3; plan uses PowerShell for the screenshot oracle without clarifying whether this replaces or supplements the C API path\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:9af2644f\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:9af2644f"
+      ],
+      "fingerprint": "9af2644f"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] [VERIFY] zb_reload, zb_window_new, zb_run_open Windows impl…",
+      "description": "## Finding (severity: warning)\n[VERIFY] zb_reload, zb_window_new, zb_run_open Windows implementation not addressed — all three are declared in webkit_shim.h (cited); plan only accounts for zb_app_run, zb_version_line, and implicitly zb_run_screenshot; if webkit.zig references any of these unconditionally the Windows link fails silently\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:760990ad\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:760990ad"
+      ],
+      "fingerprint": "760990ad"
+    },
+    {
+      "phase": "apis",
+      "severity": "warning",
+      "priority": 2,
+      "title": "[Plan Review §apis] [VERIFY] IPC reply JSON field names not confirmed against t…",
+      "description": "## Finding (severity: warning)\n[VERIFY] IPC reply JSON field names not confirmed against the JS listener — plan specifies PostWebMessageAsString with keys 'result' and 'error', but installWebViewListener (zbhost.js:88, referenced but not cited) is the actual parser; if the listener expects different key names all promises silently hang with no protocol-row evidence\n\n## Where in the plan\n/home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md  §Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)  ~line 61\n```\n- **Independent oracles only:** real WebView2 runtime version from the registry, real Windows OS values from `cmd /c ver`, fixture `<title>` parsed from source, the `PROTOCOL.md` contract — never an artifact our own render path produced.\n\n---\n\n## Milestone 0 — Host↔guest build/verify channel + Windows toolchain (PREREQUISITE — enabling infra, no flow_id)\n\n**Why first:** the visible-output gate and every E2E need to build *and* run *and* observe inside the guest. No product code until the loop works.\n\n```\n\n## Impact\n(warning — non-blocking)\n\n## Recommendation\n(no recommendation supplied — see review report for context)\n\n## Phase\napis\n\n## Traceability\nPlan: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/plans/2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8.md\nReview report: <substituted by CLI post-mint>\nEpic: <substituted by CLI post-mint>\nFingerprint: review-fp:bf2948a5\n\n## How to fix\n1. Edit the plan section above to address the recommendation.\n2. Re-run PlanReview on the plan; this fingerprint should not reappear.\n3. `bd close <this-id> --reason=\"addressed in plan revision\"`.",
+      "labels": [
+        "plan-review",
+        "phase:apis",
+        "severity:warning",
+        "plan:2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8",
+        "review-fp:bf2948a5"
+      ],
+      "fingerprint": "bf2948a5"
+    }
+  ],
+  "plan_stem": "2026-06-01-18-16-ENG-0006-tdd-windows-webview2-backend-m8"
+}

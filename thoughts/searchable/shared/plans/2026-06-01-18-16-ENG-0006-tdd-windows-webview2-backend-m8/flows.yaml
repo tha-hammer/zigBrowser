@@ -1,0 +1,103 @@
+- flow_id: backend_link_check
+  trigger: sync
+  producer: cli
+  consumer: build_sel
+  payload_schema_ref: BackendChoice
+  verb: query
+  hops: []
+  error_states: [NoBackendLinked]
+  observability:
+    start_signal: silmari.flow.backend_link_check.create
+    in_transit_signal: silmari.flow.backend_link_check.receive
+    terminal_signal: silmari.flow.backend_link_check.settle
+
+- flow_id: backend_select
+  trigger: sync
+  producer: build_sel
+  consumer: win_backend
+  payload_schema_ref: BackendChoice
+  verb: command
+  hops: []
+  error_states: [UnsupportedTarget]
+  observability:
+    start_signal: silmari.flow.backend_select.create
+    in_transit_signal: silmari.flow.backend_select.send
+    terminal_signal: silmari.flow.backend_select.process
+
+- flow_id: app_run
+  trigger: user
+  producer: cli
+  consumer: win_backend
+  payload_schema_ref: AppRunSpec
+  verb: command
+  hops: []
+  error_states: [InvalidUri, RuntimeMissing, WebViewInitFailed]
+  observability:
+    start_signal: silmari.flow.app_run.create
+    in_transit_signal: silmari.flow.app_run.send
+    terminal_signal: silmari.flow.app_run.process
+
+- flow_id: app_ack
+  trigger: sync
+  producer: win_backend
+  consumer: cli
+  payload_schema_ref: AppRunSpec
+  verb: event
+  hops: []
+  error_states: [LoadFailed, Timeout]
+  observability:
+    start_signal: silmari.flow.app_ack.create
+    in_transit_signal: silmari.flow.app_ack.receive
+    terminal_signal: silmari.flow.app_ack.settle
+
+- flow_id: render_page
+  trigger: sync
+  producer: win_backend
+  consumer: webview_rt
+  payload_schema_ref: PageLoad
+  verb: command
+  hops: []
+  error_states: [LoadFailed, Timeout]
+  observability:
+    start_signal: silmari.flow.render_page.create
+    in_transit_signal: silmari.flow.render_page.send
+    terminal_signal: silmari.flow.render_page.process
+
+- flow_id: render_result
+  trigger: sync
+  producer: webview_rt
+  consumer: win_backend
+  payload_schema_ref: PageLoad
+  verb: event
+  hops: []
+  error_states: [LoadFailed, Timeout]
+  observability:
+    start_signal: silmari.flow.render_result.create
+    in_transit_signal: silmari.flow.render_result.receive
+    terminal_signal: silmari.flow.render_result.settle
+
+- flow_id: ipc_post
+  trigger: user
+  producer: web_app
+  consumer: ipc_core
+  payload_schema_ref: IpcExchange
+  verb: command
+  hops: [win_backend]
+  error_states: [BadArgs, UnknownCommand]
+  observability:
+    start_signal: silmari.flow.ipc_post.create
+    in_transit_signal: silmari.flow.ipc_post.send
+    terminal_signal: silmari.flow.ipc_post.process
+
+- flow_id: ipc_reply
+  trigger: sync
+  producer: ipc_core
+  consumer: web_app
+  payload_schema_ref: IpcExchange  # fixed: reply returns the same entity the request wrote (id-correlated)
+  verb: event
+  hops: [win_backend]
+  error_states: [BadArgs, UnknownCommand]
+  observability:
+    start_signal: silmari.flow.ipc_reply.create
+    in_transit_signal: silmari.flow.ipc_reply.receive
+    terminal_signal: silmari.flow.ipc_reply.settle

@@ -1,0 +1,77 @@
+- id: cli
+  container: host
+  purpose: Parse CLI args and invoke the linked backend's entry points.
+  data_model:
+    - {name: AppRunSpec, type: record, invariants: ["uri validated", "e2e_protocol in {0,1}"]}
+  verbs:
+    - {name: parse_args, input: "argv", output: Command, errors: ["Usage"]}
+    - {name: run, input: AppRunSpec, output: exit_code, errors: ["InvalidUri"]}
+  errors: [Usage, InvalidUri]
+  events_start: silmari.flow.app_run.create
+  events_progress: silmari.flow.app_run.send
+  events_stop: silmari.flow.app_run.settle
+  dependencies: [build_sel, win_backend]
+
+- id: build_sel
+  container: build_system
+  purpose: Select and link exactly one backend by target OS; hard-fail if none linked.
+  data_model:
+    - {name: BackendChoice, type: record, invariants: ["exactly one backend_id per target_os", "non-null"]}
+  verbs:
+    - {name: select_backend, input: TargetTriple, output: BackendChoice, errors: ["UnsupportedTarget"]}
+  errors: [UnsupportedTarget, NoBackendLinked]
+  events_start: silmari.flow.backend_select.create
+  events_progress: silmari.flow.backend_select.send
+  events_stop: silmari.flow.backend_select.settle
+  dependencies: []
+
+- id: win_backend
+  container: native_backends
+  purpose: WebView2 backend (NEW) - owns the WebView2 host window, bridges chrome.webview messages to the Zig core, posts id-correlated replies. Implements the zb_* seam.
+  data_model: []
+  verbs:
+    - {name: zb_app_run, input: AppRunSpec, output: exit_code, errors: ["RuntimeMissing", "WebViewInitFailed", "LoadFailed"]}
+    - {name: post_reply, input: IpcExchange, output: "chrome.webview message"}
+  errors: [RuntimeMissing, WebViewInitFailed, LoadFailed, Timeout]
+  events_start: silmari.flow.app_run.create
+  events_progress: silmari.flow.ipc_post.send
+  events_stop: silmari.flow.app_run.settle
+  dependencies: [ipc_core, webview_rt]
+
+- id: ipc_core
+  container: zig_core
+  purpose: OS-agnostic JS<->Zig IPC command dispatch (ping/add/echo/os.info); cross-OS after os.info comptime branch.
+  data_model:
+    - {name: IpcExchange, type: record, invariants: ["cmd non-empty", "result_json XOR err_code", "reply id correlates request id"]}
+  verbs:
+    - {name: dispatch, input: IpcExchange, output: IpcExchange, errors: ["UnknownCommand", "BadArgs"]}
+  errors: [UnknownCommand, BadArgs]
+  events_start: silmari.flow.ipc_post.create
+  events_progress: silmari.flow.ipc_post.receive
+  events_stop: silmari.flow.ipc_post.process
+  dependencies: []
+
+- id: web_app
+  container: webview_layer
+  purpose: JS page (zbhost.js) that posts IPC envelopes via chrome.webview and resolves id-correlated replies.
+  data_model: []
+  verbs:
+    - {name: postMessage, input: IpcExchange, output: "Promise IpcExchange", errors: ["PromiseRejected"]}
+  errors: [PromiseRejected]
+  events_start: silmari.flow.ipc_post.create
+  events_progress: silmari.flow.ipc_post.send
+  events_stop: silmari.flow.ipc_post.settle
+  dependencies: [win_backend]
+
+- id: webview_rt
+  container: null
+  purpose: External WebView2 Runtime (Edge Chromium) that renders the real page.
+  data_model:
+    - {name: PageLoad, type: record, invariants: ["uri non-empty", "terminal status in {finished,failed}"]}
+  verbs:
+    - {name: load_uri, input: PageLoad, output: PageLoad, errors: ["LoadFailed"]}
+  errors: [LoadFailed]
+  events_start: silmari.flow.render_page.create
+  events_progress: silmari.flow.render_page.send
+  events_stop: silmari.flow.render_page.settle
+  dependencies: []
