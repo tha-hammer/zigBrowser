@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -14,12 +13,8 @@ from pathlib import Path
 
 from m9_reply_channel_test import (
     default_binary,
-    env_exports,
-    gui_runner_prefix,
     hw_gate_ready,
-    read_file_lines,
-    read_int_file,
-    terminate_process,
+    run_macos_gui_until,
 )
 from slice2_common import SKIP_EXIT, RunResult, eprint, print_fail_context, protocol_rows, require_file
 
@@ -55,119 +50,42 @@ def fixture_title(index: Path) -> str:
     return parser.title
 
 
-def write_render_script(
-    script_path: Path,
-    browser: Path,
-    uri: str,
-    stdout_path: Path,
-    stderr_path: Path,
-    pid_path: Path,
-    capture_path: Path,
-    env: dict[str, str],
-    cwd: Path,
-    settle_sec: float,
-) -> None:
-    command = " ".join(
-        shlex.quote(str(item))
-        for item in [browser, uri, "--e2e-protocol", "--print-title"]
-    )
-    script = "\n".join(
-        [
-            "#!/bin/sh",
-            "set -u",
-            f"cd {shlex.quote(str(cwd))}",
-            *env_exports(env),
-            f": > {shlex.quote(str(stdout_path))}",
-            f": > {shlex.quote(str(stderr_path))}",
-            f"{command} >> {shlex.quote(str(stdout_path))} 2>> {shlex.quote(str(stderr_path))} &",
-            "pid=$!",
-            f"printf '%s\\n' \"$pid\" > {shlex.quote(str(pid_path))}",
-            f"sleep {settle_sec:.3f}",
-            "if ! kill -0 \"$pid\" 2>/dev/null; then",
-            "  wait \"$pid\"",
-            "  rc=$?",
-            "  printf 'ZB_HARNESS_EXIT\\t%s\\n' \"$rc\" >> " + shlex.quote(str(stdout_path)),
-            "  exit 1",
-            "fi",
-            f"/usr/sbin/screencapture -x {shlex.quote(str(capture_path))}",
-            "capture_rc=$?",
-            "kill \"$pid\" 2>/dev/null || true",
-            "sleep 0.5",
-            "kill -9 \"$pid\" 2>/dev/null || true",
-            "wait \"$pid\" 2>/dev/null",
-            "rc=$?",
-            "printf 'ZB_HARNESS_EXIT\\t%s\\n' \"$rc\" >> " + shlex.quote(str(stdout_path)),
-            "exit \"$capture_rc\"",
-            "",
-        ]
-    )
-    script_path.write_text(script, encoding="utf-8")
-    script_path.chmod(0o755)
+def run_protocol_window(browser: Path, uri: str, expected_title: str, timeout_sec: float) -> tuple[bool, RunResult]:
+    cmd = [str(browser), uri, "--e2e-protocol", "--print-title"]
+
+    def condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
+        return title_and_nav_observed(stdout_lines, uri, expected_title)
+
+    runner_override = os.environ.pop("ZB_M9_GUI_RUNNER", None)
+    try:
+        return run_macos_gui_until(cmd, dict(os.environ), timeout_sec, condition)
+    finally:
+        if runner_override is not None:
+            os.environ["ZB_M9_GUI_RUNNER"] = runner_override
 
 
-def run_render_capture(
-    browser: Path,
-    uri: str,
-    capture_path: Path,
-    env: dict[str, str],
-    timeout_sec: float,
-    settle_sec: float,
-) -> RunResult:
-    work_dir = Path(tempfile.mkdtemp(prefix="zigBrowser-m9-render-"))
-    stdout_path = work_dir / "stdout.txt"
-    stderr_path = work_dir / "stderr.txt"
-    pid_path = work_dir / "pid.txt"
-    script_path = work_dir / "render.sh"
-    write_render_script(
-        script_path,
-        browser,
-        uri,
-        stdout_path,
-        stderr_path,
-        pid_path,
-        capture_path,
-        env,
-        Path.cwd().resolve(),
-        settle_sec,
-    )
-
-    prefix, _runner_note = gui_runner_prefix()
+def run_screenshot_capture(browser: Path, uri: str, capture_path: Path, timeout_sec: float) -> RunResult:
     try:
         proc = subprocess.run(
-            prefix + ["/bin/sh", str(script_path)],
+            [str(browser), "--screenshot", str(capture_path), uri, "--print-title"],
             capture_output=True,
             text=True,
             timeout=timeout_sec,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        pid = read_int_file(pid_path)
-        terminate_process(pid)
-        stdout_lines = read_file_lines(stdout_path)
-        stderr_lines = read_file_lines(stderr_path)
-        if exc.stderr:
-            stderr_lines.extend(str(exc.stderr).splitlines())
-        if exc.stdout:
-            stdout_lines.extend(str(exc.stdout).splitlines())
         return RunResult(
             returncode=1,
-            stdout_lines=stdout_lines,
-            stderr_lines=stderr_lines,
+            stdout_lines=str(exc.stdout or "").splitlines(),
+            stderr_lines=str(exc.stderr or "").splitlines(),
             tracked_children=set(),
             timed_out=True,
-            pid=pid,
         )
 
-    stdout_lines = read_file_lines(stdout_path)
-    stderr_lines = read_file_lines(stderr_path)
-    if proc.stderr:
-        stderr_lines.extend(proc.stderr.splitlines())
-    if proc.stdout:
-        stdout_lines.extend(proc.stdout.splitlines())
     return RunResult(
         returncode=proc.returncode,
-        stdout_lines=stdout_lines,
-        stderr_lines=stderr_lines,
+        stdout_lines=proc.stdout.splitlines(),
+        stderr_lines=proc.stderr.splitlines(),
         tracked_children=set(),
     )
 
@@ -193,13 +111,16 @@ def title_and_nav_observed(stdout_lines: list[str], uri: str, expected_title: st
     return title_ok and nav_ok
 
 
+def title_observed(stdout_lines: list[str], expected_title: str) -> bool:
+    return any(line == f"TITLE\t{expected_title}" for line in stdout_lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", "--browser", dest="binary", default=None)
     parser.add_argument("--index", default="tests/fixtures/app/index.html")
     parser.add_argument("--capture-path", default=None)
     parser.add_argument("--timeout-sec", type=float, default=35.0)
-    parser.add_argument("--settle-sec", type=float, default=5.0)
     args = parser.parse_args()
 
     enabled, reason = hw_gate_ready()
@@ -224,11 +145,21 @@ def main() -> int:
     if capture_path.exists():
         capture_path.unlink()
 
-    result = run_render_capture(browser, uri, capture_path, dict(os.environ), args.timeout_sec, args.settle_sec)
-
-    if not title_and_nav_observed(result.stdout_lines, uri, expected_title):
+    protocol_matched, protocol_result = run_protocol_window(browser, uri, expected_title, args.timeout_sec)
+    if not protocol_matched:
         print("FAIL\tm9-render-title-or-nav-not-observed")
-        print_fail_context("m9-render-title-or-nav-not-observed", result)
+        print_fail_context("m9-render-title-or-nav-not-observed", protocol_result)
+        return 1
+
+    result = run_screenshot_capture(browser, uri, capture_path, args.timeout_sec)
+    if result.returncode != 0:
+        print("FAIL\tm9-render-screenshot-exit")
+        print_fail_context("m9-render-screenshot-exit", result)
+        return 1
+
+    if not title_observed(result.stdout_lines, expected_title):
+        print("FAIL\tm9-render-screenshot-title-not-observed")
+        print_fail_context("m9-render-screenshot-title-not-observed", result)
         return 1
 
     if not capture_path.exists() or capture_path.stat().st_size == 0:
@@ -243,7 +174,7 @@ def main() -> int:
         print_fail_context("m9-render-capture-uniform", result)
         return 1
 
-    print(f"PASS\tm9-render-real-window\t{capture_path}\t{detail}")
+    print(f"PASS\tm9-render-webview-screenshot\t{capture_path}\t{detail}")
     return 0
 
 

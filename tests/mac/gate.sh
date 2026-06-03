@@ -2,10 +2,13 @@
 # M9 macOS WKWebView visible gate.
 #
 # WKWebView needs the logged-in WindowServer session. The Mac channel logs in
-# as the active console user, and direct `screencapture` works from SSH on this
-# host, so the Python M9 tests run the browser directly as that console user.
-# If a future host requires an explicit bootstrap switch and permits it, set:
-#   ZB_M9_GUI_RUNNER=launchctl-asuser
+# as the active console user, so run directly as that user. Do not use
+# `launchctl asuser` here; this SSH user is already the console user and the
+# bootstrap switch needs root on this host.
+#
+# The render oracle intentionally uses `zigBrowser --screenshot`, which calls
+# the backend's WKWebView takeSnapshot path. Do not replace it with full-screen
+# `screencapture`; that can capture wallpaper or another stacked window.
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -30,6 +33,7 @@ cd "$HOME/zigBrowser"
 test -f tests/fixtures/app/index.html
 test -f tests/fixtures/app/zbhost.js
 export ZB_ENABLE_M9_E2E=1
+unset ZB_M9_GUI_RUNNER
 python3 tests/e2e/m9_render_test.py \
   --browser zig-out/bin/zigBrowser \
   --capture-path zig-out/m9-render.png
