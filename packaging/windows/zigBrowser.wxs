@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="d4781018-6dc9-5c4d-80bc-1e5cb0de988e"
+      Name="zigBrowser"
+      Language="1033"
+      Version="$(var.ProductVersion)"
+      Manufacturer="zigBrowser"
+      UpgradeCode="c2ab0705-2690-5826-870a-7755197c5043">
+
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perUser"
+        InstallPrivileges="limited"
+        Description="zigBrowser"
+        Comments="zigBrowser Windows installer" />
+
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPPRODUCTICON" Value="ZigBrowserIcon" />
+    <Icon Id="ZigBrowserIcon" SourceFile="$(var.IconPath)" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="LocalProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="zigBrowser" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="zigBrowser" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="MainExecutableComponent" Guid="0ca7555c-d17c-53a1-a2ce-10afad92f8f3">
+        <File Id="ZigBrowserExe" Source="$(var.PayloadDir)\zigBrowser.exe" Name="zigBrowser.exe" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\zigBrowser" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+      <Component Id="WebView2BootstrapperComponent" Guid="676e1bdd-9947-576b-9eb2-2f4360cfdbee">
+        <File Id="WebView2BootstrapperFile" Source="$(var.WebView2Bootstrapper)" Name="MicrosoftEdgeWebview2Setup.exe" />
+        <RegistryValue Root="HKCU" Key="Software\zigBrowser" Name="WebView2Bootstrapper" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="c6df193b-473e-57f6-96cb-751f201b984c">
+        <Shortcut
+            Id="StartMenuShortcut"
+            Name="zigBrowser"
+            Description="Launch zigBrowser"
+            Target="[INSTALLFOLDER]zigBrowser.exe"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="ZigBrowserIcon" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\zigBrowser" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent" Guid="4de8295c-5496-55d0-bfd5-e539beb23336">
+        <Shortcut
+            Id="DesktopShortcut"
+            Name="zigBrowser"
+            Description="Launch zigBrowser"
+            Target="[INSTALLFOLDER]zigBrowser.exe"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="ZigBrowserIcon" />
+        <RegistryValue Root="HKCU" Key="Software\zigBrowser" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <CustomAction
+        Id="RunWebView2Bootstrapper"
+        FileKey="WebView2BootstrapperFile"
+        ExeCommand="/silent /install"
+        Execute="deferred"
+        Return="ignore"
+        Impersonate="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RunWebView2Bootstrapper" After="InstallFiles">NOT Installed</Custom>
+    </InstallExecuteSequence>
+
+    <Feature Id="DefaultFeature" Title="zigBrowser" Level="1">
+      <ComponentRef Id="MainExecutableComponent" />
+      <ComponentRef Id="WebView2BootstrapperComponent" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+  </Product>
+</Wix>
