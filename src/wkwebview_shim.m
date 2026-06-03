@@ -97,6 +97,20 @@ static const char *utf8_or_empty(NSString *text) {
   return text != nil ? text.UTF8String : "";
 }
 
+static NSInteger snapshot_settle_ms_from_env(void) {
+  const char *raw = getenv("ZB_SNAPSHOT_SETTLE_MS");
+  if (raw == NULL || raw[0] == '\0') {
+    return 0;
+  }
+
+  char *end = NULL;
+  long value = strtol(raw, &end, 10);
+  if (end == raw || *end != '\0' || value <= 0) {
+    return 0;
+  }
+  return (NSInteger)value;
+}
+
 static NSString *json_string_from_object(id object) {
   id value = object != nil ? object : @{};
   if (![NSJSONSerialization isValidJSONObject:value] &&
@@ -617,9 +631,11 @@ static void handle_signal(int signo) {
 @property(nonatomic, assign) BOOL printTitle;
 @property(nonatomic, assign) BOOL done;
 @property(nonatomic, assign) int exitCode;
+@property(nonatomic, assign) NSInteger settleMilliseconds;
 @property(nonatomic, strong) NSTimer *timeoutTimer;
 - (instancetype)initWithURI:(NSString *)uri outPath:(NSString *)outPath printTitle:(BOOL)printTitle;
 - (int)run;
+- (void)takeSnapshot;
 @end
 
 @implementation ZBSnapshotRunner
@@ -632,6 +648,7 @@ static void handle_signal(int signo) {
   _outPath = [outPath copy];
   _printTitle = printTitle;
   _exitCode = ZB_EXIT_SUCCESS;
+  _settleMilliseconds = snapshot_settle_ms_from_env();
   return self;
 }
 
@@ -698,6 +715,32 @@ static void handle_signal(int signo) {
     fflush(stdout);
   }
 
+  if (self.settleMilliseconds > 0) {
+    NSTimeInterval settleSeconds = (NSTimeInterval)self.settleMilliseconds / 1000.0;
+    self.timeoutTimer =
+        [NSTimer scheduledTimerWithTimeInterval:settleSeconds + ZB_NAVIGATION_TIMEOUT_SECONDS
+                                         target:self
+                                       selector:@selector(onTimeout:)
+                                       userInfo:nil
+                                        repeats:NO];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(settleSeconds * (double)NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                     if (self.done) {
+                       return;
+                     }
+                     [self.timeoutTimer invalidate];
+                     self.timeoutTimer = nil;
+                     [self takeSnapshot];
+                   });
+    return;
+  }
+
+  self.timeoutTimer = nil;
+  [self takeSnapshot];
+}
+
+- (void)takeSnapshot {
+  WKWebView *webView = self.webView;
   WKSnapshotConfiguration *configuration = [[WKSnapshotConfiguration alloc] init];
   configuration.rect = webView.bounds;
   [webView takeSnapshotWithConfiguration:configuration
