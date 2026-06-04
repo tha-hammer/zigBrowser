@@ -708,9 +708,17 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     return;
   }
 
-  terminate_window_web_process(win);
-
   if (win->view != NULL) {
+    if (!win->finished && !win->failed && !win->timed_out && win->app != NULL) {
+      win->cancelled = 1;
+      win->app->exit_code = ZB_EXIT_CANCELLED;
+    }
+    if (win->cancellable != NULL) {
+      g_cancellable_cancel(win->cancellable);
+    }
+    terminate_window_web_process(win);
+    webkit_web_view_stop_loading(win->view);
+
     if (win->sig_load_changed != 0) {
       g_signal_handler_disconnect(win->view, win->sig_load_changed);
       win->sig_load_changed = 0;
