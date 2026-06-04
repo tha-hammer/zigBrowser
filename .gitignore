@@ -9,6 +9,10 @@
 zig-out/
 .cw9/
 .ntm/
+zigBrowser_*.deb
+packaging/linux/.stage/
+packaging/windows/dist/
+packaging/windows/zigBrowser-temp.ico
 
 # E2E runtime-generated scratch fixtures
 tests/e2e/.tmp/
