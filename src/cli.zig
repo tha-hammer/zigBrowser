@@ -18,7 +18,7 @@ pub const Command = union(enum) {
 };
 
 pub fn parseArgs(args: []const []const u8) Command {
-    if (args.len <= 1) return .usage;
+    if (args.len <= 1) return .{ .open = .{ .url = "https://cosmic-hr-development.up.railway.app/" } };
 
     const first = args[1];
 
@@ -81,6 +81,12 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
         .print_title = print_title,
         .e2e_protocol = e2e_protocol,
     } };
+}
+
+test "parseArgs no args yields open with default URL" {
+    const cmd = parseArgs(&.{"zigBrowser"});
+    try std.testing.expect(cmd == .open);
+    try std.testing.expectEqualStrings("https://cosmic-hr-development.up.railway.app/", cmd.open.url);
 }
 
 test "parseArgs --version yields .version" {

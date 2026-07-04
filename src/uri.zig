@@ -11,6 +11,8 @@ pub fn validate(arena: std.mem.Allocator, input: []const u8) UriError![:0]const 
 
     if (std.mem.eql(u8, parsed.scheme, "http") or std.mem.eql(u8, parsed.scheme, "https")) {
         if (parsed.host == null) return error.InvalidUri;
+    } else if (std.mem.eql(u8, parsed.scheme, "about")) {
+        // WebKit handles about:blank natively; pass through.
     } else if (!std.mem.eql(u8, parsed.scheme, "file")) {
         return error.UnsupportedScheme;
     }
@@ -29,6 +31,13 @@ test "validate accepts file/http/https" {
 
     const https_uri = try validate(allocator, "https://example.com/");
     defer allocator.free(https_uri);
+}
+
+test "validate accepts about:blank" {
+    const allocator = std.testing.allocator;
+    const about_uri = try validate(allocator, "about:blank");
+    defer allocator.free(about_uri);
+    try std.testing.expectEqualStrings("about:blank", about_uri);
 }
 
 test "validate rejects unsupported schemes" {

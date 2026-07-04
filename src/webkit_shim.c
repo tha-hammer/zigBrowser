@@ -925,6 +925,8 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   WebKitSettings *settings = webkit_web_view_get_settings(view);
   if (settings != NULL) {
     webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
+    webkit_settings_set_hardware_acceleration_policy(
+        settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
   }
 
   win->sig_load_changed =
@@ -1116,6 +1118,12 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   app.e2e_protocol = e2e_protocol != 0;
   app.exit_code = ZB_EXIT_SUCCESS;
   app.app_base = derive_app_base(uri);
+
+  WebKitWebContext *web_context = webkit_web_context_get_default();
+  WebKitCookieManager *cookie_mgr =
+      webkit_web_context_get_cookie_manager(web_context);
+  webkit_cookie_manager_set_accept_policy(
+      cookie_mgr, WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
 
   WebKitUserContentManager *ucm = webkit_user_content_manager_new();
   if (ucm == NULL) {
@@ -1548,7 +1556,18 @@ static int run_screenshot_internal(const char *uri, const char *out_path,
     return ZB_EXIT_GTK_INIT_FAILED;
   }
 
+  WebKitCookieManager *shot_cookie_mgr =
+      webkit_web_context_get_cookie_manager(shot.context);
+  webkit_cookie_manager_set_accept_policy(
+      shot_cookie_mgr, WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
+
   shot.view = WEBKIT_WEB_VIEW(webkit_web_view_new_with_context(shot.context));
+  WebKitSettings *shot_settings = webkit_web_view_get_settings(shot.view);
+  if (shot_settings != NULL) {
+    webkit_settings_set_hardware_acceleration_policy(
+        shot_settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+  }
+
   shot.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_default_size(GTK_WINDOW(shot.window), 1024, 768);
   gtk_window_set_title(GTK_WINDOW(shot.window), "zigBrowser");

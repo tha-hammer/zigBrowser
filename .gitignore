@@ -16,3 +16,11 @@ packaging/windows/zigBrowser-temp.ico
 
 # E2E runtime-generated scratch fixtures
 tests/e2e/.tmp/
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
