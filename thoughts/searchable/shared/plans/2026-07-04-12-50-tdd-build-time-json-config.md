@@ -10,7 +10,8 @@ status: ready_for_implementation
 beads_issue: zigBrowser-2aa
 source_research: thoughts/searchable/shared/research/2026-07-04-12-30-build-time-config-seams.md
 last_updated: 2026-07-04
-last_updated_by: Codex
+last_updated_by: FrostyGrove
+last_updated_note: "Added seam diagrams mapping grammar, interfaces, and contracts"
 ---
 
 # Build-Time JSON Config Ingestion TDD Implementation Plan
@@ -86,6 +87,409 @@ Runtime behavior:
 - No CLI arguments produce `.open.url == config.default_url`.
 - An explicit URL argument still wins over config.
 - `Command.open.url` still flows through `uri.validate` and the existing C ABI unchanged.
+
+## Diagrams: Grammar, Interfaces, and Contracts at Each Seam
+
+### Seam Topology
+
+Five seams connect six components. Each seam has a grammar (data shape crossing), an
+interface (function/module signature), and a contract (invariants the producer guarantees
+and the consumer relies on).
+
+```
+                            SEAM MAP
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                                                                         │
+ │     zigbrowser.json ──S1──▶ build.zig ──S2──▶ build_options module      │
+ │                                                   │                     │
+ │                                                  S3                     │
+ │                                                   │                     │
+ │                                                   ▼                     │
+ │                                            src/config.zig               │
+ │                                                   │                     │
+ │                                                  S4                     │
+ │                                                   │                     │
+ │                                                   ▼                     │
+ │     src/cli.zig ◀────────────────────────── (import)                    │
+ │          │                                                              │
+ │          │ Command.open.url                                             │
+ │          ▼                                                              │
+ │     src/uri.zig ──validate──▶ src/main.zig ──S5──▶ C ABI (shim.h)      │
+ │                                                                         │
+ └─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### S1 — File → Build Script (Grammar Seam)
+
+The JSON file is where grammar lives. This is the only human-authored artifact.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ SEAM S1: zigbrowser.json → build.zig                                │
+├──────────┬──────────────────────────────────────────────────────────┤
+│ GRAMMAR  │                                                          │
+│          │  Production:  object                                      │
+│          │  Rule:        { "url": <URI-string> [, ...ignored] }      │
+│          │                                                          │
+│          │  URI-string:  RFC 3986 absolute URI                       │
+│          │    scheme  ∈ { "http", "https", "file" }                  │
+│          │    if scheme ∈ { "http", "https" } → host MUST be present │
+│          │    length   ≤ 2048 bytes                                  │
+│          │    NOT relative (no ./ or ../ or bare path)               │
+│          │                                                          │
+│          │  Extensibility:                                           │
+│          │    Extra keys at root level are silently accepted.        │
+│          │    This enables forward-compatible schema evolution.      │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ INTERFACE│                                                          │
+│          │  std.Io.Dir.cwd().readFileAlloc(io, path, alloc, limit)   │
+│          │  → []const u8 (raw JSON bytes)                           │
+│          │                                                          │
+│          │  config_schema.parse(allocator, json_bytes)               │
+│          │  → ConfigError!SiteConfig                                │
+│          │                                                          │
+│          │  Path selection:                                          │
+│          │    default = "zigbrowser.json"                            │
+│          │    override = b.option("site_config") ?? default          │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ CONTRACT │                                                          │
+│          │  PRODUCER (developer/CI) guarantees:                      │
+│          │    • File exists at path (or build panics)               │
+│          │    • Content is valid UTF-8 JSON                         │
+│          │    • "url" key present with non-empty string value       │
+│          │                                                          │
+│          │  CONSUMER (build.zig) guarantees:                        │
+│          │    • Reads file ≤ 64 KiB (prevents OOM on accidental     │
+│          │      binary)                                              │
+│          │    • Panics with path + error name on any failure        │
+│          │    • Never modifies the config file                      │
+│          │    • Passes url string unmodified to S2                  │
+│          │                                                          │
+└──────────┴──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### S2 — Build Script → Generated Options Module (Code Generation Seam)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ SEAM S2: build.zig → build_options                                  │
+├──────────┬──────────────────────────────────────────────────────────┤
+│ GRAMMAR  │                                                          │
+│          │  Generated module exports:                                │
+│          │    pub const default_url: []const u8 = "...";            │
+│          │    pub const config_path: []const u8 = "...";            │
+│          │                                                          │
+│          │  default_url:                                             │
+│          │    Verbatim "url" value from JSON.                       │
+│          │    Non-empty (enforced at S1 parse).                     │
+│          │    Valid URI scheme (enforced at S1 parse).               │
+│          │                                                          │
+│          │  config_path:                                             │
+│          │    Path that was read (for diagnostics/logging).         │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ INTERFACE│                                                          │
+│          │  const site_options = b.addOptions();                     │
+│          │  site_options.addOption([]const u8, "default_url", val); │
+│          │  site_options.addOption([]const u8, "config_path", path);│
+│          │                                                          │
+│          │  root_module.addOptions("build_options", site_options);   │
+│          │  test_module.addOptions("build_options", site_options);   │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ CONTRACT │                                                          │
+│          │  PRODUCER (build.zig) guarantees:                        │
+│          │    • default_url is the exact byte sequence from JSON    │
+│          │    • default_url has passed config_schema.parse()        │
+│          │      (valid scheme, non-empty, ≤ 2048 bytes)            │
+│          │    • Options are attached to BOTH root_module and        │
+│          │      test_module                                         │
+│          │                                                          │
+│          │  CONSUMER (any .zig file) can rely on:                   │
+│          │    • @import("build_options").default_url is always      │
+│          │      available at comptime                               │
+│          │    • Value satisfies URI scheme allowlist                 │
+│          │    • Value is non-empty                                  │
+│          │                                                          │
+└──────────┴──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### S3 — Generated Options → Config Facade (Import Seam)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ SEAM S3: build_options → src/config.zig                             │
+├──────────┬──────────────────────────────────────────────────────────┤
+│ GRAMMAR  │                                                          │
+│          │  src/config.zig re-exports:                               │
+│          │    pub const default_url: []const u8;                    │
+│          │    pub const config_path: []const u8;                    │
+│          │                                                          │
+│          │  Comptime assertion:                                     │
+│          │    default_url.len > 0 (or @compileError)                │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ INTERFACE│                                                          │
+│          │  // src/config.zig                                        │
+│          │  const build_options = @import("build_options");          │
+│          │  pub const default_url = build_options.default_url;      │
+│          │  pub const config_path = build_options.config_path;      │
+│          │                                                          │
+│          │  comptime {                                               │
+│          │      if (default_url.len == 0)                           │
+│          │          @compileError("build_options.default_url empty");│
+│          │  }                                                       │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ CONTRACT │                                                          │
+│          │  PURPOSE: Thin facade insulating source from build       │
+│          │  system internals. Only config.zig knows about           │
+│          │  "build_options"; cli.zig depends on config.zig.         │
+│          │                                                          │
+│          │  GUARANTEES:                                              │
+│          │    • default_url is comptime-known                       │
+│          │    • default_url.len > 0 (compile-time enforced)         │
+│          │    • Changing config.zig does not require changing       │
+│          │      cli.zig or main.zig                                 │
+│          │                                                          │
+└──────────┴──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### S4 — Config Facade → CLI Parser (Module Import Seam)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ SEAM S4: src/config.zig → src/cli.zig                               │
+├──────────┬──────────────────────────────────────────────────────────┤
+│ GRAMMAR  │                                                          │
+│          │  Data crossing this seam:                                 │
+│          │    config.default_url : []const u8                       │
+│          │                                                          │
+│          │  Consumed as:                                             │
+│          │    Command{ .open = .{ .url = config.default_url } }     │
+│          │                                                          │
+│          │  Command.open grammar (unchanged):                       │
+│          │    url: []const u8      — the URI to load               │
+│          │    print_title: bool    — default false                  │
+│          │    e2e_protocol: bool   — default false                  │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ INTERFACE│                                                          │
+│          │  // src/cli.zig                                           │
+│          │  const config = @import("config.zig");                   │
+│          │                                                          │
+│          │  pub fn parseArgs(args: []const []const u8) Command {    │
+│          │      if (args.len <= 1) return .{                        │
+│          │          .open = .{ .url = config.default_url }          │
+│          │      };                                                  │
+│          │      // explicit URL parsing unchanged                   │
+│          │  }                                                       │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ CONTRACT │                                                          │
+│          │  SEMANTIC:                                                │
+│          │    • No-args → config default (single-site browser       │
+│          │      identity)                                           │
+│          │    • Explicit arg → overrides config (dev/test escape)   │
+│          │    • All other CLI parsing (--version, --screenshot,     │
+│          │      --print-title, --e2e-protocol) unchanged            │
+│          │                                                          │
+│          │  BEHAVIORAL INVARIANT:                                    │
+│          │    ∀ args where args.len > 1 and first non-flag token    │
+│          │    is a URL → that URL is returned, not config default   │
+│          │                                                          │
+└──────────┴──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### S5 — Zig Runtime → C ABI (FFI Seam, Unchanged)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ SEAM S5: src/main.zig → webkit_shim.h (UNCHANGED)                  │
+├──────────┬──────────────────────────────────────────────────────────┤
+│ GRAMMAR  │                                                          │
+│          │  C function signature:                                    │
+│          │    int zb_app_run(const char *uri, int, int);            │
+│          │                                                          │
+│          │  uri:                                                     │
+│          │    Null-terminated C string                               │
+│          │    Passed through uri.validate() → [:0]const u8 → .ptr  │
+│          │    Valid scheme, valid host (for http/https)              │
+│          │                                                          │
+│          │  Returns:                                                 │
+│          │    ZB_EXIT_* enum value                                  │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ INTERFACE│                                                          │
+│          │  // Zig side (main.zig:43-47)                            │
+│          │  webkit.c.zb_app_run(valid_uri.ptr, print_title, e2e)   │
+│          │                                                          │
+│          │  // C side (webkit_shim.h:31)                            │
+│          │  int zb_app_run(const char *uri, int print_title,       │
+│          │                 int e2e_protocol);                        │
+│          │                                                          │
+├──────────┼──────────────────────────────────────────────────────────┤
+│ CONTRACT │                                                          │
+│          │  THIS SEAM IS NOT MODIFIED BY THIS FEATURE.              │
+│          │                                                          │
+│          │  Existing guarantees preserved:                           │
+│          │    • uri is non-null, null-terminated                    │
+│          │    • uri has been validated by uri.validate()            │
+│          │    • Return value is a valid ZB_EXIT_* code              │
+│          │    • GTK backend: derive_app_base(uri) for nav policy   │
+│          │    • macOS backend: derive_app_base(uri) for nav policy  │
+│          │                                                          │
+└──────────┴──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Contract Enforcement Timeline
+
+Shows WHEN each contract is checked and WHAT fails if violated:
+
+```
+    TIME ──────────────────────────────────────────────────────▶
+
+    zig build                          binary execution
+    ┌──────────────────────────┐       ┌──────────────────────┐
+    │                          │       │                      │
+    │  S1: readFileAlloc       │       │  S5: zb_app_run      │
+    │    ✗ file missing        │       │    (unchanged)       │
+    │    ✗ file > 64KiB        │       │                      │
+    │                          │       │  uri.validate()      │
+    │  S1: config_schema.parse │       │    ✗ bad scheme      │
+    │    ✗ invalid JSON        │       │    ✗ no host         │
+    │    ✗ no "url" key        │       │    ✗ relative        │
+    │    ✗ empty url           │       │                      │
+    │    ✗ url > 2048          │       │  C shim load         │
+    │    ✗ bad scheme          │       │    ✗ network error   │
+    │    ✗ relative URI        │       │    → LOAD_FAILED (5) │
+    │                          │       │                      │
+    │  S2: addOption           │       └──────────────────────┘
+    │    (always succeeds      │
+    │     if S1 passed)        │
+    │                          │
+    │  S3: comptime assert     │
+    │    ✗ empty default_url   │
+    │    (redundant safety)    │
+    │                          │
+    │  S4: cli.zig compiles    │
+    │    (always succeeds      │
+    │     if S3 passed)        │
+    │                          │
+    └──────────────────────────┘
+
+    Legend: ✗ = build/runtime failure if condition met
+```
+
+---
+
+### Grammar ↔ Seam Correspondence Table
+
+```
+┌───────────────────────────┬───────────┬────────────────────────────────────┐
+│ GRAMMAR ELEMENT           │ SEAM      │ WHERE VALIDATED                    │
+├───────────────────────────┼───────────┼────────────────────────────────────┤
+│ JSON object structure     │ S1        │ config_schema.parse() in build.zig │
+│ "url" field presence      │ S1        │ config_schema.parse() → MissingUrl │
+│ "url" non-empty           │ S1        │ config_schema.parse() → EmptyUrl   │
+│ "url" ≤ 2048 bytes        │ S1        │ config_schema.parse() → UrlTooLong │
+│ "url" scheme allowlist    │ S1        │ uri.checkAllowed() via parse()     │
+│ "url" host required       │ S1        │ uri.checkAllowed() → InvalidUri    │
+│ "url" not relative        │ S1        │ uri.checkAllowed() → RelativeUri   │
+│ Unknown fields ignored    │ S1        │ .ignore_unknown_fields = true      │
+├───────────────────────────┼───────────┼────────────────────────────────────┤
+│ default_url: []const u8   │ S2        │ b.addOptions() type system         │
+│ default_url non-empty     │ S3        │ comptime assert in config.zig      │
+├───────────────────────────┼───────────┼────────────────────────────────────┤
+│ Command.open.url slice    │ S4        │ Zig type system ([]const u8)       │
+├───────────────────────────┼───────────┼────────────────────────────────────┤
+│ const char* uri (C str)   │ S5        │ uri.validate() → arena.dupeZ()    │
+│ null-terminated           │ S5        │ [:0]const u8 type + .ptr access    │
+└───────────────────────────┴───────────┴────────────────────────────────────┘
+```
+
+---
+
+### Interface Dependency Graph
+
+Shows which module imports which, and what crosses each edge:
+
+```
+                   build.zig
+                   ┌────────────────────────────────────────────┐
+                   │ @import("src/config_schema.zig")           │
+                   │                                            │
+                   │ Calls:                                     │
+                   │   readFileAlloc(path) → bytes              │
+                   │   config_schema.parse(alloc, bytes) → cfg  │
+                   │   b.addOptions() → options                 │
+                   │   options.addOption("default_url", cfg.url)│
+                   │   root_module.addOptions("build_options",  │
+                   │                          options)          │
+                   └────────────────────┬───────────────────────┘
+                                        │ generates
+                                        ▼
+                   build_options (synthetic .zig)
+                   ┌────────────────────────────────────────────┐
+                   │ pub const default_url: []const u8 = "..."; │
+                   │ pub const config_path: []const u8 = "..."; │
+                   └────────────────────┬───────────────────────┘
+                                        │ @import
+                                        ▼
+                   src/config.zig
+                   ┌────────────────────────────────────────────┐
+                   │ pub const default_url = ...;               │
+                   │ pub const config_path = ...;               │
+                   │ comptime { assert(default_url.len > 0); }  │
+                   └────────────────────┬───────────────────────┘
+                                        │ @import
+                                        ▼
+                   src/cli.zig
+                   ┌────────────────────────────────────────────┐
+                   │ const config = @import("config.zig");      │
+                   │                                            │
+                   │ parseArgs:                                  │
+                   │   no args → .open.url = config.default_url │
+                   │   explicit → .open.url = argv token        │
+                   └────────────────────┬───────────────────────┘
+                                        │ Command.open.url
+                                        ▼
+                   src/main.zig
+                   ┌────────────────────────────────────────────┐
+                   │ uri.validate(arena, spec.url) → valid_uri  │
+                   │ webkit.c.zb_app_run(valid_uri.ptr, ...)    │
+                   └────────────────────┬───────────────────────┘
+                                        │ const char*
+                                        ▼
+                   webkit_shim.h / C backend
+                   ┌────────────────────────────────────────────┐
+                   │ load URI in webview (GTK/WK/WV2)           │
+                   └────────────────────────────────────────────┘
+
+
+   Lateral dependency (shared by S1 and S5):
+
+                   src/config_schema.zig ──imports──▶ src/uri.zig
+                                                     (checkAllowed)
+                   src/main.zig ──imports──▶ src/uri.zig
+                                            (validate, which calls checkAllowed)
+```
+
+---
 
 ## Observable Behaviors
 
