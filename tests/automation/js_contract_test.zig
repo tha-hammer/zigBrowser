@@ -21,3 +21,21 @@ test "rateLimitScan returns platform_rate_limited on signal detection" {
 test "rateLimitScan hashes raw text via hashText" {
     try std.testing.expect(std.mem.indexOf(u8, js_source, "hashText") != null);
 }
+
+// --- Behavior 12: Observer Cleanup After Operations ---
+
+test "automation.js disconnects MutationObservers in cleanup" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "observer.disconnect()") != null);
+}
+
+test "automation.js tracks outstanding waits for leak detection" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "outstandingWaits") != null);
+}
+
+test "automation.js decrements outstanding waits in cleanup path" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "outstandingWaits -= 1") != null);
+}
+
+test "automation.js exposes debugOutstandingWaits for verification" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "debugOutstandingWaits") != null);
+}
