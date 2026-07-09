@@ -56,6 +56,18 @@ pub fn pause(queue: anytype, params: PauseParams) OkResult {
     return .{ .ok = true };
 }
 
+pub const SetPacingParams = struct {
+    min_delay_ms: u32 = 3000,
+    max_delay_ms: u32 = 8000,
+    daily_cap: u32 = 100,
+};
+
+pub fn setPacing(pacing: anytype, params: SetPacingParams) !OkResult {
+    if (params.min_delay_ms > params.max_delay_ms) return error.InvalidParams;
+    pacing.configure(params);
+    return .{ .ok = true };
+}
+
 pub fn detectPlatform(url: []const u8) []const u8 {
     if (std.mem.indexOf(u8, url, "linkedin.com") != null) return "linkedin";
     if (std.mem.indexOf(u8, url, "instagram.com") != null) return "instagram";

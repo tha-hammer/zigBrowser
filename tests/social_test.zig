@@ -116,3 +116,34 @@ test "pause with zero duration returns immediately" {
     try std.testing.expect(result.ok);
     try std.testing.expectEqual(@as(u32, 0), mock_queue.last_pause_ms);
 }
+
+const MockConfigurablePacing = struct {
+    config: social.SetPacingParams = .{},
+
+    pub fn configure(self: *MockConfigurablePacing, params: social.SetPacingParams) void {
+        self.config = params;
+    }
+};
+
+test "set_pacing updates pacing configuration" {
+    var mock = MockConfigurablePacing{};
+    const result = try social.setPacing(&mock, .{
+        .min_delay_ms = 2000,
+        .max_delay_ms = 6000,
+        .daily_cap = 50,
+    });
+    try std.testing.expect(result.ok);
+    try std.testing.expectEqual(@as(u32, 2000), mock.config.min_delay_ms);
+    try std.testing.expectEqual(@as(u32, 6000), mock.config.max_delay_ms);
+    try std.testing.expectEqual(@as(u32, 50), mock.config.daily_cap);
+}
+
+test "set_pacing rejects min greater than max" {
+    var mock = MockConfigurablePacing{};
+    const result = social.setPacing(&mock, .{
+        .min_delay_ms = 9000,
+        .max_delay_ms = 3000,
+        .daily_cap = 100,
+    });
+    try std.testing.expectError(error.InvalidParams, result);
+}
