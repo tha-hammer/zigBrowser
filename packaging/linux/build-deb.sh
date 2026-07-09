@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
-VERSION=0.1.3
+VERSION=0.2.0
 ARCH=amd64
 PACKAGE=zigbrowser
 DEB_NAME=zigBrowser_${VERSION}_${ARCH}.deb

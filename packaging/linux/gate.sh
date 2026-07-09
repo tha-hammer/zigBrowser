@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-DEB_PATH=${1:-"$REPO_ROOT/zigBrowser_0.1.0_amd64.deb"}
+DEB_PATH=${1:-"$REPO_ROOT/zigBrowser_0.2.0_amd64.deb"}
 OUT_DIR=${ZB_DEB_GATE_OUT_DIR:-/tmp/zigbrowser-deb-gate}
 PNG_PATH=$OUT_DIR/page.png
 PILLOW_TOOL=$REPO_ROOT/tests/snapshots/pillow_tools.py

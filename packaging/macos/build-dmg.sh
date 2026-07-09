@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
-VERSION=0.1.3
+VERSION=0.2.0
 APP_NAME="zigBrowser"
 BUNDLE_ID="com.cosmichq.zigBrowser"
 DMG_NAME="${APP_NAME}_${VERSION}_macos.dmg"
