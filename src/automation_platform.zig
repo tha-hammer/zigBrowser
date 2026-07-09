@@ -8,6 +8,7 @@ const max_recorded_eval_script_bytes = 1024;
 const max_path_query_bytes = 1024;
 const http_status_forbidden = 403;
 const http_status_too_many_requests = 429;
+const empty_json_result_bytes = 2;
 
 pub const BackendName = enum {
     webview2,
@@ -190,18 +191,11 @@ pub const WebView2InputDispatcher = struct {
 
     pub fn dispatchMouse(self: *WebView2InputDispatcher, input: MouseInput) !void {
         if (input.trial) return;
-        _ = input.action;
-        _ = input.x;
-        _ = input.y;
-        _ = input.button;
         try self.cdp.call("Input.dispatchMouseEvent");
     }
 
     pub fn dispatchKey(self: *WebView2InputDispatcher, input: KeyInput) !void {
         if (input.trial) return;
-        _ = input.action;
-        _ = input.key;
-        _ = input.text;
         try self.cdp.call("Input.dispatchKeyEvent");
     }
 };
@@ -335,8 +329,7 @@ pub const WebView2NetworkInterceptor = struct {
         };
     }
 
-    pub fn capability(self: *const WebView2NetworkInterceptor) NetworkCapability {
-        _ = self;
+    pub fn capability(_: *const WebView2NetworkInterceptor) NetworkCapability {
         return .{ .support = .supported };
     }
 
@@ -484,6 +477,108 @@ pub const FakePlatformEval = struct {
     }
 };
 
+fn dispatchSyntheticMouse(
+    eval: *FakePlatformEval,
+    telemetry_sink: ?*InMemoryPlatformTelemetry,
+    telemetry_context: PlatformTelemetryContext,
+    backend: BackendName,
+    page_id: []const u8,
+    content_world: ContentWorld,
+    input: MouseInput,
+) !ActionResult {
+    if (input.trial) return .{ .status = .success };
+    var script_storage: [synthetic_script_buffer_len]u8 = undefined;
+    const script = try syntheticMouseScript(script_storage[0..], input);
+    return dispatchSyntheticScript(eval, telemetry_sink, telemetry_context, backend, page_id, content_world, script);
+}
+
+fn dispatchSyntheticKey(
+    eval: *FakePlatformEval,
+    telemetry_sink: ?*InMemoryPlatformTelemetry,
+    telemetry_context: PlatformTelemetryContext,
+    backend: BackendName,
+    page_id: []const u8,
+    content_world: ContentWorld,
+    input: KeyInput,
+) !ActionResult {
+    if (input.trial) return .{ .status = .success };
+    var script_storage: [synthetic_script_buffer_len]u8 = undefined;
+    const script = try syntheticKeyScript(script_storage[0..], input);
+    return dispatchSyntheticScript(eval, telemetry_sink, telemetry_context, backend, page_id, content_world, script);
+}
+
+fn dispatchSyntheticScript(
+    eval: *FakePlatformEval,
+    telemetry_sink: ?*InMemoryPlatformTelemetry,
+    telemetry_context: PlatformTelemetryContext,
+    backend: BackendName,
+    page_id: []const u8,
+    content_world: ContentWorld,
+    script: []const u8,
+) !ActionResult {
+    const result = eval.evaluate(content_world, .synthetic_input, script) catch |err| {
+        recordSyntheticInputDispatchSpan(telemetry_sink, telemetry_context, backend, page_id, content_world, .failed, script.len);
+        recordSyntheticEvalSpan(telemetry_sink, telemetry_context, backend, page_id, content_world, .failed, .eval_failed, script.len);
+        return err;
+    };
+    recordSyntheticInputDispatchSpan(telemetry_sink, telemetry_context, backend, page_id, content_world, .success, script.len);
+    recordSyntheticEvalSpan(telemetry_sink, telemetry_context, backend, page_id, content_world, .success, null, script.len);
+    return result;
+}
+
+fn recordSyntheticInputDispatchSpan(
+    telemetry_sink: ?*InMemoryPlatformTelemetry,
+    telemetry_context: PlatformTelemetryContext,
+    backend: BackendName,
+    page_id: []const u8,
+    content_world: ContentWorld,
+    status: ResultStatus,
+    payload_bytes: usize,
+) void {
+    const sink = telemetry_sink orelse return;
+    sink.record(.{
+        .name = "automation.input.dispatch",
+        .trace_id = telemetry_context.trace_id,
+        .parent_span_id = telemetry_context.parent_span_id,
+        .command_id = telemetry_context.command_id,
+        .backend = backend,
+        .page_id = page_id,
+        .input_mode = .js_synthetic,
+        .content_world = content_world,
+        .payload_bytes = payload_bytes,
+        .result_bytes = empty_json_result_bytes,
+        .result_status = status,
+    });
+}
+
+fn recordSyntheticEvalSpan(
+    telemetry_sink: ?*InMemoryPlatformTelemetry,
+    telemetry_context: PlatformTelemetryContext,
+    backend: BackendName,
+    page_id: []const u8,
+    content_world: ContentWorld,
+    status: ResultStatus,
+    error_class: ?PlatformErrorClass,
+    payload_bytes: usize,
+) void {
+    const sink = telemetry_sink orelse return;
+    sink.record(.{
+        .name = "automation.platform.eval",
+        .trace_id = telemetry_context.trace_id,
+        .parent_span_id = telemetry_context.parent_span_id,
+        .command_id = telemetry_context.command_id,
+        .backend = backend,
+        .page_id = page_id,
+        .input_mode = .js_synthetic,
+        .content_world = content_world,
+        .eval_kind = .synthetic_input,
+        .platform_error_class = error_class,
+        .payload_bytes = payload_bytes,
+        .result_bytes = if (status == .success) empty_json_result_bytes else 0,
+        .result_status = status,
+    });
+}
+
 pub const WebKitGtkInputDispatcher = struct {
     eval: *FakePlatformEval,
     page_id: []const u8,
@@ -495,69 +590,11 @@ pub const WebKitGtkInputDispatcher = struct {
     }
 
     pub fn dispatchMouse(self: *WebKitGtkInputDispatcher, input: MouseInput) !ActionResult {
-        if (input.trial) return .{ .status = .success };
-        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
-        const script = try syntheticMouseScript(script_storage[0..], input);
-        const result = self.eval.evaluate(.isolated, .synthetic_input, script) catch |err| {
-            self.recordInputDispatchSpan(.failed, script.len);
-            self.recordEvalSpan(.failed, .eval_failed, script.len);
-            return err;
-        };
-        self.recordInputDispatchSpan(.success, script.len);
-        self.recordEvalSpan(.success, null, script.len);
-        return result;
+        return dispatchSyntheticMouse(self.eval, self.telemetry_sink, self.telemetry_context, .webkitgtk, self.page_id, .isolated, input);
     }
 
     pub fn dispatchKey(self: *WebKitGtkInputDispatcher, input: KeyInput) !ActionResult {
-        if (input.trial) return .{ .status = .success };
-        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
-        const script = try syntheticKeyScript(script_storage[0..], input);
-        const result = self.eval.evaluate(.isolated, .synthetic_input, script) catch |err| {
-            self.recordInputDispatchSpan(.failed, script.len);
-            self.recordEvalSpan(.failed, .eval_failed, script.len);
-            return err;
-        };
-        self.recordInputDispatchSpan(.success, script.len);
-        self.recordEvalSpan(.success, null, script.len);
-        return result;
-    }
-
-    fn recordInputDispatchSpan(self: *WebKitGtkInputDispatcher, status: ResultStatus, payload_bytes: usize) void {
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .name = "automation.input.dispatch",
-                .trace_id = self.telemetry_context.trace_id,
-                .parent_span_id = self.telemetry_context.parent_span_id,
-                .command_id = self.telemetry_context.command_id,
-                .backend = .webkitgtk,
-                .page_id = self.page_id,
-                .input_mode = .js_synthetic,
-                .content_world = .isolated,
-                .payload_bytes = payload_bytes,
-                .result_bytes = 2,
-                .result_status = status,
-            });
-        }
-    }
-
-    fn recordEvalSpan(self: *WebKitGtkInputDispatcher, status: ResultStatus, error_class: ?PlatformErrorClass, payload_bytes: usize) void {
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .name = "automation.platform.eval",
-                .trace_id = self.telemetry_context.trace_id,
-                .parent_span_id = self.telemetry_context.parent_span_id,
-                .command_id = self.telemetry_context.command_id,
-                .backend = .webkitgtk,
-                .page_id = self.page_id,
-                .input_mode = .js_synthetic,
-                .content_world = .isolated,
-                .eval_kind = .synthetic_input,
-                .platform_error_class = error_class,
-                .payload_bytes = payload_bytes,
-                .result_bytes = if (status == .success) 2 else 0,
-                .result_status = status,
-            });
-        }
+        return dispatchSyntheticKey(self.eval, self.telemetry_sink, self.telemetry_context, .webkitgtk, self.page_id, .isolated, input);
     }
 };
 
@@ -570,8 +607,7 @@ pub const WebKitGtkNetworkInterceptor = struct {
         return .{ .page_id = page_id };
     }
 
-    pub fn capability(self: *const WebKitGtkNetworkInterceptor) NetworkCapability {
-        _ = self;
+    pub fn capability(_: *const WebKitGtkNetworkInterceptor) NetworkCapability {
         return .{
             .support = .unsupported,
             .unsupported_reason = .web_extension_required,
@@ -579,21 +615,7 @@ pub const WebKitGtkNetworkInterceptor = struct {
     }
 
     pub fn start(self: *WebKitGtkNetworkInterceptor) !void {
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .name = "automation.network.capability",
-                .trace_id = self.telemetry_context.trace_id,
-                .parent_span_id = self.telemetry_context.parent_span_id,
-                .command_id = self.telemetry_context.command_id,
-                .backend = .webkitgtk,
-                .page_id = self.page_id,
-                .network_capability = .unsupported,
-                .network_operation = .start,
-                .unsupported_reason = .web_extension_required,
-                .debt_kind = .network_interception,
-                .result_status = .unsupported,
-            });
-        }
+        recordUnsupportedNetworkStart(self.telemetry_sink, self.telemetry_context, .webkitgtk, self.page_id, .web_extension_required);
         return error.CapabilityUnsupported;
     }
 };
@@ -609,69 +631,11 @@ pub const WkWebViewInputDispatcher = struct {
     }
 
     pub fn dispatchMouse(self: *WkWebViewInputDispatcher, input: MouseInput) !ActionResult {
-        if (input.trial) return .{ .status = .success };
-        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
-        const script = try syntheticMouseScript(script_storage[0..], input);
-        const result = self.eval.evaluate(.automation, .synthetic_input, script) catch |err| {
-            self.recordInputDispatchSpan(.failed, script.len);
-            self.recordEvalSpan(.failed, .eval_failed, script.len);
-            return err;
-        };
-        self.recordInputDispatchSpan(.success, script.len);
-        self.recordEvalSpan(.success, null, script.len);
-        return result;
+        return dispatchSyntheticMouse(self.eval, self.telemetry_sink, self.telemetry_context, .wkwebview, self.page_id, .automation, input);
     }
 
     pub fn dispatchKey(self: *WkWebViewInputDispatcher, input: KeyInput) !ActionResult {
-        if (input.trial) return .{ .status = .success };
-        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
-        const script = try syntheticKeyScript(script_storage[0..], input);
-        const result = self.eval.evaluate(.automation, .synthetic_input, script) catch |err| {
-            self.recordInputDispatchSpan(.failed, script.len);
-            self.recordEvalSpan(.failed, .eval_failed, script.len);
-            return err;
-        };
-        self.recordInputDispatchSpan(.success, script.len);
-        self.recordEvalSpan(.success, null, script.len);
-        return result;
-    }
-
-    fn recordInputDispatchSpan(self: *WkWebViewInputDispatcher, status: ResultStatus, payload_bytes: usize) void {
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .name = "automation.input.dispatch",
-                .trace_id = self.telemetry_context.trace_id,
-                .parent_span_id = self.telemetry_context.parent_span_id,
-                .command_id = self.telemetry_context.command_id,
-                .backend = .wkwebview,
-                .page_id = self.page_id,
-                .input_mode = .js_synthetic,
-                .content_world = .automation,
-                .payload_bytes = payload_bytes,
-                .result_bytes = 2,
-                .result_status = status,
-            });
-        }
-    }
-
-    fn recordEvalSpan(self: *WkWebViewInputDispatcher, status: ResultStatus, error_class: ?PlatformErrorClass, payload_bytes: usize) void {
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .name = "automation.platform.eval",
-                .trace_id = self.telemetry_context.trace_id,
-                .parent_span_id = self.telemetry_context.parent_span_id,
-                .command_id = self.telemetry_context.command_id,
-                .backend = .wkwebview,
-                .page_id = self.page_id,
-                .input_mode = .js_synthetic,
-                .content_world = .automation,
-                .eval_kind = .synthetic_input,
-                .platform_error_class = error_class,
-                .payload_bytes = payload_bytes,
-                .result_bytes = if (status == .success) 2 else 0,
-                .result_status = status,
-            });
-        }
+        return dispatchSyntheticKey(self.eval, self.telemetry_sink, self.telemetry_context, .wkwebview, self.page_id, .automation, input);
     }
 };
 
@@ -684,8 +648,7 @@ pub const WkWebViewNetworkInterceptor = struct {
         return .{ .page_id = page_id };
     }
 
-    pub fn capability(self: *const WkWebViewNetworkInterceptor) NetworkCapability {
-        _ = self;
+    pub fn capability(_: *const WkWebViewNetworkInterceptor) NetworkCapability {
         return .{
             .support = .unsupported,
             .unsupported_reason = .no_platform_api,
@@ -693,24 +656,33 @@ pub const WkWebViewNetworkInterceptor = struct {
     }
 
     pub fn start(self: *WkWebViewNetworkInterceptor) !void {
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .name = "automation.network.capability",
-                .trace_id = self.telemetry_context.trace_id,
-                .parent_span_id = self.telemetry_context.parent_span_id,
-                .command_id = self.telemetry_context.command_id,
-                .backend = .wkwebview,
-                .page_id = self.page_id,
-                .network_capability = .unsupported,
-                .network_operation = .start,
-                .unsupported_reason = .no_platform_api,
-                .debt_kind = .network_interception,
-                .result_status = .unsupported,
-            });
-        }
+        recordUnsupportedNetworkStart(self.telemetry_sink, self.telemetry_context, .wkwebview, self.page_id, .no_platform_api);
         return error.CapabilityUnsupported;
     }
 };
+
+fn recordUnsupportedNetworkStart(
+    telemetry_sink: ?*InMemoryPlatformTelemetry,
+    telemetry_context: PlatformTelemetryContext,
+    backend: BackendName,
+    page_id: []const u8,
+    unsupported_reason: UnsupportedReason,
+) void {
+    const sink = telemetry_sink orelse return;
+    sink.record(.{
+        .name = "automation.network.capability",
+        .trace_id = telemetry_context.trace_id,
+        .parent_span_id = telemetry_context.parent_span_id,
+        .command_id = telemetry_context.command_id,
+        .backend = backend,
+        .page_id = page_id,
+        .network_capability = .unsupported,
+        .network_operation = .start,
+        .unsupported_reason = unsupported_reason,
+        .debt_kind = .network_interception,
+        .result_status = .unsupported,
+    });
+}
 
 fn syntheticMouseScript(storage: []u8, input: MouseInput) ![]const u8 {
     const x: i64 = @intFromFloat(input.x);

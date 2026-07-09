@@ -70,8 +70,6 @@ pub fn exportSpanRedacted(
     exporter: *FakeOtlpExporter,
     span: TransportSpan,
 ) !void {
-    _ = span.raw_token;
-    _ = span.raw_params;
     const command_id = span.command_id orelse "";
     const payload = try std.fmt.allocPrint(
         allocator,
