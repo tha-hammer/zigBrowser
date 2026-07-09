@@ -39,13 +39,10 @@ pub fn runOpenWithAutomationLifecycle(
     runner: anytype,
     config: AutomationConfig,
 ) !u8 {
-    var started = false;
-    if (config.enabled) {
-        try server.start(config);
-        started = true;
-    }
-    defer if (started) server.stop();
+    if (!config.enabled) return runner.run(server);
 
+    try server.start(config);
+    defer server.stop();
     return runner.run(server);
 }
 

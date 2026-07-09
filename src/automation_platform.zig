@@ -100,29 +100,31 @@ pub const PlatformAdapter = struct {
 
     pub fn startNetwork(self: *PlatformAdapter, page_id: []const u8) !void {
         const caps = adapterCapabilities(self.backend);
-        if (caps.network.support == .supported) {
-            if (self.telemetry_sink) |sink| {
-                sink.record(.{
-                    .backend = self.backend,
-                    .page_id = page_id,
-                    .network_capability = .supported,
-                    .result_status = .success,
-                });
-            }
-            return;
+        if (caps.network.support != .supported) {
+            const reason = caps.network.unsupported_reason.?;
+            self.last_unsupported_reason = reason;
+            self.recordNetworkCapability(page_id, .unsupported, reason, .unsupported);
+            return error.CapabilityUnsupported;
         }
 
-        self.last_unsupported_reason = caps.network.unsupported_reason.?;
-        if (self.telemetry_sink) |sink| {
-            sink.record(.{
-                .backend = self.backend,
-                .page_id = page_id,
-                .network_capability = .unsupported,
-                .unsupported_reason = caps.network.unsupported_reason,
-                .result_status = .unsupported,
-            });
-        }
-        return error.CapabilityUnsupported;
+        self.recordNetworkCapability(page_id, .supported, null, .success);
+    }
+
+    fn recordNetworkCapability(
+        self: *PlatformAdapter,
+        page_id: []const u8,
+        support: NetworkSupport,
+        unsupported_reason: ?UnsupportedReason,
+        status: ResultStatus,
+    ) void {
+        const sink = self.telemetry_sink orelse return;
+        sink.record(.{
+            .backend = self.backend,
+            .page_id = page_id,
+            .network_capability = support,
+            .unsupported_reason = unsupported_reason,
+            .result_status = status,
+        });
     }
 };
 
