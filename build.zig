@@ -220,10 +220,28 @@ pub fn build(b: *std.Build) void {
     const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
     run_nav_policy_tests.skip_foreign_checks = true;
 
+    const automation_module = b.createModule(.{
+        .root_source_file = b.path("src/automation.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const automation_smoke_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_smoke_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_smoke_tests_module.addImport("automation", automation_module);
+    const automation_smoke_tests = b.addTest(.{ .root_module = automation_smoke_tests_module });
+    const run_automation_smoke_tests = b.addRunArtifact(automation_smoke_tests);
+    run_automation_smoke_tests.skip_foreign_checks = true;
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
+    test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&ipc_windows_compile.step);
 }
 
