@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const url_scheme_separator = "://";
+const url_default_path = "/";
+
 pub const AttrMap = struct {
     entries: std.ArrayListUnmanaged(Entry),
 
@@ -218,8 +221,8 @@ const ParsedUrl = struct {
 };
 
 fn parseUrl(url: []const u8) ParsedUrl {
-    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return .{ .host = "", .origin = "", .path = "" };
-    const authority_start = scheme_end + 3;
+    const scheme_end = std.mem.indexOf(u8, url, url_scheme_separator) orelse return .{ .host = "", .origin = "", .path = "" };
+    const authority_start = scheme_end + url_scheme_separator.len;
     const after_authority_rel = std.mem.indexOfAny(u8, url[authority_start..], "/?#") orelse url[authority_start..].len;
     const authority_end = authority_start + after_authority_rel;
     const host = url[authority_start..authority_end];
@@ -227,7 +230,7 @@ fn parseUrl(url: []const u8) ParsedUrl {
 
     const path_start = authority_end;
     if (path_start >= url.len or url[path_start] != '/') {
-        return .{ .host = host, .origin = origin, .path = "/" };
+        return .{ .host = host, .origin = origin, .path = url_default_path };
     }
     const query_start_rel = std.mem.indexOfAny(u8, url[path_start..], "?#") orelse url[path_start..].len;
     return .{

@@ -1,4 +1,21 @@
 (function installZigBrowserAutomation(globalScope) {
+  const DEFAULT_WAIT_TIMEOUT_MS = 30000;
+  const WAIT_POLL_INTERVAL_MS = 16;
+  const VALID_WAIT_STATES = ['attached', 'visible', 'hidden', 'detached'];
+  const RATE_LIMIT_MODAL_SELECTORS = [
+    '[role="dialog"][aria-modal="true"]',
+    '.artdeco-modal',
+    '[role="alertdialog"]'
+  ];
+  const RATE_LIMIT_TEXT_PATTERN = /limit|restrict|block|captcha|verify/i;
+  const RATE_LIMIT_PATH_PATTERN = /challenge|captcha|checkpoint/i;
+  const RATE_LIMIT_TEXT_HASH_LIMIT = 200;
+  const RATE_LIMIT_MODAL_CONFIDENCE = 0.9;
+  const RATE_LIMIT_CHALLENGE_CONFIDENCE = 0.95;
+  const FNV_OFFSET_BASIS_32 = 2166136261;
+  const FNV_PRIME_32 = 16777619;
+  const BBOX_DECIMAL_SCALE = 100;
+
   let nextElementId = 1;
   let nextSpanId = 1;
   let outstandingWaits = 0;
@@ -90,10 +107,10 @@
     const parsed = parseSelector(command.selector);
     const strict = command.strict === true;
     const state = command.state || 'visible';
-    const timeoutMs = typeof command.timeout_ms === 'number' ? command.timeout_ms : 30000;
+    const timeoutMs = typeof command.timeout_ms === 'number' ? command.timeout_ms : DEFAULT_WAIT_TIMEOUT_MS;
     const started = nowMs();
 
-    if (!parsed.ok || !['attached', 'visible', 'hidden', 'detached'].includes(state)) {
+    if (!parsed.ok || !VALID_WAIT_STATES.includes(state)) {
       const telemetry = [selectorSpan(command, parsed.ok ? parsed.kind : 'unknown', strict, 0, started, 'error')];
       return failure('malformed_selector', command, telemetry, true);
     }
@@ -141,7 +158,7 @@
         attributes: true,
         attributeFilter: ['class', 'hidden', 'style']
       });
-      intervalId = setInterval(check, 16);
+      intervalId = setInterval(check, WAIT_POLL_INTERVAL_MS);
       timeoutId = setTimeout(() => {
         const telemetry = [selectorSpan(command, parsed.kind, strict, 0, started, 'error')];
         finish(failure('timeout', command, telemetry, true));
@@ -153,22 +170,21 @@
   function rateLimitScan(command) {
     const platform = (command.options && command.options.platform) || 'unknown';
     const signals = [];
-    var modalSelectors = [
-      '[role="dialog"][aria-modal="true"]',
-      '.artdeco-modal',
-      '[role="alertdialog"]'
-    ];
-    for (var i = 0; i < modalSelectors.length; i++) {
-      var modal = document.querySelector(modalSelectors[i]);
+    for (let i = 0; i < RATE_LIMIT_MODAL_SELECTORS.length; i++) {
+      const modal = document.querySelector(RATE_LIMIT_MODAL_SELECTORS[i]);
       if (modal) {
-        var text = modal.textContent || '';
-        if (/limit|restrict|block|captcha|verify/i.test(text)) {
-          signals.push({ kind: 'modal', text_hash: hashText(text.trim().substring(0, 200)), confidence: 0.9 });
+        const text = modal.textContent || '';
+        if (RATE_LIMIT_TEXT_PATTERN.test(text)) {
+          signals.push({
+            kind: 'modal',
+            text_hash: hashText(text.trim().substring(0, RATE_LIMIT_TEXT_HASH_LIMIT)),
+            confidence: RATE_LIMIT_MODAL_CONFIDENCE
+          });
         }
       }
     }
-    if (/challenge|captcha|checkpoint/i.test(document.location.pathname)) {
-      signals.push({ kind: 'challenge', text_hash: '', confidence: 0.95 });
+    if (RATE_LIMIT_PATH_PATTERN.test(document.location.pathname)) {
+      signals.push({ kind: 'challenge', text_hash: '', confidence: RATE_LIMIT_CHALLENGE_CONFIDENCE });
     }
     if (signals.length > 0) {
       return { ok: false, error: 'platform_rate_limited', retryable: false, data: { signal: signals[0].kind, platform: platform, signals: signals } };
@@ -465,10 +481,10 @@
   }
 
   function hashText(text) {
-    let hash = 2166136261;
+    let hash = FNV_OFFSET_BASIS_32;
     for (let i = 0; i < text.length; i += 1) {
       hash ^= text.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
+      hash = Math.imul(hash, FNV_PRIME_32);
     }
     return (hash >>> 0).toString(16);
   }
@@ -485,7 +501,7 @@
   }
 
   function round(value) {
-    return Math.round(value * 100) / 100;
+    return Math.round(value * BBOX_DECIMAL_SCALE) / BBOX_DECIMAL_SCALE;
   }
 
   function emptyRect() {

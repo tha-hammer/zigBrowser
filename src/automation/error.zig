@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const downstream_code_base = -32001;
+
 pub const AutomationError = enum {
     element_not_found,
     element_not_visible,
@@ -22,7 +24,7 @@ pub fn name(err: AutomationError) []const u8 {
 }
 
 pub fn downstreamCode(err: AutomationError) i32 {
-    return -32001 - @as(i32, @intCast(@intFromEnum(err)));
+    return downstream_code_base - @as(i32, @intCast(@intFromEnum(err)));
 }
 
 pub fn isRetryable(err: AutomationError) bool {
