@@ -1,5 +1,5 @@
 import pytest
-from zigbrowser.client import ZigBrowser
+from zigbrowser.client import AsyncZigBrowser, ZigBrowser
 from zigbrowser.errors import AutomationError
 
 
@@ -166,3 +166,41 @@ def test_social_rate_status_wrapper(mock_uds_server):
     req = mock_uds_server.last_request()
     assert req["method"] == "social.rate_status"
     assert result["remaining_actions"] == 73
+
+
+@pytest.mark.asyncio
+async def test_async_call(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    async with AsyncZigBrowser(socket_path=mock_uds_server.path) as zb:
+        result = await zb.call("dom.click", {"selector": "role=button"})
+
+    assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_async_call_error(mock_uds_server):
+    mock_uds_server.set_response({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": -32001,
+            "message": "element_not_found",
+            "data": {"trace_id": "t-async-123"},
+        },
+        "id": 1,
+    })
+
+    async with AsyncZigBrowser(socket_path=mock_uds_server.path) as zb:
+        with pytest.raises(AutomationError) as exc_info:
+            await zb.call("dom.click", {"selector": "role=button"})
+
+        assert exc_info.value.trace_id == "t-async-123"
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager(mock_uds_server):
+    zb = AsyncZigBrowser(socket_path=mock_uds_server.path)
+    assert not zb.connected
+    async with zb:
+        assert zb.connected
+    assert not zb.connected

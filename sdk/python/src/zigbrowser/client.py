@@ -1,3 +1,4 @@
+import asyncio
 import itertools
 import json
 import queue
@@ -329,3 +330,59 @@ class ZigBrowser:
 
     def __exit__(self, *args):
         self.disconnect()
+
+
+class AsyncZigBrowser:
+    _id_counter = itertools.count(1)
+
+    def __init__(self, socket_path: str, token: str | None = None):
+        self._socket_path = socket_path
+        self._token = token
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self._writer is not None
+
+    async def connect(self) -> None:
+        self._reader, self._writer = await asyncio.open_unix_connection(
+            self._socket_path
+        )
+
+    async def disconnect(self) -> None:
+        if self._writer:
+            self._writer.close()
+            await self._writer.wait_closed()
+            self._writer = None
+            self._reader = None
+
+    async def call(self, method: str, params: dict | None = None) -> dict:
+        if not self._writer:
+            raise ConnectionError("Not connected")
+
+        request = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params or {},
+            "id": next(self._id_counter),
+        }
+        data = json.dumps(request).encode("utf-8")
+        self._writer.write(struct.pack(">I", len(data)) + data)
+        await self._writer.drain()
+
+        length_bytes = await self._reader.readexactly(4)
+        length = struct.unpack(">I", length_bytes)[0]
+        response_data = await self._reader.readexactly(length)
+        parsed = json.loads(response_data.decode("utf-8"))
+
+        if "error" in parsed:
+            raise AutomationError.from_rpc_error(parsed["error"])
+        return parsed.get("result")
+
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *args):
+        await self.disconnect()
