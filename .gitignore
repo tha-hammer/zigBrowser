@@ -26,3 +26,7 @@ node_modules/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# Python build artifacts
+*.egg-info/
+__pycache__/
