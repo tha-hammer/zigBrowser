@@ -23,6 +23,10 @@ Slice 3/4 (HW-gated contracts):
 - `m8_reply_channel_test.py` (Windows WebView2; exits 77 off-platform)
 - `m9_reply_channel_test.py` (macOS WKWebView; exits 77 off-platform)
 
+Automation Phase 1:
+- `automation_fixture_server.py` (deterministic local HTML fixture server)
+- `../../e2e/automation_script.spec.ts` (Playwright injected-script harness)
+
 Protocol:
 - `PROTOCOL.md` (normative `--e2e-protocol` line schema)
 

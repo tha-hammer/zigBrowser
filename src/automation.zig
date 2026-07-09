@@ -1,0 +1,24 @@
+pub const phase1_command_verbs = [_][]const u8{
+    "dom.query",
+    "dom.click",
+    "dom.fill",
+    "dom.type",
+    "dom.getText",
+    "dom.getAttribute",
+    "dom.waitFor",
+    "page.navigate",
+    "page.reload",
+    "page.url",
+    "page.title",
+    "page.evaluate",
+    "page.screenshot",
+};
+
+pub fn isPhase1CommandVerb(method: []const u8) bool {
+    for (phase1_command_verbs) |verb| {
+        if (std.mem.eql(u8, verb, method)) return true;
+    }
+    return false;
+}
+
+const std = @import("std");
