@@ -39,3 +39,38 @@ test "automation.js decrements outstanding waits in cleanup path" {
 test "automation.js exposes debugOutstandingWaits for verification" {
     try std.testing.expect(std.mem.indexOf(u8, js_source, "debugOutstandingWaits") != null);
 }
+
+// --- Behavior 16: C40 Non-Interference Contract ---
+
+test "C40: automation.js never calls Runtime.enable" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "Runtime.enable") == null);
+}
+
+test "C40: __zbAutomation is defined as non-enumerable" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "enumerable: false") != null);
+}
+
+test "C40: __zbAutomation is non-writable to prevent page tampering" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "writable: false") != null);
+}
+
+test "C40: __zbAutomation is non-configurable" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "configurable: false") != null);
+}
+
+test "C40: automation.js uses defineProperty not direct assignment" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "Object.defineProperty") != null);
+}
+
+test "C40: no telemetry emitted to network from page context" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "XMLHttpRequest") == null);
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "fetch(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "WebSocket") == null);
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "sendBeacon") == null);
+}
+
+test "C40: no CDP protocol calls in injected script" {
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "Runtime.evaluate") == null);
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "Page.addScript") == null);
+    try std.testing.expect(std.mem.indexOf(u8, js_source, "DOM.getDocument") == null);
+}
