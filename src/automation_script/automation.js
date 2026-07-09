@@ -16,6 +16,12 @@
         return getText(command);
       case 'getAttribute':
         return getAttribute(command);
+      case 'click':
+        return runAction(command, 'click');
+      case 'fill':
+        return runAction(command, 'fill');
+      case 'type':
+        return runAction(command, 'type');
       default:
         return failure('unknown_op', command, [], false);
     }
@@ -42,6 +48,101 @@
     return success({ value: resolved.elements[0].getAttribute(command.name) }, resolved.telemetry);
   }
 
+  function runAction(command, action) {
+    const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+    if (!resolved.ok) return resolved.response;
+
+    const element = resolved.elements[0];
+    const options = command.options || {};
+    const force = options.force === true || command.force === true;
+    const trial = options.trial === true || command.trial === true;
+    const telemetry = resolved.telemetry.slice();
+
+    if (!force) {
+      const check = runActionabilityChecks(element, action);
+      telemetry.push(actionabilitySpan(command, action, check));
+      if (!check.passed) {
+        return actionFailure(check.error, check.check, telemetry);
+      }
+    } else {
+      telemetry.push(actionabilitySpan(command, action, {
+        check: 'force',
+        passed: true,
+        error: null,
+        bbox: element.getBoundingClientRect()
+      }));
+    }
+
+    if (trial) return success({ ok: true }, telemetry);
+
+    if (action === 'click') synthesizeClick(element);
+    if (action === 'fill') synthesizeFill(element, command.value || '');
+    if (action === 'type') synthesizeType(element, command.text || '');
+    return success({ ok: true }, telemetry);
+  }
+
+  function runActionabilityChecks(element, action) {
+    if (!element || !element.isConnected) return failedCheck(element, 'attached', 'element_not_found');
+    if (!isElementVisibleEnough(element)) return failedCheck(element, 'visible', 'element_not_visible');
+    if (element.getAttribute('data-moving') === 'true') return failedCheck(element, 'stable', 'element_not_stable');
+    if (!receivesEvents(element)) return failedCheck(element, 'receives-events', 'element_obscured');
+    if (isDisabled(element)) return failedCheck(element, 'enabled', 'element_disabled');
+    if ((action === 'fill' || action === 'type') && !isEditable(element)) {
+      return failedCheck(element, 'editable', 'element_not_editable');
+    }
+    return { check: 'all', passed: true, error: null, bbox: element.getBoundingClientRect() };
+  }
+
+  function failedCheck(element, check, error) {
+    return {
+      check,
+      passed: false,
+      error,
+      bbox: element ? element.getBoundingClientRect() : emptyRect()
+    };
+  }
+
+  function receivesEvents(element) {
+    const rect = element.getBoundingClientRect();
+    const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return top === element || (top && element.contains(top));
+  }
+
+  function isDisabled(element) {
+    return element.disabled === true || element.getAttribute('aria-disabled') === 'true';
+  }
+
+  function isEditable(element) {
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea') return false;
+    if (isDisabled(element)) return false;
+    return element.readOnly !== true;
+  }
+
+  function synthesizeClick(element) {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: globalScope }));
+    }
+  }
+
+  function synthesizeFill(element, value) {
+    element.focus();
+    element.value = value;
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function synthesizeType(element, text) {
+    element.focus();
+    for (const char of text) {
+      element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: char }));
+      element.value = (element.value || '') + char;
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+      element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: char }));
+    }
+  }
+
   function resolveForCommand(command) {
     const started = nowMs();
     const strict = command.strict === true;
@@ -53,7 +154,7 @@
 
     let elements;
     try {
-      elements = resolveSelector(parsed.kind, parsed.body).filter(isElementVisibleEnough);
+      elements = resolveSelector(parsed.kind, parsed.body);
     } catch (_) {
       const telemetry = [selectorSpan(command, parsed.kind, strict, 0, started, 'error')];
       return { ok: false, response: failure('malformed_selector', command, telemetry, true) };
@@ -195,6 +296,19 @@
     };
   }
 
+  function actionFailure(error, failedCheckName, telemetry) {
+    return {
+      ok: false,
+      error,
+      retryable: true,
+      data: {
+        reason: failedCheckName,
+        failed_check: failedCheckName
+      },
+      telemetry
+    };
+  }
+
   function selectorSpan(command, kind, strict, matchCount, started, status) {
     return {
       name: 'automation.selector.resolve',
@@ -214,6 +328,36 @@
         duration_ms: Math.max(0, nowMs() - started)
       }
     };
+  }
+
+  function actionabilitySpan(command, action, check) {
+    const rect = check.bbox || emptyRect();
+    return {
+      name: 'automation.actionability.check',
+      trace_id: command.trace_id || '',
+      span_id: 'script-span-' + nextSpanId++,
+      parent_span_id: command.parent_span_id || '',
+      command_id: command.command_id || '',
+      attributes: {
+        'action.name': action,
+        'action.force': String((command.options && command.options.force === true) || command.force === true),
+        'action.trial': String((command.options && command.options.trial === true) || command.trial === true),
+        'actionability.check': check.check,
+        'actionability.required_checks': requiredChecks(action).join(','),
+        'actionability.passed': check.passed ? 'true' : 'false',
+        'actionability.failed_check': check.passed ? '' : check.check,
+        'bbox.width': round(rect.width),
+        'bbox.height': round(rect.height),
+        'result.status': check.passed ? 'ok' : 'error',
+        'automation.error': check.error || ''
+      }
+    };
+  }
+
+  function requiredChecks(action) {
+    const checks = ['attached', 'visible', 'stable', 'receives-events', 'enabled'];
+    if (action === 'fill' || action === 'type') checks.push('editable');
+    return checks;
   }
 
   function hashText(text) {
@@ -240,6 +384,10 @@
     return Math.round(value * 100) / 100;
   }
 
+  function emptyRect() {
+    return { width: 0, height: 0, left: 0, top: 0, x: 0, y: 0 };
+  }
+
   function nowMs() {
     return Math.round(performance.now());
   }
@@ -249,7 +397,7 @@
     enumerable: false,
     writable: false,
     value: {
-      version: 'phase1-m3-selector-engine',
+      version: 'phase1-m4-actionability',
       handle
     }
   });

@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Automation Actionability Fixture</title>
+    <style>
+      body {
+        font-family: sans-serif;
+      }
+      button,
+      input {
+        display: block;
+        margin: 12px;
+        padding: 8px 12px;
+      }
+      #hidden-button {
+        display: none;
+      }
+      #obscured-wrap {
+        position: relative;
+        width: 180px;
+        height: 52px;
+        margin: 12px;
+      }
+      #obscured-button {
+        position: absolute;
+        left: 0;
+        top: 0;
+      }
+      #obscurer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 160px;
+        height: 44px;
+        background: rgba(200, 0, 0, 0.35);
+        z-index: 2;
+      }
+    </style>
+  </head>
+  <body>
+    <button data-testid="ready-button" id="ready-button">Ready</button>
+    <button data-testid="hidden-button" id="hidden-button">Hidden</button>
+    <button data-testid="moving-button" data-moving="true">Moving</button>
+    <button data-testid="disabled-button" disabled>Disabled</button>
+    <input data-testid="readonly-input" readonly value="">
+    <div id="obscured-wrap">
+      <button data-testid="obscured-button" id="obscured-button">Obscured</button>
+      <div id="obscurer"></div>
+    </div>
+    <script>
+      globalThis.__fixtureLog = [];
+      document.querySelector('[data-testid="ready-button"]').addEventListener('click', () => {
+        globalThis.__fixtureLog.push('ready:click');
+      });
+    </script>
+  </body>
+</html>

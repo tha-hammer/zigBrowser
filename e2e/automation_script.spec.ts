@@ -7,6 +7,9 @@ const scriptPath = path.resolve(__dirname, '../src/automation_script/automation.
 const selectorsFixtureUrl = pathToFileURL(
   path.resolve(__dirname, '../tests/fixtures/automation/selectors.html')
 ).toString();
+const actionabilityFixtureUrl = pathToFileURL(
+  path.resolve(__dirname, '../tests/fixtures/automation/actionability.html')
+).toString();
 
 test('automation injected script source is wired into the Playwright harness', async () => {
   const source = await readFile(scriptPath, 'utf8');
@@ -111,5 +114,102 @@ test.describe('selector engine', () => {
     const serializedAttrs = JSON.stringify(span.attributes);
     expect(serializedAttrs).not.toContain('css=[aria-label="Comment"]');
     expect(serializedAttrs).not.toContain('Comment');
+  });
+});
+
+test.describe('actionability checks', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(actionabilityFixtureUrl);
+    await page.addScriptTag({ path: scriptPath });
+  });
+
+  async function handle(page, command) {
+    return page.evaluate((payload) => globalThis.__zbAutomation.handle(payload), command);
+  }
+
+  test('blocks mutating actions until elements are actionable', async ({ page }) => {
+    const cases = [
+      { op: 'click', selector: 'testid=hidden-button', error: 'element_not_visible', check: 'visible' },
+      { op: 'click', selector: 'testid=moving-button', error: 'element_not_stable', check: 'stable' },
+      { op: 'click', selector: 'testid=obscured-button', error: 'element_obscured', check: 'receives-events' },
+      { op: 'click', selector: 'testid=disabled-button', error: 'element_disabled', check: 'enabled' },
+      { op: 'fill', selector: 'testid=readonly-input', value: 'blocked', error: 'element_not_editable', check: 'editable' },
+      { op: 'type', selector: 'testid=readonly-input', text: 'blocked', error: 'element_not_editable', check: 'editable' },
+    ];
+
+    for (const item of cases) {
+      const result = await handle(page, {
+        op: item.op,
+        selector: item.selector,
+        value: item.value,
+        text: item.text,
+        trace_id: 'trace-action',
+        command_id: 'cmd-action',
+        parent_span_id: 'span-root',
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe(item.error);
+      expect(result.data.failed_check).toBe(item.check);
+    }
+
+    const detached = await handle(page, { op: 'click', selector: 'testid=detached-button' });
+    expect(detached.ok).toBe(false);
+    expect(detached.error).toBe('element_not_found');
+  });
+
+  test('trial mode creates no side effects and force bypasses checks', async ({ page }) => {
+    const trial = await handle(page, {
+      op: 'click',
+      selector: 'testid=ready-button',
+      options: { trial: true },
+    });
+    expect(trial.ok).toBe(true);
+    expect(await page.evaluate(() => globalThis.__fixtureLog)).toEqual([]);
+
+    const click = await handle(page, {
+      op: 'click',
+      selector: 'testid=ready-button',
+    });
+    expect(click.ok).toBe(true);
+    expect(await page.evaluate(() => globalThis.__fixtureLog.includes('ready:click'))).toBe(true);
+
+    const forceFill = await handle(page, {
+      op: 'fill',
+      selector: 'testid=readonly-input',
+      value: 'forced',
+      options: { force: true },
+    });
+    expect(forceFill.ok).toBe(true);
+    expect(await page.locator('[data-testid="readonly-input"]').inputValue()).toBe('forced');
+  });
+
+  test('emits redacted actionability telemetry', async ({ page }) => {
+    const result = await handle(page, {
+      op: 'fill',
+      selector: 'testid=readonly-input',
+      value: 'password=abc',
+      trace_id: 'trace-action',
+      command_id: 'cmd-action',
+      parent_span_id: 'span-root',
+    });
+
+    expect(result.ok).toBe(false);
+    const span = result.telemetry.find((item) => item.name === 'automation.actionability.check');
+    expect(span).toBeTruthy();
+    expect(span.trace_id).toBe('trace-action');
+    expect(span.command_id).toBe('cmd-action');
+    expect(span.parent_span_id).toBe('span-root');
+    expect(span.attributes['action.name']).toBe('fill');
+    expect(span.attributes['actionability.check']).toBe('editable');
+    expect(span.attributes['actionability.passed']).toBe('false');
+    expect(span.attributes['actionability.failed_check']).toBe('editable');
+    expect(span.attributes['bbox.width']).toBeGreaterThanOrEqual(0);
+    expect(span.attributes['bbox.height']).toBeGreaterThanOrEqual(0);
+
+    const serialized = JSON.stringify(span.attributes);
+    expect(serialized).not.toContain('testid=readonly-input');
+    expect(serialized).not.toContain('password=abc');
+    expect(serialized).not.toContain('<input');
   });
 });
