@@ -89,19 +89,12 @@ pub const Connection = struct {
         }
 
         const result = router.dispatch(method, params);
+        if (id.isNotification()) return null;
+
         return switch (result) {
-            .success_json => |json| if (id == .absent)
-                null
-            else
-                try jsonRpcResult(allocator, id.responseId(), json),
-            .method_not_found => if (id == .absent)
-                null
-            else
-                try jsonRpcError(allocator, id.responseId(), -32601, "Method not found"),
-            .invalid_params => if (id == .absent)
-                null
-            else
-                try jsonRpcError(allocator, id.responseId(), -32602, "Invalid params"),
+            .success_json => |json| try jsonRpcResult(allocator, id.responseId(), json),
+            .method_not_found => try jsonRpcError(allocator, id.responseId(), -32601, "Method not found"),
+            .invalid_params => try jsonRpcError(allocator, id.responseId(), -32602, "Invalid params"),
         };
     }
 
@@ -126,6 +119,10 @@ pub const JsonRpcId = union(enum) {
             .absent => .null,
             else => self,
         };
+    }
+
+    fn isNotification(self: JsonRpcId) bool {
+        return self == .absent;
     }
 };
 
