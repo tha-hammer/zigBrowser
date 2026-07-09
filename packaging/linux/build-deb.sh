@@ -26,7 +26,8 @@ mkdir -p \
   "$STAGE_DIR/usr/share/applications" \
   "$STAGE_DIR/usr/share/icons/hicolor/256x256/apps"
 
-install -m 0644 "$SCRIPT_DIR/control.in" "$STAGE_DIR/DEBIAN/control"
+sed "s/@VERSION@/$VERSION/g" "$SCRIPT_DIR/control.in" > "$STAGE_DIR/DEBIAN/control"
+chmod 0644 "$STAGE_DIR/DEBIAN/control"
 install -m 0755 "$REPO_ROOT/zig-out/bin/zigBrowser" "$STAGE_DIR/usr/bin/zigBrowser"
 install -m 0644 "$SCRIPT_DIR/zigBrowser.desktop" "$STAGE_DIR/usr/share/applications/zigBrowser.desktop"
 

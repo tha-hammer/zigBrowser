@@ -1,5 +1,5 @@
 Package: zigbrowser
-Version: 0.1.3
+Version: @VERSION@
 Section: web
 Priority: optional
 Architecture: amd64
