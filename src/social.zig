@@ -68,6 +68,30 @@ pub fn setPacing(pacing: anytype, params: SetPacingParams) !OkResult {
     return .{ .ok = true };
 }
 
+pub const SocialVerb = enum {
+    login_check,
+    rate_status,
+    pause,
+    set_pacing,
+};
+
+pub fn socialVerb(method: []const u8) ?SocialVerb {
+    const table = [_]struct { method: []const u8, verb: SocialVerb }{
+        .{ .method = "social.login_check", .verb = .login_check },
+        .{ .method = "social.rate_status", .verb = .rate_status },
+        .{ .method = "social.pause", .verb = .pause },
+        .{ .method = "social.set_pacing", .verb = .set_pacing },
+    };
+    for (table) |entry| {
+        if (std.mem.eql(u8, entry.method, method)) return entry.verb;
+    }
+    return null;
+}
+
+pub fn isSocialMethod(method: []const u8) bool {
+    return std.mem.startsWith(u8, method, "social.");
+}
+
 pub fn detectPlatform(url: []const u8) []const u8 {
     if (std.mem.indexOf(u8, url, "linkedin.com") != null) return "linkedin";
     if (std.mem.indexOf(u8, url, "instagram.com") != null) return "instagram";

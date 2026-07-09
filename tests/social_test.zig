@@ -147,3 +147,45 @@ test "set_pacing rejects min greater than max" {
     });
     try std.testing.expectError(error.InvalidParams, result);
 }
+
+test "dispatch routes social.login_check" {
+    const verb = social.socialVerb("social.login_check");
+    try std.testing.expect(verb != null);
+    try std.testing.expectEqual(social.SocialVerb.login_check, verb.?);
+}
+
+test "dispatch routes social.rate_status" {
+    const verb = social.socialVerb("social.rate_status");
+    try std.testing.expect(verb != null);
+    try std.testing.expectEqual(social.SocialVerb.rate_status, verb.?);
+}
+
+test "dispatch routes social.pause" {
+    const verb = social.socialVerb("social.pause");
+    try std.testing.expect(verb != null);
+    try std.testing.expectEqual(social.SocialVerb.pause, verb.?);
+}
+
+test "dispatch routes social.set_pacing" {
+    const verb = social.socialVerb("social.set_pacing");
+    try std.testing.expect(verb != null);
+    try std.testing.expectEqual(social.SocialVerb.set_pacing, verb.?);
+}
+
+test "dispatch rejects unknown social method" {
+    const verb = social.socialVerb("social.unknown_method");
+    try std.testing.expect(verb == null);
+}
+
+test "isSocialMethod returns true for social namespace" {
+    try std.testing.expect(social.isSocialMethod("social.login_check"));
+    try std.testing.expect(social.isSocialMethod("social.rate_status"));
+    try std.testing.expect(social.isSocialMethod("social.pause"));
+    try std.testing.expect(social.isSocialMethod("social.set_pacing"));
+}
+
+test "isSocialMethod returns false for other namespaces" {
+    try std.testing.expect(!social.isSocialMethod("dom.click"));
+    try std.testing.expect(!social.isSocialMethod("page.navigate"));
+    try std.testing.expect(!social.isSocialMethod("linkedin.connect"));
+}
