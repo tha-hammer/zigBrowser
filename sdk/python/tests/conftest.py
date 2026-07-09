@@ -2,7 +2,6 @@ import json
 import os
 import socket
 import struct
-import tempfile
 import threading
 
 import pytest
