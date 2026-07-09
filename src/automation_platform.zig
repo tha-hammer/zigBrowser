@@ -501,6 +501,88 @@ pub const WebKitGtkNetworkInterceptor = struct {
     }
 };
 
+pub const WkWebViewInputDispatcher = struct {
+    eval: *FakePlatformEval,
+    page_id: []const u8,
+    telemetry_sink: ?*InMemoryPlatformTelemetry = null,
+
+    pub fn init(eval: *FakePlatformEval, page_id: []const u8) WkWebViewInputDispatcher {
+        return .{ .eval = eval, .page_id = page_id };
+    }
+
+    pub fn dispatchMouse(self: *WkWebViewInputDispatcher, input: MouseInput) !ActionResult {
+        if (input.trial) return .{ .status = .success };
+        var script_storage: [512]u8 = undefined;
+        const script = try syntheticMouseScript(script_storage[0..], input);
+        const result = self.eval.evaluate(.automation, .synthetic_input, script) catch |err| {
+            self.recordEvalSpan(.failed, .eval_failed);
+            return err;
+        };
+        self.recordEvalSpan(.success, null);
+        return result;
+    }
+
+    pub fn dispatchKey(self: *WkWebViewInputDispatcher, input: KeyInput) !ActionResult {
+        if (input.trial) return .{ .status = .success };
+        var script_storage: [512]u8 = undefined;
+        const script = try syntheticKeyScript(script_storage[0..], input);
+        const result = self.eval.evaluate(.automation, .synthetic_input, script) catch |err| {
+            self.recordEvalSpan(.failed, .eval_failed);
+            return err;
+        };
+        self.recordEvalSpan(.success, null);
+        return result;
+    }
+
+    fn recordEvalSpan(self: *WkWebViewInputDispatcher, status: ResultStatus, error_class: ?PlatformErrorClass) void {
+        if (self.telemetry_sink) |sink| {
+            sink.record(.{
+                .name = "automation.platform.eval",
+                .backend = .wkwebview,
+                .page_id = self.page_id,
+                .input_mode = .js_synthetic,
+                .content_world = .automation,
+                .eval_kind = .synthetic_input,
+                .platform_error_class = error_class,
+                .result_status = status,
+            });
+        }
+    }
+};
+
+pub const WkWebViewNetworkInterceptor = struct {
+    page_id: []const u8,
+    telemetry_sink: ?*InMemoryPlatformTelemetry = null,
+
+    pub fn init(page_id: []const u8) WkWebViewNetworkInterceptor {
+        return .{ .page_id = page_id };
+    }
+
+    pub fn capability(self: *const WkWebViewNetworkInterceptor) NetworkCapability {
+        _ = self;
+        return .{
+            .support = .unsupported,
+            .unsupported_reason = .no_platform_api,
+        };
+    }
+
+    pub fn start(self: *WkWebViewNetworkInterceptor) !void {
+        if (self.telemetry_sink) |sink| {
+            sink.record(.{
+                .name = "automation.network.capability",
+                .backend = .wkwebview,
+                .page_id = self.page_id,
+                .network_capability = .unsupported,
+                .network_operation = .start,
+                .unsupported_reason = .no_platform_api,
+                .debt_kind = .network_interception,
+                .result_status = .unsupported,
+            });
+        }
+        return error.CapabilityUnsupported;
+    }
+};
+
 fn syntheticMouseScript(storage: []u8, input: MouseInput) ![]const u8 {
     const x: i64 = @intFromFloat(input.x);
     const y: i64 = @intFromFloat(input.y);
@@ -837,6 +919,48 @@ test "P3.4 WebKitGTK NetworkInterceptor start returns unsupported Web Extension 
     try testing.expectEqual(BackendName.webkitgtk, telemetry.last_span.backend);
     try testing.expectEqual(NetworkSupport.unsupported, telemetry.last_span.network_capability);
     try testing.expectEqual(UnsupportedReason.web_extension_required, telemetry.last_span.unsupported_reason.?);
+    try testing.expectEqual(DebtKind.network_interception, telemetry.last_span.debt_kind.?);
+    try testing.expectEqual(ResultStatus.unsupported, telemetry.last_span.result_status);
+}
+
+test "P3.5 WKWebView synthetic input evaluates automation content world exactly once" {
+    var eval = FakePlatformEval{};
+    var telemetry = InMemoryPlatformTelemetry.init();
+    var dispatcher = WkWebViewInputDispatcher.init(&eval, "page-wk");
+    dispatcher.telemetry_sink = &telemetry;
+
+    const result = try dispatcher.dispatchKey(.{
+        .action = .type,
+        .key = "A",
+        .text = "A",
+    });
+
+    try testing.expectEqual(ResultStatus.success, result.status);
+    try testing.expectEqual(@as(usize, 1), eval.call_count);
+    try testing.expectEqual(ContentWorld.automation, eval.last_content_world);
+    try testing.expect(eval.last_content_world != .page);
+    try testing.expectEqual(EvalKind.synthetic_input, eval.last_eval_kind);
+    try testing.expect(std.mem.indexOf(u8, eval.last_script, "KeyboardEvent") != null);
+    try testing.expectEqualStrings("automation.platform.eval", telemetry.last_span.name);
+    try testing.expectEqual(BackendName.wkwebview, telemetry.last_span.backend);
+    try testing.expectEqual(ContentWorld.automation, telemetry.last_span.content_world.?);
+    try testing.expectEqual(ResultStatus.success, telemetry.last_span.result_status);
+}
+
+test "P3.5 WKWebView NetworkInterceptor start returns unsupported no-platform-api debt" {
+    var telemetry = InMemoryPlatformTelemetry.init();
+    var network = WkWebViewNetworkInterceptor.init("page-wk");
+    network.telemetry_sink = &telemetry;
+
+    const capability = network.capability();
+    try testing.expectEqual(NetworkSupport.unsupported, capability.support);
+    try testing.expectEqual(UnsupportedReason.no_platform_api, capability.unsupported_reason.?);
+
+    try testing.expectError(error.CapabilityUnsupported, network.start());
+    try testing.expectEqualStrings("automation.network.capability", telemetry.last_span.name);
+    try testing.expectEqual(BackendName.wkwebview, telemetry.last_span.backend);
+    try testing.expectEqual(NetworkSupport.unsupported, telemetry.last_span.network_capability);
+    try testing.expectEqual(UnsupportedReason.no_platform_api, telemetry.last_span.unsupported_reason.?);
     try testing.expectEqual(DebtKind.network_interception, telemetry.last_span.debt_kind.?);
     try testing.expectEqual(ResultStatus.unsupported, telemetry.last_span.result_status);
 }
