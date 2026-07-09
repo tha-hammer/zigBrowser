@@ -59,3 +59,38 @@ test "login_check returns not logged in for login page" {
     try std.testing.expect(!result.logged_in);
     try std.testing.expect(result.username == null);
 }
+
+const MockPacingLayer = struct {
+    daily_cap: u32 = 100,
+    remaining: u32 = 100,
+    reset_at: []const u8 = "2026-07-10T00:00:00",
+
+    pub fn getState(self: *const MockPacingLayer) social.PacingState {
+        return .{
+            .remaining_actions = self.remaining,
+            .reset_at = self.reset_at,
+            .daily_cap = self.daily_cap,
+        };
+    }
+};
+
+test "rate_status returns pacing state from pacing layer" {
+    const mock = MockPacingLayer{ .daily_cap = 100, .remaining = 73 };
+    const result = social.rateStatus(&mock);
+    try std.testing.expectEqual(@as(u32, 73), result.remaining_actions);
+    try std.testing.expectEqual(@as(u32, 100), result.daily_cap);
+    try std.testing.expectEqualStrings("2026-07-10T00:00:00", result.reset_at);
+}
+
+test "rate_status returns defaults when cap not reached" {
+    const mock = MockPacingLayer{};
+    const result = social.rateStatus(&mock);
+    try std.testing.expectEqual(@as(u32, 100), result.remaining_actions);
+    try std.testing.expectEqual(@as(u32, 100), result.daily_cap);
+}
+
+test "rate_status returns zero when cap reached" {
+    const mock = MockPacingLayer{ .daily_cap = 100, .remaining = 0 };
+    const result = social.rateStatus(&mock);
+    try std.testing.expectEqual(@as(u32, 0), result.remaining_actions);
+}

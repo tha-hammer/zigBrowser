@@ -22,6 +22,27 @@ pub fn loginCheck(port: anytype) LoginCheckResult {
     };
 }
 
+pub const PacingState = struct {
+    remaining_actions: u32,
+    reset_at: []const u8,
+    daily_cap: u32,
+};
+
+pub const RateStatusResult = struct {
+    remaining_actions: u32,
+    reset_at: []const u8,
+    daily_cap: u32,
+};
+
+pub fn rateStatus(pacing: anytype) RateStatusResult {
+    const state = pacing.getState();
+    return .{
+        .remaining_actions = state.remaining_actions,
+        .reset_at = state.reset_at,
+        .daily_cap = state.daily_cap,
+    };
+}
+
 pub fn detectPlatform(url: []const u8) []const u8 {
     if (std.mem.indexOf(u8, url, "linkedin.com") != null) return "linkedin";
     if (std.mem.indexOf(u8, url, "instagram.com") != null) return "instagram";
