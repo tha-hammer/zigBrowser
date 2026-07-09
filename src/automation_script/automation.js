@@ -25,6 +25,8 @@
         return runAction(command, 'type');
       case 'waitFor':
         return waitFor(command);
+      case 'rateLimitScan':
+        return rateLimitScan(command);
       default:
         return failure('unknown_op', command, [], false);
     }
@@ -146,6 +148,32 @@
       }, timeoutMs);
       check();
     });
+  }
+
+  function rateLimitScan(command) {
+    const platform = (command.options && command.options.platform) || 'unknown';
+    const signals = [];
+    var modalSelectors = [
+      '[role="dialog"][aria-modal="true"]',
+      '.artdeco-modal',
+      '[role="alertdialog"]'
+    ];
+    for (var i = 0; i < modalSelectors.length; i++) {
+      var modal = document.querySelector(modalSelectors[i]);
+      if (modal) {
+        var text = modal.textContent || '';
+        if (/limit|restrict|block|captcha|verify/i.test(text)) {
+          signals.push({ kind: 'modal', text_hash: hashText(text.trim().substring(0, 200)), confidence: 0.9 });
+        }
+      }
+    }
+    if (/challenge|captcha|checkpoint/i.test(document.location.pathname)) {
+      signals.push({ kind: 'challenge', text_hash: '', confidence: 0.95 });
+    }
+    if (signals.length > 0) {
+      return { ok: false, error: 'platform_rate_limited', retryable: false, data: { signal: signals[0].kind, platform: platform, signals: signals } };
+    }
+    return { ok: true, value: { signals: [] }, telemetry: [] };
   }
 
   function waitStateSatisfied(elements, state) {

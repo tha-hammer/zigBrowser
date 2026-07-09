@@ -406,9 +406,25 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_pacing_tests.step);
     test_step.dependOn(&run_session_tests.step);
     test_step.dependOn(&run_stealth_tests.step);
+    // --- Phase 4: JS contract tests ---
+    const js_embed_module = b.createModule(.{
+        .root_source_file = b.path("src/automation_script/js_embed.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const js_contract_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation/js_contract_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    js_contract_tests_module.addImport("js_embed", js_embed_module);
+    const js_contract_tests = b.addTest(.{ .root_module = js_contract_tests_module });
+    const run_js_contract_tests = b.addRunArtifact(js_contract_tests);
+
     test_step.dependOn(&run_social_tests.step);
     test_step.dependOn(&run_linkedin_tests.step);
     test_step.dependOn(&run_instagram_tests.step);
+    test_step.dependOn(&run_js_contract_tests.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
