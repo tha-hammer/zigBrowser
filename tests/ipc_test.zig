@@ -125,35 +125,90 @@ test "zb_ipc_dispatch C ABI returns result and error strings" {
     try std.testing.expectEqualStrings("UnknownCommand", std.mem.span(out_err.?));
 }
 
-test "zb_ipc_dispatch enforces 4096-byte output ceiling for echo" {
+test "zb_ipc_dispatch returns echo payloads larger than 4096 bytes" {
     var out_result: ?[*:0]const u8 = null;
     var out_err: ?[*:0]const u8 = null;
 
-    var ok_msg: [4093]u8 = undefined;
-    @memset(ok_msg[0..], 'x');
-    const ok_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"msg\":\"{s}\"}}", .{ok_msg});
-    defer std.testing.allocator.free(ok_args);
-    const ok_args_z = try std.testing.allocator.dupeZ(u8, ok_args);
-    defer std.testing.allocator.free(ok_args_z);
+    const msg = try std.testing.allocator.alloc(u8, 4096);
+    defer std.testing.allocator.free(msg);
+    @memset(msg, 'x');
 
-    const ok_rc = ipc.zb_ipc_dispatch("echo", ok_args_z, &out_result, &out_err);
-    try std.testing.expectEqual(@as(c_int, 0), ok_rc);
+    const args = try echoArgsJson(std.testing.allocator, msg);
+    defer std.testing.allocator.free(args);
+    const args_z = try std.testing.allocator.dupeZ(u8, args);
+    defer std.testing.allocator.free(args_z);
+
+    const rc = ipc.zb_ipc_dispatch("echo", args_z, &out_result, &out_err);
+    try std.testing.expectEqual(@as(c_int, 0), rc);
     try std.testing.expect(out_err == null);
     try std.testing.expect(out_result != null);
-    try std.testing.expectEqual(@as(usize, 4095), std.mem.span(out_result.?).len);
+
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{std.json.fmt(msg, .{})});
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, std.mem.span(out_result.?));
+}
+
+test "zb_ipc_dispatch returns a complete 128 KB result and replaces it on next dispatch" {
+    var out_result: ?[*:0]const u8 = null;
+    var out_err: ?[*:0]const u8 = null;
+
+    const first_msg = try std.testing.allocator.alloc(u8, 128 * 1024);
+    defer std.testing.allocator.free(first_msg);
+    @memset(first_msg, 'a');
+
+    const first_args = try echoArgsJson(std.testing.allocator, first_msg);
+    defer std.testing.allocator.free(first_args);
+    const first_args_z = try std.testing.allocator.dupeZ(u8, first_args);
+    defer std.testing.allocator.free(first_args_z);
+
+    const first_rc = ipc.zb_ipc_dispatch("echo", first_args_z, &out_result, &out_err);
+    try std.testing.expectEqual(@as(c_int, 0), first_rc);
+    try std.testing.expect(out_err == null);
+    try std.testing.expect(out_result != null);
+
+    const first_result = std.mem.span(out_result.?);
+    try std.testing.expectEqual(first_msg.len + 2, first_result.len);
+    try std.testing.expect(first_result[0] == '"');
+    try std.testing.expect(first_result[first_result.len - 1] == '"');
 
     out_result = null;
     out_err = null;
 
-    var too_big_msg: [4094]u8 = undefined;
-    @memset(too_big_msg[0..], 'x');
-    const too_big_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"msg\":\"{s}\"}}", .{too_big_msg});
-    defer std.testing.allocator.free(too_big_args);
-    const too_big_args_z = try std.testing.allocator.dupeZ(u8, too_big_args);
-    defer std.testing.allocator.free(too_big_args_z);
+    const second_msg = try std.testing.allocator.alloc(u8, 8192);
+    defer std.testing.allocator.free(second_msg);
+    @memset(second_msg, 'b');
 
-    const bad_rc = ipc.zb_ipc_dispatch("echo", too_big_args_z, &out_result, &out_err);
-    try std.testing.expect(bad_rc != 0);
+    const second_args = try echoArgsJson(std.testing.allocator, second_msg);
+    defer std.testing.allocator.free(second_args);
+    const second_args_z = try std.testing.allocator.dupeZ(u8, second_args);
+    defer std.testing.allocator.free(second_args_z);
+
+    const second_rc = ipc.zb_ipc_dispatch("echo", second_args_z, &out_result, &out_err);
+    try std.testing.expectEqual(@as(c_int, 0), second_rc);
+    try std.testing.expect(out_err == null);
+    try std.testing.expect(out_result != null);
+
+    const second_result = std.mem.span(out_result.?);
+    try std.testing.expectEqual(second_msg.len + 2, second_result.len);
+    try std.testing.expect(second_result[0] == '"');
+    try std.testing.expect(second_result[second_result.len - 1] == '"');
+}
+
+test "zb_ipc_dispatch preserves C ABI error mapping after dynamic result storage" {
+    var out_result: ?[*:0]const u8 = null;
+    var out_err: ?[*:0]const u8 = null;
+
+    const unknown_rc = ipc.zb_ipc_dispatch("nope", "{}", &out_result, &out_err);
+    try std.testing.expect(unknown_rc != 0);
+    try std.testing.expect(out_result == null);
+    try std.testing.expect(out_err != null);
+    try std.testing.expectEqualStrings("UnknownCommand", std.mem.span(out_err.?));
+
+    out_result = null;
+    out_err = null;
+
+    const bad_args_rc = ipc.zb_ipc_dispatch("echo", "{}", &out_result, &out_err);
+    try std.testing.expect(bad_args_rc != 0);
     try std.testing.expect(out_result == null);
     try std.testing.expect(out_err != null);
     try std.testing.expectEqualStrings("BadArgs", std.mem.span(out_err.?));

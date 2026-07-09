@@ -9,8 +9,7 @@ pub const IpcError = error{
 const AddArgs = struct { a: i64, b: i64 };
 const EchoArgs = struct { msg: []const u8 };
 
-threadlocal var dispatch_scratch: [65536]u8 = undefined;
-threadlocal var dispatch_result_cstr: [4096]u8 = undefined;
+threadlocal var dispatch_result_cstr: ?[:0]u8 = null;
 threadlocal var dispatch_err_cstr: [128]u8 = undefined;
 
 pub fn dispatch(allocator: std.mem.Allocator, cmd: []const u8, args_json: []const u8) IpcError![]const u8 {
@@ -47,9 +46,11 @@ pub export fn zb_ipc_dispatch(
 ) c_int {
     out_result.* = null;
     out_err.* = null;
+    releaseDispatchResult();
 
-    var fba = std.heap.FixedBufferAllocator.init(&dispatch_scratch);
-    const allocator = fba.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     const cmd_text = std.mem.span(cmd);
     const args_text = std.mem.span(args_json);
@@ -63,13 +64,11 @@ pub export fn zb_ipc_dispatch(
         return ipcErrorCode(err);
     };
 
-    if (!copyToCStr(&dispatch_result_cstr, result)) {
+    out_result.* = storeDispatchResult(result) catch |err| {
         _ = copyToCStr(&dispatch_err_cstr, "BadArgs");
         out_err.* = cPtrFromBuffer(&dispatch_err_cstr);
-        return ipcErrorCode(error.BadArgs);
-    }
-
-    out_result.* = cPtrFromBuffer(&dispatch_result_cstr);
+        return ipcErrorCode(err);
+    };
     return 0;
 }
 
@@ -179,6 +178,19 @@ fn copyToCStr(buf: []u8, text: []const u8) bool {
     @memcpy(buf[0..text.len], text);
     buf[text.len] = 0;
     return true;
+}
+
+fn releaseDispatchResult() void {
+    if (dispatch_result_cstr) |result| {
+        std.heap.page_allocator.free(result);
+        dispatch_result_cstr = null;
+    }
+}
+
+fn storeDispatchResult(text: []const u8) IpcError![*:0]const u8 {
+    const result = std.heap.page_allocator.dupeZ(u8, text) catch return error.BadArgs;
+    dispatch_result_cstr = result;
+    return result.ptr;
 }
 
 fn cPtrFromBuffer(buf: []u8) [*:0]const u8 {
