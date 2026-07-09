@@ -1,7 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createMockServer, MockUDSServer } from "./helpers";
-
-// Will fail until src/index.ts exports ZigBrowser and AutomationError
 import { ZigBrowser, AutomationError } from "../src/index";
 
 describe("ZigBrowser client", () => {
