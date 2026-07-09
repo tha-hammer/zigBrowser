@@ -31,8 +31,9 @@ The core decision is: zigBrowser must talk to the sequences Express backend, not
 - `090_sequences_foundation.sql` forces tenant RLS through `app.current_org` and owner checks through `app.current_user` on the foundation tables.
 - `database/migrations/110_sequences_engine.sql` creates `mailbox_connections`, extends `sequence_messages`, creates the canonical `sequence_events` ledger, inbound receipt tables, outreach claims, send caps, suppression entries, metric rollups, metric cursors, and benchmark presets.
 - `sequence_events` already has `dedup_key` plus a unique `(org_id, dedup_key)` index for idempotent canonical writes.
-- `sequence_events.event_type` currently supports `ContactReadinessAssessed`, `SequenceCreated`, `AudienceSelected`, `DraftGenerated`, `SequenceApproved`, `MessageSent`, `ReplySynced`, `BounceSynced`, `SuppressionApplied`, `EnrollmentStopped`, `AtsWritebackSucceeded`, `AtsWritebackFailed`, and `CandidateConverted`.
-- PRD 9.1 and 9.2 require additional canonical tracking event types: `MessageOpened`, `LinkClicked`, and `MessageDelivered`.
+- `sequence_events.event_type` in `110_sequences_engine.sql` originally supports `ContactReadinessAssessed`, `SequenceCreated`, `AudienceSelected`, `DraftGenerated`, `SequenceApproved`, `MessageSent`, `ReplySynced`, `BounceSynced`, `SuppressionApplied`, `EnrollmentStopped`, `AtsWritebackSucceeded`, `AtsWritebackFailed`, and `CandidateConverted`.
+- The current sequences checkout also has `database/migrations/130_sequence_tracking.sql` and `backend/services/sequenceEvents/eventTypes.js` extending the canonical allowlist with `MessageOpened`, `LinkClicked`, and `MessageDelivered`. The integration implementation must keep the database `CHECK`, JS allowlist, and tests synchronized, and must add or assert this migration on branches where it is absent.
+- `backend/services/sequenceMetrics/metricsService.js` already counts `MessageOpened` and `LinkClicked`, but its delivered funnel semantics still derive delivery from `MessageSent` minus hard bounces in the current code. PRD 9.2 delivery metrics must explicitly account for canonical `MessageDelivered` before the automation analytics wrapper claims delivered-event support.
 - `database/migrations/120_sequences_ats_crm.sql` creates ATS connection/reference/diagnostic/sync tables. ATS sync writes already have an idempotency key model.
 
 ### sequences route state
@@ -79,6 +80,7 @@ Local zigBrowser facade methods:
 | `sequences.list` | `GET /api/v1/automation/sequences` | List tenant-scoped sequences for dashboard and creation flows. |
 | `sequences.get` | `GET /api/v1/automation/sequences/:sequenceId` | Read one sequence with optional cohort, steps, metrics, and execution state. |
 | `sequences.createDraft` | `POST /api/v1/automation/sequences` | Create a draft sequence through backend sequence services. |
+| `sequences.getSteps` | `GET /api/v1/automation/sequences/:sequenceId/steps` | Read the durable versioned step-authoring contract. |
 | `sequences.saveSteps` | `PUT /api/v1/automation/sequences/:sequenceId/steps` | Save the step-authoring contract for draft sequences. |
 | `sequences.generateStepDraft` | `POST /api/v1/automation/sequences/:sequenceId/steps/generate` | Ask backend services to generate grounded step content. |
 | `sequences.previewStep` | `POST /api/v1/automation/sequences/:sequenceId/steps/preview` | Render and validate a step without sending. |
@@ -154,11 +156,32 @@ Common error codes:
 | 404 | `ENROLLMENT_NOT_FOUND` | false | Enrollment is missing or hidden by tenant scope. |
 | 404 | `MESSAGE_NOT_FOUND` | false | Message/step is missing or hidden by tenant scope. |
 | 409 | `IDEMPOTENCY_CONFLICT` | false | Same idempotency key was used with a different request hash. |
+| 409 | `STEP_VERSION_CONFLICT` | false | `expectedVersion` does not match the durable step contract version. |
+| 409 | `SEQUENCE_NOT_EXECUTABLE` | false | Sequence is not active, not approved, archived, paused, suppressed, or otherwise ineligible for execution planning. |
 | 422 | `EVENT_TYPE_UNSUPPORTED` | false | Event type is not allowed for canonical ingestion. |
 | 422 | `EVENT_ATTRIBUTION_INVALID` | false | Canonical event lacks required sequence/enrollment/message attribution. |
 | 429 | `RATE_LIMITED` | true | Backend rate limit or tenant send cap blocked the request. |
 | 500 | `DB_WRITE_FAILED` | true | Backend failed while writing after validation. |
 | 503 | `SEQUENCES_BACKEND_UNAVAILABLE` | true | Dependency outage or maintenance window. |
+
+### Mount order and auth matrix
+
+`/api/v1/automation` must be mounted in `backend/server.js` after the existing `/api/v1/` middleware chain:
+
+```text
+authenticate -> auditCrossTenant -> tenantContextMiddleware -> sequencesAutomationRoutes
+```
+
+No automation endpoint may bypass `tenantContextMiddleware`; all PostgreSQL access must run with backend-derived `app.current_org` and `app.current_user`. `zigBrowserAutomationAuth` is a route-level narrowing middleware inside `sequencesAutomationRoutes`: it validates the `X-ZB-*` HMAC when required, binds the registered client id to the delegated user session, and rejects any body/query/path attempt to supply `org_id`.
+
+| Endpoint group | User session | Service HMAC | Notes |
+|---|---|---|---|
+| `GET /ui/bootstrap`, `GET /sequences`, `GET /sequences/:id`, `GET /sequences/:id/steps`, `GET /analytics/outreach` | Required | Optional | User-session-only reads are allowed for first-party dashboard calls; if `X-ZB-Client-Id` is present, the HMAC must validate. |
+| `POST /sequences/:id/steps/preview` | Required | Optional | Read-only render/validation operation; must not persist rendered body text. If a future implementation persists preview audit rows, it becomes a write and must require HMAC plus idempotency. |
+| `POST /sequences`, `PUT /sequences/:id/steps`, `POST /sequences/:id/steps/generate` | Required | Required | State-changing authoring operations from zigBrowser; require delegated user plus registered client signature. |
+| `GET /sequences/:id/execution-plan` | Required | Required | Exposes executable work and rendered send material; reject user-session-only requests. |
+| `POST /executions`, `PATCH /executions/:id`, `POST /executions/:id/steps/:stepExecutionId/result` | Required | Required | Automation execution writes; require delegated user, registered client signature, and idempotency. |
+| `POST /events`, `POST /telemetry` | Required | Required | Ingestion writes; canonical events still derive tenant scope from auth and object ownership, never from client-supplied org fields. |
 
 ### `GET /api/v1/automation/ui/bootstrap`
 
@@ -362,7 +385,19 @@ Response:
 }
 ```
 
-Storage note: the current migrations do not expose a dedicated `sequence_steps` table. The backend integration layer must adapt this API-level step contract onto the current storage model, initially using `sequence_messages` for email content and approved plan JSON or a new step table when the sequence feature implementation creates one. Consumers must depend on this API shape, not on table names.
+Storage note: the current foundation migrations expose `sequence_messages` with `is_current`/`supersedes_id` for draft email bodies, not a durable versioned step model. The backend integration layer must adapt this API-level step contract onto storage while keeping consumers dependent on this API shape, not table names.
+
+#### Step version source and compare-and-swap
+
+`expectedVersion` is backed by a durable backend-owned step contract row, not by a client counter, `sequence_messages.updated_at`, or the number of current messages. The integration migration must add `sequence_step_contracts` unless a dedicated Phase 9.4 step table with the same guarantees exists first.
+
+Required version behavior:
+
+- `sequence_step_contracts.version` is the only value returned as `GET /steps` `version`.
+- For an existing sequence with no row, the backend bootstraps one under tenant context from current `sequence_messages` before returning or saving steps. If no steps exist, the bootstrapped version is `0`.
+- `PUT /steps` runs in one transaction: lock the `sequence_step_contracts` row with `FOR UPDATE`, compare `expectedVersion`, validate all mailbox/token/message references under the same `org_id`, update/supersede `sequence_messages` as needed, replace the serialized step contract, increment `version` by exactly one, and commit.
+- A stale `expectedVersion` returns `409 STEP_VERSION_CONFLICT` with the current version and no partial message writes.
+- Idempotent replay of a previously successful `PUT /steps` returns the stored response even if the sequence version has since advanced; a new idempotency key with an old `expectedVersion` must fail with `STEP_VERSION_CONFLICT`.
 
 ### `PUT /api/v1/automation/sequences/:sequenceId/steps`
 
@@ -499,8 +534,9 @@ Response:
 {
   "sequence": {
     "sequenceId": "seq_123",
-    "status": "pending_approval",
-    "name": "Senior Backend Search"
+    "status": "active",
+    "name": "Senior Backend Search",
+    "approvedAt": "2026-07-09T15:55:00.000Z"
   },
   "executionPlanId": "plan_20260709_001",
   "generatedAt": "2026-07-09T16:00:00.000Z",
@@ -542,7 +578,7 @@ Response:
 }
 ```
 
-The backend owns whether a step is due. zigBrowser must not infer send eligibility from raw database rows.
+The backend owns whether a step is due. zigBrowser must not infer send eligibility from raw database rows. The execution-plan service must match the current send-side gate in `backend/services/sequences/sendStore.js`: sequence `status = 'active'`, `approved_at IS NOT NULL`, enrollment `status = 'active'`, no stop reason, not suppressed, within caps, and due by `dueBefore`. Draft and `pending_approval` sequences must be rejected with `409 SEQUENCE_NOT_EXECUTABLE`, not returned with an empty executable plan.
 
 ### `POST /api/v1/automation/executions`
 
@@ -744,7 +780,7 @@ AtsWritebackFailed
 CandidateConverted
 ```
 
-`MessageOpened`, `LinkClicked`, and `MessageDelivered` require a sequences migration before this endpoint accepts them.
+`MessageOpened`, `LinkClicked`, and `MessageDelivered` require the database `CHECK`, `backend/services/sequenceEvents/eventTypes.js`, and ingestion tests to agree before this endpoint accepts them. The current sequences checkout already has this allowlist in migration `130_sequence_tracking.sql`; the automation integration must assert it remains present rather than reintroducing a divergent allowlist.
 
 ### `POST /api/v1/automation/telemetry`
 
@@ -861,7 +897,9 @@ Add a migration in the sequences repo, using the next available sequence number,
 ```sql
 -- Name suggestion: 13X_sequence_automation_integration.sql
 
--- Extend canonical event-type allowlist for PRD 9.1/9.2.
+-- Extend or assert the canonical event-type allowlist for PRD 9.1/9.2.
+-- If migration 130_sequence_tracking.sql is already present in the target branch,
+-- this block must preserve the same values and must not fork a second allowlist.
 ALTER TABLE sequence_events
   DROP CONSTRAINT IF EXISTS sequence_events_event_type_chk;
 
@@ -886,11 +924,29 @@ ALTER TABLE sequence_events
     'CandidateConverted'
   ));
 
+CREATE TABLE sequence_step_contracts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  sequence_id UUID NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+  steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+  steps_hash TEXT NOT NULL DEFAULT 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  updated_by_user_id UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT sequence_step_contracts_org_id_uniq UNIQUE (org_id, id),
+  CONSTRAINT sequence_step_contracts_sequence_uniq UNIQUE (org_id, sequence_id),
+  CONSTRAINT sequence_step_contracts_sequence_fk
+    FOREIGN KEY (org_id, sequence_id)
+    REFERENCES sequences(org_id, id)
+    ON DELETE CASCADE
+);
+
 CREATE TABLE sequence_automation_executions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id UUID NOT NULL,
-  actor_user_id UUID,
-  sequence_id UUID NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  actor_user_id UUID REFERENCES users(id),
+  sequence_id UUID NOT NULL,
   execution_plan_id TEXT,
   external_run_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
@@ -910,17 +966,53 @@ CREATE TABLE sequence_automation_executions (
   finished_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT sequence_automation_executions_org_id_uniq UNIQUE (org_id, id),
   UNIQUE (org_id, idempotency_key),
-  UNIQUE (org_id, external_run_id)
+  UNIQUE (org_id, external_run_id),
+  CONSTRAINT sequence_automation_executions_sequence_fk
+    FOREIGN KEY (org_id, sequence_id)
+    REFERENCES sequences(org_id, id)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE sequence_automation_idempotency_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  actor_user_id UUID REFERENCES users(id),
+  method TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('in_progress', 'succeeded', 'failed')),
+  response_status INTEGER,
+  response_body JSONB,
+  resource_type TEXT,
+  resource_id UUID,
+  sequence_id UUID,
+  execution_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT sequence_automation_idempotency_keys_org_id_uniq UNIQUE (org_id, id),
+  CONSTRAINT sequence_automation_idempotency_keys_scope_uniq UNIQUE (
+    org_id, method, endpoint, idempotency_key
+  ),
+  CONSTRAINT sequence_automation_idempotency_keys_sequence_fk
+    FOREIGN KEY (org_id, sequence_id)
+    REFERENCES sequences(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_idempotency_keys_execution_fk
+    FOREIGN KEY (org_id, execution_id)
+    REFERENCES sequence_automation_executions(org_id, id)
+    ON DELETE CASCADE
 );
 
 CREATE TABLE sequence_automation_step_results (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id UUID NOT NULL,
-  execution_id UUID NOT NULL REFERENCES sequence_automation_executions(id) ON DELETE CASCADE,
-  sequence_id UUID NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
-  enrollment_id UUID NOT NULL REFERENCES sequence_enrollments(id) ON DELETE CASCADE,
-  message_id UUID REFERENCES sequence_messages(id) ON DELETE SET NULL,
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  execution_id UUID NOT NULL,
+  sequence_id UUID NOT NULL,
+  enrollment_id UUID NOT NULL,
+  message_id UUID,
   step_execution_id TEXT NOT NULL,
   step_id TEXT,
   status TEXT NOT NULL CHECK (status IN (
@@ -932,21 +1024,41 @@ CREATE TABLE sequence_automation_step_results (
   retryable BOOLEAN NOT NULL DEFAULT false,
   trace_id TEXT,
   command_id TEXT,
-  canonical_sequence_event_id UUID REFERENCES sequence_events(id) ON DELETE SET NULL,
+  canonical_sequence_event_id UUID,
   diagnostic_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT sequence_automation_step_results_org_id_uniq UNIQUE (org_id, id),
   UNIQUE (org_id, idempotency_key),
-  UNIQUE (org_id, execution_id, step_execution_id)
+  UNIQUE (org_id, execution_id, step_execution_id),
+  CONSTRAINT sequence_automation_step_results_execution_fk
+    FOREIGN KEY (org_id, execution_id)
+    REFERENCES sequence_automation_executions(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_step_results_sequence_fk
+    FOREIGN KEY (org_id, sequence_id)
+    REFERENCES sequences(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_step_results_enrollment_fk
+    FOREIGN KEY (org_id, enrollment_id)
+    REFERENCES sequence_enrollments(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_step_results_message_fk
+    FOREIGN KEY (org_id, message_id)
+    REFERENCES sequence_messages(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_step_results_event_fk
+    FOREIGN KEY (org_id, canonical_sequence_event_id)
+    REFERENCES sequence_events(org_id, id)
 );
 
 CREATE TABLE sequence_automation_diagnostic_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id UUID NOT NULL,
-  execution_id UUID REFERENCES sequence_automation_executions(id) ON DELETE CASCADE,
-  sequence_id UUID REFERENCES sequences(id) ON DELETE CASCADE,
-  enrollment_id UUID REFERENCES sequence_enrollments(id) ON DELETE SET NULL,
-  message_id UUID REFERENCES sequence_messages(id) ON DELETE SET NULL,
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  execution_id UUID,
+  sequence_id UUID,
+  enrollment_id UUID,
+  message_id UUID,
   event_type TEXT NOT NULL,
   dedup_key TEXT,
   request_hash TEXT,
@@ -956,27 +1068,63 @@ CREATE TABLE sequence_automation_diagnostic_events (
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   occurred_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (org_id, dedup_key)
+  CONSTRAINT sequence_automation_diagnostic_events_org_id_uniq UNIQUE (org_id, id),
+  CONSTRAINT sequence_automation_diagnostic_events_execution_fk
+    FOREIGN KEY (org_id, execution_id)
+    REFERENCES sequence_automation_executions(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_diagnostic_events_sequence_fk
+    FOREIGN KEY (org_id, sequence_id)
+    REFERENCES sequences(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_diagnostic_events_enrollment_fk
+    FOREIGN KEY (org_id, enrollment_id)
+    REFERENCES sequence_enrollments(org_id, id)
+    ON DELETE CASCADE,
+  CONSTRAINT sequence_automation_diagnostic_events_message_fk
+    FOREIGN KEY (org_id, message_id)
+    REFERENCES sequence_messages(org_id, id)
+    ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX sequence_automation_diagnostic_events_org_dedup_uniq
+  ON sequence_automation_diagnostic_events (org_id, dedup_key)
+  WHERE dedup_key IS NOT NULL;
 ```
 
 RLS requirements:
 
-- Enable and force RLS on the new tables.
-- Add tenant policies using `org_id = current_setting('app.current_org', true)::uuid`.
+- Enable and force RLS on `sequence_step_contracts`, `sequence_automation_executions`, `sequence_automation_idempotency_keys`, `sequence_automation_step_results`, and `sequence_automation_diagnostic_events`.
+- Add tenant policies using `org_id = NULLIF(current_setting('app.current_org', true), '')::uuid` for both `USING` and `WITH CHECK`, matching the current forced-RLS migration style.
+- Migration tests must prove a row cannot reference a sequence, enrollment, message, execution, or canonical event from another org, even when the bare UUID exists.
 - Do not add an owner-only restrictive policy to automation diagnostics unless the product requires per-owner isolation; support users and admins need to debug automation failures across a tenant.
 - Keep all new tables out of analytics rollup queries except where explicitly joined for support/debug correlation.
 
 ### Idempotency
 
-Every write endpoint requires an `Idempotency-Key` header. The backend computes a canonical request hash from the normalized request body plus effective actor and endpoint.
+Every state-changing write endpoint requires an `Idempotency-Key` header. The backend computes a canonical request hash from the normalized request body plus effective actor, method, endpoint template, path params, and tenant. Successful write responses are persisted in `sequence_automation_idempotency_keys` unless the endpoint has a stronger resource-specific idempotency table; resource-specific tables still link back to the same request hash semantics. `POST /steps/preview` is excluded only because it is specified as read-only and must not persist rendered content.
 
 Rules:
 
-- Same endpoint, same org, same idempotency key, same request hash returns the original success response with `duplicate: true`.
-- Same endpoint, same org, same idempotency key, different request hash returns `409 IDEMPOTENCY_CONFLICT`.
+- Same method, endpoint template, org, actor, idempotency key, and request hash returns the original success response with `duplicate: true`.
+- Same method, endpoint template, org, actor, and idempotency key with a different request hash returns `409 IDEMPOTENCY_CONFLICT`.
 - Batch event ingestion uses item-level `dedupKey` in addition to the request-level idempotency key.
 - `sequence_events.dedup_key` remains the canonical dedupe mechanism for analytics events.
+- Validation/auth failures do not create durable idempotency rows. Once the backend begins a write transaction, either the resource mutation and idempotency row commit together or both roll back.
+- Stored idempotency responses must never include raw rendered bodies, raw selectors, raw typed text, tokens, cookies, or candidate PII.
+
+Write-path persistence matrix:
+
+| Endpoint | Persistence and replay contract |
+|---|---|
+| `POST /api/v1/automation/sequences` | Store response in `sequence_automation_idempotency_keys` with `resource_type = 'sequence'`; replay returns the same `sequenceId` and `duplicate: true`; conflict blocks a second draft create with the same key. |
+| `PUT /api/v1/automation/sequences/:sequenceId/steps` | Store the successful CAS response in `sequence_automation_idempotency_keys`; replay returns the saved post-update `version` even if the current version has advanced; a new key with stale `expectedVersion` returns `STEP_VERSION_CONFLICT`. |
+| `POST /api/v1/automation/sequences/:sequenceId/steps/generate` | Store response in `sequence_automation_idempotency_keys` and use canonical `DraftGenerated` `dedupKey` for the ledger write; replay returns the same `messageId`/event metadata. |
+| `POST /api/v1/automation/executions` | Persist execution idempotency in `sequence_automation_executions` plus the response envelope in `sequence_automation_idempotency_keys`; replay returns the same `executionId`. |
+| `PATCH /api/v1/automation/executions/:executionId` | Persist each status update response in `sequence_automation_idempotency_keys`; replay is a no-op that returns the original state transition response, while a different body with the same key returns `IDEMPOTENCY_CONFLICT`. |
+| `POST /api/v1/automation/executions/:executionId/steps/:stepExecutionId/result` | Persist in `sequence_automation_step_results` keyed by `(org_id, idempotency_key)` and `(org_id, execution_id, step_execution_id)`; replay returns the same diagnostic and canonical event outcome. |
+| `POST /api/v1/automation/events` | Persist the batch response in `sequence_automation_idempotency_keys`; canonical items also dedupe through `sequence_events(org_id, dedup_key)`, and diagnostic items dedupe through `sequence_automation_diagnostic_events(org_id, dedup_key)`. |
+| `POST /api/v1/automation/telemetry` | Persist the accepted/rejected response in `sequence_automation_idempotency_keys`; each accepted item stores a deterministic diagnostic `dedupKey` derived from `executionId`, `traceId`, `spanId`, `commandId`, `name`, and `occurredAt` when the client did not provide one. |
 
 Recommended dedup key shapes:
 
@@ -1042,7 +1190,7 @@ The integration API accepts only redacted automation context:
 | 9.1 Sequence Tracking | `POST /api/v1/automation/events`, `POST /api/v1/automation/executions/:executionId/steps/:stepExecutionId/result`, existing mailbox/webhook routes | Append canonical tracking events to `sequence_events`; add `MessageDelivered`, `MessageOpened`, `LinkClicked`; use `dedup_key`; store automation diagnostics separately. |
 | 9.2 Analytics | `GET /api/v1/automation/analytics/outreach`, existing `sequenceMetrics.js` services | Analytics reads canonical `sequence_events` and rollups only; telemetry tables are excluded from metric counters. |
 | 9.3 New Sequence Creation | `GET /api/v1/automation/ui/bootstrap`, `GET /api/v1/automation/sequences`, `POST /api/v1/automation/sequences`, `GET /api/v1/automation/sequences/:sequenceId` | Create draft `sequences` rows under backend tenant context; do not accept client-supplied org id; expose mailbox/template/status summaries. |
-| 9.4 Step Authoring | `GET /api/v1/automation/sequences/:sequenceId/steps`, `PUT /api/v1/automation/sequences/:sequenceId/steps`, `POST /api/v1/automation/sequences/:sequenceId/steps/generate`, `POST /api/v1/automation/sequences/:sequenceId/steps/preview`, `GET /api/v1/automation/sequences/:sequenceId/execution-plan` | API-level `SequenceStep` schema abstracts current storage; email drafts map to `sequence_messages`; generated drafts emit `DraftGenerated`; send execution emits `MessageSent` only through backend validation. |
+| 9.4 Step Authoring | `GET /api/v1/automation/sequences/:sequenceId/steps`, `PUT /api/v1/automation/sequences/:sequenceId/steps`, `POST /api/v1/automation/sequences/:sequenceId/steps/generate`, `POST /api/v1/automation/sequences/:sequenceId/steps/preview`, `GET /api/v1/automation/sequences/:sequenceId/execution-plan` | API-level `SequenceStep` schema abstracts current storage; `sequence_step_contracts.version` is the durable CAS source; email drafts map to `sequence_messages`; generated drafts emit `DraftGenerated`; send execution emits `MessageSent` only through backend validation after approval. |
 
 ## Implementation Plan by Testable Behavior
 
@@ -1073,10 +1221,11 @@ Red:
 
 - Add backend route tests for missing service signature, stale timestamp, replayed nonce, invalid body hash, missing delegated user, and attempted client-supplied `org_id`.
 - Add tests that user-session-only reads still derive org/user from existing auth middleware.
+- Add mount-order tests proving `/api/v1/automation` runs after `authenticate`, `auditCrossTenant`, and `tenantContextMiddleware`, and that execution/write routes reject user-session-only calls when the auth matrix requires HMAC.
 
 Green:
 
-- Add `zigBrowserAutomationAuth` middleware that validates `X-ZB-*` request signing and composes with existing user auth.
+- Mount `sequencesAutomationRoutes` after the existing `/api/v1/` auth/audit/tenant middleware chain, then add route-level `zigBrowserAutomationAuth` middleware that validates `X-ZB-*` request signing where required by the auth matrix.
 - Store registered client secrets in backend environment or secrets manager, not source files.
 
 Refactor:
@@ -1094,6 +1243,7 @@ Red:
 
 - Add integration tests that seed two orgs and verify `/ui/bootstrap`, `/sequences`, `/sequences/:id`, `/steps`, and `/execution-plan` return only the authenticated org's rows.
 - Add tests that `execution-plan` excludes archived, paused, suppressed, over-cap, and not-due work.
+- Add tests that `execution-plan` rejects `draft` and `pending_approval` sequences with `409 SEQUENCE_NOT_EXECUTABLE` and never returns executable steps unless the sequence is `active` with `approved_at IS NOT NULL`.
 
 Green:
 
@@ -1115,12 +1265,13 @@ Red:
 
 - Add tests that `POST /sequences` creates draft rows with backend-derived `org_id`.
 - Add tests that `PUT /sequences/:id/steps` rejects stale `expectedVersion`, invalid mailboxes, invalid tokens, archived sequences, and cross-org ids.
+- Add tests that `expectedVersion` is compared against `sequence_step_contracts.version`, that successful saves increment by exactly one, that stale saves leave `sequence_messages` unchanged, and that idempotent replay returns the original saved version.
 - Add tests that generate/preview routes do not log raw rendered bodies.
 
 Green:
 
 - Route draft creation through existing sequence services.
-- Implement the `SequenceStep` API adapter over current storage. Use `sequence_messages` for email content until the feature implementation introduces a dedicated step table.
+- Implement the `SequenceStep` API adapter over current storage. Use `sequence_step_contracts` for version/CAS and serialized step order, and use `sequence_messages` for email content until the feature implementation introduces a dedicated step table.
 - Reuse grounded draft generation paths for step generation.
 
 Refactor:
@@ -1136,8 +1287,9 @@ Success criteria:
 
 Red:
 
-- Add migration tests for new automation execution, step result, and diagnostic tables with forced tenant RLS.
-- Add service tests for idempotent execution creation, duplicate replay, and idempotency conflict.
+- Add migration tests for `sequence_step_contracts`, `sequence_automation_executions`, `sequence_automation_idempotency_keys`, `sequence_automation_step_results`, and `sequence_automation_diagnostic_events` with forced tenant RLS, `UNIQUE (org_id, id)`, and composite cross-org FK rejection.
+- Add service tests for idempotent execution creation, execution update, step-result write, duplicate replay, and idempotency conflict.
+- Add route/service tests that `POST /sequences`, `PUT /steps`, `POST /steps/generate`, `PATCH /executions`, `POST /events`, and `POST /telemetry` all persist replay/conflict state according to the write-path matrix.
 - Add tests for execution status transitions and trace/command correlation persistence.
 
 Green:
@@ -1159,7 +1311,8 @@ Red:
 
 - Add tests that canonical event ingestion rejects unsupported types, missing attribution, cross-org ids, duplicate keys with different payloads, and telemetry-only event types.
 - Add tests that duplicate canonical events with the same dedup key return `duplicate`.
-- Add tests that `MessageOpened`, `LinkClicked`, and `MessageDelivered` are accepted only after the event-type migration.
+- Add tests that `MessageOpened`, `LinkClicked`, and `MessageDelivered` are accepted only when the database `CHECK`, `backend/services/sequenceEvents/eventTypes.js`, and route ingestion allowlist agree.
+- Add a drift test that fails if canonical event types are added to the migration but omitted from `eventTypes.js`, or added to `eventTypes.js` but rejected by the database check.
 
 Green:
 
@@ -1182,12 +1335,13 @@ Red:
 
 - Add tests that outreach analytics counts are driven by `sequence_events`, not telemetry or diagnostic tables.
 - Seed `MessageSent`, `MessageOpened`, `LinkClicked`, `ReplySynced`, and `BounceSynced` events and assert metric definitions from this plan.
+- Seed `MessageDelivered` and assert delivery metrics use canonical delivery events where PRD 9.2 requires them, rather than silently aliasing delivered to `MessageSent`.
 - Add tests for date range, sequence, job, owner, mailbox, and group-by filters.
 
 Green:
 
 - Implement `/api/v1/automation/analytics/outreach` as a thin wrapper around existing sequence metrics services where possible.
-- Extend metric queries only where PRD 9.2 requires filters not currently available.
+- Extend `backend/services/sequenceMetrics/metricsService.js` and metric queries where PRD 9.2 requires filters or delivered-event semantics not currently available.
 
 Refactor:
 
@@ -1243,8 +1397,11 @@ Success criteria:
 sequences repo:
 
 - `database/migrations/13X_sequence_automation_integration.sql`
+- `database/migrations/130_sequence_tracking.sql` only if the target branch has not already landed the `MessageDelivered`/`MessageOpened`/`LinkClicked` event-type extension; otherwise add guard tests that assert it remains synchronized.
 - `backend/routes/sequencesAutomation.js`
 - `backend/middleware/zigBrowserAutomationAuth.js`
+- `backend/services/sequenceEvents/eventTypes.js`
+- `backend/services/sequenceMetrics/metricsService.js`
 - `backend/services/sequences/automationIntegrationService.js`
 - `backend/services/sequences/automationEventIngestService.js`
 - `backend/services/sequences/automationAnalyticsService.js` if existing metrics services cannot directly cover PRD 9.2
@@ -1262,8 +1419,12 @@ zigBrowser repo:
 - sequences backend tests pass for auth, tenant scoping, event ingestion, idempotency, analytics, and step serialization.
 - zigBrowser tests pass for the integration client, local facade contract, error mapping, redaction, and retry behavior.
 - Cross-repo contract test passes without a real browser and without direct DB access from zigBrowser.
-- The migration applies cleanly, enables forced RLS on new tables, and does not weaken existing RLS policies.
+- The migration applies cleanly, enables forced RLS on new tables, uses `UNIQUE (org_id, id)` plus composite FKs for tenant-owned references, and does not weaken existing RLS policies.
+- Every state-changing write route has durable idempotent replay and conflict tests, including `PUT /steps`, `PATCH /executions`, `POST /events`, and `POST /telemetry`.
+- Execution planning rejects `draft` and `pending_approval` sequences and returns executable work only for active approved sequences.
+- Step authoring uses a durable version source with compare-and-swap semantics; stale saves cannot partially update `sequence_messages`.
 - Analytics reads use canonical `sequence_events` and existing rollup paths; telemetry/diagnostic rows do not affect counters.
+- Canonical event allowlists and metrics stay synchronized across the database migration, `eventTypes.js`, ingestion services, and `metricsService.js`.
 - The API contract in this document is linked from the implementation bead so sibling agents can consume it.
 
 ## Open Integration Points for Phase 0
