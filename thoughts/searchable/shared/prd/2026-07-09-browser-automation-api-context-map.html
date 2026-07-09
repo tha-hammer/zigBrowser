@@ -1,0 +1,1811 @@
+<title>zigBrowser — Bounded Context Map</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-code: #f0f2f5;
+    --text: #1c2024;
+    --text-2: #5c6370;
+    --text-3: #8b929e;
+    --border: #d4d8de;
+    --border-light: #e8eaee;
+    --accent: #2563eb;
+    --iface: #0969da;
+    --iface-bg: #dbeafe;
+    --contract: #92700c;
+    --contract-bg: #fef3c7;
+    --seam: #7c3aed;
+    --seam-bg: #ede9fe;
+    --gap: #dc2626;
+    --gap-bg: #fee2e2;
+    --event: #15803d;
+    --event-bg: #dcfce7;
+    --asis: #059669;
+    --asis-bg: #d1fae5;
+    --tobe: #2563eb;
+    --tobe-bg: #dbeafe;
+    --nav-w: 220px;
+    --mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Monaco, 'Courier New', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-code: #1c2128;
+      --text: #e6edf3;
+      --text-2: #8b949e;
+      --text-3: #6e7681;
+      --border: #30363d;
+      --border-light: #21262d;
+      --accent: #58a6ff;
+      --iface: #58a6ff;
+      --iface-bg: #0d1b2e;
+      --contract: #d29922;
+      --contract-bg: #1c1500;
+      --seam: #a371f7;
+      --seam-bg: #1a0d30;
+      --gap: #f85149;
+      --gap-bg: #2d0b0b;
+      --event: #3fb950;
+      --event-bg: #0b1e0f;
+      --asis: #3fb950;
+      --asis-bg: #0b1e0f;
+      --tobe: #58a6ff;
+      --tobe-bg: #0d1b2e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-code: #1c2128;
+    --text: #e6edf3;
+    --text-2: #8b949e;
+    --text-3: #6e7681;
+    --border: #30363d;
+    --border-light: #21262d;
+    --accent: #58a6ff;
+    --iface: #58a6ff;
+    --iface-bg: #0d1b2e;
+    --contract: #d29922;
+    --contract-bg: #1c1500;
+    --seam: #a371f7;
+    --seam-bg: #1a0d30;
+    --gap: #f85149;
+    --gap-bg: #2d0b0b;
+    --event: #3fb950;
+    --event-bg: #0b1e0f;
+    --asis: #3fb950;
+    --asis-bg: #0b1e0f;
+    --tobe: #58a6ff;
+    --tobe-bg: #0d1b2e;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-code: #f0f2f5;
+    --text: #1c2024;
+    --text-2: #5c6370;
+    --text-3: #8b929e;
+    --border: #d4d8de;
+    --border-light: #e8eaee;
+    --accent: #2563eb;
+    --iface: #0969da;
+    --iface-bg: #dbeafe;
+    --contract: #92700c;
+    --contract-bg: #fef3c7;
+    --seam: #7c3aed;
+    --seam-bg: #ede9fe;
+    --gap: #dc2626;
+    --gap-bg: #fee2e2;
+    --event: #15803d;
+    --event-bg: #dcfce7;
+    --asis: #059669;
+    --asis-bg: #d1fae5;
+    --tobe: #2563eb;
+    --tobe-bg: #dbeafe;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--sans); background: var(--bg); color: var(--text); line-height: 1.55; }
+
+  .page { display: grid; grid-template-columns: var(--nav-w) 1fr; min-height: 100vh; }
+  @media (max-width: 860px) {
+    .page { grid-template-columns: 1fr; }
+    nav.sidebar { position: static; width: 100%; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+    nav.sidebar .nav-inner { padding: 12px 16px; }
+    nav.sidebar ul { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+    nav.sidebar li { margin: 0; }
+  }
+
+  nav.sidebar {
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--border); background: var(--surface);
+    font-size: 13px;
+  }
+  nav.sidebar .nav-inner { padding: 20px 16px; }
+  nav.sidebar h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.02em; margin-bottom: 4px; }
+  nav.sidebar .subtitle { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }
+  nav.sidebar h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-3); margin: 14px 0 6px; font-weight: 600; }
+  nav.sidebar ul { list-style: none; }
+  nav.sidebar li { margin: 2px 0; }
+  nav.sidebar a {
+    text-decoration: none; color: var(--text-2); display: block; padding: 3px 8px;
+    border-radius: 4px; font-size: 12.5px; transition: background 0.12s;
+  }
+  nav.sidebar a:hover { background: var(--border-light); color: var(--text); }
+  nav.sidebar .tag-asis, nav.sidebar .tag-tobe { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  nav.sidebar .tag-asis { background: var(--asis); }
+  nav.sidebar .tag-tobe { background: var(--tobe); }
+
+  main { padding: 32px 40px 80px; max-width: 920px; }
+  @media (max-width: 860px) { main { padding: 20px 16px 60px; } }
+
+  .doc-header { margin-bottom: 36px; }
+  .doc-header h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .doc-header .meta { font-size: 12px; color: var(--text-3); }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px 16px;
+    padding: 12px 16px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; margin-bottom: 32px; font-size: 12px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 8px; font-weight: 700; font-family: var(--mono); color: #fff;
+  }
+  .sw-iface { background: var(--iface); }
+  .sw-contract { background: var(--contract); }
+  .sw-seam { background: var(--seam); }
+  .sw-event { background: var(--event); }
+  .sw-gap { background: var(--gap); }
+
+  section { margin-bottom: 48px; scroll-margin-top: 20px; }
+  section > h2 {
+    font-size: 17px; font-weight: 700; margin-bottom: 4px;
+    display: flex; align-items: center; gap: 10px;
+    padding-bottom: 8px; border-bottom: 2px solid var(--border);
+  }
+  .tag {
+    display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 3px;
+  }
+  .tag-asis-label { background: var(--asis-bg); color: var(--asis); }
+  .tag-tobe-label { background: var(--tobe-bg); color: var(--tobe); }
+  .tag-provisional { background: var(--gap-bg); color: var(--gap); font-size: 9px; }
+
+  .bc-desc { font-size: 13.5px; color: var(--text-2); margin: 8px 0 4px; }
+  .bc-owns { font-size: 12.5px; color: var(--text-3); margin-bottom: 16px; font-family: var(--mono); }
+  .bc-owns strong { color: var(--text-2); }
+
+  .block-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-3); margin-bottom: 6px;
+  }
+
+  pre {
+    background: var(--surface-code); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 16px; overflow-x: auto;
+    font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    margin-bottom: 20px; tab-size: 4; color: var(--text);
+  }
+  pre code { font-family: inherit; }
+  .cm-kw { color: var(--seam); font-weight: 600; }
+  .cm-id { color: var(--iface); }
+  .cm-ct { color: var(--contract); }
+  .cm-sm { color: var(--seam); }
+  .cm-gp { color: var(--gap); }
+  .cm-ev { color: var(--event); }
+  .cm-cmt { color: var(--text-3); font-style: italic; }
+  .cm-str { color: var(--event); }
+
+  .gap-register { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 24px; }
+  .gap-register th {
+    text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-3); padding: 6px 10px; border-bottom: 2px solid var(--border);
+    font-weight: 600;
+  }
+  .gap-register td {
+    padding: 7px 10px; border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+  .gap-register tr:hover td { background: var(--surface-code); }
+  .gap-id { font-family: var(--mono); font-weight: 600; color: var(--gap); white-space: nowrap; }
+  .gap-sev { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+  .sev-block { color: var(--gap); font-weight: 600; }
+  .sev-risk { color: var(--contract); }
+  .sev-drift { color: var(--text-3); }
+
+  .divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+
+<div class="page">
+<nav class="sidebar">
+  <div class="nav-inner">
+    <h1>zigBrowser</h1>
+    <div class="subtitle">Bounded Context Map</div>
+    <h3>Index</h3>
+    <ul>
+      <li><a href="#index">Context Map</a></li>
+      <li><a href="#gaps">Gap &amp; Risk Register</a></li>
+    </ul>
+    <h3>As-Is</h3>
+    <ul>
+      <li><a href="#bc1"><span class="tag-asis"></span>BC1 Shell</a></li>
+      <li><a href="#bc2"><span class="tag-asis"></span>BC2 Nav Policy</a></li>
+      <li><a href="#bc3"><span class="tag-asis"></span>BC3 IPC Bridge</a></li>
+      <li><a href="#bc4"><span class="tag-asis"></span>BC4 Platform</a></li>
+      <li><a href="#bc5"><span class="tag-asis"></span>BC5 Build</a></li>
+    </ul>
+    <h3>To-Be</h3>
+    <ul>
+      <li><a href="#bc6"><span class="tag-tobe"></span>BC6 Auto Engine</a></li>
+      <li><a href="#bc7"><span class="tag-tobe"></span>BC7 Injected Script</a></li>
+      <li><a href="#bc8"><span class="tag-tobe"></span>BC8 Transport</a></li>
+      <li><a href="#bc9"><span class="tag-tobe"></span>BC9 Stealth</a></li>
+      <li><a href="#bc10"><span class="tag-tobe"></span>BC10 Social</a></li>
+      <li><a href="#bc11"><span class="tag-tobe"></span>BC11 Observability</a></li>
+      <li><a href="#bc12"><span class="tag-tobe"></span>BC12 Platform Caps</a></li>
+    </ul>
+  </div>
+</nav>
+
+<main>
+<div class="doc-header">
+  <h1>Bounded Context Map</h1>
+  <div class="meta">zigBrowser Automation API &middot; 2026-07-09 &middot; 12 contexts &middot; 110 IDs</div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch sw-iface">IN</div> Interface (IN#/OUT#)</div>
+  <div class="legend-item"><div class="legend-swatch sw-contract">C</div> Contract (C#)</div>
+  <div class="legend-item"><div class="legend-swatch sw-seam">S</div> Seam (S#)</div>
+  <div class="legend-item"><div class="legend-swatch sw-event">EV</div> Event (EV#)</div>
+  <div class="legend-item"><div class="legend-swatch sw-gap">G</div> Gap (G#)</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- INDEX                                                          -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="index">
+<h2>Index: Context-to-Context Map</h2>
+
+<div class="block-label">Mermaid &mdash; Context Map</div>
+<pre><code>flowchart TB
+    classDef asis fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef tobe fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef gap  fill:#fee2e2,stroke:#ef4444,color:#7f1d1d
+    classDef seam fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
+
+    subgraph AS_IS["AS-IS (production)"]
+        BC1["BC1: Shell\nmain.zig, cli.zig, uri.zig, errors.zig"]:::asis
+        BC2["BC2: Navigation Policy\nnav_policy.zig"]:::asis
+        BC3["BC3: IPC Bridge\nipc.zig"]:::asis
+        BC4["BC4: Platform Rendering\nwebkit_shim.c, webview2_shim.cpp,\nwkwebview_shim.m, webkit.zig"]:::asis
+        BC5["BC5: Build System\nbuild.zig"]:::asis
+    end
+
+    subgraph TO_BE["TO-BE (PRD-provisioned)"]
+        BC6["BC6: Automation Engine\ncommand queue, retry, errors"]:::tobe
+        BC7["BC7: Injected Script\nselector, DOM actions, isolated world"]:::tobe
+        BC8["BC8: External Transport\nJSON-RPC, UDS, WebSocket"]:::tobe
+        BC9["BC9: Stealth &amp; Pacing\nbehavioral sim, rate limiting"]:::tobe
+        BC10["BC10: Social Contracts\nLinkedIn, Instagram sequences"]:::tobe
+        BC11["BC11: Observability\ntelemetry, wide events, redaction"]:::tobe
+        BC12["BC12: Platform Capabilities\ncookie, network, native input"]:::tobe
+    end
+
+    %% AS-IS seams
+    BC1 -->|"S1: Shell→Platform\nzb_app_run, zb_run_screenshot"| BC4
+    BC4 -->|"S2: Platform→Policy\nzb_policy_decide C ABI"| BC2
+    BC4 -->|"S3: Platform→IPC\nzb_ipc_dispatch C ABI"| BC3
+    BC5 -->|"S5: Build→Platform\nbackend source selection"| BC4
+
+    %% TO-BE seams
+    BC8  -->|"S10→S11: Client→Router\nJSON-RPC over UDS"| BC6
+    BC6  -->|"S6: Engine→PagePort\nvtable dispatch"| BC4
+    BC6  -->|"via S6→S9:\ninject/eval through platform"| BC7
+    BC9  -->|"S12: Engine→Pacing\nwraps execution"| BC6
+    BC9  -->|"S13: Script→Detection\nDOM signal monitoring"| BC7
+    BC10 -->|"S14: Social→Engine\ncompound→primitive"| BC6
+    BC11 -.->|"S15: Components→Sink\nTelemetrySink vtable"| BC6
+    BC11 -.->|"S15"| BC8
+    BC12 -->|"S16–18: Cookie/Net/Input"| BC6
+
+    %% Critical gaps blocking TO-BE
+    G1["G1: 4KB result buffer"]:::gap
+    G5["G5: No native→JS eval"]:::gap
+    G6["G6: No isolated worlds"]:::gap
+    G7["G7: No socket transport"]:::gap
+    G2["G2: WebView2 no policy call"]:::gap
+    G12["G12: Isolated-world leakage"]:::gap
+
+    G1 -.-x|"blocks all auto results"| BC6
+    G5 -.-x|"blocks script eval"| BC7
+    G6 -.-x|"blocks injection"| BC7
+    G7 -.-x|"blocks external API"| BC8
+    G2 -.-x|"drift"| BC4
+    G12 -.-x|"stealth risk"| BC7</code></pre>
+
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- GAP REGISTER                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="gaps">
+<h2>Gap &amp; Risk Register</h2>
+
+<div style="overflow-x:auto">
+<table class="gap-register">
+<thead>
+<tr>
+  <th>ID</th><th>Severity</th><th>Context</th><th>Violated / Missing Boundary</th><th>Impact</th><th>Resolution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td class="gap-id">G1</td>
+  <td class="gap-sev sev-block">BLOCKS</td>
+  <td>BC3→BC6</td>
+  <td>C6 ResultCeiling (4096 B static buffer) violated by C39 ResultOwnership</td>
+  <td>dom.query, page.evaluate, page.screenshot all exceed 4 KB. No automation command can ship.</td>
+  <td>Switch dispatch_result_cstr from threadlocal [4096]u8 to heap-backed allocation. PRD Phase 1 prerequisite.</td>
+</tr>
+<tr>
+  <td class="gap-id">G2</td>
+  <td class="gap-sev sev-drift">DRIFT</td>
+  <td>BC4/BC2</td>
+  <td>S2 Platform→Policy partially implemented: webview2_shim.cpp declares but never calls zb_policy_decide</td>
+  <td>Windows builds have no navigation containment. file:// traversal possible on Windows.</td>
+  <td>Wire NavigationStarting event handler to call zb_policy_decide, matching GTK/macOS parity.</td>
+</tr>
+<tr>
+  <td class="gap-id">G3</td>
+  <td class="gap-sev sev-drift">DRIFT</td>
+  <td>BC5</td>
+  <td>C11 SDKPresence: tests/uri_test.zig not wired into build.zig test step</td>
+  <td>URI tests don't run in CI. Canonicalization regression undetectable.</td>
+  <td>Add uri_module + uri_tests_module to build.zig test step, matching ipc/nav_policy pattern.</td>
+</tr>
+<tr>
+  <td class="gap-id">G4</td>
+  <td class="gap-sev sev-drift">DRIFT</td>
+  <td>BC1</td>
+  <td>C1 URIValidation: uri.zig validate returns raw input verbatim; uri_test.zig asserts canonicalization</td>
+  <td>Test expectations don't match implementation. Either tests are aspirational or validate is incomplete.</td>
+  <td>Align: implement canonicalization in validate, or fix test expectations to match current behavior.</td>
+</tr>
+<tr>
+  <td class="gap-id">G5</td>
+  <td class="gap-sev sev-block">BLOCKS</td>
+  <td>BC4</td>
+  <td>S4 Platform→DOM: current path is JS→native only (zbHost). Automation requires native→JS eval.</td>
+  <td>No mechanism to send commands to the page. Core automation path doesn't exist.</td>
+  <td>Implement native eval wrappers per platform: webkit_web_view_evaluate_javascript (GTK), ExecuteScriptAsync (WebView2), evaluateJavaScript:in:in: (WKWebView).</td>
+</tr>
+<tr>
+  <td class="gap-id">G6</td>
+  <td class="gap-sev sev-block">BLOCKS</td>
+  <td>BC7</td>
+  <td>S9 Platform→Script: no isolated script world injection exists. Only __zigBrowserBackend marker injected (WebView2, macOS).</td>
+  <td>Automation script has nowhere to live invisibly.</td>
+  <td>Wire platform-specific injection: webkit_user_content_manager_add_script with world_name (GTK), AddScriptToExecuteOnDocumentCreatedAsync IIFE (WebView2), WKUserScript+WKContentWorld (macOS).</td>
+</tr>
+<tr>
+  <td class="gap-id">G7</td>
+  <td class="gap-sev sev-block">BLOCKS</td>
+  <td>BC8</td>
+  <td>S10 Client→Server: no UDS socket server exists. No external transport of any kind.</td>
+  <td>No external client can connect to zigBrowser.</td>
+  <td>Implement AutomationApiServer: AF_UNIX listener, JSON-RPC 2.0 framing, per-session token auth.</td>
+</tr>
+<tr>
+  <td class="gap-id">G8</td>
+  <td class="gap-sev sev-block">BLOCKS</td>
+  <td>BC6</td>
+  <td>C16 ErrorTaxonomy: AutomationError enum doesn't exist. Only IpcError{UnknownCommand,BadArgs} today.</td>
+  <td>No typed automation errors. All failures would collapse to generic errors.</td>
+  <td>Define AutomationError with 12 variants (element_not_found through cancelled), map to -32001..-32012.</td>
+</tr>
+<tr>
+  <td class="gap-id">G9</td>
+  <td class="gap-sev sev-block">BLOCKS</td>
+  <td>BC11</td>
+  <td>S15 Components→Sink: TelemetrySink doesn't exist. No span/event infrastructure.</td>
+  <td>No observability for automation commands. Investigation requires printf debugging.</td>
+  <td>Implement TelemetrySink vtable, in-memory test sink, root automation.command spans, child spans.</td>
+</tr>
+<tr>
+  <td class="gap-id">G10</td>
+  <td class="gap-sev sev-risk">RISK</td>
+  <td>BC12</td>
+  <td>C37 NetworkCapability: Linux/macOS NetworkInterceptor stubs are tracked security debt.</td>
+  <td>Silent throttling (429s on XHR, WebSocket soft-bans) invisible on 2/3 platforms. Accounts burn invisibly.</td>
+  <td>Log stubs as tracked debt. Revisit trigger: any account burned by undetected rate limiting.</td>
+</tr>
+<tr>
+  <td class="gap-id">G11</td>
+  <td class="gap-sev sev-risk">RISK</td>
+  <td>BC8</td>
+  <td>C24 UDSOnly: AF_UNIX on Windows in Zig std.net unvalidated. ADR-1 contingency: TCP + bearer token.</td>
+  <td>If AF_UNIX fails on Windows, transport design needs revision.</td>
+  <td>Spike: test AF_UNIX socket creation/connection on Windows 10 1803+ with Zig 0.16. Pre-Phase 2.</td>
+</tr>
+<tr>
+  <td class="gap-id">G12</td>
+  <td class="gap-sev sev-risk">RISK</td>
+  <td>BC7/BC9</td>
+  <td>C18 ScriptIsolation + C40 NonInterference: Isolated script worlds share DOM with page context (PRD &sect;8.2.1)</td>
+  <td>Page-context MutationObservers fire on automation DOM changes. PerformanceObserver/rAF cadence analysis can detect automation timing. Prototype modifications visible cross-world. Not currently detected by vendors but techniques will evolve.</td>
+  <td>Minimize DOM surface touched. Prefer reading over writing. Clean observers synchronously. Align with rAF cadence. Revisit trigger: any platform deploying timing-based or prototype-chain detection.</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<hr class="divider">
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC1: SHELL                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc1">
+<h2>BC1: Shell <span class="tag tag-asis-label">as-is</span></h2>
+<p class="bc-desc">Command-line interface, URI validation, error taxonomy, and process lifecycle. The entry boundary of the application &mdash; parses user intent and delegates to the platform rendering context.</p>
+<p class="bc-owns"><strong>Owns:</strong> main.zig, app.zig, cli.zig, uri.zig, errors.zig</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+
+    subgraph BC1["BC1: Shell"]
+        IN1["IN1: ProcessArgs\nargv → Command union"]:::iface
+        IN2["IN2: URIInput\nraw URI string"]:::iface
+        C1["C1: URIValidation\nscheme ∈ {file,http,https,about}\nhttp|https requires host\nrelative → reject"]:::contract
+        C2["C2: ExitCodeMapping\nBrowserError → ZB_EXIT_*\n12 variants, 0-10 + 130"]:::contract
+        G4["G4: URICanonical\nvalidate() returns raw input\ntests expect canonical form"]:::gap
+        OUT1["OUT1: ExitCode\n0 | 1..10 | 130"]:::iface
+        OUT2["OUT2: VersionLine\nzigBrowser — {backend} {ver}"]:::iface
+        OUT3["OUT3: ValidatedURI\n[:0]const u8"]:::iface
+    end
+
+    S1["S1: Shell→Platform\nzb_app_run(uri, print_title, e2e)\nzb_run_screenshot(uri, out, title)"]:::seam
+
+    IN1 --> IN2
+    IN2 --> C1
+    C1 --> OUT3
+    C1 -.- G4
+    OUT3 --> S1
+    S1 -->|"exit code"| OUT1
+    C2 --> OUT1</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC1: Shell ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN1_ProcessArgs</span>   ::= <span class="cm-str">"--version"</span>
+                    | <span class="cm-str">"--screenshot"</span> OutPath URL [<span class="cm-str">"--print-title"</span>]
+                    | URL? [<span class="cm-str">"--print-title"</span>] [<span class="cm-str">"--e2e-protocol"</span>]  ;
+<span class="cm-cmt">(* Default URL when no arg: "https://cosmic-hr-development.up.railway.app/" *)</span>
+
+<span class="cm-id">IN2_URIInput</span>      ::= Scheme <span class="cm-str">"://"</span> URIBody ;
+Scheme            ::= <span class="cm-str">"file"</span> | <span class="cm-str">"http"</span> | <span class="cm-str">"https"</span> | <span class="cm-str">"about"</span> ;
+
+<span class="cm-id">OUT1_ExitCode</span>     ::= <span class="cm-str">"0"</span> | <span class="cm-str">"1"</span> | <span class="cm-str">"2"</span> | <span class="cm-str">"3"</span> | <span class="cm-str">"4"</span> | <span class="cm-str">"5"</span>
+                    | <span class="cm-str">"6"</span> | <span class="cm-str">"7"</span> | <span class="cm-str">"8"</span> | <span class="cm-str">"9"</span> | <span class="cm-str">"10"</span> | <span class="cm-str">"130"</span> ;
+
+<span class="cm-id">OUT2_VersionLine</span>  ::= <span class="cm-str">"zigBrowser"</span> BackendInfo ;
+BackendInfo       ::= <span class="cm-str">" — WebKitGTK "</span> SemVer <span class="cm-str">", GTK "</span> SemVer
+                    | <span class="cm-str">" (WebView2 "</span> VerStr <span class="cm-str">")"</span>
+                    | <span class="cm-str">" "</span> AppVer <span class="cm-str">" (WKWebView "</span> VerStr <span class="cm-str">")"</span> ;
+
+<span class="cm-id">OUT3_ValidatedURI</span> ::= SentinelSlice ;
+<span class="cm-cmt">(* arena.dupeZ(u8, input) — verbatim copy, no canonicalization *)</span>
+
+<span class="cm-cmt">(* ─── BC1: Shell ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C1_URIValidation</span>
+    <span class="cm-kw">governs:</span> IN2_URIInput → OUT3_ValidatedURI
+    <span class="cm-kw">invariant:</span> scheme ∈ {<span class="cm-str">"file"</span>, <span class="cm-str">"http"</span>, <span class="cm-str">"https"</span>, <span class="cm-str">"about"</span>}
+    <span class="cm-kw">pre:</span>  std.Uri.parse(input) succeeds
+    <span class="cm-kw">pre:</span>  scheme ∈ {http,https} → host ≠ null
+    <span class="cm-kw">post:</span> valid → returns arena-duped input as [:0]const u8
+    <span class="cm-kw">post:</span> invalid → UriError{InvalidUri | UnsupportedScheme | RelativeUri} ;
+
+<span class="cm-ct">C2_ExitCodeMapping</span>
+    <span class="cm-kw">governs:</span> errors.zig exitCode() ↔ webkit_shim.h ZB_EXIT_* enum
+    <span class="cm-kw">invariant:</span> BrowserError variants map 1:1 to integer exit codes
+    <span class="cm-kw">pre:</span>  err : BrowserError | anyerror
+    <span class="cm-kw">post:</span> Usage→1, InvalidUri|UnsupportedScheme→2, DisplayUnavailable→3,
+          GtkInitFailed→4, LoadFailed→5, SnapshotFailed→6, WriteFailed→7,
+          Timeout→8, RuntimeMissing→9, WebViewInitFailed→10, Cancelled→130,
+          else→1 ;
+
+<span class="cm-cmt">(* ─── BC1: Shell ─── Seams ─── *)</span>
+
+<span class="cm-sm">S1_Shell_Platform</span>
+    <span class="cm-kw">interfaces:</span> IN5_AppRun, OUT1_ExitCode, OUT2_VersionLine, OUT3_ValidatedURI
+    <span class="cm-kw">contracts:</span>  C1_URIValidation, C2_ExitCodeMapping, C7_PlatformCABI ;
+
+<span class="cm-cmt">(* ─── BC1: Shell ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G4_URICanonical</span>
+    <span class="cm-kw">violates:</span> C1_URIValidation post-condition
+    <span class="cm-kw">evidence:</span> uri.zig:17 returns arena.dupeZ(u8, input) — raw copy
+              tests/uri_test.zig expects "file:/tmp/x" → "file:///tmp/x"
+    <span class="cm-kw">status:</span>   implementation-test divergence ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC2: NAVIGATION POLICY                                         -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc2">
+<h2>BC2: Navigation Policy <span class="tag tag-asis-label">as-is</span></h2>
+<p class="bc-desc">File-system path containment logic. Ensures file:// navigations stay within the app's base directory after path normalization. Distinct ubiquitous language (Decision, DecisionType), own C ABI boundary, own test suite.</p>
+<p class="bc-owns"><strong>Owns:</strong> nav_policy.zig</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+
+    subgraph BC2["BC2: Navigation Policy"]
+        IN3["IN3: PolicyQuery\n(base_uri, candidate_uri, dtype)"]:::iface
+        C3["C3: PathContainment\nfile:// candidates must resolve\nwithin app_base after normalization"]:::contract
+        C4["C4: DecisionABI\nenum ordinals pinned 0,1,2\ninvalid dtype → ignore"]:::contract
+        OUT4["OUT4: PolicyDecision\nuse | ignore | open_in_subwindow"]:::iface
+    end
+
+    S2["S2: Platform→Policy\nzb_policy_decide(base, cand, dtype)\nC ABI export"]:::seam
+
+    S2 --> IN3
+    IN3 --> C3
+    IN3 --> C4
+    C3 --> OUT4
+    C4 --> OUT4
+
+    style S2 fill:#8250df,stroke:#6639ba,color:#fff</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC2: Navigation Policy ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN3_PolicyQuery</span>   ::= <span class="cm-str">"("</span> BaseURI <span class="cm-str">","</span> CandidateURI <span class="cm-str">","</span> DecisionType <span class="cm-str">")"</span> ;
+BaseURI           ::= FileURI | HttpURI | OtherURI ;
+CandidateURI      ::= FileURI | HttpURI | JavascriptURI | OtherURI ;
+DecisionType      ::= <span class="cm-str">"navigation_action"</span> | <span class="cm-str">"new_window_action"</span> | <span class="cm-str">"response"</span> ;
+
+<span class="cm-id">OUT4_PolicyDecision</span> ::= <span class="cm-str">"use"</span> | <span class="cm-str">"ignore"</span> | <span class="cm-str">"open_in_subwindow"</span> ;
+
+<span class="cm-cmt">(* ─── BC2: Navigation Policy ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C3_PathContainment</span>
+    <span class="cm-kw">governs:</span> IN3_PolicyQuery → OUT4_PolicyDecision (navigation_action dtype)
+    <span class="cm-kw">invariant:</span> file:// candidates resolve within app_base after .. normalization
+    <span class="cm-kw">pre:</span>  base is file:// URI with valid path
+    <span class="cm-kw">pre:</span>  candidate is file:// URI
+    <span class="cm-kw">post:</span> normalizeAbsolutePosix(candidate_path).startsWith(base_dir) → use
+    <span class="cm-kw">post:</span> otherwise → ignore
+    <span class="cm-kw">post:</span> non-file base → use (web browsing context allows all)
+    <span class="cm-kw">post:</span> non-file candidate with file base → ignore ;
+
+<span class="cm-ct">C4_DecisionABI</span>
+    <span class="cm-kw">governs:</span> zb_policy_decide C export ↔ platform shim callers
+    <span class="cm-kw">invariant:</span> Decision{use=0, ignore=1, open_in_subwindow=2}
+    <span class="cm-kw">invariant:</span> DecisionType{navigation_action=0, new_window_action=1, response=2}
+    <span class="cm-kw">pre:</span>  dtype : c_int
+    <span class="cm-kw">post:</span> dtype ∉ {0,1,2} → ignore (fail closed)
+    <span class="cm-kw">post:</span> new_window_action → always open_in_subwindow
+    <span class="cm-kw">post:</span> response → always use ;
+
+<span class="cm-cmt">(* ─── BC2: Navigation Policy ─── Seams ─── *)</span>
+
+<span class="cm-sm">S2_Platform_Policy</span>
+    <span class="cm-kw">interfaces:</span> IN3_PolicyQuery, OUT4_PolicyDecision
+    <span class="cm-kw">contracts:</span>  C3_PathContainment, C4_DecisionABI ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC3: IPC BRIDGE                                                -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc3">
+<h2>BC3: IPC Bridge <span class="tag tag-asis-label">as-is</span></h2>
+<p class="bc-desc">In-page zbHost command dispatch. Receives commands from page JavaScript via the platform shim's message handler, routes to a command table, returns JSON results. The 4096-byte result buffer ceiling (G1) is the critical blocker for automation.</p>
+<p class="bc-owns"><strong>Owns:</strong> ipc.zig</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+
+    subgraph BC3["BC3: IPC Bridge"]
+        IN4["IN4: IPCCommand\n(cmd: string, args_json: string)"]:::iface
+        C5["C5: CommandTable\nping, add, echo, os.info\nunknown → UnknownCommand\nbad args → BadArgs"]:::contract
+        C6["C6: ResultCeiling\n4095 byte max (4096 - nul)\noverflow → BadArgs"]:::contract
+        G1["G1: ResultCeiling\nblocks dom.query, page.evaluate,\npage.screenshot"]:::gap
+        OUT5["OUT5: IPCResult\nJSON string | IpcError"]:::iface
+    end
+
+    S3["S3: Platform→IPC\nzb_ipc_dispatch(cmd, args,\n&result, &err) C ABI"]:::seam
+
+    S3 --> IN4
+    IN4 --> C5
+    C5 --> C6
+    C6 --> OUT5
+    C6 -.- G1</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC3: IPC Bridge ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN4_IPCCommand</span>    ::= <span class="cm-str">"("</span> CmdName <span class="cm-str">","</span> ArgsJSON <span class="cm-str">")"</span> ;
+CmdName           ::= <span class="cm-str">"ping"</span> | <span class="cm-str">"add"</span> | <span class="cm-str">"echo"</span> | <span class="cm-str">"os.info"</span> ;
+ArgsJSON          ::= <span class="cm-str">"null"</span> | <span class="cm-str">"{}"</span> | JSONObject ;
+
+<span class="cm-id">OUT5_IPCResult</span>    ::= SuccessResult | IpcError ;
+SuccessResult     ::= JSONString | JSONNumber | JSONObject ;
+IpcError          ::= <span class="cm-str">"UnknownCommand"</span> | <span class="cm-str">"BadArgs"</span> ;
+
+<span class="cm-cmt">(* ─── BC3: IPC Bridge ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C5_CommandTable</span>
+    <span class="cm-kw">governs:</span> IN4_IPCCommand → OUT5_IPCResult
+    <span class="cm-kw">invariant:</span> known commands: {ping, add, echo, os.info}
+    <span class="cm-kw">pre:</span>  cmd ∈ known → args match expected shape
+    <span class="cm-kw">post:</span> ping → "\"pong\""
+    <span class="cm-kw">post:</span> add({a,b}) → decimal(a+b) via i128 (no overflow)
+    <span class="cm-kw">post:</span> echo({msg}) → JSON-quoted msg
+    <span class="cm-kw">post:</span> os.info → {sysname, release, machine}
+    <span class="cm-kw">post:</span> unknown → error.UnknownCommand ;
+
+<span class="cm-ct">C6_ResultCeiling</span>
+    <span class="cm-kw">governs:</span> dispatch_result_cstr threadlocal buffer
+    <span class="cm-kw">invariant:</span> result.len ≤ 4095 bytes (before nul terminator)
+    <span class="cm-kw">pre:</span>  result produced by dispatch()
+    <span class="cm-kw">post:</span> fits → copied to [4096]u8 C string, returned via out_result
+    <span class="cm-kw">post:</span> exceeds → error.BadArgs (copyToCStr failure at ipc.zig:66-70)
+    <span class="cm-kw">note:</span> dispatch_scratch [65536]u8 allocator may also need growth ;
+
+<span class="cm-cmt">(* ─── BC3: IPC Bridge ─── Seams ─── *)</span>
+
+<span class="cm-sm">S3_Platform_IPC</span>
+    <span class="cm-kw">interfaces:</span> IN4_IPCCommand, OUT5_IPCResult
+    <span class="cm-kw">contracts:</span>  C5_CommandTable, C6_ResultCeiling ;
+
+<span class="cm-cmt">(* ─── BC3: IPC Bridge ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G1_ResultCeiling</span>
+    <span class="cm-kw">violates:</span> C6_ResultCeiling ceiling vs C39_ResultOwnership requirement
+    <span class="cm-kw">evidence:</span> ipc.zig:12 dispatch_result_cstr: [4096]u8 static buffer
+              dom.query multi-element results &gt; 4 KB
+              page.evaluate page content &gt;&gt; 4 KB
+              page.screenshot base64 data &gt;&gt;&gt; 4 KB
+    <span class="cm-kw">status:</span>   Phase 1 prerequisite — must fix before any automation ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC4: PLATFORM RENDERING                                        -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc4">
+<h2>BC4: Platform Rendering <span class="tag tag-asis-label">as-is</span></h2>
+<p class="bc-desc">WebView lifecycle, windowing, and event loops across three platform shims (GTK, WebView2, WKWebView). Largest context. Bridges page JS to Zig (IPC/policy) and emits E2E protocol events. Contains two critical gaps: missing native→JS eval path (G5) and WebView2 nav policy drift (G2).</p>
+<p class="bc-owns"><strong>Owns:</strong> webkit_shim.c, webview2_shim.cpp, wkwebview_shim.m, webkit.zig, webkit_shim.h</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart TB
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+    classDef event    fill:#1a7f37,stroke:#116329,color:#fff
+
+    subgraph BC4["BC4: Platform Rendering"]
+        IN5["IN5: AppRunRequest\n(uri, print_title, e2e_protocol)"]:::iface
+        IN6["IN6: ScriptMessage\nzbHost JS message → IPC"]:::iface
+        C7["C7: PlatformCABI\nzb_app_run, zb_run_screenshot,\nzb_version_line, zb_reload,\nzb_window_new"]:::contract
+        C8["C8: E2EProtocol\nline-delimited UTF-8, tab-separated\nNAV|IPC|IPCERR|BLOCKED|\nLOAD_FAIL|SUBWIN|WINCOUNT"]:::contract
+        C9["C9: WindowLimit\nZB_MAX_WINDOWS = 16"]:::contract
+        EV1["EV1: NavigationEvent\nload-changed, load-failed"]:::event
+        EV2["EV2: E2ELine\nprotocol emissions on stdout"]:::event
+        G2["G2: WebView2NavPolicy\ndeclares zb_policy_decide,\nnever calls it"]:::gap
+        G5["G5: NativeToJS\nonly JS→native path exists\nno native→JS eval mechanism"]:::gap
+        OUT6["OUT6: WindowDisplay\nnative window + WebView"]:::iface
+        OUT7["OUT7: ScreenshotFile\nPNG to filesystem"]:::iface
+        OUT8["OUT8: E2EOutput\nstdout protocol stream"]:::iface
+    end
+
+    S1["S1: Shell→Platform"]:::seam
+    S2["S2: Platform→Policy"]:::seam
+    S3["S3: Platform→IPC"]:::seam
+    S4["S4: Platform→DOM\nJS eval + script injection\n(JS→native via zbHost)"]:::seam
+
+    S1 --> IN5
+    IN5 --> C7
+    C7 --> OUT6
+    C7 --> OUT7
+    IN6 --> S3
+    S2 -.- G2
+    S4 -.- G5
+    EV1 --> C8
+    C8 --> EV2
+    EV2 --> OUT8</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC4: Platform Rendering ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN5_AppRun</span>        ::= <span class="cm-str">"("</span> URI <span class="cm-str">","</span> PrintTitle <span class="cm-str">","</span> E2EProtocol <span class="cm-str">")"</span> ;
+PrintTitle        ::= <span class="cm-str">"0"</span> | <span class="cm-str">"1"</span> ;
+E2EProtocol       ::= <span class="cm-str">"0"</span> | <span class="cm-str">"1"</span> ;
+
+<span class="cm-id">IN6_ScriptMessage</span> ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"cmd\":"</span> CmdStr <span class="cm-str">","</span> <span class="cm-str">"\"args\":"</span> ArgsVal <span class="cm-str">"}"</span> ;
+
+<span class="cm-id">OUT6_WindowDisplay</span>  ::= NativeWindowHandle ;
+<span class="cm-id">OUT7_ScreenshotFile</span> ::= FilePath ;  <span class="cm-cmt">(* atomic write: temp → cairo PNG → rename *)</span>
+<span class="cm-id">OUT8_E2EOutput</span>      ::= E2ELine* ;
+
+<span class="cm-id">EV1_NavigationEvent</span> ::= <span class="cm-str">"load-changed"</span> LoadEvent | <span class="cm-str">"load-failed"</span> ErrorInfo ;
+LoadEvent           ::= <span class="cm-str">"started"</span> | <span class="cm-str">"redirected"</span> | <span class="cm-str">"committed"</span> | <span class="cm-str">"finished"</span> ;
+
+<span class="cm-id">EV2_E2ELine</span>       ::= NavLine | IPCLine | IPCErrLine | BlockedLine
+                    | LoadFailLine | SubwinLine | WincountLine ;
+NavLine           ::= <span class="cm-str">"NAV\t"</span> URI <span class="cm-str">"\t"</span> Title <span class="cm-str">"\n"</span> ;
+IPCLine           ::= <span class="cm-str">"IPC\t"</span> Cmd <span class="cm-str">"\t"</span> ResultJSON <span class="cm-str">"\n"</span> ;
+IPCErrLine        ::= <span class="cm-str">"IPCERR\t"</span> Cmd <span class="cm-str">"\t"</span> ErrName <span class="cm-str">"\n"</span> ;
+BlockedLine       ::= <span class="cm-str">"BLOCKED\t"</span> URI <span class="cm-str">"\n"</span> ;
+LoadFailLine      ::= <span class="cm-str">"LOAD_FAIL\t"</span> URI <span class="cm-str">"\t"</span> Domain <span class="cm-str">"\t"</span> Code <span class="cm-str">"\n"</span> ;
+SubwinLine        ::= <span class="cm-str">"SUBWIN\t"</span> URI <span class="cm-str">"\n"</span> ;
+WincountLine      ::= <span class="cm-str">"WINCOUNT\t"</span> Count <span class="cm-str">"\n"</span> ;
+
+<span class="cm-cmt">(* ─── BC4: Platform Rendering ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C7_PlatformCABI</span>
+    <span class="cm-kw">governs:</span> webkit_shim.h shared C ABI ↔ all 3 platform shims
+    <span class="cm-kw">invariant:</span> signatures:
+        int  zb_app_run(const char*, int, int)
+        int  zb_run_screenshot(const char*, const char*, int)
+        void zb_version_line(char*, size_t)
+        void zb_reload(ZbWindow*, int)
+        ZbWindow* zb_window_new(ZbApp*, void*)
+    <span class="cm-kw">pre:</span>  URI is valid nul-terminated UTF-8
+    <span class="cm-kw">post:</span> returns ZB_EXIT_* code from C2_ExitCodeMapping
+    <span class="cm-kw">note:</span> WebView2 stubs zb_run_screenshot (always ZB_EXIT_SNAPSHOT_FAILED) ;
+
+<span class="cm-ct">C8_E2EProtocol</span>
+    <span class="cm-kw">governs:</span> stdout protocol stream (tests/e2e/PROTOCOL.md normative)
+    <span class="cm-kw">invariant:</span> line-delimited UTF-8, tab-separated fields
+    <span class="cm-kw">invariant:</span> field payloads sanitized (tabs/newlines removed)
+    <span class="cm-kw">invariant:</span> writers flush each line
+    <span class="cm-kw">pre:</span>  e2e_protocol = 1
+    <span class="cm-kw">post:</span> each event → one line with prefix + tab-separated fields ;
+
+<span class="cm-ct">C9_WindowLimit</span>
+    <span class="cm-kw">governs:</span> ZbApp.windows array
+    <span class="cm-kw">invariant:</span> n_windows ≤ ZB_MAX_WINDOWS (16)
+    <span class="cm-kw">pre:</span>  zb_window_new called
+    <span class="cm-kw">post:</span> exceeds → window creation rejected (GTK/macOS enforce; WebView2 n/a) ;
+
+<span class="cm-cmt">(* ─── BC4: Platform Rendering ─── Seams ─── *)</span>
+
+<span class="cm-sm">S1_Shell_Platform</span>
+    <span class="cm-kw">interfaces:</span> IN5_AppRun, OUT1_ExitCode, OUT2_VersionLine, OUT3_ValidatedURI
+    <span class="cm-kw">contracts:</span>  C1_URIValidation, C2_ExitCodeMapping, C7_PlatformCABI ;
+
+<span class="cm-sm">S2_Platform_Policy</span>
+    <span class="cm-kw">interfaces:</span> IN3_PolicyQuery, OUT4_PolicyDecision
+    <span class="cm-kw">contracts:</span>  C3_PathContainment, C4_DecisionABI ;
+
+<span class="cm-sm">S3_Platform_IPC</span>
+    <span class="cm-kw">interfaces:</span> IN4_IPCCommand, OUT5_IPCResult
+    <span class="cm-kw">contracts:</span>  C5_CommandTable, C6_ResultCeiling ;
+
+<span class="cm-sm">S4_Platform_DOM</span>
+    <span class="cm-kw">interfaces:</span> IN6_ScriptMessage <span class="cm-cmt">(JS→native only, as-is)</span>
+    <span class="cm-kw">contracts:</span>  C7_PlatformCABI <span class="cm-cmt">(zbHost message handler wiring)</span> ;
+
+<span class="cm-cmt">(* ─── BC4: Platform Rendering ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G2_WebView2NavPolicy</span>
+    <span class="cm-kw">violates:</span> S2_Platform_Policy (partial implementation)
+    <span class="cm-kw">evidence:</span> webview2_shim.cpp declares zb_policy_decide in webkit_shim.h
+              but contains zero call sites (grep confirms)
+              GTK: on_window_decide_policy calls zb_policy_decide ✓
+              macOS: decidePolicyForNavigationAction calls zb_policy_decide ✓
+    <span class="cm-kw">status:</span>   file:// traversal possible on Windows ;
+
+<span class="cm-gp">G5_NativeToJS</span>
+    <span class="cm-kw">violates:</span> S4_Platform_DOM (unidirectional only)
+    <span class="cm-kw">evidence:</span> JS→native: zbHost script message handler (all 3 platforms) ✓
+              native→JS: only title eval + __zigBrowserBackend marker
+              no general native→JS evaluation mechanism for automation
+    <span class="cm-kw">status:</span>   automation requires evaluate-in-world on all 3 platforms ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC5: BUILD SYSTEM                                              -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc5">
+<h2>BC5: Build System <span class="tag tag-asis-label">as-is</span></h2>
+<p class="bc-desc">Cross-platform build orchestration. Selects one platform backend per target OS, wires system libraries, and manages test targets. Meta-context that governs what gets compiled.</p>
+<p class="bc-owns"><strong>Owns:</strong> build.zig</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+
+    subgraph BC5["BC5: Build System"]
+        IN7["IN7: BuildOptions\ntarget OS, SDK paths,\n-Dwebview2_include, etc."]:::iface
+        C10["C10: BackendSelect\nlinux→gtk, windows→webview2,\nmacos→macos, else→panic"]:::contract
+        C11["C11: SDKPresence\nGTK: pkg-config webkit2gtk-4.1\nWebView2: .h + .lib + WinRT\nmacOS: wkwebview_shim.m exists"]:::contract
+        G3["G3: URITestWiring\ntests/uri_test.zig not in\nbuild test step"]:::gap
+        OUT9["OUT9: Binary\nzigBrowser executable"]:::iface
+        OUT10["OUT10: TestResults\nunit + ipc + nav_policy tests"]:::iface
+    end
+
+    S5["S5: Build→Platform\nselects 1 shim source +\nsystem libraries"]:::seam
+
+    IN7 --> C10
+    C10 --> C11
+    C11 --> OUT9
+    C11 --> OUT10
+    C11 -.- G3
+    C10 --> S5</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC5: Build System ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN7_BuildOptions</span>  ::= TargetOS [SDKPaths] ;
+TargetOS          ::= <span class="cm-str">"linux"</span> | <span class="cm-str">"windows"</span> | <span class="cm-str">"macos"</span> ;
+SDKPaths          ::= (<span class="cm-str">"-Dwebview2_include="</span> Path)?
+                      (<span class="cm-str">"-Dwebview2_lib="</span> Path)?
+                      (<span class="cm-str">"-Dwinrt_include="</span> Path)? ;
+
+<span class="cm-id">OUT9_Binary</span>       ::= <span class="cm-str">"zig-out/bin/zigBrowser"</span> ;
+<span class="cm-id">OUT10_TestResults</span> ::= TestStep+ ;
+TestStep          ::= <span class="cm-str">"run_unit_tests"</span> | <span class="cm-str">"run_ipc_tests"</span>
+                    | <span class="cm-str">"run_nav_policy_tests"</span> | <span class="cm-str">"ipc_windows_compile"</span> ;
+
+<span class="cm-cmt">(* ─── BC5: Build System ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C10_BackendSelect</span>
+    <span class="cm-kw">governs:</span> resolveBackend(target) → Backend enum
+    <span class="cm-kw">invariant:</span> exactly one backend per binary
+    <span class="cm-kw">pre:</span>  target.os : std.Target.Os.Tag
+    <span class="cm-kw">post:</span> linux → gtk_backend (webkit_shim.c)
+    <span class="cm-kw">post:</span> windows → webview2_backend (webview2_shim.cpp)
+    <span class="cm-kw">post:</span> macos → macos_backend (wkwebview_shim.m)
+    <span class="cm-kw">post:</span> else → @panic("NoBackendLinked") ;
+
+<span class="cm-ct">C11_SDKPresence</span>
+    <span class="cm-kw">governs:</span> pkg_guard build step — fails build early if deps missing
+    <span class="cm-kw">invariant:</span> GTK: pkg-config --exists webkit2gtk-4.1 gtk+-3.0
+    <span class="cm-kw">invariant:</span> WebView2: WebView2.h, WebView2LoaderStatic.lib, wrl.h
+    <span class="cm-kw">invariant:</span> macOS: src/wkwebview_shim.m file exists ;
+
+<span class="cm-cmt">(* ─── BC5: Build System ─── Seams ─── *)</span>
+
+<span class="cm-sm">S5_Build_Platform</span>
+    <span class="cm-kw">interfaces:</span> IN7_BuildOptions, OUT9_Binary
+    <span class="cm-kw">contracts:</span>  C10_BackendSelect, C11_SDKPresence ;
+
+<span class="cm-cmt">(* ─── BC5: Build System ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G3_URITestWiring</span>
+    <span class="cm-kw">violates:</span> C11_SDKPresence (incomplete test coverage)
+    <span class="cm-kw">evidence:</span> ipc_test.zig: has addImport("ipc",...) + test step ✓
+              nav_policy_test.zig: has addImport("nav_policy",...) + test step ✓
+              uri_test.zig: imports @import("uri") but NO module/step in build.zig
+    <span class="cm-kw">status:</span>   URI tests silently skipped in CI ;</code></pre>
+</section>
+
+<hr class="divider">
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC6: AUTOMATION ENGINE                                         -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc6">
+<h2>BC6: Automation Engine <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">Command queue, retry loop, actionability enforcement, and error taxonomy. The heart of the automation system. Provisional because the boundary between engine and pacing layer (BC9) may merge during implementation if pacing proves inseparable from the retry loop.</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) AutomationEngine, PageCommandQueue, AutomationRouter, AutomationError</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart TB
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+    classDef event    fill:#1a7f37,stroke:#116329,color:#fff
+
+    subgraph BC6["BC6: Automation Engine"]
+        IN8["IN8: AutomationCommand\n(method, params, page_id, deadline)"]:::iface
+        C12["C12: ActionRetry\n16ms poll, timeout_ms default 30000"]:::contract
+        C13["C13: Actionability\n6 checks: attached, visible, stable,\nreceivesEvents, enabled, editable"]:::contract
+        C14["C14: PageFIFO\none queue per page, strictly serial\ncross-page concurrent"]:::contract
+        C15["C15: TrialMode\ntrial=true → checks only, no side effect\nforce=true → bypass checks"]:::contract
+        C16["C16: ErrorTaxonomy\n12 AutomationError variants\n→ JSON-RPC -32001..-32012"]:::contract
+        G8["G8: NoAutoErrors\nAutomationError enum\ndoesn't exist yet"]:::gap
+        EV3["EV3: CommandLifecycle\nenqueue, retry, success,\nfailure, cancellation"]:::event
+        OUT11["OUT11: CommandResult\nResult&lt;T, AutomationError&gt;"]:::iface
+    end
+
+    S6["S6: Engine→PagePort\nAutomationPagePort vtable:\ninjectScript, evalScript,\nnavigate, reload, screenshot"]:::seam
+    S7["S7: Router→Engine\nAutomationRouter.dispatch(\nmethod, params) → engine"]:::seam
+
+    S7 --> IN8
+    IN8 --> C14
+    C14 --> C12
+    C12 --> C13
+    C13 --> C15
+    C15 --> C16
+    C16 --> OUT11
+    C16 -.- G8
+    C12 --> EV3
+    C13 --> S6</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC6: Automation Engine ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN8_AutomationCommand</span> ::= <span class="cm-str">"{"</span> Method <span class="cm-str">","</span> Params <span class="cm-str">","</span> PageId? <span class="cm-str">","</span> Deadline <span class="cm-str">"}"</span> ;
+Method                ::= DomMethod | PageMethod | CookieMethod | SessionMethod ;
+DomMethod             ::= <span class="cm-str">"dom."</span> (<span class="cm-str">"query"</span>|<span class="cm-str">"click"</span>|<span class="cm-str">"fill"</span>|<span class="cm-str">"type"</span>|<span class="cm-str">"getText"</span>|<span class="cm-str">"getAttribute"</span>|<span class="cm-str">"waitFor"</span>) ;
+PageMethod            ::= <span class="cm-str">"page."</span> (<span class="cm-str">"navigate"</span>|<span class="cm-str">"reload"</span>|<span class="cm-str">"url"</span>|<span class="cm-str">"title"</span>|<span class="cm-str">"evaluate"</span>|<span class="cm-str">"screenshot"</span>) ;
+CookieMethod          ::= <span class="cm-str">"cookies."</span> (<span class="cm-str">"getAll"</span>|<span class="cm-str">"set"</span>|<span class="cm-str">"delete"</span>) ;
+SessionMethod         ::= <span class="cm-str">"session.status"</span> ;
+Deadline              ::= PositiveInteger ;  <span class="cm-cmt">(* ms, default 30000 *)</span>
+
+<span class="cm-id">OUT11_CommandResult</span>   ::= SuccessValue | AutomationError ;
+SuccessValue          ::= JSONValue ;
+
+<span class="cm-id">EV3_CommandLifecycle</span>  ::= <span class="cm-str">"enqueued"</span> | <span class="cm-str">"retrying"</span> RetryCount
+                        | <span class="cm-str">"succeeded"</span> | <span class="cm-str">"failed"</span> AutomationError
+                        | <span class="cm-str">"cancelled"</span> ;
+
+<span class="cm-cmt">(* ─── BC6: Automation Engine ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C12_ActionRetry</span>
+    <span class="cm-kw">governs:</span> AutomationEngine retry loop
+    <span class="cm-kw">invariant:</span> poll interval = 16ms (requestAnimationFrame cadence)
+    <span class="cm-kw">pre:</span>  command has selector + deadline (timeout_ms, default 30000)
+    <span class="cm-kw">post:</span> resolve selector → run actionability → execute or retry
+    <span class="cm-kw">post:</span> timeout with no match → element_not_found
+    <span class="cm-kw">post:</span> timeout after partial checks → most specific actionability error ;
+
+<span class="cm-ct">C13_Actionability</span>
+    <span class="cm-kw">governs:</span> mutating DOM actions (click, fill, type, select, check, hover)
+    <span class="cm-kw">invariant:</span> 6 checks enforced before mutation unless force=true
+    <span class="cm-kw">pre:</span>  resolved element candidate exists
+    <span class="cm-kw">post:</span> attached (all), visible (click/fill/type/hover/select),
+          stable (click/fill), receivesEvents (click),
+          enabled (click/fill/type/select), editable (fill/type)
+    <span class="cm-kw">post:</span> failing check → exact AutomationError variant ;
+
+<span class="cm-ct">C14_PageFIFO</span>
+    <span class="cm-kw">governs:</span> PageCommandQueue per ZbWindow/page_id
+    <span class="cm-kw">invariant:</span> same-page commands strictly FIFO, one at a time
+    <span class="cm-kw">invariant:</span> cross-page commands may execute concurrently
+    <span class="cm-kw">pre:</span>  page_id resolves to live page/window
+    <span class="cm-kw">post:</span> closed page → cancelled or navigation_failed
+    <span class="cm-kw">post:</span> cancel(handle) removes queued or interrupts retry ;
+
+<span class="cm-ct">C15_TrialMode</span>
+    <span class="cm-kw">governs:</span> trial and force options on mutating actions
+    <span class="cm-kw">invariant:</span> trial=true → selector + checks, no DOM side effect
+    <span class="cm-kw">invariant:</span> force=true → bypass actionability checks
+    <span class="cm-kw">pre:</span>  same params as real action
+    <span class="cm-kw">post:</span> trial: same errors minus execution-stage errors
+    <span class="cm-kw">post:</span> force: executes regardless of check state ;
+
+<span class="cm-ct">C16_ErrorTaxonomy</span>
+    <span class="cm-kw">governs:</span> AutomationError enum ↔ JSON-RPC error codes
+    <span class="cm-kw">invariant:</span> 12 variants map 1:1 to -32001..-32012
+    <span class="cm-kw">post:</span> element_not_found→-32001, element_not_visible→-32002,
+          element_not_stable→-32003, element_obscured→-32004,
+          element_disabled→-32005, element_not_editable→-32006,
+          navigation_timeout→-32007, navigation_failed→-32008,
+          action_timeout→-32009, platform_rate_limited→-32010,
+          session_invalid→-32011, cancelled→-32012 ;
+
+<span class="cm-cmt">(* ─── BC6: Automation Engine ─── Seams ─── *)</span>
+
+<span class="cm-sm">S6_Engine_PagePort</span>
+    <span class="cm-kw">interfaces:</span> IN8_AutomationCommand, IN9_ScriptCommand, OUT11_CommandResult
+    <span class="cm-kw">contracts:</span>  C12_ActionRetry, C13_Actionability, C39_ResultOwnership ;
+
+<span class="cm-sm">S7_Router_Engine</span>
+    <span class="cm-kw">interfaces:</span> IN8_AutomationCommand, OUT11_CommandResult
+    <span class="cm-kw">contracts:</span>  C16_ErrorTaxonomy, C22_MethodDispatch ;
+
+<span class="cm-cmt">(* ─── BC6: Automation Engine ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G8_NoAutoErrors</span>
+    <span class="cm-kw">violates:</span> C16_ErrorTaxonomy (doesn't exist yet)
+    <span class="cm-kw">evidence:</span> only IpcError{UnknownCommand,BadArgs} exists (ipc.zig)
+              AutomationError with 12 variants is PRD-specified
+    <span class="cm-kw">status:</span>   define in new automation module, Phase 1 ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC7: INJECTED SCRIPT                                           -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc7">
+<h2>BC7: Injected Script Engine <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">JavaScript in an isolated world: selector parsing, DOM interaction, actionability checks, event synthesis, wait primitives. Provisional because the boundary between script and engine (BC6) depends on how much actionability logic stays in JS vs. Zig — the PRD splits checks across both.</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) automation.js (single injected file), selector grammar parsing, DOM event synthesis</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+
+    subgraph BC7["BC7: Injected Script Engine"]
+        IN9["IN9: ScriptCommand\n{op, request_id, selector?,\nvalue?, options?}"]:::iface
+        C17["C17: SelectorGrammar\nrole=, testid=, text=,\ncss=, xpath="]:::contract
+        C18["C18: ScriptIsolation\nisolated world, no page globals\ninvisible to Object.keys(window)"]:::contract
+        C19["C19: CleanupContract\nMutationObserver, IntersectionObserver,\nPerformanceObserver cleaned after op"]:::contract
+        C20["C20: InjectionTiming\ndocument-start, main + subframes"]:::contract
+        G6["G6: IsolatedWorld\nno injection infrastructure exists"]:::gap
+        OUT12["OUT12: ScriptResponse\n{ok:true, value?}\n| {ok:false, error, retryable, data}"]:::iface
+    end
+
+    S8["S8: Script→DOM\nselector resolution,\nevent synthesis"]:::seam
+    S9["S9: Platform→Script\nplatform-specific inject/eval"]:::seam
+
+    S9 --> IN9
+    IN9 --> C17
+    C17 --> C18
+    C18 --> C19
+    C19 --> S8
+    S8 --> OUT12
+    C20 --> S9
+    C20 -.- G6</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC7: Injected Script ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN9_ScriptCommand</span>  ::= <span class="cm-str">"{"</span>
+                        <span class="cm-str">"\"op\":"</span> ScriptOp <span class="cm-str">","</span>
+                        <span class="cm-str">"\"request_id\":"</span> String <span class="cm-str">","</span>
+                        (<span class="cm-str">"\"selector\":"</span> Selector <span class="cm-str">","</span>)?
+                        (<span class="cm-str">"\"value\":"</span> JSONValue <span class="cm-str">","</span>)?
+                        (<span class="cm-str">"\"options\":"</span> ActionOptions)?
+                      <span class="cm-str">"}"</span> ;
+ScriptOp           ::= <span class="cm-str">"query"</span>|<span class="cm-str">"click"</span>|<span class="cm-str">"fill"</span>|<span class="cm-str">"type"</span>|<span class="cm-str">"getText"</span>|<span class="cm-str">"getAttribute"</span>
+                      |<span class="cm-str">"waitFor"</span>|<span class="cm-str">"evaluate"</span>|<span class="cm-str">"observeNavigation"</span>|<span class="cm-str">"rateLimitScan"</span> ;
+
+<span class="cm-id">OUT12_ScriptResponse</span> ::= ScriptResult | ScriptFailure ;
+ScriptResult       ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"ok\":true"</span> (<span class="cm-str">","</span> <span class="cm-str">"\"value\":"</span> JSONValue)? <span class="cm-str">"}"</span> ;
+ScriptFailure      ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"ok\":false,"</span>
+                        <span class="cm-str">"\"error\":"</span> AutomationErrorName <span class="cm-str">","</span>
+                        <span class="cm-str">"\"retryable\":"</span> Boolean <span class="cm-str">","</span>
+                        <span class="cm-str">"\"data\":"</span> JSONObject <span class="cm-str">"}"</span> ;
+
+<span class="cm-cmt">(* ─── BC7: Injected Script ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C17_SelectorGrammar</span>
+    <span class="cm-kw">governs:</span> resolveSelector(selector, strict) in injected JS
+    <span class="cm-kw">invariant:</span> Playwright-compatible prefix strings, parsed in JS
+    <span class="cm-kw">pre:</span>  selector = Prefix "=" Body
+    <span class="cm-kw">post:</span> "role=" → ARIA role + accessible name + attributes
+    <span class="cm-kw">post:</span> "testid=" → data-testid attribute
+    <span class="cm-kw">post:</span> "text=" → visible text content (exact or substring)
+    <span class="cm-kw">post:</span> "css=" → standard CSS selector
+    <span class="cm-kw">post:</span> "xpath=" → XPath expression
+    <span class="cm-kw">post:</span> strict=true → exactly 1 match required ;
+
+Selector           ::= RoleSelector | TestIdSelector | TextSelector
+                      | CssSelector | XPathSelector ;
+RoleSelector       ::= <span class="cm-str">"role="</span> RoleName RoleAttr* ;
+RoleAttr           ::= <span class="cm-str">"["</span> (<span class="cm-str">"name"</span>|<span class="cm-str">"checked"</span>|<span class="cm-str">"selected"</span>|<span class="cm-str">"expanded"</span>|<span class="cm-str">"level"</span>) <span class="cm-str">"="</span> QuotedVal <span class="cm-str">"]"</span> ;
+TestIdSelector     ::= <span class="cm-str">"testid="</span> IdOrQuoted ;
+TextSelector       ::= <span class="cm-str">"text="</span> TextMatch ;
+CssSelector        ::= <span class="cm-str">"css="</span> CssText ;
+XPathSelector      ::= <span class="cm-str">"xpath="</span> XPathText ;
+ActionOptions      ::= <span class="cm-str">"{"</span> Timeout? Force? Trial? Strict? <span class="cm-str">"}"</span> ;
+
+<span class="cm-ct">C18_ScriptIsolation</span>
+    <span class="cm-kw">governs:</span> globalThis.__zbAutomation in isolated world
+    <span class="cm-kw">invariant:</span> page Object.keys(window) cannot see automation globals
+    <span class="cm-kw">invariant:</span> no prototype pollution of shared DOM objects
+    <span class="cm-kw">pre:</span>  world created via platform mechanism
+    <span class="cm-kw">post:</span> GTK: webkit_user_content_manager_add_script with world_name
+    <span class="cm-kw">post:</span> WebView2: IIFE scope (no named worlds)
+    <span class="cm-kw">post:</span> macOS: WKUserScript + WKContentWorld named world ;
+
+<span class="cm-ct">C19_CleanupContract</span>
+    <span class="cm-kw">governs:</span> observer lifecycle in injected script
+    <span class="cm-kw">invariant:</span> no persistent DOM modifications after operation
+    <span class="cm-kw">pre:</span>  operation may create MutationObserver, IntersectionObserver,
+          PerformanceObserver
+    <span class="cm-kw">post:</span> all observers disconnected synchronously before resolve ;
+
+<span class="cm-ct">C20_InjectionTiming</span>
+    <span class="cm-kw">governs:</span> automation script availability
+    <span class="cm-kw">invariant:</span> injected at document-start
+    <span class="cm-kw">invariant:</span> injected for every main frame and subframe where supported
+    <span class="cm-kw">pre:</span>  automation enabled before navigation
+    <span class="cm-kw">post:</span> script available before any page script executes ;
+
+<span class="cm-cmt">(* ─── BC7: Injected Script ─── Seams ─── *)</span>
+
+<span class="cm-sm">S8_Script_DOM</span>
+    <span class="cm-kw">interfaces:</span> IN9_ScriptCommand, OUT12_ScriptResponse
+    <span class="cm-kw">contracts:</span>  C17_SelectorGrammar, C19_CleanupContract ;
+
+<span class="cm-sm">S9_Platform_Script</span>
+    <span class="cm-kw">interfaces:</span> IN9_ScriptCommand, OUT12_ScriptResponse
+    <span class="cm-kw">contracts:</span>  C18_ScriptIsolation, C20_InjectionTiming ;
+
+<span class="cm-cmt">(* ─── BC7: Injected Script ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G6_IsolatedWorld</span>
+    <span class="cm-kw">violates:</span> S9_Platform_Script, C18_ScriptIsolation, C20_InjectionTiming
+    <span class="cm-kw">evidence:</span> only __zigBrowserBackend marker injected (WebView2, macOS)
+              no isolated world creation on any platform
+              no globalThis.__zbAutomation handler
+    <span class="cm-kw">status:</span>   Phase 1 — wire all 3 platform injection mechanisms ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC8: EXTERNAL TRANSPORT                                        -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc8">
+<h2>BC8: External Transport <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">JSON-RPC 2.0 server over Unix domain socket with WebSocket event push. The external boundary of the automation system. Provisional because transport and authentication may need revision if the AF_UNIX Windows spike (G11) fails.</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) AutomationApiServer, JSON-RPC framing, socket lifecycle, token auth</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+    classDef event    fill:#1a7f37,stroke:#116329,color:#fff
+
+    subgraph BC8["BC8: External Transport"]
+        IN10["IN10: RPCRequest\nJSON-RPC 2.0 over UDS"]:::iface
+        C21["C21: JSONRPCFrame\njsonrpc='2.0', authenticated,\none response per id"]:::contract
+        C22["C22: MethodDispatch\nmethod matches grammar\nunknown→-32601, bad params→-32602"]:::contract
+        C23["C23: SocketLifecycle\ncreate on --automation-api\nremove on shutdown, random name"]:::contract
+        C24["C24: UDSOnly\nAF_UNIX only, no TCP\nzero network exposure"]:::contract
+        G7["G7: NoTransport\nno UDS server exists"]:::gap
+        G11["G11: AFUNIXSpike\nAF_UNIX on Windows in\nZig std.net unvalidated"]:::gap
+        EV4["EV4: EventNotification\nevent.navigation, event.rate_limit,\nevent.session, event.network"]:::event
+        OUT13["OUT13: RPCResponse\nJSON-RPC result | error"]:::iface
+    end
+
+    S10["S10: Client→Server\nUDS + token handshake"]:::seam
+    S11["S11: Server→Router\nvalidated method+params\n→ AutomationRouter"]:::seam
+
+    S10 --> IN10
+    IN10 --> C21
+    C21 --> C22
+    C22 --> S11
+    S11 --> OUT13
+    C23 --> S10
+    C24 --> S10
+    C24 -.- G11
+    C23 -.- G7
+    C21 --> EV4</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC8: External Transport ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN10_RPCRequest</span>    ::= <span class="cm-str">"{"</span> Version <span class="cm-str">","</span> Method <span class="cm-str">","</span> Params? <span class="cm-str">","</span> Id <span class="cm-str">"}"</span> ;
+Version            ::= <span class="cm-str">"\"jsonrpc\":\"2.0\""</span> ;
+Id                 ::= <span class="cm-str">"\"id\":"</span> (String | Integer | <span class="cm-str">"null"</span>) ;
+
+<span class="cm-id">OUT13_RPCResponse</span>  ::= <span class="cm-str">"{"</span> Version <span class="cm-str">","</span> (Result | RpcError) <span class="cm-str">","</span> Id <span class="cm-str">"}"</span> ;
+Result             ::= <span class="cm-str">"\"result\":"</span> JSONValue ;
+RpcError           ::= <span class="cm-str">"\"error\":{\"code\":"</span> RpcCode <span class="cm-str">",\"message\":"</span> String
+                        (<span class="cm-str">",\"data\":"</span> JSONValue)? <span class="cm-str">"}"</span> ;
+RpcCode            ::= <span class="cm-str">"-32700"</span>|<span class="cm-str">"-32600"</span>|<span class="cm-str">"-32601"</span>|<span class="cm-str">"-32602"</span>|<span class="cm-str">"-32603"</span>
+                      | AutomationCode ;
+AutomationCode     ::= <span class="cm-str">"-32001"</span> .. <span class="cm-str">"-32012"</span> ;
+
+<span class="cm-id">EV4_EventNotification</span> ::= <span class="cm-str">"{"</span> Version <span class="cm-str">","</span> EventMethod <span class="cm-str">","</span> Params? <span class="cm-str">"}"</span> ;
+EventMethod        ::= <span class="cm-str">"\"method\":\"event."</span> EventKind <span class="cm-str">"\""</span> ;
+EventKind          ::= <span class="cm-str">"navigation"</span>|<span class="cm-str">"rate_limit"</span>|<span class="cm-str">"session"</span>|<span class="cm-str">"console"</span>|<span class="cm-str">"network"</span> ;
+
+<span class="cm-cmt">(* ─── BC8: External Transport ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C21_JSONRPCFrame</span>
+    <span class="cm-kw">governs:</span> IN10_RPCRequest → OUT13_RPCResponse framing
+    <span class="cm-kw">invariant:</span> valid UTF-8 JSON object with jsonrpc="2.0"
+    <span class="cm-kw">invariant:</span> authenticated connection (per-session token)
+    <span class="cm-kw">invariant:</span> exactly one response for each request with id
+    <span class="cm-kw">invariant:</span> notifications (no id) get no response
+    <span class="cm-kw">post:</span> parse errors → -32700, invalid request → -32600 ;
+
+<span class="cm-ct">C22_MethodDispatch</span>
+    <span class="cm-kw">governs:</span> method field → AutomationRouter
+    <span class="cm-kw">invariant:</span> method matches CommandMethod grammar from PRD §3.5
+    <span class="cm-kw">pre:</span>  method : String
+    <span class="cm-kw">post:</span> unknown method → -32601 (Method not found)
+    <span class="cm-kw">post:</span> invalid params → -32602 (Invalid params)
+    <span class="cm-kw">post:</span> automation failure → -32001..-32012 per C16 ;
+
+<span class="cm-ct">C23_SocketLifecycle</span>
+    <span class="cm-kw">governs:</span> UDS file creation and removal
+    <span class="cm-kw">invariant:</span> socket created on --automation-api flag
+    <span class="cm-kw">invariant:</span> socket removed on clean shutdown
+    <span class="cm-kw">invariant:</span> filename randomized to prevent enumeration
+    <span class="cm-kw">pre:</span>  CLI flag --automation-api present
+    <span class="cm-kw">post:</span> $XDG_RUNTIME_DIR/zigbrowser-{random}.sock (Linux/macOS)
+          %LOCALAPPDATA%\zigbrowser\automation-{random}.sock (Windows) ;
+
+<span class="cm-ct">C24_UDSOnly</span>
+    <span class="cm-kw">governs:</span> transport security model (ADR-1)
+    <span class="cm-kw">invariant:</span> AF_UNIX only, no TCP loopback
+    <span class="cm-kw">invariant:</span> filesystem permissions protect socket
+    <span class="cm-kw">invariant:</span> per-session token handshake on connect
+    <span class="cm-kw">note:</span> if AF_UNIX fails on Windows → revisit with TCP + bearer token ;
+
+<span class="cm-cmt">(* ─── BC8: External Transport ─── Seams ─── *)</span>
+
+<span class="cm-sm">S10_Client_Server</span>
+    <span class="cm-kw">interfaces:</span> IN10_RPCRequest, OUT13_RPCResponse, EV4_EventNotification
+    <span class="cm-kw">contracts:</span>  C21_JSONRPCFrame, C23_SocketLifecycle, C24_UDSOnly ;
+
+<span class="cm-sm">S11_Server_Router</span>
+    <span class="cm-kw">interfaces:</span> IN8_AutomationCommand, OUT11_CommandResult
+    <span class="cm-kw">contracts:</span>  C22_MethodDispatch, C16_ErrorTaxonomy ;
+
+<span class="cm-cmt">(* ─── BC8: External Transport ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G7_NoTransport</span>
+    <span class="cm-kw">violates:</span> S10_Client_Server, C23_SocketLifecycle (nothing exists)
+    <span class="cm-kw">evidence:</span> no socket server code in codebase
+              no --automation-api CLI flag (cli.zig only has --version, --screenshot,
+              --print-title, --e2e-protocol)
+    <span class="cm-kw">status:</span>   Phase 2 — entire module to build ;
+
+<span class="cm-gp">G11_AFUNIXSpike</span>
+    <span class="cm-kw">violates:</span> C24_UDSOnly (unvalidated assumption)
+    <span class="cm-kw">evidence:</span> ADR-1 states AF_UNIX available Win10 1803+ via Zig std.net
+              no spike or test confirms this works
+    <span class="cm-kw">status:</span>   pre-Phase 2 spike required ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC9: STEALTH & PACING                                          -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc9">
+<h2>BC9: Stealth &amp; Pacing <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">Behavioral simulation (typing, clicking, scrolling), rate limiting, and anti-detection observability (PRD &sect;8). Includes &sect;8.1 structural advantages, &sect;8.2 stealth design choices, &sect;8.3 behavioral simulation, &sect;8.4 rate limiting, and &sect;8.5 anti-detection observability telemetry (EV6 stealth assessment events, C40 non-interference contract). Provisional because pacing decisions are tightly coupled to the engine retry loop (BC6) and may not warrant a separate context if the engine owns the full execution lifecycle.</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) PacingLayer, BehavioralSimulator, DOMRateLimitDetector</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef event    fill:#1a7f37,stroke:#116329,color:#fff
+
+    subgraph BC9["BC9: Stealth & Pacing"]
+        IN11["IN11: PacingConfig\nmin_delay_ms, max_delay_ms,\ndaily_cap"]:::iface
+        C25["C25: TypingSimulation\nGaussian μ=120ms σ=40ms\nclamped 80-200ms"]:::contract
+        C26["C26: ClickSimulation\nBezier curves, Fitts's law,\novershoot, dwell 50-150ms"]:::contract
+        C27["C27: RateLimiting\nper-platform daily caps\ndelay uniform [min,max]\nmidnight reset"]:::contract
+        C28["C28: DOMDetection\nmonitor modals, toasts,\nchallenges, error pages"]:::contract
+        C40["C40: NonInterference\nno CDP Runtime.enable for telemetry\nno page-world globals for telemetry\nno persistent observers for telemetry\nno page→network telemetry export"]:::contract
+        EV5["EV5: RateLimitSignal\nplatform detection event"]:::event
+        EV6["EV6: StealthAssessment\nautomation.stealth.assessment\nper detection surface"]:::event
+        OUT14["OUT14: PacingDecision\ndelay_ms, remaining, cap_reached"]:::iface
+    end
+
+    S12["S12: Engine→Pacing\nwraps command execution"]:::seam
+    S13["S13: Script→Detection\nDOM signal monitoring\nin injected script"]:::seam
+
+    S12 --> IN11
+    IN11 --> C27
+    C27 --> OUT14
+    C25 --> S12
+    C26 --> S12
+    C28 --> S13
+    S13 --> EV5
+    C40 --> EV6
+    EV6 -.-> S15</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC9: Stealth & Pacing ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN11_PacingConfig</span>  ::= <span class="cm-str">"{"</span>
+                        <span class="cm-str">"\"min_delay_ms\":"</span> PositiveInt <span class="cm-str">","</span>
+                        <span class="cm-str">"\"max_delay_ms\":"</span> PositiveInt <span class="cm-str">","</span>
+                        <span class="cm-str">"\"daily_cap\":"</span> PositiveInt
+                      <span class="cm-str">"}"</span> ;
+
+<span class="cm-id">OUT14_PacingDecision</span> ::= <span class="cm-str">"{"</span>
+                          <span class="cm-str">"\"delay_ms\":"</span> Number <span class="cm-str">","</span>
+                          <span class="cm-str">"\"remaining_actions\":"</span> Integer <span class="cm-str">","</span>
+                          <span class="cm-str">"\"cap_reached\":"</span> Boolean
+                        <span class="cm-str">"}"</span> ;
+
+<span class="cm-id">EV5_RateLimitSignal</span> ::= <span class="cm-str">"{"</span>
+                         <span class="cm-str">"\"platform\":"</span> PlatformName <span class="cm-str">","</span>
+                         <span class="cm-str">"\"signal\":"</span> SignalKind <span class="cm-str">","</span>
+                         <span class="cm-str">"\"text\":"</span> String?
+                       <span class="cm-str">"}"</span> ;
+SignalKind         ::= <span class="cm-str">"modal"</span>|<span class="cm-str">"toast"</span>|<span class="cm-str">"challenge"</span>|<span class="cm-str">"http_error"</span>|<span class="cm-str">"429"</span> ;
+
+<span class="cm-id">EV6_StealthAssessment</span> ::= <span class="cm-str">"{"</span>
+                           <span class="cm-str">"\"surface\":"</span> DetectionSurface <span class="cm-str">","</span>
+                           <span class="cm-str">"\"risk_level\":"</span> RiskLevel <span class="cm-str">","</span>
+                           Dimensions
+                         <span class="cm-str">"}"</span> ;
+DetectionSurface   ::= <span class="cm-str">"isolated_world"</span>|<span class="cm-str">"cdp_usage"</span>|<span class="cm-str">"extension_telltales"</span>
+                      |<span class="cm-str">"input_realism"</span>|<span class="cm-str">"timing_artifacts"</span>|<span class="cm-str">"rate_limiting"</span> ;
+RiskLevel          ::= <span class="cm-str">"none"</span>|<span class="cm-str">"low"</span>|<span class="cm-str">"medium"</span>|<span class="cm-str">"high"</span> ;
+<span class="cm-cmt">(* §8.5.1: emitted as child event on root automation.command trace *)</span>
+
+<span class="cm-cmt">(* ─── BC9: Stealth & Pacing ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C25_TypingSimulation</span>
+    <span class="cm-kw">governs:</span> dom.type keystroke dispatch
+    <span class="cm-kw">invariant:</span> per-keystroke with Gaussian inter-key delays
+    <span class="cm-kw">post:</span> mean=120ms, σ=40ms, clamped [80ms, 200ms]
+    <span class="cm-kw">post:</span> word-boundary pauses 300-600ms
+    <span class="cm-kw">post:</span> per-platform profiles configurable ;
+
+<span class="cm-ct">C26_ClickSimulation</span>
+    <span class="cm-kw">governs:</span> dom.click mouse movement and dispatch
+    <span class="cm-kw">invariant:</span> Bezier curve interpolation for movement
+    <span class="cm-kw">post:</span> natural arc with overshoot + correction
+    <span class="cm-kw">post:</span> duration proportional to distance (Fitts's law)
+    <span class="cm-kw">post:</span> dwell at target 50-150ms before click ;
+
+<span class="cm-ct">C27_RateLimiting</span>
+    <span class="cm-kw">governs:</span> social.set_pacing → action throttling
+    <span class="cm-kw">invariant:</span> per-platform daily caps (default 100)
+    <span class="cm-kw">invariant:</span> delay uniform [min_delay_ms, max_delay_ms] (default 3000-8000ms)
+    <span class="cm-kw">invariant:</span> reset at midnight local time
+    <span class="cm-kw">pre:</span>  config via IN11_PacingConfig
+    <span class="cm-kw">post:</span> cap reached → platform_rate_limited error ;
+
+<span class="cm-ct">C28_DOMDetection</span>
+    <span class="cm-kw">governs:</span> injected script rateLimitScan operation
+    <span class="cm-kw">invariant:</span> monitor platform-specific DOM signals
+    <span class="cm-kw">pre:</span>  social automation active
+    <span class="cm-kw">post:</span> error modal detected → EV5 + platform_rate_limited
+    <span class="cm-kw">post:</span> challenge/captcha redirect → EV5 + platform_rate_limited
+    <span class="cm-kw">note:</span> network-level 429 detection deferred (ADR-3) ;
+
+<span class="cm-ct">C40_NonInterference</span>
+    <span class="cm-kw">governs:</span> anti-detection observability (PRD §8.5.5)
+    <span class="cm-kw">invariant:</span> anti-detection telemetry must not become a new detection surface
+    <span class="cm-kw">post:</span> NEVER enable CDP Runtime.enable to collect telemetry
+    <span class="cm-kw">post:</span> NEVER add page-world globals, DOM attrs, or prototype patches for telemetry
+    <span class="cm-kw">post:</span> NEVER keep persistent MutationObserver/PerformanceObserver/IntersectionObserver
+          alive after an operation solely for telemetry
+    <span class="cm-kw">post:</span> NEVER emit telemetry from page context to network — export from native only
+    <span class="cm-kw">post:</span> NEVER sample away automation.detection.signal events (rare signals &gt;
+          high-volume success events)
+    <span class="cm-kw">post:</span> NEVER log raw social content, selectors, cookies, tokens, localStorage,
+          screenshots, or DOM snapshots
+    <span class="cm-kw">note:</span> collection happens in native engine, queue, adapters, existing
+          injected-script response path only ;
+
+<span class="cm-cmt">(* ─── BC9: Stealth & Pacing ─── Seams ─── *)</span>
+
+<span class="cm-sm">S12_Engine_Pacing</span>
+    <span class="cm-kw">interfaces:</span> IN11_PacingConfig, OUT14_PacingDecision, IN8_AutomationCommand
+    <span class="cm-kw">contracts:</span>  C25_TypingSimulation, C26_ClickSimulation, C27_RateLimiting, C40_NonInterference ;
+
+<span class="cm-sm">S13_Script_Detection</span>
+    <span class="cm-kw">interfaces:</span> IN9_ScriptCommand (op=rateLimitScan), EV5_RateLimitSignal, EV6_StealthAssessment
+    <span class="cm-kw">contracts:</span>  C28_DOMDetection, C40_NonInterference, C19_CleanupContract ;
+
+<span class="cm-cmt">(* ─── BC9: Stealth & Pacing ─── §8.5 Anti-Detection Observability ─── *)</span>
+<span class="cm-cmt">(*</span>
+<span class="cm-cmt">  §8.5.1 Stealth Assessment (EV6) emitted per detection surface:</span>
+<span class="cm-cmt">    isolated_world → script.world, injection_time, page_global_count, observer.cleanup_count</span>
+<span class="cm-cmt">    cdp_usage      → backend.name, cdp.runtime_enabled=false, cdp.dom_used, cdp.input_used</span>
+<span class="cm-cmt">    extension      → extension.surface_present=false, performance.extension_entries=0</span>
+<span class="cm-cmt">    input_realism  → input.mode, behavior.profile, mouse.distance_px, typing.char_count</span>
+<span class="cm-cmt">    timing         → raf.aligned, poll.interval_ms, selector.resolve_ms, jitter.profile</span>
+<span class="cm-cmt">    rate_limiting  → rate_limit.signal, signal.source, signal.confidence, daily.remaining</span>
+<span class="cm-cmt"></span>
+<span class="cm-cmt">  §8.5.2 Behavioral Simulation Events (automation.behavior.simulation):</span>
+<span class="cm-cmt">    typing  → profile.name, distribution.name, char_count, delay_{min,max,mean}_ms</span>
+<span class="cm-cmt">    click   → distance_px, duration_ms, overshoot_px, dwell_ms, input.mode</span>
+<span class="cm-cmt">    scroll  → delta_px, duration_ms, pause_count, reverse_scroll_count</span>
+<span class="cm-cmt">    session → warmup_ms, break_count, session_elapsed_ms, daily.remaining</span>
+<span class="cm-cmt">    FORBIDDEN: raw typed text, element text, page content, account names</span>
+<span class="cm-cmt"></span>
+<span class="cm-cmt">  §8.5.3 Detection Signal Events (automation.detection.signal):</span>
+<span class="cm-cmt">    dom     → signal.kind, dom.signal_hash, selector.kind, confidence</span>
+<span class="cm-cmt">    network → http.status_code, resource.kind, request.host, confidence</span>
+<span class="cm-cmt">    session → session.state, profile.id_hash, confidence</span>
+<span class="cm-cmt">    engine  → automation.error, retry.count, daily.remaining, confidence</span>
+<span class="cm-cmt">    Stores hash of DOM text/URL path, never raw values</span>
+<span class="cm-cmt"></span>
+<span class="cm-cmt">  §8.5.4 Analysis Loop: define→visualize→investigate→evaluate</span>
+<span class="cm-cmt">    If loop cannot distinguish engine defect from platform defense,</span>
+<span class="cm-cmt">    missing field = instrumentation gap → add before widening rollout</span>
+<span class="cm-cmt">*)</span></code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC10: SOCIAL CONTRACTS                                         -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc10">
+<h2>BC10: Social Platform Contracts <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">Platform-specific compound action sequences (LinkedIn, Instagram). Highest change rate of any context — selectors break when platforms update their DOM. Provisional because the LinkedIn/Instagram split may not warrant separate sub-contexts until selector maintenance patterns emerge.</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) LinkedIn/Instagram action sequences, platform selector sets, session checks</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+
+    subgraph BC10["BC10: Social Contracts"]
+        IN12["IN12: SocialCommand\nlinkedin.connect, instagram.follow,\netc."]:::iface
+        C29["C29: LinkedInActions\n7 compound actions:\nconnect, message, like,\ncomment, visit, search, extract"]:::contract
+        C30["C30: InstagramActions\n5 compound actions:\nfollow, like, comment,\ndm, story_view"]:::contract
+        C31["C31: SessionValidity\nsocial.login_check →\n{loggedIn, platform, username?}"]:::contract
+        OUT15["OUT15: SocialResult\nper-step status"]:::iface
+    end
+
+    S14["S14: Social→Engine\ncompound → primitive\ndom.*/page.* decomposition"]:::seam
+
+    IN12 --> C29
+    IN12 --> C30
+    C29 --> S14
+    C30 --> S14
+    C31 --> OUT15
+    S14 --> OUT15</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC10: Social Contracts ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN12_SocialCommand</span> ::= PlatformMethod ;
+PlatformMethod     ::= (<span class="cm-str">"linkedin"</span>|<span class="cm-str">"instagram"</span>) <span class="cm-str">"."</span> PlatformVerb ;
+PlatformVerb       ::= <span class="cm-str">"connect"</span>|<span class="cm-str">"message"</span>|<span class="cm-str">"like"</span>|<span class="cm-str">"comment"</span>|<span class="cm-str">"visit"</span>
+                      |<span class="cm-str">"search"</span>|<span class="cm-str">"extract"</span>|<span class="cm-str">"follow"</span>|<span class="cm-str">"dm"</span>|<span class="cm-str">"story_view"</span> ;
+SocialGeneric      ::= <span class="cm-str">"social."</span> (<span class="cm-str">"login_check"</span>|<span class="cm-str">"rate_status"</span>|<span class="cm-str">"pause"</span>|<span class="cm-str">"set_pacing"</span>) ;
+
+<span class="cm-id">OUT15_SocialResult</span> ::= <span class="cm-str">"{"</span> (<span class="cm-str">"\"ok\":true"</span> | <span class="cm-str">"\"ok\":false,"</span> StepError) <span class="cm-str">"}"</span> ;
+StepError          ::= <span class="cm-str">"\"step\":"</span> String <span class="cm-str">","</span> <span class="cm-str">"\"error\":"</span> AutomationError ;
+
+<span class="cm-cmt">(* ─── BC10: Social Contracts ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C29_LinkedInActions</span>
+    <span class="cm-kw">governs:</span> linkedin.* compound action sequences
+    <span class="cm-kw">invariant:</span> each compound action = ordered sequence of dom.*/page.* primitives
+    <span class="cm-kw">post:</span> connect: navigate→click Connect→[add note]→confirm
+    <span class="cm-kw">post:</span> message: open conversation→compose→send
+    <span class="cm-kw">post:</span> like: navigate→click Like
+    <span class="cm-kw">post:</span> comment: navigate→click Comment→type→submit
+    <span class="cm-kw">post:</span> visit: navigate to profile (triggers view notification)
+    <span class="cm-kw">post:</span> search: execute query→[apply filters]→return results
+    <span class="cm-kw">post:</span> extract: navigate→scrape structured profile data ;
+
+<span class="cm-ct">C30_InstagramActions</span>
+    <span class="cm-kw">governs:</span> instagram.* compound action sequences
+    <span class="cm-kw">invariant:</span> each compound action = ordered sequence of dom.*/page.* primitives
+    <span class="cm-kw">post:</span> follow: navigate→click Follow
+    <span class="cm-kw">post:</span> like: navigate→double-click or click heart
+    <span class="cm-kw">post:</span> comment: navigate→click field→type→submit
+    <span class="cm-kw">post:</span> dm: open thread→compose→send
+    <span class="cm-kw">post:</span> story_view: navigate→view sequentially ;
+
+<span class="cm-ct">C31_SessionValidity</span>
+    <span class="cm-kw">governs:</span> social.login_check and session_invalid error
+    <span class="cm-kw">pre:</span>  browser has active page on target platform
+    <span class="cm-kw">post:</span> {loggedIn: bool, platform: string, username?: string}
+    <span class="cm-kw">post:</span> not logged in + social action attempted → session_invalid (-32011) ;
+
+<span class="cm-cmt">(* ─── BC10: Social Contracts ─── Seams ─── *)</span>
+
+<span class="cm-sm">S14_Social_Engine</span>
+    <span class="cm-kw">interfaces:</span> IN12_SocialCommand, IN8_AutomationCommand, OUT15_SocialResult
+    <span class="cm-kw">contracts:</span>  C29_LinkedInActions, C30_InstagramActions, C31_SessionValidity ;</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC11: OBSERVABILITY                                            -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc11">
+<h2>BC11: Observability <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">Telemetry sink, wide event emission, trace/span correlation, and privacy redaction (PRD &sect;7). Cross-cutting concern consumed by all automation components including anti-detection observability (&sect;8.5). Provisional because the observability boundary depends on whether TelemetrySink is a shared library or an injected dependency &mdash; the PRD specifies a vtable interface, suggesting the latter. Primary diagnostic unit is the wide event: one flat, queryable record per unit of work (&sect;7.1).</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) TelemetrySink vtable, span/event schema, redaction layer, export adapters</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart LR
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+
+    subgraph BC11["BC11: Observability"]
+        IN13["IN13: TelemetryInput\nspans and events from\nautomation components"]:::iface
+        C32["C32: RootSpanAttrs\ntrace_id, rpc.method, page.id,\nbackend.name, duration_ms,\nresult.status, selector.kind, ..."]:::contract
+        C33["C33: RedactionPolicy\nnever: cookies, tokens, passwords,\nmessage text, screenshots\nhash: selectors, IDs, paths"]:::contract
+        C34["C34: TraceCorrelation\nchild spans share root trace_id\n7 child span types"]:::contract
+        C35["C35: ExportIsolation\nexport failure must not fail\nautomation commands"]:::contract
+        G9["G9: NoTelemetry\nTelemetrySink doesn't exist"]:::gap
+        OUT16["OUT16: TelemetryExport\nlocal sink | OTLP export"]:::iface
+    end
+
+    S15["S15: Components→Sink\nTelemetrySink vtable:\nstartSpan, addEvent, endSpan"]:::seam
+
+    S15 --> IN13
+    IN13 --> C32
+    C32 --> C33
+    C33 --> C34
+    C34 --> C35
+    C35 --> OUT16
+    C32 -.- G9</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC11: Observability ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN13_TelemetryInput</span>  ::= StartSpan | AddEvent | EndSpan ;
+StartSpan            ::= SpanName TelemetryAttrs ;
+AddEvent             ::= SpanRef EventName TelemetryAttrs ;
+EndSpan              ::= SpanRef TelemetryStatus TelemetryAttrs ;
+
+<span class="cm-id">OUT16_TelemetryExport</span> ::= TelemetryEvent* ;
+TelemetryEvent       ::= <span class="cm-str">"{"</span>
+                           <span class="cm-str">"\"name\":"</span> TelemetryName <span class="cm-str">","</span>
+                           <span class="cm-str">"\"trace_id\":"</span> String <span class="cm-str">","</span>
+                           <span class="cm-str">"\"span_id\":"</span> String <span class="cm-str">","</span>
+                           <span class="cm-str">"\"timestamp\":"</span> IsoTimestamp <span class="cm-str">","</span>
+                           <span class="cm-str">"\"duration_ms\":"</span> Number <span class="cm-str">","</span>
+                           <span class="cm-str">"\"attributes\":"</span> JSONObject
+                         <span class="cm-str">"}"</span> ;
+TelemetryName        ::= <span class="cm-str">"automation.command"</span>              <span class="cm-cmt">(* root span *)</span>
+                        |<span class="cm-str">"automation.selector.resolve"</span>     <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.actionability.check"</span>  <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.platform.eval"</span>       <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.input.dispatch"</span>      <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.network.event"</span>       <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.pacing.decision"</span>     <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.social.action"</span>       <span class="cm-cmt">(* §7.3 *)</span>
+                        |<span class="cm-str">"automation.stealth.assessment"</span>  <span class="cm-cmt">(* §8.5.1 *)</span>
+                        |<span class="cm-str">"automation.behavior.simulation"</span> <span class="cm-cmt">(* §8.5.2 *)</span>
+                        |<span class="cm-str">"automation.detection.signal"</span>    <span class="cm-cmt">(* §8.5.3 *)</span> ;
+
+<span class="cm-cmt">(* ─── BC11: Observability ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C32_RootSpanAttrs</span>
+    <span class="cm-kw">governs:</span> automation.command root span emitted per JSON-RPC request
+    <span class="cm-kw">invariant:</span> required attributes present on every root span:
+        trace_id, span_id, command_id, rpc.method, rpc.id_hash,
+        page.id, session.id_hash, platform.name, backend.name, backend.version,
+        os.name, automation.script.version, api.version, app.version, git.sha,
+        queue.wait_ms, duration_ms, timeout_ms, retry.count,
+        result.status, automation.error, selector.kind, selector.hash,
+        action.name, action.force, action.trial
+    <span class="cm-kw">post:</span> missing required attribute → test fixture assertion failure ;
+
+<span class="cm-ct">C33_RedactionPolicy</span>
+    <span class="cm-kw">governs:</span> telemetry export across all sinks
+    <span class="cm-kw">invariant:</span> NEVER record: cookie values, tokens, passwords, message text,
+              raw form values, screenshots, DOM snapshots, full URLs with tokens
+    <span class="cm-kw">invariant:</span> HASH: selector.hash, profile.id_hash, post.id_hash,
+              session.id_hash, target.path_hash, conversation.id_hash
+    <span class="cm-kw">invariant:</span> redaction layer runs before export, applies to all sinks ;
+
+<span class="cm-ct">C34_TraceCorrelation</span>
+    <span class="cm-kw">governs:</span> parent-child span relationships (PRD §7.3)
+    <span class="cm-kw">invariant:</span> child spans share root trace_id
+    <span class="cm-kw">invariant:</span> 10 child span/event types:
+        automation.selector.resolve     — injected script, selector latency+match
+        automation.actionability.check  — injected script, which check blocked
+        automation.platform.eval        — PagePort adapter, native eval timing
+        automation.input.dispatch       — InputDispatcher, native vs JS input
+        automation.network.event        — NetworkInterceptor, HTTP+throttle
+        automation.pacing.decision      — Pacing layer, delay/cap decisions
+        automation.social.action        — Social layer, compound→primitive
+        automation.stealth.assessment   — Anti-detection, per surface (§8.5.1)
+        automation.behavior.simulation  — Behavioral layer, timing shape (§8.5.2)
+        automation.detection.signal     — Rate-limit/challenge detectors (§8.5.3) ;
+
+<span class="cm-ct">C35_ExportIsolation</span>
+    <span class="cm-kw">governs:</span> TelemetrySink export path
+    <span class="cm-kw">invariant:</span> export failure must not fail automation commands
+    <span class="cm-kw">invariant:</span> telemetry is fire-and-forget from command path ;
+
+<span class="cm-cmt">(* ─── BC11: Observability ─── Seams ─── *)</span>
+
+<span class="cm-sm">S15_Components_Sink</span>
+    <span class="cm-kw">interfaces:</span> IN13_TelemetryInput, OUT16_TelemetryExport
+    <span class="cm-kw">contracts:</span>  C32_RootSpanAttrs, C33_RedactionPolicy, C34_TraceCorrelation,
+               C35_ExportIsolation ;
+
+<span class="cm-cmt">(* ─── BC11: Observability ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G9_NoTelemetry</span>
+    <span class="cm-kw">violates:</span> S15_Components_Sink (nothing exists)
+    <span class="cm-kw">evidence:</span> no TelemetrySink, no span types, no redaction layer
+              only E2E protocol (EV2) exists — test-only, not production telemetry
+    <span class="cm-kw">status:</span>   Phase 1 — define vtable + in-memory test sink ;
+
+<span class="cm-cmt">(* ─── BC11 ↔ BC9 Bridge: §8.5 Anti-Detection Observability ─── *)</span>
+<span class="cm-cmt">(*</span>
+<span class="cm-cmt">  §8.5 spans (stealth.assessment, behavior.simulation, detection.signal)</span>
+<span class="cm-cmt">  are EMITTED by BC9 (Stealth & Pacing) but CONSUMED by BC11 (Observability)</span>
+<span class="cm-cmt">  via S15_Components_Sink. The C40_NonInterference contract in BC9 governs</span>
+<span class="cm-cmt">  what anti-detection telemetry is allowed to observe without becoming a</span>
+<span class="cm-cmt">  detection surface itself. The C33_RedactionPolicy in BC11 governs what</span>
+<span class="cm-cmt">  gets exported. Both must hold simultaneously.</span>
+<span class="cm-cmt"></span>
+<span class="cm-cmt">  §7.5 Analysis Loop: define→visualize→investigate→evaluate</span>
+<span class="cm-cmt">  §7.6 SLO Candidates derived from automation.command root spans:</span>
+<span class="cm-cmt">    Command availability: 99% non-rate-limited complete without AutomationError</span>
+<span class="cm-cmt">    Action latency: 95% dom.click/fill under 2s on fixture pages</span>
+<span class="cm-cmt">    Queue delay: 99% start within 100ms (excluding social.pause)</span>
+<span class="cm-cmt">    Telemetry coverage: 100% commands emit required root attributes</span>
+<span class="cm-cmt">    Redaction compliance: 0 events with denied sensitive keys</span>
+<span class="cm-cmt">*)</span></code></pre>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- BC12: PLATFORM CAPABILITIES                                    -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<section id="bc12">
+<h2>BC12: Platform Capabilities <span class="tag tag-tobe-label">to-be</span> <span class="tag tag-provisional">provisional</span></h2>
+<p class="bc-desc">Platform-specific extensions to the rendering context: cookie store access, network interception, and native input dispatch. Provisional because these may fold back into BC4 (Platform Rendering) if the vtable interfaces prove too thin to justify a separate context. Separated here because they have distinct capability advertisement contracts and platform-divergent implementations.</p>
+<p class="bc-owns"><strong>Owns:</strong> (new) CookieStorePort, NetworkInterceptor, InputDispatcher — per-platform adapters</p>
+
+<div class="block-label">Boundary Diagram</div>
+<pre><code>flowchart TB
+    classDef iface    fill:#0969da,stroke:#0550ae,color:#fff
+    classDef contract fill:#bf8700,stroke:#9a6e00,color:#000
+    classDef seam     fill:#8250df,stroke:#6639ba,color:#fff
+    classDef gap      fill:#cf222e,stroke:#a40e26,color:#fff
+
+    subgraph BC12["BC12: Platform Capabilities"]
+        IN14["IN14: CookieCommand\ncookies.getAll, .set, .delete"]:::iface
+        IN15["IN15: NetworkControl\nstart, stop, pollEvent"]:::iface
+        IN16["IN16: InputCommand\nmouse, keyboard dispatch"]:::iface
+        C36["C36: CookieScope\nscoped to active browser\nprofile/data store"]:::contract
+        C37["C37: NetworkCapability\nadvertise before use\nunsupported → typed error\nnot silent success"]:::contract
+        C38["C38: InputDispatchMode\nWebView2: CDP Input.*\nGTK/WKWebView: JS synthetic\nsame result grammar"]:::contract
+        C39["C39: ResultOwnership\nresults survive until release\ndynamic alloc, no 4KB ceiling"]:::contract
+        G10["G10: NetDebt\nLinux/macOS stubs =\ntracked security debt"]:::gap
+        OUT17["OUT17: CookieData\n[{name,value,domain,...}]"]:::iface
+        OUT18["OUT18: NetworkEvent\nrequest/response/rate signals"]:::iface
+    end
+
+    S16["S16: Engine→Cookie\nCookieStorePort via\nPagePort.vtable.cookies"]:::seam
+    S17["S17: Engine→Network\nNetworkInterceptor vtable\ncapability, start, stop, poll"]:::seam
+    S18["S18: Engine→Input\nInputDispatcher optional\nPagePort capability"]:::seam
+
+    IN14 --> C36
+    C36 --> OUT17
+    IN15 --> C37
+    C37 --> OUT18
+    C37 -.- G10
+    IN16 --> C38
+    C39 --> S16
+    C39 --> S17
+    C39 --> S18</code></pre>
+
+<div class="block-label">EBNF Grammar</div>
+<pre><code><span class="cm-cmt">(* ─── BC12: Platform Capabilities ─── Interfaces ─── *)</span>
+
+<span class="cm-id">IN14_CookieCommand</span>  ::= <span class="cm-str">"cookies.getAll"</span> GetAllParams?
+                       | <span class="cm-str">"cookies.set"</span> SetParams
+                       | <span class="cm-str">"cookies.delete"</span> DeleteParams ;
+GetAllParams        ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"url\":"</span> String <span class="cm-str">"}"</span> ;
+SetParams           ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"name\":"</span> String <span class="cm-str">","</span> <span class="cm-str">"\"value\":"</span> String <span class="cm-str">","</span>
+                          <span class="cm-str">"\"domain\":"</span> String (<span class="cm-str">","</span> CookieOpts)? <span class="cm-str">"}"</span> ;
+DeleteParams        ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"name\":"</span> String <span class="cm-str">","</span> <span class="cm-str">"\"domain\":"</span> String <span class="cm-str">"}"</span> ;
+
+<span class="cm-id">IN15_NetworkControl</span> ::= NetworkOp ;
+NetworkOp           ::= <span class="cm-str">"start"</span> PageId | <span class="cm-str">"stop"</span> PageId | <span class="cm-str">"poll"</span> ;
+
+<span class="cm-id">IN16_InputCommand</span>  ::= MouseInput | KeyboardInput ;
+MouseInput          ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"type\":\"mouse\","</span> <span class="cm-str">"\"action\":"</span> MouseAction <span class="cm-str">","</span>
+                          <span class="cm-str">"\"x\":"</span> Number <span class="cm-str">","</span> <span class="cm-str">"\"y\":"</span> Number <span class="cm-str">"}"</span> ;
+KeyboardInput       ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"type\":\"key\","</span> <span class="cm-str">"\"action\":"</span> KeyAction <span class="cm-str">","</span>
+                          <span class="cm-str">"\"key\":"</span> String <span class="cm-str">"}"</span> ;
+
+<span class="cm-id">OUT17_CookieData</span>   ::= CookieObject* ;
+CookieObject        ::= <span class="cm-str">"{"</span> <span class="cm-str">"\"name\":"</span> Str <span class="cm-str">","</span> <span class="cm-str">"\"value\":"</span> Str <span class="cm-str">","</span> <span class="cm-str">"\"domain\":"</span> Str <span class="cm-str">","</span>
+                          <span class="cm-str">"\"path\":"</span> Str <span class="cm-str">","</span> <span class="cm-str">"\"expires\":"</span> Num <span class="cm-str">","</span>
+                          <span class="cm-str">"\"httpOnly\":"</span> Bool <span class="cm-str">","</span> <span class="cm-str">"\"secure\":"</span> Bool <span class="cm-str">"}"</span> ;
+
+<span class="cm-id">OUT18_NetworkEvent</span> ::= <span class="cm-str">"{"</span>
+                        <span class="cm-str">"\"kind\":"</span> NetEventKind <span class="cm-str">","</span>
+                        <span class="cm-str">"\"url\":"</span> String <span class="cm-str">","</span>
+                        <span class="cm-str">"\"status\":"</span> Integer? <span class="cm-str">","</span>
+                        <span class="cm-str">"\"rate_limit\":"</span> Boolean?
+                      <span class="cm-str">"}"</span> ;
+NetEventKind       ::= <span class="cm-str">"request"</span>|<span class="cm-str">"response"</span>|<span class="cm-str">"rate_limit"</span> ;
+
+<span class="cm-cmt">(* ─── BC12: Platform Capabilities ─── Contracts ─── *)</span>
+
+<span class="cm-ct">C36_CookieScope</span>
+    <span class="cm-kw">governs:</span> CookieStorePort per-platform implementations
+    <span class="cm-kw">invariant:</span> operations scoped to active browser profile/data store
+    <span class="cm-kw">invariant:</span> not a separate test store
+    <span class="cm-kw">pre:</span>  browser profile initialized
+    <span class="cm-kw">post:</span> GTK: WebKitCookieManager
+    <span class="cm-kw">post:</span> WebView2: CoreWebView2.CookieManager
+    <span class="cm-kw">post:</span> macOS: WKHTTPCookieStore (NOT NSHTTPCookieStorage)
+    <span class="cm-kw">post:</span> unsupported op → capability error, not silent success ;
+
+<span class="cm-ct">C37_NetworkCapability</span>
+    <span class="cm-kw">governs:</span> NetworkInterceptor per-platform implementations
+    <span class="cm-kw">invariant:</span> must advertise capability before use
+    <span class="cm-kw">invariant:</span> unsupported → typed error, not silent success
+    <span class="cm-kw">post:</span> WebView2: full impl via AddWebResourceRequestedFilter
+    <span class="cm-kw">post:</span> GTK: stub — "not supported" (Web Extension needed)
+    <span class="cm-kw">post:</span> macOS: stub — "not supported" (no API)
+    <span class="cm-kw">note:</span> stubs are tracked security debt per ADR-3 ;
+
+<span class="cm-ct">C38_InputDispatchMode</span>
+    <span class="cm-kw">governs:</span> InputDispatcher per-platform implementations
+    <span class="cm-kw">invariant:</span> same result grammar across platforms
+    <span class="cm-kw">post:</span> WebView2: CDP Input.dispatchMouseEvent/dispatchKeyEvent (OS-level)
+    <span class="cm-kw">post:</span> GTK: synthetic JS MouseEvent/KeyboardEvent
+    <span class="cm-kw">post:</span> macOS: synthetic JS MouseEvent/KeyboardEvent
+    <span class="cm-kw">note:</span> CDP Input.* less detectable than JS synthetic ;
+
+<span class="cm-ct">C39_ResultOwnership</span>
+    <span class="cm-kw">governs:</span> C ABI result lifetime across automation commands
+    <span class="cm-kw">invariant:</span> results survive until documented release point
+    <span class="cm-kw">invariant:</span> results may exceed 4096 bytes (replaces C6 ceiling)
+    <span class="cm-kw">pre:</span>  caller provides allocator or documented release callback
+    <span class="cm-kw">post:</span> allocation failure → internal error
+    <span class="cm-kw">post:</span> static buffer overflow must not be observable ;
+
+<span class="cm-cmt">(* ─── BC12: Platform Capabilities ─── Seams ─── *)</span>
+
+<span class="cm-sm">S16_Engine_Cookie</span>
+    <span class="cm-kw">interfaces:</span> IN14_CookieCommand, OUT17_CookieData
+    <span class="cm-kw">contracts:</span>  C36_CookieScope, C39_ResultOwnership ;
+
+<span class="cm-sm">S17_Engine_Network</span>
+    <span class="cm-kw">interfaces:</span> IN15_NetworkControl, OUT18_NetworkEvent
+    <span class="cm-kw">contracts:</span>  C37_NetworkCapability, C39_ResultOwnership ;
+
+<span class="cm-sm">S18_Engine_Input</span>
+    <span class="cm-kw">interfaces:</span> IN16_InputCommand
+    <span class="cm-kw">contracts:</span>  C38_InputDispatchMode ;
+
+<span class="cm-cmt">(* ─── BC12: Platform Capabilities ─── Gaps ─── *)</span>
+
+<span class="cm-gp">G10_NetDebt</span>
+    <span class="cm-kw">violates:</span> C37_NetworkCapability (partial, tracked debt)
+    <span class="cm-kw">evidence:</span> Linux/macOS NetworkInterceptor stubs cannot detect:
+              - 429s on background XHR/GraphQL
+              - WebSocket-delivered soft-bans
+              - Shadow rate-limiting on LinkedIn messaging
+    <span class="cm-kw">status:</span>   tracked security debt with revisit trigger
+              (any account burned by undetected throttling) ;</code></pre>
+</section>
+
+</main>
+</div>
