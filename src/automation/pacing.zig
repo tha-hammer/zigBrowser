@@ -18,6 +18,8 @@ pub const PacingDecision = struct {
     cap_reached: bool,
 };
 
+const ms_per_day: i64 = 86_400_000;
+
 pub const RateLimiter = struct {
     config: PacingConfig,
     actions_today: u32,
@@ -43,17 +45,7 @@ pub const RateLimiter = struct {
     pub fn recordAction(self: *RateLimiter, random: std.Random) !PacingDecision {
         self.maybeResetDay();
         if (self.actions_today >= self.config.daily_cap) return error.PlatformRateLimited;
-
-        self.actions_today += 1;
-        const range = self.config.max_delay_ms - self.config.min_delay_ms;
-        const delay = self.config.min_delay_ms + @as(u32, @intFromFloat(random.float(f64) * @as(f64, @floatFromInt(range))));
-        const rem = self.config.daily_cap - self.actions_today;
-
-        return .{
-            .delay_ms = delay,
-            .remaining_actions = rem,
-            .cap_reached = rem == 0,
-        };
+        return self.consumeAction(random);
     }
 
     pub fn recordActionEmit(
@@ -66,36 +58,34 @@ pub const RateLimiter = struct {
         self.maybeResetDay();
 
         if (self.actions_today >= self.config.daily_cap) {
-            var attrs = sink.newAttrs();
-            attrs.put("trace_id", ctx.trace_id);
-            attrs.put("command_id", ctx.command_id);
-            attrs.put("platform.name", platform);
-            attrs.putBool("pacing.cap_reached", true);
-            sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" }, "automation.pacing.decision", attrs);
+            self.emitPacingEvent(sink, ctx, platform, true);
             return error.PlatformRateLimited;
         }
 
-        self.actions_today += 1;
-        const range = self.config.max_delay_ms - self.config.min_delay_ms;
-        const delay = self.config.min_delay_ms + @as(u32, @intFromFloat(random.float(f64) * @as(f64, @floatFromInt(range))));
-        const rem = self.config.daily_cap - self.actions_today;
-
-        var attrs = sink.newAttrs();
-        attrs.put("trace_id", ctx.trace_id);
-        attrs.put("command_id", ctx.command_id);
-        attrs.put("platform.name", platform);
-        attrs.putBool("pacing.cap_reached", rem == 0);
-        sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" }, "automation.pacing.decision", attrs);
-
-        return .{
-            .delay_ms = delay,
-            .remaining_actions = rem,
-            .cap_reached = rem == 0,
-        };
+        const decision = self.consumeAction(random);
+        self.emitPacingEvent(sink, ctx, platform, decision.cap_reached);
+        return decision;
     }
 
     pub fn updateConfig(self: *RateLimiter, config: PacingConfig) void {
         self.config = config;
+    }
+
+    fn consumeAction(self: *RateLimiter, random: std.Random) PacingDecision {
+        self.actions_today += 1;
+        const range = self.config.max_delay_ms - self.config.min_delay_ms;
+        const delay = self.config.min_delay_ms + @as(u32, @intFromFloat(random.float(f64) * @as(f64, @floatFromInt(range))));
+        const rem = self.config.daily_cap - self.actions_today;
+        return .{ .delay_ms = delay, .remaining_actions = rem, .cap_reached = rem == 0 };
+    }
+
+    fn emitPacingEvent(_: *RateLimiter, sink: anytype, ctx: TraceContext, platform: []const u8, cap_reached: bool) void {
+        var attrs = sink.newAttrs();
+        attrs.put("trace_id", ctx.trace_id);
+        attrs.put("command_id", ctx.command_id);
+        attrs.put("platform.name", platform);
+        attrs.putBool("pacing.cap_reached", cap_reached);
+        sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" }, "automation.pacing.decision", attrs);
     }
 
     fn maybeResetDay(self: *RateLimiter) void {
@@ -107,6 +97,6 @@ pub const RateLimiter = struct {
     }
 
     fn dayFromTimestamp(ms: i64) i32 {
-        return @intCast(@divFloor(ms, 86_400_000));
+        return @intCast(@divFloor(ms, ms_per_day));
     }
 };
