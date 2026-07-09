@@ -1,3 +1,7 @@
+pub const errors = @import("automation/error.zig");
+pub const router = @import("automation/router.zig");
+pub const telemetry = @import("automation/telemetry.zig");
+
 pub const phase1_command_verbs = [_][]const u8{
     "dom.query",
     "dom.click",
