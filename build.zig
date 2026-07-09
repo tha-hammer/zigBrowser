@@ -378,6 +378,21 @@ pub fn build(b: *std.Build) void {
     const run_linkedin_tests = b.addRunArtifact(linkedin_tests);
     run_linkedin_tests.skip_foreign_checks = true;
 
+    const instagram_module = b.createModule(.{
+        .root_source_file = b.path("src/instagram.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const instagram_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/instagram_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    instagram_tests_module.addImport("instagram", instagram_module);
+    const instagram_tests = b.addTest(.{ .root_module = instagram_tests_module });
+    const run_instagram_tests = b.addRunArtifact(instagram_tests);
+    run_instagram_tests.skip_foreign_checks = true;
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
@@ -393,6 +408,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_stealth_tests.step);
     test_step.dependOn(&run_social_tests.step);
     test_step.dependOn(&run_linkedin_tests.step);
+    test_step.dependOn(&run_instagram_tests.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
