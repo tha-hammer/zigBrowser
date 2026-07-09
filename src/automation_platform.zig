@@ -2,6 +2,13 @@ const std = @import("std");
 
 const testing = std.testing;
 
+const max_recorded_cdp_calls = 16;
+const synthetic_script_buffer_len = 512;
+const max_recorded_eval_script_bytes = 1024;
+const max_path_query_bytes = 1024;
+const http_status_forbidden = 403;
+const http_status_too_many_requests = 429;
+
 pub const BackendName = enum {
     webview2,
     webkitgtk,
@@ -157,7 +164,7 @@ pub const KeyInput = struct {
 };
 
 pub const FakeWebView2Cdp = struct {
-    methods: [16][]const u8 = undefined,
+    methods: [max_recorded_cdp_calls][]const u8 = undefined,
     call_count: usize = 0,
 
     pub fn call(self: *FakeWebView2Cdp, method: []const u8) !void {
@@ -386,7 +393,7 @@ pub const WebView2NetworkInterceptor = struct {
             .status_code = input.status_code,
             .status_class = statusClass(input.status_code),
             .resource_kind = input.resource_kind,
-            .rate_limit = input.status_code == 429 or input.status_code == 403,
+            .rate_limit = input.status_code == http_status_too_many_requests or input.status_code == http_status_forbidden,
         };
     }
 
@@ -453,7 +460,7 @@ pub const FakePlatformEval = struct {
     fail_next: bool = false,
     last_content_world: ContentWorld = .isolated,
     last_eval_kind: EvalKind = .synthetic_input,
-    last_script_storage: [1024]u8 = undefined,
+    last_script_storage: [max_recorded_eval_script_bytes]u8 = undefined,
     last_script: []const u8 = "",
 
     pub fn evaluate(
@@ -489,7 +496,7 @@ pub const WebKitGtkInputDispatcher = struct {
 
     pub fn dispatchMouse(self: *WebKitGtkInputDispatcher, input: MouseInput) !ActionResult {
         if (input.trial) return .{ .status = .success };
-        var script_storage: [512]u8 = undefined;
+        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
         const script = try syntheticMouseScript(script_storage[0..], input);
         const result = self.eval.evaluate(.isolated, .synthetic_input, script) catch |err| {
             self.recordInputDispatchSpan(.failed, script.len);
@@ -503,7 +510,7 @@ pub const WebKitGtkInputDispatcher = struct {
 
     pub fn dispatchKey(self: *WebKitGtkInputDispatcher, input: KeyInput) !ActionResult {
         if (input.trial) return .{ .status = .success };
-        var script_storage: [512]u8 = undefined;
+        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
         const script = try syntheticKeyScript(script_storage[0..], input);
         const result = self.eval.evaluate(.isolated, .synthetic_input, script) catch |err| {
             self.recordInputDispatchSpan(.failed, script.len);
@@ -603,7 +610,7 @@ pub const WkWebViewInputDispatcher = struct {
 
     pub fn dispatchMouse(self: *WkWebViewInputDispatcher, input: MouseInput) !ActionResult {
         if (input.trial) return .{ .status = .success };
-        var script_storage: [512]u8 = undefined;
+        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
         const script = try syntheticMouseScript(script_storage[0..], input);
         const result = self.eval.evaluate(.automation, .synthetic_input, script) catch |err| {
             self.recordInputDispatchSpan(.failed, script.len);
@@ -617,7 +624,7 @@ pub const WkWebViewInputDispatcher = struct {
 
     pub fn dispatchKey(self: *WkWebViewInputDispatcher, input: KeyInput) !ActionResult {
         if (input.trial) return .{ .status = .success };
-        var script_storage: [512]u8 = undefined;
+        var script_storage: [synthetic_script_buffer_len]u8 = undefined;
         const script = try syntheticKeyScript(script_storage[0..], input);
         const result = self.eval.evaluate(.automation, .synthetic_input, script) catch |err| {
             self.recordInputDispatchSpan(.failed, script.len);
@@ -755,7 +762,7 @@ fn redactUrl(url: []const u8, host_storage: []u8, path_hash_storage: []u8) !Reda
 
     const path = componentBytes(parsed.path);
     const query = if (parsed.query) |query_component| componentBytes(query_component) else "";
-    var path_query_storage: [1024]u8 = undefined;
+    var path_query_storage: [max_path_query_bytes]u8 = undefined;
     const path_query = if (query.len == 0)
         path
     else

@@ -2,6 +2,8 @@ const std = @import("std");
 
 const testing = std.testing;
 
+const default_max_line_bytes = 64 * 1024;
+
 pub const RouterResult = union(enum) {
     success_json: []const u8,
     method_not_found,
@@ -39,7 +41,7 @@ pub const Router = struct {
 
 pub const ConnectionConfig = struct {
     token: []const u8,
-    max_line_bytes: usize = 64 * 1024,
+    max_line_bytes: usize = default_max_line_bytes,
 };
 
 pub const Connection = struct {

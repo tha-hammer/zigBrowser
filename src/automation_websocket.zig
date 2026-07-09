@@ -3,6 +3,8 @@ const std = @import("std");
 const testing = std.testing;
 
 const websocket_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const max_single_byte_payload_len = 125;
+const text_frame_fin_opcode = 0x81;
 
 pub fn secWebSocketAccept(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
     const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ key, websocket_guid });
@@ -41,9 +43,9 @@ pub fn eventNotificationJson(allocator: std.mem.Allocator, notification: EventNo
 }
 
 pub fn writeTextFrame(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
-    if (payload.len > 125) return error.PayloadTooLarge;
+    if (payload.len > max_single_byte_payload_len) return error.PayloadTooLarge;
     const frame = try allocator.alloc(u8, payload.len + 2);
-    frame[0] = 0x81;
+    frame[0] = text_frame_fin_opcode;
     frame[1] = @intCast(payload.len);
     @memcpy(frame[2..], payload);
     return frame;
