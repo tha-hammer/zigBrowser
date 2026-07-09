@@ -1,6 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const automation_rpc = @import("automation_rpc.zig");
+const automation_transport = @import("automation_transport.zig");
 const ipc = @import("ipc.zig");
 const nav_policy = @import("nav_policy.zig");
 const uri = @import("uri.zig");
@@ -9,6 +10,7 @@ const webkit = @import("webkit.zig");
 test "module reachability" {
     _ = cli;
     _ = automation_rpc;
+    _ = automation_transport;
     _ = ipc;
     _ = nav_policy;
     _ = uri;

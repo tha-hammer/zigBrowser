@@ -6,6 +6,8 @@ pub const Command = union(enum) {
         url: []const u8,
         print_title: bool = false,
         e2e_protocol: bool = false,
+        automation_api: bool = false,
+        automation_token_file: ?[]const u8 = null,
     },
     screenshot: struct {
         url: []const u8,
@@ -55,14 +57,31 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     var url: ?[]const u8 = null;
     var print_title = false;
     var e2e_protocol = false;
+    var automation_api = false;
+    var automation_token_file: ?[]const u8 = null;
 
-    for (tokens) |token| {
+    var i: usize = 0;
+    while (i < tokens.len) : (i += 1) {
+        const token = tokens[i];
         if (std.mem.eql(u8, token, "--print-title")) {
             print_title = true;
             continue;
         }
         if (std.mem.eql(u8, token, "--e2e-protocol")) {
             e2e_protocol = true;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--automation-api")) {
+            automation_api = true;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--automation-token-file")) {
+            i += 1;
+            if (i >= tokens.len) return .usage;
+            const path = tokens[i];
+            if (std.mem.startsWith(u8, path, "-")) return .usage;
+            if (automation_token_file != null) return .usage;
+            automation_token_file = path;
             continue;
         }
         if (std.mem.startsWith(u8, token, "-")) {
@@ -75,11 +94,14 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     }
 
     if (url == null) return .usage;
+    if (automation_token_file != null and !automation_api) return .usage;
 
     return .{ .open = .{
         .url = url.?,
         .print_title = print_title,
         .e2e_protocol = e2e_protocol,
+        .automation_api = automation_api,
+        .automation_token_file = automation_token_file,
     } };
 }
 
@@ -128,6 +150,43 @@ test "parseArgs supports both open flags" {
     try std.testing.expect(cmd == .open);
     try std.testing.expect(cmd.open.e2e_protocol);
     try std.testing.expect(cmd.open.print_title);
+}
+
+test "parseArgs URL --automation-api sets automation flag" {
+    const cmd = parseArgs(&.{ "zigBrowser", "https://example.com", "--automation-api" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.automation_api);
+    try std.testing.expect(cmd.open.automation_token_file == null);
+}
+
+test "parseArgs --automation-api URL is accepted" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--automation-api", "https://example.com" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.automation_api);
+    try std.testing.expectEqualStrings("https://example.com", cmd.open.url);
+}
+
+test "parseArgs duplicate --automation-api remains idempotent" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--automation-api", "https://example.com", "--automation-api" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.automation_api);
+}
+
+test "parseArgs --automation-token-file captures token path" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--automation-api", "--automation-token-file", "/tmp/zb.token", "https://example.com" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expect(cmd.open.automation_api);
+    try std.testing.expectEqualStrings("/tmp/zb.token", cmd.open.automation_token_file.?);
+}
+
+test "parseArgs --automation-token-file path starting with dash is usage" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--automation-api", "--automation-token-file", "-bad", "https://example.com" });
+    try std.testing.expect(cmd == .usage);
+}
+
+test "parseArgs rejects automation flags for screenshot" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--automation-api" });
+    try std.testing.expect(cmd == .usage);
 }
 
 test "parseArgs --screenshot yields .screenshot payload" {
