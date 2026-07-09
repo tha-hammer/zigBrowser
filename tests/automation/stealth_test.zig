@@ -89,3 +89,58 @@ test "behavior simulation event contains required click dimensions" {
     try std.testing.expect(!event.attrs.contains("selector"));
     try std.testing.expect(!event.attrs.contains("element.text"));
 }
+
+test "detection signal emits hashed DOM text, never raw text" {
+    var sink = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink.deinit();
+
+    stealth.emitDetectionSignal(&sink, .{
+        .source = .dom,
+        .kind = "modal",
+        .platform = "linkedin",
+        .confidence = 0.9,
+        .raw_text = "You've reached the weekly invitation limit",
+    }, "trace-3", "span-3");
+
+    try std.testing.expectEqual(@as(usize, 1), sink.events.items.len);
+    const event = sink.events.items[0];
+    try std.testing.expectEqualStrings("automation.detection.signal", event.name);
+    try std.testing.expect(event.attrs.contains("signal.source"));
+    try std.testing.expect(event.attrs.contains("signal.kind"));
+    try std.testing.expect(event.attrs.contains("dom.signal_hash"));
+    try std.testing.expect(event.attrs.contains("confidence"));
+
+    // Raw text must NOT appear anywhere
+    try std.testing.expect(!event.attrs.contains("text"));
+    try std.testing.expect(!event.attrs.contains("raw_text"));
+    try std.testing.expect(!event.attrs.containsValue("You've reached"));
+
+    // Hash is deterministic and 64 hex chars (SHA-256)
+    const hash = event.attrs.get("dom.signal_hash").?;
+    try std.testing.expectEqual(@as(usize, 64), hash.len);
+
+    // C47: trace propagation
+    try std.testing.expectEqualStrings("trace-3", event.trace_id);
+}
+
+test "detection signal hash is deterministic" {
+    var sink1 = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink1.deinit();
+    var sink2 = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink2.deinit();
+
+    const signal = stealth.DetectionSignal{
+        .source = .dom,
+        .kind = "modal",
+        .platform = "linkedin",
+        .confidence = 0.9,
+        .raw_text = "limit reached",
+    };
+
+    stealth.emitDetectionSignal(&sink1, signal, "t", "s");
+    stealth.emitDetectionSignal(&sink2, signal, "t", "s");
+
+    const hash1 = sink1.events.items[0].attrs.get("dom.signal_hash").?;
+    const hash2 = sink2.events.items[0].attrs.get("dom.signal_hash").?;
+    try std.testing.expectEqualStrings(hash1, hash2);
+}

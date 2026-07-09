@@ -75,11 +75,13 @@ pub const AttrMap = struct {
 
 pub const TestTelemetrySink = struct {
     events: std.ArrayListUnmanaged(TelemetryEvent),
+    owned_strings: std.ArrayListUnmanaged([]const u8),
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) TestTelemetrySink {
         return .{
             .events = .empty,
+            .owned_strings = .empty,
             .allocator = allocator,
         };
     }
@@ -88,7 +90,17 @@ pub const TestTelemetrySink = struct {
         for (self.events.items) |*event| {
             event.attrs.deinit();
         }
+        for (self.owned_strings.items) |s| {
+            self.allocator.free(s);
+        }
+        self.owned_strings.deinit(self.allocator);
         self.events.deinit(self.allocator);
+    }
+
+    pub fn dupeString(self: *TestTelemetrySink, src: []const u8) []const u8 {
+        const s = self.allocator.dupe(u8, src) catch return "";
+        self.owned_strings.append(self.allocator, s) catch {};
+        return s;
     }
 
     pub fn newAttrs(self: *TestTelemetrySink) AttrMap {
@@ -179,6 +191,44 @@ pub fn emitBehaviorSimulation(
     sink.addEvent(
         .{ .trace_id = trace_id, .span_id = parent_span_id },
         "automation.behavior.simulation",
+        attrs,
+    );
+}
+
+pub const SignalSource = enum { dom, network, session, engine };
+
+pub const DetectionSignal = struct {
+    source: SignalSource,
+    kind: []const u8,
+    platform: []const u8,
+    confidence: f64,
+    raw_text: []const u8,
+};
+
+pub fn emitDetectionSignal(
+    sink: *TestTelemetrySink,
+    signal: DetectionSignal,
+    trace_id: []const u8,
+    parent_span_id: []const u8,
+) void {
+    var attrs = sink.newAttrs();
+    attrs.put("signal.source", @tagName(signal.source));
+    attrs.put("signal.kind", signal.kind);
+    attrs.put("platform.name", signal.platform);
+    attrs.put("confidence", "0.0");
+
+    // Hash raw text — never emit raw (C48)
+    const truncated = if (signal.raw_text.len > 200) signal.raw_text[0..200] else signal.raw_text;
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(truncated);
+    const digest = hasher.finalResult();
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    const hash_str = sink.dupeString(&hex);
+    attrs.put("dom.signal_hash", hash_str);
+
+    sink.addEvent(
+        .{ .trace_id = trace_id, .span_id = parent_span_id },
+        "automation.detection.signal",
         attrs,
     );
 }
