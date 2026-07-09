@@ -63,3 +63,106 @@ def test_call_not_connected_raises():
     client = ZigBrowser(socket_path="/tmp/nonexistent.sock")
     with pytest.raises(ConnectionError, match="Not connected"):
         client.call("dom.click", {})
+
+
+def test_dom_click_wrapper(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        result = zb.dom.click("role=button[name='OK']", timeout_ms=5000)
+
+    assert result["ok"] is True
+    req = mock_uds_server.last_request()
+    assert req["method"] == "dom.click"
+    assert req["params"]["selector"] == "role=button[name='OK']"
+    assert req["params"]["options"]["timeout_ms"] == 5000
+
+
+def test_dom_fill_wrapper(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        result = zb.dom.fill("input#name", "Jane Doe")
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "dom.fill"
+    assert req["params"]["selector"] == "input#name"
+    assert req["params"]["value"] == "Jane Doe"
+
+
+def test_page_navigate_wrapper(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        zb.page.navigate("https://example.com", wait_until="networkidle")
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "page.navigate"
+    assert req["params"]["url"] == "https://example.com"
+    assert req["params"]["waitUntil"] == "networkidle"
+
+
+def test_linkedin_connect_wrapper(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        result = zb.linkedin.connect(
+            "https://www.linkedin.com/in/jane/", note="Hi Jane!"
+        )
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "linkedin.connect"
+    assert req["params"]["profileUrl"] == "https://www.linkedin.com/in/jane/"
+    assert req["params"]["note"] == "Hi Jane!"
+
+
+def test_linkedin_visit_wrapper(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        zb.linkedin.visit("https://www.linkedin.com/in/jane/")
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "linkedin.visit"
+    assert req["params"]["profileUrl"] == "https://www.linkedin.com/in/jane/"
+
+
+def test_instagram_follow_wrapper(mock_uds_server):
+    mock_uds_server.set_response({"jsonrpc": "2.0", "result": {"ok": True}, "id": 1})
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        zb.instagram.follow("https://www.instagram.com/janedoe/")
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "instagram.follow"
+    assert req["params"]["profileUrl"] == "https://www.instagram.com/janedoe/"
+
+
+def test_social_login_check_wrapper(mock_uds_server):
+    mock_uds_server.set_response({
+        "jsonrpc": "2.0",
+        "result": {"loggedIn": True, "platform": "linkedin", "username": "jane"},
+        "id": 1,
+    })
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        result = zb.social.login_check()
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "social.login_check"
+    assert result["loggedIn"] is True
+
+
+def test_social_rate_status_wrapper(mock_uds_server):
+    mock_uds_server.set_response({
+        "jsonrpc": "2.0",
+        "result": {"remaining_actions": 73, "daily_cap": 100},
+        "id": 1,
+    })
+
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        result = zb.social.rate_status()
+
+    req = mock_uds_server.last_request()
+    assert req["method"] == "social.rate_status"
+    assert result["remaining_actions"] == 73
