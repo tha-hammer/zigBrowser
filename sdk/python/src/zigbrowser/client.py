@@ -1,7 +1,10 @@
 import itertools
 import json
+import queue
 import socket
 import struct
+import threading
+from collections.abc import Callable
 
 from zigbrowser.errors import AutomationError
 
@@ -203,6 +206,10 @@ class ZigBrowser:
         self._socket_path = socket_path
         self._token = token
         self._sock: socket.socket | None = None
+        self._event_listeners: dict[str, list[Callable]] = {}
+        self._reader_thread: threading.Thread | None = None
+        self._reader_running = False
+        self._response_queue: queue.Queue = queue.Queue()
         self.dom = DomNamespace(self)
         self.page = PageNamespace(self)
         self.linkedin = LinkedInNamespace(self)
@@ -225,9 +232,50 @@ class ZigBrowser:
         self._sock = sock
 
     def disconnect(self) -> None:
+        self._reader_running = False
         if self._sock:
             self._sock.close()
             self._sock = None
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=1.0)
+            self._reader_thread = None
+
+    def on(self, event_type: str, callback: Callable) -> None:
+        self._event_listeners.setdefault(event_type, []).append(callback)
+        if self._sock and not self._reader_running:
+            self._start_reader()
+
+    def _start_reader(self) -> None:
+        self._reader_running = True
+        self._reader_thread = threading.Thread(
+            target=self._read_loop, daemon=True
+        )
+        self._reader_thread.start()
+
+    def _read_loop(self) -> None:
+        while self._reader_running and self._sock:
+            try:
+                length_bytes = self._recv_exact(4)
+                if not length_bytes:
+                    break
+                length = struct.unpack(">I", length_bytes)[0]
+                data = self._recv_exact(length)
+                if not data:
+                    break
+                parsed = json.loads(data.decode("utf-8"))
+                if "id" in parsed:
+                    self._response_queue.put(parsed)
+                elif "method" in parsed:
+                    self._dispatch_event(
+                        parsed.get("method", ""),
+                        parsed.get("params", {}),
+                    )
+            except (OSError, ConnectionError):
+                break
+
+    def _dispatch_event(self, method: str, params: dict) -> None:
+        for cb in self._event_listeners.get(method, []):
+            cb(params)
 
     def call(self, method: str, params: dict | None = None) -> dict:
         if not self._sock:
@@ -240,8 +288,12 @@ class ZigBrowser:
             "id": next(self._id_counter),
         }
         self._send(json.dumps(request))
-        response = self._recv()
-        parsed = json.loads(response)
+
+        if self._reader_running:
+            parsed = self._response_queue.get(timeout=30.0)
+        else:
+            response = self._recv()
+            parsed = json.loads(response)
 
         if "error" in parsed:
             raise AutomationError.from_rpc_error(parsed["error"])
@@ -257,11 +309,16 @@ class ZigBrowser:
         data = self._recv_exact(length)
         return data.decode("utf-8")
 
-    def _recv_exact(self, n: int) -> bytes:
+    def _recv_exact(self, n: int) -> bytes | None:
         data = b""
         while len(data) < n:
-            chunk = self._sock.recv(n - len(data))
+            try:
+                chunk = self._sock.recv(n - len(data))
+            except OSError:
+                return None
             if not chunk:
+                if self._reader_running:
+                    return None
                 raise ConnectionError("Connection closed")
             data += chunk
         return data
