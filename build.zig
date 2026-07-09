@@ -347,6 +347,37 @@ pub fn build(b: *std.Build) void {
     const stealth_tests = b.addTest(.{ .root_module = stealth_tests_module });
     const run_stealth_tests = b.addRunArtifact(stealth_tests);
 
+    // --- Phase 5: Social contracts ---
+    const social_module = b.createModule(.{
+        .root_source_file = b.path("src/social.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const social_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/social_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    social_tests_module.addImport("social", social_module);
+    const social_tests = b.addTest(.{ .root_module = social_tests_module });
+    const run_social_tests = b.addRunArtifact(social_tests);
+    run_social_tests.skip_foreign_checks = true;
+
+    const linkedin_module = b.createModule(.{
+        .root_source_file = b.path("src/linkedin.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const linkedin_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/linkedin_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    linkedin_tests_module.addImport("linkedin", linkedin_module);
+    const linkedin_tests = b.addTest(.{ .root_module = linkedin_tests_module });
+    const run_linkedin_tests = b.addRunArtifact(linkedin_tests);
+    run_linkedin_tests.skip_foreign_checks = true;
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
@@ -360,6 +391,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_pacing_tests.step);
     test_step.dependOn(&run_session_tests.step);
     test_step.dependOn(&run_stealth_tests.step);
+    test_step.dependOn(&run_social_tests.step);
+    test_step.dependOn(&run_linkedin_tests.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
