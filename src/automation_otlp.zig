@@ -14,7 +14,7 @@ pub const AutomationTelemetryExportConfig = struct {
 
     pub fn fromEndpoint(endpoint: ?[]const u8) AutomationTelemetryExportConfig {
         const value = endpoint orelse return .{};
-        if (!std.mem.startsWith(u8, value, "http://") and !std.mem.startsWith(u8, value, "https://")) {
+        if (!isHttpEndpoint(value)) {
             return .{ .diagnostic = .invalid_endpoint };
         }
         return .{
@@ -23,6 +23,11 @@ pub const AutomationTelemetryExportConfig = struct {
         };
     }
 };
+
+fn isHttpEndpoint(endpoint: []const u8) bool {
+    return std.mem.startsWith(u8, endpoint, "http://") or
+        std.mem.startsWith(u8, endpoint, "https://");
+}
 
 pub const TransportSpan = struct {
     name: []const u8,
