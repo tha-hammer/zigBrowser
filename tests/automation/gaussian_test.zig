@@ -41,3 +41,43 @@ test "clamped gaussian with min=max returns constant" {
         try std.testing.expectEqual(@as(f64, 50.0), sample);
     }
 }
+
+test "typing delays: per-char in [80,200], word boundary in [300,600]" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+
+    const profile = gaussian.TypingProfile{
+        .mu_ms = 120.0,
+        .sigma_ms = 40.0,
+        .min_ms = 80.0,
+        .max_ms = 200.0,
+        .word_pause_min_ms = 300.0,
+        .word_pause_max_ms = 600.0,
+    };
+
+    const delays = try gaussian.computeTypingDelays(allocator, random, "hello world", profile);
+    defer allocator.free(delays);
+
+    try std.testing.expectEqual(@as(usize, 11), delays.len);
+
+    for (delays, 0..) |delay, i| {
+        if ("hello world"[i] == ' ') {
+            try std.testing.expect(delay >= 300.0);
+            try std.testing.expect(delay <= 600.0);
+        } else {
+            try std.testing.expect(delay >= 80.0);
+            try std.testing.expect(delay <= 200.0);
+        }
+    }
+}
+
+test "typing delays: empty string returns empty slice" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+    const profile = gaussian.TypingProfile.default();
+    const delays = try gaussian.computeTypingDelays(allocator, random, "", profile);
+    defer allocator.free(delays);
+    try std.testing.expectEqual(@as(usize, 0), delays.len);
+}

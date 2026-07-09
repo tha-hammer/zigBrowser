@@ -1,5 +1,11 @@
 const std = @import("std");
 
+pub const TraceContext = struct {
+    trace_id: []const u8 = "",
+    command_id: []const u8 = "",
+    session_id: []const u8 = "",
+};
+
 pub const PacingConfig = struct {
     min_delay_ms: u32 = 3000,
     max_delay_ms: u32 = 8000,
@@ -42,6 +48,44 @@ pub const RateLimiter = struct {
         const range = self.config.max_delay_ms - self.config.min_delay_ms;
         const delay = self.config.min_delay_ms + @as(u32, @intFromFloat(random.float(f64) * @as(f64, @floatFromInt(range))));
         const rem = self.config.daily_cap - self.actions_today;
+
+        return .{
+            .delay_ms = delay,
+            .remaining_actions = rem,
+            .cap_reached = rem == 0,
+        };
+    }
+
+    pub fn recordActionEmit(
+        self: *RateLimiter,
+        random: std.Random,
+        sink: anytype,
+        ctx: TraceContext,
+        platform: []const u8,
+    ) !PacingDecision {
+        self.maybeResetDay();
+
+        if (self.actions_today >= self.config.daily_cap) {
+            var attrs = sink.newAttrs();
+            attrs.put("trace_id", ctx.trace_id);
+            attrs.put("command_id", ctx.command_id);
+            attrs.put("platform.name", platform);
+            attrs.putBool("pacing.cap_reached", true);
+            sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" }, "automation.pacing.decision", attrs);
+            return error.PlatformRateLimited;
+        }
+
+        self.actions_today += 1;
+        const range = self.config.max_delay_ms - self.config.min_delay_ms;
+        const delay = self.config.min_delay_ms + @as(u32, @intFromFloat(random.float(f64) * @as(f64, @floatFromInt(range))));
+        const rem = self.config.daily_cap - self.actions_today;
+
+        var attrs = sink.newAttrs();
+        attrs.put("trace_id", ctx.trace_id);
+        attrs.put("command_id", ctx.command_id);
+        attrs.put("platform.name", platform);
+        attrs.putBool("pacing.cap_reached", rem == 0);
+        sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" }, "automation.pacing.decision", attrs);
 
         return .{
             .delay_ms = delay,

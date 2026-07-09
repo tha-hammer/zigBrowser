@@ -270,6 +270,83 @@ pub fn build(b: *std.Build) void {
     const run_automation_router_tests = b.addRunArtifact(automation_router_tests);
     run_automation_router_tests.skip_foreign_checks = true;
 
+    // --- Phase 4: Gaussian tests ---
+    const gaussian_module = b.createModule(.{
+        .root_source_file = b.path("src/automation/gaussian.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const gaussian_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation/gaussian_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gaussian_tests_module.addImport("gaussian", gaussian_module);
+    const gaussian_tests = b.addTest(.{ .root_module = gaussian_tests_module });
+    const run_gaussian_tests = b.addRunArtifact(gaussian_tests);
+
+    // --- Phase 4: Bezier tests ---
+    const bezier_module = b.createModule(.{
+        .root_source_file = b.path("src/automation/bezier.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const bezier_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation/bezier_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bezier_tests_module.addImport("bezier", bezier_module);
+    const bezier_tests = b.addTest(.{ .root_module = bezier_tests_module });
+    const run_bezier_tests = b.addRunArtifact(bezier_tests);
+
+    const stealth_module = b.createModule(.{
+        .root_source_file = b.path("src/automation/stealth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // --- Phase 4: Pacing tests ---
+    const pacing_module = b.createModule(.{
+        .root_source_file = b.path("src/automation/pacing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const pacing_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation/pacing_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pacing_tests_module.addImport("pacing", pacing_module);
+    pacing_tests_module.addImport("stealth", stealth_module);
+    const pacing_tests = b.addTest(.{ .root_module = pacing_tests_module });
+    const run_pacing_tests = b.addRunArtifact(pacing_tests);
+
+    // --- Phase 4: Session tests ---
+    const session_module = b.createModule(.{
+        .root_source_file = b.path("src/automation/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const session_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation/session_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    session_tests_module.addImport("session", session_module);
+    const session_tests = b.addTest(.{ .root_module = session_tests_module });
+    const run_session_tests = b.addRunArtifact(session_tests);
+
+    // --- Phase 4: Stealth telemetry tests ---
+    const stealth_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation/stealth_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stealth_tests_module.addImport("stealth", stealth_module);
+    const stealth_tests = b.addTest(.{ .root_module = stealth_tests_module });
+    const run_stealth_tests = b.addRunArtifact(stealth_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
@@ -278,6 +355,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_error_tests.step);
     test_step.dependOn(&run_automation_router_tests.step);
     test_step.dependOn(&ipc_windows_compile.step);
+    test_step.dependOn(&run_gaussian_tests.step);
+    test_step.dependOn(&run_bezier_tests.step);
+    test_step.dependOn(&run_pacing_tests.step);
+    test_step.dependOn(&run_session_tests.step);
+    test_step.dependOn(&run_stealth_tests.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
