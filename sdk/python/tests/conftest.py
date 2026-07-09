@@ -12,7 +12,6 @@ class MockUDSServer:
         self.path = path
         self._response: dict | None = None
         self._last_request: dict | None = None
-        self._notifications: list[dict] = []
         self._server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server_sock.bind(self.path)
         self._server_sock.listen(1)
