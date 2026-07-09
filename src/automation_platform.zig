@@ -27,6 +27,7 @@ pub const ResultStatus = enum {
     success,
     unsupported,
     dropped,
+    failed,
 };
 
 pub const InputCapability = struct {
@@ -179,6 +180,24 @@ pub const NetworkOperation = enum {
     start,
     stop,
     event,
+};
+
+pub const ContentWorld = enum {
+    isolated,
+    automation,
+    page,
+};
+
+pub const EvalKind = enum {
+    synthetic_input,
+};
+
+pub const PlatformErrorClass = enum {
+    eval_failed,
+};
+
+pub const DebtKind = enum {
+    network_interception,
 };
 
 pub const DropReason = enum {
@@ -367,6 +386,157 @@ pub const WebView2NetworkInterceptor = struct {
     }
 };
 
+pub const ActionResult = struct {
+    status: ResultStatus = .success,
+};
+
+pub const FakePlatformEval = struct {
+    call_count: usize = 0,
+    fail_next: bool = false,
+    last_content_world: ContentWorld = .isolated,
+    last_eval_kind: EvalKind = .synthetic_input,
+    last_script_storage: [1024]u8 = undefined,
+    last_script: []const u8 = "",
+
+    pub fn evaluate(
+        self: *FakePlatformEval,
+        content_world: ContentWorld,
+        eval_kind: EvalKind,
+        script: []const u8,
+    ) !ActionResult {
+        self.call_count += 1;
+        self.last_content_world = content_world;
+        self.last_eval_kind = eval_kind;
+        if (script.len > self.last_script_storage.len) return error.ScriptTooLarge;
+        @memcpy(self.last_script_storage[0..script.len], script);
+        self.last_script = self.last_script_storage[0..script.len];
+
+        if (self.fail_next) {
+            self.fail_next = false;
+            return error.PlatformEvalFailed;
+        }
+        return .{ .status = .success };
+    }
+};
+
+pub const WebKitGtkInputDispatcher = struct {
+    eval: *FakePlatformEval,
+    page_id: []const u8,
+    telemetry_sink: ?*InMemoryPlatformTelemetry = null,
+
+    pub fn init(eval: *FakePlatformEval, page_id: []const u8) WebKitGtkInputDispatcher {
+        return .{ .eval = eval, .page_id = page_id };
+    }
+
+    pub fn dispatchMouse(self: *WebKitGtkInputDispatcher, input: MouseInput) !ActionResult {
+        if (input.trial) return .{ .status = .success };
+        var script_storage: [512]u8 = undefined;
+        const script = try syntheticMouseScript(script_storage[0..], input);
+        const result = self.eval.evaluate(.isolated, .synthetic_input, script) catch |err| {
+            self.recordEvalSpan(.failed, .eval_failed);
+            return err;
+        };
+        self.recordEvalSpan(.success, null);
+        return result;
+    }
+
+    pub fn dispatchKey(self: *WebKitGtkInputDispatcher, input: KeyInput) !ActionResult {
+        if (input.trial) return .{ .status = .success };
+        var script_storage: [512]u8 = undefined;
+        const script = try syntheticKeyScript(script_storage[0..], input);
+        const result = self.eval.evaluate(.isolated, .synthetic_input, script) catch |err| {
+            self.recordEvalSpan(.failed, .eval_failed);
+            return err;
+        };
+        self.recordEvalSpan(.success, null);
+        return result;
+    }
+
+    fn recordEvalSpan(self: *WebKitGtkInputDispatcher, status: ResultStatus, error_class: ?PlatformErrorClass) void {
+        if (self.telemetry_sink) |sink| {
+            sink.record(.{
+                .name = "automation.platform.eval",
+                .backend = .webkitgtk,
+                .page_id = self.page_id,
+                .input_mode = .js_synthetic,
+                .content_world = .isolated,
+                .eval_kind = .synthetic_input,
+                .platform_error_class = error_class,
+                .result_status = status,
+            });
+        }
+    }
+};
+
+pub const WebKitGtkNetworkInterceptor = struct {
+    page_id: []const u8,
+    telemetry_sink: ?*InMemoryPlatformTelemetry = null,
+
+    pub fn init(page_id: []const u8) WebKitGtkNetworkInterceptor {
+        return .{ .page_id = page_id };
+    }
+
+    pub fn capability(self: *const WebKitGtkNetworkInterceptor) NetworkCapability {
+        _ = self;
+        return .{
+            .support = .unsupported,
+            .unsupported_reason = .web_extension_required,
+        };
+    }
+
+    pub fn start(self: *WebKitGtkNetworkInterceptor) !void {
+        if (self.telemetry_sink) |sink| {
+            sink.record(.{
+                .name = "automation.network.capability",
+                .backend = .webkitgtk,
+                .page_id = self.page_id,
+                .network_capability = .unsupported,
+                .network_operation = .start,
+                .unsupported_reason = .web_extension_required,
+                .debt_kind = .network_interception,
+                .result_status = .unsupported,
+            });
+        }
+        return error.CapabilityUnsupported;
+    }
+};
+
+fn syntheticMouseScript(storage: []u8, input: MouseInput) ![]const u8 {
+    const x: i64 = @intFromFloat(input.x);
+    const y: i64 = @intFromFloat(input.y);
+    const button = input.button orelse "left";
+    return std.fmt.bufPrint(
+        storage,
+        "document.elementFromPoint({d},{d})?.dispatchEvent(new PointerEvent('{s}',{{button:'{s}',bubbles:true}}));",
+        .{ x, y, mouseEventName(input.action), button },
+    ) catch return error.ScriptTooLarge;
+}
+
+fn syntheticKeyScript(storage: []u8, input: KeyInput) ![]const u8 {
+    return std.fmt.bufPrint(
+        storage,
+        "document.activeElement?.dispatchEvent(new KeyboardEvent('{s}',{{key:'{s}',bubbles:true}}));",
+        .{ keyEventName(input.action), input.key },
+    ) catch return error.ScriptTooLarge;
+}
+
+fn mouseEventName(action: MouseAction) []const u8 {
+    return switch (action) {
+        .move => "pointermove",
+        .down => "pointerdown",
+        .up => "pointerup",
+        .click => "click",
+    };
+}
+
+fn keyEventName(action: KeyAction) []const u8 {
+    return switch (action) {
+        .down => "keydown",
+        .up => "keyup",
+        .type => "keydown",
+    };
+}
+
 const RedactedUrl = struct {
     host: []const u8,
     path_hash: []const u8,
@@ -420,10 +590,15 @@ pub const PlatformSpan = struct {
     name: []const u8 = "automation.network.capability",
     backend: BackendName = .webkitgtk,
     page_id: []const u8 = "",
+    input_mode: InputMode = .js_synthetic,
+    content_world: ?ContentWorld = null,
+    eval_kind: ?EvalKind = null,
     network_capability: NetworkSupport = .unsupported,
     network_operation: NetworkOperation = .capability,
     unsupported_reason: ?UnsupportedReason = null,
     drop_reason: ?DropReason = null,
+    debt_kind: ?DebtKind = null,
+    platform_error_class: ?PlatformErrorClass = null,
     result_status: ResultStatus = .unsupported,
 };
 
@@ -596,4 +771,72 @@ test "P3.3 WebView2 NetworkInterceptor bounded queue drops with diagnostics" {
     try testing.expectEqual(DropReason.queue_full, telemetry.last_span.drop_reason.?);
     try testing.expect(interceptor.pollEvent() != null);
     try testing.expect(interceptor.pollEvent() == null);
+}
+
+test "P3.4 WebKitGTK synthetic input evaluates isolated-world JS command shape" {
+    var eval = FakePlatformEval{};
+    var telemetry = InMemoryPlatformTelemetry.init();
+    var dispatcher = WebKitGtkInputDispatcher.init(&eval, "page-gtk");
+    dispatcher.telemetry_sink = &telemetry;
+
+    const mouse_result = try dispatcher.dispatchMouse(.{
+        .action = .click,
+        .x = 12,
+        .y = 34,
+        .button = "left",
+    });
+    try testing.expectEqual(ResultStatus.success, mouse_result.status);
+    try testing.expectEqual(@as(usize, 1), eval.call_count);
+    try testing.expectEqual(ContentWorld.isolated, eval.last_content_world);
+    try testing.expectEqual(EvalKind.synthetic_input, eval.last_eval_kind);
+    try testing.expect(std.mem.indexOf(u8, eval.last_script, "dispatchEvent") != null);
+    try testing.expect(std.mem.indexOf(u8, eval.last_script, "PointerEvent") != null);
+    try testing.expect(std.mem.indexOf(u8, eval.last_script, "window.") == null);
+    try testing.expectEqualStrings("automation.platform.eval", telemetry.last_span.name);
+    try testing.expectEqual(InputMode.js_synthetic, telemetry.last_span.input_mode);
+    try testing.expectEqual(ContentWorld.isolated, telemetry.last_span.content_world.?);
+
+    _ = try dispatcher.dispatchKey(.{
+        .action = .type,
+        .key = "A",
+        .text = "A",
+    });
+    try testing.expectEqual(@as(usize, 2), eval.call_count);
+    try testing.expect(std.mem.indexOf(u8, eval.last_script, "KeyboardEvent") != null);
+}
+
+test "P3.4 WebKitGTK eval failure maps to platform error telemetry" {
+    var eval = FakePlatformEval{ .fail_next = true };
+    var telemetry = InMemoryPlatformTelemetry.init();
+    var dispatcher = WebKitGtkInputDispatcher.init(&eval, "page-gtk");
+    dispatcher.telemetry_sink = &telemetry;
+
+    try testing.expectError(error.PlatformEvalFailed, dispatcher.dispatchMouse(.{
+        .action = .click,
+        .x = 1,
+        .y = 2,
+        .button = "left",
+    }));
+
+    try testing.expectEqualStrings("automation.platform.eval", telemetry.last_span.name);
+    try testing.expectEqual(ResultStatus.failed, telemetry.last_span.result_status);
+    try testing.expectEqual(PlatformErrorClass.eval_failed, telemetry.last_span.platform_error_class.?);
+}
+
+test "P3.4 WebKitGTK NetworkInterceptor start returns unsupported Web Extension debt" {
+    var telemetry = InMemoryPlatformTelemetry.init();
+    var network = WebKitGtkNetworkInterceptor.init("page-gtk");
+    network.telemetry_sink = &telemetry;
+
+    const capability = network.capability();
+    try testing.expectEqual(NetworkSupport.unsupported, capability.support);
+    try testing.expectEqual(UnsupportedReason.web_extension_required, capability.unsupported_reason.?);
+
+    try testing.expectError(error.CapabilityUnsupported, network.start());
+    try testing.expectEqualStrings("automation.network.capability", telemetry.last_span.name);
+    try testing.expectEqual(BackendName.webkitgtk, telemetry.last_span.backend);
+    try testing.expectEqual(NetworkSupport.unsupported, telemetry.last_span.network_capability);
+    try testing.expectEqual(UnsupportedReason.web_extension_required, telemetry.last_span.unsupported_reason.?);
+    try testing.expectEqual(DebtKind.network_interception, telemetry.last_span.debt_kind.?);
+    try testing.expectEqual(ResultStatus.unsupported, telemetry.last_span.result_status);
 }
