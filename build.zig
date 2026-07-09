@@ -203,6 +203,17 @@ pub fn build(b: *std.Build) void {
     const ipc_windows_step = b.step("ipc-test-win", "Compile backend-free IPC module for x86_64-windows");
     ipc_windows_step.dependOn(&ipc_windows_compile.step);
 
+    const afunix_spike_module = b.createModule(.{
+        .root_source_file = b.path("tests/spikes/af_unix_roundtrip.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const afunix_spike_tests = b.addTest(.{ .root_module = afunix_spike_module });
+    const run_afunix_spike_tests = b.addRunArtifact(afunix_spike_tests);
+    run_afunix_spike_tests.skip_foreign_checks = true;
+    const afunix_spike_step = b.step("automation-afunix-spike-win", "Run AF_UNIX automation transport spike");
+    afunix_spike_step.dependOn(&run_afunix_spike_tests.step);
+
     const nav_policy_module = b.createModule(.{
         .root_source_file = b.path("src/nav_policy.zig"),
         .target = target,

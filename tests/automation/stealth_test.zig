@@ -144,3 +144,73 @@ test "detection signal hash is deterministic" {
     const hash2 = sink2.events.items[0].attrs.get("dom.signal_hash").?;
     try std.testing.expectEqualStrings(hash1, hash2);
 }
+
+test "telemetry fixture: stealth.assessment has all required dimensions" {
+    var sink = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink.deinit();
+
+    inline for (std.meta.fields(stealth.DetectionSurface)) |field| {
+        const surface: stealth.DetectionSurface = @enumFromInt(field.value);
+        stealth.emitStealthAssessment(&sink, .{
+            .surface = surface,
+            .risk_level = .none,
+            .script_world = "zbAutomation",
+            .observer_cleanup_count = 0,
+            .prototype_modified = false,
+        }, "trace-fixture", "span-fixture");
+    }
+
+    const required_keys = [_][]const u8{
+        "stealth.surface", "stealth.risk_level", "stealth.control",
+    };
+    for (sink.events.items) |event| {
+        for (required_keys) |key| {
+            try std.testing.expect(event.attrs.contains(key));
+        }
+    }
+}
+
+test "telemetry fixture: redaction scanner finds zero forbidden keys" {
+    var sink = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink.deinit();
+
+    stealth.emitStealthAssessment(&sink, .{
+        .surface = .isolated_world,
+        .risk_level = .none,
+        .script_world = "zbAutomation",
+        .observer_cleanup_count = 0,
+        .prototype_modified = false,
+    }, "t", "s");
+    stealth.emitBehaviorSimulation(&sink, .{
+        .kind = .typing,
+        .typing = .{
+            .profile_name = "default",
+            .distribution_name = "gaussian",
+            .char_count = 5,
+            .delay_min_ms = 80,
+            .delay_max_ms = 200,
+            .delay_mean_ms = 120,
+        },
+    }, "t", "s");
+    stealth.emitDetectionSignal(&sink, .{
+        .source = .dom,
+        .kind = "modal",
+        .platform = "linkedin",
+        .confidence = 0.9,
+        .raw_text = "limit reached",
+    }, "t", "s");
+
+    const forbidden = [_][]const u8{
+        "cookie",  "token",          "password",
+        "secret",  "bearer",         "text",
+        "message", "value",          "raw_text",
+        "screenshot", "dom_snapshot", "local_storage",
+        "session_storage",
+    };
+
+    for (sink.events.items) |event| {
+        for (forbidden) |key| {
+            try std.testing.expect(!event.attrs.contains(key));
+        }
+    }
+}
