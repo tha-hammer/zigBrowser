@@ -30,3 +30,50 @@ test "cubic bezier midpoint is on curve" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), mid.x, 1e-10);
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), mid.y, 1e-10);
 }
+
+test "mouse path starts at origin and ends near target" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+
+    const path = try bezier.generateMousePath(
+        allocator,
+        random,
+        .{ .x = 100, .y = 100 },
+        .{ .x = 500, .y = 300 },
+        bezier.MouseProfile.default(),
+    );
+    defer allocator.free(path.points);
+
+    try std.testing.expect(path.points.len >= 10);
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), path.points[0].x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), path.points[0].y, 1e-6);
+
+    const last = path.points[path.points.len - 1];
+    const dx = last.x - 500.0;
+    const dy = last.y - 300.0;
+    const dist = @sqrt(dx * dx + dy * dy);
+    try std.testing.expect(dist < 30.0);
+
+    try std.testing.expect(path.duration_ms > 0);
+    try std.testing.expect(path.dwell_ms >= 50.0);
+    try std.testing.expect(path.dwell_ms <= 150.0);
+}
+
+test "mouse path zero distance produces minimal path" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+
+    const path = try bezier.generateMousePath(
+        allocator,
+        random,
+        .{ .x = 200, .y = 200 },
+        .{ .x = 200, .y = 200 },
+        bezier.MouseProfile.default(),
+    );
+    defer allocator.free(path.points);
+
+    try std.testing.expect(path.points.len >= 1);
+    try std.testing.expect(path.duration_ms == 0 or path.duration_ms < 50);
+}
