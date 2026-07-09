@@ -110,6 +110,79 @@ pub const TestTelemetrySink = struct {
     }
 };
 
+pub const BehaviorKind = enum { typing, click, session };
+
+pub const TypingDims = struct {
+    profile_name: []const u8,
+    distribution_name: []const u8,
+    char_count: u32,
+    delay_min_ms: f64,
+    delay_max_ms: f64,
+    delay_mean_ms: f64,
+};
+
+pub const ClickDims = struct {
+    distance_px: f64,
+    duration_ms: f64,
+    overshoot_px: f64,
+    dwell_ms: f64,
+    input_mode: []const u8,
+};
+
+pub const SessionDims = struct {
+    warmup_ms: u64,
+    break_count: u32,
+    session_elapsed_ms: u64,
+    daily_remaining: u32,
+};
+
+pub const BehaviorEvent = struct {
+    kind: BehaviorKind,
+    typing: TypingDims = undefined,
+    click: ClickDims = undefined,
+    session: SessionDims = undefined,
+};
+
+pub fn emitBehaviorSimulation(
+    sink: *TestTelemetrySink,
+    event: BehaviorEvent,
+    trace_id: []const u8,
+    parent_span_id: []const u8,
+) void {
+    var attrs = sink.newAttrs();
+    attrs.put("behavior.kind", @tagName(event.kind));
+
+    switch (event.kind) {
+        .typing => {
+            attrs.put("profile.name", event.typing.profile_name);
+            attrs.put("distribution.name", event.typing.distribution_name);
+            attrs.put("char_count", "0");
+            attrs.put("delay_min_ms", "0");
+            attrs.put("delay_max_ms", "0");
+            attrs.put("delay_mean_ms", "0");
+        },
+        .click => {
+            attrs.put("distance_px", "0");
+            attrs.put("duration_ms", "0");
+            attrs.put("overshoot_px", "0");
+            attrs.put("dwell_ms", "0");
+            attrs.put("input.mode", event.click.input_mode);
+        },
+        .session => {
+            attrs.put("warmup_ms", "0");
+            attrs.put("break_count", "0");
+            attrs.put("session_elapsed_ms", "0");
+            attrs.put("daily.remaining", "0");
+        },
+    }
+
+    sink.addEvent(
+        .{ .trace_id = trace_id, .span_id = parent_span_id },
+        "automation.behavior.simulation",
+        attrs,
+    );
+}
+
 pub fn emitStealthAssessment(
     sink: *TestTelemetrySink,
     assessment: StealthAssessment,
