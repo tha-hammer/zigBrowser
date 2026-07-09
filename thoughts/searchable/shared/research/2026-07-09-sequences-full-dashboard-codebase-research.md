@@ -7,7 +7,7 @@ repository: zigBrowser
 cross_repo: /home/maceo/ntm_Dev/sequences
 topic: "Full Dashboard Codebase Research — Automation Control + Sequences Management UI"
 tags: [research, codebase, dashboard, automation, sequences, zigBrowser, recruiter-ui, design-system, database, api]
-status: complete
+status: revised
 last_updated: 2026-07-09
 last_updated_by: SAI
 ---
@@ -26,7 +26,7 @@ Research both the zigBrowser and sequences codebases to ground the full dashboar
 
 ## Summary
 
-zigBrowser has a built automation API (JSON-RPC 2.0 verb router, injected automation.js, Python/Node SDKs, CLI, anti-detection/pacing, privacy-aware telemetry) but the runtime wiring is incomplete — `--automation-api` is parsed but not consumed in the actual app run path (`src/app.zig:21-29`), and no external API or database integration exists. The sequences app has a complete Express + React + PostgreSQL stack with sequence CRUD, a canonical event ledger (`sequence_events`, 13 event types), funnel metrics computation, a recruiter-ui Next.js SPA with 8 sequence UI components, and a design system (@cosmic/ds, 35 components). The dashboard must bridge these two worlds: zigBrowser hosting the UI locally and pushing/reading automation + sequence data through an exposed API (being designed by the Phase 0 agent).
+zigBrowser has a built automation API (JSON-RPC 2.0 verb router, injected automation.js, Python/Node SDKs, CLI, anti-detection/pacing, privacy-aware telemetry) but the runtime wiring is incomplete — `--automation-api` is parsed but not consumed in the actual app run path (`src/app.zig:21-29`), and no database integration implementation exists. The sequences app has a complete Express + React + PostgreSQL stack with sequence CRUD, a canonical event ledger (`sequence_events`, 13 event types), funnel metrics computation, a recruiter-ui Next.js SPA with 8 sequence UI components, and a design system (@cosmic/ds, 35 components). The `zb-sequences-v1` contract (`sequences-integration-api-db-layer-plan.md`) bridges these two worlds — 12 facade methods, HMAC service auth, idempotency — but implementation has not started. Four production blockers remain: automation flag wiring in app.zig, processInboundMailboxEvent stub, missing event types in CHECK constraint, and analytics SQL filter gap (see Prerequisites section).
 
 ---
 
@@ -54,7 +54,7 @@ The verb registry lives in `src/automation/router.zig:6-20`, defining 13 verbs a
 | page | page_evaluate | `page.evaluate` | `expression` | — |
 | page | page_screenshot | `page.screenshot` | — | `fullPage` |
 
-Selector format: `kind=body` where kind is one of `role|testid|text|css|xpath` (enforced in `src/automation_script/automation.js:299`).
+Selector format: `kind=body` where kind is one of `role|testid|text|css|xpath` (enforced in `src/automation_script/automation.js:293-303`).
 
 #### A.2 Transport / Framing
 
@@ -63,7 +63,7 @@ Selector format: `kind=body` where kind is one of `role|testid|text|css|xpath` (
 - AutomationError codes `-32001` through `-32012` (`automation_rpc.zig:14-27`): element_not_found, element_not_visible, element_not_stable, element_obscured, element_disabled, element_not_editable, navigation_timeout, navigation_failed, action_timeout, platform_rate_limited, session_invalid, cancelled.
 - Max line length 64KiB (`automation_rpc.zig:5`).
 
-`src/automation_websocket.zig` implements RFC6455 WebSocket upgrade + JSON-RPC event notifications with a bounded `SubscriberQueue` (capacity-limited FIFO, drops slow subscribers).
+`src/automation_websocket.zig` implements the `Sec-WebSocket-Accept` key computation (SHA-1 + base64 per RFC6455) and a bounded `SubscriberQueue` (capacity-limited FIFO at `automation_websocket.zig:64-96`, drops slow subscribers) for JSON-RPC event notifications. No HTTP upgrade request parser exists in this file — upgrade handling is expected to be performed by the transport layer.
 
 SDK wire format is 4-byte big-endian length prefix + UTF-8 JSON payload (distinct from the line-based format in the Zig router).
 
@@ -128,7 +128,7 @@ Privacy contract: raw selector text, typed values, URL paths/queries, and modal 
 
 #### B.1 WebKitGTK Shell
 
-`src/webkit_shim.c:1103` (`zb_app_run`) creates the GTK application:
+`src/webkit_shim.c:1103` (`zb_app_run`) initializes GTK via `gtk_init_check()` and creates a plain `GtkWindow` (no `GtkApplication` object):
 - `WebKitWebContext` via `webkit_web_context_get_default()` (line 1122)
 - `WebKitUserContentManager` (line 1128)
 - `WebKitWebView` via `webkit_web_view_new_with_user_content_manager` (line 1135-1136)
@@ -143,7 +143,7 @@ Default URL when launched bare: `https://cosmic-hr-development.up.railway.app/` 
 
 `install_ipc_handler()` (`src/webkit_shim.c:530-548`) registers a `zbHost` script-message handler on the `WebKitUserContentManager`. The `on_ipc_message_received()` handler (line 550-608) parses JSON (`cmd`/`args`), dispatches to `zb_ipc_dispatch()` (`src/ipc.zig:41-73`), and returns a JSC value. Page-side JS calls `window.webkit.messageHandlers.zbHost.postMessage(...)`.
 
-Current `zb_ipc_dispatch` handles only 4 commands: `ping`, `add`, `echo`, `os.info` — with a 4096-byte C-string result ceiling (identified as a prerequisite to fix in the Phase 1 plan).
+Current `zb_ipc_dispatch` handles only 4 commands: `ping`, `add`, `echo`, `os.info`. The only fixed-size buffer in `ipc.zig` is 128 bytes (error message buffer); a 4096-byte limit may exist in the C-side JSON helpers (`webkit_shim.c`) but was not confirmed at the claimed location. The Phase 1 plan identifies IPC result size as a prerequisite to fix.
 
 #### B.3 Content Injection Status
 
@@ -187,16 +187,16 @@ All migrations in `/home/maceo/ntm_Dev/sequences/database/migrations/`.
 
 | Table | Migration | Key Columns | RLS |
 |---|---|---|---|
-| `sequences` | 090:17-29 | id, org_id, owner_user_id, name, status (draft/pending_approval/active/archived), job_id, approved_plan JSONB (added by 100) | Two-layer (org+user) |
+| `sequences` | 090:17-29, extended 100 | id, org_id, owner_user_id, name, status (090: draft/pending_approval/archived; 100 adds 'active' by dropping and re-creating the CHECK), job_id, approved_plan JSONB (added by 100) | Two-layer (org+user) |
 | `sequence_enrollments` | 090:35-76 | id, sequence_id, candidate_source, candidate_ref_id (generated), inclusion, skip_reason, status (draft/active/sent/paused/suppressed/bounced/stopped, added by 100), current_step_index, next_send_at | Two-layer (org+user) |
-| `sequence_messages` | 090:97-134, extended 110:74-146 | id, sequence_id, enrollment_id, direction, subject, body, grounding_status, evidence_map JSONB, review_queue JSONB, status (draft/sent/received/failed), rendered_subject/body, provider_message_id, provider_thread_id | Two-layer (org+user) |
+| `sequence_messages` | 090:97-134, extended 110:74-146 | id, sequence_id, enrollment_id, direction, subject, body, **strategy** (090), grounding_status, evidence_map JSONB, review_queue JSONB, **render_status** (090: draft/failed), **is_current** BOOLEAN (090), **supersedes_id** UUID self-FK (090), status (110: draft/sent/received/failed), rendered_subject/body (110), provider_message_id/thread_id (110) | Two-layer (org+user) |
 | `sequence_cohort_sources` | 090:79-94 | source_kind (manual/workspace_search/shortlist/nl_constraint/reverse_jd), source_ref JSONB | Two-layer (org+user) |
 
 #### C.2 Event Ledger & Metrics
 
 | Table | Migration | Purpose |
 |---|---|---|
-| `sequence_events` | 110:149-190 | Canonical event ledger. 13 event types: ContactReadinessAssessed, SequenceCreated, AudienceSelected, DraftGenerated, SequenceApproved, MessageSent, ReplySynced, BounceSynced, SuppressionApplied, EnrollmentStopped, AtsWritebackSucceeded, AtsWritebackFailed, CandidateConverted. Dedup via partial unique index on `(org_id, dedup_key)` where dedup_key NOT NULL (110:185-187). Single-layer org RLS (110:391-396). |
+| `sequence_events` | 110:149-183 (table def), 110:185-190 (dedup + window indexes) | Canonical event ledger. 13 event types (CHECK at 110:166-182): ContactReadinessAssessed, SequenceCreated, AudienceSelected, DraftGenerated, SequenceApproved, MessageSent, ReplySynced, BounceSynced, SuppressionApplied, EnrollmentStopped, AtsWritebackSucceeded, AtsWritebackFailed, CandidateConverted. **Missing**: PRD 9.1/9.2 require MessageOpened, LinkClicked, MessageDelivered — see Prerequisites §3. Dedup via partial unique index on `(org_id, dedup_key)` where dedup_key NOT NULL (110:185-187). Single-layer org RLS (110:391-396). |
 | `sequence_metrics_rollup` | 110:305-341 | Pre-aggregated: selected, contactable, enrolled, sends, delivered, bounces, replies, positive_replies, negative_replies, conversions + rates. Grouped by sequence/recruiter/role/campaign/source/channel. |
 | `sequence_metrics_cursor` | 110:343-355 | Incremental computation watermark per sequence. |
 | `sequence_benchmark_presets` | 110:357-389 | Industry benchmark reference values by metric/channel/role/seniority/geography. |
@@ -222,7 +222,7 @@ Two patterns:
 - **Two-layer** (090 tables): `app.current_org` PERMISSIVE + `app.current_user` RESTRICTIVE — both must match.
 - **Single-layer** (110+ tables): `app.current_org` PERMISSIVE only.
 
-GUCs set by `withTenantDbContext()` in `backend/database_interaction.js:417-450` — `SET LOCAL` (transaction-scoped), parameterized (`$1`), fail-closed on unset/empty.
+GUCs set by `withTenantDbContext()` in `backend/database_interaction.js:417-450` — `set_config('app.current_org', $1, true)` (the `true` = `is_local`, functionally equivalent to `SET LOCAL` but using the function call syntax), parameterized (`$1`), fail-closed on unset/empty.
 
 Pre-tenant-resolution: `private.resolve_org_by_mailbox_connection` and `private.resolve_org_by_ats_connection` — SECURITY DEFINER functions with narrow column-level grants to NOLOGIN resolver roles.
 
@@ -327,7 +327,9 @@ Four phase plans in `thoughts/shared/plans/`:
 | Phase 4 | `2026-07-09-phase4-anti-detection-pacing-tdd-plan.md` | Gaussian typing, Bezier mouse, rate limiter, session simulator, DOM detection. | Phase 3 |
 | Phase 5 | `2026-07-09-phase5-sdks-social-contracts-tdd-plan.md` | Python/Node SDKs, CLI, LinkedIn (7 actions), Instagram (5 actions), social.* base commands. | Phase 2 + Phase 4 |
 
-No phase plan covers dashboard UI hosting, database integration, or an exposed API for external apps. No contract for zigBrowser communicating with a database exists in the corpus.
+The `sequences-integration-api-db-layer-plan.md` (same directory, same date) defines the `zb-sequences-v1` contract covering dashboard UI hosting, exposed API (`/api/v1/automation`), and database integration via the sequences Express backend with HMAC service auth, idempotency headers, error envelope, and 12 facade methods. Two dependent plans extend it for PRD feature slices:
+- `sequences-integration-91-tracking-92-analytics-plan.md` — execution tracking + analytics dashboard
+- `sequences-integration-93-creation-94-authoring-plan.md` — sequence creation wizard + step authoring
 
 ---
 
@@ -379,22 +381,26 @@ This data originates in zigBrowser's automation subsystem and has no existing pa
 
 ### H. Seams to Build Against
 
-#### H.1 The Shared Seam: Exposed API (Phase 0 Agent)
+#### H.1 The Shared Seam: zb-sequences-v1 Contract
 
-No exposed API exists today for zigBrowser to communicate with the sequences PostgreSQL database. The Phase 0 agent is designing this contract. The dashboard's requirements for that API are documented in sections G.1-G.3 above.
+The `zb-sequences-v1` contract (`sequences-integration-api-db-layer-plan.md`) defines 12 facade methods over `/api/v1/automation` with HMAC service auth (`X-ZB-Signature`), idempotency headers (`Idempotency-Key`), and per-endpoint request/response schemas. The contract specifies HTTPS to the sequences Express backend — not direct PostgreSQL from Zig. The existing zigBrowser JSON-RPC Unix socket remains the browser automation command channel; it is not used for sequence database access.
+
+Implementation has not started. The dashboard's requirements for that API are documented in sections G.1-G.3 above.
 
 #### H.2 zigBrowser → Sequences DB
 
-Current state: zero integration. The automation telemetry (`InMemoryTelemetrySink`) stores spans in memory only. OTLP export (`src/automation_otlp.zig`) can push to an HTTP endpoint but is not wired to any database writer. The pacing state (`RateLimiter`) is in-process memory with no persistence.
+Current state: contract designed (`zb-sequences-v1`), zero implementation. The db-layer plan specifies that zigBrowser will call the sequences Express backend over HTTPS for all database operations — endpoints include `automation.createExecution`, `automation.updateExecution`, `automation.recordStepResult`, `automation.ingestEvents`, and `automation.ingestTelemetry`. Today, the automation telemetry (`InMemoryTelemetrySink`) stores spans in memory only. OTLP export (`src/automation_otlp.zig`) can push to an HTTP endpoint but is not wired to any database writer. The pacing state (`RateLimiter`) is in-process memory with no persistence.
 
 #### H.3 Sequences Backend → Dashboard API
 
 The existing Express routes already serve most of the read data the dashboard needs (`GET /analytics`, `GET /dashboard`, `GET /:id/funnel`, etc.). Gaps:
 - No endpoint for send_caps / pacing configuration
 - No endpoint for benchmark presets
-- No endpoint for the new PRD 9.1 event types (MessageOpened, LinkClicked, MessageDelivered — these event types are not yet in the `sequence_events_event_type_chk` CHECK constraint at `110:166-167`)
+- No endpoint for the new PRD 9.1 event types (MessageOpened, LinkClicked, MessageDelivered — these event types are not yet in the `sequence_events_event_type_chk` CHECK constraint at `110:166-182`) — see Prerequisites §3
 - No endpoint for reply interest labeling
-- `GET /analytics` filter support is limited — `listSequenceEventsForAnalytics` (`sequences_db.js:85`) only filters by `sequenceId`; project/recruiter/inbox/date-range filters pass through but are not applied at the SQL layer
+- `GET /analytics` filter support is limited — `listSequenceEventsForAnalytics` (`sequences_db.js:85`) only filters by `sequenceId`; project/recruiter/inbox/date-range filters pass through but are not applied at the SQL layer — see Prerequisites §4
+
+**Automation data gaps (Section G.3) partially addressed by db-layer plan**: The `zb-sequences-v1` contract defines `automation.createExecution`, `automation.recordStepResult`, `automation.ingestEvents`, and `automation.ingestTelemetry` — these address session state, step results, event ingestion, and telemetry persistence. Pacing state persistence and live command feed transport remain unaddressed (see Open Questions §3 and §4)
 
 #### H.4 recruiter-ui → Dashboard Components
 
@@ -429,6 +435,11 @@ Existing sequence UI components (`sequence-dashboard.jsx`, etc.) render KPI tile
 - `src/automation_otlp.zig:68-82` — redacted OTLP export
 - `src/nav_policy.zig:24-38` — navigation confinement (file:// only)
 - `build.zig:430-437` — platform backend selection
+
+### Plans (cross-repo integration)
+- `thoughts/searchable/shared/plans/2026-07-09-sequences-integration-api-db-layer-plan.md` — zb-sequences-v1 contract (12 facade methods, HMAC auth, idempotency)
+- `thoughts/searchable/shared/plans/2026-07-09-sequences-integration-91-tracking-92-analytics-plan.md` — PRD 9.1/9.2 feature plan
+- `thoughts/searchable/shared/plans/2026-07-09-sequences-integration-93-creation-94-authoring-plan.md` — PRD 9.3/9.4 feature plan
 
 ### sequences
 - `database/migrations/090_sequences_foundation.sql:17-165` — base tables + two-layer RLS
@@ -473,12 +484,14 @@ src/automation/telemetry.zig          backend/services/sequenceEvents/eventServi
 src/automation_otlp.zig               database/migrations/110:149-190
   └─ OTLP export (HTTP, optional)       └─ sequence_events (13 event types)
 
-          ┌──── NO CONNECTION EXISTS ────┐
-          │                              │
-          │  Phase 0 Agent designs the   │
-          │  exposed API + DB bridge     │
-          │                              │
-          └──────────────────────────────┘
+          ┌── CONTRACT DESIGNED, NOT IMPLEMENTED ──┐
+          │                                         │
+          │  zb-sequences-v1: 12 facade methods     │
+          │  HMAC auth, idempotency, error envelope │
+          │  See: sequences-integration-api-db-     │
+          │       layer-plan.md                     │
+          │                                         │
+          └─────────────────────────────────────────┘
 
 recruiter-ui (Next.js/React)
 ────────────────────────────
@@ -509,42 +522,64 @@ zigBrowser: no auth integration with sequences exists. The automation API uses i
 
 ---
 
-## Related Research
+## Related Research & Plans
 
 - `thoughts/shared/research/2026-07-04-09-17-isolated-local-web-app-runtime-for-cosmic-hr04.md` — closest existing research to "dashboard hosting"
 - `thoughts/shared/research/2026-07-09-browser-automation-api-contracts.md` — automation API design research
 - `thoughts/shared/research/2026-07-09-14-40-codebase-automation-api-seams.md` — automation seams inventory
+- `thoughts/searchable/shared/plans/2026-07-09-sequences-integration-api-db-layer-plan.md` — zb-sequences-v1 contract (resolves Open Questions 1, 2, 5, 6)
+- `thoughts/searchable/shared/plans/2026-07-09-sequences-integration-91-tracking-92-analytics-plan.md` — PRD 9.1/9.2 implementation plan
+- `thoughts/searchable/shared/plans/2026-07-09-sequences-integration-93-creation-94-authoring-plan.md` — PRD 9.3/9.4 implementation plan
 
 ---
 
 ## Workflow Closure Map
 
-This research covers the structural topology of two codebases and their seams — it documents "where/what is X" across both repos, not a single input → effect → observable behavior chain. The dashboard itself does not yet exist as a behavior; it is a planned UI that will compose existing behaviors (sequence CRUD, event ledger writes, metrics computation, automation telemetry). No single production trigger → source-of-truth write → observable result chain can be mapped because the integration layer (Phase 0) connecting these two codebases does not exist yet.
+This research covers the structural topology of two codebases and their seams — it documents "where/what is X" across both repos, not a single input → effect → observable behavior chain. The dashboard itself does not yet exist as a behavior; it is a planned UI that will compose existing behaviors (sequence CRUD, event ledger writes, metrics computation, automation telemetry).
 
-When the Phase 0 exposed API is designed and implemented, individual behaviors within that integration (e.g., "automation session writes pacing data → sequences DB → dashboard reads and renders pacing gauge") will become mappable chains. Until then, the documented seams (sections G and H) define the boundary conditions for those future chains.
+**Contract status**: The `zb-sequences-v1` contract (`sequences-integration-api-db-layer-plan.md`) now defines the integration layer, and the dependent plans (`91-tracking-92-analytics`, `93-creation-94-authoring`) define specific behavior chains. Cross-repo workflow closure mapping is now *designable* (contract exists) but not yet *implementable* (no code exists).
 
-> No closure adapter — no trigger→observe behavior chain exists across these codebases today.
+The following chains are designable but remain unmapped until implementation:
+- zigBrowser automation execution → `automation.createExecution` → sequences DB → dashboard reads execution state
+- zigBrowser pacing decision → `automation.ingestEvents` → `sequence_events` → analytics rollup → dashboard chart
+- Inbound mailbox webhook → `processInboundMailboxEvent` (**STUB — throws**) → `ReplySynced`/`BounceSynced` events → dashboard reply queue
+
+Within the sequences app alone, the existing chains are complete:
+- `appendSequenceEvent` → `sequence_events` → `computeSequenceFunnel` → `GET /analytics` (production-callable)
+- `router.zig` verb dispatch → `telemetry.zig` span recording → `InMemoryTelemetrySink` (local, in-memory only)
+
+> No closure adapter — cross-repo trigger→observe behavior chains are designable but not implementable today. Three production blockers remain (see Prerequisites section).
+
+---
+
+## Prerequisites (Must Complete Before Dashboard Implementation)
+
+These are blocking issues — not open questions. Dashboard implementation depends on resolving all four.
+
+1. **[P0 DEFECT] Wire automation flags in app.zig:runOpen** — `src/app.zig:21-29` (`runOpen`) does not consume `spec.automation_api` or `spec.automation_token_file` — they are parsed by `cli.zig:9-10` but silently discarded. `runOpenWithAutomationLifecycle` (`automation_transport.zig:37-47`) is only called from tests. The entire automation subsystem (verbs, telemetry, pacing, sessions) is unreachable from a normal `zigbrowser` invocation. All dashboard features depending on automation state are blocked. *(Phase 1 plan deliverable.)*
+
+2. **[P0 DEFECT] Implement processInboundMailboxEvent** — `sequencesWebhook.js:34-36` defaults to a stub that throws `Error('Sequence mailbox processing service is not configured')`. `server.js:65,364` mounts it without overriding this parameter. Any inbound mailbox webhook that passes signature verification and org resolution will hit this stub and return HTTP 500. No `ReplySynced` or `BounceSynced` events will ever be written from webhook sources. The dashboard's reply queue will be permanently empty for webhook-sourced data; response_rate and positive_response_rate will undercount. *(Sequences-repo fix.)*
+
+3. **[PREREQUISITE MIGRATION] Add new event types to CHECK constraint** — `sequence_events_event_type_chk` (`110:166-182`) allows exactly 13 event types. PRD 9.1/9.2 require MessageOpened, LinkClicked, and MessageDelivered. Any INSERT with these types will fail with a CHECK violation. Create migration 130+ to ALTER the constraint before dashboard implementation.
+
+4. **[BLOCKING] Extend listSequenceEventsForAnalytics SQL filters** — `sequences_db.js:85-104` only applies `sequence_id` in the WHERE clause. All other filter keys (project, recruiter, inbox, date-range) from `req.query` are silently ignored at the SQL layer. Post-fetch JS grouping via `groupKeyFor()` (`metricsService.js:164-181`) provides grouping but not filtering — all events are fetched regardless. This won't scale and produces incorrect results for filtered views. Implement SQL-layer filtering for project, recruiter, inbox, date-range, and time-bucketing before building the analytics dashboard.
 
 ---
 
 ## Open Questions
 
-1. **Phase 0 API Contract**: The exposed API connecting zigBrowser to the sequences PostgreSQL DB is being designed by the Phase 0 agent. What transport will it use (HTTP REST, gRPC, direct Postgres connection from Zig, message queue)? This determines the dashboard's data flow architecture.
+*Questions 1, 2, 6, and 7 were resolved by the `sequences-integration-api-db-layer-plan.md` and its dependent plans. They are retained here with resolution notes for traceability.*
 
-2. **Authentication Bridge**: zigBrowser's automation API uses token-file auth; sequences uses Clerk OAuth. How will the dashboard authenticate to the sequences backend? Will zigBrowser proxy Clerk tokens, or will a separate auth mechanism be needed?
+1. **RESOLVED — API Contract**: The db-layer plan specifies HTTPS to the sequences Express backend (not direct PostgreSQL). The `zb-sequences-v1` contract defines 12 facade methods over `/api/v1/automation` with HMAC service auth, idempotency headers, and per-endpoint schemas. See `sequences-integration-api-db-layer-plan.md`.
 
-3. **New Event Types**: PRD 9.1 defines three new event types (MessageOpened, LinkClicked, MessageDelivered) not yet in the `sequence_events_event_type_chk` CHECK constraint. A migration is needed before the dashboard can read/write these events.
+2. **RESOLVED — Authentication Bridge**: HMAC service-to-service auth (`X-ZB-Signature`) for zigBrowser → sequences API calls, plus optional Bearer token delegation for user-context operations. See db-layer plan "Common headers" section.
 
-4. **Analytics Filter Gap**: `getSequenceAnalytics` in `metricsService.js:336` accepts groupBy/filters, but the underlying `listSequenceEventsForAnalytics` (`sequences_db.js:85`) only applies `sequenceId` at the SQL layer. PRD 9.2 requires filtering by sequence, project, started-by, inboxes, date-range, and grouped-by (days/weeks/months) — the SQL query needs extension.
+3. **Pacing/Session Persistence**: The RateLimiter and SessionSimulator are in-memory only. The db-layer plan's `automation.createExecution` / `automation.updateExecution` endpoints imply execution state persistence, but the promise of pacing-state persistence across zigBrowser restarts remains undefined — will it use the sequences DB via API or a local zigBrowser store?
 
-5. **Automation Wiring**: `src/app.zig:21-29` (`runOpen`) does not consume `--automation-api` or `--automation-token-file`. The automation transport lifecycle (`automation_transport.zig:37-47`) is only exercised by unit tests. This must be wired before the dashboard can read automation state.
+4. **Real-time Command Feed**: PRD scope includes a live command/telemetry feed. The automation WebSocket (`automation_websocket.zig`) supports event push via `SubscriberQueue` (capacity-limited FIFO that drops slow subscribers — `automation_websocket.zig:64-96`), but this is a different protocol layer than the dashboard's data source. The SubscriberQueue drop behavior's impact on dashboard UX is undefined (stale data? gap indicator? reconnect?).
 
-6. **UI Hosting Decision**: Which of the four hosting options (remote URL, local static+Express, file:// with IPC, embedded HTTP server) will be used? The prior research doc (`2026-07-04-09-17-isolated-local-web-app-runtime-for-cosmic-hr04.md`) favors local static+Express but lists multiple unimplemented prerequisites.
+5. **RESOLVED — UI Hosting Decision**: The db-layer plan states "zigBrowser hosts the automation dashboard UI" (local static+Express model). Unimplemented prerequisites from the prior research (`2026-07-04-09-17-isolated-local-web-app-runtime-for-cosmic-hr04.md`) still apply: configurable default URL, browser profile dirs, HTTP-loopback nav policy, origin-gated IPC.
 
-7. **Dashboard vs. recruiter-ui**: Will the dashboard be new pages within the existing recruiter-ui SPA (sharing its auth, routing, and design system), or a separate standalone app? Existing sequence components live in recruiter-ui with full Clerk integration.
+6. **RESOLVED — Dashboard vs. recruiter-ui**: Dashboard is built as new pages within the existing recruiter-ui SPA, sharing its auth, routing, and design system. The db-layer plan confirms this topology.
 
-8. **Pacing/Session Persistence**: The RateLimiter and SessionSimulator are in-memory only. For the dashboard to show pacing usage across sessions, this state must be persisted somewhere — either in the sequences DB via the Phase 0 API or in a local zigBrowser store.
-
-9. **Real-time Command Feed**: PRD scope includes a live command/telemetry feed. The automation WebSocket (`automation_websocket.zig`) supports event push via `SubscriberQueue`, but this is a different protocol layer than the dashboard's data source. How will live telemetry flow to the dashboard UI?
-
-10. **processInboundMailboxEvent Stub**: `sequencesWebhook.js:34` defaults `processInboundMailboxEvent` to a stub that throws. Server.js does NOT override it. Any actually-resolved-org mailbox webhook will fail at step 5. This affects the reply/bounce capture pipeline that PRD 9.1 depends on.
+7. **SDK Interface Gaps vs. Dashboard**: LinkedIn/Instagram/Social/Cookies SDK namespaces call RPC method names with no server-side verb entry. If the dashboard shows "LinkedIn actions remaining" or "Instagram session status," those SDK interfaces don't work today and aren't covered until Phase 5. Dashboard features requiring these verbs must be gated on Phase 5 completion.
