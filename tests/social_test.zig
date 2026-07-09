@@ -94,3 +94,25 @@ test "rate_status returns zero when cap reached" {
     const result = social.rateStatus(&mock);
     try std.testing.expectEqual(@as(u32, 0), result.remaining_actions);
 }
+
+const MockCommandQueue = struct {
+    last_pause_ms: u32 = 0,
+
+    pub fn pauseFor(self: *MockCommandQueue, duration_ms: u32) void {
+        self.last_pause_ms = duration_ms;
+    }
+};
+
+test "pause blocks queue for specified duration" {
+    var mock_queue = MockCommandQueue{};
+    const result = social.pause(&mock_queue, .{ .duration_ms = 5000 });
+    try std.testing.expect(result.ok);
+    try std.testing.expectEqual(@as(u32, 5000), mock_queue.last_pause_ms);
+}
+
+test "pause with zero duration returns immediately" {
+    var mock_queue = MockCommandQueue{};
+    const result = social.pause(&mock_queue, .{ .duration_ms = 0 });
+    try std.testing.expect(result.ok);
+    try std.testing.expectEqual(@as(u32, 0), mock_queue.last_pause_ms);
+}

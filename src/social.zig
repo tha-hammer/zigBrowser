@@ -43,6 +43,19 @@ pub fn rateStatus(pacing: anytype) RateStatusResult {
     };
 }
 
+pub const PauseParams = struct {
+    duration_ms: u32,
+};
+
+pub const OkResult = struct {
+    ok: bool,
+};
+
+pub fn pause(queue: anytype, params: PauseParams) OkResult {
+    queue.pauseFor(params.duration_ms);
+    return .{ .ok = true };
+}
+
 pub fn detectPlatform(url: []const u8) []const u8 {
     if (std.mem.indexOf(u8, url, "linkedin.com") != null) return "linkedin";
     if (std.mem.indexOf(u8, url, "instagram.com") != null) return "instagram";
