@@ -78,9 +78,9 @@ After Phase 4 implementation:
 4. Session simulator manages warmup periods, scheduled breaks, and randomized session durations.
 5. DOM-based detection scans for error modals, toast notifications, challenge/captcha pages, and HTTP error pages rendered in the DOM.
 6. Isolated-world leakage mitigations: synchronous observer cleanup, rAF-aligned operations, zero prototype pollution.
-7. Three telemetry event types emitted as child events on root `automation.command` traces: `automation.stealth.assessment`, `automation.behavior.simulation`, `automation.detection.signal`.
+7. Four telemetry event types emitted as child events on root `automation.command` traces: `automation.stealth.assessment`, `automation.behavior.simulation`, `automation.detection.signal`, `automation.pacing.decision`.
 8. Non-interference contract (C40) verified: no CDP Runtime.enable, no page-world globals, no persistent observers, no page→network telemetry export.
-9. Telemetry fixtures validate required dimensions and redaction compliance across all Phase 4 events.
+9. Telemetry fixtures validate required dimensions, redaction deny-list (C48), cardinality expectations (C46), and trace propagation (C47) across all Phase 4 events (EV5–EV9).
 
 ### Observable Behaviors
 
@@ -89,6 +89,8 @@ After Phase 4 implementation:
 - Given click target, when simulated, then mouse follows Bezier curve path
 - Given DOM with rate-limit signal, when scanned, then detection event emitted
 - Given any Phase 4 operation, when telemetry captured, then no forbidden fields present
+- Given pacing recordAction, when telemetry captured, then EV9 pacing.decision event emitted with trace_id, command_id, platform.name, delay_ms, remaining
+- Given any Phase 4 event, when trace queried, then trace_id correlates to root automation.command span (C47)
 
 ## What We're NOT Doing
 
@@ -99,6 +101,124 @@ After Phase 4 implementation:
 - Network-level 429 detection (deferred per ADR-3 — DOM-based detection only)
 - Scroll simulation (PRD mentions it but does not specify contracts; deferred)
 - WebView2-specific NetworkInterceptor rate-limit signals (Phase 3 scope)
+
+## Observability Design
+
+This section defines the observability surface for Phase 4, grounded in wide-event first principles: one flat, richly-attributed span per unit of work, high cardinality for debuggability, and the core analysis loop (define → visualize → investigate → evaluate). Phase 4 does NOT bolt on metrics-style counters — every observable produces a wide event with enough dimensions to answer arbitrary questions at query time.
+
+### Units of Work → Wide Events
+
+| Unit of Work | Wide Event (Span Name) | ID | When Emitted |
+|---|---|---|---|
+| Stealth surface check | `automation.stealth.assessment` | EV6 | Once per detection surface crossed during a command |
+| Behavioral simulation | `automation.behavior.simulation` | EV7 | Once per typing/click/session simulation |
+| Detection signal | `automation.detection.signal` | EV8 | On DOM/session/engine rate-limit detection |
+| Pacing decision | `automation.pacing.decision` | EV9 | On every RateLimiter.recordAction call |
+
+Each event is a child of the root `automation.command` span (BC6, Phase 1) via shared `trace_id` and `parent_span_id`. Every investigation starts at the root command and drills into Phase 4 events by expanding the trace.
+
+### Dimension Catalog
+
+#### High-Cardinality Dimensions (unique per event — enables BubbleUp)
+
+| Dimension | Event(s) | Example Values | Why It Matters |
+|---|---|---|---|
+| `trace_id` | EV6, EV7, EV8, EV9 | `"a1b2c3..."` | Correlate stealth/pacing/detection to the triggering command |
+| `command_id` | EV6, EV7, EV8, EV9 | `"cmd-7f3e..."` | Group all Phase 4 events for one command |
+| `session_id` | EV7 (session), EV9 | `"sess-9d1a..."` | Track pacing state drift across a full session |
+| `dom.signal_hash` | EV8 | `"e3b0c4..."` (SHA-256) | Identify recurring detection signals without raw text |
+| `pacing.delay_ms` | EV9 | `4271` | Detect delay clustering or drift |
+| `pacing.remaining_actions` | EV9 | `47` | Spot sessions burning caps unexpectedly fast |
+| `session.elapsed_ms` | EV7 (session), EV9 | `847291` | Correlate detection with session age |
+
+#### Low-Cardinality Dimensions (enumerated — enables GROUP BY / faceting)
+
+| Dimension | Event(s) | Values | Why It Matters |
+|---|---|---|---|
+| `stealth.surface` | EV6 | 6 values: `isolated_world`, `cdp_usage`, `extension_telltales`, `input_realism`, `timing_artifacts`, `rate_limiting` | Which detection surface was assessed |
+| `stealth.risk_level` | EV6 | 4 values: `none`, `low`, `medium`, `high` | Filter to non-trivial risks |
+| `behavior.kind` | EV7 | 3 values: `typing`, `click`, `session` | Segment simulation statistics |
+| `signal.source` | EV8 | 4 values: `dom`, `network`, `session`, `engine` | Where detection happened |
+| `signal.kind` | EV8 | `modal`, `toast`, `challenge`, `http_error` | What type of signal |
+| `platform.name` | EV5, EV8, EV9 | 3 values: `linkedin`, `instagram`, `unknown` | Per-platform pacing analysis |
+| `pacing.cap_reached` | EV9 | `true`, `false` | Alert on cap saturation |
+| `session.in_warmup` | EV9 | `true`, `false` | Segment warmup vs active |
+| `session.should_break` | EV9 | `true`, `false` | Correlate break timing with detection |
+
+### Trace Propagation (C47)
+
+```
+Root Span (BC6, Phase 1)              trace_id = T, span_id = S_root
+  └─ automation.command
+       │
+       ├─ [via S12] BC9 receives (trace_id=T, command_id=CMD)
+       │    ├─ EV9: automation.pacing.decision     (parent_span_id=S_root)
+       │    ├─ EV7: automation.behavior.simulation  (parent_span_id=S_root)
+       │    ├─ EV6: automation.stealth.assessment   (parent_span_id=S_root)
+       │    └─ EV8: automation.detection.signal     (parent_span_id=S_root)
+       │
+       └─ [via S15] BC11 receives all events with (trace_id=T)
+            └─ Redact (C33/C48) → Correlate (C34) → Export (C35)
+```
+
+`trace_id` and `command_id` are propagated into BC9 via S12 (engine passes them as context when wrapping command execution). BC9 attaches them to every emitted event. BC11 receives them via S15 and correlates under the root trace.
+
+### Redaction Deny-List (C48)
+
+Phase 4 deny-list — attributes that MUST NOT appear on any EV5–EV9 event before reaching the sink:
+
+| Denied Key | Reason | Enforcement |
+|---|---|---|
+| `text`, `raw_text`, `message` | User-generated content | Struct shape excludes field |
+| `value`, `form_value` | Form data | Struct shape excludes field |
+| `cookie`, `token`, `password`, `secret`, `bearer` | Credentials | Struct shape excludes field |
+| `screenshot`, `dom_snapshot` | Page state | Struct shape excludes field |
+| `local_storage`, `session_storage` | Browser storage | Struct shape excludes field |
+| `selector` (raw), `element.text` | DOM identity | Hashed variant only (`selector.hash`) |
+| `account.name`, `profile.name` (PII) | User identity | Hashed variant only (`profile.id_hash`) |
+
+Enforcement is structural: Zig emit functions accept typed structs that physically cannot carry denied fields. The `TestTelemetrySink` fixture scanner (Behavior 17) validates this at test time by scanning all captured events for denied keys.
+
+### SLI / SLO
+
+**SLI-1: Detection-Free Action Rate**
+- Definition: Proportion of `automation.command` root spans (per platform) that complete without a sibling `automation.detection.signal` event on the same `trace_id`.
+- Query: `1 - (COUNT(automation.detection.signal) / COUNT(automation.command)) GROUP BY platform.name` over a 24h window.
+- **Candidate SLO**: ≥ 95% of commands per platform complete detection-free over a rolling 24h window.
+
+**SLI-2: Stealth Risk Escalation Rate**
+- Definition: Proportion of `automation.stealth.assessment` events with `stealth.risk_level ≠ "none"`.
+- Query: `COUNT WHERE stealth.risk_level != "none" / COUNT *` on EV6 over a 7-day window.
+- **Candidate SLO**: ≤ 1% of stealth assessments report risk_level above `none` over 7 days.
+
+**SLI-3: Pacing Cap Saturation**
+- Definition: Sessions where `pacing.remaining_actions` reaches 0 (cap exhausted).
+- Query: `COUNT WHERE pacing.cap_reached = true GROUP BY session_id, platform.name` on EV9, as a fraction of total sessions.
+- **Candidate SLO**: ≤ 5% of sessions per platform exhaust daily caps.
+
+These SLIs are queryable directly from the wide events — no pre-aggregated metrics needed. BubbleUp on the root command span with EV8 as the outlier dimension pinpoints which platform, session, or command pattern triggers detections.
+
+### Analysis Scenarios (Core Loop)
+
+**Scenario: "Accounts are getting flagged on LinkedIn but not Instagram"**
+1. **Define**: Alert fires on SLI-1 (detection-free rate drops below 95% for platform=linkedin).
+2. **Visualize**: HEATMAP(`pacing.delay_ms`) on EV9 WHERE platform.name=linkedin — are delays clustering?
+3. **Investigate**: BubbleUp on `automation.detection.signal` (linkedin vs instagram baseline): which dimensions differ? Likely `signal.kind`, `dom.signal_hash`, `session.elapsed_ms`.
+4. **Evaluate**: Filter to specific `dom.signal_hash` → correlate `trace_id` to root command → identify which action type triggers the modal.
+
+**Scenario: "Why did pacing cap out early today?"**
+1. **Define**: EV9 events show `pacing.cap_reached=true` at 2pm instead of expected 6pm.
+2. **Visualize**: COUNT by hour on EV9 WHERE session_id=X.
+3. **Investigate**: BubbleUp on `pacing.delay_ms` — delays shorter than configured min? Config update (Behavior 8) mid-session?
+4. **Evaluate**: Find the EV9 where `pacing.config_min_ms` changed — timestamp correlates with `updateConfig` call.
+
+### Observability Gap: Silent Throttling (G13)
+
+NetworkInterceptor stubs on Linux/macOS (G10) create a Phase 4 observability blind spot: `automation.detection.signal` events with `signal.source=network` can only fire on WebView2 (Windows). On Linux and macOS, network-level rate limiting (429s, WebSocket soft-bans) produces NO telemetry — sessions burn silently.
+
+This gap means SLI-1 systematically over-reports detection-free rates on Linux/macOS. The SLO must carry a platform-conditional caveat, or G10 must be closed before trusting the SLI on non-Windows platforms.
+
+---
 
 ## Testing Strategy
 
@@ -797,6 +917,14 @@ pub const RateLimiter = struct {
 - [ ] Green: delay in range, remaining decrements, cap errors
 - [ ] All tests pass
 
+**Telemetry Assertions (per Observability Design, C46/C47):**
+- [ ] `recordAction` emits EV9 `automation.pacing.decision` via TestTelemetrySink
+- [ ] EV9 contains required dimensions: `trace_id`, `command_id`, `platform.name`, `pacing.delay_ms`, `pacing.remaining_actions`, `pacing.cap_reached`, `pacing.actions_today`, `pacing.daily_cap`
+- [ ] EV9 contains session state: `session.in_warmup`, `session.should_break`, `session.elapsed_ms`
+- [ ] `platform.name` is low cardinality (one of `linkedin`, `instagram`, `unknown`)
+- [ ] C48 deny-list keys absent from EV9: `text`, `cookie`, `token`, `password`, `secret`
+- [ ] `trace_id` is non-empty when caller provides trace context
+
 ---
 
 ## Behavior 7: Rate Limiter Midnight Reset
@@ -1051,6 +1179,10 @@ pub const SessionSimulator = struct {
 - [ ] Red: `SessionSimulator` not found
 - [ ] Green: warmup period honored
 - [ ] All tests pass
+
+**Telemetry Assertions (per Observability Design):**
+- [ ] `isInWarmup()` state reflected in EV9 `session.in_warmup` dimension when pacing decision emitted during warmup
+- [ ] `session.elapsed_ms` monotonically increases on successive EV9/EV7 events within a session
 
 ---
 
@@ -1395,6 +1527,13 @@ pub const TestTelemetrySink = struct {
 - [ ] Green: event emitted with all required dimensions
 - [ ] All tests pass
 
+**Observability Assertions (per C46/C47/C48):**
+- [ ] `trace_id` and `command_id` are present and non-empty on every EV6 event
+- [ ] `stealth.surface` is one of 6 enumerated values (low-cardinality validation)
+- [ ] `stealth.risk_level` is one of 4 enumerated values (low-cardinality validation)
+- [ ] C48 deny-list keys absent: `text`, `cookie`, `token`, `password`, `secret`, `selector`, `element.text`
+- [ ] `parent_span_id` is non-empty (C47 trace propagation)
+
 ---
 
 ## Behavior 14: Behavioral Simulation Telemetry (§8.5.2)
@@ -1477,6 +1616,14 @@ test "behavior simulation event contains required click dimensions" {
 - [ ] Green: required dimensions present, forbidden absent
 - [ ] All tests pass
 
+**Observability Assertions (per C46/C47/C48):**
+- [ ] `trace_id` and `command_id` are present and non-empty on every EV7 event
+- [ ] `behavior.kind` is one of 3 enumerated values: `typing`, `click`, `session` (low-cardinality validation)
+- [ ] Typing variant: `char_count` is high-cardinality (any positive integer), `delay_mean_ms` is high-cardinality
+- [ ] Session variant: `session_id` is present and high-cardinality
+- [ ] C48 deny-list keys absent: `text`, `value`, `message`, `selector`, `element.text`, `account.name`
+- [ ] `parent_span_id` is non-empty (C47 trace propagation)
+
 ---
 
 ## Behavior 15: Detection Signal Telemetry (§8.5.3)
@@ -1542,6 +1689,15 @@ test "detection signal emits hashed DOM text, never raw text" {
 - [ ] Red: `emitDetectionSignal` not found
 - [ ] Green: hash present, raw text absent
 - [ ] All tests pass
+
+**Observability Assertions (per C46/C47/C48):**
+- [ ] `trace_id` and `command_id` are present and non-empty on every EV8 event
+- [ ] `signal.source` is one of 4 enumerated values: `dom`, `network`, `session`, `engine` (low-cardinality validation)
+- [ ] `dom.signal_hash` is exactly 64 hex characters (SHA-256) when present (high-cardinality)
+- [ ] C48 deny-list keys absent: `text`, `raw_text`, `value`, `cookie`, `token`, `dom_snapshot`
+- [ ] `containsValue("You've reached")` returns false — no raw text leaked into any attribute value
+- [ ] `parent_span_id` is non-empty (C47 trace propagation)
+- [ ] Same raw text → same `dom.signal_hash` (deterministic hashing)
 
 ---
 
@@ -1683,8 +1839,194 @@ test "telemetry fixture: redaction scanner finds zero forbidden keys" {
 ### Success Criteria
 **Automated:**
 - [ ] All fixture assertions pass
-- [ ] Zero forbidden keys in any telemetry event
-- [ ] 100% of required dimensions present
+- [ ] Zero forbidden keys in any telemetry event (C48 deny-list)
+- [ ] 100% of required dimensions present across EV5–EV9
+- [ ] `trace_id` and `parent_span_id` present on every event (C47)
+- [ ] Low-cardinality fields contain only enumerated values (C46)
+
+---
+
+## Behavior 18: Pacing Decision Telemetry (EV9)
+
+### Test Specification
+
+**Given**: Rate limiter consulted for an action with trace context `(trace_id, command_id, session_id)`
+**When**: `recordAction` called and pacing decision made
+**Then**: An `automation.pacing.decision` child event (EV9) is emitted via TelemetrySink with: `trace_id`, `command_id`, `session_id`, `platform.name`, `pacing.delay_ms`, `pacing.remaining_actions`, `pacing.daily_cap`, `pacing.cap_reached`, `pacing.actions_today`, `pacing.config_min_ms`, `pacing.config_max_ms`, `session.in_warmup`, `session.should_break`, `session.elapsed_ms`, `session.break_count`
+
+**Edge Cases**:
+- Cap-reached decision → EV9 emitted with `pacing.cap_reached=true` AND error returned
+- First action of session → `pacing.actions_today=1`, `session.in_warmup` possibly true
+- No trace context provided → `trace_id` and `command_id` empty strings (not omitted)
+
+**Property**: Every `recordAction` call emits exactly one EV9. Events per session = actions per session.
+
+**Files touched**: `src/automation/pacing.zig`, `src/automation/stealth.zig`, `tests/automation/pacing_test.zig`
+
+### TDD Cycle
+
+#### 🔴 Red: Write Failing Test
+**File**: `tests/automation/pacing_test.zig`
+```zig
+test "recordAction emits automation.pacing.decision event with required dimensions" {
+    var sink = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink.deinit();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+    const test_time = struct {
+        var now_ms: i64 = 1_720_000_000_000;
+        fn get() i64 { return now_ms; }
+    };
+
+    var limiter = pacing.RateLimiter.init(.{
+        .min_delay_ms = 3000,
+        .max_delay_ms = 8000,
+        .daily_cap = 100,
+    }, test_time.get);
+
+    const ctx = pacing.TraceContext{
+        .trace_id = "trace-abc",
+        .command_id = "cmd-123",
+        .session_id = "sess-xyz",
+    };
+
+    _ = try limiter.recordAction(random, &sink, ctx, "linkedin");
+
+    try std.testing.expectEqual(@as(usize, 1), sink.events.items.len);
+    const event = sink.events.items[0];
+    try std.testing.expectEqualStrings("automation.pacing.decision", event.name);
+
+    // Required high-cardinality dimensions
+    try std.testing.expect(event.attrs.contains("trace_id"));
+    try std.testing.expect(event.attrs.contains("command_id"));
+    try std.testing.expect(event.attrs.contains("pacing.delay_ms"));
+    try std.testing.expect(event.attrs.contains("pacing.remaining_actions"));
+
+    // Required low-cardinality dimensions
+    try std.testing.expectEqualStrings("linkedin", event.attrs.get("platform.name").?);
+    try std.testing.expectEqualStrings("false", event.attrs.get("pacing.cap_reached").?);
+
+    // C48 deny-list
+    const forbidden = [_][]const u8{
+        "text", "cookie", "token", "password", "secret",
+        "raw_text", "message", "value", "screenshot",
+    };
+    for (forbidden) |key| {
+        try std.testing.expect(!event.attrs.contains(key));
+    }
+}
+
+test "cap-reached recordAction still emits EV9 before returning error" {
+    var sink = stealth.TestTelemetrySink.init(std.testing.allocator);
+    defer sink.deinit();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
+    const test_time = struct {
+        var now_ms: i64 = 1_720_000_000_000;
+        fn get() i64 { return now_ms; }
+    };
+
+    var limiter = pacing.RateLimiter.init(.{
+        .min_delay_ms = 100,
+        .max_delay_ms = 200,
+        .daily_cap = 1,
+    }, test_time.get);
+
+    const ctx = pacing.TraceContext{
+        .trace_id = "t",
+        .command_id = "c",
+        .session_id = "s",
+    };
+
+    _ = try limiter.recordAction(random, &sink, ctx, "instagram");
+
+    // Second action should emit EV9 with cap_reached=true, then error
+    try std.testing.expectError(
+        error.PlatformRateLimited,
+        limiter.recordAction(random, &sink, ctx, "instagram"),
+    );
+
+    // EV9 still emitted for the cap-reached decision
+    try std.testing.expectEqual(@as(usize, 2), sink.events.items.len);
+    const last_event = sink.events.items[1];
+    try std.testing.expectEqualStrings("true", last_event.attrs.get("pacing.cap_reached").?);
+}
+```
+
+#### 🟢 Green: Extend `recordAction` to accept sink and trace context, emit EV9
+
+**File**: `src/automation/pacing.zig` — add `TraceContext` struct and extend `recordAction` signature:
+```zig
+pub const TraceContext = struct {
+    trace_id: []const u8 = "",
+    command_id: []const u8 = "",
+    session_id: []const u8 = "",
+};
+
+// Extend recordAction to emit EV9
+pub fn recordAction(
+    self: *RateLimiter,
+    random: std.Random,
+    sink: anytype,
+    ctx: TraceContext,
+    platform: []const u8,
+) !PacingDecision {
+    self.maybeResetDay();
+
+    const cap_reached = self.actions_today >= self.config.daily_cap;
+
+    // Emit EV9 before returning error on cap
+    var attrs = sink.newAttrs();
+    attrs.put("trace_id", ctx.trace_id);
+    attrs.put("command_id", ctx.command_id);
+    attrs.put("session_id", ctx.session_id);
+    attrs.put("platform.name", platform);
+    attrs.putBool("pacing.cap_reached", cap_reached);
+    attrs.putInt("pacing.daily_cap", self.config.daily_cap);
+    attrs.putInt("pacing.actions_today", self.actions_today);
+    attrs.putInt("pacing.config_min_ms", self.config.min_delay_ms);
+    attrs.putInt("pacing.config_max_ms", self.config.max_delay_ms);
+
+    if (cap_reached) {
+        attrs.putInt("pacing.delay_ms", 0);
+        attrs.putInt("pacing.remaining_actions", 0);
+        sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" },
+            "automation.pacing.decision", attrs);
+        return error.PlatformRateLimited;
+    }
+
+    self.actions_today += 1;
+    const range = self.config.max_delay_ms - self.config.min_delay_ms;
+    const delay = self.config.min_delay_ms + @as(u32, @intFromFloat(
+        random.float(f64) * @as(f64, @floatFromInt(range))));
+    const rem = self.config.daily_cap - self.actions_today;
+
+    attrs.putInt("pacing.delay_ms", delay);
+    attrs.putInt("pacing.remaining_actions", rem);
+    sink.addEvent(.{ .trace_id = ctx.trace_id, .span_id = "" },
+        "automation.pacing.decision", attrs);
+
+    return .{ .delay_ms = delay, .remaining_actions = rem, .cap_reached = rem == 0 };
+}
+```
+
+#### 🔵 Refactor
+- [ ] No duplication: EV9 emission shares the `TestTelemetrySink` from stealth.zig
+- [ ] Reveals intent: `TraceContext` struct makes propagation explicit
+- [ ] Struct shape enforcement: denied fields physically unrepresentable
+- [ ] No shallow wrappers
+- [ ] Fits existing patterns: same emit pattern as Behaviors 13–15
+
+### Success Criteria
+**Automated:**
+- [ ] Red: `TraceContext` not found
+- [ ] Green: EV9 emitted with all required dimensions, denied keys absent
+- [ ] Cap-reached case emits EV9 before returning error
+- [ ] `trace_id`, `command_id` propagated correctly (C47)
+- [ ] `platform.name` validates against known enum (C46)
+- [ ] All existing Behavior 6/7/8 tests still pass (signature change requires updating callers)
 
 ---
 
@@ -1816,7 +2158,8 @@ Behavior 12: Observer cleanup       ─┘ Group E: JS, needs Phase 1 injected s
 Behavior 13: Stealth assessment     ─┐
 Behavior 14: Behavior simulation     │
 Behavior 15: Detection signal        │ Group F: Telemetry, needs Phase 1 TelemetrySink
-Behavior 16: Non-interference       ─┘
+Behavior 16: Non-interference        │
+Behavior 18: Pacing decision (EV9)  ─┘
 
 Behavior 17: Telemetry fixtures     ── Group G: Release gate, needs all above
 ```
@@ -1921,18 +2264,24 @@ flowchart TB
         C44["C44: SessionSimulation"]:::contract
         C28["C28: DOMDetection"]:::contract
         C40["C40: NonInterference"]:::contract
+        C46["C46: TelemetryCardinality"]:::contract
+        C47["C47: TracePropagation"]:::contract
+        C48["C48: RedactionDenyList"]:::contract
 
         OUT14["OUT14: PacingDecision"]:::iface
         OUT19["OUT19: TypingDelays"]:::iface
         OUT20["OUT20: MousePath"]:::iface
         OUT21["OUT21: SessionDecision"]:::iface
+        OUT22["OUT22: StealthTelemetryEmit"]:::iface
 
         EV5["EV5: RateLimitSignal"]:::iface
         EV6["EV6: StealthAssessment"]:::iface
         EV7["EV7: BehaviorSimulation"]:::iface
         EV8["EV8: DetectionSignal"]:::iface
+        EV9["EV9: PacingDecision"]:::iface
 
         G12["G12: IsolatedWorldLeakage"]:::gap
+        G13["G13: SilentThrottlingBlindSpot"]:::gap
     end
 
     S15["S15: →TelemetrySink (BC11)"]:::seam
@@ -1951,6 +2300,7 @@ flowchart TB
     IN11 --> C27
     C27 --> C45
     C45 --> OUT14
+    C27 --> EV9
     IN19 --> C44
     C44 --> OUT21
     OUT14 --> S12
@@ -1963,10 +2313,20 @@ flowchart TB
     C40 --> EV6
     C40 --> EV7
     C40 --> EV8
-    EV5 --> S15
-    EV6 --> S15
-    EV7 --> S15
-    EV8 --> S15
+    C47 --> EV6
+    C47 --> EV7
+    C47 --> EV8
+    C47 --> EV9
+    C48 --> OUT22
+    C46 --> OUT22
+    EV5 --> OUT22
+    EV6 --> OUT22
+    EV7 --> OUT22
+    EV8 --> OUT22
+    EV9 --> OUT22
+    OUT22 --> S15
+    G13 -.- C28
+    G13 -.- EV8
 ```
 
 #### (b) EBNF Grammar
@@ -2112,6 +2472,43 @@ HexString            ::= [0-9a-f]{64} ;   (* SHA-256 hex digest *)
    dom.signal_hash is SHA-256 of trimmed text (first 200 chars).
    NEVER sampled away — rare defense signals > high-volume success. *)
 
+EV9_PacingDecision   ::= "{"
+                           "\"name\":\"automation.pacing.decision\"" ","
+                           "\"trace_id\":" String ","
+                           "\"command_id\":" String ","
+                           "\"parent_span_id\":" String ","
+                           "\"session_id\":" String ","
+                           "\"platform.name\":" PlatformName ","
+                           "\"pacing.delay_ms\":" NonNegativeInt ","
+                           "\"pacing.remaining_actions\":" NonNegativeInt ","
+                           "\"pacing.daily_cap\":" PositiveInt ","
+                           "\"pacing.cap_reached\":" Boolean ","
+                           "\"pacing.actions_today\":" NonNegativeInt ","
+                           "\"pacing.config_min_ms\":" PositiveInt ","
+                           "\"pacing.config_max_ms\":" PositiveInt ","
+                           "\"session.in_warmup\":" Boolean ","
+                           "\"session.should_break\":" Boolean ","
+                           "\"session.elapsed_ms\":" NonNegativeInt ","
+                           "\"session.break_count\":" NonNegativeInt
+                         "}" ;
+(* Emitted by RateLimiter.recordAction on every pacing decision (Behavior 18).
+   One event per action attempt, including cap-reached decisions.
+   High-cardinality: trace_id, command_id, session_id, pacing.delay_ms,
+     pacing.remaining_actions, session.elapsed_ms.
+   Low-cardinality: platform.name, pacing.cap_reached, session.in_warmup,
+     session.should_break. *)
+
+(* ═══ BC9: Stealth & Pacing ═══ Outputs ═══ *)
+
+OUT22_StealthTelemetryEmit ::= (EV5_RateLimitSignal
+                               | EV6_StealthAssessment
+                               | EV7_BehaviorSimulation
+                               | EV8_DetectionSignal
+                               | EV9_PacingDecision)* ;
+(* Named output port from BC9 to S15. All Phase 4 events flow through
+   OUT22 after C48 deny-list enforcement and C47 trace attachment,
+   before crossing S15 to the TelemetrySink in BC11. *)
+
 (* ═══ BC9: Stealth & Pacing ═══ Contracts ═══ *)
 
 C25_TypingSimulation
@@ -2212,6 +2609,42 @@ C45_DailyCapInvariant
     post: updateConfig with new cap → remaining = new_cap - actions_today
     post: new_cap < actions_today → remaining = 0, next action errors ;
 
+C46_TelemetryCardinality
+    governs: OUT22_StealthTelemetryEmit (cardinality expectations for all EV5–EV9)
+    invariant: high-cardinality dimensions are never used as metrics tags
+    invariant: low-cardinality dimensions contain only enumerated values
+    high_cardinality: trace_id, command_id, session_id, dom.signal_hash,
+        pacing.delay_ms, pacing.remaining_actions, session.elapsed_ms,
+        char_count, delay_mean_ms, distance_px, duration_ms
+    low_cardinality: stealth.surface (6 values), stealth.risk_level (4),
+        behavior.kind (3), signal.source (4), signal.kind (4),
+        platform.name (3), pacing.cap_reached (2),
+        session.in_warmup (2), session.should_break (2)
+    post: test fixtures validate low-cardinality fields against known enum sets
+    post: high-cardinality fields accepted as-is (no enum validation) ;
+
+C47_TracePropagation
+    governs: trace_id and command_id continuity across S12 and S15
+    invariant: all Phase 4 events (EV5–EV9) carry trace_id from root automation.command span
+    invariant: command_id follows same propagation path as trace_id
+    pre:  BC6 engine provides (trace_id, command_id) via S12 when wrapping command
+    post: BC9 attaches trace_id and command_id to every emitted event
+    post: BC11 receives events with trace_id via S15 for correlation (C34)
+    post: empty trace context → trace_id and command_id are empty strings, not omitted
+    post: EV6, EV7, EV8, EV9 each carry parent_span_id from root span ;
+
+C48_RedactionDenyList
+    governs: OUT22_StealthTelemetryEmit (Phase 4 deny-list before S15 crossing)
+    invariant: denied attributes MUST NOT appear on any EV5–EV9 event
+    deny: text, raw_text, message, value, form_value,
+          cookie, token, password, secret, bearer,
+          screenshot, dom_snapshot, local_storage, session_storage,
+          selector (raw), element.text, account.name
+    hash: dom.signal_hash (SHA-256 first 200 chars), selector.hash, profile.id_hash
+    enforcement: Zig struct shape — denied fields physically unrepresentable
+    post: TestTelemetrySink fixture scanner (Behavior 17) validates at test time
+    note: extends C33 RedactionPolicy for Phase 4-specific fields ;
+
 (* ═══ BC9: Stealth & Pacing ═══ Seams ═══ *)
 
 S12_Engine_Pacing
@@ -2219,7 +2652,7 @@ S12_Engine_Pacing
     direction: BC6 wraps command execution with pacing layer
     interfaces: IN11, IN17, IN18, IN19 (inbound from engine)
                 OUT14, OUT19, OUT20, OUT21 (outbound to engine)
-    contracts:  C25, C26, C27, C40, C44 ;
+    contracts:  C25, C26, C27, C40, C44, C47 (trace context propagated inbound) ;
 
 S13_Script_Detection
     boundary: BC7 Injected Script ↔ BC9 DOM Detection
@@ -2230,11 +2663,13 @@ S13_Script_Detection
 
 S15_Components_Sink
     boundary: BC9 Stealth & Pacing → BC11 Observability (bridge)
-    direction: BC9 emits anti-detection events to TelemetrySink vtable
-    events:     EV5, EV6, EV7, EV8
-    contracts:  C40 (NonInterference governs emission), C33 (external RedactionPolicy) ;
+    direction: BC9 emits anti-detection events to TelemetrySink vtable via OUT22
+    interfaces: OUT22 (StealthTelemetryEmit, outbound)
+    events:     EV5, EV6, EV7, EV8, EV9
+    contracts:  C40 (NonInterference governs emission), C46 (cardinality),
+                C47 (trace propagation), C48 (deny-list), C33 (external RedactionPolicy) ;
 
-(* ═══ BC9: Stealth & Pacing ═══ Gap ═══ *)
+(* ═══ BC9: Stealth & Pacing ═══ Gaps ═══ *)
 
 G12_IsolatedWorldLeakage
     violates: C28 DOMDetection + C40 NonInterference (risk, not blocking)
@@ -2247,15 +2682,28 @@ G12_IsolatedWorldLeakage
                 synchronously, align with rAF cadence
     revisit trigger: any platform deploying timing-based or prototype-chain detection
     status: ongoing risk, not currently detected by vendors ;
+
+G13_SilentThrottlingBlindSpot
+    violates: EV8 DetectionSignal coverage (observability gap, not blocking)
+    boundary: BC9 (DOM Detection) / BC12 (NetworkInterceptor via G10)
+    evidence: NetworkInterceptor stubs on Linux/macOS (G10) mean:
+      - EV8 events with signal.source=network can only fire on WebView2 (Windows)
+      - 429s on background XHR/GraphQL produce NO telemetry on Linux/macOS
+      - WebSocket-delivered soft-bans invisible on 2/3 platforms
+      - SLI-1 (detection-free rate) systematically over-reports on non-Windows
+    mitigation: SLO carries platform-conditional caveat until G10 closed;
+                document gap in SLI dashboards
+    revisit trigger: any account burned by undetected network throttling on Linux/macOS
+    status: observability gap, not blocking — tracks G10 lifecycle ;
 ```
 
 #### (c) Seam Table
 
 | Seam | Direction | Interfaces (IN/OUT) | Events (EV) | Contracts (C) |
 |---|---|---|---|---|
-| **S12** Engine→Pacing | BC6 → BC9 (bidirectional) | IN11, IN17, IN18, IN19 (inbound); OUT14, OUT19, OUT20, OUT21 (outbound) | — | C25, C26, C27, C40, C44 |
+| **S12** Engine→Pacing | BC6 → BC9 (bidirectional) | IN11, IN17, IN18, IN19 (inbound); OUT14, OUT19, OUT20, OUT21 (outbound) | — | C25, C26, C27, C40, C44, C47 |
 | **S13** Script→Detection | BC7 → BC9 | IN9 (external) | EV5 | C28, C40, C19 (external) |
-| **S15** →TelemetrySink | BC9 → BC11 (bridge) | — | EV5, EV6, EV7, EV8 | C40, C33 (external) |
+| **S15** →TelemetrySink | BC9 → BC11 (bridge) | OUT22 (outbound) | EV5, EV6, EV7, EV8, EV9 | C40, C46, C47, C48, C33 (external) |
 
 **External dependency seam (reference only):**
 
@@ -2269,9 +2717,9 @@ G12_IsolatedWorldLeakage
 ### BC11: Observability — Anti-Detection Facet (§8.5)
 
 **Status:** TO-BE, provisional.
-**Provisional reason:** BC11's boundary depends on whether TelemetrySink is a shared library or an injected dependency — the PRD specifies a vtable interface (injected). This section maps ONLY the §8.5 anti-detection facet of BC11 (the three event types emitted by BC9 through S15). The core observability infrastructure (root spans, general child spans, OTLP export) belongs to the Phase 1 agent's map.
+**Provisional reason:** BC11's boundary depends on whether TelemetrySink is a shared library or an injected dependency — the PRD specifies a vtable interface (injected). This section maps ONLY the §8.5 anti-detection facet of BC11 (the four event types emitted by BC9 through S15 via OUT22). The core observability infrastructure (root spans, general child spans, OTLP export) belongs to the Phase 1 agent's map.
 
-**Owns (Phase 4 facet only):** event schemas for `automation.stealth.assessment`, `automation.behavior.simulation`, `automation.detection.signal`; §8.5-specific redaction rules; telemetry fixture assertions for Phase 4 events.
+**Owns (Phase 4 facet only):** event schemas for `automation.stealth.assessment`, `automation.behavior.simulation`, `automation.detection.signal`, `automation.pacing.decision`; §8.5-specific redaction rules; telemetry fixture assertions for Phase 4 events.
 
 #### (a) Boundary Diagram
 
@@ -2290,6 +2738,7 @@ flowchart LR
         EV6r["EV6: StealthAssessment (received)"]:::iface
         EV7r["EV7: BehaviorSimulation (received)"]:::iface
         EV8r["EV8: DetectionSignal (received)"]:::iface
+        EV9r["EV9: PacingDecision (received)"]:::iface
 
         C33["C33: RedactionPolicy (§8.5 facet)"]:::contract
         C34["C34: TraceCorrelation"]:::contract
@@ -2303,9 +2752,11 @@ flowchart LR
     IN13 --> EV6r
     IN13 --> EV7r
     IN13 --> EV8r
+    IN13 --> EV9r
     EV6r --> C33
     EV7r --> C33
     EV8r --> C33
+    EV9r --> C33
     C33 --> C34
     C34 --> C35
     C35 --> OUT16
@@ -2317,13 +2768,14 @@ flowchart LR
 ```ebnf
 (* ═══ BC11 §8.5 Facet: Observability — Anti-Detection ═══ Interfaces ═══ *)
 
-IN13_TelemetryInput_85  ::= AddStealthEvent | AddBehaviorEvent | AddDetectionEvent ;
+IN13_TelemetryInput_85  ::= AddStealthEvent | AddBehaviorEvent | AddDetectionEvent | AddPacingEvent ;
 AddStealthEvent         ::= SpanRef "automation.stealth.assessment" EV6_Attrs ;
 AddBehaviorEvent        ::= SpanRef "automation.behavior.simulation" EV7_Attrs ;
 AddDetectionEvent       ::= SpanRef "automation.detection.signal" EV8_Attrs ;
+AddPacingEvent          ::= SpanRef "automation.pacing.decision" EV9_Attrs ;
 SpanRef                 ::= "{ trace_id:" String ", span_id:" String "}" ;
-(* Phase 4 facet of IN13: the three §8.5 event types received via
-   TelemetrySink.addEvent from BC9 stealth telemetry emitter. *)
+(* Phase 4 facet of IN13: the four §8.5 event types received via
+   TelemetrySink.addEvent from BC9 stealth telemetry emitter via OUT22. *)
 
 OUT16_TelemetryExport_85 ::= TelemetryEvent_85* ;
 TelemetryEvent_85        ::= "{"
@@ -2336,7 +2788,8 @@ TelemetryEvent_85        ::= "{"
                              "}" ;
 TelemetryName_85         ::= "automation.stealth.assessment"
                             | "automation.behavior.simulation"
-                            | "automation.detection.signal" ;
+                            | "automation.detection.signal"
+                            | "automation.pacing.decision" ;
 RedactedAttrs            ::= JSONObject ;
 (* Phase 4 facet of OUT16: exported events after redaction (C33) and
    correlation (C34). Export to local sink, OTLP, or test capture. *)
@@ -2357,6 +2810,12 @@ EV8_DetectionSignal_rx
     schema: (same as EV8_DetectionSignal in BC9)
     consumption: received via TelemetrySink.addEvent, correlated to root trace,
                  NEVER sampled away (C40 mandate), hash-only for DOM text ;
+
+EV9_PacingDecision_rx
+    schema: (same as EV9_PacingDecision in BC9)
+    consumption: received via TelemetrySink.addEvent via OUT22, correlated to root trace,
+                 redacted per C33 and C48 deny-list, pacing.delay_ms and rate-limit
+                 state dimensions preserved for SLI-2 (pacing latency) analysis ;
 
 (* ═══ BC11 §8.5 Facet ═══ Contracts ═══ *)
 
@@ -2397,9 +2856,9 @@ C40_NonInterference_rx
 
 S15_Components_Sink_85
     boundary: BC9 Stealth & Pacing → BC11 Observability (§8.5 facet)
-    direction: inbound events from BC9, outbound to export
+    direction: inbound events from BC9 via OUT22, outbound to export
     interfaces: IN13 (§8.5 facet), OUT16 (§8.5 events)
-    events:     EV6 (received), EV7 (received), EV8 (received)
+    events:     EV6 (received), EV7 (received), EV8 (received), EV9 (received)
     contracts:  C33 (RedactionPolicy), C34 (TraceCorrelation),
                 C35 (ExportIsolation), C40 (NonInterference) ;
 ```
@@ -2408,7 +2867,7 @@ S15_Components_Sink_85
 
 | Seam | Direction | Interfaces (IN/OUT) | Events (EV) | Contracts (C) |
 |---|---|---|---|---|
-| **S15** Components→Sink (§8.5 facet) | BC9 → BC11 | IN13 (inbound), OUT16 (outbound) | EV6, EV7, EV8 (received) | C33, C34, C35, C40 |
+| **S15** Components→Sink (§8.5 facet) | BC9 → BC11 | IN13 (inbound), OUT16 (outbound) | EV6, EV7, EV8, EV9 (received) | C33, C34, C35, C40 |
 
 ---
 
@@ -2428,7 +2887,7 @@ flowchart LR
     BC6 -->|"S12: Engine→Pacing\nIN11,IN17,IN18,IN19 / OUT14,OUT19,OUT20,OUT21"| BC9
     BC7 -->|"S13: Script→Detection\nIN9 / EV5"| BC9
     BC12 -->|"S18: native input\n(dependency, Phase 3)"| BC6
-    BC9 -->|"S15: →TelemetrySink\nEV5,EV6,EV7,EV8"| BC11
+    BC9 -->|"S15: →TelemetrySink\nEV5,EV6,EV7,EV8,EV9 via OUT22"| BC11
 ```
 
 ### Gap & Risk Register (Phase 4 Scope)
@@ -2436,12 +2895,13 @@ flowchart LR
 | ID | Severity | Context | Violated / Missing Boundary | Impact | Resolution |
 |---|---|---|---|---|---|
 | **G12** | RISK | BC7/BC9 | C28 DOMDetection + C40 NonInterference: isolated script worlds share DOM with page context (PRD §8.2.1) | Page-context MutationObservers fire on automation DOM changes. PerformanceObserver/rAF cadence analysis can detect automation timing. Prototype modifications visible cross-world. | Minimize DOM surface. Prefer reading over writing. Clean observers synchronously (C19). rAF-align operations. Revisit trigger: any platform deploying timing-based or prototype-chain detection. |
+| **G13** | GAP | BC9/BC12 | EV8 DetectionSignal coverage: NetworkInterceptor stubs on Linux/macOS (G10) → 429s on background XHR/GraphQL produce NO telemetry on non-Windows platforms | SLI-1 (detection-free rate) systematically over-reports on Linux/macOS. WebSocket-delivered soft-bans invisible on 2/3 platforms. Silent throttling undetectable. | SLO carries platform-conditional caveat until G10 closed. Document gap in SLI dashboards. Revisit trigger: account burned by undetected network throttling on Linux/macOS. Tracks G10 lifecycle. |
 
 ### Acceptance Self-Check
 
 - [x] **Diagram IDs and grammar entries are 1:1** — verified for both contexts:
-  - **BC9** (26 IDs): IN11, IN17, IN18, IN19, OUT14, OUT19, OUT20, OUT21, EV5, EV6, EV7, EV8, C25, C26, C27, C28, C40, C41, C42, C43, C44, C45, G12, S12, S13, S15. All 26 have grammar entries. Zero orphans.
-  - **BC11 §8.5 facet** (10 IDs): IN13, OUT16, EV6, EV7, EV8, C33, C34, C35, C40, S15. All 10 have grammar entries. Zero orphans.
+  - **BC9** (32 IDs): IN11, IN17, IN18, IN19, OUT14, OUT19, OUT20, OUT21, OUT22, EV5, EV6, EV7, EV8, EV9, C25, C26, C27, C28, C40, C41, C42, C43, C44, C45, C46, C47, C48, G12, G13, S12, S13, S15. All 32 have grammar entries. Zero orphans.
+  - **BC11 §8.5 facet** (11 IDs): IN13, OUT16, EV6, EV7, EV8, EV9, C33, C34, C35, C40, S15. All 11 have grammar entries. Zero orphans.
 - [x] **Every contract (C#) names the target it governs:**
   - C25 → `dom.type keystroke dispatch via gaussian.computeTypingDelays`
   - C26 → `dom.click mouse movement via bezier.generateMousePath`
@@ -2453,20 +2913,25 @@ flowchart LR
   - C43 → `bezier.generateMousePath duration calculation`
   - C44 → `session.SessionSimulator (warmup, breaks, duration)`
   - C45 → `pacing.RateLimiter.remaining + actions_today`
+  - C46 → `telemetry cardinality expectations per EV5-EV9 dimension`
+  - C47 → `trace_id/command_id propagation from BC6 root span through S12→BC9→S15→BC11`
+  - C48 → `redaction deny-list enforced by Zig struct shape (text, cookie, token, password, secret)`
   - C33 → `OUT16_TelemetryExport_85 (redaction before export of §8.5 events)`
   - C34 → `parent-child span relationship for §8.5 events`
   - C35 → `TelemetrySink export path for §8.5 events`
   - C40 (rx) → `consumption-side constraints on §8.5 event processing`
 - [x] **Every seam (S#) enumerates its crossing interfaces and contracts:**
-  - S12 → interfaces: IN11, IN17, IN18, IN19, OUT14, OUT19, OUT20, OUT21; contracts: C25, C26, C27, C40, C44
+  - S12 → interfaces: IN11, IN17, IN18, IN19, OUT14, OUT19, OUT20, OUT21; contracts: C25, C26, C27, C40, C44, C47
   - S13 → interfaces: IN9 (external); events: EV5; contracts: C28, C40, C19 (external)
-  - S15 (BC9 side) → events: EV5, EV6, EV7, EV8; contracts: C40, C33 (external)
-  - S15 (BC11 side) → interfaces: IN13, OUT16; events: EV6, EV7, EV8; contracts: C33, C34, C35, C40
+  - S15 (BC9 side) → interfaces: OUT22; events: EV5, EV6, EV7, EV8, EV9; contracts: C40, C46, C47, C48, C33 (external)
+  - S15 (BC11 side) → interfaces: IN13, OUT16; events: EV6, EV7, EV8, EV9; contracts: C33, C34, C35, C40
 - [x] **Every context has all three parts (diagram, grammar, seam table):**
   - BC9: diagram ✓, grammar ✓, seam table ✓
   - BC11 §8.5 facet: diagram ✓, grammar ✓, seam table ✓
 - [x] **Every violated/missing boundary is marked with the `gap` class:**
   - G12 (IsolatedWorldLeakage): marked `:::gap` in BC9 diagram, with `C28 -.- G12` dashed connection showing the risk relationship. Not buried in prose.
+  - G13 (SilentThrottlingBlindSpot): marked `:::gap` in BC9 diagram, with `G13 -.- C28` and `G13 -.- EV8` dashed connections. Documented in Gap & Risk Register.
 - [x] **Provisional boundaries are labeled with a reason:**
   - BC9: "BC9's boundary with BC6 (Automation Engine) may merge during implementation if pacing proves inseparable from the retry loop"
   - BC11 §8.5 facet: "BC11's boundary depends on whether TelemetrySink is a shared library or an injected dependency"
+- [x] **Orphan IDs: none** — all 43 IDs (32 BC9 + 11 BC11 §8.5) resolve to exactly one grammar entry and vice-versa.

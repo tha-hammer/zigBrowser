@@ -146,6 +146,145 @@ tests/
 - Cookie encryption at rest (PRD §14.1, open question)
 - Network-level 429 detection (ADR-3, deferred)
 
+## Observability Design (Phase 5)
+
+Phase 5 observability follows wide-event first principles: one flat span per unit of work with rich, queryable dimensions. Pre-aggregated counters are NOT used; every question is answered at query time from wide events.
+
+### Units of Work → Wide Events
+
+| Unit of Work | Span/Event Name | Emitter | Parent |
+|---|---|---|---|
+| Compound social action (e.g., linkedin.connect end-to-end) | `automation.social.compound` (EV8) | BC10 social contract handlers | Root `automation.command` span (BC6, via S14) |
+| Individual step within a compound (e.g., click Connect button) | `automation.social.action` (EV7) | BC10 step dispatcher | `automation.social.compound` span |
+| SDK call round-trip (client-side surface only) | N/A — SDK surfaces server-side trace_id/command_id on errors | Client Tier | N/A |
+
+### EV8: `automation.social.compound` — Compound Sequence Span
+
+One wide event per compound social action. This is the primary diagnostic unit for debugging social automation failures.
+
+| Attribute | Cardinality | Notes |
+|---|---|---|
+| `trace_id` | High | Propagated from root automation.command span (BC6) |
+| `span_id` | High | Unique to this compound span |
+| `parent_span_id` | High | Points to root automation.command span |
+| `command_id` | High | Propagated from root — SDK correlation key |
+| `social.platform` | Low | "linkedin" \| "instagram" \| "unknown" |
+| `social.action` | Low | "connect" \| "message" \| "like" \| ... (12 values) |
+| `social.step_count` | Low | Total primitive steps in this compound |
+| `profile.id_hash` | High | SHA-256 of profile URL (NEVER raw URL) |
+| `post.id_hash` | High | SHA-256 of post URL (when applicable) |
+| `target.host` | Low | "www.linkedin.com" \| "www.instagram.com" (raw host allowed) |
+| `note.provided` | Low | true if note parameter present (linkedin.connect) |
+| `note.length` | Low | Character count of note (NEVER the text itself) |
+| `note.truncated` | Low | true if note truncated to 300 chars (C42) |
+| `search.query_length` | Low | Character count of search query (NEVER the query text) |
+| `duration_ms` | High | Total compound action wall time |
+| `result.status` | Low | "ok" \| "error" \| "cancelled" |
+| `automation.error` | Low | Error name if failed, absent if success |
+| `error.step` | Medium | Which step name failed (e.g., "click_connect") |
+| `error.step_index` | Low | 0-based index of failing step |
+| `platform.login_verified` | Low | true if login_check gate passed |
+| `pacing.remaining_actions` | Low | Remaining daily actions at time of execution |
+| `session.id_hash` | High | Hashed session identifier (propagated from root) |
+
+### EV7: `automation.social.action` — Step-Level Events (Enhanced)
+
+One event per primitive step within a compound. Enriched with step ordering and primitive method context.
+
+| Attribute | Cardinality | Notes |
+|---|---|---|
+| `trace_id` | High | Shared with parent EV8 compound span |
+| `parent_span_id` | High | Points to EV8 compound span |
+| `social.platform` | Low | Inherited from compound |
+| `social.action` | Low | Compound action verb |
+| `social.step` | Medium | Step name: "login_check", "navigate", "click_connect", "fill_note", "click_send" |
+| `social.step_index` | Low | 0-based position in compound sequence |
+| `social.primitive_method` | Low | The dom.\*/page.\* method dispatched |
+| `social.primitive_selector_hash` | High | SHA-256 of selector string (NEVER raw selector) |
+| `duration_ms` | High | This step's wall time |
+| `result.status` | Low | "ok" \| "error" |
+
+### Trace Propagation Across S14
+
+```
+Client SDK (trace_id in error.data)
+  ↑ S10 (JSON-RPC response includes trace_id in error.data)
+  |
+BC8 Transport (trace_id on root span)
+  ↓ S11
+BC6 Engine (automation.command root span: trace_id, command_id)
+  ↓ S14
+BC10 Social (automation.social.compound child span: inherits trace_id, command_id)
+  ↓ S14 (each primitive step)
+BC6 Engine (child automation.command spans: same trace_id)
+  ↓ S15
+BC11 Observability (TelemetrySink receives all spans with shared trace_id)
+```
+
+**Critical invariant (C51):** When BC10 calls `engine.dispatch()` for each primitive step within a compound, the trace context (trace_id, command_id) MUST propagate to the child spans. If the engine creates new root spans instead of child spans for nested dispatches, the compound→primitive linkage is lost.
+
+### Redaction Contract for BC10 (C52)
+
+**Deny-list** — NEVER record in telemetry:
+- `note.text`, `message.text`, `comment.text` — social content
+- `search.query` — search terms
+- `profile.url`, `post.url`, `conversation.url` — raw URLs with path segments containing names
+- `username` — raw usernames from login_check or DM params
+- `dm.text` — direct message content
+
+**Hash-before-emit** — record only SHA-256 hash:
+- `profile.id_hash` = SHA-256(profile_url)
+- `post.id_hash` = SHA-256(post_url)
+- `conversation.id_hash` = SHA-256(conversation_url)
+- `social.primitive_selector_hash` = SHA-256(selector_string)
+
+**Allowed raw** — OK to record without transformation:
+- `target.host` (e.g., "www.linkedin.com") — low cardinality, no PII
+- `note.length`, `search.query_length` — integer lengths, not content
+- `social.platform`, `social.action`, `social.step` — enum values
+
+The redaction layer runs in BC10 BEFORE emitting to TelemetrySink (S15). This is upstream of C33 (BC11's RedactionPolicy) — both must hold.
+
+### SDK Diagnostic Contract (C53)
+
+SDK error objects receive pre-redacted diagnostic fields from the server's `error.data`. The SDK contract:
+1. Extract `trace_id` and `command_id` from `error.data` (these are correlation IDs, not sensitive)
+2. Remaining `error.data` fields become `diagnostics` dict — these are already server-redacted
+3. SDK MUST NOT add raw request params (selector strings, profile URLs, note text) to the error object
+4. `repr(error)` / `toString()` includes `trace_id` for debugging — never includes raw params
+
+### SLI / SLO Definitions
+
+**SLI 1: Compound social action success rate**
+- Source: `automation.social.compound` (EV8) spans
+- Formula: COUNT(result.status="ok") / COUNT(*) WHERE automation.error != "platform_rate_limited" AND automation.error != "session_invalid"
+- Rationale: Rate-limited and session-invalid are expected operational states, not system failures
+
+**Candidate SLO:** 95% of compound social actions succeed on first attempt (excluding rate-limited/session-invalid)
+
+**SLI 2: SDK error trace correlation**
+- Source: Client-side test fixture assertions
+- Formula: COUNT(error.trace_id != null) / COUNT(AutomationError) WHERE server includes trace_id in error.data
+- Rationale: Every debuggable error must carry its trace correlation key
+
+**Candidate SLO:** 100% of AutomationError exceptions carry trace_id when server provides one
+
+**SLI 3: Redaction compliance for BC10**
+- Source: Test fixture telemetry scanner over EV7/EV8 events
+- Formula: COUNT(events containing deny-listed keys) = 0
+- Rationale: Zero tolerance for PII leakage in social automation telemetry
+
+**Candidate SLO:** 0 telemetry events from BC10 containing deny-listed attribute keys or raw social content
+
+### Observability Core Analysis Loop (Phase 5)
+
+1. **Define**: Start from SDK `AutomationError` with trace_id, or from `automation.social.compound` spans with `result.status=error`
+2. **Visualize**: GROUP BY `social.platform`, `social.action`, `automation.error`, `error.step` — see which compound actions fail and at which step
+3. **Investigate**: Compare failing compounds against successful ones across `target.host`, `pacing.remaining_actions`, `platform.login_verified`, `session.id_hash`, `social.step_count` — BubbleUp across all dimensions
+4. **Evaluate**: Confirm by filtering with/without the suspected cause. If the loop cannot answer, the missing dimension becomes an instrumentation gap.
+
+---
+
 ## Testing Strategy
 
 - **Framework (Zig)**: Zig built-in test runner via `zig build test`
@@ -945,7 +1084,7 @@ pub fn register(router: *AutomationRouter) void {
 
 ##### 🔴 Red
 ```zig
-test "linkedin.visit emits social.action telemetry" {
+test "linkedin.visit emits compound span with required attributes (EV8)" {
     var mock_engine = MockAutomationEngine.init();
     var mock_sink = MockTelemetrySink.init();
     mock_engine.setTelemetrySink(&mock_sink);
@@ -955,33 +1094,148 @@ test "linkedin.visit emits social.action telemetry" {
         .profile_url = "https://www.linkedin.com/in/jane/",
     });
 
-    const events = mock_sink.getEvents("automation.social.action");
-    try std.testing.expect(events.len > 0);
-    try std.testing.expectEqualStrings("linkedin", events[0].attrs.get("social.platform").?);
-    try std.testing.expectEqualStrings("visit", events[0].attrs.get("social.action").?);
-    // profile URL is hashed, not raw
-    try std.testing.expect(events[0].attrs.get("profile.id_hash") != null);
-    try std.testing.expect(events[0].attrs.get("profile.url") == null);
+    // EV8: compound span emitted
+    const compounds = mock_sink.getSpans("automation.social.compound");
+    try std.testing.expect(compounds.len == 1);
+    const cs = compounds[0];
+
+    // Required attributes present (high dimensionality)
+    try std.testing.expectEqualStrings("linkedin", cs.attrs.get("social.platform").?);
+    try std.testing.expectEqualStrings("visit", cs.attrs.get("social.action").?);
+    try std.testing.expect(cs.attrs.get("trace_id") != null);
+    try std.testing.expect(cs.attrs.get("command_id") != null);
+    try std.testing.expect(cs.attrs.get("duration_ms") != null);
+    try std.testing.expectEqualStrings("ok", cs.attrs.get("result.status").?);
+    try std.testing.expect(cs.attrs.get("target.host") != null);
+    try std.testing.expect(cs.attrs.get("platform.login_verified") != null);
+
+    // Redaction: profile.id_hash present, raw URL absent (C52)
+    try std.testing.expect(cs.attrs.get("profile.id_hash") != null);
+    try std.testing.expect(cs.attrs.get("profile.url") == null);
+
+    // EV7: step events emitted
+    const steps = mock_sink.getEvents("automation.social.action");
+    try std.testing.expect(steps.len > 0);
+    try std.testing.expectEqualStrings("linkedin", steps[0].attrs.get("social.platform").?);
+    try std.testing.expectEqualStrings("visit", steps[0].attrs.get("social.action").?);
+    try std.testing.expect(steps[0].attrs.get("social.step_index") != null);
+    try std.testing.expect(steps[0].attrs.get("social.primitive_method") != null);
+}
+
+test "linkedin.visit redaction deny-list holds (C52)" {
+    var mock_engine = MockAutomationEngine.init();
+    var mock_sink = MockTelemetrySink.init();
+    mock_engine.setTelemetrySink(&mock_sink);
+    mock_engine.setLoginState(.{ .logged_in = true, .platform = "linkedin" });
+
+    _ = try linkedin.visit(&mock_engine, .{
+        .profile_url = "https://www.linkedin.com/in/jane/",
+    });
+
+    // No denied keys in ANY emitted telemetry
+    const denied = [_][]const u8{ "profile.url", "note.text", "message.text",
+        "comment.text", "search.query", "username", "conversation.url", "dm.text" };
+    for (mock_sink.allAttrs()) |attrs| {
+        for (denied) |key| {
+            try std.testing.expect(attrs.get(key) == null);
+        }
+    }
+}
+
+test "linkedin.connect compound span captures note metadata without content" {
+    var mock_engine = MockAutomationEngine.init();
+    var mock_sink = MockTelemetrySink.init();
+    mock_engine.setTelemetrySink(&mock_sink);
+    mock_engine.setLoginState(.{ .logged_in = true, .platform = "linkedin" });
+    mock_engine.setDomResult("dom.click", .{ .ok = true });
+    mock_engine.setDomResult("dom.fill", .{ .ok = true });
+
+    _ = try linkedin.connect(&mock_engine, .{
+        .profile_url = "https://www.linkedin.com/in/jane/",
+        .note = "Hi Jane, let's connect!",
+    });
+
+    const compounds = mock_sink.getSpans("automation.social.compound");
+    const cs = compounds[0];
+    try std.testing.expectEqualStrings("connect", cs.attrs.get("social.action").?);
+    try std.testing.expect(cs.attrs.get("note.provided") != null);
+    try std.testing.expect(cs.attrs.get("note.length") != null);
+    // Raw note text NEVER recorded
+    try std.testing.expect(cs.attrs.get("note.text") == null);
+}
+
+test "linkedin.connect trace_id propagates from engine to compound span (C51)" {
+    var mock_engine = MockAutomationEngine.init();
+    var mock_sink = MockTelemetrySink.init();
+    mock_engine.setTelemetrySink(&mock_sink);
+    mock_engine.setTraceId("t-test-propagation");
+    mock_engine.setCommandId("cmd-test-123");
+    mock_engine.setLoginState(.{ .logged_in = true, .platform = "linkedin" });
+    mock_engine.setDomResult("dom.click", .{ .ok = true });
+
+    _ = try linkedin.connect(&mock_engine, .{
+        .profile_url = "https://www.linkedin.com/in/jane/",
+        .note = null,
+    });
+
+    const compounds = mock_sink.getSpans("automation.social.compound");
+    try std.testing.expectEqualStrings("t-test-propagation", compounds[0].attrs.get("trace_id").?);
+    try std.testing.expectEqualStrings("cmd-test-123", compounds[0].attrs.get("command_id").?);
 }
 ```
 
 ##### 🟢 Green
 ```zig
-fn emitSocialAction(engine: *AutomationEngine, platform: []const u8, action: []const u8, step: []const u8) void {
+fn startCompoundSpan(engine: *AutomationEngine, platform: []const u8, action: []const u8) ?TelemetrySpan {
     if (engine.telemetry) |sink| {
-        sink.addEvent(engine.currentSpan(), "automation.social.action", .{
+        return sink.startSpan("automation.social.compound", .{
             .{ "social.platform", platform },
             .{ "social.action", action },
-            .{ "social.step", step },
+            .{ "trace_id", engine.traceId() },
+            .{ "command_id", engine.commandId() },
+            .{ "target.host", platformHost(platform) },
+            .{ "platform.login_verified", "true" },
         });
     }
+    return null;
+}
+
+fn endCompoundSpan(engine: *AutomationEngine, span: ?TelemetrySpan, status: []const u8, attrs: TelemetryAttrs) void {
+    if (engine.telemetry) |sink| {
+        if (span) |s| {
+            sink.endSpan(s, if (std.mem.eql(u8, status, "ok")) .ok else .error, attrs);
+        }
+    }
+}
+
+fn emitStepEvent(engine: *AutomationEngine, span: ?TelemetrySpan, platform: []const u8, action: []const u8, step: []const u8, step_index: u32, method: []const u8) void {
+    if (engine.telemetry) |sink| {
+        if (span) |s| {
+            sink.addEvent(s, "automation.social.action", .{
+                .{ "social.platform", platform },
+                .{ "social.action", action },
+                .{ "social.step", step },
+                .{ "social.step_index", step_index },
+                .{ "social.primitive_method", method },
+            });
+        }
+    }
+}
+
+fn hashForTelemetry(input: []const u8) [64]u8 {
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(input, &out, .{});
+    return std.fmt.bytesToHex(out, .lower);
 }
 ```
 
 ##### 🔵 Refactor
-- [ ] Telemetry emission is a cross-cutting concern — single helper function
-- [ ] Never logs raw profile URL — hashes per C33 RedactionPolicy
+- [ ] `startCompoundSpan`/`endCompoundSpan`/`emitStepEvent` — three helpers covering the compound→step hierarchy
+- [ ] `hashForTelemetry` — single redaction function used by all BC10 emitters
+- [ ] Never logs raw profile URL — hashes per C52 SocialRedaction
+- [ ] Deny-list enforced at emission site, upstream of C33 (BC11)
 - [ ] No-op if telemetry sink is null — matches C35 ExportIsolation
+- [ ] trace_id/command_id propagated from engine context (C51)
 
 ---
 
@@ -1237,6 +1491,48 @@ test "all 5 instagram methods register" {
     };
     for (methods) |method| {
         try std.testing.expect(router.hasMethod(method));
+    }
+}
+
+test "instagram.follow emits compound span with redacted attributes (EV8, C52)" {
+    var mock_engine = MockAutomationEngine.init();
+    var mock_sink = MockTelemetrySink.init();
+    mock_engine.setTelemetrySink(&mock_sink);
+    mock_engine.setLoginState(.{ .logged_in = true, .platform = "instagram" });
+
+    _ = try instagram.follow(&mock_engine, .{
+        .profile_url = "https://www.instagram.com/janedoe/",
+    });
+
+    const compounds = mock_sink.getSpans("automation.social.compound");
+    try std.testing.expect(compounds.len == 1);
+    try std.testing.expectEqualStrings("instagram", compounds[0].attrs.get("social.platform").?);
+    try std.testing.expectEqualStrings("follow", compounds[0].attrs.get("social.action").?);
+    try std.testing.expect(compounds[0].attrs.get("profile.id_hash") != null);
+    try std.testing.expect(compounds[0].attrs.get("profile.url") == null);
+    try std.testing.expect(compounds[0].attrs.get("trace_id") != null);
+    try std.testing.expect(compounds[0].attrs.get("command_id") != null);
+
+    // Step events emitted for each primitive
+    const steps = mock_sink.getEvents("automation.social.action");
+    try std.testing.expect(steps.len >= 2); // navigate + click Follow
+    try std.testing.expectEqualStrings("instagram", steps[0].attrs.get("social.platform").?);
+}
+
+test "instagram telemetry deny-list holds across all 5 actions (C52)" {
+    var mock_engine = MockAutomationEngine.init();
+    var mock_sink = MockTelemetrySink.init();
+    mock_engine.setTelemetrySink(&mock_sink);
+    mock_engine.setLoginState(.{ .logged_in = true, .platform = "instagram" });
+
+    _ = try instagram.dm(&mock_engine, .{ .username = "janedoe", .text = "Hey!" });
+
+    const denied = [_][]const u8{ "profile.url", "dm.text", "message.text",
+        "username", "comment.text" };
+    for (mock_sink.allAttrs()) |attrs| {
+        for (denied) |key| {
+            try std.testing.expect(attrs.get(key) == null);
+        }
     }
 }
 ```
@@ -1514,6 +1810,41 @@ def test_all_12_error_codes_map_correctly(code, name):
     err = AutomationError.from_rpc_error(rpc_error)
     assert err.code == code
     assert err.error_name == name
+
+def test_sdk_error_diagnostics_contain_only_redacted_fields_c53():
+    """C53: SDK must not introduce unredacted fields beyond what the server sent."""
+    rpc_error = {
+        "code": -32001,
+        "message": "element_not_found",
+        "data": {
+            "trace_id": "t-abc",
+            "command_id": "c-def",
+            "selector.hash": "h-sha256-abc",
+            "timeout_ms": 5000,
+            "target.host": "www.linkedin.com",
+        },
+    }
+    err = AutomationError.from_rpc_error(rpc_error)
+    # Diagnostics must only contain what server explicitly included
+    assert "selector.hash" in err.diagnostics
+    assert "timeout_ms" in err.diagnostics
+    assert "target.host" in err.diagnostics
+    # Raw selector NEVER present (server redacted it)
+    assert "selector" not in err.diagnostics
+    assert "profile.url" not in err.diagnostics
+    assert "note.text" not in err.diagnostics
+
+def test_sdk_error_repr_includes_trace_id_never_raw_params():
+    """C53: repr() shows trace_id for debugging, never raw params."""
+    rpc_error = {
+        "code": -32010,
+        "message": "platform_rate_limited",
+        "data": {"trace_id": "t-rate-123", "command_id": "c-456"},
+    }
+    err = AutomationError.from_rpc_error(rpc_error)
+    err_repr = repr(err)
+    assert "t-rate-123" in err_repr
+    assert "platform_rate_limited" in err_repr
 ```
 
 ##### 🟢 Green
@@ -2457,12 +2788,17 @@ flowchart TB
         C30["C30: InstagramActions\n5 compound sequences"]:::contract
         C42["C42: NoteLimit\nnote ≤ 300 chars"]:::contract
         C44["C44: CompoundDecomposition\ndom.*/page.* primitives only"]:::contract
+        C51["C51: CompoundTracePropagation\ntrace_id/command_id continuity\nacross S14 nested dispatch"]:::contract
+        C52["C52: SocialRedaction\ndeny-list + hash-before-emit\nupstream of C33"]:::contract
 
         C31["C31: SessionValidity\nlogin_check gate"]:::contract
         C41["C41: PacingDelegation\nvalidate + delegate"]:::contract
 
-        EV7["EV7: SocialActionEvent\nautomation.social.action"]:::iface
+        EV7["EV7: SocialActionEvent\nautomation.social.action\n(step-level)"]:::iface
+        EV8["EV8: SocialCompoundSpan\nautomation.social.compound\n(wide event per compound)"]:::iface
         OUT15["OUT15: SocialResult"]:::iface
+        OUT24["OUT24: TelemetryEmit\nEV7+EV8 → S15 sink"]:::iface
+        G14["G14: NestedTraceContext\nengine.dispatch() within compound\nmay create root instead of child spans"]:::gap
         S14["S14: Social→Engine"]:::seam
     end
 
@@ -2479,12 +2815,17 @@ flowchart TB
     IN18 --> C41
     C31 --> S14
     C41 --> S14
-    C44 --> S14
+    C44 --> C51
+    C51 --> S14
     S14 --> OUT15
     S14 ---|"IN8/OUT11"| BC6_ext
-    C29 -.-> EV7
-    C30 -.-> EV7
-    EV7 -.->|"via S15"| BC11_ext
+    C29 -.-> EV8
+    C30 -.-> EV8
+    EV8 -.-> EV7
+    EV8 -.-> C52
+    C52 -.-> OUT24
+    OUT24 -.->|"via S15"| BC11_ext
+    C51 -.- G14
 ```
 
 #### (b) EBNF Grammar
@@ -2510,14 +2851,50 @@ RateStatusResult          ::= "{" "\"remaining_actions\":" Integer ","
                               "\"reset_at\":" IsoTimestamp ","
                               "\"daily_cap\":" Integer "}" ;
 
+EV8_SocialCompoundSpan    ::= "{"
+                              "\"name\":\"automation.social.compound\","
+                              "\"trace_id\":" String ","
+                              "\"span_id\":" String ","
+                              "\"parent_span_id\":" String ","
+                              "\"command_id\":" String ","
+                              "\"social.platform\":" PlatformName ","
+                              "\"social.action\":" ActionVerb ","
+                              "\"social.step_count\":" Integer ","
+                              "\"profile.id_hash\":" String? ","
+                              "\"post.id_hash\":" String? ","
+                              "\"target.host\":" String ","
+                              "\"note.provided\":" Boolean? ","
+                              "\"note.length\":" Integer? ","
+                              "\"note.truncated\":" Boolean? ","
+                              "\"search.query_length\":" Integer? ","
+                              "\"duration_ms\":" Number ","
+                              "\"result.status\":" ResultStatus ","
+                              "\"automation.error\":" String? ","
+                              "\"error.step\":" String? ","
+                              "\"error.step_index\":" Integer? ","
+                              "\"platform.login_verified\":" Boolean ","
+                              "\"pacing.remaining_actions\":" Integer? ","
+                              "\"session.id_hash\":" String?
+                              "}" ;
+ResultStatus              ::= "\"ok\"" | "\"error\"" | "\"cancelled\"" ;
+
 EV7_SocialActionEvent     ::= "{"
                               "\"name\":\"automation.social.action\","
+                              "\"trace_id\":" String ","
+                              "\"parent_span_id\":" String ","
                               "\"social.platform\":" PlatformName ","
                               "\"social.action\":" ActionVerb ","
                               "\"social.step\":" StepName ","
-                              "\"profile.id_hash\":" String?
+                              "\"social.step_index\":" Integer ","
+                              "\"social.primitive_method\":" String ","
+                              "\"social.primitive_selector_hash\":" String? ","
+                              "\"duration_ms\":" Number ","
+                              "\"result.status\":" ResultStatus
                               "}" ;
 PlatformName              ::= "\"linkedin\"" | "\"instagram\"" ;
+
+OUT24_TelemetryEmit       ::= (EV8_SocialCompoundSpan | EV7_SocialActionEvent)* ;
+(* BC10 emits EV8 and EV7 to BC11 via S15 TelemetrySink vtable *)
 
 (* ─── BC10: Social Contracts ─── Contracts ─── *)
 
@@ -2591,24 +2968,73 @@ C44_CompoundDecomposition
     post: dom.type used (not dom.fill) for behavioral simulation through pacing
     post: step failure bubbles AutomationError with step context preserved ;
 
+C51_CompoundTracePropagation
+    governs: trace_id and command_id continuity across S14 nested dispatches
+    invariant: compound social action (EV8) inherits trace_id, command_id from
+               root automation.command span (BC6)
+    invariant: each primitive step dispatched via engine.dispatch() within a
+               compound MUST produce child spans (not new root spans) sharing
+               the same trace_id
+    pre:  engine provides trace context to compound handler via currentSpan()
+    post: EV8 compound span: parent_span_id = root automation.command span_id
+    post: EV7 step events: parent_span_id = EV8 compound span_id
+    post: primitive command child spans: trace_id = EV8 trace_id
+    note: if BC6 engine.dispatch() does not support nested trace context,
+          G14 is the resulting gap — compound→primitive linkage lost ;
+
+C52_SocialRedaction
+    governs: BC10 telemetry emission to S15 TelemetrySink
+    invariant: deny-list enforced at emission site, upstream of C33 (BC11)
+    deny-list (NEVER record):
+        note.text, message.text, comment.text, dm.text,
+        search.query, profile.url, post.url, conversation.url, username
+    hash-before-emit (SHA-256 only):
+        profile.id_hash = SHA-256(profile_url)
+        post.id_hash = SHA-256(post_url)
+        conversation.id_hash = SHA-256(conversation_url)
+        social.primitive_selector_hash = SHA-256(selector_string)
+    allowed-raw:
+        target.host (low cardinality, no PII)
+        note.length, search.query_length (integer counts)
+        social.platform, social.action, social.step (enum values)
+    post: test fixture scanner asserts 0 events with deny-listed keys ;
+
 (* ─── BC10: Social Contracts ─── Seam ─── *)
 
 S14_Social_Engine
     interfaces: IN12_SocialCommand, IN18_SocialGenericCommand,
                 IN8_AutomationCommand (external/BC6),
                 OUT15_SocialResult, OUT11_CommandResult (external/BC6)
-    events:     EV7_SocialActionEvent (emitted to S15/BC11)
+    events:     EV8_SocialCompoundSpan, EV7_SocialActionEvent (emitted to S15/BC11 via OUT24)
     contracts:  C29_LinkedInActions, C30_InstagramActions,
                 C31_SessionValidity, C41_PacingDelegation,
-                C43_URLValidation, C44_CompoundDecomposition ;
+                C43_URLValidation, C44_CompoundDecomposition,
+                C51_CompoundTracePropagation ;
+
+(* ─── BC10: Social Contracts ─── Gap ─── *)
+
+G14_NestedTraceContext
+    violates: C51_CompoundTracePropagation (assumption about BC6 behavior)
+    evidence: BC10 calls engine.dispatch() for each primitive step within
+              a compound social action. If engine.dispatch() creates new
+              root spans (fresh trace_id) instead of child spans (inherited
+              trace_id), the compound→primitive trace linkage is lost.
+              BC6's dispatch() trace-context behavior is not yet specified
+              for nested/recursive calls from registered method handlers.
+    impact:   Without nested trace context, CLI --trace shows disconnected
+              spans — the compound span (EV8) and its primitives have
+              different trace_ids, breaking the investigation loop.
+    status:   RISK — depends on BC6 engine implementation. Resolution:
+              BC6 must propagate current trace context to nested dispatch
+              calls, or BC10 must explicitly pass trace context as param ;
 ```
 
 #### (c) Seam Table
 
 | S# | Boundary | Interfaces Crossing | Events Crossing | Contracts Governing |
 |---|---|---|---|---|
-| S14 | BC10 → BC6 | IN12, IN18 → decomposed to IN8 (BC6); OUT11 (BC6) → aggregated to OUT15 | — | C29, C30, C31, C41, C43, C44 |
-| S15 | BC10 → BC11 (external) | — | EV7 → IN13 (BC11) | C33 RedactionPolicy (BC11, governs EV7 export) |
+| S14 | BC10 → BC6 | IN12, IN18 → decomposed to IN8 (BC6); OUT11 (BC6) → aggregated to OUT15 | — | C29, C30, C31, C41, C43, C44, C51 |
+| S15 | BC10 → BC11 (external) | OUT24 → IN13 (BC11) | EV8, EV7 → IN13 (BC11) | C52 SocialRedaction (BC10, governs emission), C33 RedactionPolicy (BC11, governs export) |
 
 ---
 
@@ -2636,6 +3062,7 @@ flowchart TB
         C46["C46: ErrorMapping\n[-32012,-32001] → AutomationError\nother → ProtocolError"]:::contract
         C47["C47: TraceExposure\ntrace_id, command_id,\ndiagnostics on errors"]:::contract
         C49["C49: EventDispatch\nWS notifications → callbacks\nmulti-listener, dropped if unmatched"]:::contract
+        C53["C53: SDKDiagnosticContract\nonly redacted fields on error\ntrace_id + command_id + hashed"]:::contract
 
         OUT21["OUT21: SDKResult\nparsed dict/object | exception"]:::iface
         OUT22["OUT22: CLIOutput\nJSON | error + trace_id hint"]:::iface
@@ -2655,7 +3082,8 @@ flowchart TB
     C45 --> S10
     S10 ---|"IN10/OUT13/EV4"| BC8_ext
     S10 --> C46
-    C46 --> C47
+    C46 --> C53
+    C53 --> C47
     C47 --> OUT21
     C47 --> OUT22
     S10 --> C49
@@ -2755,6 +3183,24 @@ C50_CLITraceHelper
     post: trace not found → "Trace {trace_id} not found"
     post: no socket env → "Error: ZIGBROWSER_SOCKET not set" ;
 
+C53_SDKDiagnosticContract
+    governs: diagnostic fields surfaced on SDK/CLI error objects
+    invariant: error.diagnostics NEVER contains raw deny-listed values
+              (deny-list: note.text, message.text, comment.text, dm.text,
+               search.query, profile.url, post.url, conversation.url, username)
+    invariant: if server-side error.data contains deny-listed fields,
+              SDK strips them before populating diagnostics
+    invariant: trace_id and command_id are always raw (not hashed) — they
+              are system identifiers, not user content
+    invariant: hashed fields (SHA-256 prefix) pass through as-is — server
+              already applied C52_SocialRedaction hash-before-emit
+    pre:  error.data received from server via S10
+    post: err.trace_id = extracted raw (system ID, safe)
+    post: err.command_id = extracted raw (system ID, safe)
+    post: err.diagnostics = remaining fields with deny-listed values stripped
+    post: repr(err)/toString() includes trace_id, NEVER raw deny-listed content
+    post: CLI error output follows same contract for OUT22 ;
+
 (* ─── Client Tier ─── Seam ─── *)
 
 S10_Client_Server
@@ -2763,6 +3209,7 @@ S10_Client_Server
                 EV4_EventNotification (external/BC8),
                 OUT21_SDKResult, OUT22_CLIOutput, OUT23_SDKEvent (client exit)
     contracts:  C45_ClientFraming, C46_ErrorMapping, C47_TraceExposure,
+                C53_SDKDiagnosticContract,
                 C21_JSONRPCFrame (external/BC8), C24_UDSOnly (external/BC8) ;
 
 (* ─── Client Tier ─── Gaps ─── *)
@@ -2781,7 +3228,7 @@ G13_TelemetryQueryMethod
 
 | S# | Boundary | Interfaces Crossing | Events Crossing | Contracts Governing |
 |---|---|---|---|---|
-| S10 | Client Tier → BC8 | IN19, IN20 → serialized as IN10 (BC8); OUT13 (BC8) → parsed as OUT21, OUT22 | EV4 (BC8) → dispatched as OUT23 | C45, C46, C47; C21, C24 (external/BC8) |
+| S10 | Client Tier → BC8 | IN19, IN20 → serialized as IN10 (BC8); OUT13 (BC8) → parsed as OUT21, OUT22 | EV4 (BC8) → dispatched as OUT23 | C45, C46, C47, C53; C21, C24 (external/BC8) |
 
 ---
 
@@ -2813,7 +3260,7 @@ flowchart LR
     Client -->|"S10: JSON-RPC over UDS\nIN10↔OUT13, EV4"| BC8
     BC8 -->|"S11: method→router"| BC6
     BC10 -->|"S14: compound→primitive\nIN12/IN18→IN8"| BC6
-    BC10 -.->|"S15: EV7 telemetry"| BC11
+    BC10 -.->|"S15: EV7+EV8 telemetry\nOUT24→IN13"| BC11
     BC6 -.->|"S12: pacing queries"| BC9
 ```
 
@@ -2822,19 +3269,21 @@ flowchart LR
 | ID | Severity | Context | Violated / Missing Boundary | Impact | Resolution |
 |---|---|---|---|---|---|
 | G13 | RISK | Client Tier | C50 CLITraceHelper assumes `telemetry.query` RPC method — not in BC8 CommandMethod grammar or BC6 router | CLI `--trace` feature non-functional until server exposes trace query endpoint | Define `telemetry.query` in BC6/BC8 method grammar, or CLI reads local telemetry files directly |
+| G14 | RISK | BC10 | C51 CompoundTracePropagation assumes BC6 engine.dispatch() propagates current trace context to nested calls — not yet specified in BC6 | Compound span (EV8) and primitive step spans have different trace_ids, breaking trace linkage and CLI --trace investigation | BC6 must propagate trace context in nested dispatch, or BC10 must explicitly pass trace context as parameter |
 
 ---
 
 ### Acceptance Self-Check
 
 - [x] **Diagram IDs ↔ grammar entries are 1:1** — no orphans
-  - BC10: 12 nodes (IN12, IN18, C29, C30, C31, C41, C42, C43, C44, EV7, OUT15, S14) ↔ 12 grammar entries
-  - Client Tier: 13 nodes (IN19, IN20, C45, C46, C47, C48, C49, C50, OUT21, OUT22, OUT23, G13, S10) ↔ 13 grammar entries
-- [x] **Every contract (C#) names its target** — C29→linkedin.* sequences, C30→instagram.* sequences, C31→login_check gate, C41→pacing delegation, C42→note parameter, C43→URL parameters, C44→compound decomposition, C45→UDS framing, C46→error dispatch, C47→trace exposure, C48→namespace wrappers, C49→event dispatch, C50→CLI trace
+  - BC10: 17 nodes (IN12, IN18, C29, C30, C31, C41, C42, C43, C44, C51, C52, EV7, EV8, OUT15, OUT24, G14, S14) ↔ 17 grammar entries
+  - Client Tier: 14 nodes (IN19, IN20, C45, C46, C47, C48, C49, C50, C53, OUT21, OUT22, OUT23, G13, S10) ↔ 14 grammar entries
+  - **Orphan IDs: none**
+- [x] **Every contract (C#) names its target** — C29→linkedin.* sequences, C30→instagram.* sequences, C31→login_check gate, C41→pacing delegation, C42→note parameter, C43→URL parameters, C44→compound decomposition, C45→UDS framing, C46→error dispatch, C47→trace exposure, C48→namespace wrappers, C49→event dispatch, C50→CLI trace, C51→compound trace propagation, C52→social redaction deny-list/hash, C53→SDK diagnostic field redaction
 - [x] **Every seam (S#) enumerates crossing interfaces and contracts**
-  - S14: IN12, IN18, IN8(ext), OUT15, OUT11(ext); EV7→S15; C29, C30, C31, C41, C43, C44
-  - S10: IN19, IN20, IN10(ext), OUT13(ext), EV4(ext), OUT21, OUT22, OUT23; C45, C46, C47, C21(ext), C24(ext)
-  - S15(ext): EV7; C33(ext)
+  - S14: IN12, IN18, IN8(ext), OUT15, OUT11(ext); EV8, EV7→S15 via OUT24; C29, C30, C31, C41, C43, C44, C51
+  - S10: IN19, IN20, IN10(ext), OUT13(ext), EV4(ext), OUT21, OUT22, OUT23; C45, C46, C47, C53, C21(ext), C24(ext)
+  - S15(ext): OUT24→IN13(BC11); EV8, EV7; C52 (BC10 emission-side), C33(ext BC11 export-side)
 - [x] **Every context has all three parts** — BC10: diagram ✓ grammar ✓ seam table ✓ | Client Tier: diagram ✓ grammar ✓ seam table ✓
-- [x] **Every gap marked with `gap` class** — G13 uses `:::gap` in Client Tier diagram. No gaps in BC10 (all to-be, no violated boundaries)
+- [x] **Every gap marked with `gap` class** — G13 uses `:::gap` in Client Tier diagram. G14 uses `:::gap` in BC10 diagram
 - [x] **Provisional boundaries labeled** — BC10: provisional (LinkedIn/Instagram split may not warrant sub-contexts until selector maintenance patterns emerge). Client Tier: not provisional (cleanly scoped)
