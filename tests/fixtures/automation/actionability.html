@@ -44,15 +44,53 @@
     <button data-testid="moving-button" data-moving="true">Moving</button>
     <button data-testid="disabled-button" disabled>Disabled</button>
     <input data-testid="readonly-input" readonly value="">
+    <input data-testid="editable-input" value="old value">
+    <input data-testid="type-input" value="">
+    <section id="dynamic-root"></section>
     <div id="obscured-wrap">
       <button data-testid="obscured-button" id="obscured-button">Obscured</button>
       <div id="obscurer"></div>
     </div>
     <script>
       globalThis.__fixtureLog = [];
-      document.querySelector('[data-testid="ready-button"]').addEventListener('click', () => {
-        globalThis.__fixtureLog.push('ready:click');
-      });
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        document.querySelector('[data-testid="ready-button"]').addEventListener(type, () => {
+          globalThis.__fixtureLog.push(`ready:${type}`);
+        });
+      }
+
+      const editable = document.querySelector('[data-testid="editable-input"]');
+      editable.addEventListener('focus', () => globalThis.__fixtureLog.push('editable:focus'));
+      editable.addEventListener('input', () => globalThis.__fixtureLog.push(`editable:input:${editable.value}`));
+      editable.addEventListener('change', () => globalThis.__fixtureLog.push(`editable:change:${editable.value}`));
+
+      const typeInput = document.querySelector('[data-testid="type-input"]');
+      typeInput.addEventListener('keydown', (event) => globalThis.__fixtureLog.push(`type:keydown:${event.key}`));
+      typeInput.addEventListener('input', (event) => globalThis.__fixtureLog.push(`type:input:${event.data}`));
+      typeInput.addEventListener('keyup', (event) => globalThis.__fixtureLog.push(`type:keyup:${event.key}`));
+
+      globalThis.__attachDynamic = () => {
+        const root = document.querySelector('#dynamic-root');
+        if (!root.querySelector('[data-testid="dynamic-target"]')) {
+          const button = document.createElement('button');
+          button.dataset.testid = 'dynamic-target';
+          button.textContent = 'Dynamic';
+          button.hidden = true;
+          root.appendChild(button);
+        }
+      };
+      globalThis.__showDynamic = () => {
+        const target = document.querySelector('[data-testid="dynamic-target"]');
+        if (target) target.hidden = false;
+      };
+      globalThis.__hideDynamic = () => {
+        const target = document.querySelector('[data-testid="dynamic-target"]');
+        if (target) target.hidden = true;
+      };
+      globalThis.__detachDynamic = () => {
+        const target = document.querySelector('[data-testid="dynamic-target"]');
+        if (target) target.remove();
+      };
     </script>
   </body>
 </html>

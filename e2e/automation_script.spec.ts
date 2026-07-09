@@ -213,3 +213,98 @@ test.describe('actionability checks', () => {
     expect(serialized).not.toContain('<input');
   });
 });
+
+test.describe('DOM actions and wait primitives', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(actionabilityFixtureUrl);
+    await page.addScriptTag({ path: scriptPath });
+  });
+
+  async function handle(page, command) {
+    return page.evaluate((payload) => globalThis.__zbAutomation.handle(payload), command);
+  }
+
+  test('click dispatches pointer and mouse events in order', async ({ page }) => {
+    await page.evaluate(() => { globalThis.__fixtureLog = []; });
+
+    const result = await handle(page, { op: 'click', selector: 'testid=ready-button' });
+
+    expect(result.ok).toBe(true);
+    expect(await page.evaluate(() => globalThis.__fixtureLog)).toEqual([
+      'ready:pointerdown',
+      'ready:mousedown',
+      'ready:pointerup',
+      'ready:mouseup',
+      'ready:click',
+    ]);
+  });
+
+  test('fill focuses, clears, sets value, and dispatches input/change', async ({ page }) => {
+    await page.evaluate(() => { globalThis.__fixtureLog = []; });
+
+    const result = await handle(page, { op: 'fill', selector: 'testid=editable-input', value: 'new value' });
+
+    expect(result.ok).toBe(true);
+    expect(await page.locator('[data-testid="editable-input"]').inputValue()).toBe('new value');
+    expect(await page.evaluate(() => globalThis.__fixtureLog)).toEqual([
+      'editable:focus',
+      'editable:input:new value',
+      'editable:change:new value',
+    ]);
+  });
+
+  test('type dispatches keydown/input/keyup per character', async ({ page }) => {
+    await page.evaluate(() => { globalThis.__fixtureLog = []; });
+
+    const result = await handle(page, { op: 'type', selector: 'testid=type-input', text: 'ab' });
+
+    expect(result.ok).toBe(true);
+    expect(await page.locator('[data-testid="type-input"]').inputValue()).toBe('ab');
+    expect(await page.evaluate(() => globalThis.__fixtureLog)).toEqual([
+      'type:keydown:a',
+      'type:input:a',
+      'type:keyup:a',
+      'type:keydown:b',
+      'type:input:b',
+      'type:keyup:b',
+    ]);
+  });
+
+  test('waitFor resolves attached, visible, hidden, and detached states with cleanup', async ({ page }) => {
+    await page.evaluate(() => {
+      setTimeout(() => globalThis.__attachDynamic(), 25);
+    });
+    expect((await handle(page, { op: 'waitFor', selector: 'testid=dynamic-target', state: 'attached', timeout_ms: 500 })).ok).toBe(true);
+
+    await page.evaluate(() => {
+      setTimeout(() => globalThis.__showDynamic(), 25);
+    });
+    expect((await handle(page, { op: 'waitFor', selector: 'testid=dynamic-target', state: 'visible', timeout_ms: 500 })).ok).toBe(true);
+
+    await page.evaluate(() => {
+      setTimeout(() => globalThis.__hideDynamic(), 25);
+    });
+    expect((await handle(page, { op: 'waitFor', selector: 'testid=dynamic-target', state: 'hidden', timeout_ms: 500 })).ok).toBe(true);
+
+    await page.evaluate(() => {
+      setTimeout(() => globalThis.__detachDynamic(), 25);
+    });
+    expect((await handle(page, { op: 'waitFor', selector: 'testid=dynamic-target', state: 'detached', timeout_ms: 500 })).ok).toBe(true);
+
+    expect(await page.evaluate(() => globalThis.__zbAutomation.debugOutstandingWaits())).toBe(0);
+  });
+
+  test('waitFor times out on a never-appearing selector and cleans up', async ({ page }) => {
+    const result = await handle(page, {
+      op: 'waitFor',
+      selector: 'testid=never-appears',
+      state: 'attached',
+      timeout_ms: 50,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('element_not_found');
+    expect(result.data.reason).toBe('timeout');
+    expect(await page.evaluate(() => globalThis.__zbAutomation.debugOutstandingWaits())).toBe(0);
+  });
+});

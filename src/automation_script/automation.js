@@ -1,6 +1,7 @@
 (function installZigBrowserAutomation(globalScope) {
   let nextElementId = 1;
   let nextSpanId = 1;
+  let outstandingWaits = 0;
   const elementIds = new WeakMap();
 
   function handle(input) {
@@ -22,6 +23,8 @@
         return runAction(command, 'fill');
       case 'type':
         return runAction(command, 'type');
+      case 'waitFor':
+        return waitFor(command);
       default:
         return failure('unknown_op', command, [], false);
     }
@@ -79,6 +82,78 @@
     if (action === 'fill') synthesizeFill(element, command.value || '');
     if (action === 'type') synthesizeType(element, command.text || '');
     return success({ ok: true }, telemetry);
+  }
+
+  function waitFor(command) {
+    const parsed = parseSelector(command.selector);
+    const strict = command.strict === true;
+    const state = command.state || 'visible';
+    const timeoutMs = typeof command.timeout_ms === 'number' ? command.timeout_ms : 30000;
+    const started = nowMs();
+
+    if (!parsed.ok || !['attached', 'visible', 'hidden', 'detached'].includes(state)) {
+      const telemetry = [selectorSpan(command, parsed.ok ? parsed.kind : 'unknown', strict, 0, started, 'error')];
+      return failure('malformed_selector', command, telemetry, true);
+    }
+
+    outstandingWaits += 1;
+    return new Promise((resolve) => {
+      let settled = false;
+      let intervalId = null;
+      let timeoutId = null;
+      const observer = new MutationObserver(check);
+
+      function cleanup() {
+        if (intervalId !== null) clearInterval(intervalId);
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        observer.disconnect();
+        outstandingWaits -= 1;
+      }
+
+      function finish(response) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(response);
+      }
+
+      function check() {
+        let elements;
+        try {
+          elements = resolveSelector(parsed.kind, parsed.body);
+        } catch (_) {
+          const telemetry = [selectorSpan(command, parsed.kind, strict, 0, started, 'error')];
+          finish(failure('malformed_selector', command, telemetry, true));
+          return;
+        }
+
+        if (waitStateSatisfied(elements, state)) {
+          const telemetry = [selectorSpan(command, parsed.kind, strict, elements.length, started, 'ok')];
+          finish(success({ ok: true }, telemetry));
+        }
+      }
+
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['class', 'hidden', 'style']
+      });
+      intervalId = setInterval(check, 16);
+      timeoutId = setTimeout(() => {
+        const telemetry = [selectorSpan(command, parsed.kind, strict, 0, started, 'error')];
+        finish(failure('timeout', command, telemetry, true));
+      }, timeoutMs);
+      check();
+    });
+  }
+
+  function waitStateSatisfied(elements, state) {
+    if (state === 'attached') return elements.length > 0;
+    if (state === 'detached') return elements.length === 0;
+    if (state === 'visible') return elements.some(isElementVisibleEnough);
+    if (state === 'hidden') return elements.length === 0 || elements.every((element) => !isElementVisibleEnough(element));
+    return false;
   }
 
   function runActionabilityChecks(element, action) {
@@ -274,6 +349,7 @@
   }
 
   function isElementVisibleEnough(element) {
+    if (element.hidden === true) return false;
     const rect = element.getBoundingClientRect();
     const style = globalScope.getComputedStyle(element);
     return rect.width > 0 &&
@@ -398,7 +474,10 @@
     writable: false,
     value: {
       version: 'phase1-m4-actionability',
-      handle
+      handle,
+      debugOutstandingWaits() {
+        return outstandingWaits;
+      }
     }
   });
 })(globalThis);
