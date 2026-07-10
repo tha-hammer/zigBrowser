@@ -518,6 +518,7 @@ pub const Ev70Span = struct {
     span_id: []const u8 = "",
     command_id: ?[]const u8 = null,
     execution_id: ?[]const u8 = null,
+    idempotency_key_hash: ?[]const u8 = null,
 };
 
 pub const Ev70Sink = struct {
@@ -534,6 +535,7 @@ pub const Ev70Sink = struct {
             if (span.trace_id) |value| self.allocator.free(value);
             if (span.command_id) |value| self.allocator.free(value);
             if (span.execution_id) |value| self.allocator.free(value);
+            if (span.idempotency_key_hash) |value| self.allocator.free(value);
         }
         self.spans.deinit(self.allocator);
     }
@@ -559,6 +561,13 @@ pub const Ev70Sink = struct {
             if (command_id) |value| self.allocator.free(value);
             return;
         };
+        const idempotency_key_hash = dupeOptional(self.allocator, span.idempotency_key_hash) catch {
+            self.allocator.free(span_id);
+            if (trace_id) |value| self.allocator.free(value);
+            if (command_id) |value| self.allocator.free(value);
+            if (execution_id) |value| self.allocator.free(value);
+            return;
+        };
 
         self.spans.append(self.allocator, .{
             .name = span.name,
@@ -571,11 +580,13 @@ pub const Ev70Sink = struct {
             .span_id = span_id,
             .command_id = command_id,
             .execution_id = execution_id,
+            .idempotency_key_hash = idempotency_key_hash,
         }) catch {
             self.allocator.free(span_id);
             if (trace_id) |value| self.allocator.free(value);
             if (command_id) |value| self.allocator.free(value);
             if (execution_id) |value| self.allocator.free(value);
+            if (idempotency_key_hash) |value| self.allocator.free(value);
         };
     }
 };
@@ -615,7 +626,7 @@ pub const SequencesClient = struct {
         return buf[0..];
     }
 
-    fn emitEv70(self: *SequencesClient, comptime endpoint: []const u8, result: CallResult) void {
+    fn emitEv70(self: *SequencesClient, comptime endpoint: []const u8, result: CallResult, idempotency_key_hash: ?[]const u8) void {
         var span_id_buf: [16]u8 = undefined;
         self.sink.emit(.{
             .name = "zb_sequences.client_call",
@@ -628,13 +639,39 @@ pub const SequencesClient = struct {
             .span_id = self.generateSpanId(&span_id_buf),
             .command_id = self.trace_ctx.command_id,
             .execution_id = self.trace_ctx.execution_id,
+            .idempotency_key_hash = idempotency_key_hash,
         });
     }
 
     fn callAndEmit(self: *SequencesClient, comptime endpoint: []const u8) CallResult {
         const result = CallResult{ .status_code = 0, .body = "", .duplicate = false };
-        self.emitEv70(endpoint, result);
+        self.emitEv70(endpoint, result, null);
         return result;
+    }
+
+    fn callAndEmitWithParams(self: *SequencesClient, comptime endpoint: []const u8, params: anytype) CallResult {
+        const result = CallResult{ .status_code = 0, .body = "", .duplicate = false };
+        const idem_hash = extractIdempotencyKeyHash(params);
+        self.emitEv70(endpoint, result, if (idem_hash) |*h| h else null);
+        return result;
+    }
+
+    fn extractIdempotencyKeyHash(params: anytype) ?[canonical_hashing.prefixed_hash_len]u8 {
+        const T = @TypeOf(params);
+        if (@typeInfo(T) == .@"struct" and @hasField(T, "idempotency_key")) {
+            const field = params.idempotency_key;
+            switch (@typeInfo(@TypeOf(field))) {
+                .optional => if (field) |key| return hashIdempotencyKey(key),
+                else => return hashIdempotencyKey(field),
+            }
+        }
+        return null;
+    }
+
+    fn hashIdempotencyKey(key: anytype) [canonical_hashing.prefixed_hash_len]u8 {
+        var buf: [canonical_hashing.prefixed_hash_len]u8 = undefined;
+        _ = canonical_hashing.h(&buf, key);
+        return buf;
     }
 
     pub fn getUiBootstrap(self: *SequencesClient, params: anytype) CallResult {
@@ -648,8 +685,7 @@ pub const SequencesClient = struct {
     }
 
     pub fn createDraftSequence(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.createDraftSequence);
+        return self.callAndEmitWithParams(endpoint_templates.createDraftSequence, params);
     }
 
     pub fn getSequenceDetail(self: *SequencesClient, params: anytype) CallResult {
@@ -663,18 +699,15 @@ pub const SequencesClient = struct {
     }
 
     pub fn saveSteps(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.saveSteps);
+        return self.callAndEmitWithParams(endpoint_templates.saveSteps, params);
     }
 
     pub fn generateStepDraft(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.generateStepDraft);
+        return self.callAndEmitWithParams(endpoint_templates.generateStepDraft, params);
     }
 
     pub fn previewStep(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.previewStep);
+        return self.callAndEmitWithParams(endpoint_templates.previewStep, params);
     }
 
     pub fn getExecutionPlan(self: *SequencesClient, params: anytype) CallResult {
@@ -683,28 +716,23 @@ pub const SequencesClient = struct {
     }
 
     pub fn createExecution(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.createExecution);
+        return self.callAndEmitWithParams(endpoint_templates.createExecution, params);
     }
 
     pub fn updateExecution(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.updateExecution);
+        return self.callAndEmitWithParams(endpoint_templates.updateExecution, params);
     }
 
     pub fn recordStepResult(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.recordStepResult);
+        return self.callAndEmitWithParams(endpoint_templates.recordStepResult, params);
     }
 
     pub fn ingestEvents(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.ingestEvents);
+        return self.callAndEmitWithParams(endpoint_templates.ingestEvents, params);
     }
 
     pub fn ingestTelemetry(self: *SequencesClient, params: anytype) CallResult {
-        _ = params;
-        return self.callAndEmit(endpoint_templates.ingestTelemetry);
+        return self.callAndEmitWithParams(endpoint_templates.ingestTelemetry, params);
     }
 
     pub fn getOutreachAnalytics(self: *SequencesClient, params: anytype) CallResult {

@@ -284,3 +284,45 @@ test "trace context can be updated between calls" {
     try std.testing.expect(sink.spans.items[0].execution_id == null);
     try std.testing.expectEqualStrings("exec-new", sink.spans.items[1].execution_id.?);
 }
+
+// --- TDD Cycle 4: idempotency_key_hash on EV70 spans ---
+
+test "EV70 span has null idempotency_key_hash by default" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expect(sink.spans.items[0].idempotency_key_hash == null);
+}
+
+test "EV70 span carries idempotency_key_hash when key provided" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.createExecution(.{ .idempotency_key = "my-idem-key-123" });
+    const span = sink.spans.items[0];
+    try std.testing.expect(span.idempotency_key_hash != null);
+    var expected_buf: [sequences.canonical_hashing.prefixed_hash_len]u8 = undefined;
+    const expected = sequences.canonical_hashing.h(&expected_buf, "my-idem-key-123");
+    try std.testing.expectEqualStrings(expected, span.idempotency_key_hash.?);
+}
+
+test "read endpoint ignores idempotency_key" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expect(sink.spans.items[0].idempotency_key_hash == null);
+}
+
+test "write endpoints accept idempotency_key" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.createDraftSequence(.{ .idempotency_key = "key-a" });
+    _ = client.saveSteps(.{ .idempotency_key = "key-b" });
+    _ = client.createExecution(.{ .idempotency_key = "key-c" });
+    for (sink.spans.items[0..3]) |span| {
+        try std.testing.expect(span.idempotency_key_hash != null);
+    }
+}
