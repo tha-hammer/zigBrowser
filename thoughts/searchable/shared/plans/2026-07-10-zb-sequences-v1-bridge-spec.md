@@ -200,6 +200,56 @@ Write-path replay matrix:
 
 `POST /steps/preview` is specified as read-only and must not persist rendered body text, so it does not require `Idempotency-Key`. If implementation later persists preview audits, that endpoint becomes a write and must adopt the idempotency contract.
 
+### Canonical Hashing & Signing (NORMATIVE)
+
+Every hash and signature in `zb-sequences-v1` uses these exact primitives so the zigBrowser client and the sequences backend produce **byte-identical** results. Where any earlier prose says "normalized request body" or `sha256:...`, this section is the authoritative definition.
+
+**Primitives**
+
+- `SHA256(b)` = SHA-256 over bytes `b`. `hex(d)` = lowercase hex of digest `d` (no `0x`, no uppercase).
+- `H(s)` = `"sha256:" + hex(SHA256(utf8(s)))` for a string `s`. UTF-8, no BOM. Every spec field shaped `sha256:<hex>` is produced by `H(...)`.
+- `Hbytes(b)` = `hex(SHA256(b))` for raw bytes `b` — bare lowercase hex, **no** `sha256:` prefix. Used only inside the signature base string.
+- `JCS(obj)` = RFC 8785 JSON Canonicalization Scheme (sorted keys, minimal whitespace, ECMAScript number formatting, UTF-8).
+- Multi-line base strings join with a single `LF` (U+000A), **no trailing newline**.
+- **Empty request body** hashes to the SHA-256 of zero bytes: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- `base64url` = RFC 4648 §5, **no padding**.
+
+**1. `bodyHash`** (shared by signing and idempotency): `bodyHash = Hbytes(raw_request_body_bytes)`, or the empty-body constant above when there is no body. The client hashes the exact bytes it transmits; the server hashes the exact bytes it received **before any parsing or normalization**. Never re-serialize JSON before hashing the body.
+
+**2. HMAC signature** (`X-ZB-Signature: v1=<sig>`) — client computes, server verifies, so it MUST match:
+
+```text
+base = join(LF):
+  "v1"
+  <UPPERCASE HTTP method>
+  <request-target exactly as sent: path, plus "?"+query when present, no fragment>
+  <X-ZB-Timestamp value>
+  <X-ZB-Nonce value>
+  <bodyHash>
+X-ZB-Signature = "v1=" + base64url( HMAC_SHA256(client_shared_secret, utf8(base)) )
+```
+
+**3. `canonicalRequestHash`** (idempotency conflict detection; server-computed and deterministic — the client never computes it, it only retries byte-identically with the same `Idempotency-Key`): `canonicalRequestHash = H( JCS(R) )`, stored in `sequence_automation_idempotency_keys.request_hash`, where `R` is:
+
+```json
+{
+  "actor": "<effective actor user id>",
+  "body": "<bodyHash>",
+  "endpoint": "<UPPERCASE method> <mounted template path, e.g. /api/v1/automation/sequences/:sequenceId/steps>",
+  "method": "<UPPERCASE HTTP method>",
+  "org": "<effective org id>",
+  "path": { "<param>": "<string value>" },
+  "query": { "<behavior-affecting param>": "<string value>" },
+  "v": "<X-ZB-Sequences-Version, e.g. zb-sequences-v1>"
+}
+```
+
+`body` carries `bodyHash` (raw-byte hash) so JSON re-serialization can never diverge. `path`/`query` are string→string maps (`{}` when none); JCS sorts their keys. Include only behavior-affecting query params; pagination cursors are excluded from writes (writes carry none).
+
+**4. Observability key hashes** (emitted by BOTH the client EV70 and the server EV71/EV73 — MUST match so spans correlate): `idempotency_key_hash = H(raw Idempotency-Key header value)`; `dedup_key_hash = H(raw item dedupKey)`. Raw keys are never emitted — only these hashes.
+
+**5. `renderedHash`** (step-content identity for preview/CAS): `renderedHash = H(rendered_body_string)`, where `rendered_body_string` is the final rendered step body after variable substitution, exactly as the server persists and returns it. The server is the sole producer; the client treats it as opaque and compares by string equality.
+
 ### Pagination
 
 List endpoints use cursor pagination:
