@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:;">
+<title>zigBrowser — Automation Dashboard</title>
+<style>
+:root {
+  --bg: #0f0f11;
+  --surface: #1a1a1f;
+  --surface-hover: #222228;
+  --border: #2a2a33;
+  --text: #e4e4e8;
+  --text-muted: #8b8b97;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: "SF Mono", "Fira Code", "Fira Mono", monospace;
+  --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.5; }
+
+.app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+.app-header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.app-header h1 { font-size: 16px; font-weight: 600; }
+.app-header .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.app-header .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.app-header .status-dot.connected { background: var(--success); }
+.app-header .status-dot.error { background: var(--error); }
+
+.app-nav { display: flex; gap: 2px; margin-left: auto; }
+.app-nav button { padding: 6px 14px; background: transparent; border: 1px solid transparent; border-radius: var(--radius); color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.app-nav button:hover { background: var(--surface-hover); color: var(--text); }
+.app-nav button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.app-body { overflow-y: auto; padding: 20px; }
+
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.kpi-card .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.kpi-card .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi-card .delta { font-size: 12px; margin-top: 2px; }
+.kpi-card .delta.positive { color: var(--success); }
+.kpi-card .delta.negative { color: var(--error); }
+
+.section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 16px; }
+.section-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.section-header h2 { font-size: 14px; font-weight: 600; }
+.section-body { padding: 16px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 8px 12px; color: var(--text-muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--surface-hover); }
+
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.badge.draft { background: #2a2a33; color: var(--text-muted); }
+.badge.active { background: #052e16; color: var(--success); }
+.badge.pending { background: #422006; color: var(--warning); }
+.badge.archived { background: #1e1b2e; color: #a78bfa; }
+
+.empty-state { text-align: center; padding: 48px 20px; color: var(--text-muted); }
+.empty-state h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+
+.loading { display: flex; align-items: center; justify-content: center; padding: 48px; }
+.loading .spinner { width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.chart-placeholder { height: 200px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); font-size: 13px; }
+
+.pacing-gauge { display: flex; align-items: center; gap: 12px; }
+.pacing-bar { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.pacing-bar .fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+.pacing-bar .fill.ok { background: var(--success); }
+.pacing-bar .fill.warn { background: var(--warning); }
+.pacing-bar .fill.critical { background: var(--error); }
+.pacing-label { font-size: 13px; font-variant-numeric: tabular-nums; min-width: 60px; text-align: right; }
+
+.feed-item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.feed-item:last-child { border-bottom: none; }
+.feed-item .timestamp { color: var(--text-muted); font-family: var(--mono); font-size: 11px; min-width: 80px; }
+.feed-item .method { font-family: var(--mono); font-weight: 500; min-width: 120px; }
+.feed-item .detail { color: var(--text-muted); flex: 1; }
+</style>
+</head>
+<body>
+<div id="app" class="app">
+  <header class="app-header">
+    <h1>Automation Dashboard</h1>
+    <div class="status">
+      <span class="status-dot" id="connection-dot"></span>
+      <span id="connection-label">Connecting...</span>
+    </div>
+    <nav class="app-nav">
+      <button class="active" data-view="overview">Overview</button>
+      <button data-view="sequences">Sequences</button>
+      <button data-view="analytics">Analytics</button>
+      <button data-view="automation">Automation</button>
+    </nav>
+  </header>
+  <main class="app-body" id="main-content">
+    <div class="loading"><div class="spinner"></div></div>
+  </main>
+</div>
+<script>
+(function() {
+  "use strict";
+
+  var state = {
+    view: "overview",
+    connected: false,
+    bootstrap: null,
+    sequences: null,
+    analytics: null,
+    error: null
+  };
+
+  function ipc(cmd, args) {
+    return new Promise(function(resolve, reject) {
+      if (typeof window.webkit !== "undefined" &&
+          window.webkit.messageHandlers &&
+          window.webkit.messageHandlers.zbHost) {
+        try {
+          var payload = JSON.stringify({ cmd: cmd, args: args || {} });
+          var result = window.webkit.messageHandlers.zbHost.postMessage(payload);
+          if (result && typeof result === "string") {
+            resolve(JSON.parse(result));
+          } else if (result && typeof result === "object") {
+            resolve(result);
+          } else {
+            resolve(null);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      } else {
+        reject(new Error("zbHost IPC not available"));
+      }
+    });
+  }
+
+  function $(sel) { return document.querySelector(sel); }
+  function $$(sel) { return document.querySelectorAll(sel); }
+
+  function setConnectionStatus(connected, label) {
+    var dot = $("#connection-dot");
+    var lbl = $("#connection-label");
+    dot.className = "status-dot " + (connected ? "connected" : "error");
+    lbl.textContent = label || (connected ? "Connected" : "Disconnected");
+    state.connected = connected;
+  }
+
+  function navigateTo(view) {
+    state.view = view;
+    $$(".app-nav button").forEach(function(btn) {
+      btn.classList.toggle("active", btn.dataset.view === view);
+    });
+    render();
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement("div");
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  function renderKpi(label, value, delta) {
+    var deltaClass = "";
+    var deltaStr = "";
+    if (delta != null) {
+      deltaClass = delta >= 0 ? "positive" : "negative";
+      deltaStr = '<div class="delta ' + deltaClass + '">' +
+        (delta >= 0 ? "+" : "") + delta + "%" + "</div>";
+    }
+    return '<div class="kpi-card">' +
+      '<div class="label">' + escapeHtml(label) + "</div>" +
+      '<div class="value">' + escapeHtml(String(value != null ? value : "--")) + "</div>" +
+      deltaStr + "</div>";
+  }
+
+  function renderBadge(status) {
+    var cls = "draft";
+    if (status === "active") cls = "active";
+    else if (status === "pending_approval") cls = "pending";
+    else if (status === "archived") cls = "archived";
+    return '<span class="badge ' + cls + '">' + escapeHtml(status) + "</span>";
+  }
+
+  function renderOverview() {
+    var b = state.bootstrap;
+    var s = state.sequences;
+
+    var html = '<div class="kpi-row">';
+    if (s && s.items) {
+      var active = s.items.filter(function(i) { return i.status === "active"; }).length;
+      var draft = s.items.filter(function(i) { return i.status === "draft"; }).length;
+      var pending = s.items.filter(function(i) { return i.status === "pending_approval"; }).length;
+      html += renderKpi("Active Sequences", active);
+      html += renderKpi("Drafts", draft);
+      html += renderKpi("Pending Approval", pending);
+      html += renderKpi("Total", s.items.length);
+    }
+    html += "</div>";
+
+    if (b && b.mailboxes) {
+      html += '<div class="section"><div class="section-header"><h2>Mailbox Status</h2></div>';
+      html += '<div class="section-body">';
+      b.mailboxes.forEach(function(mbx) {
+        html += '<div class="pacing-gauge">';
+        html += '<span>' + escapeHtml(mbx.provider) + "</span>";
+        var used = Math.max(0, 200 - (mbx.dailyCapRemaining || 0));
+        var pct = Math.round((used / 200) * 100);
+        var cls = pct > 80 ? "critical" : pct > 50 ? "warn" : "ok";
+        html += '<div class="pacing-bar"><div class="fill ' + cls + '" style="width:' + pct + '%"></div></div>';
+        html += '<span class="pacing-label">' + (mbx.dailyCapRemaining || 0) + " left</span>";
+        html += "</div>";
+      });
+      html += "</div></div>";
+    }
+
+    if (s && s.items && s.items.length > 0) {
+      html += '<div class="section"><div class="section-header"><h2>Recent Sequences</h2></div>';
+      html += '<div class="section-body"><table><thead><tr>';
+      html += "<th>Name</th><th>Status</th><th>Updated</th>";
+      html += "</tr></thead><tbody>";
+      s.items.slice(0, 5).forEach(function(seq) {
+        html += "<tr>";
+        html += "<td>" + escapeHtml(seq.name) + "</td>";
+        html += "<td>" + renderBadge(seq.status) + "</td>";
+        html += "<td>" + escapeHtml(seq.updatedAt || "") + "</td>";
+        html += "</tr>";
+      });
+      html += "</tbody></table></div></div>";
+    }
+
+    return html;
+  }
+
+  function renderSequences() {
+    var s = state.sequences;
+    if (!s || !s.items) return '<div class="loading"><div class="spinner"></div></div>';
+    if (s.items.length === 0) {
+      return '<div class="empty-state"><h3>No Sequences</h3><p>Create a sequence to get started.</p></div>';
+    }
+
+    var html = '<div class="section"><div class="section-header"><h2>All Sequences</h2></div>';
+    html += '<div class="section-body"><table><thead><tr>';
+    html += "<th>Name</th><th>Status</th><th>Owner</th><th>Contacted</th><th>Reply Rate</th><th>Updated</th>";
+    html += "</tr></thead><tbody>";
+    s.items.forEach(function(seq) {
+      var m = seq.metrics || {};
+      html += "<tr>";
+      html += "<td>" + escapeHtml(seq.name) + "</td>";
+      html += "<td>" + renderBadge(seq.status) + "</td>";
+      html += "<td>" + escapeHtml(seq.ownerUserId || "") + "</td>";
+      html += "<td>" + (m.profilesContacted != null ? m.profilesContacted : "--") + "</td>";
+      html += "<td>" + (m.replyRate != null ? (m.replyRate * 100).toFixed(1) + "%" : "--") + "</td>";
+      html += "<td>" + escapeHtml(seq.updatedAt || "") + "</td>";
+      html += "</tr>";
+    });
+    html += "</tbody></table></div></div>";
+    return html;
+  }
+
+  function renderAnalytics() {
+    var a = state.analytics;
+    if (!a) return '<div class="loading"><div class="spinner"></div></div>';
+
+    var t = a.totals || {};
+    var html = '<div class="kpi-row">';
+    html += renderKpi("Profiles Contacted", t.profilesContacted);
+    html += renderKpi("Opens", t.opens);
+    html += renderKpi("Clicks", t.clicks);
+    html += renderKpi("Replies", t.replies);
+    html += renderKpi("Interested", t.interestedReplies);
+    html += renderKpi("Bounces", t.bounces);
+    html += "</div>";
+
+    html += '<div class="section"><div class="section-header"><h2>Outreach Over Time</h2>';
+    html += '<span style="font-size:12px;color:var(--text-muted)">Grouped by ' + escapeHtml(a.groupBy || "week") + "</span></div>";
+    html += '<div class="section-body">';
+    if (a.series && a.series.length > 0) {
+      html += "<table><thead><tr><th>Period</th><th>Contacted</th><th>Open Rate</th><th>Click Rate</th><th>Reply Rate</th><th>Bounce Rate</th></tr></thead><tbody>";
+      a.series.forEach(function(row) {
+        html += "<tr>";
+        html += "<td>" + escapeHtml(row.bucketStart || "") + "</td>";
+        html += "<td>" + (row.profilesContacted || 0) + "</td>";
+        html += "<td>" + ((row.openRate || 0) * 100).toFixed(1) + "%</td>";
+        html += "<td>" + ((row.clickRate || 0) * 100).toFixed(1) + "%</td>";
+        html += "<td>" + ((row.replyRate || 0) * 100).toFixed(1) + "%</td>";
+        html += "<td>" + ((row.bounceRate || 0) * 100).toFixed(1) + "%</td>";
+        html += "</tr>";
+      });
+      html += "</tbody></table>";
+    } else {
+      html += '<div class="chart-placeholder">No analytics data available</div>';
+    }
+    html += "</div></div>";
+
+    return html;
+  }
+
+  function renderAutomation() {
+    var html = '<div class="section"><div class="section-header"><h2>Session Status</h2></div>';
+    html += '<div class="section-body">';
+    html += '<div class="empty-state"><p>Automation session data will appear when execution tracking is active.</p></div>';
+    html += "</div></div>";
+
+    html += '<div class="section"><div class="section-header"><h2>Live Command Feed</h2></div>';
+    html += '<div class="section-body">';
+    html += '<div class="empty-state"><p>Command telemetry will stream here during active automation.</p></div>';
+    html += "</div></div>";
+
+    return html;
+  }
+
+  function render() {
+    var main = $("#main-content");
+    switch (state.view) {
+      case "overview": main.innerHTML = renderOverview(); break;
+      case "sequences": main.innerHTML = renderSequences(); break;
+      case "analytics": main.innerHTML = renderAnalytics(); break;
+      case "automation": main.innerHTML = renderAutomation(); break;
+      default: main.innerHTML = renderOverview();
+    }
+  }
+
+  function init() {
+    $$(".app-nav button").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        navigateTo(this.dataset.view);
+      });
+    });
+
+    ipc("dashboard.bootstrap", {}).then(function(data) {
+      state.bootstrap = data;
+      setConnectionStatus(true, "Connected");
+      return ipc("dashboard.sequences.list", {});
+    }).then(function(data) {
+      state.sequences = data;
+      return ipc("dashboard.analytics.outreach", {});
+    }).then(function(data) {
+      state.analytics = data;
+      render();
+    }).catch(function(err) {
+      setConnectionStatus(false, "Disconnected");
+      render();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>

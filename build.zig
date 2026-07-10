@@ -270,6 +270,23 @@ pub fn build(b: *std.Build) void {
     const run_automation_router_tests = b.addRunArtifact(automation_router_tests);
     run_automation_router_tests.skip_foreign_checks = true;
 
+    const automation_server_module = b.createModule(.{
+        .root_source_file = b.path("src/automation_server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const automation_server_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_server_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_server_tests_module.addImport("automation_server", automation_server_module);
+    const automation_server_tests = b.addTest(.{ .root_module = automation_server_tests_module });
+    const run_automation_server_tests = b.addRunArtifact(automation_server_tests);
+    run_automation_server_tests.skip_foreign_checks = true;
+
     // --- Phase 4: Gaussian tests ---
     const gaussian_module = b.createModule(.{
         .root_source_file = b.path("src/automation/gaussian.zig"),
@@ -400,6 +417,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
     test_step.dependOn(&run_automation_router_tests.step);
+    test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);
@@ -442,6 +460,50 @@ pub fn build(b: *std.Build) void {
     const run_sequences_client_tests = b.addRunArtifact(sequences_client_tests);
     run_sequences_client_tests.skip_foreign_checks = true;
     test_step.dependOn(&run_sequences_client_tests.step);
+
+    const sequences_ev70_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/sequences/ev70_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sequences_ev70_tests_module.addImport("sequences", sequences_module);
+    const sequences_ev70_tests = b.addTest(.{ .root_module = sequences_ev70_tests_module });
+    const run_sequences_ev70_tests = b.addRunArtifact(sequences_ev70_tests);
+    run_sequences_ev70_tests.skip_foreign_checks = true;
+    test_step.dependOn(&run_sequences_ev70_tests.step);
+
+    // --- Track D: Dashboard UI — embed + IPC + mock data ---
+    const dashboard_embed_module = b.createModule(.{
+        .root_source_file = b.path("src/dashboard/embed.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const dashboard_embed_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/dashboard/dashboard_embed_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dashboard_embed_tests_module.addImport("dashboard_embed", dashboard_embed_module);
+    const dashboard_embed_tests = b.addTest(.{ .root_module = dashboard_embed_tests_module });
+    const run_dashboard_embed_tests = b.addRunArtifact(dashboard_embed_tests);
+    run_dashboard_embed_tests.skip_foreign_checks = true;
+    test_step.dependOn(&run_dashboard_embed_tests.step);
+
+    const dashboard_ipc_module = b.createModule(.{
+        .root_source_file = b.path("src/dashboard/ipc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const dashboard_ipc_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/dashboard/dashboard_ipc_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dashboard_ipc_tests_module.addImport("dashboard_ipc", dashboard_ipc_module);
+    const dashboard_ipc_tests = b.addTest(.{ .root_module = dashboard_ipc_tests_module });
+    const run_dashboard_ipc_tests = b.addRunArtifact(dashboard_ipc_tests);
+    run_dashboard_ipc_tests.skip_foreign_checks = true;
+    test_step.dependOn(&run_dashboard_ipc_tests.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
