@@ -326,3 +326,32 @@ test "write endpoints accept idempotency_key" {
         try std.testing.expect(span.idempotency_key_hash != null);
     }
 }
+
+// --- TDD Cycle 5: Error and timing attributes on EV70 spans ---
+
+test "EV70 span has zero duration_ms by default (stub transport)" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqual(@as(u64, 0), sink.spans.items[0].duration_ms);
+}
+
+test "EV70 span has null error fields by default" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    const span = sink.spans.items[0];
+    try std.testing.expect(span.error_class == null);
+    try std.testing.expect(span.error_code == null);
+    try std.testing.expect(span.retryable == null);
+}
+
+test "EV70 span has zero retry_count by default" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqual(@as(u32, 0), sink.spans.items[0].retry_count);
+}

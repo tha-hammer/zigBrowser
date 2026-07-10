@@ -519,6 +519,11 @@ pub const Ev70Span = struct {
     command_id: ?[]const u8 = null,
     execution_id: ?[]const u8 = null,
     idempotency_key_hash: ?[]const u8 = null,
+    duration_ms: u64 = 0,
+    error_class: ?[]const u8 = null,
+    error_code: ?[]const u8 = null,
+    retryable: ?bool = null,
+    retry_count: u32 = 0,
 };
 
 pub const Ev70Sink = struct {
@@ -536,6 +541,8 @@ pub const Ev70Sink = struct {
             if (span.command_id) |value| self.allocator.free(value);
             if (span.execution_id) |value| self.allocator.free(value);
             if (span.idempotency_key_hash) |value| self.allocator.free(value);
+            if (span.error_class) |value| self.allocator.free(value);
+            if (span.error_code) |value| self.allocator.free(value);
         }
         self.spans.deinit(self.allocator);
     }
@@ -544,30 +551,20 @@ pub const Ev70Sink = struct {
         return self.spans.items.len;
     }
 
+    fn freeOptionals(self: *Ev70Sink, optionals: anytype) void {
+        inline for (optionals) |opt| {
+            if (opt) |value| self.allocator.free(value);
+        }
+    }
+
     pub fn emit(self: *Ev70Sink, span: Ev70Span) void {
         const span_id = self.allocator.dupe(u8, span.span_id) catch return;
-        const trace_id = dupeOptional(self.allocator, span.trace_id) catch {
-            self.allocator.free(span_id);
-            return;
-        };
-        const command_id = dupeOptional(self.allocator, span.command_id) catch {
-            self.allocator.free(span_id);
-            if (trace_id) |value| self.allocator.free(value);
-            return;
-        };
-        const execution_id = dupeOptional(self.allocator, span.execution_id) catch {
-            self.allocator.free(span_id);
-            if (trace_id) |value| self.allocator.free(value);
-            if (command_id) |value| self.allocator.free(value);
-            return;
-        };
-        const idempotency_key_hash = dupeOptional(self.allocator, span.idempotency_key_hash) catch {
-            self.allocator.free(span_id);
-            if (trace_id) |value| self.allocator.free(value);
-            if (command_id) |value| self.allocator.free(value);
-            if (execution_id) |value| self.allocator.free(value);
-            return;
-        };
+        const trace_id = dupeOptional(self.allocator, span.trace_id) catch return;
+        const command_id = dupeOptional(self.allocator, span.command_id) catch return;
+        const execution_id = dupeOptional(self.allocator, span.execution_id) catch return;
+        const idempotency_key_hash = dupeOptional(self.allocator, span.idempotency_key_hash) catch return;
+        const error_class = dupeOptional(self.allocator, span.error_class) catch return;
+        const error_code = dupeOptional(self.allocator, span.error_code) catch return;
 
         self.spans.append(self.allocator, .{
             .name = span.name,
@@ -581,12 +578,14 @@ pub const Ev70Sink = struct {
             .command_id = command_id,
             .execution_id = execution_id,
             .idempotency_key_hash = idempotency_key_hash,
+            .duration_ms = span.duration_ms,
+            .error_class = error_class,
+            .error_code = error_code,
+            .retryable = span.retryable,
+            .retry_count = span.retry_count,
         }) catch {
             self.allocator.free(span_id);
-            if (trace_id) |value| self.allocator.free(value);
-            if (command_id) |value| self.allocator.free(value);
-            if (execution_id) |value| self.allocator.free(value);
-            if (idempotency_key_hash) |value| self.allocator.free(value);
+            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, error_class, error_code });
         };
     }
 };
