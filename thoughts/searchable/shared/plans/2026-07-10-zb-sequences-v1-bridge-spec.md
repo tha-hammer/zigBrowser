@@ -253,6 +253,55 @@ CandidateConverted
 
 `MessageOpened`, `LinkClicked`, and `MessageDelivered` are already present in migration 130 and `eventTypes.js` at `/home/maceo/ntm_Dev/sequences/database/migrations/130_sequence_tracking.sql:18-42` and `/home/maceo/ntm_Dev/sequences/backend/services/sequenceEvents/eventTypes.js:15-20`. Migration 150 must not fork that allowlist.
 
+### Bridge Observability Contract
+
+The bridge treats OpenTelemetry spans as wide events, not as pre-aggregated metrics counters. Every critical unit of work emits one flat, high-dimensional span with enough context to support the core analysis loop: define the failing population, visualize latency/error shape, investigate by grouping and diffing dimensions, then evaluate the suspected cause.
+
+Required span units:
+
+| Tier | Wide event | Unit of work | Required correlation |
+|---|---|---|---|
+| zigBrowser client | `EV70 zb_sequences.client_call` | One client facade call to `/api/v1/automation` | `trace_id`, `command_id` when known, `execution_id` once known, idempotency key hash for writes |
+| API boundary | `EV71 zb_sequences.api_request` | One `/api/v1/automation` request/response | Same `trace_id`; `request_id`; `command_id`/`execution_id` copied from body, path resource, or existing execution row |
+| Wrapped service | `EV72 zb_sequences.service_call` | One wrapped existing sequences service operation | Same `trace_id`; service operation; sequence/enrollment/message ids when touched |
+| DB write | `EV73 zb_sequences.db_write` | One bridge-owned transaction or durable write to migration-150 tables | Same `trace_id`; `execution_id`; table/operation; idempotency and request hashes |
+
+Metrics and logs are derivative views of these spans. Metrics may be computed from the wide events for alerting and SLO burn, but instrumentation must preserve the raw span attributes rather than emitting only counters. Logs may include `trace_id`, `span_id`, `request_id`, and error code for audit/debugging, but logs are not the primary correlation contract.
+
+Trace propagation rules:
+
+- zigBrowser starts or joins the trace before the client facade call. It forwards W3C `traceparent`/`tracestate` when available and includes the existing automation `trace.traceId` in execution/event/telemetry bodies.
+- The API extracts the inbound trace context, records it on `EV71`, and passes it to wrapped service calls and DB writes. If both W3C trace context and a legacy automation trace id are present, spans record `trace_id` for the propagated trace and `automation_trace_id` for the existing automation telemetry id.
+- `command_id` is nullable until a browser command exists, but once a request body or telemetry item supplies it, downstream `EV71`, `EV72`, and `EV73` spans must preserve it exactly.
+- `execution_id` is nullable before `POST /executions` commits. After an execution exists, every update, step result, event ingest, telemetry ingest, service call, and DB write span for that execution must include the same `execution_id`.
+- Error envelopes continue to expose `traceId` and `commandId` when known, allowing users to jump from API failures to the automation telemetry stream.
+
+Cardinality contract:
+
+| Attribute | Cardinality | Handling |
+|---|---|---|
+| `trace_id`, `span_id`, `parent_span_id`, `automation_trace_id`, `command_id`, `execution_id`, `sequence_id`, `step_execution_id`, `external_run_id`, `org_id`, `tenant`, `actor_user_id`, `idempotency_key_hash`, `dedup_key_hash`, `request_id` | High | Preserve as queryable span attributes. Hash raw idempotency/dedup keys before emission. |
+| `endpoint` when it is an endpoint template, `http.method`, `http.status_code`, `error.class`, `error.code`, `retryable`, `duplicate`, `event_type`, `service.name`, `service.operation`, `db.table`, `db.operation`, `status` | Low or bounded | Preserve directly; use templates/enums rather than raw URLs or free-form strings. |
+| Raw URL, raw query string, raw selector, message subject/body, candidate name/email/phone, tenant display name/domain, auth token, cookie, signature | Unbounded or sensitive | Denied before any trace, log, diagnostic, idempotency, or analytics sink. Emit only approved hashes, enums, or counts. |
+
+Privacy and redaction deny-list before any sink:
+
+- Authorization headers, cookies, session tokens, provider tokens, HMAC signatures, API keys, and refresh tokens.
+- Raw selectors, raw typed text, unbounded DOM text, screenshots, raw URLs with paths or query strings, and browser storage dumps.
+- Raw message bodies, rendered body snapshots, rendered subjects, generation prompts that contain candidate or tenant PII, and preview output.
+- Candidate PII including names, email addresses, phone numbers, profile URLs, resumes, and free-form notes.
+- Tenant PII including tenant display names, domains, billing data, and customer-specific free-form labels. `tenant` in spans must be an opaque tenant key or hash.
+
+If an inbound `/telemetry` item contains deny-listed data, reject it with `TELEMETRY_REDACTION_FAILED`. If internally generated instrumentation detects a deny-listed value, suppress the value before emission, set `redaction.suppressed=true`, and emit only the safe hash/classification needed for debugging.
+
+Critical-path SLIs and candidate SLOs:
+
+| Critical path | SLI from wide events | Candidate SLO |
+|---|---|---|
+| Execution create (`POST /executions`) | Valid non-conflicting `EV71` requests with `endpoint=POST /executions` and `http.status_code < 500` divided by valid non-conflicting attempts; latency from paired `EV71.duration_ms` | 99.5% success over 30 days and p95 API latency under 750 ms |
+| Event ingest (`POST /events`) | Accepted item count from `EV71`/`EV73` divided by valid submitted items; ingest age from `EV73.event.ingest_age_ms` or `EV73.event.created_at - EV73.event.occurred_at` for canonical and diagnostic items | 99.0% of valid items durable within 60 seconds and p95 API latency under 500 ms |
+| Analytics read (`GET /analytics/outreach`) | Successful `EV71` reads with `endpoint=GET /analytics/outreach`, `http.status_code=200`, and `EV72.service.operation=outreachAnalytics` divided by valid reads; latency from `EV71.duration_ms` and `EV72.duration_ms` | 99.5% success over 30 days, p95 API latency under 2 seconds, and p95 service latency under 1.5 seconds |
+
 ## Endpoint Groups
 
 ### 1. UI Bootstrap
@@ -1382,12 +1431,14 @@ Migration 150 acceptance:
 - Implement migration `150_sequence_automation_integration.sql` exactly to the tenant-safe pattern above.
 - Add services for step-contract CAS, execution tracking, idempotency, event ingestion, telemetry diagnostics, and automation analytics adaptation.
 - Reuse existing `sequenceService`, `draftService`, `draftPersistence`, `generateStepService`, `sendStore`, `sequenceExecutionService`, `eventService`, and metrics services.
-- Add backend tests for auth matrix, tenant isolation, composite FKs, idempotency replay/conflict, step CAS, active/approved execution-plan gating, canonical event ingestion, telemetry redaction, and analytics exclusion of diagnostics.
+- Emit `EV71`, `EV72`, and `EV73` wide events with `trace_id`/`command_id`/`execution_id` continuity and redaction before every sink.
+- Add backend tests for auth matrix, tenant isolation, composite FKs, idempotency replay/conflict, step CAS, active/approved execution-plan gating, canonical event ingestion, telemetry redaction, trace propagation, observability redaction, SLI source attributes, and analytics exclusion of diagnostics.
 
 ### zigBrowser Session
 
 - Build a `zb-sequences-v1` client facade that calls only `/api/v1/automation`; no direct PostgreSQL access.
-- Forward `X-ZB-Sequences-Version`, delegated user session, HMAC headers, trace ids, command ids, and stable idempotency keys.
+- Forward `X-ZB-Sequences-Version`, delegated user session, HMAC headers, W3C trace context, automation trace ids, command ids, execution ids when known, and stable idempotency keys.
+- Emit `EV70` client-call wide events after applying the observability redaction deny-list.
 - Wire browser automation runtime to `execution-plan`, `executions`, `recordStepResult`, `events`, and `telemetry`.
 - Build the hosted dashboard against this spec's response schemas.
 - Preserve the existing JSON-RPC browser command channel as local automation control; do not use it for sequence database access.
@@ -1395,13 +1446,14 @@ Migration 150 acceptance:
 
 ## System Map
 
-Scope: this map covers only the `zb-sequences-v1` bridge bounded contexts. Existing sequences services and tables from migrations `090` through `140` are represented as external seams; their internals are not remapped here.
+Scope: this map covers only the `zb-sequences-v1` bridge bounded contexts. Existing sequences services and tables from migrations `090` through `140` are represented as external seams; their internals are not remapped here. Observability is mapped as first-class bridge I/O through S12, with one wide-event span per client call, API request, wrapped service call, and DB write.
 
 ID reuse from the existing sequences-integration system maps:
 
 - `BC3`, `IN8` through `IN12`, `S3`, and `C6` retain their Phase 0 API/HMAC meanings.
 - `BC4`, `OUT4`, and `OUT5` retain the zigBrowser-side API consumer meanings, generalized from the Python SDK to the v1 client facade.
 - `S1` retains the backend-to-database seam meaning, narrowed here to migration-150 bridge tables.
+- `OUT70` through `OUT73`, `EV70` through `EV73`, `C27` through `C30`, and `S12` are new observability interfaces, wide-event schemas, contracts, and sink seam.
 
 ### BC4: zigBrowser Client Facade
 
@@ -1430,13 +1482,20 @@ graph LR
         OUT31["OUT31: POST /events"]:::iface
         OUT32["OUT32: POST /telemetry"]:::iface
         OUT33["OUT33: GET /analytics/outreach"]:::iface
+        OUT70["OUT70: emit client span to observability sink"]:::iface
+        EV70["EV70: zb_sequences.client_call wide event"]:::iface
         C10["C10: Bridge headers and signing target"]:::contract
         C11["C11: Idempotent write replay target"]:::contract
         C12["C12: Redaction before transport target"]:::contract
         C13["C13: Execution lifecycle target"]:::contract
+        C27["C27: Trace propagation target"]:::contract
+        C28["C28: Observability redaction target"]:::contract
+        C29["C29: Cardinality/dimensionality target"]:::contract
+        C30["C30: SLI/SLO derivation target"]:::contract
     end
 
     S3{"S3: Client API HTTP seam"}:::seam
+    S12{"S12: Observability sink seam"}:::seam
 
     OUT21 --> S3
     OUT22 --> S3
@@ -1453,6 +1512,23 @@ graph LR
     OUT31 --> S3
     OUT32 --> S3
     OUT33 --> S3
+    OUT21 --> EV70
+    OUT22 --> EV70
+    OUT23 --> EV70
+    OUT24 --> EV70
+    OUT25 --> EV70
+    OUT26 --> EV70
+    OUT27 --> EV70
+    OUT28 --> EV70
+    OUT4 --> EV70
+    OUT29 --> EV70
+    OUT30 --> EV70
+    OUT5 --> EV70
+    OUT31 --> EV70
+    OUT32 --> EV70
+    OUT33 --> EV70
+    EV70 --> OUT70
+    OUT70 --> S12
     C10 --> S3
     C11 --> S3
     C12 --> OUT31
@@ -1460,6 +1536,10 @@ graph LR
     C13 --> OUT4
     C13 --> OUT29
     C13 --> OUT5
+    C27 --> EV70
+    C28 --> EV70
+    C29 --> EV70
+    C30 --> EV70
 ```
 
 #### EBNF Grammar
@@ -1526,6 +1606,16 @@ OUT32 ::= "POST" "/api/v1/automation/telemetry" body ;
 OUT33 ::= "GET" "/api/v1/automation/analytics/outreach" query ;
   (* post: analytics derived from canonical sequence_events, not diagnostics *)
 
+OUT70 ::= "emit_to_observability_sink" "(" EV70 ")" ;
+  (* pre: C27 trace context has been created or joined before the client call *)
+  (* pre: C28 deny-list applied before emission *)
+  (* post: client-call wide event is emitted across S12 *)
+
+EV70 ::= "zb_sequences.client_call" ;
+  (* span_kind: client *)
+  (* attribute_keys: trace_id, span_id, parent_span_id, automation_trace_id, command_id, execution_id, external_run_id, sequence_id, org_id, tenant, actor_user_id_hash, client_id, endpoint, http.method, http.status_code, duration_ms, idempotency_key_hash, retry_count, duplicate, error.class, error.code, retryable, zb_sequences.version, zigbrowser.version, automation.api, session_id_hash, redaction.suppressed *)
+  (* cardinality: high for trace_id, span_id, command_id, execution_id, sequence_id, org_id, tenant, idempotency_key_hash; low/bounded for endpoint template, http.method, http.status_code, error.class, error.code, duplicate, retryable *)
+
 C10 ::= "bridge_headers_and_signing" ;
   (* target: OUT4, OUT5, OUT21-OUT33 *)
   (* invariant: every request sends X-ZB-Sequences-Version = 'zb-sequences-v1' *)
@@ -1550,9 +1640,42 @@ C13 ::= "execution_lifecycle_order" ;
   (* invariant: step results use backend-issued executionId and stepExecutionId *)
   (* invariant: OUT30 terminal status follows final OUT5 result batch or terminal local failure *)
 
+C27 ::= "trace_propagation_continuity" ;
+  (* target: EV70, EV71, EV72, EV73, OUT70, OUT71, OUT72, OUT73 *)
+  (* invariant: trace_id is created or joined in BC4 and preserved across S3, S8, S1, and S12 *)
+  (* invariant: automation_trace_id from existing automation telemetry is retained when it differs from W3C trace_id *)
+  (* invariant: command_id is nullable before browser command creation but is preserved exactly once known *)
+  (* invariant: execution_id is nullable before IN11 commit but is included on every downstream execution, event, telemetry, service, and DB span once known *)
+  (* invariant: error envelopes include traceId and commandId when known so API failures correlate back to automation telemetry *)
+
+C28 ::= "observability_redaction_before_sink" ;
+  (* target: EV70, EV71, EV72, EV73, OUT70, OUT71, OUT72, OUT73 *)
+  (* invariant: deny-list is applied before traces, logs, diagnostics, idempotency responses, analytics, or any S12 sink emission *)
+  (* invariant: denied fields include tenant PII, candidate PII, tokens, cookies, signatures, raw selectors, raw DOM/text, raw URLs, screenshots, rendered subjects, message bodies, body snapshots, and preview output *)
+  (* invariant: hashes/classes/counts may replace denied values only when the replacement cannot reconstruct the original secret or PII *)
+
+C29 ::= "wide_event_cardinality_and_dimensionality" ;
+  (* target: EV70, EV71, EV72, EV73 *)
+  (* invariant: high-cardinality dimensions trace_id, execution_id, command_id, sequence_id, org_id, tenant, idempotency_key_hash, span_id, and request_id remain queryable attributes *)
+  (* invariant: endpoint is emitted as a bounded endpoint template, never as raw path or query *)
+  (* invariant: error.class and error.code remain low-cardinality enums suitable for grouping *)
+  (* invariant: instrumentation emits wide events first; metrics and logs are derived views, not replacements *)
+
+C30 ::= "critical_path_sli_slo_derivation" ;
+  (* target: EV70, EV71, EV72, EV73 *)
+  (* invariant: execution-create success and latency SLI derive from EV71 endpoint=POST /executions and status/error attributes *)
+  (* invariant: event-ingest durability and latency SLI derive from EV71 endpoint=POST /events plus EV73 write duration and event age attributes *)
+  (* invariant: analytics-read success and latency SLI derive from EV71 endpoint=GET /analytics/outreach and EV72 operation=outreachAnalytics *)
+  (* invariant: EV70 provides client-perceived latency and retry dimensions for user-impact validation without replacing server-side SLI source events *)
+  (* invariant: SLO alerting uses spans as source data and may aggregate into metrics without dropping the underlying high-cardinality event rows *)
+
 S3 ::= "client_api_http_seam" ;
   (* crossings: OUT4, OUT5, OUT21-OUT33 from BC4 to BC3 IN8-IN12, IN21-IN30 *)
-  (* contracts: C10, C11, C12, C13, C14, C15 *)
+  (* contracts: C10, C11, C12, C13, C14, C15, C27, C28, C29 *)
+
+S12 ::= "observability_sink_seam" ;
+  (* crossings: OUT70, OUT71, OUT72, OUT73 emit EV70, EV71, EV72, EV73 to the trace/event sink *)
+  (* contracts: C27, C28, C29, C30 *)
 
 sequenceId ::= uuid ;
 executionId ::= uuid ;
@@ -1566,7 +1689,8 @@ body ::= json_object ;
 
 | Seam | Direction | Crossing interfaces | Events | Contracts |
 |---|---|---|---|---|
-| S3 | BC4 -> BC3 | OUT21->IN21, OUT22->IN22, OUT23->IN23, OUT24->IN24, OUT25->IN25, OUT26->IN26, OUT27->IN27, OUT28->IN28, OUT4->IN8, OUT29->IN11, OUT30->IN12, OUT5->IN9, OUT31->IN10, OUT32->IN29, OUT33->IN30 | None emitted by the client seam itself | C10, C11, C12, C13 |
+| S3 | BC4 -> BC3 | OUT21->IN21, OUT22->IN22, OUT23->IN23, OUT24->IN24, OUT25->IN25, OUT26->IN26, OUT27->IN27, OUT28->IN28, OUT4->IN8, OUT29->IN11, OUT30->IN12, OUT5->IN9, OUT31->IN10, OUT32->IN29, OUT33->IN30 | EV70 emitted by OUT70 for every client call crossing S3 | C10, C11, C12, C13, C27, C28, C29 |
+| S12 | BC4 -> observability sink | OUT70 emits EV70 | EV70 client call wide event | C27, C28, C29, C30 |
 
 ### BC3: /api/v1/automation API Boundary
 
@@ -1595,18 +1719,22 @@ graph LR
         IN10["IN10: POST /events"]:::iface
         IN29["IN29: POST /telemetry"]:::iface
         IN30["IN30: GET /analytics/outreach"]:::iface
+        OUT71["OUT71: emit API request span to observability sink"]:::iface
+        EV71["EV71: zb_sequences.api_request wide event"]:::iface
         C6["C6: HMAC-SHA256 auth target"]:::contract
         C14["C14: Versioned envelope target"]:::contract
         C15["C15: Write idempotency target"]:::contract
         C16["C16: Tenant field rejection target"]:::contract
         C17["C17: Active-and-approved execution gate target"]:::contract
         G2["G2: Error code catalog gap"]:::gap
+        G3["G3: Observability propagation gap"]:::gap
     end
 
     S3{"S3: Client API HTTP seam"}:::seam
     S6{"S6: Auth/Tenant middleware seam"}:::seam
     S1{"S1: Migration-150 DB seam"}:::seam
     S8{"S8: Existing sequences seam"}:::seam
+    S12{"S12: Observability sink seam"}:::seam
 
     S3 --> IN21
     S3 --> IN22
@@ -1639,7 +1767,25 @@ graph LR
     IN10 --> S8
     IN29 --> S1
     IN30 --> S8
+    IN21 --> EV71
+    IN22 --> EV71
+    IN23 --> EV71
+    IN24 --> EV71
+    IN25 --> EV71
+    IN26 --> EV71
+    IN27 --> EV71
+    IN28 --> EV71
+    IN8 --> EV71
+    IN11 --> EV71
+    IN12 --> EV71
+    IN9 --> EV71
+    IN10 --> EV71
+    IN29 --> EV71
+    IN30 --> EV71
+    EV71 --> OUT71
+    OUT71 --> S12
     G2 --> C14
+    G3 --> EV71
 ```
 
 #### EBNF Grammar
@@ -1713,6 +1859,16 @@ IN30 ::= "GET /api/v1/automation/analytics/outreach" query ;
   (* pre: C14 version header; C16 no tenant override *)
   (* post: analytics returned from IN66 over canonical sequence_events *)
 
+OUT71 ::= "emit_to_observability_sink" "(" EV71 ")" ;
+  (* pre: C27 inbound trace context has been extracted and attached to request scope *)
+  (* pre: C28 deny-list applied before emission *)
+  (* post: API request/response wide event is emitted across S12 *)
+
+EV71 ::= "zb_sequences.api_request" ;
+  (* span_kind: server *)
+  (* attribute_keys: trace_id, span_id, parent_span_id, automation_trace_id, request_id, command_id, execution_id, external_run_id, sequence_id, org_id, tenant, actor_user_id_hash, client_id, endpoint, http.method, http.route, http.status_code, duration_ms, request.body_hash, request.item_count, response.accepted_count, response.rejected_count, idempotency_key_hash, idempotency.outcome, auth.hmac_required, auth.hmac_valid, duplicate, error.class, error.code, retryable, zb_sequences.version, redaction.suppressed *)
+  (* cardinality: high for trace_id, span_id, request_id, command_id, execution_id, sequence_id, org_id, tenant, idempotency_key_hash; low/bounded for endpoint template, http.method, http.status_code, auth flags, duplicate, retryable, error.class, error.code *)
+
 C6 ::= "hmac_sha256_auth" ;
   (* target: IN8, IN9, IN10, IN11, IN12, IN23, IN26, IN27, IN29; optional-validate on IN21, IN22, IN24, IN25, IN28, IN30 *)
   (* invariant: HMAC-required requests carry X-ZB-Client-Id, X-ZB-Timestamp, X-ZB-Nonce, X-ZB-Signature *)
@@ -1749,9 +1905,15 @@ G2 ::= "error_code_catalog_gap" ;
   (* violation: endpoint sections name EXECUTION_STATE_CONFLICT and DRAFT_GROUNDING_VIOLATION, but the Common codes table does not list them *)
   (* mitigation: implementation must either add these codes to the shared catalog or define endpoint-local code allowlists in tests *)
 
+G3 ::= "observability_propagation_gap" ;
+  (* target: C27, EV71, EV72, EV73 *)
+  (* gap_class: missing-propagation *)
+  (* violation: the pre-observability bridge text carried trace ids in selected execution/event/telemetry bodies but did not require every API, wrapped-service, and DB-write span to preserve trace_id, command_id, and execution_id continuity *)
+  (* mitigation: implementation must add propagation tests that assert EV70-EV73 for one execution share trace_id and preserve command_id/execution_id whenever known *)
+
 S1 ::= "backend_to_migration150_db_seam" ;
   (* crossings: IN50-IN54, OUT50-OUT51 *)
-  (* contracts: C20, C21, C22, C23 *)
+  (* contracts: C20, C21, C22, C23, C27, C28, C29, C30 *)
 
 S6 ::= "api_to_auth_tenant_middleware_seam" ;
   (* crossings: IN21-IN30 and IN8-IN12 pass through IN40-IN43 before handler work *)
@@ -1759,17 +1921,18 @@ S6 ::= "api_to_auth_tenant_middleware_seam" ;
 
 S8 ::= "api_to_existing_sequences_external_seam" ;
   (* crossings: IN60-IN66 and OUT60 *)
-  (* contracts: C24, C25, C26 *)
+  (* contracts: C24, C25, C26, C27, C28, C29, C30 *)
 ```
 
 #### Seam Table
 
 | Seam | Direction | Crossing interfaces | Events | Contracts |
 |---|---|---|---|---|
-| S3 | BC4 -> BC3 | OUT21->IN21, OUT22->IN22, OUT23->IN23, OUT24->IN24, OUT25->IN25, OUT26->IN26, OUT27->IN27, OUT28->IN28, OUT4->IN8, OUT29->IN11, OUT30->IN12, OUT5->IN9, OUT31->IN10, OUT32->IN29, OUT33->IN30 | None at seam | C10, C11, C12, C13, C14, C15 |
+| S3 | BC4 -> BC3 | OUT21->IN21, OUT22->IN22, OUT23->IN23, OUT24->IN24, OUT25->IN25, OUT26->IN26, OUT27->IN27, OUT28->IN28, OUT4->IN8, OUT29->IN11, OUT30->IN12, OUT5->IN9, OUT31->IN10, OUT32->IN29, OUT33->IN30 | EV70 client span correlates to EV71 API span through C27 | C10, C11, C12, C13, C14, C15, C27, C28, C29 |
 | S6 | BC3 -> BC9 | All IN8-IN12 and IN21-IN30 pass through IN40-IN43; handlers receive OUT40 and optional OUT41 | EV40 on auth rejection | C6, C16, C18, C19 |
-| S1 | BC3 -> BC2 | IN25/IN26->IN50, IN11/IN12->IN51, writes->IN52, IN9->IN53, IN10/IN29->IN54, reads->OUT50/OUT51 | EV50 for diagnostics | C20, C21, C22, C23 |
-| S8 | BC3 -> BC1 | IN23->IN60/IN61, IN26->OUT60, IN27->IN62, IN8->IN63/IN64/OUT60, IN9/IN10->IN65, IN30->IN66 | EV60 for canonical product events | C24, C25, C26 |
+| S1 | BC3 -> BC2 | IN25/IN26->IN50, IN11/IN12->IN51, writes->IN52, IN9->IN53, IN10/IN29->IN54, reads->OUT50/OUT51 | EV71 API span correlates to EV73 DB write span; EV50 for diagnostics | C20, C21, C22, C23, C27, C28, C29, C30 |
+| S8 | BC3 -> BC1 | IN23->IN60/IN61, IN26->OUT60, IN27->IN62, IN8->IN63/IN64/OUT60, IN9/IN10->IN65, IN30->IN66 | EV71 API span correlates to EV72 service span; EV60 for canonical product events | C24, C25, C26, C27, C28, C29, C30 |
+| S12 | BC3 -> observability sink | OUT71 emits EV71 | EV71 API request/response wide event | C27, C28, C29, C30 |
 
 ### BC9: Auth/Tenant Seam
 
@@ -1892,6 +2055,8 @@ graph LR
         OUT50["OUT50: execution/diagnostic summary reads"]:::iface
         OUT51["OUT51: step contract reads"]:::iface
         EV50["EV50: automation diagnostic event recorded"]:::iface
+        OUT73["OUT73: emit DB write span to observability sink"]:::iface
+        EV73["EV73: zb_sequences.db_write wide event"]:::iface
         C20["C20: Composite FK and forced RLS target"]:::contract
         C21["C21: Step CAS target"]:::contract
         C22["C22: Idempotency atomicity target"]:::contract
@@ -1901,6 +2066,7 @@ graph LR
     S1{"S1: Migration-150 DB seam"}:::seam
     S9{"S9: Tenant GUC/RLS seam"}:::seam
     S11{"S11: Existing table FK seam"}:::seam
+    S12{"S12: Observability sink seam"}:::seam
 
     S1 --> IN50
     S1 --> IN51
@@ -1915,6 +2081,13 @@ graph LR
     IN51 --> S11
     IN53 --> S11
     IN54 --> S11
+    IN50 --> EV73
+    IN51 --> EV73
+    IN52 --> EV73
+    IN53 --> EV73
+    IN54 --> EV73
+    EV73 --> OUT73
+    OUT73 --> S12
 ```
 
 #### EBNF Grammar
@@ -1954,6 +2127,16 @@ EV50 ::= "automation_diagnostic_event_recorded" ;
   (* source: IN54 *)
   (* sink: diagnostics-only storage and operational observability *)
 
+OUT73 ::= "emit_to_observability_sink" "(" EV73 ")" ;
+  (* pre: C27 request trace context is attached to the DB transaction scope *)
+  (* pre: C28 deny-list applied before emission; SQL text and raw response bodies are not emitted *)
+  (* post: migration-150 DB write wide event is emitted across S12 *)
+
+EV73 ::= "zb_sequences.db_write" ;
+  (* span_kind: internal *)
+  (* attribute_keys: trace_id, span_id, parent_span_id, automation_trace_id, request_id, command_id, execution_id, sequence_id, enrollment_id, message_id, step_execution_id, org_id, tenant, actor_user_id_hash, endpoint, db.system, db.table, db.operation, db.transaction_id_hash, db.query_template_hash, idempotency_key_hash, request_hash, row_count, event.occurred_at, event.created_at, event.ingest_age_ms, rls.org_match, duration_ms, duplicate, error.class, error.code, retryable, redaction.suppressed *)
+  (* cardinality: high for trace_id, span_id, request_id, command_id, execution_id, sequence_id, enrollment_id, message_id, step_execution_id, org_id, tenant, idempotency_key_hash, request_hash; low/bounded for endpoint template, db.system, db.table, db.operation, row_count bucket, duplicate, retryable, error.class, error.code *)
+
 C20 ::= "composite_fk_and_forced_rls" ;
   (* target: IN50, IN51, IN52, IN53, IN54, OUT50, OUT51 *)
   (* invariant: every tenant-owned migration-150 table has UNIQUE(org_id,id) *)
@@ -1986,9 +2169,10 @@ S11 ::= "migration150_to_existing_table_fk_seam" ;
 
 | Seam | Direction | Crossing interfaces | Events | Contracts |
 |---|---|---|---|---|
-| S1 | BC3 -> BC2 | IN25/IN26->IN50, IN11/IN12->IN51, all writes->IN52, IN9->IN53, IN10/IN29->IN54, reads->OUT50/OUT51 | EV50 for diagnostic inserts | C20, C21, C22, C23 |
-| S9 | BC9 -> BC2 | OUT40 sets DB GUCs before all IN50-IN54 and OUT50-OUT51 work | EV40 blocks crossing on auth failure | C18, C20 |
-| S11 | BC2 -> BC1 existing tables | Composite FKs from migration-150 tables to existing sequences, enrollments, messages, users, orgs, and sequence_events | FK failures surface as DB_WRITE_FAILED or forbidden/not-found mapping | C20, C24 |
+| S1 | BC3 -> BC2 | IN25/IN26->IN50, IN11/IN12->IN51, all writes->IN52, IN9->IN53, IN10/IN29->IN54, reads->OUT50/OUT51 | EV73 for bridge DB writes; EV50 for diagnostic inserts | C20, C21, C22, C23, C27, C28, C29, C30 |
+| S9 | BC9 -> BC2 | OUT40 sets DB GUCs before all IN50-IN54 and OUT50-OUT51 work | EV40 blocks crossing on auth failure; successful DB work emits EV73 | C18, C20, C27 |
+| S11 | BC2 -> BC1 existing tables | Composite FKs from migration-150 tables to existing sequences, enrollments, messages, users, orgs, and sequence_events | FK failures surface as DB_WRITE_FAILED or forbidden/not-found mapping on EV73 | C20, C24, C27, C28 |
+| S12 | BC2 -> observability sink | OUT73 emits EV73 | EV73 DB write wide event | C27, C28, C29, C30 |
 
 ### BC1: Existing Sequences Services/Tables External Seam
 
@@ -2011,6 +2195,8 @@ graph LR
         IN66["IN66: sequenceMetrics/outreachAnalytics"]:::iface
         OUT60["OUT60: existing 090-140 table rowsets"]:::iface
         EV60["EV60: canonical sequence event"]:::iface
+        OUT72["OUT72: emit service call span to observability sink"]:::iface
+        EV72["EV72: zb_sequences.service_call wide event"]:::iface
         C24["C24: No parallel model target"]:::contract
         C25["C25: Canonical event allowlist target"]:::contract
         C26["C26: Analytics source target"]:::contract
@@ -2018,6 +2204,7 @@ graph LR
 
     S8{"S8: Existing sequences seam"}:::seam
     S11{"S11: Existing table FK seam"}:::seam
+    S12{"S12: Observability sink seam"}:::seam
 
     S8 --> IN60
     S8 --> IN61
@@ -2029,6 +2216,15 @@ graph LR
     OUT60 --> S8
     IN65 --> EV60
     S11 --> OUT60
+    IN60 --> EV72
+    IN61 --> EV72
+    IN62 --> EV72
+    IN63 --> EV72
+    IN64 --> EV72
+    IN65 --> EV72
+    IN66 --> EV72
+    EV72 --> OUT72
+    OUT72 --> S12
 ```
 
 #### EBNF Grammar
@@ -2070,6 +2266,16 @@ EV60 ::= "canonical_sequence_event" ;
   (* source: IN65 *)
   (* variants accepted by this bridge: MessageSent, MessageDelivered, MessageOpened, LinkClicked, ReplySynced, BounceSynced, SuppressionApplied, EnrollmentStopped, AtsWritebackSucceeded, AtsWritebackFailed, CandidateConverted *)
 
+OUT72 ::= "emit_to_observability_sink" "(" EV72 ")" ;
+  (* pre: C27 request trace context is attached to the wrapped service call *)
+  (* pre: C28 deny-list applied before emission; generated body text and candidate PII are not emitted *)
+  (* post: wrapped-service wide event is emitted across S12 *)
+
+EV72 ::= "zb_sequences.service_call" ;
+  (* span_kind: internal *)
+  (* attribute_keys: trace_id, span_id, parent_span_id, automation_trace_id, request_id, command_id, execution_id, sequence_id, enrollment_id, message_id, event_type, org_id, tenant, actor_user_id_hash, endpoint, service.name, service.operation, generation.request_id, grounding.status, due_work.count, result.status, duration_ms, duplicate, error.class, error.code, retryable, redaction.suppressed *)
+  (* cardinality: high for trace_id, span_id, request_id, command_id, execution_id, sequence_id, enrollment_id, message_id, org_id, tenant, generation.request_id; low/bounded for endpoint template, service.name, service.operation, event_type, grounding.status, result.status, duplicate, retryable, error.class, error.code *)
+
 C24 ::= "no_parallel_sequence_model" ;
   (* target: IN60, IN61, IN62, IN63, IN64, IN65, IN66, OUT60 *)
   (* invariant: bridge endpoints wrap existing services/tables instead of creating parallel sequence, enrollment, message, event, mailbox, or analytics models *)
@@ -2091,8 +2297,9 @@ C26 ::= "analytics_source_is_sequence_events" ;
 
 | Seam | Direction | Crossing interfaces | Events | Contracts |
 |---|---|---|---|---|
-| S8 | BC3 -> BC1 | IN23->IN60/IN61, IN26->OUT60 plus existing message persistence, IN27->IN62, IN8->IN63/IN64/OUT60, IN9/IN10->IN65, IN30->IN66 | EV60 for canonical product events | C24, C25, C26 |
-| S11 | BC2 -> BC1 existing tables | Migration-150 composite FKs validate against existing orgs, users, sequences, enrollments, messages, and sequence_events rowsets | FK failures prevent bridge writes | C20, C24 |
+| S8 | BC3 -> BC1 | IN23->IN60/IN61, IN26->OUT60 plus existing message persistence, IN27->IN62, IN8->IN63/IN64/OUT60, IN9/IN10->IN65, IN30->IN66 | EV72 for wrapped service calls; EV60 for canonical product events | C24, C25, C26, C27, C28, C29, C30 |
+| S11 | BC2 -> BC1 existing tables | Migration-150 composite FKs validate against existing orgs, users, sequences, enrollments, messages, and sequence_events rowsets | FK failures prevent bridge writes and surface on EV73 | C20, C24, C27, C28 |
+| S12 | BC1 -> observability sink | OUT72 emits EV72 | EV72 wrapped service call wide event | C27, C28, C29, C30 |
 
 ### INDEX
 
@@ -2100,11 +2307,11 @@ C26 ::= "analytics_source_is_sequence_events" ;
 
 | Context | Name | Bridge role | Status | Stable-ID note |
 |---|---|---|---|---|
-| BC4 | zigBrowser Client Facade | Consumes only `/api/v1/automation`; owns headers, HMAC signing, idempotency keys, retry handling, and redaction before transport | TO-BE in zigBrowser session | Reuses prior BC4 consumer role, OUT4, OUT5 |
-| BC3 | `/api/v1/automation` API Boundary | Versioned HTTP contract and endpoint dispatch in sequences backend | TO-BE in sequences session | Reuses prior BC3, IN8-IN12, S3, C6 |
+| BC4 | zigBrowser Client Facade | Consumes only `/api/v1/automation`; owns headers, HMAC signing, idempotency keys, retry handling, redaction before transport, trace start/join, and EV70 client spans | TO-BE in zigBrowser session | Reuses prior BC4 consumer role, OUT4, OUT5 |
+| BC3 | `/api/v1/automation` API Boundary | Versioned HTTP contract, endpoint dispatch, trace extraction, EV71 API spans, and SLI/SLO source attributes in sequences backend | TO-BE in sequences session | Reuses prior BC3, IN8-IN12, S3, C6 |
 | BC9 | Auth/Tenant Seam | Delegated user auth, HMAC service identity, tenant context middleware, DB GUC provenance | TO-BE automation middleware plus AS-IS auth chain | New bridge-local context |
-| BC2 | Automation Execution/Tracking DB Context | Migration-150 bridge-owned tables for step contracts, executions, idempotency, step results, and diagnostics | TO-BE migration 150 | Reuses prior database context role and S1 |
-| BC1 | Existing Sequences Services/Tables External Seam | Existing services and migrations 090-140 tables wrapped by bridge endpoints | AS-IS external seam | Reuses prior existing backend/services role, narrowed to seam references |
+| BC2 | Automation Execution/Tracking DB Context | Migration-150 bridge-owned tables for step contracts, executions, idempotency, step results, diagnostics, and EV73 DB write spans | TO-BE migration 150 | Reuses prior database context role and S1 |
+| BC1 | Existing Sequences Services/Tables External Seam | Existing services and migrations 090-140 tables wrapped by bridge endpoints, with EV72 wrapped-service spans | AS-IS external seam plus TO-BE wrappers | Reuses prior existing backend/services role, narrowed to seam references |
 
 #### Context-Map Diagram
 
@@ -2126,8 +2333,10 @@ graph LR
     S8{"S8: API/Existing Sequences"}:::seam
     S9{"S9: Tenant GUC/RLS"}:::seam
     S11{"S11: Migration-150/Existing FK"}:::seam
+    S12{"S12: Observability Sink"}:::seam
     G1["G1: nonce store boundary gap"]:::gap
     G2["G2: error code catalog gap"]:::gap
+    G3["G3: observability propagation gap"]:::gap
 
     BC4 --> S3
     S3 --> BC3
@@ -2142,8 +2351,13 @@ graph LR
     S8 --> BC1
     BC2 --> S11
     S11 --> BC1
+    BC4 --> S12
+    BC3 --> S12
+    BC2 --> S12
+    BC1 --> S12
     G1 --> BC9
     G2 --> BC3
+    G3 --> BC3
 ```
 
 #### Gap / Risk Register
@@ -2152,12 +2366,14 @@ graph LR
 |---|---|---|---|---|---|---|
 | G1 | missing-boundary | BC9 | C19 / IN43 | Nonce replay rejection is required, but the spec does not name the durable or cache-backed nonce store used across backend processes. | A single-process or ad hoc nonce cache could allow replay after restart or across workers. | Define the nonce store boundary before implementation and add replay tests that cross process boundaries. |
 | G2 | contract-drift | BC3 | C14 / IN12 / IN27 | Endpoint sections mention `EXECUTION_STATE_CONFLICT` and `DRAFT_GROUNDING_VIOLATION`, but the Common codes table does not list them. | Client contract tests may disagree with backend error envelope validation. | Add these codes to the common catalog or define endpoint-local allowed-code tests explicitly. |
+| G3 | missing-propagation | BC3 | C27 / EV71 / EV72 / EV73 | The original bridge text carried trace ids only in selected execution, event, and telemetry payloads; it did not require all API, wrapped-service, and DB-write spans to preserve trace, command, and execution continuity. | A bridge failure could be visible in automation telemetry but not joinable to backend service or DB work. | Implement C27 and add propagation tests proving EV70-EV73 from one execution share `trace_id` and preserve `command_id`/`execution_id` once known. |
 
 #### Acceptance Self-Check
 
-- [x] Diagram IDs and grammar entries are 1:1 for IN/OUT/EV/C/S/G IDs: ZERO orphans.
-- [x] Every contract names its target in its grammar entry: C6, C10-C26.
-- [x] Every seam enumerates its crossings and contracts: S1, S3, S6, S8, S9, S11.
+- [x] Diagram IDs and grammar entries are 1:1 for IN/OUT/EV/C/S/G IDs, including OUT70-OUT73, EV70-EV73, C27-C30, S12, and G3: ZERO orphans.
+- [x] Every contract names its target in its grammar entry: C6, C10-C30.
+- [x] Every seam enumerates its crossings and contracts: S1, S3, S6, S8, S9, S11, S12.
 - [x] Every bounded context has all three required parts: mermaid boundary diagram, EBNF grammar, and seam table.
 - [x] Existing sequences services/tables are referenced only as external seams: BC1 lists named operations and source table families without remapping internals.
-- [x] Missing or violated boundaries are marked with the `gap` class: G1 and G2.
+- [x] Missing or violated boundaries are marked with the `gap` class: G1, G2, and G3.
+- [x] Observability uses wide events/spans rather than metrics-only counters, with explicit high-cardinality dimensions, deny-list redaction before sinks, trace propagation, and SLI/SLO derivation from EV71-EV73.
