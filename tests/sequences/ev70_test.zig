@@ -355,3 +355,66 @@ test "EV70 span has zero retry_count by default" {
     _ = client.getUiBootstrap(.{});
     try std.testing.expectEqual(@as(u32, 0), sink.spans.items[0].retry_count);
 }
+
+// --- TDD Cycle 6: SequencesClient wired to AutomationClient transport ---
+
+const MockTransport = struct {
+    response_status: u16 = 200,
+    response_body: []const u8 = "{}",
+    call_count: u32 = 0,
+
+    fn transport(self: *MockTransport) sequences.Transport {
+        return .{ .context = self, .sendFn = send };
+    }
+
+    fn send(context: *anyopaque, allocator: std.mem.Allocator, _: *const sequences.PreparedRequest) !sequences.TransportResponse {
+        const self: *MockTransport = @ptrCast(@alignCast(context));
+        self.call_count += 1;
+        return .{
+            .status_code = self.response_status,
+            .body = try allocator.dupe(u8, self.response_body),
+        };
+    }
+};
+
+fn makeClientWithTransport(sink: *sequences.Ev70Sink, mock: *MockTransport, client: *sequences.AutomationClient) sequences.SequencesClient {
+    client.* = sequences.AutomationClient.init(std.testing.allocator, .{
+        .base_url = "http://localhost:3000",
+        .delegated_user_token = "test-token",
+        .service_auth = .{ .client_id = "test-client", .secret = "test-secret" },
+    }, mock.transport());
+    return sequences.SequencesClient.initWithClient(std.testing.allocator, sink, client);
+}
+
+test "SequencesClient delegates to AutomationClient when provided" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var mock = MockTransport{};
+    var automation_client: sequences.AutomationClient = undefined;
+    var client = makeClientWithTransport(&sink, &mock, &automation_client);
+    var result = client.getUiBootstrap(.{});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 1), mock.call_count);
+}
+
+test "EV70 span reflects transport status code" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var mock = MockTransport{ .response_status = 201 };
+    var automation_client: sequences.AutomationClient = undefined;
+    var client = makeClientWithTransport(&sink, &mock, &automation_client);
+    var result = client.createExecution(.{});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 201), sink.spans.items[0].http_status_code);
+}
+
+test "facade method returns response body from transport" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var mock = MockTransport{ .response_body = "{\"id\":\"seq-1\"}" };
+    var automation_client: sequences.AutomationClient = undefined;
+    var client = makeClientWithTransport(&sink, &mock, &automation_client);
+    var result = client.getSequenceDetail(.{});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("{\"id\":\"seq-1\"}", result.body);
+}

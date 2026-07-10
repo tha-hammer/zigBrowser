@@ -499,6 +499,15 @@ pub const CallResult = struct {
     status_code: u16,
     body: []const u8,
     duplicate: bool,
+    owned_allocator: ?std.mem.Allocator = null,
+
+    pub fn deinit(self: *CallResult, allocator: std.mem.Allocator) void {
+        const alloc = self.owned_allocator orelse allocator;
+        if (self.body.len > 0 and self.owned_allocator != null) {
+            alloc.free(@constCast(self.body));
+        }
+        self.* = undefined;
+    }
 };
 
 pub const TraceContext = struct {
@@ -601,11 +610,16 @@ fn methodLen(comptime template: []const u8) comptime_int {
 pub const SequencesClient = struct {
     allocator: std.mem.Allocator,
     sink: *Ev70Sink,
+    automation_client: ?*AutomationClient = null,
     trace_ctx: TraceContext = .{},
     span_counter: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, sink: *Ev70Sink) SequencesClient {
         return .{ .allocator = allocator, .sink = sink };
+    }
+
+    pub fn initWithClient(allocator: std.mem.Allocator, sink: *Ev70Sink, automation_client: *AutomationClient) SequencesClient {
+        return .{ .allocator = allocator, .sink = sink, .automation_client = automation_client };
     }
 
     pub fn setTraceContext(self: *SequencesClient, ctx: TraceContext) void {
@@ -642,14 +656,52 @@ pub const SequencesClient = struct {
         });
     }
 
+    fn executeViaTransport(self: *SequencesClient, comptime endpoint: []const u8, idem: Idempotency) CallResult {
+        const ac = self.automation_client orelse {
+            return .{ .status_code = 0, .body = "", .duplicate = false };
+        };
+        comptime var method_end = 0;
+        inline for (endpoint, 0..) |c, idx| {
+            if (c == ' ') {
+                method_end = idx;
+                break;
+            }
+        }
+        const path = comptime endpoint[method_end + 1 ..];
+        const method: std.http.Method = comptime parseMethod(endpoint[0..method_end]);
+
+        const outcome = ac.call(.{
+            .method = method,
+            .request_target = path,
+            .hmac = .optional,
+            .idempotency = idem,
+        }) catch {
+            return .{ .status_code = 0, .body = "", .duplicate = false };
+        };
+        switch (outcome) {
+            .success => |s| return .{
+                .status_code = s.status_code,
+                .body = s.body,
+                .duplicate = false,
+                .owned_allocator = self.allocator,
+            },
+            .api_error => |e| {
+                var err = e;
+                err.deinit(self.allocator);
+                return .{ .status_code = e.status_code, .body = "", .duplicate = false };
+            },
+        }
+    }
+
     fn callAndEmit(self: *SequencesClient, comptime endpoint: []const u8) CallResult {
-        const result = CallResult{ .status_code = 0, .body = "", .duplicate = false };
+        const result = self.executeViaTransport(endpoint, .none);
         self.emitEv70(endpoint, result, null);
         return result;
     }
 
     fn callAndEmitWithParams(self: *SequencesClient, comptime endpoint: []const u8, params: anytype) CallResult {
-        const result = CallResult{ .status_code = 0, .body = "", .duplicate = false };
+        const idem = extractIdempotency(params);
+        const result = self.executeViaTransport(endpoint, idem);
         const idem_hash = extractIdempotencyKeyHash(params);
         self.emitEv70(endpoint, result, if (idem_hash) |*h| h else null);
         return result;
@@ -671,6 +723,27 @@ pub const SequencesClient = struct {
         var buf: [canonical_hashing.prefixed_hash_len]u8 = undefined;
         _ = canonical_hashing.h(&buf, key);
         return buf;
+    }
+
+    fn extractIdempotency(params: anytype) Idempotency {
+        const T = @TypeOf(params);
+        if (@typeInfo(T) == .@"struct" and @hasField(T, "idempotency_key")) {
+            const field = params.idempotency_key;
+            switch (@typeInfo(@TypeOf(field))) {
+                .optional => if (field) |key| return .{ .key = key },
+                else => return .{ .key = field },
+            }
+        }
+        return .none;
+    }
+
+    fn parseMethod(comptime name: []const u8) std.http.Method {
+        if (std.mem.eql(u8, name, "GET")) return .GET;
+        if (std.mem.eql(u8, name, "POST")) return .POST;
+        if (std.mem.eql(u8, name, "PUT")) return .PUT;
+        if (std.mem.eql(u8, name, "PATCH")) return .PATCH;
+        if (std.mem.eql(u8, name, "DELETE")) return .DELETE;
+        @compileError("unsupported HTTP method: " ++ name);
     }
 
     pub fn getUiBootstrap(self: *SequencesClient, params: anytype) CallResult {
