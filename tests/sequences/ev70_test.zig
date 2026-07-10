@@ -488,3 +488,91 @@ test "EV70 span has automation.api = v1" {
     _ = client.getUiBootstrap(.{});
     try std.testing.expectEqualStrings("v1", sink.spans.items[0].automation_api);
 }
+
+// --- TDD Cycle 9: Remaining EV70 spec attributes ---
+
+test "EV70 span carries tenant from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .tenant = "tenant-hash-abc" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("tenant-hash-abc", sink.spans.items[0].tenant.?);
+}
+
+test "EV70 span carries parent_span_id from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .parent_span_id = "parent-span-001" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("parent-span-001", sink.spans.items[0].parent_span_id.?);
+}
+
+test "EV70 span carries automation_trace_id from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .automation_trace_id = "auto-trace-xyz" });
+    _ = client.listSequences(.{});
+    try std.testing.expectEqualStrings("auto-trace-xyz", sink.spans.items[0].automation_trace_id.?);
+}
+
+test "EV70 span carries external_run_id from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .external_run_id = "run-42" });
+    _ = client.createExecution(.{});
+    try std.testing.expectEqualStrings("run-42", sink.spans.items[0].external_run_id.?);
+}
+
+test "EV70 span carries actor_user_id_hash from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .actor_user_id_hash = "sha256:abc123" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("sha256:abc123", sink.spans.items[0].actor_user_id_hash.?);
+}
+
+test "EV70 span carries session_id_hash from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .session_id_hash = "sha256:sess999" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("sha256:sess999", sink.spans.items[0].session_id_hash.?);
+}
+
+test "EV70 span carries zigbrowser.version from client config" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setClientConfig(.{ .zigbrowser_version = "0.4.1" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("0.4.1", sink.spans.items[0].zigbrowser_version.?);
+}
+
+test "EV70 span has redaction.suppressed = false by default" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqual(false, sink.spans.items[0].redaction_suppressed);
+}
+
+test "all remaining nullable context attributes default to null" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    const span = sink.spans.items[0];
+    try std.testing.expect(span.tenant == null);
+    try std.testing.expect(span.parent_span_id == null);
+    try std.testing.expect(span.automation_trace_id == null);
+    try std.testing.expect(span.external_run_id == null);
+    try std.testing.expect(span.actor_user_id_hash == null);
+    try std.testing.expect(span.session_id_hash == null);
+    try std.testing.expect(span.zigbrowser_version == null);
+}
