@@ -1,5 +1,6 @@
 const std = @import("std");
 const automation = @import("automation.zig");
+const automation_websocket = @import("automation_websocket.zig");
 
 const net = std.Io.net;
 
@@ -99,6 +100,11 @@ pub const AutomationApiServer = struct {
 
         var header: [4]u8 = undefined;
         reader.interface.readSliceAll(&header) catch return;
+        if (std.mem.eql(u8, &header, "GET ")) {
+            try handleWebSocketUpgrade(&reader, &writer, &header);
+            return;
+        }
+
         const payload_len = std.mem.readInt(u32, &header, .big);
         if (payload_len > max_frame_bytes) {
             const response = try jsonRpcError(std.heap.smp_allocator, "null", -32700, "Parse error");
@@ -219,6 +225,56 @@ fn writeFrame(writer: anytype, payload: []const u8) !void {
     try writer.interface.writeAll(&header);
     try writer.interface.writeAll(payload);
     try writer.interface.flush();
+}
+
+fn handleWebSocketUpgrade(reader: anytype, writer: anytype, initial: *const [4]u8) !void {
+    var request: [4096]u8 = undefined;
+    @memcpy(request[0..4], initial);
+    var len: usize = 4;
+    while (len < request.len) : (len += 1) {
+        try reader.interface.readSliceAll(request[len .. len + 1]);
+        if (len >= 3 and std.mem.eql(u8, request[len - 3 .. len + 1], "\r\n\r\n")) {
+            len += 1;
+            break;
+        }
+    }
+    const request_text = request[0..len];
+    const key = webSocketHeader(request_text, "Sec-WebSocket-Key") orelse return;
+
+    const accept = try automation_websocket.secWebSocketAccept(std.heap.smp_allocator, key);
+    defer std.heap.smp_allocator.free(accept);
+    const response = try std.fmt.allocPrint(
+        std.heap.smp_allocator,
+        "HTTP/1.1 101 Switching Protocols\r\n" ++
+            "Upgrade: websocket\r\n" ++
+            "Connection: Upgrade\r\n" ++
+            "Sec-WebSocket-Accept: {s}\r\n" ++
+            "\r\n",
+        .{accept},
+    );
+    defer std.heap.smp_allocator.free(response);
+
+    const payload = try automation_websocket.eventNotificationJson(std.heap.smp_allocator, .{
+        .method = "automation.ready",
+        .params_json = "{\"status\":\"ready\"}",
+    });
+    defer std.heap.smp_allocator.free(payload);
+    const frame = try automation_websocket.writeTextFrame(std.heap.smp_allocator, payload);
+    defer std.heap.smp_allocator.free(frame);
+
+    try writer.interface.writeAll(response);
+    try writer.interface.writeAll(frame);
+    try writer.interface.flush();
+}
+
+fn webSocketHeader(request: []const u8, comptime name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, request, "\r\n");
+    const prefix = name ++ ":";
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, prefix)) continue;
+        return std.mem.trim(u8, line[prefix.len..], " \t");
+    }
+    return null;
 }
 
 fn wakeAccept(io: std.Io, socket_path: []const u8) void {
