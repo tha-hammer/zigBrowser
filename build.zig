@@ -290,7 +290,7 @@ pub fn build(b: *std.Build) void {
     const automation_api_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/automation_api_lifecycle_test.py --binary \"$1\" --prefer-xvfb; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "python3 tests/e2e/automation_api_lifecycle_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
         "automation-api-e2e",
     });
     automation_api_e2e.addArtifactArg(exe);

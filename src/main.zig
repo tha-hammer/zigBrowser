@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const app = @import("app.zig");
 const cli = @import("cli.zig");
 const errors = @import("errors.zig");
 const uri = @import("uri.zig");
@@ -35,16 +36,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(errors.exitCode(error.Usage));
         },
         .open => |spec| {
-            const valid_uri = uri.validate(arena, spec.url) catch |err| {
-                try reportUriError(init, err, spec.url);
-                std.process.exit(errors.exitCode(mapUriErr(err)));
+            const code = app.runWithIo(arena, init.io, command) catch |err| {
+                switch (err) {
+                    error.InvalidUri => try reportUriError(init, error.InvalidUri, spec.url),
+                    error.UnsupportedScheme => try reportUriError(init, error.UnsupportedScheme, spec.url),
+                    else => {},
+                }
+                std.process.exit(errors.exitCode(err));
             };
-
-            const code = webkit.c.zb_app_run(
-                valid_uri.ptr,
-                if (spec.print_title) 1 else 0,
-                if (spec.e2e_protocol) 1 else 0,
-            );
             std.process.exit(@intCast(code));
         },
         .screenshot => |spec| {
