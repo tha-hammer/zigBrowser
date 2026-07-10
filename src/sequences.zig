@@ -500,11 +500,17 @@ pub const CallResult = struct {
     body: []const u8,
     duplicate: bool,
     owned_allocator: ?std.mem.Allocator = null,
+    error_class: ?[]const u8 = null,
+    error_code: ?[]const u8 = null,
+    retryable: ?bool = null,
 
     pub fn deinit(self: *CallResult, allocator: std.mem.Allocator) void {
         const alloc = self.owned_allocator orelse allocator;
         if (self.body.len > 0 and self.owned_allocator != null) {
             alloc.free(@constCast(self.body));
+        }
+        if (self.error_code) |value| {
+            if (self.owned_allocator != null) alloc.free(@constCast(value));
         }
         self.* = undefined;
     }
@@ -653,6 +659,9 @@ pub const SequencesClient = struct {
             .command_id = self.trace_ctx.command_id,
             .execution_id = self.trace_ctx.execution_id,
             .idempotency_key_hash = idempotency_key_hash,
+            .error_class = result.error_class,
+            .error_code = result.error_code,
+            .retryable = result.retryable,
         });
     }
 
@@ -687,8 +696,17 @@ pub const SequencesClient = struct {
             },
             .api_error => |e| {
                 var err = e;
-                err.deinit(self.allocator);
-                return .{ .status_code = e.status_code, .body = "", .duplicate = false };
+                defer err.deinit(self.allocator);
+                const error_code = self.allocator.dupe(u8, err.code) catch null;
+                return .{
+                    .status_code = err.status_code,
+                    .body = "",
+                    .duplicate = false,
+                    .owned_allocator = if (error_code != null) self.allocator else null,
+                    .error_class = "api_error",
+                    .error_code = error_code,
+                    .retryable = err.retryable,
+                };
             },
         }
     }

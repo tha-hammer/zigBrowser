@@ -418,3 +418,39 @@ test "facade method returns response body from transport" {
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("{\"id\":\"seq-1\"}", result.body);
 }
+
+// --- TDD Cycle 7: Error attributes from ErrorEnvelope ---
+
+test "EV70 span populates error attributes from API error response" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var mock = MockTransport{
+        .response_status = 409,
+        .response_body = "{\"error\":{\"code\":\"STEP_VERSION_CONFLICT\",\"message\":\"Version mismatch\",\"retryable\":false}}",
+    };
+    var automation_client: sequences.AutomationClient = undefined;
+    var client = makeClientWithTransport(&sink, &mock, &automation_client);
+    var result = client.saveSteps(.{});
+    defer result.deinit(std.testing.allocator);
+    const span = sink.spans.items[0];
+    try std.testing.expectEqual(@as(u16, 409), span.http_status_code);
+    try std.testing.expectEqualStrings("STEP_VERSION_CONFLICT", span.error_code.?);
+    try std.testing.expectEqual(false, span.retryable.?);
+}
+
+test "EV70 span marks retryable errors" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var mock = MockTransport{
+        .response_status = 503,
+        .response_body = "{\"error\":{\"code\":\"SERVICE_UNAVAILABLE\",\"message\":\"Try again\",\"retryable\":true}}",
+    };
+    var automation_client: sequences.AutomationClient = undefined;
+    var client = makeClientWithTransport(&sink, &mock, &automation_client);
+    var result = client.getUiBootstrap(.{});
+    defer result.deinit(std.testing.allocator);
+    const span = sink.spans.items[0];
+    try std.testing.expectEqual(@as(u16, 503), span.http_status_code);
+    try std.testing.expectEqualStrings("SERVICE_UNAVAILABLE", span.error_code.?);
+    try std.testing.expectEqual(true, span.retryable.?);
+}
