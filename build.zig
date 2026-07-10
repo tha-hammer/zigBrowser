@@ -287,6 +287,14 @@ pub fn build(b: *std.Build) void {
     const run_automation_server_tests = b.addRunArtifact(automation_server_tests);
     run_automation_server_tests.skip_foreign_checks = true;
 
+    const automation_api_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_api_lifecycle_test.py --binary \"$1\" --prefer-xvfb; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-api-e2e",
+    });
+    automation_api_e2e.addArtifactArg(exe);
+
     // --- Phase 4: Gaussian tests ---
     const gaussian_module = b.createModule(.{
         .root_source_file = b.path("src/automation/gaussian.zig"),
@@ -418,6 +426,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_error_tests.step);
     test_step.dependOn(&run_automation_router_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
+    test_step.dependOn(&automation_api_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);

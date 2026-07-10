@@ -1,4 +1,475 @@
+const std = @import("std");
+
 pub const version = "zb-sequences-v1";
+pub const base_path = "/api/v1/automation";
+
+pub const canonical_hashing = struct {
+    pub const digest_len = std.crypto.hash.sha2.Sha256.digest_length;
+    pub const hex_len = digest_len * 2;
+    pub const prefixed_hash_len = "sha256:".len + hex_len;
+    pub const hmac_sha256_len = std.crypto.auth.hmac.sha2.HmacSha256.mac_length;
+    pub const empty_body_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    pub fn sha256Hex(dest: *[hex_len]u8, bytes: []const u8) []const u8 {
+        var digest: [digest_len]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+        return lowerHex(dest, &digest);
+    }
+
+    pub fn hbytes(dest: *[hex_len]u8, bytes: []const u8) []const u8 {
+        return sha256Hex(dest, bytes);
+    }
+
+    pub fn h(dest: *[prefixed_hash_len]u8, text: []const u8) []const u8 {
+        @memcpy(dest[0.."sha256:".len], "sha256:");
+
+        var digest: [digest_len]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(text, &digest, .{});
+        _ = writeLowerHex(dest["sha256:".len..], &digest);
+        return dest[0..prefixed_hash_len];
+    }
+
+    pub fn lowerHex(dest: *[hex_len]u8, bytes: []const u8) []const u8 {
+        return writeLowerHex(dest[0..], bytes);
+    }
+
+    pub fn writeLowerHex(dest: []u8, bytes: []const u8) []const u8 {
+        std.debug.assert(dest.len >= bytes.len * 2);
+        const alphabet = "0123456789abcdef";
+        for (bytes, 0..) |byte, i| {
+            dest[i * 2] = alphabet[byte >> 4];
+            dest[i * 2 + 1] = alphabet[byte & 0x0f];
+        }
+        return dest[0 .. bytes.len * 2];
+    }
+
+    pub fn hmacSha256(dest: *[hmac_sha256_len]u8, secret: []const u8, message: []const u8) void {
+        std.crypto.auth.hmac.sha2.HmacSha256.create(dest, message, secret);
+    }
+
+    pub fn base64UrlNoPad(dest: []u8, bytes: []const u8) []const u8 {
+        return std.base64.url_safe_no_pad.Encoder.encode(dest, bytes);
+    }
+
+    pub fn base64UrlNoPadAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+        const encoded = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(bytes.len));
+        return @constCast(base64UrlNoPad(encoded, bytes));
+    }
+};
+
+pub const ServiceAuth = struct {
+    client_id: []const u8,
+    secret: []const u8,
+};
+
+pub const HmacMode = enum {
+    none,
+    optional,
+    required,
+};
+
+pub const Idempotency = union(enum) {
+    none,
+    key: []const u8,
+    generate,
+};
+
+pub const Header = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+pub const BuildPreparedRequestError = error{
+    MissingServiceAuth,
+    InvalidTimeout,
+    OutOfMemory,
+};
+
+pub const PreparedRequest = struct {
+    arena: std.heap.ArenaAllocator,
+    method: std.http.Method,
+    request_target: []const u8,
+    url: []const u8,
+    body: []const u8,
+    headers: []const Header,
+    timeout_ms: u32,
+    body_hash: []const u8,
+    idempotency_key_hash: ?[]const u8,
+    signature_base: ?[]const u8,
+
+    pub const BuildOptions = struct {
+        base_url: []const u8,
+        delegated_user_token: []const u8,
+        service_auth: ?ServiceAuth = null,
+        hmac: HmacMode = .required,
+        method: std.http.Method,
+        request_target: []const u8,
+        body: []const u8 = "",
+        idempotency: Idempotency = .none,
+        timestamp_ms: ?i64 = null,
+        nonce: ?[]const u8 = null,
+        timeout_ms: u32 = 5000,
+    };
+
+    pub fn build(parent_allocator: std.mem.Allocator, options: BuildOptions) BuildPreparedRequestError!PreparedRequest {
+        if (options.timeout_ms == 0) return error.InvalidTimeout;
+
+        var arena = std.heap.ArenaAllocator.init(parent_allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+
+        var headers: std.ArrayListUnmanaged(Header) = .empty;
+        const body = try allocator.dupe(u8, options.body);
+        const request_target = try allocator.dupe(u8, options.request_target);
+        const url = try joinBaseUrl(allocator, options.base_url, options.request_target);
+
+        var body_hash_stack: [canonical_hashing.hex_len]u8 = undefined;
+        const body_hash = try allocator.dupe(u8, canonical_hashing.hbytes(&body_hash_stack, body));
+
+        try appendHeader(allocator, &headers, "X-ZB-Sequences-Version", version);
+        try appendHeader(
+            allocator,
+            &headers,
+            "Authorization",
+            try std.fmt.allocPrint(allocator, "Bearer {s}", .{options.delegated_user_token}),
+        );
+        if (options.method.requestHasBody()) {
+            try appendHeader(allocator, &headers, "Content-Type", "application/json");
+        }
+
+        var signature_base: ?[]const u8 = null;
+        switch (options.hmac) {
+            .none => {},
+            .optional => if (options.service_auth) |auth| {
+                signature_base = try addSignatureHeaders(allocator, &headers, options, auth, body_hash);
+            },
+            .required => {
+                const auth = options.service_auth orelse return error.MissingServiceAuth;
+                signature_base = try addSignatureHeaders(allocator, &headers, options, auth, body_hash);
+            },
+        }
+
+        var idempotency_key_hash: ?[]const u8 = null;
+        switch (options.idempotency) {
+            .none => {},
+            .key => |key| {
+                const owned_key = try allocator.dupe(u8, key);
+                try appendHeader(allocator, &headers, "Idempotency-Key", owned_key);
+                var prefixed: [canonical_hashing.prefixed_hash_len]u8 = undefined;
+                idempotency_key_hash = try allocator.dupe(u8, canonical_hashing.h(&prefixed, owned_key));
+            },
+            .generate => {
+                const key = try generateIdempotencyKey(allocator);
+                try appendHeader(allocator, &headers, "Idempotency-Key", key);
+                var prefixed: [canonical_hashing.prefixed_hash_len]u8 = undefined;
+                idempotency_key_hash = try allocator.dupe(u8, canonical_hashing.h(&prefixed, key));
+            },
+        }
+
+        return .{
+            .arena = arena,
+            .method = options.method,
+            .request_target = request_target,
+            .url = url,
+            .body = body,
+            .headers = headers.items,
+            .timeout_ms = options.timeout_ms,
+            .body_hash = body_hash,
+            .idempotency_key_hash = idempotency_key_hash,
+            .signature_base = signature_base,
+        };
+    }
+
+    pub fn deinit(self: *PreparedRequest) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+
+    pub fn headerValue(self: *const PreparedRequest, name: []const u8) ?[]const u8 {
+        for (self.headers) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
+        }
+        return null;
+    }
+
+    pub fn wireBytesEqual(self: *const PreparedRequest, other: *const PreparedRequest) bool {
+        if (self.method != other.method) return false;
+        if (self.timeout_ms != other.timeout_ms) return false;
+        if (!std.mem.eql(u8, self.request_target, other.request_target)) return false;
+        if (!std.mem.eql(u8, self.url, other.url)) return false;
+        if (!std.mem.eql(u8, self.body, other.body)) return false;
+        if (self.headers.len != other.headers.len) return false;
+        for (self.headers, other.headers) |left, right| {
+            if (!std.mem.eql(u8, left.name, right.name)) return false;
+            if (!std.mem.eql(u8, left.value, right.value)) return false;
+        }
+        return true;
+    }
+
+    fn addSignatureHeaders(
+        allocator: std.mem.Allocator,
+        headers: *std.ArrayListUnmanaged(Header),
+        options: BuildOptions,
+        auth: ServiceAuth,
+        body_hash: []const u8,
+    ) ![]const u8 {
+        const timestamp_ms = options.timestamp_ms orelse std.time.milliTimestamp();
+        const timestamp = try std.fmt.allocPrint(allocator, "{d}", .{timestamp_ms});
+        const nonce = if (options.nonce) |provided| try allocator.dupe(u8, provided) else try generateNonce(allocator);
+        const signature_base = try buildSignatureBase(
+            allocator,
+            options.method,
+            options.request_target,
+            timestamp,
+            nonce,
+            body_hash,
+        );
+        const signature = try signBaseString(allocator, auth.secret, signature_base);
+
+        try appendHeader(allocator, headers, "X-ZB-Client-Id", auth.client_id);
+        try appendHeader(allocator, headers, "X-ZB-Timestamp", timestamp);
+        try appendHeader(allocator, headers, "X-ZB-Nonce", nonce);
+        try appendHeader(allocator, headers, "X-ZB-Signature", signature);
+        return signature_base;
+    }
+};
+
+pub fn buildSignatureBase(
+    allocator: std.mem.Allocator,
+    method: std.http.Method,
+    request_target: []const u8,
+    timestamp: []const u8,
+    nonce: []const u8,
+    body_hash: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "v1\n{s}\n{s}\n{s}\n{s}\n{s}",
+        .{ @tagName(method), request_target, timestamp, nonce, body_hash },
+    );
+}
+
+pub fn signBaseString(allocator: std.mem.Allocator, secret: []const u8, base: []const u8) ![]u8 {
+    var mac: [canonical_hashing.hmac_sha256_len]u8 = undefined;
+    canonical_hashing.hmacSha256(&mac, secret, base);
+    const encoded_len = std.base64.url_safe_no_pad.Encoder.calcSize(mac.len);
+    const signature = try allocator.alloc(u8, "v1=".len + encoded_len);
+    @memcpy(signature[0.."v1=".len], "v1=");
+    _ = canonical_hashing.base64UrlNoPad(signature["v1=".len..], &mac);
+    return signature;
+}
+
+pub const TransportResponse = struct {
+    status_code: u16,
+    body: []u8,
+
+    pub fn deinit(self: *TransportResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+        self.* = undefined;
+    }
+};
+
+pub const Transport = struct {
+    context: *anyopaque,
+    sendFn: *const fn (*anyopaque, std.mem.Allocator, *const PreparedRequest) anyerror!TransportResponse,
+
+    pub fn send(self: Transport, allocator: std.mem.Allocator, request: *const PreparedRequest) !TransportResponse {
+        return self.sendFn(self.context, allocator, request);
+    }
+};
+
+pub const SuccessResponse = struct {
+    status_code: u16,
+    body: []u8,
+
+    pub fn deinit(self: *SuccessResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+        self.* = undefined;
+    }
+};
+
+pub const CallOutcome = union(enum) {
+    success: SuccessResponse,
+    api_error: ErrorEnvelope,
+
+    pub fn deinit(self: *CallOutcome, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .success => |*success| success.deinit(allocator),
+            .api_error => |*api_error| api_error.deinit(allocator),
+        }
+        self.* = undefined;
+    }
+};
+
+pub const AutomationClient = struct {
+    allocator: std.mem.Allocator,
+    config: Config,
+    transport: Transport,
+
+    pub const Config = struct {
+        base_url: []const u8,
+        delegated_user_token: []const u8,
+        service_auth: ?ServiceAuth = null,
+        default_timeout_ms: u32 = 5000,
+    };
+
+    pub const CallOptions = struct {
+        method: std.http.Method,
+        request_target: []const u8,
+        body: []const u8 = "",
+        hmac: HmacMode = .required,
+        idempotency: Idempotency = .none,
+        timestamp_ms: ?i64 = null,
+        nonce: ?[]const u8 = null,
+        timeout_ms: ?u32 = null,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, config: Config, transport: Transport) AutomationClient {
+        return .{ .allocator = allocator, .config = config, .transport = transport };
+    }
+
+    pub fn call(self: *AutomationClient, options: CallOptions) !CallOutcome {
+        var request = try PreparedRequest.build(self.allocator, .{
+            .base_url = self.config.base_url,
+            .delegated_user_token = self.config.delegated_user_token,
+            .service_auth = self.config.service_auth,
+            .hmac = options.hmac,
+            .method = options.method,
+            .request_target = options.request_target,
+            .body = options.body,
+            .idempotency = options.idempotency,
+            .timestamp_ms = options.timestamp_ms,
+            .nonce = options.nonce,
+            .timeout_ms = options.timeout_ms orelse self.config.default_timeout_ms,
+        });
+        defer request.deinit();
+
+        var response = try self.transport.send(self.allocator, &request);
+        if (response.status_code >= 400) {
+            defer response.deinit(self.allocator);
+            return .{ .api_error = try ErrorEnvelope.parse(self.allocator, response.status_code, response.body) };
+        }
+
+        return .{ .success = .{ .status_code = response.status_code, .body = response.body } };
+    }
+};
+
+pub const StdHttpTransport = struct {
+    client: *std.http.Client,
+
+    pub fn transport(self: *StdHttpTransport) Transport {
+        return .{ .context = self, .sendFn = send };
+    }
+
+    fn send(context: *anyopaque, allocator: std.mem.Allocator, request: *const PreparedRequest) !TransportResponse {
+        const self: *StdHttpTransport = @ptrCast(@alignCast(context));
+        var extra_headers = try allocator.alloc(std.http.Header, request.headers.len);
+        defer allocator.free(extra_headers);
+        for (request.headers, 0..) |header, i| {
+            extra_headers[i] = .{ .name = header.name, .value = header.value };
+        }
+
+        var body_writer: std.Io.Writer.Allocating = .init(allocator);
+        errdefer body_writer.deinit();
+
+        const payload: ?[]const u8 = if (request.method.requestHasBody()) request.body else null;
+        const result = try self.client.fetch(.{
+            .location = .{ .url = request.url },
+            .method = request.method,
+            .payload = payload,
+            .response_writer = &body_writer.writer,
+            .redirect_behavior = .unhandled,
+            .extra_headers = extra_headers,
+            .keep_alive = false,
+        });
+
+        return .{
+            .status_code = @as(u16, @intFromEnum(result.status)),
+            .body = try body_writer.toOwnedSlice(),
+        };
+    }
+};
+
+pub const ErrorEnvelope = struct {
+    status_code: u16,
+    code: []u8,
+    message: []u8,
+    retryable: ?bool = null,
+    request_id: ?[]u8 = null,
+    trace_id: ?[]u8 = null,
+    command_id: ?[]u8 = null,
+
+    pub fn parse(allocator: std.mem.Allocator, status_code: u16, body: []const u8) !ErrorEnvelope {
+        const Wire = struct {
+            @"error": struct {
+                code: []const u8,
+                message: []const u8,
+                retryable: ?bool = null,
+                requestId: ?[]const u8 = null,
+                traceId: ?[]const u8 = null,
+                commandId: ?[]const u8 = null,
+            },
+        };
+        var parsed = try std.json.parseFromSlice(Wire, allocator, body, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        const err = parsed.value.@"error";
+        return .{
+            .status_code = status_code,
+            .code = try allocator.dupe(u8, err.code),
+            .message = try allocator.dupe(u8, err.message),
+            .retryable = err.retryable,
+            .request_id = try dupeOptional(allocator, err.requestId),
+            .trace_id = try dupeOptional(allocator, err.traceId),
+            .command_id = try dupeOptional(allocator, err.commandId),
+        };
+    }
+
+    pub fn deinit(self: *ErrorEnvelope, allocator: std.mem.Allocator) void {
+        allocator.free(self.code);
+        allocator.free(self.message);
+        if (self.request_id) |value| allocator.free(value);
+        if (self.trace_id) |value| allocator.free(value);
+        if (self.command_id) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+fn appendHeader(
+    allocator: std.mem.Allocator,
+    headers: *std.ArrayListUnmanaged(Header),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    try headers.append(allocator, .{
+        .name = name,
+        .value = try allocator.dupe(u8, value),
+    });
+}
+
+fn dupeOptional(allocator: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
+    return if (value) |some| try allocator.dupe(u8, some) else null;
+}
+
+fn joinBaseUrl(allocator: std.mem.Allocator, base_url: []const u8, request_target: []const u8) ![]u8 {
+    const trimmed_base = std.mem.trimRight(u8, base_url, "/");
+    if (std.mem.startsWith(u8, request_target, "/")) {
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ trimmed_base, request_target });
+    }
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ trimmed_base, request_target });
+}
+
+fn generateNonce(allocator: std.mem.Allocator) ![]u8 {
+    var bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    return canonical_hashing.base64UrlNoPadAlloc(allocator, &bytes);
+}
+
+fn generateIdempotencyKey(allocator: std.mem.Allocator) ![]u8 {
+    var bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    const encoded = canonical_hashing.base64UrlNoPadAlloc(allocator, &bytes) catch return error.OutOfMemory;
+    return std.fmt.allocPrint(allocator, "zb_idem_{s}", .{encoded});
+}
 
 pub const endpoint_templates = struct {
     pub const getUiBootstrap = "GET /api/v1/automation/ui/bootstrap";
@@ -24,103 +495,13 @@ pub const CallResult = struct {
     duplicate: bool,
 };
 
-pub const SequencesClient = struct {
-    allocator: std.mem.Allocator,
-    sink: *Ev70Sink,
-
-    pub fn init(allocator: std.mem.Allocator, sink: *Ev70Sink) SequencesClient {
-        return .{ .allocator = allocator, .sink = sink };
-    }
-
-    pub fn getUiBootstrap(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn listSequences(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn createDraftSequence(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn getSequenceDetail(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn getSteps(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn saveSteps(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn generateStepDraft(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn previewStep(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn getExecutionPlan(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn createExecution(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn updateExecution(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn recordStepResult(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn ingestEvents(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn ingestTelemetry(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
-
-    pub fn getOutreachAnalytics(self: *SequencesClient, params: anytype) CallResult {
-        _ = self;
-        _ = params;
-        return .{ .status_code = 0, .body = "", .duplicate = false };
-    }
+pub const Ev70Span = struct {
+    name: []const u8,
+    endpoint: []const u8,
+    http_method: []const u8,
+    http_status_code: u16,
+    zb_sequences_version: []const u8,
+    duplicate: bool,
 };
 
 pub const Ev70Sink = struct {
@@ -138,12 +519,117 @@ pub const Ev70Sink = struct {
     pub fn spanCount(self: *const Ev70Sink) usize {
         return self.spans.items.len;
     }
+
+    pub fn emit(self: *Ev70Sink, span: Ev70Span) void {
+        self.spans.append(self.allocator, span) catch {};
+    }
 };
 
-pub const Ev70Span = struct {
-    name: []const u8,
-    endpoint: []const u8,
-    http_method: []const u8,
-};
+fn extractHttpMethod(comptime template: []const u8) *const [methodLen(template)]u8 {
+    return comptime template[0..methodLen(template)];
+}
 
-const std = @import("std");
+fn methodLen(comptime template: []const u8) comptime_int {
+    return comptime std.mem.indexOfScalar(u8, template, ' ') orelse template.len;
+}
+
+pub const SequencesClient = struct {
+    allocator: std.mem.Allocator,
+    sink: *Ev70Sink,
+
+    pub fn init(allocator: std.mem.Allocator, sink: *Ev70Sink) SequencesClient {
+        return .{ .allocator = allocator, .sink = sink };
+    }
+
+    fn emitEv70(self: *SequencesClient, comptime endpoint: []const u8, result: CallResult) void {
+        self.sink.emit(.{
+            .name = "zb_sequences.client_call",
+            .endpoint = endpoint,
+            .http_method = extractHttpMethod(endpoint),
+            .http_status_code = result.status_code,
+            .zb_sequences_version = version,
+            .duplicate = result.duplicate,
+        });
+    }
+
+    fn callAndEmit(self: *SequencesClient, comptime endpoint: []const u8) CallResult {
+        const result = CallResult{ .status_code = 0, .body = "", .duplicate = false };
+        self.emitEv70(endpoint, result);
+        return result;
+    }
+
+    pub fn getUiBootstrap(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.getUiBootstrap);
+    }
+
+    pub fn listSequences(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.listSequences);
+    }
+
+    pub fn createDraftSequence(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.createDraftSequence);
+    }
+
+    pub fn getSequenceDetail(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.getSequenceDetail);
+    }
+
+    pub fn getSteps(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.getSteps);
+    }
+
+    pub fn saveSteps(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.saveSteps);
+    }
+
+    pub fn generateStepDraft(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.generateStepDraft);
+    }
+
+    pub fn previewStep(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.previewStep);
+    }
+
+    pub fn getExecutionPlan(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.getExecutionPlan);
+    }
+
+    pub fn createExecution(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.createExecution);
+    }
+
+    pub fn updateExecution(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.updateExecution);
+    }
+
+    pub fn recordStepResult(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.recordStepResult);
+    }
+
+    pub fn ingestEvents(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.ingestEvents);
+    }
+
+    pub fn ingestTelemetry(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.ingestTelemetry);
+    }
+
+    pub fn getOutreachAnalytics(self: *SequencesClient, params: anytype) CallResult {
+        _ = params;
+        return self.callAndEmit(endpoint_templates.getOutreachAnalytics);
+    }
+};
