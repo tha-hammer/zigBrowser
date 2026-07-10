@@ -523,10 +523,16 @@ pub const TraceContext = struct {
     org_id: ?[]const u8 = null,
     sequence_id: ?[]const u8 = null,
     tenant: ?[]const u8 = null,
+    parent_span_id: ?[]const u8 = null,
+    automation_trace_id: ?[]const u8 = null,
+    external_run_id: ?[]const u8 = null,
+    actor_user_id_hash: ?[]const u8 = null,
+    session_id_hash: ?[]const u8 = null,
 };
 
 pub const ClientConfig = struct {
     client_id: ?[]const u8 = null,
+    zigbrowser_version: ?[]const u8 = null,
 };
 
 pub const Ev70Span = struct {
@@ -550,6 +556,14 @@ pub const Ev70Span = struct {
     sequence_id: ?[]const u8 = null,
     client_id: ?[]const u8 = null,
     automation_api: []const u8 = "v1",
+    tenant: ?[]const u8 = null,
+    parent_span_id: ?[]const u8 = null,
+    automation_trace_id: ?[]const u8 = null,
+    external_run_id: ?[]const u8 = null,
+    actor_user_id_hash: ?[]const u8 = null,
+    session_id_hash: ?[]const u8 = null,
+    zigbrowser_version: ?[]const u8 = null,
+    redaction_suppressed: bool = false,
 };
 
 pub const Ev70Sink = struct {
@@ -563,15 +577,24 @@ pub const Ev70Sink = struct {
     pub fn deinit(self: *Ev70Sink) void {
         for (self.spans.items) |span| {
             self.allocator.free(span.span_id);
-            if (span.trace_id) |value| self.allocator.free(value);
-            if (span.command_id) |value| self.allocator.free(value);
-            if (span.execution_id) |value| self.allocator.free(value);
-            if (span.idempotency_key_hash) |value| self.allocator.free(value);
-            if (span.error_class) |value| self.allocator.free(value);
-            if (span.error_code) |value| self.allocator.free(value);
-            if (span.org_id) |value| self.allocator.free(value);
-            if (span.sequence_id) |value| self.allocator.free(value);
-            if (span.client_id) |value| self.allocator.free(value);
+            self.freeOptionals(.{
+                span.trace_id,
+                span.command_id,
+                span.execution_id,
+                span.idempotency_key_hash,
+                span.error_class,
+                span.error_code,
+                span.org_id,
+                span.sequence_id,
+                span.client_id,
+                span.tenant,
+                span.parent_span_id,
+                span.automation_trace_id,
+                span.external_run_id,
+                span.actor_user_id_hash,
+                span.session_id_hash,
+                span.zigbrowser_version,
+            });
         }
         self.spans.deinit(self.allocator);
     }
@@ -597,6 +620,13 @@ pub const Ev70Sink = struct {
         const org_id = dupeOptional(self.allocator, span.org_id) catch return;
         const sequence_id = dupeOptional(self.allocator, span.sequence_id) catch return;
         const client_id = dupeOptional(self.allocator, span.client_id) catch return;
+        const tenant = dupeOptional(self.allocator, span.tenant) catch return;
+        const parent_span_id = dupeOptional(self.allocator, span.parent_span_id) catch return;
+        const automation_trace_id = dupeOptional(self.allocator, span.automation_trace_id) catch return;
+        const external_run_id = dupeOptional(self.allocator, span.external_run_id) catch return;
+        const actor_user_id_hash = dupeOptional(self.allocator, span.actor_user_id_hash) catch return;
+        const session_id_hash = dupeOptional(self.allocator, span.session_id_hash) catch return;
+        const zigbrowser_version = dupeOptional(self.allocator, span.zigbrowser_version) catch return;
 
         self.spans.append(self.allocator, .{
             .name = span.name,
@@ -619,9 +649,17 @@ pub const Ev70Sink = struct {
             .sequence_id = sequence_id,
             .client_id = client_id,
             .automation_api = span.automation_api,
+            .tenant = tenant,
+            .parent_span_id = parent_span_id,
+            .automation_trace_id = automation_trace_id,
+            .external_run_id = external_run_id,
+            .actor_user_id_hash = actor_user_id_hash,
+            .session_id_hash = session_id_hash,
+            .zigbrowser_version = zigbrowser_version,
+            .redaction_suppressed = span.redaction_suppressed,
         }) catch {
             self.allocator.free(span_id);
-            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, error_class, error_code, org_id, sequence_id, client_id });
+            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, error_class, error_code, org_id, sequence_id, client_id, tenant, parent_span_id, automation_trace_id, external_run_id, actor_user_id_hash, session_id_hash, zigbrowser_version });
         };
     }
 };
@@ -691,6 +729,13 @@ pub const SequencesClient = struct {
             .org_id = self.trace_ctx.org_id,
             .sequence_id = self.trace_ctx.sequence_id,
             .client_id = self.client_config.client_id,
+            .tenant = self.trace_ctx.tenant,
+            .parent_span_id = self.trace_ctx.parent_span_id,
+            .automation_trace_id = self.trace_ctx.automation_trace_id,
+            .external_run_id = self.trace_ctx.external_run_id,
+            .actor_user_id_hash = self.trace_ctx.actor_user_id_hash,
+            .session_id_hash = self.trace_ctx.session_id_hash,
+            .zigbrowser_version = self.client_config.zigbrowser_version,
         });
     }
 
