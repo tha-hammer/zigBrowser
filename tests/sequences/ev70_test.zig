@@ -454,3 +454,37 @@ test "EV70 span marks retryable errors" {
     try std.testing.expectEqualStrings("SERVICE_UNAVAILABLE", span.error_code.?);
     try std.testing.expectEqual(true, span.retryable.?);
 }
+
+// --- TDD Cycle 8: Extended context and static config on EV70 spans ---
+
+test "EV70 span carries org_id and sequence_id from trace context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{
+        .trace_id = "t1",
+        .org_id = "org-abc",
+        .sequence_id = "seq-xyz",
+    });
+    _ = client.getSteps(.{});
+    const span = sink.spans.items[0];
+    try std.testing.expectEqualStrings("org-abc", span.org_id.?);
+    try std.testing.expectEqualStrings("seq-xyz", span.sequence_id.?);
+}
+
+test "EV70 span carries client_id from config" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = sequences.SequencesClient.init(std.testing.allocator, &sink);
+    client.setClientConfig(.{ .client_id = "my-client-id" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("my-client-id", sink.spans.items[0].client_id.?);
+}
+
+test "EV70 span has automation.api = v1" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("v1", sink.spans.items[0].automation_api);
+}

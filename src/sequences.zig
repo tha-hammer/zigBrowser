@@ -520,6 +520,13 @@ pub const TraceContext = struct {
     trace_id: ?[]const u8 = null,
     command_id: ?[]const u8 = null,
     execution_id: ?[]const u8 = null,
+    org_id: ?[]const u8 = null,
+    sequence_id: ?[]const u8 = null,
+    tenant: ?[]const u8 = null,
+};
+
+pub const ClientConfig = struct {
+    client_id: ?[]const u8 = null,
 };
 
 pub const Ev70Span = struct {
@@ -539,6 +546,10 @@ pub const Ev70Span = struct {
     error_code: ?[]const u8 = null,
     retryable: ?bool = null,
     retry_count: u32 = 0,
+    org_id: ?[]const u8 = null,
+    sequence_id: ?[]const u8 = null,
+    client_id: ?[]const u8 = null,
+    automation_api: []const u8 = "v1",
 };
 
 pub const Ev70Sink = struct {
@@ -558,6 +569,9 @@ pub const Ev70Sink = struct {
             if (span.idempotency_key_hash) |value| self.allocator.free(value);
             if (span.error_class) |value| self.allocator.free(value);
             if (span.error_code) |value| self.allocator.free(value);
+            if (span.org_id) |value| self.allocator.free(value);
+            if (span.sequence_id) |value| self.allocator.free(value);
+            if (span.client_id) |value| self.allocator.free(value);
         }
         self.spans.deinit(self.allocator);
     }
@@ -580,6 +594,9 @@ pub const Ev70Sink = struct {
         const idempotency_key_hash = dupeOptional(self.allocator, span.idempotency_key_hash) catch return;
         const error_class = dupeOptional(self.allocator, span.error_class) catch return;
         const error_code = dupeOptional(self.allocator, span.error_code) catch return;
+        const org_id = dupeOptional(self.allocator, span.org_id) catch return;
+        const sequence_id = dupeOptional(self.allocator, span.sequence_id) catch return;
+        const client_id = dupeOptional(self.allocator, span.client_id) catch return;
 
         self.spans.append(self.allocator, .{
             .name = span.name,
@@ -598,9 +615,13 @@ pub const Ev70Sink = struct {
             .error_code = error_code,
             .retryable = span.retryable,
             .retry_count = span.retry_count,
+            .org_id = org_id,
+            .sequence_id = sequence_id,
+            .client_id = client_id,
+            .automation_api = span.automation_api,
         }) catch {
             self.allocator.free(span_id);
-            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, error_class, error_code });
+            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, error_class, error_code, org_id, sequence_id, client_id });
         };
     }
 };
@@ -618,6 +639,7 @@ pub const SequencesClient = struct {
     sink: *Ev70Sink,
     automation_client: ?*AutomationClient = null,
     trace_ctx: TraceContext = .{},
+    client_config: ClientConfig = .{},
     span_counter: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, sink: *Ev70Sink) SequencesClient {
@@ -630,6 +652,10 @@ pub const SequencesClient = struct {
 
     pub fn setTraceContext(self: *SequencesClient, ctx: TraceContext) void {
         self.trace_ctx = ctx;
+    }
+
+    pub fn setClientConfig(self: *SequencesClient, config: ClientConfig) void {
+        self.client_config = config;
     }
 
     fn generateSpanId(self: *SequencesClient, buf: *[16]u8) []const u8 {
@@ -662,6 +688,9 @@ pub const SequencesClient = struct {
             .error_class = result.error_class,
             .error_code = result.error_code,
             .retryable = result.retryable,
+            .org_id = self.trace_ctx.org_id,
+            .sequence_id = self.trace_ctx.sequence_id,
+            .client_id = self.client_config.client_id,
         });
     }
 
