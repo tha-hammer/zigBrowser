@@ -425,6 +425,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_linkedin_tests.step);
     test_step.dependOn(&run_instagram_tests.step);
     test_step.dependOn(&run_js_contract_tests.step);
+
+    // --- Track C: Sequences client facade + EV70 observability ---
+    const sequences_module = b.createModule(.{
+        .root_source_file = b.path("src/sequences.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const sequences_client_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/sequences/client_facade_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sequences_client_tests_module.addImport("sequences", sequences_module);
+    const sequences_client_tests = b.addTest(.{ .root_module = sequences_client_tests_module });
+    const run_sequences_client_tests = b.addRunArtifact(sequences_client_tests);
+    run_sequences_client_tests.skip_foreign_checks = true;
+    test_step.dependOn(&run_sequences_client_tests.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
