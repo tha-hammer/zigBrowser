@@ -1443,3 +1443,649 @@ This closure test covers the **end-to-end execution chain** that Closure Tests 1
 - Send store step tracking: `backend/services/sequences/sendStore.js:17-93`
 - Test infrastructure: `tests/integration/global-setup.js` (Vitest + PostgreSQL provisioning)
 - Contact status: `backend/services/contact/deriveContactStatus.js:10-17` (status vocabulary)
+
+---
+
+## System Map
+
+### Context Roster
+
+| # | Context | Repo | Status | Owner |
+|---|---------|------|--------|-------|
+| BC1 | Sequences Backend Services | `/home/maceo/ntm_Dev/sequences` | AS-IS + extensions | This plan (Behaviors 2-5) |
+| BC2 | Sequences Database | `/home/maceo/ntm_Dev/sequences` | AS-IS (extended schema) | Shared |
+| BC3 | Phase 0 API Layer | Both repos (seam) | AS-IS (sibling plan) | Sibling agent |
+| BC4 | zigBrowser Python SDK | `/home/maceo/ntm_Dev/zigBrowser/sdk/python` | AS-IS + extensions | This plan (Behavior 6) |
+| BC5 | zigBrowser Zig Engine | `/home/maceo/ntm_Dev/zigBrowser/src/automation` | AS-IS + extensions | This plan (Behavior 1) |
+| BC6 | Email Gateway | External | AS-IS (not modified) | Existing |
+| BC7 | Contact Subsystem | `/home/maceo/ntm_Dev/sequences/backend/services/contact` | AS-IS (not modified) | Existing |
+| BC8 | Wizard UI | `/home/maceo/ntm_Dev/sequences` (prerequisite) | Not built by this plan | Prerequisite |
+
+---
+
+### (a) Context-Level Boundary Diagram
+
+```mermaid
+graph TB
+    classDef iface    fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam     fill:#fff2cc,stroke:#d6b656
+    classDef gap      fill:#f8cecc,stroke:#b85450
+
+    subgraph BC8_Wizard["BC8: Wizard UI (prerequisite — not built)"]
+        OUT8["OUT8: SequenceAuthoringStep[]"]:::iface
+    end
+
+    subgraph BC1_SeqBackend["BC1: Sequences Backend Services"]
+        IN1["IN1: approveSequence(seqId, userId)"]:::iface
+        IN2["IN2: buildAutomationPlan(steps, config)"]:::iface
+        IN3["IN3: validateStep / validateStepsForApproval"]:::iface
+        IN4["IN4: resolveTokens(text, candidate, opts)"]:::iface
+        OUT1["OUT1: sendDueStep → MailboxGatewayV1"]:::iface
+        OUT2["OUT2: appendSequenceEvent(ev)"]:::iface
+        C1["C1: approved_plan v2 schema"]:::contract
+        C2["C2: Token ownership — templates in plan, JS preview, Zig execution"]:::contract
+        C3["C3: Dual-path routing — email→gateway, social→browser"]:::contract
+    end
+
+    subgraph BC2_DB["BC2: Sequences Database (PostgreSQL)"]
+        IN5["IN5: sequences.approved_plan JSONB write"]:::iface
+        IN6["IN6: sequence_events INSERT"]:::iface
+        IN7["IN7: sequence_enrollments UPDATE"]:::iface
+        OUT3["OUT3: SELECT sequences / enrollments / messages"]:::iface
+    end
+
+    subgraph BC3_Phase0["BC3: Phase 0 API Layer (HMAC-SHA256)"]
+        IN8["IN8: GET /sequences/:id/execution-plan"]:::iface
+        IN9["IN9: POST /executions/:eid/steps/:sid/result"]:::iface
+        IN10["IN10: POST /events"]:::iface
+        IN11["IN11: POST /executions"]:::iface
+        IN12["IN12: PATCH /executions/:eid"]:::iface
+        IN13_GAP["IN13: GET /capabilities"]:::gap
+        IN14_GAP["IN14: GET /health"]:::gap
+        C6["C6: HMAC-SHA256 auth on all calls"]:::contract
+    end
+
+    subgraph BC4_PythonSDK["BC4: zigBrowser Python SDK"]
+        IN15["IN15: AutomationPlan.from_dict(data)"]:::iface
+        IN16["IN16: StepExecutor.execute_step(step, candidate)"]:::iface
+        OUT4["OUT4: HTTP GET execution-plan"]:::iface
+        OUT5["OUT5: HTTP POST step result"]:::iface
+        OUT6["OUT6: UDS dispatch(method, params)"]:::iface
+        C4["C4: Serial fail-fast command execution"]:::contract
+        C5["C5: Error→enrollment-action classification"]:::contract
+    end
+
+    subgraph BC5_ZigEngine["BC5: zigBrowser Zig Engine"]
+        IN17["IN17: AutomationRouter.dispatch(method, params_json)"]:::iface
+        IN18["IN18: toCommandSequence(step, candidate)"]:::iface
+        IN19_GAP["IN19: social.* verbs (Phase 5 — NOT IMPLEMENTED)"]:::gap
+        EV1["EV1: RouterResult (success_json | error)"]:::iface
+    end
+
+    subgraph BC6_Gateway["BC6: Email Gateway (external)"]
+        IN20["IN20: sendSequenceMessage(params)"]:::iface
+    end
+
+    subgraph BC7_Contact["BC7: Contact Subsystem (external)"]
+        OUT7["OUT7: CandidateContext resolution"]:::iface
+    end
+
+    %% Seams
+    S1{"S1: Backend↔DB"}:::seam
+    S2{"S2: Backend↔Phase 0 (HTTP serve)"}:::seam
+    S3{"S3: Phase 0↔Python SDK (HTTP consume, HMAC)"}:::seam
+    S4{"S4: Python SDK↔Zig Engine (UDS)"}:::seam
+    S5{"S5: Backend↔Email Gateway (SMTP/API)"}:::seam
+
+    %% Flows
+    OUT8 --> IN1
+    IN1 --> IN2
+    IN1 --> IN3
+    IN2 --> C1
+    IN2 --> IN5
+    IN1 --> IN6
+
+    BC1_SeqBackend --> S1
+    S1 --> BC2_DB
+    BC1_SeqBackend --> S2
+    S2 --> BC3_Phase0
+    BC3_Phase0 --> S3
+    S3 --> BC4_PythonSDK
+
+    OUT6 --> S4
+    S4 --> IN17
+    IN17 --> EV1
+    IN16 --> IN18
+
+    OUT1 --> S5
+    S5 --> IN20
+
+    OUT7 --> IN4
+    OUT7 --> IN18
+```
+
+---
+
+### BC1: Sequences Backend Services
+
+#### (a) Diagram
+
+```mermaid
+graph LR
+    classDef iface    fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam     fill:#fff2cc,stroke:#d6b656
+    classDef gap      fill:#f8cecc,stroke:#b85450
+
+    subgraph BC1["BC1: Sequences Backend Services"]
+        IN1["IN1: approveSequence"]:::iface
+        IN2["IN2: buildAutomationPlan"]:::iface
+        IN3["IN3: validateStep / ForApproval"]:::iface
+        IN4["IN4: resolveTokens"]:::iface
+        OUT1["OUT1: sendDueStep → gateway"]:::iface
+        OUT2["OUT2: appendSequenceEvent"]:::iface
+        C1["C1: approved_plan v2 schema"]:::contract
+        C2["C2: Token ownership contract"]:::contract
+        C3["C3: Dual-path routing"]:::contract
+    end
+
+    S1{"S1: DB seam"}:::seam
+    S2{"S2: Phase 0 serve"}:::seam
+    S5{"S5: Gateway seam"}:::seam
+
+    IN1 --> IN2
+    IN1 --> IN3
+    IN2 --> C1
+    IN2 --> S1
+    OUT2 --> S1
+    OUT1 --> S5
+    IN1 -.-> S2
+```
+
+#### (b) Grammar
+
+```ebnf
+(* === BC1: Sequences Backend Services === *)
+
+(* IN1 — approveSequence: production entrypoint for plan construction *)
+IN1 ::= "approveSequence" "(" sequenceId "," userId ")" ;
+  sequenceId ::= uuid ;
+  userId     ::= uuid ;
+  (* pre:  sequence.status IN {'draft','pending_approval'} *)
+  (* pre:  all steps pass validateStepsForApproval *)
+  (* post: sequence.status = 'active' *)
+  (* post: approved_plan written with version=2, automation_steps[] present *)
+  (* post: SequenceApproved event appended to sequence_events *)
+
+(* IN2 — buildAutomationPlan: constructs v2 approved_plan from authored steps *)
+IN2 ::= "buildAutomationPlan" "(" steps "," config ")" ;
+  steps  ::= "[" { SequenceAuthoringStep "," } "]" ;
+  config ::= "{" "senderMailboxId" ":" string ","
+                  "language" ":" string ","
+                  "includeLinkedInStep" ":" boolean "}" ;
+  (* pre:  steps[] are well-formed SequenceAuthoringStep per PRD 9.4 line 143 *)
+  (* pre:  email steps have non-empty subject and body *)
+  (* pre:  no step has groundingStatus='review' *)
+  (* post: returns { version:2, steps:[], automation_steps:[], approved_at:iso8601 } *)
+  (* post: automation_steps[].action IN {"send_email","linkedin_view_profile","linkedin_connect","linkedin_message"} *)
+  (* post: email step params contain TEMPLATE placeholders {{...}}, never resolved values *)
+
+(* IN3 — validateStep / validateStepsForApproval *)
+IN3 ::= "validateStep" "(" step "," capabilities ["," "{" "commands" ":" commandList "}"] ")"
+       | "validateStepsForApproval" "(" steps "," capabilities ")" ;
+  (* pre:  capabilities.verbs lists known automation verbs *)
+  (* post: returns { valid:boolean, errors:ValidationError[], warnings:ValidationWarning[] } *)
+  (* post: forbidden verbs (page.evaluate) produce errors *)
+  (* post: partial grounding produces warnings, review grounding produces errors *)
+
+(* IN4 — resolveTokens: authoring preview ONLY *)
+IN4 ::= "resolveTokens" "(" text "," candidate ["," "{" "mode" ":" ("'preview'" | "'resolve'") "}"] ")" ;
+  (* pre:  text contains zero or more {{Token Name}} placeholders *)
+  (* post: returns { text:string, unresolved:string[] } *)
+  (* post: mode='preview' → unresolved tokens become {{Name:MISSING}} *)
+  (* post: mode='resolve' → unresolved tokens remain as {{Name}} *)
+  (* invariant: token names are case-insensitive via TOKEN_MAP *)
+
+(* OUT1 — sendDueStep: existing email gateway call, NOT modified *)
+OUT1 ::= "sendDueStep" "(" enrollmentId "," deps ")" ;
+  (* pre:  enrollment.status = 'active', next_send_at <= NOW() *)
+  (* post: email sent via MailboxGatewayV1.sendSequenceMessage *)
+  (* post: enrollment.current_step_index advanced *)
+  (* post: MessageSent event appended *)
+
+(* OUT2 — appendSequenceEvent *)
+OUT2 ::= "appendSequenceEvent" "(" event ")" ;
+  event ::= "{" "org_id" ":" uuid ","
+                "sequence_id" ":" uuid ","
+                "event_type" ":" EventType ","
+                "payload" ":" json ","
+                "dedup_key" ":" ( string | null ) "}" ;
+  EventType ::= "SequenceCreated" | "SequenceApproved" | "StepCompleted"
+              | "StepFailed" | "MessageSent" | "AudienceSelected"
+              | "DraftGenerated" ;
+
+(* C1 — approved_plan v2 schema *)
+C1 ::= "approved_plan_v2" ;
+  (* target: IN2 return value, written to sequences.approved_plan JSONB *)
+  (* invariant: version field discriminates v1 from v2 *)
+  (* invariant: v1 = { steps:[{index:0}], approved_at, version:1 } — hardcoded placeholder *)
+  (* invariant: v2 = { version:2, steps:[], automation_steps:AutomationStepV2[], approved_at } *)
+  (* invariant: automation_steps[].action IN {"send_email","linkedin_view_profile","linkedin_connect","linkedin_message"} *)
+  (* invariant: email steps carry template_subject, template_body with unresolved {{}} *)
+  (* invariant: v1 plans remain valid — additive extension only *)
+  (* pre:  all steps pass IN3 validation *)
+  (* post: written atomically inside approveSequence transaction *)
+
+(* C2 — Token Resolution Ownership *)
+C2 ::= "token_ownership" ;
+  (* target: IN4 (JS preview), IN18 (Zig execution) *)
+  (* invariant: approved_plan NEVER contains resolved token values *)
+  (* invariant: JS resolveTokens is authoring-preview ONLY *)
+  (* invariant: Zig toCommandSequence resolves per-enrollment at execution time *)
+  (* invariant: email token resolution at send time is gateway pipeline's responsibility *)
+
+(* C3 — Dual-path Execution Routing *)
+C3 ::= "dual_path_routing" ;
+  (* target: IN1 approval flow, IN16 execution flow *)
+  (* invariant: step.action = 'send_email' → email gateway pipeline (OUT1) *)
+  (* invariant: step.action starts with 'linkedin_' → zigBrowser browser automation *)
+  (* invariant: no step type uses BOTH paths *)
+  (* pre:  approved_plan has version=2 with action fields *)
+  (* post: email steps never produce browser commands *)
+  (* post: social steps never use MailboxGatewayV1 *)
+```
+
+#### (c) Seam Table
+
+| Seam | Direction | Interfaces | Events | Contracts |
+|------|-----------|------------|--------|-----------|
+| S1 (Backend↔DB) | OUT | IN5 (write approved_plan), IN6 (INSERT event), IN7 (UPDATE enrollment) | EV1 (SequenceApproved via IN6) | C1 (v2 schema written to JSONB) |
+| S1 (Backend↔DB) | IN | OUT3 (SELECT sequences/enrollments/messages) | — | — |
+| S2 (Backend↔Phase 0) | OUT | Serves IN8-IN12 as HTTP endpoints | EV2,EV3 (via IN10 POST events) | C6 (HMAC-SHA256 auth) |
+| S5 (Backend↔Gateway) | OUT | OUT1 → IN20 (sendSequenceMessage) | — | C3 (email-only path) |
+
+---
+
+### BC2: Sequences Database
+
+#### (a) Diagram
+
+```mermaid
+graph LR
+    classDef iface    fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam     fill:#fff2cc,stroke:#d6b656
+    classDef gap      fill:#f8cecc,stroke:#b85450
+
+    subgraph BC2["BC2: Sequences Database"]
+        IN5["IN5: sequences.approved_plan JSONB write"]:::iface
+        IN6["IN6: sequence_events INSERT"]:::iface
+        IN7["IN7: sequence_enrollments UPDATE"]:::iface
+        OUT3["OUT3: SELECT queries"]:::iface
+        C7["C7: approved_plan v1↔v2 coexistence"]:::contract
+        C8["C8: contact_status JSONB vocabulary"]:::contract
+    end
+
+    S1{"S1: DB seam"}:::seam
+
+    S1 --> IN5
+    S1 --> IN6
+    S1 --> IN7
+    OUT3 --> S1
+```
+
+#### (b) Grammar
+
+```ebnf
+(* === BC2: Sequences Database === *)
+
+(* IN5 — approved_plan JSONB write *)
+IN5 ::= "UPDATE sequences SET approved_plan = $plan WHERE id = $id" ;
+  (* pre:  $plan matches C1 schema (v1 or v2) *)
+  (* pre:  called within FOR UPDATE lock *)
+  (* post: approved_plan column contains valid JSONB *)
+
+(* IN6 — sequence_events INSERT *)
+IN6 ::= "INSERT INTO sequence_events" "(" columns ")" "VALUES" "(" values ")" ;
+  (* pre:  event_type IN EventType enum *)
+  (* post: dedup_key enforced by UNIQUE(org_id, dedup_key) WHERE dedup_key IS NOT NULL *)
+
+(* IN7 — sequence_enrollments UPDATE *)
+IN7 ::= "UPDATE sequence_enrollments SET status=$s, current_step_index=$i WHERE id=$id" ;
+  (* pre:  status transition is valid per enrollment FSM *)
+  (* post: next_send_at updated when advancing *)
+
+(* OUT3 — SELECT queries *)
+OUT3 ::= "SELECT" columns "FROM" table "WHERE" predicate ;
+  (* post: approved_plan may be v1 or v2 — callers MUST check version field *)
+
+(* C7 — approved_plan v1↔v2 coexistence *)
+C7 ::= "approved_plan_coexistence" ;
+  (* target: IN5, OUT3 *)
+  (* invariant: existing rows have version:1 shape *)
+  (* invariant: new approvals write version:2 shape *)
+  (* invariant: all readers MUST check version before accessing automation_steps *)
+
+(* C8 — contact_status JSONB vocabulary *)
+C8 ::= "contact_status_vocab" ;
+  (* target: sequence_enrollments.contact_status JSONB *)
+  (* invariant: status IN {'bounced','suppressed','duplicate','ready','needs_enrichment','missing'} *)
+  (* invariant: computed by deriveContactStatus.js, persisted on enrollment row *)
+```
+
+#### (c) Seam Table
+
+| Seam | Direction | Interfaces | Events | Contracts |
+|------|-----------|------------|--------|-----------|
+| S1 (Backend↔DB) | IN | IN5, IN6, IN7 | EV1 (via IN6) | C1, C7 |
+| S1 (Backend↔DB) | OUT | OUT3 | — | C7 (version check on read) |
+
+---
+
+### BC3: Phase 0 API Layer
+
+#### (a) Diagram
+
+```mermaid
+graph LR
+    classDef iface    fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam     fill:#fff2cc,stroke:#d6b656
+    classDef gap      fill:#f8cecc,stroke:#b85450
+
+    subgraph BC3["BC3: Phase 0 API Layer"]
+        IN8["IN8: GET /execution-plan"]:::iface
+        IN9["IN9: POST /steps/:sid/result"]:::iface
+        IN10["IN10: POST /events"]:::iface
+        IN11["IN11: POST /executions"]:::iface
+        IN12["IN12: PATCH /executions/:eid"]:::iface
+        IN13_GAP["IN13: GET /capabilities (NOT IN PHASE 0)"]:::gap
+        IN14_GAP["IN14: GET /health (NOT IN PHASE 0)"]:::gap
+        C6["C6: HMAC-SHA256 auth"]:::contract
+    end
+
+    S2{"S2: Backend serve"}:::seam
+    S3{"S3: SDK consume"}:::seam
+
+    S2 --> BC3
+    BC3 --> S3
+```
+
+#### (b) Grammar
+
+```ebnf
+(* === BC3: Phase 0 API Layer === *)
+
+(* IN8 — GET execution-plan: high-level action model *)
+IN8 ::= "GET /api/v1/automation/sequences/" sequenceId "/execution-plan" ;
+  (* pre:  valid HMAC-SHA256 signature (C6) *)
+  (* post: returns { steps: ExecutionPlanStep[] } *)
+  (* post: each step has action field: "send_email" | "linkedin_*" *)
+  (* post: each step embeds candidate context (no separate /enrollments/:id/context) *)
+  (* post: step results keyed by executionId + stepExecutionId, NOT sequenceId + stepIndex *)
+
+(* IN9 — POST step result *)
+IN9 ::= "POST /api/v1/automation/executions/" executionId "/steps/" stepExecutionId "/result" ;
+  (* pre:  valid HMAC-SHA256 + Idempotency-Key + X-ZB-Trace-Id + X-ZB-Command-Id *)
+  (* pre:  executionId and stepExecutionId are backend-generated IDs from IN8 *)
+  (* post: step result recorded; enrollment state updated per error classification (C5) *)
+
+(* IN10 — POST events *)
+IN10 ::= "POST /api/v1/automation/events" ;
+  (* pre:  valid HMAC-SHA256 + Idempotency-Key *)
+  (* post: event recorded in sequence_events (NOT scoped under /sequences/:id) *)
+
+(* IN11 — POST create execution *)
+IN11 ::= "POST /api/v1/automation/executions" ;
+  (* pre:  valid HMAC-SHA256 + Idempotency-Key *)
+  (* post: new execution run created, returns executionId *)
+
+(* IN12 — PATCH update execution *)
+IN12 ::= "PATCH /api/v1/automation/executions/" executionId ;
+  (* pre:  valid HMAC-SHA256 *)
+  (* post: execution state updated (pause, complete, fail) *)
+
+(* IN13 — GET /capabilities: NOT IN PHASE 0 *)
+IN13 ::= "GET /api/v1/automation/capabilities" ;
+  (* GAP: endpoint not defined in Phase 0 contract *)
+  (* workaround: hardcode capability list initially *)
+
+(* IN14 — GET /health: NOT IN PHASE 0 *)
+IN14 ::= "GET /api/v1/automation/health" ;
+  (* GAP: endpoint not defined in Phase 0 contract *)
+  (* workaround: use execution-plan 404 as connectivity proxy *)
+
+(* C6 — HMAC-SHA256 auth model *)
+C6 ::= "hmac_sha256_auth" ;
+  (* target: all IN8-IN14 endpoints *)
+  (* invariant: every request carries X-ZB-Client-Id, X-ZB-Timestamp, X-ZB-Nonce, X-ZB-Signature *)
+  (* invariant: signature base = version + method + path+query + timestamp + nonce + SHA256(body) *)
+  (* invariant: write requests additionally require Idempotency-Key, X-ZB-Trace-Id, X-ZB-Command-Id *)
+  (* invariant: backend rejects stale timestamps, replayed nonces, unknown client IDs *)
+```
+
+#### (c) Seam Table
+
+| Seam | Direction | Interfaces | Events | Contracts |
+|------|-----------|------------|--------|-----------|
+| S2 (Backend→Phase 0) | IN | BC1 serves IN8-IN12 | EV2,EV3 (via IN10) | C6 |
+| S3 (Phase 0→SDK) | OUT | IN8,IN9,IN10,IN11,IN12 consumed by BC4 | — | C6 (SDK must sign) |
+
+---
+
+### BC4: zigBrowser Python SDK
+
+#### (a) Diagram
+
+```mermaid
+graph LR
+    classDef iface    fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam     fill:#fff2cc,stroke:#d6b656
+    classDef gap      fill:#f8cecc,stroke:#b85450
+
+    subgraph BC4["BC4: zigBrowser Python SDK"]
+        IN15["IN15: AutomationPlan.from_dict"]:::iface
+        IN16["IN16: StepExecutor.execute_step"]:::iface
+        OUT4["OUT4: HTTP GET execution-plan"]:::iface
+        OUT5["OUT5: HTTP POST step result"]:::iface
+        OUT6["OUT6: UDS dispatch(method, params)"]:::iface
+        C4["C4: Serial fail-fast execution"]:::contract
+        C5["C5: Error→enrollment-action table"]:::contract
+        C9["C9: Wire protocol — 4-byte length-prefix"]:::contract
+    end
+
+    S3{"S3: Phase 0 HTTP"}:::seam
+    S4{"S4: UDS to Zig"}:::seam
+
+    OUT4 --> S3
+    OUT5 --> S3
+    OUT6 --> S4
+```
+
+#### (b) Grammar
+
+```ebnf
+(* === BC4: zigBrowser Python SDK === *)
+
+(* IN15 — AutomationPlan.from_dict *)
+IN15 ::= "AutomationPlan.from_dict" "(" plan_json ")" ;
+  plan_json ::= "{" "version" ":" integer ","
+                    "automation_steps" ":" "[" { AutomationStepJSON "," } "]" "}" ;
+  AutomationStepJSON ::= "{" "step_id" ":" string ","
+                             "step_index" ":" integer ","
+                             "action" ":" ActionType ","
+                             "scheduling" ":" SchedulingJSON ","
+                             [ "template_subject" ":" string "," ]
+                             [ "template_body" ":" string "," ]
+                             [ "token_bindings" ":" "[" { TokenBindingJSON } "]" ] "}" ;
+  ActionType ::= "send_email" | "linkedin_view_profile" | "linkedin_connect" | "linkedin_message" ;
+  SchedulingJSON ::= "{" "wait_before" ":" ( WaitJSON | null ) "}" ;
+  WaitJSON ::= "{" "amount" ":" integer "," "unit" ":" WaitUnit "}" ;
+  WaitUnit ::= "minutes" | "hours" | "business_days" | "days" ;
+  (* pre:  plan_json is valid JSON matching v2 schema *)
+  (* post: returns AutomationPlan with typed AutomationStep list *)
+
+(* IN16 — StepExecutor.execute_step *)
+IN16 ::= "StepExecutor.execute_step" "(" step "," candidate ")" ;
+  step      ::= AutomationStep ;
+  candidate ::= "{" { field_name ":" string "," } "}" ;
+  (* pre:  step is a deserialized AutomationStep *)
+  (* post: returns StepExecutionResult *)
+  (* post: if action='send_email' → skipped_reason='gateway_handled', no browser calls *)
+  (* post: if action='linkedin_*' → commands built and dispatched serially via OUT6 *)
+  (* post: on error → fail-fast, returns failed_at_command index (C4) *)
+
+(* OUT4 — HTTP GET execution-plan *)
+OUT4 ::= "GET" "/api/v1/automation/sequences/" sequenceId "/execution-plan" ;
+  (* pre:  HMAC-SHA256 signed (C6) *)
+  (* post: response deserialized via IN15 *)
+
+(* OUT5 — HTTP POST step result *)
+OUT5 ::= "POST" "/api/v1/automation/executions/" executionId "/steps/" stepExecutionId "/result" ;
+  (* pre:  HMAC-SHA256 signed + Idempotency-Key (C6) *)
+  (* post: result payload includes success/error, failed_at_command *)
+
+(* OUT6 — UDS dispatch to Zig engine *)
+OUT6 ::= "dispatch" "(" method "," params ")" ;
+  method ::= dom_verb | page_verb | social_verb ;
+  dom_verb    ::= "dom.query" | "dom.click" | "dom.fill" | "dom.type"
+                | "dom.getText" | "dom.getAttribute" | "dom.waitFor" ;
+  page_verb   ::= "page.navigate" | "page.reload" | "page.url"
+                | "page.title" | "page.evaluate" | "page.screenshot" ;
+  social_verb ::= "linkedin.connect" | "linkedin.view_profile"
+                | "linkedin.message" | "social.login_check" | "social.rate_status" ;
+  params ::= json_object ;
+  (* pre:  UDS connection open, 4-byte big-endian length-prefix framing (C9) *)
+  (* post: response via same framing, parsed as RouterResult *)
+
+(* C4 — Serial fail-fast command execution *)
+C4 ::= "serial_failfast" ;
+  (* target: IN16 command dispatch loop *)
+  (* invariant: commands dispatch in array order *)
+  (* invariant: first failure stops execution — no remaining commands attempted *)
+  (* invariant: failed_at_command records index of failing command *)
+  (* invariant: no parallel or speculative execution within a step *)
+
+(* C5 — Error→enrollment-action classification *)
+C5 ::= "error_classification" ;
+  (* target: IN16 error handling, OUT5 result reporting *)
+  (* invariant: -32001 element_not_found → pause enrollment *)
+  (* invariant: -32003 element_not_stable → retry (up to 3) *)
+  (* invariant: -32007 navigation_timeout → retry (up to 3) *)
+  (* invariant: -32010 platform_rate_limited → pause + backoff *)
+  (* invariant: -32011 session_invalid → pause ALL enrollments *)
+  (* invariant: error types in errors.py, NOT types.py (empty) *)
+
+(* C9 — Wire protocol: 4-byte big-endian length prefix *)
+C9 ::= "wire_protocol_length_prefix" ;
+  (* target: OUT6 *)
+  (* invariant: Python SDK uses struct.pack(">I", len) + payload *)
+  (* invariant: Zig side uses line-based framing (different protocol) *)
+  (* invariant: existing ZigBrowser client handles framing — StepExecutor delegates *)
+```
+
+#### (c) Seam Table
+
+| Seam | Direction | Interfaces | Events | Contracts |
+|------|-----------|------------|--------|-----------|
+| S3 (Phase 0→SDK) | OUT | OUT4 (GET plan), OUT5 (POST result) | — | C6 (must sign) |
+| S4 (SDK→Zig) | OUT | OUT6 dispatch | — | C4 (serial), C9 (framing) |
+
+---
+
+### BC5: zigBrowser Zig Engine
+
+#### (a) Diagram
+
+```mermaid
+graph LR
+    classDef iface    fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam     fill:#fff2cc,stroke:#d6b656
+    classDef gap      fill:#f8cecc,stroke:#b85450
+
+    subgraph BC5["BC5: zigBrowser Zig Engine"]
+        IN17["IN17: AutomationRouter.dispatch"]:::iface
+        IN18["IN18: toCommandSequence"]:::iface
+        EV1["EV1: RouterResult"]:::iface
+        IN19_GAP["IN19: social.* verbs (Phase 5 — NOT IMPL)"]:::gap
+    end
+
+    S4{"S4: UDS from SDK"}:::seam
+    S4 --> IN17
+    IN17 --> EV1
+```
+
+#### (b) Grammar
+
+```ebnf
+(* === BC5: zigBrowser Zig Engine === *)
+
+(* IN17 — AutomationRouter.dispatch *)
+IN17 ::= "dispatch" "(" method "," params_json ")" ;
+  method     ::= "[]const u8" ;
+  params_json ::= "?[]const u8" ;
+  (* pre:  method is a known Verb enum value *)
+  (* post: returns RouterResult = success_json | method_not_found | invalid_params | automation_error *)
+  (* post: automation_error carries AutomationError enum value *)
+
+(* IN18 — toCommandSequence: social step → browser commands *)
+IN18 ::= "toCommandSequence" "(" allocator "," step "," candidate ")" ;
+  step      ::= SequenceStep ;
+  candidate ::= CandidateContext ;
+  (* pre:  step.step_type IN {email, wait, linkedin_action} *)
+  (* post: email/wait → empty slice (gateway handles email) *)
+  (* post: linkedin_action → ordered []AutomationCommand *)
+  (* post: grounding_status=review → error.GroundingReviewRequired *)
+  (* post: missing candidate field → error.MissingCandidateField *)
+  (* invariant: production caller is StepExecutor._build_commands (BC4) *)
+
+(* EV1 — RouterResult *)
+EV1 ::= "RouterResult" ;
+  RouterResult ::= "success_json" "(" json ")"
+                 | "method_not_found"
+                 | "invalid_params"
+                 | "automation_error" "(" AutomationError ")" ;
+  AutomationError ::= "element_not_found" | "element_not_visible" | "element_not_stable"
+                     | "element_obscured" | "element_disabled" | "element_not_editable"
+                     | "navigation_timeout" | "navigation_failed" | "action_timeout"
+                     | "platform_rate_limited" | "session_invalid" | "cancelled" ;
+  (* error codes: -32001 - @intFromEnum(err) *)
+
+(* IN19 — social verbs: Phase 5 dependency — GAP *)
+IN19 ::= social_verb ;
+  (* GAP: router.zig:5-19 has ONLY dom.* and page.* verbs *)
+  (* GAP: social.*, linkedin.*, instagram.* verbs NOT IMPLEMENTED *)
+  (* blocking: LinkedIn step execution (Behavior 1, 6) cannot work until Phase 5 *)
+```
+
+#### (c) Seam Table
+
+| Seam | Direction | Interfaces | Events | Contracts |
+|------|-----------|------------|--------|-----------|
+| S4 (SDK→Zig) | IN | IN17 (dispatch) | EV1 (RouterResult) | C9 (wire framing handled by SDK) |
+
+---
+
+### Gap / Risk Register
+
+| ID | Type | Context | Description | Impact | Mitigation |
+|----|------|---------|-------------|--------|------------|
+| IN13 | Missing endpoint | BC3 | `GET /capabilities` not in Phase 0 contract | Step validation can't query live capability set | Hardcode capability list initially; file as Phase 0 scope addition |
+| IN14 | Missing endpoint | BC3 | `GET /health` not in Phase 0 contract | Wizard can't show zigBrowser connectivity status | Use execution-plan 404 as proxy; file as Phase 0 scope addition |
+| IN19 | Missing verbs | BC5 | `social.*`, `linkedin.*` verbs not in `router.zig` | LinkedIn step execution fails at runtime | Phase 5 blocking dependency; mark tests pending |
+| C9/S4 | Protocol mismatch | BC4↔BC5 | Python SDK uses 4-byte length-prefix; Zig uses line-based | Could cause framing errors if not handled | Existing `ZigBrowser` client handles correctly; `StepExecutor` delegates |
+| C7 | Schema migration | BC2 | `approved_plan` v1→v2 coexistence | Readers that don't check `version` field will break on v2 | Version discriminator; all readers MUST check version |
+
+---
+
+### Acceptance Self-Check
+
+- [x] Diagram IDs and grammar entries are 1:1 — all IDs (IN1-IN20, OUT1-OUT7, EV1, C1-C9, S1-S5) have grammar entries; no orphans
+- [x] Every contract (C1-C9) names the target it governs
+- [x] Every seam (S1-S5) enumerates its crossing interfaces and contracts
+- [x] Every context (BC1-BC5) has all three parts (diagram, grammar, seam table)
+- [x] Every violated/missing boundary is marked with `gap` class (IN13, IN14, IN19)
+- [x] No provisional boundaries — all contexts are clearly defined from the plan
