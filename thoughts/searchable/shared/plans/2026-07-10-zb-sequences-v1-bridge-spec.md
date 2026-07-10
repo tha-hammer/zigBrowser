@@ -1392,3 +1392,772 @@ Migration 150 acceptance:
 - Build the hosted dashboard against this spec's response schemas.
 - Preserve the existing JSON-RPC browser command channel as local automation control; do not use it for sequence database access.
 - Add contract/client tests for all error codes, retryability, idempotent replay, redaction, and no-DB-credential topology.
+
+## System Map
+
+Scope: this map covers only the `zb-sequences-v1` bridge bounded contexts. Existing sequences services and tables from migrations `090` through `140` are represented as external seams; their internals are not remapped here.
+
+ID reuse from the existing sequences-integration system maps:
+
+- `BC3`, `IN8` through `IN12`, `S3`, and `C6` retain their Phase 0 API/HMAC meanings.
+- `BC4`, `OUT4`, and `OUT5` retain the zigBrowser-side API consumer meanings, generalized from the Python SDK to the v1 client facade.
+- `S1` retains the backend-to-database seam meaning, narrowed here to migration-150 bridge tables.
+
+### BC4: zigBrowser Client Facade
+
+#### Boundary Diagram
+
+```mermaid
+graph LR
+    classDef iface fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam fill:#fff2cc,stroke:#d6b656
+    classDef gap fill:#f8cecc,stroke:#b85450
+
+    subgraph BC4["BC4: zigBrowser Client Facade"]
+        OUT21["OUT21: GET /ui/bootstrap"]:::iface
+        OUT22["OUT22: GET /sequences"]:::iface
+        OUT23["OUT23: POST /sequences"]:::iface
+        OUT24["OUT24: GET /sequences/:sequenceId"]:::iface
+        OUT25["OUT25: GET /sequences/:sequenceId/steps"]:::iface
+        OUT26["OUT26: PUT /sequences/:sequenceId/steps"]:::iface
+        OUT27["OUT27: POST /sequences/:sequenceId/steps/generate"]:::iface
+        OUT28["OUT28: POST /sequences/:sequenceId/steps/preview"]:::iface
+        OUT4["OUT4: GET /sequences/:sequenceId/execution-plan"]:::iface
+        OUT29["OUT29: POST /executions"]:::iface
+        OUT30["OUT30: PATCH /executions/:executionId"]:::iface
+        OUT5["OUT5: POST /executions/:executionId/steps/:stepExecutionId/result"]:::iface
+        OUT31["OUT31: POST /events"]:::iface
+        OUT32["OUT32: POST /telemetry"]:::iface
+        OUT33["OUT33: GET /analytics/outreach"]:::iface
+        C10["C10: Bridge headers and signing target"]:::contract
+        C11["C11: Idempotent write replay target"]:::contract
+        C12["C12: Redaction before transport target"]:::contract
+        C13["C13: Execution lifecycle target"]:::contract
+    end
+
+    S3{"S3: Client API HTTP seam"}:::seam
+
+    OUT21 --> S3
+    OUT22 --> S3
+    OUT23 --> S3
+    OUT24 --> S3
+    OUT25 --> S3
+    OUT26 --> S3
+    OUT27 --> S3
+    OUT28 --> S3
+    OUT4 --> S3
+    OUT29 --> S3
+    OUT30 --> S3
+    OUT5 --> S3
+    OUT31 --> S3
+    OUT32 --> S3
+    OUT33 --> S3
+    C10 --> S3
+    C11 --> S3
+    C12 --> OUT31
+    C12 --> OUT32
+    C13 --> OUT4
+    C13 --> OUT29
+    C13 --> OUT5
+```
+
+#### EBNF Grammar
+
+```ebnf
+(* === BC4: zigBrowser Client Facade === *)
+
+OUT21 ::= "GET" "/api/v1/automation/ui/bootstrap" ;
+  (* pre: delegated user session present *)
+  (* post: actor, feature flags, mailboxes, and analytics defaults returned *)
+
+OUT22 ::= "GET" "/api/v1/automation/sequences" query ;
+  (* post: cursor-paginated sequence list returned *)
+
+OUT23 ::= "POST" "/api/v1/automation/sequences" body ;
+  (* pre: C10 signed request and C11 idempotency key *)
+  (* post: draft sequence created or duplicate response replayed *)
+
+OUT24 ::= "GET" "/api/v1/automation/sequences/" sequenceId query ;
+  (* post: sequence detail returned under tenant scope *)
+
+OUT25 ::= "GET" "/api/v1/automation/sequences/" sequenceId "/steps" ;
+  (* post: step contract version and ordered steps returned *)
+
+OUT26 ::= "PUT" "/api/v1/automation/sequences/" sequenceId "/steps" body ;
+  (* pre: C10 signed request and C11 idempotency key *)
+  (* pre: body.expectedVersion is the last observed sequence_step_contracts.version *)
+  (* post: step contract saved at version + 1 or STEP_VERSION_CONFLICT returned *)
+
+OUT27 ::= "POST" "/api/v1/automation/sequences/" sequenceId "/steps/generate" body ;
+  (* pre: C10 signed request and C11 idempotency key *)
+  (* post: generated step returned without mutating sequence state *)
+
+OUT28 ::= "POST" "/api/v1/automation/sequences/" sequenceId "/steps/preview" body ;
+  (* pre: delegated user session present; HMAC optional and validated if present *)
+  (* post: truncated preview returned; preview text is not persisted by the client *)
+
+OUT4 ::= "GET" "/api/v1/automation/sequences/" sequenceId "/execution-plan" query ;
+  (* reused from existing map: zigBrowser-side execution-plan fetch *)
+  (* pre: C10 signed request *)
+  (* post: executable plan is consumed before OUT29 starts a durable execution *)
+
+OUT29 ::= "POST" "/api/v1/automation/executions" body ;
+  (* pre: C10 signed request and C11 idempotency key *)
+  (* post: executionId returned for the externalRunId *)
+
+OUT30 ::= "PATCH" "/api/v1/automation/executions/" executionId body ;
+  (* pre: C10 signed request and C11 idempotency key *)
+  (* post: execution status transition recorded or replayed *)
+
+OUT5 ::= "POST" "/api/v1/automation/executions/" executionId "/steps/" stepExecutionId "/result" body ;
+  (* reused from existing map: zigBrowser-side step-result report *)
+  (* pre: C10 signed request and C11 idempotency key *)
+  (* post: diagnostic result and optional canonical event outcome returned *)
+
+OUT31 ::= "POST" "/api/v1/automation/events" body ;
+  (* pre: C10 signed request, C11 idempotency key, and C12 redacted diagnostics *)
+  (* post: canonical events and diagnostics are itemized as inserted, duplicate, conflict, or rejected *)
+
+OUT32 ::= "POST" "/api/v1/automation/telemetry" body ;
+  (* pre: C10 signed request, C11 idempotency key, and C12 redacted telemetry *)
+  (* post: accepted/rejected telemetry diagnostics returned *)
+
+OUT33 ::= "GET" "/api/v1/automation/analytics/outreach" query ;
+  (* post: analytics derived from canonical sequence_events, not diagnostics *)
+
+C10 ::= "bridge_headers_and_signing" ;
+  (* target: OUT4, OUT5, OUT21-OUT33 *)
+  (* invariant: every request sends X-ZB-Sequences-Version = 'zb-sequences-v1' *)
+  (* invariant: every request sends delegated Authorization bearer session *)
+  (* invariant: HMAC-required writes and execution reads send X-ZB-Client-Id, X-ZB-Timestamp, X-ZB-Nonce, X-ZB-Signature *)
+  (* invariant: client signs the exact path and query bytes it sends *)
+
+C11 ::= "idempotent_write_replay" ;
+  (* target: OUT5, OUT23, OUT26, OUT27, OUT29, OUT30, OUT31, OUT32 *)
+  (* invariant: write Idempotency-Key is stable for one logical write attempt *)
+  (* invariant: retry of the same canonical request accepts duplicate=true *)
+  (* invariant: retry with different canonical request hash treats 409 IDEMPOTENCY_CONFLICT as terminal *)
+
+C12 ::= "client_side_redaction_before_transport" ;
+  (* target: OUT31, OUT32 *)
+  (* invariant: telemetry and diagnostics do not include raw selectors, typed text, cookies, tokens, raw URLs, screenshots, candidate PII, or raw message bodies *)
+  (* invariant: canonical MessageSent may include provider evidence and rendered body snapshot only through OUT5 eventCandidate *)
+
+C13 ::= "execution_lifecycle_order" ;
+  (* target: OUT4, OUT29, OUT5, OUT30 *)
+  (* invariant: client fetches OUT4 before OUT29 *)
+  (* invariant: step results use backend-issued executionId and stepExecutionId *)
+  (* invariant: OUT30 terminal status follows final OUT5 result batch or terminal local failure *)
+
+S3 ::= "client_api_http_seam" ;
+  (* crossings: OUT4, OUT5, OUT21-OUT33 from BC4 to BC3 IN8-IN12, IN21-IN30 *)
+  (* contracts: C10, C11, C12, C13, C14, C15 *)
+
+sequenceId ::= uuid ;
+executionId ::= uuid ;
+stepExecutionId ::= string ;
+query ::= [ "?" queryParam { "&" queryParam } ] ;
+queryParam ::= name "=" value ;
+body ::= json_object ;
+```
+
+#### Seam Table
+
+| Seam | Direction | Crossing interfaces | Events | Contracts |
+|---|---|---|---|---|
+| S3 | BC4 -> BC3 | OUT21->IN21, OUT22->IN22, OUT23->IN23, OUT24->IN24, OUT25->IN25, OUT26->IN26, OUT27->IN27, OUT28->IN28, OUT4->IN8, OUT29->IN11, OUT30->IN12, OUT5->IN9, OUT31->IN10, OUT32->IN29, OUT33->IN30 | None emitted by the client seam itself | C10, C11, C12, C13 |
+
+### BC3: /api/v1/automation API Boundary
+
+#### Boundary Diagram
+
+```mermaid
+graph LR
+    classDef iface fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam fill:#fff2cc,stroke:#d6b656
+    classDef gap fill:#f8cecc,stroke:#b85450
+
+    subgraph BC3["BC3: /api/v1/automation API Boundary"]
+        IN21["IN21: GET /ui/bootstrap"]:::iface
+        IN22["IN22: GET /sequences"]:::iface
+        IN23["IN23: POST /sequences"]:::iface
+        IN24["IN24: GET /sequences/:sequenceId"]:::iface
+        IN25["IN25: GET /sequences/:sequenceId/steps"]:::iface
+        IN26["IN26: PUT /sequences/:sequenceId/steps"]:::iface
+        IN27["IN27: POST /sequences/:sequenceId/steps/generate"]:::iface
+        IN28["IN28: POST /sequences/:sequenceId/steps/preview"]:::iface
+        IN8["IN8: GET /sequences/:sequenceId/execution-plan"]:::iface
+        IN11["IN11: POST /executions"]:::iface
+        IN12["IN12: PATCH /executions/:executionId"]:::iface
+        IN9["IN9: POST /executions/:executionId/steps/:stepExecutionId/result"]:::iface
+        IN10["IN10: POST /events"]:::iface
+        IN29["IN29: POST /telemetry"]:::iface
+        IN30["IN30: GET /analytics/outreach"]:::iface
+        C6["C6: HMAC-SHA256 auth target"]:::contract
+        C14["C14: Versioned envelope target"]:::contract
+        C15["C15: Write idempotency target"]:::contract
+        C16["C16: Tenant field rejection target"]:::contract
+        C17["C17: Active-and-approved execution gate target"]:::contract
+        G2["G2: Error code catalog gap"]:::gap
+    end
+
+    S3{"S3: Client API HTTP seam"}:::seam
+    S6{"S6: Auth/Tenant middleware seam"}:::seam
+    S1{"S1: Migration-150 DB seam"}:::seam
+    S8{"S8: Existing sequences seam"}:::seam
+
+    S3 --> IN21
+    S3 --> IN22
+    S3 --> IN23
+    S3 --> IN24
+    S3 --> IN25
+    S3 --> IN26
+    S3 --> IN27
+    S3 --> IN28
+    S3 --> IN8
+    S3 --> IN11
+    S3 --> IN12
+    S3 --> IN9
+    S3 --> IN10
+    S3 --> IN29
+    S3 --> IN30
+    IN21 --> S6
+    IN23 --> S1
+    IN23 --> S8
+    IN26 --> S1
+    IN26 --> S8
+    IN27 --> S8
+    IN8 --> S1
+    IN8 --> S8
+    IN11 --> S1
+    IN12 --> S1
+    IN9 --> S1
+    IN9 --> S8
+    IN10 --> S1
+    IN10 --> S8
+    IN29 --> S1
+    IN30 --> S8
+    G2 --> C14
+```
+
+#### EBNF Grammar
+
+```ebnf
+(* === BC3: /api/v1/automation API Boundary === *)
+
+IN21 ::= "GET /api/v1/automation/ui/bootstrap" ;
+  (* pre: C14 version header; C16 no tenant query override *)
+  (* post: actor, feature flags, mailbox summaries, analytics defaults *)
+
+IN22 ::= "GET /api/v1/automation/sequences" query ;
+  (* pre: C14 version header; C16 no tenant query override *)
+  (* post: cursor page sorted by updated_at DESC, id DESC *)
+
+IN23 ::= "POST /api/v1/automation/sequences" body ;
+  (* pre: C6 HMAC required; C15 idempotency required; C16 tenant fields rejected *)
+  (* post: creates draft through IN60 and optional IN61; stores idempotency in IN52 *)
+
+IN24 ::= "GET /api/v1/automation/sequences/" sequenceId query ;
+  (* pre: C14 version header; C16 no tenant override *)
+  (* post: sequence detail assembled from S8 and optional S1 summaries *)
+
+IN25 ::= "GET /api/v1/automation/sequences/" sequenceId "/steps" ;
+  (* pre: C14 version header *)
+  (* post: reads or bootstraps IN50; returns version and steps *)
+
+IN26 ::= "PUT /api/v1/automation/sequences/" sequenceId "/steps" body ;
+  (* pre: C6 HMAC required; C15 idempotency required; C16 tenant fields rejected *)
+  (* pre: sequence status is draft or pending_approval *)
+  (* post: CAS-save via IN50 and current/superseded message writes through S8 *)
+
+IN27 ::= "POST /api/v1/automation/sequences/" sequenceId "/steps/generate" body ;
+  (* pre: C6 HMAC required; C15 idempotency required *)
+  (* post: calls IN62 side-effect-free generation; writes only idempotency metadata *)
+
+IN28 ::= "POST /api/v1/automation/sequences/" sequenceId "/steps/preview" body ;
+  (* pre: C14 version header; C16 tenant fields rejected *)
+  (* post: renders preview without durable preview body persistence *)
+
+IN8 ::= "GET /api/v1/automation/sequences/" sequenceId "/execution-plan" query ;
+  (* reused from existing map: high-level execution-plan endpoint *)
+  (* pre: C6 HMAC required; C17 active-and-approved gate passes *)
+  (* post: returns due executable work and backend-issued stepExecutionIds *)
+
+IN11 ::= "POST /api/v1/automation/executions" body ;
+  (* reused from existing map: create execution *)
+  (* pre: C6 HMAC required; C15 idempotency required; C17 active-and-approved gate passes *)
+  (* post: inserts or replays IN51 execution row *)
+
+IN12 ::= "PATCH /api/v1/automation/executions/" executionId body ;
+  (* reused from existing map: update execution *)
+  (* pre: C6 HMAC required; C15 idempotency required *)
+  (* post: updates IN51 status unless terminal-state transition violates C15 *)
+
+IN9 ::= "POST /api/v1/automation/executions/" executionId "/steps/" stepExecutionId "/result" body ;
+  (* reused from existing map: record step result *)
+  (* pre: C6 HMAC required; C15 idempotency required *)
+  (* post: inserts IN53 and, if valid, appends canonical event via IN65 *)
+
+IN10 ::= "POST /api/v1/automation/events" body ;
+  (* reused from existing map: ingest events *)
+  (* pre: C6 HMAC required; C15 idempotency required *)
+  (* post: canonical items cross S8 to IN65; diagnostic items cross S1 to IN54 *)
+
+IN29 ::= "POST /api/v1/automation/telemetry" body ;
+  (* pre: C6 HMAC required; C15 idempotency required *)
+  (* post: redacted diagnostics stored via IN54; sequence_events is not written *)
+
+IN30 ::= "GET /api/v1/automation/analytics/outreach" query ;
+  (* pre: C14 version header; C16 no tenant override *)
+  (* post: analytics returned from IN66 over canonical sequence_events *)
+
+C6 ::= "hmac_sha256_auth" ;
+  (* target: IN8, IN9, IN10, IN11, IN12, IN23, IN26, IN27, IN29; optional-validate on IN21, IN22, IN24, IN25, IN28, IN30 *)
+  (* invariant: HMAC-required requests carry X-ZB-Client-Id, X-ZB-Timestamp, X-ZB-Nonce, X-ZB-Signature *)
+  (* invariant: signature base = version, method, exact path/query, timestamp, nonce, SHA256(raw body or empty) *)
+  (* invariant: stale timestamps, unknown clients, replayed nonces, and invalid signatures return ZIGBROWSER_SIGNATURE_INVALID *)
+
+C14 ::= "versioned_error_and_success_envelope" ;
+  (* target: IN8-IN12, IN21-IN30 *)
+  (* invariant: request must include X-ZB-Sequences-Version = 'zb-sequences-v1' *)
+  (* invariant: every response echoes X-ZB-Sequences-Version = 'zb-sequences-v1' *)
+  (* invariant: errors use { error: { code, message, retryable?, requestId?, traceId?, commandId?, details? } } *)
+
+C15 ::= "write_idempotency_and_conflict" ;
+  (* target: IN9, IN10, IN11, IN12, IN23, IN26, IN27, IN29 *)
+  (* invariant: validation/auth failures do not create durable idempotency rows *)
+  (* invariant: resource mutation and IN52 idempotency row commit or roll back together *)
+  (* invariant: same key and request hash returns original success response with duplicate=true *)
+  (* invariant: same key and different request hash returns 409 IDEMPOTENCY_CONFLICT *)
+
+C16 ::= "tenant_scope_source" ;
+  (* target: IN8-IN12, IN21-IN30 *)
+  (* invariant: tenant scope comes only from req.user.orgId and app.current_org/app.current_user GUCs *)
+  (* invariant: request body, query, or path fields named orgId, org_id, tenantId, or tenant_id are rejected *)
+
+C17 ::= "active_approved_execution_gate" ;
+  (* target: IN8, IN11 *)
+  (* invariant: executable work requires sequences.status='active' and approved_at IS NOT NULL *)
+  (* invariant: draft and pending_approval return 409 SEQUENCE_NOT_EXECUTABLE, not an empty executable plan *)
+  (* invariant: due work also respects enrollment active status, stop_reason, next_send_at, caps, suppression, pause, and bounce state *)
+
+G2 ::= "error_code_catalog_gap" ;
+  (* target: C14, IN12, IN27 *)
+  (* gap_class: contract-drift *)
+  (* violation: endpoint sections name EXECUTION_STATE_CONFLICT and DRAFT_GROUNDING_VIOLATION, but the Common codes table does not list them *)
+  (* mitigation: implementation must either add these codes to the shared catalog or define endpoint-local code allowlists in tests *)
+
+S1 ::= "backend_to_migration150_db_seam" ;
+  (* crossings: IN50-IN54, OUT50-OUT51 *)
+  (* contracts: C20, C21, C22, C23 *)
+
+S6 ::= "api_to_auth_tenant_middleware_seam" ;
+  (* crossings: IN21-IN30 and IN8-IN12 pass through IN40-IN43 before handler work *)
+  (* contracts: C6, C16, C18, C19 *)
+
+S8 ::= "api_to_existing_sequences_external_seam" ;
+  (* crossings: IN60-IN66 and OUT60 *)
+  (* contracts: C24, C25, C26 *)
+```
+
+#### Seam Table
+
+| Seam | Direction | Crossing interfaces | Events | Contracts |
+|---|---|---|---|---|
+| S3 | BC4 -> BC3 | OUT21->IN21, OUT22->IN22, OUT23->IN23, OUT24->IN24, OUT25->IN25, OUT26->IN26, OUT27->IN27, OUT28->IN28, OUT4->IN8, OUT29->IN11, OUT30->IN12, OUT5->IN9, OUT31->IN10, OUT32->IN29, OUT33->IN30 | None at seam | C10, C11, C12, C13, C14, C15 |
+| S6 | BC3 -> BC9 | All IN8-IN12 and IN21-IN30 pass through IN40-IN43; handlers receive OUT40 and optional OUT41 | EV40 on auth rejection | C6, C16, C18, C19 |
+| S1 | BC3 -> BC2 | IN25/IN26->IN50, IN11/IN12->IN51, writes->IN52, IN9->IN53, IN10/IN29->IN54, reads->OUT50/OUT51 | EV50 for diagnostics | C20, C21, C22, C23 |
+| S8 | BC3 -> BC1 | IN23->IN60/IN61, IN26->OUT60, IN27->IN62, IN8->IN63/IN64/OUT60, IN9/IN10->IN65, IN30->IN66 | EV60 for canonical product events | C24, C25, C26 |
+
+### BC9: Auth/Tenant Seam
+
+#### Boundary Diagram
+
+```mermaid
+graph LR
+    classDef iface fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam fill:#fff2cc,stroke:#d6b656
+    classDef gap fill:#f8cecc,stroke:#b85450
+
+    subgraph BC9["BC9: Auth/Tenant Seam"]
+        IN40["IN40: authenticate bearer user"]:::iface
+        IN41["IN41: auditCrossTenant"]:::iface
+        IN42["IN42: tenantContextMiddleware"]:::iface
+        IN43["IN43: verify zigBrowser HMAC service identity"]:::iface
+        OUT40["OUT40: req.user + app.current_org/app.current_user"]:::iface
+        OUT41["OUT41: verified zigBrowser service principal"]:::iface
+        EV40["EV40: auth/tenant rejection"]:::iface
+        C18["C18: Tenant context provenance target"]:::contract
+        C19["C19: HMAC replay defense target"]:::contract
+        G1["G1: Nonce store boundary gap"]:::gap
+    end
+
+    S6{"S6: API/Auth seam"}:::seam
+    S9{"S9: Tenant GUC/RLS seam"}:::seam
+
+    S6 --> IN40
+    IN40 --> IN41
+    IN41 --> IN42
+    IN42 --> OUT40
+    S6 --> IN43
+    IN43 --> OUT41
+    IN40 --> EV40
+    IN43 --> EV40
+    OUT40 --> S9
+    G1 --> C19
+```
+
+#### EBNF Grammar
+
+```ebnf
+(* === BC9: Auth/Tenant Seam === *)
+
+IN40 ::= "authenticate" "(" Authorization ")" ;
+  (* pre: Authorization = 'Bearer ' delegated-user-session-token *)
+  (* post: req.user.orgId and req.user.id are available to downstream middleware *)
+  (* error: AUTH_REQUIRED when missing or invalid *)
+
+IN41 ::= "auditCrossTenant" "(" request ")" ;
+  (* pre: IN40 succeeded *)
+  (* post: cross-tenant access attempts are rejected or audited before route handler execution *)
+
+IN42 ::= "tenantContextMiddleware" "(" request "," db_connection ")" ;
+  (* pre: IN40 and IN41 succeeded *)
+  (* post: app.current_org and app.current_user GUCs are installed for DB work *)
+
+IN43 ::= "verifyZigBrowserHmac" "(" method "," pathAndQuery "," headers "," rawBody ")" ;
+  (* pre: endpoint auth matrix requires HMAC or optional HMAC headers are present *)
+  (* post: OUT41 service principal available to handler *)
+  (* error: ZIGBROWSER_SIGNATURE_INVALID on stale, replayed, unknown, or invalid signature *)
+
+OUT40 ::= "tenant_context" "(" req.user.orgId "," req.user.id "," app.current_org "," app.current_user ")" ;
+  (* post: DB reads and writes rely on OUT40, never client-supplied tenant fields *)
+
+OUT41 ::= "service_principal" "(" clientId "," verifiedAt "," nonce ")" ;
+  (* post: route handler may record verified zigBrowser service identity for audit only *)
+
+EV40 ::= "auth_tenant_rejection" ;
+  (* variants: AUTH_REQUIRED, FORBIDDEN, ZIGBROWSER_SIGNATURE_INVALID, AUTOMATION_CONTRACT_INVALID *)
+
+C18 ::= "tenant_context_provenance" ;
+  (* target: IN40, IN41, IN42, OUT40 *)
+  (* invariant: /api/v1/automation mounts below authenticate -> auditCrossTenant -> tenantContextMiddleware *)
+  (* invariant: service HMAC never derives or overrides tenant scope *)
+  (* invariant: RLS GUCs match req.user.orgId and req.user.id *)
+
+C19 ::= "hmac_replay_defense" ;
+  (* target: IN43, OUT41 *)
+  (* invariant: X-ZB-Timestamp must be within the configured freshness window *)
+  (* invariant: X-ZB-Nonce is base64url 128-bit entropy and single-use within the freshness window *)
+  (* invariant: nonce replay rejection happens before route handler side effects *)
+
+G1 ::= "nonce_store_boundary_gap" ;
+  (* target: C19, IN43 *)
+  (* gap_class: missing-boundary *)
+  (* violation: this bridge spec requires nonce replay rejection but does not name the durable or cache-backed nonce store boundary *)
+  (* mitigation: implementation must define a nonce store before coding, or add a migration/cache contract and tests for cross-process replay rejection *)
+
+S9 ::= "tenant_guc_rls_seam" ;
+  (* crossings: OUT40 feeds migration-150 RLS policies and existing sequence table RLS *)
+  (* contracts: C18, C20 *)
+```
+
+#### Seam Table
+
+| Seam | Direction | Crossing interfaces | Events | Contracts |
+|---|---|---|---|---|
+| S6 | BC3 -> BC9 | IN8-IN12 and IN21-IN30 enter IN40-IN43; route handlers receive OUT40 and OUT41 | EV40 on auth, signature, or tenant rejection | C6, C18, C19 |
+| S9 | BC9 -> BC2 and BC1 table access | OUT40 installs `app.current_org` and `app.current_user` before S1 and S8 DB work | EV40 prevents DB crossing on failure | C18, C20 |
+
+### BC2: Automation Execution/Tracking DB Context
+
+#### Boundary Diagram
+
+```mermaid
+graph LR
+    classDef iface fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam fill:#fff2cc,stroke:#d6b656
+    classDef gap fill:#f8cecc,stroke:#b85450
+
+    subgraph BC2["BC2: Automation Execution/Tracking DB Context (migration 150)"]
+        IN50["IN50: sequence_step_contracts CAS"]:::iface
+        IN51["IN51: sequence_automation_executions write"]:::iface
+        IN52["IN52: sequence_automation_idempotency_keys write/read"]:::iface
+        IN53["IN53: sequence_automation_step_results insert"]:::iface
+        IN54["IN54: sequence_automation_diagnostic_events insert"]:::iface
+        OUT50["OUT50: execution/diagnostic summary reads"]:::iface
+        OUT51["OUT51: step contract reads"]:::iface
+        EV50["EV50: automation diagnostic event recorded"]:::iface
+        C20["C20: Composite FK and forced RLS target"]:::contract
+        C21["C21: Step CAS target"]:::contract
+        C22["C22: Idempotency atomicity target"]:::contract
+        C23["C23: Diagnostics exclusion target"]:::contract
+    end
+
+    S1{"S1: Migration-150 DB seam"}:::seam
+    S9{"S9: Tenant GUC/RLS seam"}:::seam
+    S11{"S11: Existing table FK seam"}:::seam
+
+    S1 --> IN50
+    S1 --> IN51
+    S1 --> IN52
+    S1 --> IN53
+    S1 --> IN54
+    OUT50 --> S1
+    OUT51 --> S1
+    S9 --> C20
+    IN54 --> EV50
+    IN50 --> S11
+    IN51 --> S11
+    IN53 --> S11
+    IN54 --> S11
+```
+
+#### EBNF Grammar
+
+```ebnf
+(* === BC2: Automation Execution/Tracking DB Context === *)
+
+IN50 ::= "sequence_step_contracts" "." ( "bootstrap" | "lock_for_update" | "cas_update" ) ;
+  (* pre: C20 tenant RLS active *)
+  (* post: version increments by exactly one on successful save *)
+  (* post: step rows serialize current sequence_messages as the bridge contract *)
+
+IN51 ::= "sequence_automation_executions" "." ( "insert" | "update_status" | "select" ) ;
+  (* pre: C20 composite FK to sequences(org_id,id) passes *)
+  (* post: external_run_id is unique per org *)
+
+IN52 ::= "sequence_automation_idempotency_keys" "." ( "insert_in_progress" | "store_response" | "lookup" ) ;
+  (* pre: actor_user_id, org_id, method, endpoint_template, idempotency_key are known *)
+  (* post: stores canonical request hash and sanitized response body *)
+
+IN53 ::= "sequence_automation_step_results" "." "insert" ;
+  (* pre: C20 composite FKs to execution, sequence, enrollment, message, and optional canonical event pass *)
+  (* post: one result per org_id, execution_id, step_execution_id *)
+
+IN54 ::= "sequence_automation_diagnostic_events" "." "insert" ;
+  (* pre: C20 tenant RLS active *)
+  (* post: optional dedup_key is unique per org *)
+  (* post: EV50 emitted for diagnostic storage observability *)
+
+OUT50 ::= "SELECT execution_or_diagnostic_summary FROM migration150_tables" ;
+  (* post: summaries may feed API list/detail responses, never product analytics rollups *)
+
+OUT51 ::= "SELECT version, steps FROM sequence_step_contracts WHERE org_id=$org AND sequence_id=$sequence" ;
+  (* post: returned version is the only CAS version accepted by IN26 *)
+
+EV50 ::= "automation_diagnostic_event_recorded" ;
+  (* source: IN54 *)
+  (* sink: diagnostics-only storage and operational observability *)
+
+C20 ::= "composite_fk_and_forced_rls" ;
+  (* target: IN50, IN51, IN52, IN53, IN54, OUT50, OUT51 *)
+  (* invariant: every tenant-owned migration-150 table has UNIQUE(org_id,id) *)
+  (* invariant: every sequence, enrollment, message, execution, and canonical event reference uses composite (org_id,id) FK *)
+  (* invariant: forced RLS is enabled and uses NULLIF(current_setting('app.current_org', true), '')::uuid *)
+
+C21 ::= "step_contract_compare_and_swap" ;
+  (* target: IN50, OUT51 *)
+  (* invariant: GET /steps bootstraps one row per org_id, sequence_id when absent *)
+  (* invariant: PUT /steps locks the row, compares expectedVersion, and writes no partial sequence_messages on conflict *)
+  (* invariant: successful save increments version by exactly one *)
+
+C22 ::= "idempotency_atomicity" ;
+  (* target: IN52 plus IN50, IN51, IN53, IN54 *)
+  (* invariant: idempotency response and resource mutation commit in the same transaction *)
+  (* invariant: validation/auth failures never create IN52 rows *)
+  (* invariant: stored responses omit raw selectors, typed text, cookies, auth tokens, screenshots, raw URLs, raw message bodies, and candidate PII *)
+
+C23 ::= "diagnostics_excluded_from_product_analytics" ;
+  (* target: IN54, OUT50 *)
+  (* invariant: sequence_automation_diagnostic_events never feeds sequence_metrics_rollup or outreach analytics *)
+  (* invariant: canonical outcomes cross S8 to sequence_events instead of being synthesized from diagnostics *)
+
+S11 ::= "migration150_to_existing_table_fk_seam" ;
+  (* crossings: IN50->sequences, IN51->sequences, IN53->sequence_automation_executions/sequences/sequence_enrollments/sequence_messages/sequence_events, IN54->optional existing sequence/enrollment/message references *)
+  (* contracts: C20, C24 *)
+```
+
+#### Seam Table
+
+| Seam | Direction | Crossing interfaces | Events | Contracts |
+|---|---|---|---|---|
+| S1 | BC3 -> BC2 | IN25/IN26->IN50, IN11/IN12->IN51, all writes->IN52, IN9->IN53, IN10/IN29->IN54, reads->OUT50/OUT51 | EV50 for diagnostic inserts | C20, C21, C22, C23 |
+| S9 | BC9 -> BC2 | OUT40 sets DB GUCs before all IN50-IN54 and OUT50-OUT51 work | EV40 blocks crossing on auth failure | C18, C20 |
+| S11 | BC2 -> BC1 existing tables | Composite FKs from migration-150 tables to existing sequences, enrollments, messages, users, orgs, and sequence_events | FK failures surface as DB_WRITE_FAILED or forbidden/not-found mapping | C20, C24 |
+
+### BC1: Existing Sequences Services/Tables External Seam
+
+#### Boundary Diagram
+
+```mermaid
+graph LR
+    classDef iface fill:#dae8fc,stroke:#6c8ebf
+    classDef contract fill:#d5e8d4,stroke:#82b366
+    classDef seam fill:#fff2cc,stroke:#d6b656
+    classDef gap fill:#f8cecc,stroke:#b85450
+
+    subgraph BC1["BC1: Existing Sequences Services/Tables (external seam only)"]
+        IN60["IN60: sequenceService.createSequence/addCohortCandidates"]:::iface
+        IN61["IN61: draftService/draftPersistence"]:::iface
+        IN62["IN62: generateStepService.generate"]:::iface
+        IN63["IN63: sendStore due-work gates"]:::iface
+        IN64["IN64: sequenceExecutionService approval state"]:::iface
+        IN65["IN65: appendSequenceEvent"]:::iface
+        IN66["IN66: sequenceMetrics/outreachAnalytics"]:::iface
+        OUT60["OUT60: existing 090-140 table rowsets"]:::iface
+        EV60["EV60: canonical sequence event"]:::iface
+        C24["C24: No parallel model target"]:::contract
+        C25["C25: Canonical event allowlist target"]:::contract
+        C26["C26: Analytics source target"]:::contract
+    end
+
+    S8{"S8: Existing sequences seam"}:::seam
+    S11{"S11: Existing table FK seam"}:::seam
+
+    S8 --> IN60
+    S8 --> IN61
+    S8 --> IN62
+    S8 --> IN63
+    S8 --> IN64
+    S8 --> IN65
+    S8 --> IN66
+    OUT60 --> S8
+    IN65 --> EV60
+    S11 --> OUT60
+```
+
+#### EBNF Grammar
+
+```ebnf
+(* === BC1: Existing Sequences Services/Tables External Seam === *)
+
+IN60 ::= "sequenceService.createSequence" "(" name "," ownerUserId "," orgId "," metadata ")"
+       | "sequenceService.addCohortCandidates" "(" sequenceId "," candidateRefs ")" ;
+  (* external seam: service internals are not remapped *)
+  (* post: draft sequence and optional enrollments exist in migrations 090-140 tables *)
+
+IN61 ::= "draftService" "." operation | "draftPersistence" "." operation ;
+  (* external seam: draft persistence and DraftGenerated behavior remain owned by existing service code *)
+
+IN62 ::= "generateStepService.generate" "(" target "," instruction "," currentSteps ")" ;
+  (* external seam: side-effect-free generation is reused *)
+  (* post: generated step response returned; no durable step mutation except bridge idempotency metadata *)
+
+IN63 ::= "sendStore" "." ( "listDueEnrollments" | "isApproved" ) ;
+  (* external seam: due-work gate remains owned by existing sendStore *)
+  (* post: eligible work satisfies approved, active, not stopped, and due constraints *)
+
+IN64 ::= "sequenceExecutionService" "." ( "approveSequence_state_read" | "approved_plan_read" ) ;
+  (* external seam: approval state and approved_plan semantics remain owned by existing sequence execution service *)
+
+IN65 ::= "appendSequenceEvent" "(" canonicalEvent ")" ;
+  (* external seam: canonical event validation and dedupe remain owned by eventService and sequences_db *)
+  (* post: EV60 inserted or duplicate/conflict detected in sequence_events *)
+
+IN66 ::= "sequenceMetrics" "." operation | "outreachAnalyticsService.getOutreachAnalytics" "(" filters ")" ;
+  (* external seam: product analytics read only canonical sequence_events *)
+
+OUT60 ::= "SELECT existing_sequences_rowsets" ;
+  (* source: sequences, sequence_enrollments, sequence_messages, sequence_events, mailbox_connections, and analytics scope tables from migrations 090-140 *)
+  (* invariant: bridge code does not introduce parallel sequence, enrollment, message, event, mailbox, or analytics tables *)
+
+EV60 ::= "canonical_sequence_event" ;
+  (* source: IN65 *)
+  (* variants accepted by this bridge: MessageSent, MessageDelivered, MessageOpened, LinkClicked, ReplySynced, BounceSynced, SuppressionApplied, EnrollmentStopped, AtsWritebackSucceeded, AtsWritebackFailed, CandidateConverted *)
+
+C24 ::= "no_parallel_sequence_model" ;
+  (* target: IN60, IN61, IN62, IN63, IN64, IN65, IN66, OUT60 *)
+  (* invariant: bridge endpoints wrap existing services/tables instead of creating parallel sequence, enrollment, message, event, mailbox, or analytics models *)
+  (* invariant: existing service internals are referenced only by named seam operation and source grounding *)
+
+C25 ::= "canonical_event_allowlist_and_attribution" ;
+  (* target: IN65, EV60 *)
+  (* invariant: canonical bridge events must be accepted by eventTypes.js and the sequence_events CHECK constraint *)
+  (* invariant: message-level events include messageId; funnel events include enrollmentId; every canonical event includes sequenceId *)
+  (* invariant: automation diagnostics never masquerade as EV60 *)
+
+C26 ::= "analytics_source_is_sequence_events" ;
+  (* target: IN66 *)
+  (* invariant: outreach analytics read sequence_events and analytics scope tables *)
+  (* invariant: sequence_automation_diagnostic_events are excluded from product analytics *)
+```
+
+#### Seam Table
+
+| Seam | Direction | Crossing interfaces | Events | Contracts |
+|---|---|---|---|---|
+| S8 | BC3 -> BC1 | IN23->IN60/IN61, IN26->OUT60 plus existing message persistence, IN27->IN62, IN8->IN63/IN64/OUT60, IN9/IN10->IN65, IN30->IN66 | EV60 for canonical product events | C24, C25, C26 |
+| S11 | BC2 -> BC1 existing tables | Migration-150 composite FKs validate against existing orgs, users, sequences, enrollments, messages, and sequence_events rowsets | FK failures prevent bridge writes | C20, C24 |
+
+### INDEX
+
+#### Context Roster
+
+| Context | Name | Bridge role | Status | Stable-ID note |
+|---|---|---|---|---|
+| BC4 | zigBrowser Client Facade | Consumes only `/api/v1/automation`; owns headers, HMAC signing, idempotency keys, retry handling, and redaction before transport | TO-BE in zigBrowser session | Reuses prior BC4 consumer role, OUT4, OUT5 |
+| BC3 | `/api/v1/automation` API Boundary | Versioned HTTP contract and endpoint dispatch in sequences backend | TO-BE in sequences session | Reuses prior BC3, IN8-IN12, S3, C6 |
+| BC9 | Auth/Tenant Seam | Delegated user auth, HMAC service identity, tenant context middleware, DB GUC provenance | TO-BE automation middleware plus AS-IS auth chain | New bridge-local context |
+| BC2 | Automation Execution/Tracking DB Context | Migration-150 bridge-owned tables for step contracts, executions, idempotency, step results, and diagnostics | TO-BE migration 150 | Reuses prior database context role and S1 |
+| BC1 | Existing Sequences Services/Tables External Seam | Existing services and migrations 090-140 tables wrapped by bridge endpoints | AS-IS external seam | Reuses prior existing backend/services role, narrowed to seam references |
+
+#### Context-Map Diagram
+
+```mermaid
+graph LR
+    classDef ctx fill:#f5f5f5,stroke:#666
+    classDef seam fill:#fff2cc,stroke:#d6b656
+    classDef gap fill:#f8cecc,stroke:#b85450
+
+    BC4["BC4: zigBrowser Client Facade"]:::ctx
+    BC3["BC3: /api/v1/automation API Boundary"]:::ctx
+    BC9["BC9: Auth/Tenant Seam"]:::ctx
+    BC2["BC2: Migration-150 Automation DB"]:::ctx
+    BC1["BC1: Existing Sequences Services/Tables"]:::ctx
+
+    S3{"S3: Client API HTTP"}:::seam
+    S6{"S6: API/Auth Tenant"}:::seam
+    S1{"S1: API/Migration-150 DB"}:::seam
+    S8{"S8: API/Existing Sequences"}:::seam
+    S9{"S9: Tenant GUC/RLS"}:::seam
+    S11{"S11: Migration-150/Existing FK"}:::seam
+    G1["G1: nonce store boundary gap"]:::gap
+    G2["G2: error code catalog gap"]:::gap
+
+    BC4 --> S3
+    S3 --> BC3
+    BC3 --> S6
+    S6 --> BC9
+    BC9 --> S9
+    S9 --> BC2
+    S9 --> BC1
+    BC3 --> S1
+    S1 --> BC2
+    BC3 --> S8
+    S8 --> BC1
+    BC2 --> S11
+    S11 --> BC1
+    G1 --> BC9
+    G2 --> BC3
+```
+
+#### Gap / Risk Register
+
+| ID | Gap class | Context | Boundary | Description | Impact | Mitigation |
+|---|---|---|---|---|---|---|
+| G1 | missing-boundary | BC9 | C19 / IN43 | Nonce replay rejection is required, but the spec does not name the durable or cache-backed nonce store used across backend processes. | A single-process or ad hoc nonce cache could allow replay after restart or across workers. | Define the nonce store boundary before implementation and add replay tests that cross process boundaries. |
+| G2 | contract-drift | BC3 | C14 / IN12 / IN27 | Endpoint sections mention `EXECUTION_STATE_CONFLICT` and `DRAFT_GROUNDING_VIOLATION`, but the Common codes table does not list them. | Client contract tests may disagree with backend error envelope validation. | Add these codes to the common catalog or define endpoint-local allowed-code tests explicitly. |
+
+#### Acceptance Self-Check
+
+- [x] Diagram IDs and grammar entries are 1:1 for IN/OUT/EV/C/S/G IDs: ZERO orphans.
+- [x] Every contract names its target in its grammar entry: C6, C10-C26.
+- [x] Every seam enumerates its crossings and contracts: S1, S3, S6, S8, S9, S11.
+- [x] Every bounded context has all three required parts: mermaid boundary diagram, EBNF grammar, and seam table.
+- [x] Existing sequences services/tables are referenced only as external seams: BC1 lists named operations and source table families without remapping internals.
+- [x] Missing or violated boundaries are marked with the `gap` class: G1 and G2.
