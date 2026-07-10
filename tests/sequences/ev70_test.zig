@@ -200,3 +200,87 @@ test "multiple calls accumulate spans in sink" {
     _ = client.createExecution(.{});
     try std.testing.expectEqual(@as(usize, 3), sink.spanCount());
 }
+
+// --- TDD Cycle 3: Trace propagation context on EV70 spans ---
+
+test "EV70 span carries trace_id from client context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .trace_id = "abc-trace-123" });
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expectEqualStrings("abc-trace-123", sink.spans.items[0].trace_id.?);
+}
+
+test "EV70 span trace_id is null when no context set" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expect(sink.spans.items[0].trace_id == null);
+}
+
+test "EV70 span carries command_id from client context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .command_id = "cmd-456" });
+    _ = client.createExecution(.{});
+    try std.testing.expectEqualStrings("cmd-456", sink.spans.items[0].command_id.?);
+}
+
+test "EV70 span carries execution_id from client context" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{ .execution_id = "exec-789" });
+    _ = client.updateExecution(.{});
+    try std.testing.expectEqualStrings("exec-789", sink.spans.items[0].execution_id.?);
+}
+
+test "EV70 span_id is populated on every call" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expect(sink.spans.items[0].span_id.len > 0);
+}
+
+test "each call gets a unique span_id" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    _ = client.listSequences(.{});
+    try std.testing.expect(!std.mem.eql(u8, sink.spans.items[0].span_id, sink.spans.items[1].span_id));
+}
+
+test "trace context propagates across multiple calls" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    client.setTraceContext(.{
+        .trace_id = "trace-multi",
+        .command_id = "cmd-multi",
+        .execution_id = "exec-multi",
+    });
+    _ = client.getUiBootstrap(.{});
+    _ = client.listSequences(.{});
+    _ = client.createExecution(.{});
+    for (sink.spans.items[0..3]) |span| {
+        try std.testing.expectEqualStrings("trace-multi", span.trace_id.?);
+        try std.testing.expectEqualStrings("cmd-multi", span.command_id.?);
+        try std.testing.expectEqualStrings("exec-multi", span.execution_id.?);
+    }
+}
+
+test "trace context can be updated between calls" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    client.setTraceContext(.{ .execution_id = "exec-new" });
+    _ = client.createExecution(.{});
+    try std.testing.expect(sink.spans.items[0].execution_id == null);
+    try std.testing.expectEqualStrings("exec-new", sink.spans.items[1].execution_id.?);
+}

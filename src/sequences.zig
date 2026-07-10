@@ -82,6 +82,8 @@ pub const Header = struct {
 pub const BuildPreparedRequestError = error{
     MissingServiceAuth,
     InvalidTimeout,
+    EntropyUnavailable,
+    Canceled,
     OutOfMemory,
 };
 
@@ -213,7 +215,7 @@ pub const PreparedRequest = struct {
         auth: ServiceAuth,
         body_hash: []const u8,
     ) ![]const u8 {
-        const timestamp_ms = options.timestamp_ms orelse std.time.milliTimestamp();
+        const timestamp_ms = options.timestamp_ms orelse currentUnixMillis();
         const timestamp = try std.fmt.allocPrint(allocator, "{d}", .{timestamp_ms});
         const nonce = if (options.nonce) |provided| try allocator.dupe(u8, provided) else try generateNonce(allocator);
         const signature_base = try buildSignatureBase(
@@ -451,7 +453,7 @@ fn dupeOptional(allocator: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
 }
 
 fn joinBaseUrl(allocator: std.mem.Allocator, base_url: []const u8, request_target: []const u8) ![]u8 {
-    const trimmed_base = std.mem.trimRight(u8, base_url, "/");
+    const trimmed_base = std.mem.trimEnd(u8, base_url, "/");
     if (std.mem.startsWith(u8, request_target, "/")) {
         return std.fmt.allocPrint(allocator, "{s}{s}", .{ trimmed_base, request_target });
     }
@@ -460,15 +462,19 @@ fn joinBaseUrl(allocator: std.mem.Allocator, base_url: []const u8, request_targe
 
 fn generateNonce(allocator: std.mem.Allocator) ![]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&bytes);
     return canonical_hashing.base64UrlNoPadAlloc(allocator, &bytes);
 }
 
 fn generateIdempotencyKey(allocator: std.mem.Allocator) ![]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&bytes);
     const encoded = canonical_hashing.base64UrlNoPadAlloc(allocator, &bytes) catch return error.OutOfMemory;
     return std.fmt.allocPrint(allocator, "zb_idem_{s}", .{encoded});
+}
+
+fn currentUnixMillis() i64 {
+    return std.Io.Clock.real.now(std.Io.Threaded.global_single_threaded.io()).toMilliseconds();
 }
 
 pub const endpoint_templates = struct {
@@ -495,6 +501,12 @@ pub const CallResult = struct {
     duplicate: bool,
 };
 
+pub const TraceContext = struct {
+    trace_id: ?[]const u8 = null,
+    command_id: ?[]const u8 = null,
+    execution_id: ?[]const u8 = null,
+};
+
 pub const Ev70Span = struct {
     name: []const u8,
     endpoint: []const u8,
@@ -502,6 +514,10 @@ pub const Ev70Span = struct {
     http_status_code: u16,
     zb_sequences_version: []const u8,
     duplicate: bool,
+    trace_id: ?[]const u8 = null,
+    span_id: []const u8 = "",
+    command_id: ?[]const u8 = null,
+    execution_id: ?[]const u8 = null,
 };
 
 pub const Ev70Sink = struct {
@@ -513,6 +529,12 @@ pub const Ev70Sink = struct {
     }
 
     pub fn deinit(self: *Ev70Sink) void {
+        for (self.spans.items) |span| {
+            self.allocator.free(span.span_id);
+            if (span.trace_id) |value| self.allocator.free(value);
+            if (span.command_id) |value| self.allocator.free(value);
+            if (span.execution_id) |value| self.allocator.free(value);
+        }
         self.spans.deinit(self.allocator);
     }
 
@@ -521,7 +543,40 @@ pub const Ev70Sink = struct {
     }
 
     pub fn emit(self: *Ev70Sink, span: Ev70Span) void {
-        self.spans.append(self.allocator, span) catch {};
+        const span_id = self.allocator.dupe(u8, span.span_id) catch return;
+        const trace_id = dupeOptional(self.allocator, span.trace_id) catch {
+            self.allocator.free(span_id);
+            return;
+        };
+        const command_id = dupeOptional(self.allocator, span.command_id) catch {
+            self.allocator.free(span_id);
+            if (trace_id) |value| self.allocator.free(value);
+            return;
+        };
+        const execution_id = dupeOptional(self.allocator, span.execution_id) catch {
+            self.allocator.free(span_id);
+            if (trace_id) |value| self.allocator.free(value);
+            if (command_id) |value| self.allocator.free(value);
+            return;
+        };
+
+        self.spans.append(self.allocator, .{
+            .name = span.name,
+            .endpoint = span.endpoint,
+            .http_method = span.http_method,
+            .http_status_code = span.http_status_code,
+            .zb_sequences_version = span.zb_sequences_version,
+            .duplicate = span.duplicate,
+            .trace_id = trace_id,
+            .span_id = span_id,
+            .command_id = command_id,
+            .execution_id = execution_id,
+        }) catch {
+            self.allocator.free(span_id);
+            if (trace_id) |value| self.allocator.free(value);
+            if (command_id) |value| self.allocator.free(value);
+            if (execution_id) |value| self.allocator.free(value);
+        };
     }
 };
 
@@ -536,12 +591,32 @@ fn methodLen(comptime template: []const u8) comptime_int {
 pub const SequencesClient = struct {
     allocator: std.mem.Allocator,
     sink: *Ev70Sink,
+    trace_ctx: TraceContext = .{},
+    span_counter: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, sink: *Ev70Sink) SequencesClient {
         return .{ .allocator = allocator, .sink = sink };
     }
 
+    pub fn setTraceContext(self: *SequencesClient, ctx: TraceContext) void {
+        self.trace_ctx = ctx;
+    }
+
+    fn generateSpanId(self: *SequencesClient, buf: *[16]u8) []const u8 {
+        self.span_counter += 1;
+        const hex_chars = "0123456789abcdef";
+        var val = self.span_counter;
+        var i: usize = 16;
+        while (i > 0) {
+            i -= 1;
+            buf[i] = hex_chars[@intCast(val & 0xf)];
+            val >>= 4;
+        }
+        return buf[0..];
+    }
+
     fn emitEv70(self: *SequencesClient, comptime endpoint: []const u8, result: CallResult) void {
+        var span_id_buf: [16]u8 = undefined;
         self.sink.emit(.{
             .name = "zb_sequences.client_call",
             .endpoint = endpoint,
@@ -549,6 +624,10 @@ pub const SequencesClient = struct {
             .http_status_code = result.status_code,
             .zb_sequences_version = version,
             .duplicate = result.duplicate,
+            .trace_id = self.trace_ctx.trace_id,
+            .span_id = self.generateSpanId(&span_id_buf),
+            .command_id = self.trace_ctx.command_id,
+            .execution_id = self.trace_ctx.execution_id,
         });
     }
 
