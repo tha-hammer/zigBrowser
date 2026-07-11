@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config.zig");
 
 pub const Command = union(enum) {
     version,
@@ -20,7 +21,7 @@ pub const Command = union(enum) {
 };
 
 pub fn parseArgs(args: []const []const u8) Command {
-    if (args.len <= 1) return .{ .open = .{ .url = "https://cosmic-hr-development.up.railway.app/" } };
+    if (args.len <= 1) return .{ .open = .{ .url = config.default_url } };
 
     const first = args[1];
 
@@ -105,10 +106,10 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     } };
 }
 
-test "parseArgs no args yields open with default URL" {
+test "parseArgs no args yields open with config default URL" {
     const cmd = parseArgs(&.{"zigBrowser"});
     try std.testing.expect(cmd == .open);
-    try std.testing.expectEqualStrings("https://cosmic-hr-development.up.railway.app/", cmd.open.url);
+    try std.testing.expectEqualStrings(config.default_url, cmd.open.url);
 }
 
 test "parseArgs --version yields .version" {

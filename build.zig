@@ -1,4 +1,6 @@
 const std = @import("std");
+const config_schema = @import("src/config_schema.zig");
+
 const Backend = enum {
     gtk_backend,
     webview2_backend,
@@ -126,6 +128,16 @@ pub fn build(b: *std.Build) void {
         .winrt_include_dir = winrt_include orelse b.graph.environ_map.get("WINRT_INCLUDE"),
         .lib_dir = webview2_lib orelse b.graph.environ_map.get("WEBVIEW2_LIB"),
     };
+    const site_config_path = b.option(
+        []const u8,
+        "site_config",
+        "Path to zigBrowser JSON site config (default: zigbrowser.json)",
+    ) orelse "zigbrowser.json";
+    const site_config = loadSiteConfig(b, site_config_path);
+    const site_options = b.addOptions();
+    site_options.addOption([]const u8, "default_url", site_config.url);
+    site_options.addOption([]const u8, "config_path", site_config_path);
+    const site_options_module = site_options.createModule();
 
     const pkg_guard: *std.Build.Step = switch (backend) {
         .gtk_backend => &b.addSystemCommand(&.{
@@ -139,6 +151,9 @@ pub fn build(b: *std.Build) void {
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
+        .imports = &.{
+            .{ .name = "build_options", .module = site_options_module },
+        },
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -161,6 +176,9 @@ pub fn build(b: *std.Build) void {
 
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
+        .imports = &.{
+            .{ .name = "build_options", .module = site_options_module },
+        },
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -230,6 +248,21 @@ pub fn build(b: *std.Build) void {
     const nav_policy_tests = b.addTest(.{ .root_module = nav_policy_tests_module });
     const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
     run_nav_policy_tests.skip_foreign_checks = true;
+
+    const config_schema_module = b.createModule(.{
+        .root_source_file = b.path("src/config_schema.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const config_schema_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/config_schema_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    config_schema_tests_module.addImport("config_schema", config_schema_module);
+    const config_schema_tests = b.addTest(.{ .root_module = config_schema_tests_module });
+    const run_config_schema_tests = b.addRunArtifact(config_schema_tests);
+    run_config_schema_tests.skip_foreign_checks = true;
 
     const automation_module = b.createModule(.{
         .root_source_file = b.path("src/automation.zig"),
@@ -422,6 +455,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
+    test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
     test_step.dependOn(&run_automation_router_tests.step);
@@ -523,6 +557,21 @@ pub fn build(b: *std.Build) void {
     dashboard_visual.setCwd(b.path("."));
     const dashboard_visual_step = b.step("dashboard-visual", "Visual-regression check for the automation dashboard (Node+Playwright)");
     dashboard_visual_step.dependOn(&dashboard_visual.step);
+}
+
+fn loadSiteConfig(b: *std.Build, path: []const u8) config_schema.SiteConfig {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        b.graph.io,
+        path,
+        b.allocator,
+        .limited(64 * 1024),
+    ) catch |err| {
+        std.debug.panic("failed to read site config '{s}': {s}", .{ path, @errorName(err) });
+    };
+
+    return config_schema.parse(b.allocator, bytes) catch |err| {
+        std.debug.panic("invalid site config '{s}': {s}", .{ path, @errorName(err) });
+    };
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {

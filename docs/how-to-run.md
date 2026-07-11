@@ -15,6 +15,17 @@
 
 ## Open an app entry page in a real window
 
+With no URL argument, zigBrowser opens the `url` from the build-time
+`zigbrowser.json` config. That value is baked into the binary when `zig build`
+runs.
+
+```bash
+DISPLAY="${DISPLAY:-:1}" \
+  ./zig-out/bin/zigBrowser
+```
+
+Pass a URL explicitly to override the configured default:
+
 ```bash
 DISPLAY="${DISPLAY:-:1}" \
   ./zig-out/bin/zigBrowser "file://$(pwd)/tests/fixtures/app/index.html"
