@@ -115,6 +115,15 @@ Auth matrix:
 | `POST /telemetry` | Required | Required |
 | `GET /analytics/outreach` | Required | Optional; validate if present |
 
+### Live-Run Backend Configuration
+
+The HMAC contract above is verifiable only when the backend `/api/v1/automation` mount is wired with two stores and captures raw request bytes. These are the operational requirements for a real signed round-trip (proven against a live smoke test).
+
+- **Client registry + nonce store.** The HMAC middleware needs a client registry (id -> secret) and a nonce store wired into the `/api/v1/automation` mount. For dev/smoke, client secrets are configured via env `ZB_AUTOMATION_CLIENTS="clientId:secret,clientId2:secret2"` — the first `:` splits id from secret, and secrets must not contain `,`. Production must resolve secrets from a secret store, not this env var.
+- **Unknown client id.** A request whose `X-ZB-Client-Id` is not in the registry must yield a clean `401 ZIGBROWSER_SIGNATURE_INVALID`, never a crash.
+- **Raw-body capture (critical gotcha).** The `bodyHash` in the signature base string is computed over the **raw request bytes** (see Canonical Hashing & Signing). The server must capture those bytes before JSON parsing — e.g. `express.json({ verify: (req, _res, buf) => { req.rawBody = buf } })` — and hash `req.rawBody`. If the raw bytes are not captured, the server hashes empty bytes and every signed write with a body fails signature verification. This was a real bug found and fixed during the live smoke.
+- **Attribution rows must exist.** A signed `POST /events` MessageSent round-trip requires the referenced `sequence`, `enrollment`, and `message` rows to already exist under the caller's org; otherwise the write returns `422 EVENT_ATTRIBUTION_INVALID`.
+
 ### Error Envelope
 
 Errors must use the sequences convention:
