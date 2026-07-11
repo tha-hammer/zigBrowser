@@ -503,6 +503,7 @@ pub const CallResult = struct {
     error_class: ?[]const u8 = null,
     error_code: ?[]const u8 = null,
     retryable: ?bool = null,
+    duration_ms: u64 = 0,
 
     pub fn deinit(self: *CallResult, allocator: std.mem.Allocator) void {
         const alloc = self.owned_allocator orelse allocator;
@@ -547,6 +548,7 @@ pub const Ev70Span = struct {
     command_id: ?[]const u8 = null,
     execution_id: ?[]const u8 = null,
     idempotency_key_hash: ?[]const u8 = null,
+    dedup_key_hash: ?[]const u8 = null,
     duration_ms: u64 = 0,
     error_class: ?[]const u8 = null,
     error_code: ?[]const u8 = null,
@@ -582,6 +584,7 @@ pub const Ev70Sink = struct {
                 span.command_id,
                 span.execution_id,
                 span.idempotency_key_hash,
+                span.dedup_key_hash,
                 span.error_class,
                 span.error_code,
                 span.org_id,
@@ -615,6 +618,7 @@ pub const Ev70Sink = struct {
         const command_id = dupeOptional(self.allocator, span.command_id) catch return;
         const execution_id = dupeOptional(self.allocator, span.execution_id) catch return;
         const idempotency_key_hash = dupeOptional(self.allocator, span.idempotency_key_hash) catch return;
+        const dedup_key_hash = dupeOptional(self.allocator, span.dedup_key_hash) catch return;
         const error_class = dupeOptional(self.allocator, span.error_class) catch return;
         const error_code = dupeOptional(self.allocator, span.error_code) catch return;
         const org_id = dupeOptional(self.allocator, span.org_id) catch return;
@@ -640,6 +644,7 @@ pub const Ev70Sink = struct {
             .command_id = command_id,
             .execution_id = execution_id,
             .idempotency_key_hash = idempotency_key_hash,
+            .dedup_key_hash = dedup_key_hash,
             .duration_ms = span.duration_ms,
             .error_class = error_class,
             .error_code = error_code,
@@ -659,7 +664,7 @@ pub const Ev70Sink = struct {
             .redaction_suppressed = span.redaction_suppressed,
         }) catch {
             self.allocator.free(span_id);
-            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, error_class, error_code, org_id, sequence_id, client_id, tenant, parent_span_id, automation_trace_id, external_run_id, actor_user_id_hash, session_id_hash, zigbrowser_version });
+            self.freeOptionals(.{ trace_id, command_id, execution_id, idempotency_key_hash, dedup_key_hash, error_class, error_code, org_id, sequence_id, client_id, tenant, parent_span_id, automation_trace_id, external_run_id, actor_user_id_hash, session_id_hash, zigbrowser_version });
         };
     }
 };
@@ -670,6 +675,11 @@ fn extractHttpMethod(comptime template: []const u8) *const [methodLen(template)]
 
 fn methodLen(comptime template: []const u8) comptime_int {
     return comptime std.mem.indexOfScalar(u8, template, ' ') orelse template.len;
+}
+
+fn elapsedMs(started: std.Io.Timestamp, io: std.Io) u64 {
+    const ms = started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
+    return if (ms > 0) @intCast(ms) else 0;
 }
 
 pub const SequencesClient = struct {
@@ -709,7 +719,7 @@ pub const SequencesClient = struct {
         return buf[0..];
     }
 
-    fn emitEv70(self: *SequencesClient, comptime endpoint: []const u8, result: CallResult, idempotency_key_hash: ?[]const u8) void {
+    fn emitEv70(self: *SequencesClient, comptime endpoint: []const u8, result: CallResult, idempotency_key_hash: ?[]const u8, dedup_key_hash: ?[]const u8) void {
         var span_id_buf: [16]u8 = undefined;
         self.sink.emit(.{
             .name = "zb_sequences.client_call",
@@ -723,6 +733,8 @@ pub const SequencesClient = struct {
             .command_id = self.trace_ctx.command_id,
             .execution_id = self.trace_ctx.execution_id,
             .idempotency_key_hash = idempotency_key_hash,
+            .dedup_key_hash = dedup_key_hash,
+            .duration_ms = result.duration_ms,
             .error_class = result.error_class,
             .error_code = result.error_code,
             .retryable = result.retryable,
@@ -753,20 +765,25 @@ pub const SequencesClient = struct {
         const path = comptime endpoint[method_end + 1 ..];
         const method: std.http.Method = comptime parseMethod(endpoint[0..method_end]);
 
+        // Wall-clock the transport round-trip so EV70 carries a real duration_ms.
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const started = std.Io.Clock.awake.now(io);
         const outcome = ac.call(.{
             .method = method,
             .request_target = path,
             .hmac = .optional,
             .idempotency = idem,
         }) catch {
-            return .{ .status_code = 0, .body = "", .duplicate = false };
+            return .{ .status_code = 0, .body = "", .duplicate = false, .duration_ms = elapsedMs(started, io) };
         };
+        const duration_ms = elapsedMs(started, io);
         switch (outcome) {
             .success => |s| return .{
                 .status_code = s.status_code,
                 .body = s.body,
                 .duplicate = false,
                 .owned_allocator = self.allocator,
+                .duration_ms = duration_ms,
             },
             .api_error => |e| {
                 var err = e;
@@ -780,6 +797,7 @@ pub const SequencesClient = struct {
                     .error_class = "api_error",
                     .error_code = error_code,
                     .retryable = err.retryable,
+                    .duration_ms = duration_ms,
                 };
             },
         }
@@ -787,7 +805,7 @@ pub const SequencesClient = struct {
 
     fn callAndEmit(self: *SequencesClient, comptime endpoint: []const u8) CallResult {
         const result = self.executeViaTransport(endpoint, .none);
-        self.emitEv70(endpoint, result, null);
+        self.emitEv70(endpoint, result, null, null);
         return result;
     }
 
@@ -795,7 +813,8 @@ pub const SequencesClient = struct {
         const idem = extractIdempotency(params);
         const result = self.executeViaTransport(endpoint, idem);
         const idem_hash = extractIdempotencyKeyHash(params);
-        self.emitEv70(endpoint, result, if (idem_hash) |*h| h else null);
+        const dedup_hash = extractDedupKeyHash(params);
+        self.emitEv70(endpoint, result, if (idem_hash) |*h| h else null, if (dedup_hash) |*h| h else null);
         return result;
     }
 
@@ -815,6 +834,20 @@ pub const SequencesClient = struct {
         var buf: [canonical_hashing.prefixed_hash_len]u8 = undefined;
         _ = canonical_hashing.h(&buf, key);
         return buf;
+    }
+
+    // dedup_key_hash = H(raw dedupKey) per the NORMATIVE §Canonical Hashing recipe,
+    // so the client EV70 span correlates with the server EV71/EV73 dedup hashes.
+    fn extractDedupKeyHash(params: anytype) ?[canonical_hashing.prefixed_hash_len]u8 {
+        const T = @TypeOf(params);
+        if (@typeInfo(T) == .@"struct" and @hasField(T, "dedup_key")) {
+            const field = params.dedup_key;
+            switch (@typeInfo(@TypeOf(field))) {
+                .optional => if (field) |key| return hashIdempotencyKey(key),
+                else => return hashIdempotencyKey(field),
+            }
+        }
+        return null;
     }
 
     fn extractIdempotency(params: anytype) Idempotency {

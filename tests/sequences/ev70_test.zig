@@ -362,6 +362,7 @@ const MockTransport = struct {
     response_status: u16 = 200,
     response_body: []const u8 = "{}",
     call_count: u32 = 0,
+    delay_ms: u64 = 0,
 
     fn transport(self: *MockTransport) sequences.Transport {
         return .{ .context = self, .sendFn = send };
@@ -370,6 +371,12 @@ const MockTransport = struct {
     fn send(context: *anyopaque, allocator: std.mem.Allocator, _: *const sequences.PreparedRequest) !sequences.TransportResponse {
         const self: *MockTransport = @ptrCast(@alignCast(context));
         self.call_count += 1;
+        if (self.delay_ms > 0) {
+            // Deterministic busy-wait so a timed transport call has measurable duration.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            const start = std.Io.Clock.awake.now(io);
+            while (start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() < @as(i64, @intCast(self.delay_ms))) {}
+        }
         return .{
             .status_code = self.response_status,
             .body = try allocator.dupe(u8, self.response_body),
@@ -575,4 +582,62 @@ test "all remaining nullable context attributes default to null" {
     try std.testing.expect(span.actor_user_id_hash == null);
     try std.testing.expect(span.session_id_hash == null);
     try std.testing.expect(span.zigbrowser_version == null);
+}
+
+// --- TDD Cycle 10: dedup_key_hash on write EV70 spans ---
+
+test "EV70 span has null dedup_key_hash by default" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{});
+    try std.testing.expect(sink.spans.items[0].dedup_key_hash == null);
+}
+
+test "ingestEvents EV70 span carries dedup_key_hash when dedup_key provided" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.ingestEvents(.{
+        .idempotency_key = "batch-idem-1",
+        .dedup_key = "zigbrowser:MessageSent:seq_1:enr_1:msg_1:step_1",
+    });
+    const span = sink.spans.items[0];
+    try std.testing.expect(span.dedup_key_hash != null);
+    var expected_buf: [sequences.canonical_hashing.prefixed_hash_len]u8 = undefined;
+    const expected = sequences.canonical_hashing.h(&expected_buf, "zigbrowser:MessageSent:seq_1:enr_1:msg_1:step_1");
+    try std.testing.expectEqualStrings(expected, span.dedup_key_hash.?);
+}
+
+test "read endpoint has null dedup_key_hash even if dedup_key present" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.getUiBootstrap(.{ .dedup_key = "ignored-on-read" });
+    try std.testing.expect(sink.spans.items[0].dedup_key_hash == null);
+}
+
+test "dedup_key_hash matches pinned H(dedupKey) recipe" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var client = makeClient(&sink);
+    _ = client.recordStepResult(.{ .idempotency_key = "k", .dedup_key = "dedup-xyz-789" });
+    const span = sink.spans.items[0];
+    try std.testing.expect(span.dedup_key_hash != null);
+    var expected_buf: [sequences.canonical_hashing.prefixed_hash_len]u8 = undefined;
+    const expected = sequences.canonical_hashing.h(&expected_buf, "dedup-xyz-789");
+    try std.testing.expectEqualStrings(expected, span.dedup_key_hash.?);
+}
+
+// --- TDD Cycle 11: real duration_ms from timed transport calls ---
+
+test "EV70 span records real duration_ms from a timed transport call" {
+    var sink = makeSink();
+    defer sink.deinit();
+    var mock = MockTransport{ .delay_ms = 3 };
+    var automation_client: sequences.AutomationClient = undefined;
+    var client = makeClientWithTransport(&sink, &mock, &automation_client);
+    var result = client.getUiBootstrap(.{});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(sink.spans.items[0].duration_ms >= 1);
 }
