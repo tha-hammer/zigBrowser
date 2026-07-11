@@ -30,3 +30,6 @@ node_modules/
 # Python build artifacts
 *.egg-info/
 __pycache__/
+
+# Dashboard visual-regression screenshots (generated)
+tools/dashboard-shots/

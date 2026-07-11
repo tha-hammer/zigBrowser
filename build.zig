@@ -513,6 +513,16 @@ pub fn build(b: *std.Build) void {
     const run_dashboard_ipc_tests = b.addRunArtifact(dashboard_ipc_tests);
     run_dashboard_ipc_tests.skip_foreign_checks = true;
     test_step.dependOn(&run_dashboard_ipc_tests.step);
+
+    // --- Dashboard visual-regression check (Playwright + Chromium via Node) ---
+    // Renders src/dashboard/content/index.html in connected + disconnected states
+    // and asserts on the rendered DOM, guarding against a blank error state.
+    // Kept out of `zig build test` (needs Node/Playwright/Chromium); run in CI as
+    // its own step: `zig build dashboard-visual`.
+    const dashboard_visual = b.addSystemCommand(&.{ "node", "tools/dashboard_visual_check.mjs" });
+    dashboard_visual.setCwd(b.path("."));
+    const dashboard_visual_step = b.step("dashboard-visual", "Visual-regression check for the automation dashboard (Node+Playwright)");
+    dashboard_visual_step.dependOn(&dashboard_visual.step);
 }
 
 fn resolveBackend(target: std.Build.ResolvedTarget) Backend {
