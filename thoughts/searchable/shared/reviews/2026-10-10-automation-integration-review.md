@@ -161,6 +161,15 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `2a4e6ee` — N19 native screenshots | Exact C/Zig async-state, ownership, deadline, size-limit and live-test review | **CODE BLOCKED; integrated gate pending**. | C/Zig byte ownership, async refs, cancellation, window teardown and TooLarge transfer are balanced. BLOCKER: once the snapshot callback starts, synchronous Cairo encoding blocks GTK without observing abandonment/deadline, so a timed-out call can leave the browser main thread doing unbounded abandoned work; the 1 ms test does not hold the writer across expiry. SHOULD: overflow-safe/first-chunk TooLarge classification and a raw-pixel bound for full-page surfaces. NIT: remove the test's `zb-shot-*` directory. Public PagePort/router/socket evidence remains pending. Mailed cc_1 as 4746. |
 | `ee19e40` — PagePort v3.3/v3.4 and N17/N18/N19 engine/routes | Exact PagePort/router/engine/SDK/fake/live-test diff review | **CODE BLOCKED; native integration pending**. | BLOCKER: after a selector wheel succeeds, the next `measure` can come from a replacement document and be accepted as success or drive another wheel; preserve/compare the dispatched document token and return `document_changed`. SHOULD: screenshot base64/JSON allocation and encoding sit outside the PagePort deadline. Parser ownership, file-path isolation, terminal port-error mapping, native hover and synthetic socket evidence otherwise look coherent. Mailed cc_2 as 4749. |
 | `314a14e` — N20 platform rate-limit signals | Exact automation.js and live-WebKit test review | **CODE BLOCKED; flow integration pending**. | BLOCKER: signal `text_hash` is the existing 32-bit FNV-1a, not the Phase-4 contract's SHA-256; the test checks only that a hash-shaped field exists. SHOULD: hidden Arkose/authwall nodes are treated as user-visible blocking signals. Platform scoping, hidden-toast handling, raw-text omission and real isolated-world injection are otherwise covered. Mailed cc_1 as 4750. |
+| `c750b87` — GTK PagePort v3.3/v3.4 wiring and measure op | Exact adapter/script/live-WebKit diff and cross-seam review | **CODE BLOCKED; public E2E pending**. | Vtable completeness, C-string ownership, file error mapping and the non-scrolling measure op are correct. BLOCKER: post-wheel `.document_changed` or `.leaving` from the acknowledgement is ignored, then offsets are read from the replacement document; offset-form scroll returns those as success. The seam needs distinct after-dispatch provenance. Mailed cc_1 as 4756. |
+| `6f12c70` — scroll document continuity and screenshot deadline | Exact engine/fake/test/docs diff | **APPROVED engine follow-up**. | Closes 4749: after one selector wheel, either in-view or out-of-view measure from doc B yields `-32001 document_changed` and no second wheel. Capture arriving at/past the screenshot deadline is now `screenshot_deadline`; base64 is explicitly defined as size-bounded after capture. The GTK after-dispatch seam issue in c750b87 remains separate. Mailed approval in 4755. |
+| `9534f61` — one real-binary PagePort v3.3/v3.4 E2E | Exact Python SDK/error mapping, fixture, PNG oracle and build wiring review | **APPROVED for stated scope: author gate 83/83 steps, 607/607 tests**. | The real binary is driven through the Python SDK. The test independently decodes PNG chunks/CRCs/filters and checks dimensions/pixels; observes trusted file changes with exact names/sizes and pre-click `bad_file`; and checks trusted wheels plus immediate offsets. Temporary profile/uploads are cleaned. Separate open items: after-wheel document provenance and CSS-based native hover. Mailed approval as 4758. |
+| `f11596b` — N20 flow-side platform-signal integration | Exact runner/routes/unit/server/live-fixture/docs diff review | **CODE BLOCKED; author reports 83/83 steps, 615/615 tests**. | The scan schedule, signal allowlisting/redaction, terminal `-32010`, cap release/no-count behavior, and real X/LinkedIn/Instagram socket oracles match the N20 contract. BLOCKER: a required pre-action or final scan may consume the remaining absolute flow budget, but the runner then starts an action with its pre-scan timeout or reports success when the final scan has zero time. The fake scan path consumes no fake-clock time, masking the regression. Mailed cc_2 as 4762. |
+| `eb49169` — N20 absolute-deadline and cancellation follow-up | Exact runner/fake/test diff and shared-worktree gate | **DEADLINE APPROVED; cancellation CODE BLOCKED. Author reports 83/83 steps, 620/620 tests**. | Scan latency now consumes the fake clock, the action budget is rechecked and both timeout locations are lowered, and a final scan that spends the budget prevents success/counting. BLOCKER: a non-cancelled failed child's reclassification scan still has no post-scan cancellation check, despite the commit's “after every scan” claim; the new cancellation tests do not cover that branch. Mailed cc_2 as 4772. |
+| `e6cb03e` — terminal after-dispatch document provenance and native CSS-hover oracle | Exact PagePort/engine/fake/socket-E2E diff review | **APPROVED engine/evidence slice: author gate 83/83 steps, 616/616 tests; adapter half pending**. | `DocumentReplaced` precisely means input was dispatched and the page was then replaced; the engine maps it terminally to `-32001` with no relocate/retry. The real socket oracle proves synthetic hover does not establish CSS `:hover`, while plain and humanized native hover do so with trusted moves and clear again after moving away. Mailed approval as 4764. |
+| `85797af` — screenshot encoding/cap and N20 signal follow-up | Exact C async-state/deadline/size review plus JS SHA-256 and live-oracle review | **CODE BLOCKED; author reports 83/83 steps, 607/607 tests**. | SHA-256 matches an independent Zig digest, hidden Arkose/authwall nodes are ignored, byte-limit accounting is overflow-safe, ownership is balanced, and temporary directories are removed. BLOCKER: the PNG sink observes only whether the waiter has marked the job abandoned, not the absolute deadline; `auto_job_wait` can accept `DONE` after expiry if completion wins the mutex/scheduling race. SHOULD: the full-page measurement and snapshot are separate async operations, so dynamic layout growth can evade the claimed raw-pixel cap. Mailed cc_1 as 4768. |
+| Clean export of `f11596b` | `D=$(mktemp -d); trap 'find "$D" -delete' EXIT; git archive f11596b \| tar -x -C "$D"; cd "$D"; timeout 900 xvfb-run -a zig build test --summary all` | **GREEN: 83/83 steps, 615/615 tests**. | All production-chain E2Es at that commit passed. The throwaway export was deleted immediately after the gate. This evidence predates `e6cb03e` and `85797af` and does not close their source-review findings. |
+| Shared WIP after `85797af`, pre-log-commit gate | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **RED: 80/83 steps; 530/530 executed tests passed; one compile error**. | Every live E2E reached by the gate passed. Root-test compilation failed at untracked cc_2 WIP `src/automation/pacing_store.zig:118`: unqualified `save` is ambiguous between `Persister.save` and the module-level function. Mailed cc_2 as 4770. This is not a committed-HEAD regression. |
 | Shared N17–N20 WIP before mutation checkpoint | Bounded `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 612/613 tests**. | Every real-binary E2E passed, including the new native screenshot/file/scroll and platform-signal cases. The sole failure is `automation_server_test.zig:1056`: the routed x.post oracle expects 8 evals, while the new N20 scans make 14. Mailed cc_2 as 4752; this is owner WIP, not a committed-HEAD regression. |
 
 ## Mutation audit at `137dfa1`
@@ -189,6 +198,9 @@ Checkpoint gate after restoring guards 1-5: the same clean export passed
 | 10 | Humanize budget preflight: delete the whole-path fit check for a humanized click. | `automation_engine_test` — failed: the tight-budget click reached dispatch logic and returned `deadline_before_input` instead of pre-dispatch `humanize_budget`; 77/78 tests passed. | `automation_input_test.py` — passed. | **KILLED** by the focused engine unit. The public E2E exercises humanized input but no tight-budget/no-dispatch case. |
 | 11 | Cookie telemetry redaction: copy the raw cookie value into the owned telemetry `name_hash` buffer instead of hashing the cookie name. | `automation_cookie_test` — failed its rejecting-sink assertion with `raw value crossed the sink: s3cret-v4lue`; 26/27 tests passed. | `automation_cookies_test.py` — passed. | **KILLED** by the focused telemetry unit. The real-binary E2E checks process output, not the TelemetrySink boundary. |
 | 12 | Strict Netscape import parsing: disable the check that the include-subdomains flag agrees with the domain's leading dot. | `automation_cookie_test` — failed the dedicated scope check: `imported:4, skipped:0` instead of `imported:2, skipped:2`; 26/27 tests passed. | `automation_cookies_test.py` — passed. | **KILLED** by the focused parser unit. The live E2E imports only well-formed lines. |
+| 13 | X logged-out gate: disable the login-link branch that converts a missing composer into `error.LoggedOut`. | `automation_x_test` — failed: expected `-32011`, got `-32001`; 17/18 tests passed. | `x_flows_test.py` — failed the same public contract after driving the real binary: expected `-32011 logged_out`, got `-32001`. | **KILLED** by both layers. |
+| 14 | Social RateLimiter daily cap: disable `SocialState.reserve`'s admission check against limiter remaining capacity and in-flight reservations. | `automation_social_test` — the cap/no-page-work and two-page tests received success instead of `-32010`, and the 8-thread cap=1 race admitted all 8 instead of exactly 1; 27/30 tests passed (two expected-error assertions trapped on success). | `social_flows_test.py` — failed `daily cap: no error`; the forbidden Instagram request reached the fixture. | **KILLED** by both layers. |
+| 15 | `dom.setInputFiles` regular-file guard: remove `G_FILE_TEST_IS_REGULAR` while retaining absolute-path/readability checks. | Root live-WebKit unit — failed `a directory is refused` plus its no-side-effect checks; 89/90 tests passed. | `automation_native_ports_test.py` — passed all six scenarios because its `bad_file` case supplies only a missing path. | **KILLED** by the focused native unit. The public socket E2E does not independently reject a readable directory. |
 
 ## Closure audit at `b9299f6`
 
@@ -803,15 +815,16 @@ The PagePort/engine must verify a stable final offset under the same deadline,
 or the public API must be defined as one wheel dispatch rather than completed
 scrolling. The socket E2E must read the offset immediately after the response.
 
-Status: **OPEN for PagePort/engine/socket integration (cc_1 / BlackRobin,
-cc_2 / BlueBeaver seam)**. `9ab165f` closes the native completion defect: the
+Status: **CLOSED by `c750b87` and `9534f61` for scroll completion**.
+`9ab165f` closes the native completion defect: the
 method waits for acknowledgement and then 100 ms quiet, or 250 ms with no
 scroll, under the same deadline. Its live WebKit test reads exact outer and
 inner offsets immediately after return, and a direct stale-token call proves
-no wheel dispatch. The agreed PagePort contract returns settled
-`ScrollOffsets`; closure still requires that interface to be wired and the
-socket E2E to read offsets immediately. Native-slice approval was mailed as
-4738.
+no wheel dispatch. `c750b87` wires the settled `ScrollOffsets` through the GTK
+PagePort, and `9534f61` drives both offset and selector forms over the external
+socket, requires trusted wheels, and compares the returned offsets with an
+immediate page read. The separate post-dispatch document-replacement defect is
+tracked below.
 
 ### BLOCKER — N18 selector scrolling accepts a replacement document after dispatch
 
@@ -822,11 +835,62 @@ the same selector, the engine can report success or dispatch another wheel
 there. This violates the agreed rule that a document change after any wheel is
 terminal and no replacement target is acted upon.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Preserve the first successfully
-dispatched document token, compare every later measure before success or
-dispatch, and add a regression with doc A/out-of-view followed by doc
-B/in-view that requires one wheel and `-32001 document_changed`. Mailed as
-4749.
+Status: **CLOSED by `6f12c70` (engine side)**. The first successfully
+dispatched document token is preserved and every later measure is compared
+before success or dispatch. Regressions cover doc A/out-of-view followed by
+doc B both in view and out of view; each requires one wheel and
+`-32001 document_changed`. The adapter's loss of after-dispatch provenance
+is tracked separately below. Mailed approval in 4755.
+
+### BLOCKER — N18 adapter returns replacement offsets after a dispatched wheel
+
+`c750b87` asks the acknowledgement tracker whether a wheel was acknowledged,
+the document changed, or navigation began. Only the acknowledged case is
+handled; the other two still call `readScrollOffsets`, which evaluates the
+current (replacement) document. Offset-form `dom.scroll` immediately returns
+those offsets as success, and selector-form performs an unnecessary read of
+the replacement before the engine's later token check.
+
+Status: **OPEN (cc_1 / BlackRobin, cc_2 / BlueBeaver seam)**. Preserve
+before-vs-after-dispatch provenance: stale-token rejection before the shim
+dispatch remains re-measurable, but a changed/leaving acknowledgement after
+the wheel is terminal and must not read or act on the replacement. Add direct
+adapter and offset-route regressions. Mailed as 4756.
+
+`e6cb03e` defines and tests the terminal engine-side `DocumentReplaced` seam.
+Closure still requires cc_1's production adapter to return it after the wheel
+and before reading replacement-page offsets; that work is present only in the
+shared uncommitted diff at the time of this review.
+
+### BLOCKER — screenshot encoding observes abandonment, not its absolute deadline
+
+`85797af` checks `job->state == ZB_JOB_RUNNING` at each Cairo PNG sink chunk.
+That bounds work after the waiter has changed the state to `ABANDONED`, but it
+does not itself observe the operation's deadline. `auto_job_wait` checks
+`DONE` before time and may accept a completion signalled after expiry if the
+encoder finishes before the awakened waiter reacquires the mutex. The slow
+writer oracle exercises only the favorable schedule where the waiter runs
+between chunks.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Store the absolute monotonic deadline on
+the job, have the PNG sink reject at/after it independent of waiter scheduling,
+and ensure a screenshot completed after that time cannot be returned as
+success. Add an oracle that delays the waiter/state transition while the sink
+crosses expiry. Mailed as 4768.
+
+### SHOULD — full-page screenshot pixel cap has a measure/snapshot race
+
+`85797af` measures the document in the automation world and then starts a
+separate asynchronous full-document snapshot. Timer-driven layout or a
+navigation can enlarge the document between those operations, so the raw
+surface WebKit materializes is not strictly bounded by the measured 32 Mi
+pixels. The static 50,000-pixel-height oracle proves refusal of an already
+large document but cannot detect this race.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Bind the capture to the measured region
+or add a dynamic-growth oracle and use a capture primitive that bounds raw
+allocation; if WebKitGTK cannot offer that guarantee, narrow the documented
+claim to best-effort preflight. Mailed as 4768.
 
 ### BLOCKER — N20 signal text hashing does not meet the SHA-256 contract
 
@@ -835,10 +899,44 @@ Phase-4 rate-limit contract explicitly requires SHA-256. The current small
 hash is collision-prone and readily reversible for predictable platform modal
 strings, so the value is not a sufficient telemetry redaction boundary.
 
-Status: **OPEN (cc_1 / BlackRobin)**. Use SHA-256 (or cryptographically hash
-before telemetry without exposing raw text) and pin the algorithm with an
-independent known vector / 64-hex-character oracle. Hidden Arkose and authwall
-nodes being treated as visible signals is a separate SHOULD. Mailed as 4750.
+Status: **CLOSED by `85797af`**. `automation.js` now hashes the UTF-8 bytes with
+SHA-256 and emits 64 lowercase hex; the live WebKit test independently computes
+the exact fixture digest with Zig's SHA-256. Hidden Arkose/authwall nodes also
+require visibility. Raw text is neither returned by the scan nor forwarded by
+the runner. Mailed as 4750 and reviewed in 4768.
+
+### BLOCKER — N20 scans can outlive the absolute flow deadline
+
+`f11596b` checks the flow deadline before a pre-action scan, but the action's
+parameters already contain the timeout computed from that pre-scan remainder.
+A clean or fail-open scan can consume the whole remainder; the runner then
+starts the action with the stale timeout. At the end, `scanClean` treats zero
+remaining time as success, so `finish` can return and count success without
+the required final scan when the last action reaches the deadline.
+
+Status: **CLOSED by `eb49169`**. The fake port now charges scan latency and
+honors its supplied timeout. The runner rechecks the one absolute deadline
+after a scan, lowers both root and `options.timeout_ms` before dispatching the
+following action, and converts a required final scan that spends the budget to
+`-32009 <platform>_flow_deadline` without counting success. Regressions cover
+both stale action timeout and final-scan exhaustion. Mailed as 4762 and
+reviewed in 4772.
+
+### BLOCKER — flow cancellation must remain authoritative around N20 scans
+
+`f11596b` dispatches scans directly through `External.evalJson`. It did not
+check cancellation before those calls, and a child step returning cancelled
+could be followed by a failed-step reclassification scan. `eb49169` checks the
+pre-action, navigation, finish, and directly-cancelled child paths, but its
+failed-step branch still does not recheck cancellation after a non-cancelled
+failure's scan.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. No scan may begin after cancellation, no
+page work may follow a cancelled child, and cancellation arriving during any
+scan must be checked immediately after it returns before the flow reports an
+older failure or continues. Add the failed-child/reclassification-scan race to
+the fake-clock cancellation oracle. Mailed as 4766, WIP follow-up 4769, and
+commit review 4772.
 
 ### SHOULD — closing one window terminates every related WebKit child process
 
