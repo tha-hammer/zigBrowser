@@ -111,15 +111,22 @@ def expect_equal(label: str, actual, expected) -> None:
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
 
 
-def run_scenarios(rpc: RpcClient, base_url: str) -> list[str]:
+def run_scenarios(rpc: RpcClient, fixture: AutomationFixtureServer) -> list[str]:
     passed: list[str] = []
+    base_url = fixture.base_url
 
-    # Sync on the DOM first: right after launch the initial load may still be
-    # in flight (title ''), see cc_1's native readiness gate.
-    expect_equal("initial waitFor", rpc.call("dom.waitFor", {"selector": "css=#msg", "state": "attached", "timeout_ms": 10000}), {"ok": True})
+    # Readiness: page.title is the FIRST request, sent while /core is still
+    # being served (the fixture delays it), with no DOM wait before it.
+    title_sent_at = time.monotonic()
+    title = rpc.call("page.title")["title"]
+    expect_equal("page.title (first call)", title, "zigBrowser Core Fixture")
+    deadline = time.monotonic() + 5
+    while fixture.core_served_at is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    served_at = fixture.core_served_at
+    expect("title was sent while /core was still loading", served_at is not None and title_sent_at < served_at, (title_sent_at, served_at))
     expect_equal("page.url", rpc.call("page.url")["url"], f"{base_url}/core")
-    expect_equal("page.title", rpc.call("page.title")["title"], "zigBrowser Core Fixture")
-    passed.append("page.url+title")
+    passed.append("page.title-first+url (readiness)")
 
     typed = rpc.evaluate("({n: 1.5, b: [true, null], s: 'x\"y', big: 2 ** 40})")
     expect_equal("page.evaluate typed", typed, {"n": 1.5, "b": [True, None], "s": 'x"y', "big": 2**40})
@@ -208,7 +215,7 @@ def main() -> int:
     prefix, env, runner_note = runner
     eprint(f"runner={runner_note}")
 
-    with AutomationFixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-automation-core-") as tmp:
+    with AutomationFixtureServer(core_delay_s=0.8) as fixture, tempfile.TemporaryDirectory(prefix="zb-automation-core-") as tmp:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(env)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
@@ -232,7 +239,7 @@ def main() -> int:
         rpc: RpcClient | None = None
         try:
             rpc = RpcClient(socket_path, args.timeout_sec)
-            passed = run_scenarios(rpc, fixture.base_url)
+            passed = run_scenarios(rpc, fixture)
         except Exception as exc:
             print("FAIL\tautomation-core")
             eprint(f"error={exc}")

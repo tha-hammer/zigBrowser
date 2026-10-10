@@ -3,6 +3,7 @@
 
 import http.server
 import threading
+import time
 import unittest
 import urllib.request
 
@@ -85,6 +86,10 @@ class _AutomationFixtureHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "not found")
             return
 
+        if self.path == "/core" and self.server.core_delay_s > 0:
+            # Deterministically slow initial load for readiness tests.
+            time.sleep(self.server.core_delay_s)
+
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -92,15 +97,18 @@ class _AutomationFixtureHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+        if self.path == "/core":
+            self.server.core_served_at = time.monotonic()
 
     def log_message(self, fmt, *args):
         return
 
 
 class AutomationFixtureServer:
-    def __init__(self, host="127.0.0.1", port=0):
+    def __init__(self, host="127.0.0.1", port=0, core_delay_s=0.0):
         self.host = host
         self.port = port
+        self.core_delay_s = core_delay_s
         self._server = None
         self._thread = None
         self.base_url = None
@@ -110,6 +118,8 @@ class AutomationFixtureServer:
             (self.host, self.port),
             _AutomationFixtureHandler,
         )
+        self._server.core_delay_s = self.core_delay_s
+        self._server.core_served_at = None
         actual_host, actual_port = self._server.server_address
         self.base_url = f"http://{actual_host}:{actual_port}"
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -123,6 +133,11 @@ class AutomationFixtureServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
         return False
+
+    @property
+    def core_served_at(self):
+        """time.monotonic() when /core finished being written, or None."""
+        return None if self._server is None else self._server.core_served_at
 
     def fetch(self, path):
         if self.base_url is None:
