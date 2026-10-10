@@ -256,6 +256,12 @@
   }
 
   function synthesizeFill(element, value) {
+    if (element.isContentEditable) {
+      element.focus();
+      selectContents(element, false);
+      editableInsert(element, value, value === '' ? 'deleteContentBackward' : 'insertText');
+      return;
+    }
     element.focus();
     element.value = value;
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
@@ -263,6 +269,16 @@
   }
 
   function synthesizeType(element, text) {
+    if (element.isContentEditable) {
+      element.focus();
+      selectContents(element, true);
+      for (const char of text) {
+        element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: char }));
+        editableInsert(element, char, 'insertText');
+        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: char }));
+      }
+      return;
+    }
     element.focus();
     for (const char of text) {
       element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: char }));
@@ -270,6 +286,67 @@
       element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
       element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: char }));
     }
+  }
+
+  // Select the element's contents, or (collapseToEnd) put the caret after them.
+  function selectContents(element, collapseToEnd) {
+    const selection = element.ownerDocument.getSelection();
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    if (collapseToEnd) range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Insert `text` at the selection the way an editor sees real typing:
+  // a cancelable beforeinput first. If the page cancels it (editors such as
+  // Draft.js apply the edit to their own model), the browser inserts nothing
+  // and fires no input event, so neither do we. Otherwise execCommand performs
+  // a native edit (undo stack, input event); when it is unavailable, a Range
+  // insert stands in and we fire input ourselves.
+  function editableInsert(element, text, inputType) {
+    const doc = element.ownerDocument;
+    const data = inputType === 'insertText' ? text : null;
+    const proceed = element.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, composed: true, inputType, data
+    }));
+    if (!proceed) return;
+
+    let nativeInput = false;
+    const sawInput = () => { nativeInput = true; };
+    element.addEventListener('input', sawInput, true);
+    let done = false;
+    try {
+      done = inputType === 'insertText'
+        ? doc.execCommand('insertText', false, text)
+        : doc.execCommand('delete', false);
+    } catch (_) {
+      done = false;
+    } finally {
+      element.removeEventListener('input', sawInput, true);
+    }
+
+    if (!done) rangeInsert(element, text);
+    if (!done || !nativeInput) {
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType, data }));
+    }
+  }
+
+  function rangeInsert(element, text) {
+    const doc = element.ownerDocument;
+    const selection = doc.getSelection();
+    if (selection.rangeCount === 0 || !element.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+      selectContents(element, true);
+    }
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    if (text.length === 0) return;
+    const node = doc.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   function resolveForCommand(command) {

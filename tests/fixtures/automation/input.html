@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Automation Input Fixture</title>
+  </head>
+  <body>
+    <!-- Plain contenteditable: the browser's own editing applies the text. -->
+    <div id="plain" contenteditable="true" style="min-height: 20px; border: 1px solid #999"></div>
+
+    <!-- Draft.js-like editor (the shape of X's post box): it cancels every
+         beforeinput, applies the edit to its own model, and re-renders. -->
+    <div id="draft" contenteditable="true" style="min-height: 20px; border: 1px solid #999"></div>
+
+    <script>
+      window.plainInputs = 0;
+      document.getElementById('plain').addEventListener('input', function () {
+        window.plainInputs += 1;
+      });
+
+      window.draftModel = '';
+      window.draftBeforeInputs = 0;
+      var draft = document.getElementById('draft');
+      function renderDraft() {
+        draft.textContent = window.draftModel;
+        var range = document.createRange();
+        range.selectNodeContents(draft);
+        range.collapse(false);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      draft.addEventListener('beforeinput', function (event) {
+        window.draftBeforeInputs += 1;
+        event.preventDefault();
+        var sel = window.getSelection();
+        var replacingAll = sel.rangeCount > 0 && !sel.isCollapsed &&
+          sel.toString() === window.draftModel;
+        if (event.inputType === 'insertText' || event.inputType === 'insertReplacementText') {
+          window.draftModel = (replacingAll ? '' : window.draftModel) + (event.data || '');
+        } else if (event.inputType === 'deleteContentBackward') {
+          window.draftModel = replacingAll ? '' : window.draftModel.slice(0, -1);
+        } else if (event.inputType === 'deleteContent' || event.inputType === 'deleteByCut') {
+          if (replacingAll) window.draftModel = '';
+        }
+        renderDraft();
+      });
+    </script>
+  </body>
+</html>
