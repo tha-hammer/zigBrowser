@@ -21,8 +21,7 @@ everywhere; real (trusted) pointer and key input, optionally human-paced,
 works on the Linux/GTK build, as do file uploads through the browser's own
 file chooser, real wheel scrolling, real hover and PNG screenshots. X,
 LinkedIn and Instagram flows are built from those commands, with a login
-gate, pacing (saving it in the profile is built, but not yet wired into
-the real binary: see "What is NOT verified"), one selector table
+gate, pacing (saved in the profile across restarts), one selector table
 per site, and a stop on the platforms' own checkpoint, CAPTCHA and limit
 pages. Everything is tested against local fixtures and the real binary. **No live
 site (x.com, linkedin.com, instagram.com) has been touched by any test.**
@@ -64,11 +63,15 @@ error codes). Build notes for other platforms: `docs/how-to-build.md`.
    user) is trusted.
 3. Native input, humanize and the site flows are new opt-in features; plain
    synthetic `dom.*` behaves as before.
-4. **Pacing will survive a restart (pending).** The store and server that
-   keep the day's action counts and the `social.set_pacing` settings in
-   `<profile dir>/automation-pacing.json` (mode 0600) are done, but the
-   real binary does not pass the profile path yet (cc_1's `app.zig`
-   hunk), so today a restart still resets pacing.
+4. **Pacing survives a restart.** The day's action counts (the shared
+   LinkedIn/Instagram cap and the X cap) and the `social.set_pacing`
+   settings are kept in `<profile dir>/automation-pacing.json` (mode
+   0600). To reset them by hand, stop the browser and delete that file.
+6. **Windows (N23).** `page.list` lists the open windows (a login popup
+   appears with its opener), `window_id` sends any `page.*`/`dom.*` call to
+   one of them, and `page.close` closes a popup. Closing a popup unloads
+   its opener's page (they share a web process): `page.navigate` the
+   opener again afterwards.
 5. **Site flows stop on platform stop signs.** A checkpoint, CAPTCHA or
    limit dialog/toast ends an `x.*`, `linkedin.*` or `instagram.*` flow
    with -32010 and `data.signal` before anything else is clicked, and the
@@ -85,16 +88,17 @@ Python SDK.
 | Method(s) | What it does | Verified by |
 |---|---|---|
 | `page.navigate`, `page.reload`, `page.url`, `page.title`, `page.evaluate` | Page control; evaluate returns JSON, exceptions as -32603 with the class name only | U, S, E (`automation_core_test.py`, readiness), SDK, L (`sdk_python_live_test.py`) |
-| `page.screenshot` | `{data: base64 PNG, width, height}` of the viewport or (`fullPage`) the document; at most 16 MiB of PNG, else -32603 `screenshot_too_large`; the 32 MiP full-page cap is a best-effort preflight (the document can grow between measuring and capturing) and the deadline bound has a known race (both RoseCat 4768, open with cc_1) | U, E (`automation_native_ports_test.py`: valid PNG, size = viewport × dpr, a known pixel colour), webkit live tests |
+| `page.screenshot` | `{data: base64 PNG, width, height}` of the viewport or (`fullPage`) the document; at most 16 MiB of PNG and 32 MiP (checked before the capture and again on the captured surface), else -32603 `screenshot_too_large`; a capture that ends at or after its deadline is a timeout (`baf151f`, `b5fab82`) | U, E (`automation_native_ports_test.py`: valid PNG, size = viewport × dpr, a known pixel colour), webkit live tests |
 | `dom.query`, `dom.getText`, `dom.getAttribute`, `dom.waitFor` | Reads and waits with selector engines `css=`, `xpath=`, `text=`, `testid=`, `role=` | U, S, E, SDK, L |
 | `dom.click`, `dom.fill`, `dom.type`, `dom.press`, `dom.selectOption` | Actions with actionability checks (visible, stable, not covered, enabled, editable), retried until the deadline; contenteditable/Draft editors; `trial`, `force`, `strict`, `delay_ms` | U (incl. retry/deadline mutation tests), E (`automation_input_test.py`), SDK, L |
 | `dom.setInputFiles` | Chooses files through WebKit's own file chooser (hidden inputs fine); absolute readable files only (-32602 `bad_file`, nothing clicked); applied-but-unconfirmed is -32009 `files_unconfirmed`, never repeated | U, S, E (`automation_native_ports_test.py`: trusted `change` with exact names and sizes, single and multiple, `bad_file`), SDK |
 | `dom.hover` | Synthetic: events only (no CSS `:hover`); native: a real pointer move (humanized: a curved path), so `:hover` menus open | U, S, E (`automation_scroll_test.py`: `:hover` style only for native), SDK |
-| `dom.scroll` | A selector into view, or the page by x/y; native: real wheel events, answered once scrolling has settled; the engine never accepts a replaced page (`6f12c70`), and the adapter's last step (no offsets from a page replaced after the wheel, `569e47a`) is still under review | U, S, E (`automation_scroll_test.py`, `automation_native_ports_test.py`: offsets read in the next command equal the answer, trusted wheels), webkit live tests, SDK |
+| `dom.scroll` | A selector into view, or the page by x/y; native: real wheel events, answered once scrolling has settled, never with a replaced page's offsets (`6f12c70`, `569e47a`, `2a31ffd`) | U, S, E (`automation_scroll_test.py`, `automation_native_ports_test.py`: offsets read in the next command equal the answer, trusted wheels), webkit live tests, SDK |
 | `options.input: "native"` on click/type/press/hover/scroll | Real GDK pointer/key/wheel events (`isTrusted`), bound to the located document, partial-input reporting, never retried after dispatch | U (engine with fake port, document change, partial input), E (socket native e2e by cc_1), webkit live tests |
 | `options.humanize` (native only) | Curved pointer path from the last pointer position, 80-200 ms key gaps, 300-600 ms word pauses, whole schedule pre-checked (`humanize_budget`) | U (seeded RNG, budget, corners, document change), E (cc_1 humanized click/type e2e) |
 | `cookies.getAll`, `cookies.set`, `cookies.delete`, `cookies.import` (Netscape/JSON) | Cookie store; values never logged or traced | U, S, E (`automation_cookies` e2e), SDK |
-| `social.login_check`, `social.rate_status`, `social.set_pacing`, `social.pause` | Login heuristic, shared social pacing (default 100/day, 3-8 s pause; profile persistence pending, see "What is NOT verified"), queue pause | U, S (restart on the same file, corrupt file), SDK, L |
+| `social.login_check`, `social.rate_status`, `social.set_pacing`, `social.pause` | Login heuristic, shared social pacing (default 100/day, 3-8 s pause, saved in the profile), queue pause | U, S (restart on the same file, corrupt file), E (`automation_pacing_persist_test.py`: restart, profile isolation, corrupt file), SDK, L |
+| `page.list`, `page.close`, `window_id` on `page.*`/`dom.*` (N23) | Window targeting: one queue per window; a gone window is -32011 `no_window` with no page work; the primary cannot be closed | U, S (targeting, close FIFO, gone/unknown ids on every page path, telemetry), E (`automation_windows_test.py`: popup listed with its opener, targeted fill/eval only in the popup, close, `no_window`, opener restored by navigate), webkit live matrix (cc_1), SDK |
 | Platform stop signs in every site flow (N20) | automation.js `rateLimitScan` after every navigation, before actions, after a failed step and before success; -32010 `{signal, platform}`; nothing clicked after a detection; one absolute flow deadline and cancellation respected | U (incl. scan latency, cancellation, mutants), S, E (`x_flows_test.py`: Arkose challenge, daily-limit toast; `social_flows_test.py`: LinkedIn checkpoint redirect, invitation-limit modal, Instagram "Try Again Later") |
 | `x.post`, `x.schedule_post`, `x.login_check`, `x.selfcheck` | X composer flows (stale-draft clear, Post button picked by trial probes, toast confirmation, schedule dialog), 50/day cap, 120 s budget (`timeout_ms` up to 600 s), `options.input/humanize` | U (`x_test.zig`, `automation_x_test.zig`), S (deterministic one-queue-turn proof), E (`x_flows_test.py` on `tests/fixtures/x/composer.html`, including a humanized 280-character post; cc_1's `x_native_test.py` proves native, humanized input is trusted), SDK for the default X call shapes only: the Python/Node `x` wrappers cannot pass `options` or `timeout_ms` yet, so those are covered over the raw socket |
 | `linkedin.visit/connect/follow/message/like/comment/search/extract/selfcheck` | LinkedIn flows; session-cookie gate before navigation; https://www.linkedin.com URLs only; typed text; note cut to 300 | U (`linkedin_test.zig`, `automation_social_test.zig`), S (socket chain), L (`social_flows_test.py` on `tests/fixtures/linkedin/`), SDK |
@@ -107,8 +111,7 @@ automation range -32001..-32012, each with `data.trace_id` and
 
 Gate: `zig build test --summary all` (under Xvfb) runs everything above,
 including the real-binary e2e suites and the cross-platform check. Latest
-green author gate (fresh cache, at `4497fbd`): **83/83 steps, 631/631
-tests** (the first handoff was 80/80, 577/577 at `3b4dd8f`; see the review
+green joint gate (HEAD + the N23 files, fresh cache, for `3528d84`): **85/85 steps, 641/641 tests** (the first handoff was 80/80, 577/577 at `3b4dd8f`; see the review
 log for the reviewer's independent gates).
 
 ## What is NOT verified
@@ -129,11 +132,9 @@ log for the reviewer's independent gates).
   CAPTCHA and limit pages" in `docs/how-to-automate.md`), but only from the
   English text, paths and frames the fixtures model: a localized or
   redesigned page may still surface as an element failure.
-- **Pacing persistence on the real binary.** The store and server are
-  done and tested (`4dafb3a`), but until cc_1's `app.zig` hunk passes the
-  profile path to the server, the real browser still keeps pacing in
-  memory; the restart e2e (`automation_pacing_persist_test.py`) lands with
-  that hunk.
+- **Closing a popup unloads its opener's page** (shared WebKit web
+  process; documented, not changed, per the orchestrator). The opener needs
+  a `page.navigate` afterwards; the windows e2e asserts exactly this.
 - File uploads, real hover/scroll and screenshots are proven on local
   fixtures only (no site-specific upload widgets).
 - `selfcheck` reports counts only: no pass/fail policy, no visibility or
@@ -200,7 +201,7 @@ Never start with a personal or production account.
 
 ## Since the first handoff (9337bde)
 
-24 commits, all gated before commit; none amended.
+All commits gated before commit; none amended.
 
 - **N14 (cc_1, `6507b96`):** `x.post` / `x.schedule_post` with native,
   humanized input are trusted end to end (real binary).
@@ -214,15 +215,16 @@ Never start with a personal or production account.
   `dom.setInputFiles`, `dom.hover`, `dom.scroll`, `page.screenshot`, the
   GTK adapter wiring (with a test that fails the build if any PagePort
   method keeps its "unsupported" default), one real-binary e2e for all
-  three, and the document-replacement and screenshot-deadline work (the
-  adapter-side follow-ups `569e47a` and the 4768 deadline race are still
-  open with cc_1).
+  three, and the document-replacement and screenshot-deadline follow-ups
+  (`569e47a`, `2a31ffd`, `baf151f`, `b5fab82`).
 - **N20 (`314a14e`, `f11596b`, `eb49169`, `4f9c341`, `85797af`):**
   platform stop signs (see the table), SHA-256 `text_hash`, hidden nodes
   ignored, the absolute deadline and cancellation kept across scans.
-- **N21 (`4dafb3a`):** pacing persisted in the profile (store + server);
-  the profile wiring and real-binary e2e are pending (see "What is NOT
-  verified").
+- **N21 (`4dafb3a`, cc_1's `bf0d76b`, `1ca9ac5`, `07bf6b5`):** pacing
+  persisted in the profile, proven on the real binary (restart, profile
+  isolation, corrupt file).
+- **N23 (joint commit with cc_1):** `page.list`, `window_id`,
+  `page.close`, a stable window registry, and the popup e2e.
 - **X admission (`4497fbd`):** X posts reserve their slot like social
   actions, so concurrent windows cannot overshoot the X cap.
 
@@ -232,17 +234,19 @@ The running review log is
 `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
 (RoseCat). Updated for N22 (after RoseCat's mails up to 4785):
 
-- **Open:** N21 production wiring (`app.zig`, cc_1) and its real-binary
-  restart/profile-isolation e2e (RoseCat 4773/4784; core `4dafb3a`
-  APPROVED). `569e47a` (adapter half of 4756) and `85797af` (RoseCat 4768:
-  the PNG sink must observe the absolute deadline; full-page measure and
-  snapshot race the pixel cap) are with cc_1. N23 (window targeting) must
-  add the two-window X cap oracle (RoseCat 4785) before targeted windows
-  can run X flows concurrently.
+- **Open:** the joint N23 commit `3528d84` awaits RoseCat's final review
+  (its WIP findings 4791-4846 were addressed before the commit). Deferred
+  by the orchestrator: closing a popup ends the web process it shares with
+  its opener (see "What is NOT verified"). Only if site flows ever accept
+  `window_id` does the two-window X cap oracle (RoseCat 4785) become due;
+  today they refuse it.
 - **APPROVED or CLOSED since the first handoff:** `8a16668` (closes 4737),
   `5a9031c`, `6507b96`, `9534f61`, `6f12c70` (closes 4749), `e6cb03e`
   (engine half of 4756, native `:hover`), `eb49169` (deadline, 4762),
-  `4f9c341` (cancellation, 4766/4769/4772), `4dafb3a` (core).
+  `4f9c341` (cancellation, 4766/4769/4772), `4dafb3a` (core), `4497fbd`
+  (X admission), N21 closed (`bf0d76b`, `1ca9ac5`, `07bf6b5`), the N22
+  handoff corrections (`c8c0d6c`, `875ff2b`), and cc_1's screenshot and
+  scroll follow-ups (`569e47a`, `2a31ffd`, `baf151f`, `b5fab82`).
 
 Earlier items, kept for the record:
 
@@ -283,9 +287,7 @@ Known, not fixed in this branch, and deliberately left for later:
   raised it as a SHOULD and the orchestrator deferred it.
 - **`session.id_hash` is not implemented.** The compound social span has
   no session id hash because there is no session concept yet.
-- **Pacing state is still in memory on the real binary.** The N21 store
-  and server (`4dafb3a`) are done; the profile wiring (`app.zig`, cc_1)
-  and its real-binary e2e are pending.
+- ~~Pacing state is in memory only~~: done in N21.
 - **SDK `x` wrappers lack `options` and `timeout_ms`.** The Python and
   Node `x.post` / `x.schedule_post` wrappers send only the default call
   shape; native input, humanize and `timeout_ms` need a raw socket call
