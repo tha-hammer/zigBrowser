@@ -150,7 +150,7 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | `page.url` | — | `{url}` |
 | `page.title` | — | `{title}` |
 | `page.evaluate` | `expression` (JavaScript expression, may be a Promise) | `{result}`; a thrown error gives -32603 with `data.name` |
-| `page.screenshot` | `fullPage?`, `timeout_ms?` | `{data, width, height}`: `data` is a base64 PNG; a backend without screenshots answers -32603, a PNG over 16 MiB -32603 with `data.reason = "screenshot_too_large"` |
+| `page.screenshot` | `fullPage?`, `timeout_ms?` | `{data, width, height}`: `data` is a base64 PNG; a backend without screenshots answers -32603, a PNG over 16 MiB -32603 with `data.reason = "screenshot_too_large"`; a capture that ends past `timeout_ms` -32009 `screenshot_deadline` |
 
 ### DOM
 
@@ -195,7 +195,8 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
   scrolling has finished, so the next command sees the final offsets. A
   native scroll to a selector tries three wheels, then fails with -32009
   `scroll_not_reached` (for example when an inner scroller under the
-  centre takes the wheel).
+  centre takes the wheel). If the page navigates after a wheel, it stops
+  with -32001 `document_changed` and never scrolls the new page.
 
 ### Cookies
 

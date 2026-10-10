@@ -1611,3 +1611,29 @@ test "page.screenshot returns base64 PNG with its size; fullPage reaches the por
     defer big.deinit(gpa);
     try expectFailureData(big, -32603, "Internal error", "\"reason\":\"screenshot_too_large\"");
 }
+
+test "native dom.scroll: a new document after a wheel is terminal even when the next measure finds the target (RoseCat 4749)" {
+    // Doc A: target out of view, one wheel; then doc B (same selector)
+    // answers in view or out of view: never success, never a second wheel.
+    for ([_][]const u8{ measured("400", "300", "fedcba9876543210", "0"), measured("400", "5000", "fedcba9876543210", "0") }) |second| {
+        var h: Harness = undefined;
+        h.init();
+        defer h.deinit();
+        h.fake.eval_replies = &.{ .{ .json = measured("400", "5000", "0123456789abcdef", "0") }, .{ .json = second } };
+        var outcome = try h.run("dom.scroll", "{\"selector\":\"css=#far\",\"options\":{\"input\":\"native\"}}");
+        defer outcome.deinit(gpa);
+        try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+        try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    }
+}
+
+test "page.screenshot that returns at or past the command deadline is a timeout, not a late success" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.screenshot_cost_ms = 1000;
+    var outcome = try h.run("page.screenshot", "{\"timeout_ms\":1000}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"screenshot_deadline\"");
+}

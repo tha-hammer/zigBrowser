@@ -383,8 +383,12 @@ pub const Engine = struct {
 
     /// page.screenshot (v3.4): `{data: base64 PNG, width, height}`. A
     /// backend without screenshots keeps the -32603 "not supported" answer.
+    /// The deadline bounds the capture: a PNG that arrives at or after it is
+    /// action_timeout "screenshot_deadline". Encoding then is bounded by
+    /// size (at most max_screenshot_bytes in, 4/3 of that out).
     fn screenshot(self: *Engine, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
         const started = self.clock.nowMs();
+        const deadline = started +| timeout_ms;
         const shot = self.port.screenshot(gpa, full_page, timeout_ms) catch |err| {
             self.platformSpan(run, "screenshot", null, 0, 0, started, @errorName(err));
             if (err == error.Unsupported) return .{ .failure = .{ .code = internal_error_code, .message = "page.screenshot is not supported" } };
@@ -392,6 +396,7 @@ pub const Engine = struct {
         };
         defer gpa.free(shot.png);
         self.platformSpan(run, "screenshot", null, 0, shot.png.len, started, "ok");
+        if (self.clock.nowMs() >= deadline) return automationFailure(gpa, .action_timeout, "screenshot_deadline", run.ids);
         const encoder = std.base64.standard.Encoder;
         const data = try gpa.alloc(u8, encoder.calcSize(shot.png.len));
         defer gpa.free(data);
@@ -646,6 +651,10 @@ pub const Engine = struct {
     fn runNativeScroll(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
         if (!self.port.supportsNativeScroll()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
         var wheels: u32 = 0;
+        // The document the wheels went to: every later measure must come
+        // from it (a replacement document is never scrolled or reported).
+        var wheeled_buf: [max_document_token_len]u8 = undefined;
+        var wheeled: ?[]const u8 = null;
         while (true) {
             var measure_command = command.*;
             measure_command.locate = .{ .op = "measure", .action = "scroll", .focus = false };
@@ -660,6 +669,9 @@ pub const Engine = struct {
                     offsets = parseScrollOffsets(gpa, json);
                 },
             }
+            if (wheeled) |doc| if (!std.mem.eql(u8, doc, target.document().?)) {
+                return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
+            };
             const centre = page_port.Point{ .x = target.viewport_width / 2, .y = target.viewport_height / 2 };
             var delta = page_port.Point{ .x = command.scroll_x orelse 0, .y = command.scroll_y orelse 0 };
             if (command.selector != null) {
@@ -684,6 +696,11 @@ pub const Engine = struct {
                 continue;
             };
             self.platformSpan(run, "nativeScroll", null, 0, 0, started, "ok");
+            if (wheeled == null) {
+                const doc = target.document().?;
+                @memcpy(wheeled_buf[0..doc.len], doc);
+                wheeled = wheeled_buf[0..doc.len];
+            }
             wheels += 1;
             if (command.selector == null) return scrollResult(gpa, settled);
         }

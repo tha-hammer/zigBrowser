@@ -93,6 +93,8 @@ pub const FakePagePort = struct {
     screenshot_full_page: ?bool = null,
     screenshot_error: ?page_port.PortError = null,
     screenshot_png: []const u8 = "\x89PNG\r\n\x1a\nfake",
+    /// Simulated capture time on `clock`.
+    screenshot_cost_ms: u64 = 0,
     /// N20: automation.js rateLimitScan evals are answered from here (in
     /// order; the last repeats), cost no time, and are counted in
     /// `scan_calls` instead of `eval_calls`, so flow tests keep their step
@@ -257,6 +259,7 @@ pub const FakePagePort = struct {
         self.last_read_timeout_ms = timeout_ms;
         self.screenshot_calls += 1;
         self.screenshot_full_page = full_page;
+        if (self.clock) |clock| clock.now_ms += self.screenshot_cost_ms;
         if (self.screenshot_error) |err| return err;
         return .{ .png = try gpa.dupe(u8, self.screenshot_png), .width = 800, .height = 600 };
     }
