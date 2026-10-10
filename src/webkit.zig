@@ -2432,7 +2432,7 @@ const ShotDriver = struct {
         // An encoder still running at the deadline (held 150 ms per chunk)
         // stops at its next chunk: the caller returns at the deadline, and
         // the GTK thread is free again for the next page call.
-        const stopped_before = c.zb_automation_debug_png_stopped();
+        const stopped_before = c.zb_automation_debug_png_stopped() + c.zb_automation_debug_png_deadline_stops();
         c.zb_automation_debug_png_write_hold(150);
         const held_start = monotonicMs();
         const held = gtk_port.screenshot(port.ptr, gpa, false, 200);
@@ -2441,12 +2441,43 @@ const ShotDriver = struct {
         self.check(if (held) |_| false else |e| e == error.Timeout, "a held encoder past the deadline is a Timeout");
         self.check(held_ms < 600, "the caller returned at its deadline");
         var waited: u32 = 0;
-        while (c.zb_automation_debug_png_stopped() == stopped_before and waited < 2000) : (waited += 10) sleepMs(10);
+        // Whichever comes first stops it: the caller giving up, or the deadline.
+        while (c.zb_automation_debug_png_stopped() + c.zb_automation_debug_png_deadline_stops() == stopped_before and waited < 2000) : (waited += 10) sleepMs(10);
         c.zb_automation_debug_png_write_hold(0);
-        self.check(c.zb_automation_debug_png_stopped() == stopped_before + 1, "the abandoned encoder stopped");
+        self.check(c.zb_automation_debug_png_stopped() + c.zb_automation_debug_png_deadline_stops() == stopped_before + 1, "the late encoder stopped");
         const next_start = monotonicMs();
         self.check(std.mem.eql(u8, d.eval("return '1';", null), "1"), "the next page call works");
         self.check(monotonicMs() - next_start < 500, "the next page call is prompt");
+
+        // The sink enforces the absolute deadline itself: with the
+        // "caller gave up" check disabled, only the deadline can stop it.
+        const deadline_stops = c.zb_automation_debug_png_deadline_stops();
+        c.zb_automation_debug_png_ignore_abandon(1);
+        c.zb_automation_debug_png_write_hold(150);
+        const own = gtk_port.screenshot(port.ptr, gpa, false, 200);
+        if (own) |shot| gpa.free(shot.png) else |_| {}
+        self.check(if (own) |_| false else |e| e == error.Timeout, "the deadline-bound encoder times out");
+        waited = 0;
+        while (c.zb_automation_debug_png_deadline_stops() == deadline_stops and waited < 2000) : (waited += 10) sleepMs(10);
+        c.zb_automation_debug_png_write_hold(0);
+        c.zb_automation_debug_png_ignore_abandon(0);
+        self.check(c.zb_automation_debug_png_deadline_stops() == deadline_stops + 1, "the deadline itself stopped the encoder");
+        const after_own = monotonicMs();
+        self.check(std.mem.eql(u8, d.eval("return '1';", null), "1") and monotonicMs() - after_own < 500, "the GTK thread is free right after");
+
+        // The document grows between the measure and the capture: the
+        // capture is refused by its own size before any encoding.
+        const post_before = c.zb_automation_debug_shot_postcapture_refusals();
+        c.zb_automation_debug_shot_after_measure("var g = document.createElement('div'); g.id = 'grown'; g.style.cssText = 'width:3000px;height:20000px'; document.body.appendChild(g); void document.body.offsetHeight;");
+        const grown = gtk_port.screenshot(port.ptr, gpa, true, 15_000);
+        c.zb_automation_debug_shot_after_measure(null);
+        if (grown) |shot| std.debug.print("grown shot: {d}x{d}\n", .{ shot.width, shot.height }) else |_| {}
+        self.check(if (grown) |shot| blk: {
+            gpa.free(shot.png);
+            break :blk false;
+        } else |e| e == error.TooLarge, "a document that grew after the measure is TooLarge");
+        self.check(c.zb_automation_debug_shot_postcapture_refusals() == post_before + 1, "the captured size refused it");
+        _ = d.eval("document.getElementById('grown').remove(); return 0;", null);
 
         // A document over the pixel cap is refused before anything is
         // rendered; the viewport shot still works.

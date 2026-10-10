@@ -269,6 +269,14 @@ int zb_automation_debug_files_unmatched_hits(void);
  * encodes stopped because their caller had given up. */
 void zb_automation_debug_png_write_hold(unsigned int ms);
 int zb_automation_debug_png_stopped(void);
+/* Test hooks: keep encoding after the caller gave up (only the absolute
+ * deadline stops it), and count deadline stops; page script run between
+ * the full-page measure and the capture, and count captures refused by
+ * their own size. */
+void zb_automation_debug_png_ignore_abandon(int on);
+int zb_automation_debug_png_deadline_stops(void);
+void zb_automation_debug_shot_after_measure(const char *page_js);
+int zb_automation_debug_shot_postcapture_refusals(void);
 /* Test hooks: choosers cancelled because their job's caller had given up;
  * block the GTK thread for `ms` at set-files stage 1 (job start, before
  * its op is sent) or 2 (chooser, before the commit decision); 0 = off. */

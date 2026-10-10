@@ -1249,6 +1249,7 @@ struct ZbAutoJob {
   gsize max_png;        /* screenshot: largest encoded PNG accepted */
   GByteArray *png;      /* screenshot: encoded result */
   int png_w, png_h;     /* screenshot: its size in pixels */
+  gint64 deadline_us;   /* screenshot: absolute monotonic deadline */
 };
 
 static GMutex zb_auto_mutex;
@@ -2250,10 +2251,16 @@ static gboolean on_window_file_chooser(WebKitWebView *view, WebKitFileChooserReq
  *   the page cannot fake it) and refuses more than ZB_SCREENSHOT_MAX_PIXELS
  *   device pixels before WebKit renders anything: the encoded-size limit
  *   alone would not bound the raw surface.
+ *   That measure and the capture are separate steps: a document that grows
+ *   in between is rendered once, then refused by its captured size before
+ *   any encoding (the cap bounds what is encoded and returned; the raw
+ *   surface of a document that grew after the measure is bounded only by
+ *   WebKit).
  * - The encoder stops as soon as the PNG would pass the job's limit
- *   (TOO_LARGE, nothing returned) or the job is no longer running (its
- *   caller gave up at the deadline), so abandoned encoding never keeps the
- *   GTK thread busy past the next chunk. */
+ *   (TOO_LARGE, nothing returned), the job's absolute deadline has passed,
+ *   or the job is no longer running (its caller gave up), so encoding never
+ *   keeps the GTK thread busy past the next chunk after the deadline. A
+ *   result completed after the deadline is discarded (TIMEOUT). */
 
 #define ZB_SCREENSHOT_MAX_PIXELS (32.0 * 1024 * 1024)
 
@@ -2261,11 +2268,34 @@ typedef struct {
   ZbAutoJob *job;
   GByteArray *bytes;
   gsize max;
-  int stop; /* 0 writing, 1 over the limit, 2 the caller gave up */
+  int stop; /* 0 writing, 1 over the limit, 2 the caller gave up, 3 deadline */
 } ZbPngSink;
 
 static gint zb_auto_debug_png_hold_ms;
 static gint zb_auto_debug_png_stopped;
+static gint zb_auto_debug_png_ignore_abandon;
+static gint zb_auto_debug_png_deadline_stops;
+static gint zb_auto_debug_shot_postcapture;
+static gchar *zb_auto_debug_shot_after_measure; /* guarded by zb_auto_mutex */
+
+void zb_automation_debug_png_ignore_abandon(int on) {
+  g_atomic_int_set(&zb_auto_debug_png_ignore_abandon, on);
+}
+
+int zb_automation_debug_png_deadline_stops(void) {
+  return g_atomic_int_get(&zb_auto_debug_png_deadline_stops);
+}
+
+int zb_automation_debug_shot_postcapture_refusals(void) {
+  return g_atomic_int_get(&zb_auto_debug_shot_postcapture);
+}
+
+void zb_automation_debug_shot_after_measure(const char *page_js) {
+  g_mutex_lock(&zb_auto_mutex);
+  g_free(zb_auto_debug_shot_after_measure);
+  zb_auto_debug_shot_after_measure = g_strdup(page_js);
+  g_mutex_unlock(&zb_auto_mutex);
+}
 
 void zb_automation_debug_png_write_hold(unsigned int ms) {
   g_atomic_int_set(&zb_auto_debug_png_hold_ms, (gint)ms);
@@ -2281,10 +2311,14 @@ static cairo_status_t auto_png_write(void *closure, const unsigned char *data, u
   if (hold > 0) {
     g_usleep((gulong)hold * 1000); /* test hook: a slow encoder */
   }
+  if (g_get_monotonic_time() >= sink->job->deadline_us) {
+    sink->stop = 3;
+    return CAIRO_STATUS_WRITE_ERROR;
+  }
   g_mutex_lock(&zb_auto_mutex);
   int running = sink->job->state == ZB_JOB_RUNNING;
   g_mutex_unlock(&zb_auto_mutex);
-  if (!running) {
+  if (!running && !g_atomic_int_get(&zb_auto_debug_png_ignore_abandon)) {
     sink->stop = 2;
     return CAIRO_STATUS_WRITE_ERROR;
   }
@@ -2311,12 +2345,26 @@ static void on_auto_snapshot_ready(GObject *object, GAsyncResult *result, gpoint
     auto_async_release(job);
     return;
   }
-  ZbPngSink sink = {job, g_byte_array_new(), job->max_png, 0};
-  cairo_status_t status = cairo_surface_write_to_png_stream(surface, auto_png_write, &sink);
   int width = cairo_image_surface_get_width(surface);
   int height = cairo_image_surface_get_height(surface);
+  if (job->full_page && (double)width * (double)height > ZB_SCREENSHOT_MAX_PIXELS) {
+    /* The document grew after the measure: refuse before encoding. */
+    cairo_surface_destroy(surface);
+    g_atomic_int_inc(&zb_auto_debug_shot_postcapture);
+    auto_job_complete(job, ZB_AUTO_ERR_TOO_LARGE, NULL,
+                      g_strdup_printf("the captured document is %d x %d pixels, more than %.0f",
+                                      width, height, ZB_SCREENSHOT_MAX_PIXELS));
+    auto_async_release(job);
+    return;
+  }
+  ZbPngSink sink = {job, g_byte_array_new(), job->max_png, 0};
+  cairo_status_t status = cairo_surface_write_to_png_stream(surface, auto_png_write, &sink);
   cairo_surface_destroy(surface);
-  if (sink.stop == 2) {
+  if (sink.stop == 3) {
+    g_atomic_int_inc(&zb_auto_debug_png_deadline_stops);
+    g_byte_array_unref(sink.bytes);
+    auto_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, g_strdup("the deadline passed while encoding"));
+  } else if (sink.stop == 2) {
     g_atomic_int_inc(&zb_auto_debug_png_stopped);
     g_byte_array_unref(sink.bytes);
   } else if (sink.stop == 1) {
@@ -2343,6 +2391,22 @@ static void auto_screenshot_snapshot(ZbAutoJob *job, ZbWindow *win) {
                                               : WEBKIT_SNAPSHOT_REGION_VISIBLE,
                                WEBKIT_SNAPSHOT_OPTIONS_NONE, job->cancellable,
                                on_auto_snapshot_ready, auto_async_ref(job));
+}
+
+static void on_auto_shot_hook_done(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  JSCValue *value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(object), result, NULL);
+  if (value != NULL) {
+    g_object_unref(value);
+  }
+  auto_untrack(job);
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win != NULL && auto_job_running(job)) {
+    auto_screenshot_snapshot(job, win);
+  } else {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+  }
+  auto_async_release(job);
 }
 
 static void on_auto_shot_measured(GObject *object, GAsyncResult *result, gpointer user_data) {
@@ -2373,7 +2437,19 @@ static void on_auto_shot_measured(GObject *object, GAsyncResult *result, gpointe
   } else if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
   } else {
-    auto_screenshot_snapshot(job, win);
+    g_mutex_lock(&zb_auto_mutex);
+    gchar *after = g_strdup(zb_auto_debug_shot_after_measure);
+    g_mutex_unlock(&zb_auto_mutex);
+    if (after != NULL) {
+      /* Test hook: page script between the measure and the capture; the
+       * capture starts once it has run. */
+      auto_track(job, win);
+      webkit_web_view_evaluate_javascript(win->view, after, -1, NULL, NULL, job->cancellable,
+                                          on_auto_shot_hook_done, auto_async_ref(job));
+      g_free(after);
+    } else {
+      auto_screenshot_snapshot(job, win);
+    }
   }
   g_clear_error(&error);
   auto_async_release(job);
@@ -3530,7 +3606,12 @@ int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned i
   ZbAutoJob *job = auto_op_new(ZB_OP_SCREENSHOT);
   job->full_page = full_page != 0;
   job->max_png = max_bytes;
+  job->deadline_us = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
   int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  if (code == ZB_AUTO_OK && g_get_monotonic_time() > job->deadline_us) {
+    /* Completed, but only after the deadline: never a late success. */
+    code = ZB_AUTO_ERR_TIMEOUT;
+  }
   if (code == ZB_AUTO_OK) {
     g_mutex_lock(&zb_auto_mutex);
     GByteArray *png = job->png;
