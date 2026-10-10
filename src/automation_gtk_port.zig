@@ -170,9 +170,6 @@ const Ack = struct {
     }
 };
 
-/// Counts the page still owes for earlier calls that gave up (per document).
-var debt: ?Ack = null;
-var debt_mutex: SpinLock = .{};
 
 /// Guards `debt`: a few loads/stores, so a spin lock suffices (std.Io.Mutex
 /// would need an Io this adapter does not have).
@@ -229,17 +226,9 @@ fn isDocumentToken(token: []const u8) bool {
     return true;
 }
 
-/// Reads the page's acknowledgement counters; swappable so tests can drive
-/// the debt rules without a page.
-var ack_reader: *const fn (deadline: i64) PortError!?Ack = readAckFromPage;
-
-fn readAck(deadline: i64) PortError!?Ack {
-    return ack_reader(deadline);
-}
-
 /// The page's acknowledgement counters, or null while no automation script
 /// answers (the document is being replaced). A malformed answer is EvalFailed.
-fn readAckFromPage(deadline: i64) PortError!?Ack {
+fn readAckFromPage(_: *anyopaque, deadline: i64) PortError!?Ack {
     const gpa = std.heap.c_allocator;
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
@@ -253,81 +242,101 @@ fn readAckFromPage(deadline: i64) PortError!?Ack {
     return ack;
 }
 
-fn readBaseline(deadline: i64) PortError!Ack {
-    while (true) {
-        if (try readAck(deadline)) |ack| return ack;
-        sleepMs(@min(5, try remainingMs(deadline)));
-    }
-}
-
 const AckOutcome = enum { acknowledged, document_changed };
 
-/// Wait until the page reached `target`'s counts, or a different document
-/// replaced it.
-fn waitAck(target: Ack, deadline: i64) PortError!AckOutcome {
-    while (true) {
-        if (try readAck(deadline)) |now| {
-            if (!now.isDocument(&target.doc)) return .document_changed;
-            if (now.click >= target.click and now.keyup >= target.keyup) return .acknowledged;
-        }
-        sleepMs(@min(5, try remainingMs(deadline)));
-    }
-}
+/// Acknowledgement reading plus the debt the page still owes for earlier
+/// calls that gave up. Production uses one tracker bound to the live page
+/// (`page_acks`); tests build their own with a fake reader, so nothing global
+/// is ever swapped.
+const AckTracker = struct {
+    reader: *const fn (ctx: *anyopaque, deadline: i64) PortError!?Ack,
+    ctx: *anyopaque,
+    debt: ?Ack = null,
+    debt_mutex: SpinLock = .{},
 
-/// Before sending anything new: wait out what earlier calls still owe.
-/// A Timeout here means no new input was sent.
-fn drainDebt(deadline: i64) PortError!void {
-    debt_mutex.lock();
-    const owed = debt;
-    debt_mutex.unlock();
-    const target = owed orelse return;
-    _ = try waitAck(target, deadline);
-    debt_mutex.lock();
-    if (debt) |current| {
-        if (std.mem.eql(u8, &current.doc, &target.doc) and current.click <= target.click and current.keyup <= target.keyup) debt = null;
+    fn read(self: *AckTracker, deadline: i64) PortError!?Ack {
+        return self.reader(self.ctx, deadline);
     }
-    debt_mutex.unlock();
-}
 
-fn addDebt(target: Ack) void {
-    debt_mutex.lock();
-    defer debt_mutex.unlock();
-    if (debt) |current| {
-        if (std.mem.eql(u8, &current.doc, &target.doc)) {
-            debt = .{ .doc = target.doc, .click = @max(current.click, target.click), .keyup = @max(current.keyup, target.keyup) };
-            return;
+    fn readBaseline(self: *AckTracker, deadline: i64) PortError!Ack {
+        while (true) {
+            if (try self.read(deadline)) |ack| return ack;
+            sleepMs(@min(5, try remainingMs(deadline)));
         }
     }
-    debt = target;
-}
 
-/// Called right after a successful dispatch: the counts are owed from now on
-/// and stay owed through any failure (Timeout, a failed read, a cancel),
-/// since the events still reach the page. Only an acknowledgement or a
-/// document change settles them.
-fn settle(target: Ack, deadline: i64) PortError!AckOutcome {
-    addDebt(target);
-    const outcome = try waitAck(target, deadline);
-    debt_mutex.lock();
-    debt = null; // transactions are serialized: the debt was this target's
-    debt_mutex.unlock();
-    return outcome;
-}
+    /// Wait until the page reached `target`'s counts, or a different
+    /// document replaced it.
+    fn waitAck(self: *AckTracker, target: Ack, deadline: i64) PortError!AckOutcome {
+        while (true) {
+            if (try self.read(deadline)) |now| {
+                if (!now.isDocument(&target.doc)) return .document_changed;
+                if (now.click >= target.click and now.keyup >= target.keyup) return .acknowledged;
+            }
+            sleepMs(@min(5, try remainingMs(deadline)));
+        }
+    }
+
+    fn owed(self: *AckTracker) ?Ack {
+        self.debt_mutex.lock();
+        defer self.debt_mutex.unlock();
+        return self.debt;
+    }
+
+    fn clearDebt(self: *AckTracker) void {
+        self.debt_mutex.lock();
+        defer self.debt_mutex.unlock();
+        self.debt = null;
+    }
+
+    fn addDebt(self: *AckTracker, target: Ack) void {
+        self.debt_mutex.lock();
+        defer self.debt_mutex.unlock();
+        if (self.debt) |current| {
+            if (std.mem.eql(u8, &current.doc, &target.doc)) {
+                self.debt = .{ .doc = target.doc, .click = @max(current.click, target.click), .keyup = @max(current.keyup, target.keyup) };
+                return;
+            }
+        }
+        self.debt = target;
+    }
+
+    /// Before sending anything new: wait out what earlier calls still owe.
+    /// A Timeout here means no new input was sent.
+    fn drainDebt(self: *AckTracker, deadline: i64) PortError!void {
+        const target = self.owed() orelse return;
+        _ = try self.waitAck(target, deadline);
+        self.clearDebt();
+    }
+
+    /// Called right after a successful dispatch: the counts are owed from now
+    /// on and stay owed through any failure (Timeout, a failed read, a
+    /// cancel), since the events still reach the page. Only an
+    /// acknowledgement or a document change settles them.
+    fn settle(self: *AckTracker, target: Ack, deadline: i64) PortError!AckOutcome {
+        self.addDebt(target);
+        const outcome = try self.waitAck(target, deadline);
+        self.clearDebt(); // transactions are serialized: the debt was this target's
+        return outcome;
+    }
+
+    /// Common start: valid token, drained debt, baseline in the expected document.
+    fn begin(self: *AckTracker, document: ?[]const u8, deadline: i64) PortError!Ack {
+        if (document) |token| {
+            if (std.mem.indexOfScalar(u8, token, 0) != null or !isDocumentToken(token)) return error.EvalFailed;
+        }
+        try self.drainDebt(deadline);
+        const base = try self.readBaseline(deadline);
+        if (document) |token| if (!base.isDocument(token)) return error.DocumentChanged;
+        return base;
+    }
+};
+
+var page_acks: AckTracker = .{ .reader = readAckFromPage, .ctx = &port_tag };
 
 fn mapNativeCode(rc: c_int) PortError!void {
     if (rc == c.ZB_AUTO_ERR_DOC_CHANGED) return error.DocumentChanged;
     return mapCode(rc);
-}
-
-/// Common start: no NUL, drained debt, baseline in the expected document.
-fn begin(document: ?[]const u8, deadline: i64) PortError!Ack {
-    if (document) |token| {
-        if (std.mem.indexOfScalar(u8, token, 0) != null or !isDocumentToken(token)) return error.EvalFailed;
-    }
-    try drainDebt(deadline);
-    const base = try readBaseline(deadline);
-    if (document) |token| if (!base.isDocument(token)) return error.DocumentChanged;
-    return base;
 }
 
 /// Real pointer motion + left click at viewport CSS px (x, y). Returns once
@@ -336,14 +345,14 @@ pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    const base = try begin(document, deadline);
+    const base = try page_acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var err: [*c]u8 = null;
     const rc = c.zb_native_click(null, x, y, 1, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    _ = try settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup }, deadline);
+    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup }, deadline);
 }
 
 /// One real key press (DOM key name) with modifiers: bit0 Shift, bit1
@@ -357,7 +366,7 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]con
     defer gpa.free(key_z);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    const base = try begin(document, deadline);
+    const base = try page_acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var releases: c_int = 0;
@@ -365,7 +374,7 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]con
     const rc = c.zb_native_key(null, key_z.ptr, @intCast(modifiers & 0x0f), expected, clampMs(try remainingMs(deadline)), &releases, &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    _ = try settle(.{ .doc = base.doc, .click = base.click, .keyup = base.keyup + releases }, deadline);
+    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click, .keyup = base.keyup + releases }, deadline);
 }
 
 /// Types `text` one code point at a time with real key events. `sent_chars`
@@ -381,7 +390,7 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    var acked = try begin(document, deadline);
+    var acked = try page_acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     // Without an explicit token the baseline document is the one to stay in.
     const expected = docZ(&doc_z, document orelse &acked.doc);
@@ -399,7 +408,7 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
         sent_chars.* += @intCast(chars);
         try mapNativeCode(rc);
         acked.keyup += releases;
-        if (try settle(acked, deadline) == .document_changed) return error.DocumentChanged;
+        if (try page_acks.settle(acked, deadline) == .document_changed) return error.DocumentChanged;
     }
 }
 
@@ -409,31 +418,25 @@ fn docZ(buf: *[doc_len + 1]u8, token: []const u8) [*:0]const u8 {
     return @ptrCast(buf);
 }
 
+/// Scripted acknowledgement reads for a test-local AckTracker.
 const FakeAcks = struct {
-    var script: []const FakeStep = &.{};
-    var index: usize = 0;
+    steps: []const Step,
+    index: usize = 0,
 
-    const FakeStep = union(enum) { ack: Ack, fail: PortError };
+    const Step = union(enum) { ack: Ack, fail: PortError };
 
-    fn read(_: i64) PortError!?Ack {
-        const step = script[@min(index, script.len - 1)];
-        index += 1;
+    fn read(ctx: *anyopaque, _: i64) PortError!?Ack {
+        const self: *FakeAcks = @ptrCast(@alignCast(ctx));
+        const step = self.steps[@min(self.index, self.steps.len - 1)];
+        self.index += 1;
         return switch (step) {
             .ack => |a| a,
             .fail => |e| e,
         };
     }
 
-    fn run(steps: []const FakeStep) void {
-        script = steps;
-        index = 0;
-        ack_reader = read;
-        debt = null;
-    }
-
-    fn reset() void {
-        ack_reader = readAckFromPage;
-        debt = null;
+    fn tracker(self: *FakeAcks) AckTracker {
+        return .{ .reader = read, .ctx = self };
     }
 };
 
@@ -444,34 +447,35 @@ fn testAck(keyup: i64) Ack {
 }
 
 test "a failed acknowledgement read after dispatch keeps the debt for the next call" {
-    defer FakeAcks.reset();
     // Dispatched one key (target keyup 6); the read then fails.
-    FakeAcks.run(&.{.{ .fail = error.EvalFailed }});
-    try std.testing.expectError(error.EvalFailed, settle(testAck(6), deadlineAfter(1000)));
-    try std.testing.expect(debt != null);
-    try std.testing.expectEqual(@as(i64, 6), debt.?.keyup);
+    var failing: FakeAcks = .{ .steps = &.{.{ .fail = error.EvalFailed }} };
+    var acks = failing.tracker();
+    try std.testing.expectError(error.EvalFailed, acks.settle(testAck(6), deadlineAfter(1000)));
+    try std.testing.expectEqual(@as(i64, 6), acks.owed().?.keyup);
 
     // The next call drains it first: the page still shows 5 twice, then 6;
     // only then is its baseline read (keyup 6), and the debt is gone.
-    FakeAcks.run(&.{ .{ .ack = testAck(5) }, .{ .ack = testAck(5) }, .{ .ack = testAck(6) }, .{ .ack = testAck(6) } });
-    debt = testAck(6);
-    const base = try begin(null, deadlineAfter(1000));
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = testAck(5) }, .{ .ack = testAck(5) }, .{ .ack = testAck(6) }, .{ .ack = testAck(6) } } };
+    acks.reader = FakeAcks.read;
+    acks.ctx = &page;
+    const base = try acks.begin(null, deadlineAfter(1000));
     try std.testing.expectEqual(@as(i64, 6), base.keyup);
-    try std.testing.expectEqual(@as(usize, 4), FakeAcks.index);
-    try std.testing.expect(debt == null);
+    try std.testing.expectEqual(@as(usize, 4), page.index);
+    try std.testing.expect(acks.owed() == null);
 }
 
 test "debt is settled by an acknowledgement or a document change" {
-    defer FakeAcks.reset();
-    FakeAcks.run(&.{.{ .ack = testAck(6) }});
-    try std.testing.expectEqual(AckOutcome.acknowledged, try settle(testAck(6), deadlineAfter(1000)));
-    try std.testing.expect(debt == null);
+    var acked: FakeAcks = .{ .steps = &.{.{ .ack = testAck(6) }} };
+    var acks = acked.tracker();
+    try std.testing.expectEqual(AckOutcome.acknowledged, try acks.settle(testAck(6), deadlineAfter(1000)));
+    try std.testing.expect(acks.owed() == null);
 
     var other = testAck(0);
     @memcpy(&other.doc, "fedcba9876543210");
-    FakeAcks.run(&.{.{ .ack = other }});
-    try std.testing.expectEqual(AckOutcome.document_changed, try settle(testAck(6), deadlineAfter(1000)));
-    try std.testing.expect(debt == null);
+    var moved: FakeAcks = .{ .steps = &.{.{ .ack = other }} };
+    var acks2 = moved.tracker();
+    try std.testing.expectEqual(AckOutcome.document_changed, try acks2.settle(testAck(6), deadlineAfter(1000)));
+    try std.testing.expect(acks2.owed() == null);
 }
 
 test "C error codes map onto PortError" {
