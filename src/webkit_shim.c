@@ -1100,6 +1100,220 @@ static gboolean on_signal_hup(gpointer user_data) {
   return G_SOURCE_CONTINUE;
 }
 
+/* ---- Automation bridge: server-thread -> GTK main-thread hand-off ----
+ *
+ * A job is refcounted: the waiter holds one ref, the queued GSource holds one,
+ * and an in-flight async op holds one. The state machine below, guarded by
+ * zb_auto_mutex, guarantees each job completes exactly once and that a job
+ * whose waiter gave up is never started (PENDING -> CANCELLED) or has its late
+ * result dropped (RUNNING -> ABANDONED). */
+
+enum {
+  ZB_LOOP_PENDING = 0,
+  ZB_LOOP_RUNNING = 1,
+  ZB_LOOP_ENDED = 2,
+};
+
+enum {
+  ZB_JOB_PENDING = 0,
+  ZB_JOB_RUNNING,
+  ZB_JOB_DONE,
+  ZB_JOB_CANCELLED,
+  ZB_JOB_ABANDONED,
+};
+
+typedef struct ZbAutoJob ZbAutoJob;
+typedef void (*ZbAutoStartFn)(ZbAutoJob *job);
+
+struct ZbAutoJob {
+  gint refcount;
+  int state; /* guarded by zb_auto_mutex */
+  int is_async;
+  int code;
+  char *result;
+  char *err;
+  ZbAutoStartFn start;
+  ZbMainJobFn fn;
+  void *ctx;
+};
+
+static GMutex zb_auto_mutex;
+static GCond zb_auto_cond;
+static int zb_auto_loop_state = ZB_LOOP_PENDING;
+
+static ZbAutoJob *auto_job_new(ZbAutoStartFn start, int is_async) {
+  ZbAutoJob *job = g_new0(ZbAutoJob, 1);
+  job->refcount = 1;
+  job->state = ZB_JOB_PENDING;
+  job->start = start;
+  job->is_async = is_async;
+  return job;
+}
+
+static ZbAutoJob *auto_job_ref(ZbAutoJob *job) {
+  g_atomic_int_inc(&job->refcount);
+  return job;
+}
+
+static void auto_job_unref(gpointer data) {
+  ZbAutoJob *job = (ZbAutoJob *)data;
+  if (job == NULL || !g_atomic_int_dec_and_test(&job->refcount)) {
+    return;
+  }
+  g_free(job->result);
+  g_free(job->err);
+  g_free(job);
+}
+
+/* GTK thread. Records the outcome once and wakes waiters; takes ownership of
+ * result/err and frees them if the waiter already gave up. */
+static void auto_job_complete(ZbAutoJob *job, int code, char *result, char *err) {
+  g_mutex_lock(&zb_auto_mutex);
+  if (job->state == ZB_JOB_RUNNING) {
+    job->code = code;
+    job->result = result;
+    job->err = err;
+    job->state = ZB_JOB_DONE;
+    result = NULL;
+    err = NULL;
+  }
+  g_cond_broadcast(&zb_auto_cond);
+  g_mutex_unlock(&zb_auto_mutex);
+  g_free(result);
+  g_free(err);
+}
+
+static gboolean auto_job_dispatch(gpointer data) {
+  ZbAutoJob *job = (ZbAutoJob *)data;
+  g_mutex_lock(&zb_auto_mutex);
+  if (job->state != ZB_JOB_PENDING) {
+    g_mutex_unlock(&zb_auto_mutex);
+    return G_SOURCE_REMOVE;
+  }
+  job->state = ZB_JOB_RUNNING;
+  g_mutex_unlock(&zb_auto_mutex);
+
+  job->start(job);
+  return G_SOURCE_REMOVE;
+}
+
+static int auto_loop_ended_locked(void) {
+  return zb_auto_loop_state == ZB_LOOP_ENDED;
+}
+
+/* Queue the job on the default main context. An explicit idle source is used
+ * instead of g_main_context_invoke, which would run the job on the calling
+ * thread whenever no thread currently owns the default context. */
+static int auto_job_submit(ZbAutoJob *job) {
+  g_mutex_lock(&zb_auto_mutex);
+  int ended = auto_loop_ended_locked();
+  g_mutex_unlock(&zb_auto_mutex);
+  if (ended) {
+    return ZB_AUTO_ERR_NO_LOOP;
+  }
+
+  GSource *source = g_idle_source_new();
+  g_source_set_priority(source, G_PRIORITY_DEFAULT);
+  g_source_set_callback(source, auto_job_dispatch, auto_job_ref(job),
+                        auto_job_unref);
+  g_source_attach(source, g_main_context_default());
+  g_source_unref(source);
+  return ZB_AUTO_OK;
+}
+
+/* Waiter thread. Returns the job's code, or TIMEOUT / NO_LOOP after moving the
+ * job to CANCELLED (never started) or ABANDONED (async op in flight). A sync
+ * job that has already started is waited out regardless of the deadline. */
+static int auto_job_wait(ZbAutoJob *job, gint64 deadline_us) {
+  int code = ZB_AUTO_OK;
+  g_mutex_lock(&zb_auto_mutex);
+  for (;;) {
+    if (job->state == ZB_JOB_DONE) {
+      code = job->code;
+      break;
+    }
+
+    int give_up = 0;
+    int give_up_code = ZB_AUTO_ERR_TIMEOUT;
+    if (auto_loop_ended_locked()) {
+      give_up = 1;
+      give_up_code = ZB_AUTO_ERR_NO_LOOP;
+    } else if (deadline_us == G_MAXINT64) {
+      g_cond_wait(&zb_auto_cond, &zb_auto_mutex);
+      continue;
+    } else if (!g_cond_wait_until(&zb_auto_cond, &zb_auto_mutex, deadline_us)) {
+      give_up = job->state != ZB_JOB_DONE;
+    }
+
+    if (!give_up) {
+      continue;
+    }
+    if (job->state == ZB_JOB_PENDING) {
+      job->state = ZB_JOB_CANCELLED;
+      code = give_up_code;
+      break;
+    }
+    if (job->state == ZB_JOB_RUNNING && job->is_async) {
+      job->state = ZB_JOB_ABANDONED;
+      code = give_up_code;
+      break;
+    }
+    /* Sync job mid-run on the GTK thread: it finishes promptly. */
+    deadline_us = G_MAXINT64;
+  }
+  g_mutex_unlock(&zb_auto_mutex);
+  return code;
+}
+
+static gint64 auto_deadline(unsigned int timeout_ms) {
+  return g_get_monotonic_time() + (gint64)timeout_ms * G_TIME_SPAN_MILLISECOND;
+}
+
+static int auto_on_gtk_thread(void) {
+  return g_main_context_is_owner(g_main_context_default());
+}
+
+static void auto_start_invoke(ZbAutoJob *job) {
+  job->fn(job->ctx);
+  auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+}
+
+int zb_main_invoke_sync(ZbMainJobFn fn, void *ctx, unsigned int timeout_ms) {
+  if (fn == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+
+  g_mutex_lock(&zb_auto_mutex);
+  int ended = auto_loop_ended_locked();
+  g_mutex_unlock(&zb_auto_mutex);
+  if (ended) {
+    return ZB_AUTO_ERR_NO_LOOP;
+  }
+
+  if (auto_on_gtk_thread()) {
+    fn(ctx);
+    return ZB_AUTO_OK;
+  }
+
+  ZbAutoJob *job = auto_job_new(auto_start_invoke, 0);
+  job->fn = fn;
+  job->ctx = ctx;
+  gint64 deadline = auto_deadline(timeout_ms);
+  int code = auto_job_submit(job);
+  if (code == ZB_AUTO_OK) {
+    code = auto_job_wait(job, deadline);
+  }
+  auto_job_unref(job);
+  return code;
+}
+
+void zb_automation_loop_mark(int running) {
+  g_mutex_lock(&zb_auto_mutex);
+  zb_auto_loop_state = running ? ZB_LOOP_RUNNING : ZB_LOOP_ENDED;
+  g_cond_broadcast(&zb_auto_cond);
+  g_mutex_unlock(&zb_auto_mutex);
+}
+
 int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   const char *display = g_getenv("DISPLAY");
   if (display == NULL || display[0] == '\0') {
@@ -1153,7 +1367,9 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   app.sighup_source_id = g_unix_signal_add(SIGHUP, on_signal_hup, &app);
 
   webkit_web_view_load_uri(main_window->view, uri);
+  zb_automation_loop_mark(1);
   gtk_main();
+  zb_automation_loop_mark(0);
 
   remove_source(&app.sigint_source_id);
   remove_source(&app.sigterm_source_id);
