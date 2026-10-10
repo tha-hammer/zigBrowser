@@ -9,6 +9,9 @@ pub const Command = union(enum) {
         e2e_protocol: bool = false,
         automation_api: bool = false,
         automation_token_file: ?[]const u8 = null,
+        /// --profile-dir <path>: persistent cookies/storage. null = caller
+        /// uses `defaultProfileDir`.
+        profile_dir: ?[]const u8 = null,
     },
     screenshot: struct {
         url: []const u8,
@@ -60,6 +63,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     var e2e_protocol = false;
     var automation_api = false;
     var automation_token_file: ?[]const u8 = null;
+    var profile_dir: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < tokens.len) : (i += 1) {
@@ -85,6 +89,15 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
             automation_token_file = path;
             continue;
         }
+        if (std.mem.eql(u8, token, "--profile-dir")) {
+            i += 1;
+            if (i >= tokens.len) return .usage;
+            const path = tokens[i];
+            if (path.len == 0 or std.mem.startsWith(u8, path, "-")) return .usage;
+            if (profile_dir != null) return .usage;
+            profile_dir = path;
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "-")) {
             return .usage;
         }
@@ -103,7 +116,22 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
         .e2e_protocol = e2e_protocol,
         .automation_api = automation_api,
         .automation_token_file = automation_token_file,
+        .profile_dir = profile_dir,
     } };
+}
+
+const profile_subpath = "zigbrowser/profile";
+
+/// Default profile directory: $XDG_DATA_HOME/zigbrowser/profile, else
+/// $HOME/.local/share/zigbrowser/profile. A relative or empty XDG_DATA_HOME
+/// is ignored (XDG Base Directory spec). Returns null when neither is usable.
+pub fn defaultProfileDir(allocator: std.mem.Allocator, xdg_data_home: ?[]const u8, home: ?[]const u8) !?[]u8 {
+    if (xdg_data_home) |dir| {
+        if (std.fs.path.isAbsolute(dir)) return try std.fs.path.join(allocator, &.{ dir, profile_subpath });
+    }
+    const home_dir = home orelse return null;
+    if (home_dir.len == 0) return null;
+    return try std.fs.path.join(allocator, &.{ home_dir, ".local/share", profile_subpath });
 }
 
 test "parseArgs no args yields open with config default URL" {
@@ -209,4 +237,52 @@ test "parseArgs --screenshot ... --print-title sets flag" {
 test "parseArgs screenshot output starting with dash is usage" {
     const cmd = parseArgs(&.{ "zigBrowser", "--screenshot", "-bad.png", "https://example.com" });
     try std.testing.expect(cmd == .usage);
+}
+
+test "parseArgs --profile-dir captures the path (with or without automation)" {
+    const plain = parseArgs(&.{ "zigBrowser", "--profile-dir", "/tmp/zb-profile", "https://example.com" });
+    try std.testing.expect(plain == .open);
+    try std.testing.expectEqualStrings("/tmp/zb-profile", plain.open.profile_dir.?);
+
+    const with_api = parseArgs(&.{ "zigBrowser", "https://example.com", "--automation-api", "--profile-dir", "rel/profile" });
+    try std.testing.expect(with_api == .open);
+    try std.testing.expectEqualStrings("rel/profile", with_api.open.profile_dir.?);
+}
+
+test "parseArgs without --profile-dir leaves profile_dir null" {
+    const cmd = parseArgs(&.{ "zigBrowser", "https://example.com" });
+    try std.testing.expect(cmd.open.profile_dir == null);
+}
+
+test "parseArgs --profile-dir errors are usage" {
+    const cases = [_][]const []const u8{
+        &.{ "zigBrowser", "https://example.com", "--profile-dir" },
+        &.{ "zigBrowser", "--profile-dir", "-x", "https://example.com" },
+        &.{ "zigBrowser", "--profile-dir", "", "https://example.com" },
+        &.{ "zigBrowser", "--profile-dir", "/a", "--profile-dir", "/b", "https://example.com" },
+        &.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--profile-dir" },
+    };
+    for (cases) |args| try std.testing.expect(parseArgs(args) == .usage);
+}
+
+test "defaultProfileDir prefers XDG_DATA_HOME, then HOME/.local/share" {
+    const allocator = std.testing.allocator;
+    const xdg = (try defaultProfileDir(allocator, "/xdg/data", "/home/u")).?;
+    defer allocator.free(xdg);
+    try std.testing.expectEqualStrings("/xdg/data/zigbrowser/profile", xdg);
+
+    const home = (try defaultProfileDir(allocator, null, "/home/u")).?;
+    defer allocator.free(home);
+    try std.testing.expectEqualStrings("/home/u/.local/share/zigbrowser/profile", home);
+
+    // XDG spec: relative/empty XDG_DATA_HOME is ignored.
+    const relative = (try defaultProfileDir(allocator, "relative/dir", "/home/u")).?;
+    defer allocator.free(relative);
+    try std.testing.expectEqualStrings("/home/u/.local/share/zigbrowser/profile", relative);
+    const empty = (try defaultProfileDir(allocator, "", "/home/u")).?;
+    defer allocator.free(empty);
+    try std.testing.expectEqualStrings("/home/u/.local/share/zigbrowser/profile", empty);
+
+    try std.testing.expect((try defaultProfileDir(allocator, null, null)) == null);
+    try std.testing.expect((try defaultProfileDir(allocator, null, "")) == null);
 }
