@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Track A E2E: --automation-api starts a live UDS JSON-RPC server."""
+"""E2E: --automation-api serves real results from the live WebKitGTK page.
+
+Drives page.url, page.title, dom.getText and dom.click over the UDS JSON-RPC
+socket against a file:// fixture, and proves the click reached the page by
+reading the text it changed."""
 
 from __future__ import annotations
 
@@ -36,13 +40,13 @@ def recv_exact(sock: socket.socket, n: int) -> bytes:
     return chunks
 
 
-def call_rpc(socket_path: Path, timeout_sec: float) -> dict:
+def call_rpc(socket_path: Path, method: str, params: dict, req_id: int, timeout_sec: float) -> dict:
     deadline = time.monotonic() + timeout_sec
     last_error: OSError | None = None
     while time.monotonic() < deadline:
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(2.0)
+            sock.settimeout(timeout_sec)
             sock.connect(str(socket_path))
             break
         except OSError as exc:
@@ -54,9 +58,9 @@ def call_rpc(socket_path: Path, timeout_sec: float) -> dict:
     with sock:
         request = {
             "jsonrpc": "2.0",
-            "method": "page.url",
-            "params": {},
-            "id": 1,
+            "method": method,
+            "params": params,
+            "id": req_id,
         }
         payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
         sock.sendall(struct.pack(">I", len(payload)) + payload)
@@ -64,7 +68,16 @@ def call_rpc(socket_path: Path, timeout_sec: float) -> dict:
         header = recv_exact(sock, 4)
         length = struct.unpack(">I", header)[0]
         response = json.loads(recv_exact(sock, length).decode("utf-8"))
-        return response
+        if response.get("jsonrpc") != "2.0" or response.get("id") != req_id:
+            raise AssertionError(f"bad JSON-RPC envelope for {method}: {response}")
+        if "error" in response:
+            raise AssertionError(f"{method} returned an error: {response}")
+        return response["result"]
+
+
+def expect_equal(label: str, actual, expected) -> None:
+    if actual != expected:
+        raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
 
 
 def terminate(proc: subprocess.Popen[str]) -> int:
@@ -81,7 +94,7 @@ def terminate(proc: subprocess.Popen[str]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
-    parser.add_argument("--index", default="tests/fixtures/app/index.html")
+    parser.add_argument("--index", default="tests/fixtures/automation/lifecycle.html")
     parser.add_argument("--timeout-sec", type=float, default=20.0)
     parser.add_argument("--prefer-xvfb", action="store_true")
     args = parser.parse_args()
@@ -126,22 +139,6 @@ def main() -> int:
         stderr_thread.start()
 
         try:
-            response = call_rpc(socket_path, args.timeout_sec)
-            result = response.get("result")
-            if response.get("jsonrpc") != "2.0" or response.get("id") != 1:
-                raise AssertionError(f"bad JSON-RPC envelope: {response}")
-            # The server must dispatch through the engine, never echo the
-            # old {"ok":true,"method":...} acknowledgement template.
-            if isinstance(result, dict) and "method" in result:
-                raise AssertionError(f"server returned the ack template: {response}")
-            error = response.get("error")
-            if result is not None:
-                if not isinstance(result, dict) or not isinstance(result.get("url"), str):
-                    raise AssertionError(f"page.url result is not {{url}}: {response}")
-            elif not (isinstance(error, dict) and error.get("code") == -32011):
-                # TRANSITIONAL: until app.zig passes the GTK PagePort, the server
-                # has no page and answers session_invalid (-32011).
-                raise AssertionError(f"unexpected page.url response: {response}")
             nav_deadline = time.monotonic() + args.timeout_sec
             while time.monotonic() < nav_deadline:
                 if any(line.startswith("NAV\t") for line in stdout_lines):
@@ -150,7 +147,36 @@ def main() -> int:
                     raise AssertionError(f"browser exited before NAV row: {proc.returncode}")
                 time.sleep(0.05)
             else:
-                raise TimeoutError("browser did not emit NAV row before shutdown")
+                raise TimeoutError("browser did not emit NAV row")
+
+            fixture_uri = index.resolve().as_uri()
+            t = args.timeout_sec
+            expect_equal("page.url", call_rpc(socket_path, "page.url", {}, 1, t), {"url": fixture_uri})
+            expect_equal(
+                "page.title",
+                call_rpc(socket_path, "page.title", {}, 2, t),
+                {"title": "Automation Lifecycle Fixture"},
+            )
+            expect_equal(
+                "dom.getText #msg",
+                call_rpc(socket_path, "dom.getText", {"selector": "css=#msg"}, 3, t),
+                {"text": "Hello automation"},
+            )
+            expect_equal(
+                "dom.getText #status before click",
+                call_rpc(socket_path, "dom.getText", {"selector": "css=#status"}, 4, t),
+                {"text": "idle"},
+            )
+            expect_equal(
+                "dom.click #go",
+                call_rpc(socket_path, "dom.click", {"selector": "css=#go"}, 5, t),
+                {"ok": True},
+            )
+            expect_equal(
+                "dom.getText #status after click",
+                call_rpc(socket_path, "dom.getText", {"selector": "css=#status"}, 6, t),
+                {"text": "clicked"},
+            )
         except Exception as exc:
             print("FAIL\tautomation-api-roundtrip")
             eprint(f"error={exc}")

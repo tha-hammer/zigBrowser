@@ -209,7 +209,11 @@ test "zb_main_invoke_sync wakes pending waiters with NO_LOOP once the loop has e
 // The test thread runs zb_app_run (the GTK main loop) on a file:// fixture;
 // a driver thread plays the automation server and exercises every op.
 
-const js_embed = @import("automation_script/js_embed.zig");
+const gtk_port = @import("automation_gtk_port.zig");
+
+test {
+    _ = gtk_port;
+}
 
 const gfile = struct {
     extern fn g_dir_make_tmp(tmpl: ?[*:0]const u8, err: ?*?*anyopaque) ?[*:0]u8;
@@ -276,6 +280,8 @@ const LiveDriver = struct {
         return a != null and std.mem.eql(u8, a.?, b);
     }
 
+    const handle_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
+
     fn quit(_: ?*anyopaque) callconv(.c) void {
         gfile.gtk_main_quit();
     }
@@ -302,7 +308,6 @@ const LiveDriver = struct {
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "undefined:7"), "page world sees page globals but not __zbAutomation");
 
         // C: real command through handle(), argument passed as data.
-        const handle_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
         r = self.eval(null, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "\"text\":\"Hello fixture\"") != null, "getText returns live fixture text");
 
@@ -354,6 +359,22 @@ const LiveDriver = struct {
         c.zb_automation_free(err);
         err = null;
 
+        // The PagePort adapter over the same ABI (what the server uses).
+        const port = gtk_port.pagePort().?;
+        const gpa = self.allocator;
+        const handle_cmd = "{\"op\":\"getText\",\"selector\":\"css=#msg\"}";
+        const port_text = port.evalJson(gpa, .automation, handle_body, handle_cmd, 5000) catch null;
+        self.check(port_text != null and std.mem.indexOf(u8, port_text.?, "Page B") != null, "PagePort.evalJson returns live text");
+        const port_page = port.evalJson(gpa, .page, "return typeof window.__zbAutomation;", "null", 5000) catch null;
+        self.check(eq(port_page, "undefined"), "PagePort .page world is the page world");
+        self.check(if (port.evalJson(gpa, .page, "throw new Error('x');", "null", 5000)) |_| false else |e| e == error.EvalFailed, "PagePort maps JS failure to EvalFailed");
+        self.check(if (port.evalJson(gpa, .page, "await new Promise(function () {});", "null", 100)) |_| false else |e| e == error.Timeout, "PagePort maps timeout to Timeout");
+        self.check(if (port.navigate(self.uri_missing, 15000)) |_| false else |e| e == error.NavigationFailed, "PagePort maps load failure to NavigationFailed");
+        const port_url = port.url(gpa, 5000) catch null;
+        self.check(port_url != null, "PagePort.url answers");
+        const port_title = port.title(gpa, 5000) catch null;
+        self.check(port_title != null, "PagePort.title answers");
+
         rc = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &err);
         self.diag("navigate back to A", rc, err);
         c.zb_automation_free(err);
@@ -401,7 +422,7 @@ test "automation bridge drives a live WebKitGTK page" {
         .uri_missing = try uriOf(arena, path_missing),
     };
 
-    c.zb_automation_set_script(js_embed.source.ptr, js_embed.source.len);
+    gtk_port.installScript();
     defer c.zb_automation_set_script(null, 0);
 
     const t = try std.Thread.spawn(.{}, LiveDriver.run, .{&driver});

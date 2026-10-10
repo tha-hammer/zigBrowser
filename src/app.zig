@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
@@ -36,6 +37,8 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     };
 
     if (spec.automation_api) {
+        // automation.js must be registered before zb_app_run builds the window.
+        automation_gtk_port.installScript();
         const config = buildAutomationConfig(arena, io, spec) catch return error.WriteFailed;
         var server = automation_server.AutomationApiServer.init(std.heap.smp_allocator, io, config) catch return error.WriteFailed;
         defer server.deinit();
@@ -79,6 +82,7 @@ fn buildAutomationConfig(
         .enabled = true,
         .socket_path = try automationSocketPath(allocator),
         .token = try automationToken(allocator, io, spec.automation_token_file),
+        .page_port = automation_gtk_port.pagePort(),
     };
 }
 
