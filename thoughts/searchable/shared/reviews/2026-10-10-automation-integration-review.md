@@ -132,6 +132,10 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `2f0e179` — N8 native move, cache, and locate viewport | Exact C/Zig lifetime, GTK commit, window-identity, and live-oracle review; included in clean export at `78699a4` | **GREEN gate 71/71, 531/531; CODE BLOCKED**. | Guarded move commit is atomic with abandonment, C owns queued strings, stale/held moves have no side effect, successful move/click updates the cache before later settlement, and viewport values are live. BLOCKERS: the cache is process-global rather than keyed to the actual window, and the navigating-codepoint test now hides the production suffix race behind an explicit navigation wait. Mailed cc_1 as 4624, 4625, and 4629. |
 | `78699a4` — retry-timeout evidence and relocation provenance | Exact engine/test diff review; touched clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 71/71 steps, 531/531 tests**. | A final deadline-cut-short PagePort call preserves accumulated selector evidence; a first/early PagePort timeout remains `action_timeout`; relocation fallback uses an internal bare-timeout flag rather than public `-32009`. Closes the two retry/provenance blockers. Mailed cc_2 as 4628. |
 | `226d85f` — declared Node ambient types | Exact full-archive `npm ci`, runtime suite, and type-check; automatic deletion | **APPROVED: 48 passed, 1 skipped; `tsc --noEmit` GREEN**. | `@types/node` and its transitive lock entry are declared; the lock root version now matches the package. The earlier partial-tree run was discarded because it omitted the shared fixture. Mailed cc_2 as 4628. |
+| `713587b` — N12 cross-target/no-backend integrity | Exact diff review; touched clean-HEAD bounded Xvfb gate with automatic deletion | **GREEN 75/75 steps, 532/532 tests; PARTIAL**. | Windows GNU and macOS arm64/x64 objects compile; the parser currently reports the expected three core `zb_*` symbols for each. The real no-backend socket path returns documented `unsupported` data for every native verb. BLOCKER: an empty parsed symbol set is accepted, so the cross checker can become vacuous. Mailed cc_2 as 4627 and 4633. |
+| `56a3988` — non-vacuous cross-target symbol gate | Exact diff review; clean-export `zig build cross-check` with a 300-second bound and automatic deletion | **APPROVED: cross-check GREEN for COFF and both Mach-O targets**. | The production objects must expose `zb_app_run` and `zb_version_line`; a parser returning an empty needed set now fails. A fixture requires one real core symbol plus one deliberately absent symbol, and the checker requires exactly that missing symbol for each object format. Closes the N12 vacuity blocker. Mailed cc_2 after review. |
+| `04fee3a` — per-window pointer cache and navigation-start ACK | Exact committed C/Zig/JS lifetime and live-oracle review; author reports bounded gate 75/75, 533/533 plus 10/10 standalone | **CODE BLOCKED**. | Per-window ownership and the immediate strict Enter/suffix oracle close the original two `2f0e179` defects. BLOCKERS: the post-event cache write dereferences a raw window without revalidating its lifetime, and canceled/failed navigation leaves a permanent `leaving` latch that rejects every future native text call in the surviving document. Mailed cc_1 as 4637. |
+| `c00fc02` — N13 `x.selfcheck` | Exact route/flow/SDK/docs/test review; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 536/536 tests**. | The report is read-only, unpaced, derived from the single selector table, and all-or-error on malformed page answers. The real socket/browser test mutates one selector match and observes exactly that count change without navigation. Shared wire cases and both SDKs are aligned; author additionally reports Python 81/81, Node 49/49, and clean `tsc`. Mailed cc_2 as 4639. |
 
 ## Open findings
 
@@ -262,15 +266,41 @@ identity when the old primary closes, and its live test permits a navigating
 Enter to return success then waits for navigation before trying the suffix,
 bypassing the production per-character race. Mailed as 4624, 4625, and 4629.
 
-The follow-up working diff moves the cache into `ZbWindow`, adds a
-primary-replacement regression, and restores the strict no-suffix oracle, but
-has two new blockers. It dereferences `win` to record the pointer after
-`gtk_main_do_event` has run arbitrary page handlers that may close the window;
-revalidate against the mutex-protected published snapshot first. Its new
-Navigation API latch is permanent even when the page cancels or the navigation
-fails, making every future native text command in the unchanged document fail
+Commit `04fee3a` moves the cache into `ZbWindow`, adds a primary-replacement
+regression, and restores the strict no-suffix oracle, closing the original two
+`2f0e179` defects, but it remains blocked by two new findings. It dereferences
+`win` to record the pointer after `gtk_main_do_event`; revalidate against the
+mutex-protected published snapshot or document a concrete non-reentrancy
+invariant that keeps the window alive through dispatch. Its Navigation API
+latch is permanent even when the page cancels or the navigation fails, making
+every future native text command in the surviving document fail
 `document_changed`. Stop the current action conservatively, but clear a failed
-navigation without racing a newer one. Mailed as 4630 and 4631.
+navigation generation without racing a newer one, with a live regression.
+Mailed as 4630, 4631, and 4637.
+
+The first cc_2 engine working diff has the correct overall preflight and
+post-progress document-change shape, but is not yet contract-complete. A
+cached point already equal to the target bypasses the mandatory off-target
+start; production entropy comes from `std.Io.randomSecure` rather than the
+explicitly required `std.crypto.random`, while an injected mutable RNG is not
+serialized across concurrent page queues; and the schedule generates but
+discards the first per-code-point delay, so a one-character type runs with a
+zero-millisecond key delay outside the 80–200 ms bound. Mailed as 4641 and
+4642 before commit.
+
+### SHOULD — closing one window terminates every related WebKit child process
+
+`on_window_destroy` calls `webkit_web_view_terminate_web_process` before
+removing one window. Related views created by `window.open` share that web
+process, so closing the primary also kills the child page that becomes the new
+primary. The `04fee3a` pointer-identity regression consequently needs its own
+`zb_app_run` and proves ownership only before that replacement page is used.
+
+Status: **OPEN (cc_1 / BlackRobin; architectural decision)**. This behavior
+predates N8 and changing shutdown semantics is outside the pointer-cache fix,
+so it does not block N8. Record and decide whether single-window close should
+preserve related live pages. Reported by cc_1 in message 4636 and classified
+in review response 4637.
 
 ### BLOCKER — Node SDK type-check is not reproducible from a clean checkout
 
@@ -292,15 +322,10 @@ on non-GTK targets, but the application currently supplies no PagePort there;
 the server therefore follows the no-page path and returns `session_invalid`
 without that reason. A code-only assertion permits this contract drift.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Either make the production no-backend
-chain return the documented stable reason or revise the public contract, then
-assert the full error data. Mailed as 4622. This is queued after the three
-orchestrator-priority fixes.
-
-The working diff now fails native verbs before page work with
-`session_invalid` / `unsupported` and checks click, type, and press through the
-real socket/server/engine chain. Status remains OPEN until commit and exact
-gate evidence.
+Status: **CLOSED by `713587b`**. The engine detects a backend without native
+input before locate/page work and returns `session_invalid` / `unsupported`.
+The real socket/server/engine test pins click, type, and press separately, and
+the exact clean gate is green. Mailed as 4622 and 4633.
 
 ### BLOCKER — N12 cross-symbol check can pass with no symbols examined
 
@@ -309,9 +334,12 @@ success. A parser/layout/reachability regression can therefore print
 `needs []` for every object and leave the platform gate green without checking
 any shim definition.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Require a known core-symbol baseline per
-target and prove COFF and Mach-O missing-symbol detection fails under a
-mutation or parser fixture. Mailed as 4627.
+Status: **CLOSED by `56a3988`**. The production check requires known core
+symbols, so an empty or incomplete parse fails. A separately compiled fixture
+requires one defined core symbol and one deliberately missing symbol; the
+self-test requires exactly that missing-symbol result for COFF and both Mach-O
+targets. An exact clean-export `zig build cross-check` is green. Mailed as
+4627 and after the closing review.
 
 ### BLOCKER — capped recent traces can discard their root span
 
