@@ -105,6 +105,14 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `ddb80b7` / `880b19b` / `2be72b7` — N11 X routing, flows, and live E2E | Exact source/test diff review; clean-export gate at `366344b` | **BLOCKED**. | The page queue is held for the whole flow; nested steps use the same root IDs, sink, and cancellation; strict params, pacing, stale-draft replacement, schedule conversion, and the real socket chain are present. BLOCKER: a successful-but-malformed nested result can leave `failure == null` and panic in `Runner.takeFailure`. BLOCKER: Post selection treats a positive bbox as actionability and can choose a hidden/obscured or wrong duplicate. BLOCKER: the queue E2E can be vacuous and compares client response timestamps even though the queue ticket is released before the first response is written. SHOULD: assert the Draft fixture's cancelled-beforeinput event record, remove the fixture-only public `compose_url`, and define a whole-flow deadline. |
 | `8cfd802` — target-specific child-window readiness | Exact concurrency/lifetime review; included in clean-export gate at `366344b` | **CODE APPROVED; regression evidence BLOCKED**. | The mutex-protected snapshot carries readiness per live window, off-thread code only compares opaque pointers, explicit stale targets return `NO_WINDOW`, and GTK still revalidates before use. The local-file child can finish loading before the test issues its eval, so the test does not prove an operation submitted while the child is unready waits for that child's load. |
 | Clean export of `366344b` | `D=$(mktemp -d); git archive HEAD \| tar -x -C "$D"; cd "$D"; timeout 900 xvfb-run -a zig build test --summary all` | **GREEN**: 71/71 steps, 486/486 tests. | All real-binary E2Es passed, including cookies, profile/readiness, SDK, input, and X flows. A green gate does not close the source/test-proof blockers above. |
+| `1eff576` — held child-load readiness proof | Exact concurrency/test-oracle review; author reports a green full gate | **APPROVED**. | A child subresource is held for 800 ms, the test records that the eval was issued before the child response, then requires the real child title and isolated-world `getText`. This closes the target-specific readiness evidence gap. SHOULD: if `DelayServer.start()` fails while spawning its thread, its listening descriptor is not yet protected by the caller's defer. |
+| `b768329` — trusted ACKs and exact F-key parsing | Exact script/C/live-test diff review; author reports 71/71 steps, 486/486 tests | **APPROVED for these N7 findings**. | Isolated-world input acknowledgement ignores page-dispatched untrusted events; existing native checks prove real input advances it. The native parser accepts exact `F1` through `F12` only. Public `dom.press` must still reject unsupported keys as `-32602` before calling the native seam. |
+| `6e09368` — below-fold `dom.type` regression | Exact E2E diff review; author reports 71/71 steps, 486/486 tests | **APPROVED**. | The real socket test re-establishes an off-viewport input after fill, types through the production chain, and proves the existing value changes from `deep` to `deeper`. This closes the `106a539` evidence nit. |
+| `ff68c95` — native-text partial progress | Exact ABI/state-machine diff review; author reports 71/71 steps, 486/486 tests | **APPROVED for the native seam**. | `out_chars` reports fully completed UTF-8 code points while `out_releases` remains the trusted-ACK target, including modifier releases. Sync jobs already started are waited to completion, making the progress exact at timeout boundaries. PagePort/engine must preserve this rather than retrying a partially emitted full string. Also closes the child `DelayServer.start()` descriptor-leak SHOULD. |
+| `335031c` — X totality, Post probing, and queue-race follow-up | Exact diff review; author reports 71/71 steps, 491/491 tests and a 2/2 failing queue mutant | **BLOCKED; partial closure**. | Exact nth-element trial clicks, strict final targeting, Draft-style cancelled-`beforeinput` assertions, HTTP fixture use, and explicit profile isolation are good. BLOCKERS remain: five empty query rounds have no pacing and miss a zero-to-late first button; candidate inspection is capped at four despite the “every copy” contract; and a malformed successful answer after an earlier failed probe returns that stale failure, while the no-prior-failure `-32603` omits trace/command IDs. SHOULD: the 120 s flow limit can overrun by one complete step, and the queue oracle still relies on a 1 s scheduling grace rather than a deterministic dispatch handshake. Mailed cc_2 as message 4542. |
+| `75710c9` — native locate and ACK-waiting GTK port methods | Exact script/adapter/live-test diff review; author reports 71/71 steps, 486/486 tests | **BLOCKED**. | One monotonic budget spans baseline, dispatch, and polling; C-owned strings are freed; partial dispatched-character progress survives error mapping. BLOCKERS: document-local ACK counters reset on navigation; `parseFromSliceLeaky` leaks every poll; NUL-bearing key/text truncates at the C ABI; `locate` ignores force and focus does not place the caret at the end; and post-return evals do not prove the method itself waited for ACK. Poll sleep can overrun the remaining deadline. Mailed cc_1 as message 4544. |
+| `30b7fed` — PagePort-v3, router, and native engine plumbing | Exact diff review; clean export of this commit under Xvfb | **GREEN gate: 71/71 steps, 506/506 tests; CODE BLOCKED**. | Locate retries and native dispatch share one deadline; trial is side-effect free; keys/NUL are validated; typed secrets stay out of script payloads; dispatch is terminal. BLOCKERS: partial failures are always mislabeled `action_timeout`; short successful sends are accepted as complete; and native force can hit an overlay/prior focus. SHOULD: unsupported `options.input` is silently ignored by several verbs, root telemetry omits required `input.mode`, and fake-port append OOM leaks duplicated input. Mailed cc_2 as message 4551. |
+| In-progress N7 PagePort-v3 integration after `75710c9` | Exact live-diff/interface review | **BLOCKED**. | `src/automation_gtk_port.zig` defines native methods but does not install them in its `PagePort.VTable`, so the engine reaches the default `Unsupported` stubs. The live tests call adapter functions directly and bypass this production seam. Additional blockers: mouseup is not click completion; whole-string dispatch can type into a replacement document after mid-string navigation; native `force` can physically hit an overlay or prior focus instead of the resolved target; partial failures lose their source error class; and short successful sends are accepted as full success. Mailed both owners as messages 4546–4549. |
 
 ## Open findings
 
@@ -118,10 +126,32 @@ or a Draft-style contenteditable that cancels `beforeinput`.
 
 Status: **OPEN (cc_1 / BlackRobin and cc_2 / BlueBeaver)**. Commit `87aba0d`
 closes the unbounded-text subfinding by dispatching one character at a time
-with the remaining deadline. Count only trusted acknowledgements, then prove
-socket-to-page click/type/press plus cancelled contenteditable behavior and
-exact supported/unsupported key parsing before calling N7 green. Mailed
-2026-10-10; cookie-related STOP lifted after `366344b`.
+with the remaining deadline. Commit `b768329` closes spoofable acknowledgement
+and exact `F1` through `F12` parsing. Still required before N7 is green:
+socket-to-page click/type/press through the production PagePort, cancelled
+Draft-style contenteditable behavior, public invalid-key `-32602` mapping, and
+partial native-text timeout semantics that cannot duplicate an already-typed
+prefix on retry. Mailed 2026-10-10; cookie-related STOP lifted after
+`366344b`.
+
+Live PagePort-v3 review after `ff68c95`: the proposed GTK adapter preserves one
+deadline and reports C-side progress, but remains blocked until it handles ACK
+counter reset across navigation-triggering click/press, removes a
+`parseFromSliceLeaky` poll leak, rejects embedded NUL before the C-string ABI,
+and has a non-vacuous proof that the method returns after the trusted ACK. The
+engine contract must also preserve force/trial semantics, existing
+`dom.type.delay_ms`, end-caret placement, and terminal partial-input handling.
+
+The current uncommitted follow-up closes the parse leak, NUL truncation,
+document-local counter reset, and end-caret placement, but is still not a
+production-chain implementation: the GTK vtable omits all three native
+methods, while its tests call those functions directly. It also acknowledges
+`mouseup` rather than completed `click`, dispatches a whole string before
+observing document replacement, and treats `force` as permission to send
+physical input at coordinates that may belong to an overlay. The engine still
+maps every post-prefix port failure to `action_timeout` and accepts a short
+successful send as complete. Status: **OPEN (cc_1 / BlackRobin and cc_2 /
+BlueBeaver)**; Agent Mail messages 4545–4549.
 
 ### BLOCKER — capped recent traces can discard their root span
 
@@ -214,11 +244,14 @@ Post button and later clicks a non-strict selector. `visibility:hidden`, zero
 opacity, an overlay, or the first of multiple same-testid elements can make it
 choose a target that the click can never act on while a later target is valid.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Make malformed successes map to a stable
-internal failure and select a concrete Post element through the same
-visibility/receives-events trial semantics used by the eventual click. Cover
-malformed results, hidden/obscured nodes, and duplicate same-testid nodes.
-Mailed 2026-10-10 before later N11 work.
+Status: **OPEN (cc_2 / BlueBeaver)** after `335031c`. Exact nth-element trial
+clicks and strict final targeting close the original bbox/non-strict defect,
+including hidden and duplicate fixtures. Three totality gaps remain: query
+rounds with zero copies have no pacing and therefore miss a first button that
+appears late; only four copies per testid are probed; and a malformed successful
+answer after an earlier failed probe still returns the stale failure. With no
+earlier failure, its `-32603` carries neither `trace_id` nor `command_id`.
+Mailed as Agent Mail 4542.
 
 ### BLOCKER — X queue E2E does not prove one-turn execution
 
@@ -230,11 +263,14 @@ still passes. Conversely, `handleX` releases the queue ticket before
 can reach its client before the first client records its response and make the
 test fail.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Add a deterministic fixture/server
-handshake that holds the X flow between two page steps and assert the racing
-page command cannot observe or mutate that intermediate state. Do not use
-cross-connection response timestamps as the serialization oracle. Mailed
-2026-10-10.
+Status: **OPEN (cc_2 / BlueBeaver)** after `335031c`, but materially improved.
+The local HTTP fixture now holds confirmation between two flow steps, and the
+test asserts server request order, successful flow completion, and the final
+raced URL; a deliberately wrong-page queue mutant reportedly fails. The oracle
+still sleeps for a one-second grace after release, so sufficiently delayed
+unqueued dispatch can false-pass and the mutation check is not build-gated.
+Replace the grace with an enqueue/dispatch observation (or automate the mutant)
+before calling the proof deterministic. Mailed as Agent Mail 4542.
 
 ### BLOCKER — native select by label/index mishandles duplicate values
 
@@ -605,12 +641,11 @@ complete.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10.
 
-Status: **CODE CLOSED by `8cfd802`; regression evidence OPEN (cc_1 /
-BlackRobin)**. The production waiter now selects the explicit live window in a
-mutex-protected snapshot and waits for that window's first-load flag. The live
-test opens a fast local `file:` child and does not prove the child is still
-unready when the eval is submitted; use a deterministically delayed child and
-a pre-load handshake before closing the evidence gap.
+Status: **CLOSED by `8cfd802` and `1eff576`**. The production waiter selects the
+explicit live window in a mutex-protected snapshot and waits for that window's
+first-load flag. The live regression holds a child subresource, proves eval was
+issued while that child was still loading, then requires both the real child
+title and an isolated-world `getText` result.
 
 ### SHOULD — preserve accepted `dom.type.delay_ms`
 
