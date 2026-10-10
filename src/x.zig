@@ -12,9 +12,10 @@ const std = @import("std");
 pub const selectors = struct {
     /// Post composer (a Draft.js contenteditable).
     pub const composer = "testid=tweetTextarea_0";
-    /// "Post" button: tweetButton in the compose dialog/page, tweetButtonInline
-    /// on the home timeline. Non-strict: whichever is present.
-    pub const post_button = "css=[data-testid=\"tweetButton\"], [data-testid=\"tweetButtonInline\"]";
+    /// "Post" button candidates, tried in order: tweetButton (compose dialog
+    /// and page), tweetButtonInline (home timeline). The first one with a
+    /// visible box is clicked, so a hidden copy is never chosen.
+    pub const post_buttons = [_][]const u8{ "testid=tweetButton", "testid=tweetButtonInline" };
     /// Confirmation toast shown after a post is sent or scheduled.
     pub const post_success = "testid=toast";
     /// Calendar icon that opens the schedule dialog.
@@ -59,6 +60,12 @@ pub const PostParams = struct {
     /// Override only for tests/fixtures; production uses `compose_url`.
     compose_url: []const u8 = compose_url,
 };
+
+/// Years the schedule dialog's Year select can plausibly offer. Whether a
+/// given moment is in the past (or too far ahead) is decided by X's own
+/// dialog, which rejects it; the flow then fails on the Confirm step.
+pub const min_schedule_year = 2000;
+pub const max_schedule_year = 2100;
 
 pub const ScheduleParams = struct {
     text: []const u8,
@@ -130,16 +137,68 @@ fn openComposer(gpa: std.mem.Allocator, runner: anytype, url: []const u8) Error!
     return false;
 }
 
+/// X may restore an unsent draft into the composer, so clear it first
+/// (dom.fill "" replaces the content in one edit), then type the text.
 fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8) Error!bool {
     if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.composer, .options = .{ .timeout_ms = click_timeout_ms } }))) return false;
+    if (!(try step(gpa, runner, "dom.fill", .{ .selector = selectors.composer, .value = "" }))) return false;
     return step(gpa, runner, "dom.type", .{ .selector = selectors.composer, .text = text });
 }
 
 /// Click Post (it stays disabled until there is text; the engine retries
 /// until it is enabled) and wait for X's confirmation toast.
 fn submit(gpa: std.mem.Allocator, runner: anytype) Error!bool {
-    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.post_button, .options = .{ .strict = false, .timeout_ms = click_timeout_ms } }))) return false;
+    const button = (try pickPostButton(gpa, runner)) orelse return false;
+    if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = .{ .strict = false, .timeout_ms = click_timeout_ms } }))) return false;
     return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "attached", .timeout_ms = confirm_timeout_ms });
+}
+
+/// First Post candidate with a visible (non-empty) box; the first candidate
+/// when none is visible yet (the click then retries until it is). Null if a
+/// query step failed.
+fn pickPostButton(gpa: std.mem.Allocator, runner: anytype) Error!?[]const u8 {
+    for (selectors.post_buttons) |candidate| {
+        const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = candidate, .timeout_ms = 0 }, .{});
+        defer gpa.free(params);
+        const result = (try runner.run("dom.query", params)) orelse return null;
+        if (try hasVisibleElement(gpa, result)) return candidate;
+    }
+    return selectors.post_buttons[0];
+}
+
+fn hasVisibleElement(gpa: std.mem.Allocator, query_result: []const u8) Error!bool {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, query_result, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |o| o,
+        else => return false,
+    };
+    const elements = switch (root.get("elements") orelse return false) {
+        .array => |a| a.items,
+        else => return false,
+    };
+    for (elements) |element| {
+        const bbox = switch (element) {
+            .object => |o| switch (o.get("bbox") orelse continue) {
+                .object => |b| b,
+                else => continue,
+            },
+            else => continue,
+        };
+        if (positive(bbox.get("width")) and positive(bbox.get("height"))) return true;
+    }
+    return false;
+}
+
+fn positive(value: ?std.json.Value) bool {
+    return switch (value orelse return false) {
+        .integer => |n| n > 0,
+        .float => |f| f > 0,
+        else => false,
+    };
 }
 
 /// Runs one command; true if it succeeded.
@@ -181,6 +240,7 @@ fn parseWhen(date: []const u8, time: []const u8) Error!When {
     const day = digits(date[8..10]) orelse return error.InvalidParams;
     const hour = digits(time[0..2]) orelse return error.InvalidParams;
     const minute = digits(time[3..5]) orelse return error.InvalidParams;
+    if (year < min_schedule_year or year > max_schedule_year) return error.InvalidParams;
     if (month < 1 or month > 12 or hour > 23 or minute > 59) return error.InvalidParams;
     if (day < 1 or day > daysInMonth(year, month)) return error.InvalidParams;
     return .{
