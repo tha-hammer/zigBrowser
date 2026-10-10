@@ -118,6 +118,7 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `904acaf` — strict native option grammar and fake ownership | Exact diff review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED: 71/71 steps, 510/510 tests**. | Closes explicit synthetic input on unsupported verbs, press force/trial acceptance, and fake native-payload ownership on append OOM. No new finding. Mailed cc_2 as message 4567. |
 | `fe5638e` — completed-click ACK and locate token producer | Exact diff review; clean export with bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 510/510 tests; PARTIAL**. | The queued trusted-click counter runs after non-navigating event dispatch/default activation, closing the mouseup-as-completion implementation defect. Locate now returns the isolated-world document token. Production vtable, token crossing/atomic guard, ACK debt, and socket-chain evidence remain open. SHOULD: make the timestamp proof mutation-sensitive and assert the token in the live test. Mailed cc_1 as message 4570. |
 | `631cd01` — PagePort v3.1 document binding | Exact diff/lifetime/error review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED for engine/interface: 71/71 steps, 514/514 tests; integration blocked**. | The engine owns the token, relocalizes only before progress, terminates after progress (including full-count one-codepoint `DocumentChanged`), preserves IDs, and does not emit token/text telemetry. SHOULD: validate the producer's exact token/C-string shape, test repeated changes through deadline, and make the no-yield/timeout-atomic contract explicit. The live adapter must still prove the contract. Mailed cc_2 as message 4573. |
+| `85424b9` — native PagePort v3.1 adapter and GTK document guard | Exact C/Zig state-machine and production-vtable review; clean export with `timeout 900 xvfb-run -a`, followed by automatic tree deletion | **GREEN gate: 71/71 steps, 514/514 tests; CODE BLOCKED**. | Correctly wires the production vtable, owns the C token copy, checks the token and dispatches without yielding to the GTK loop, waits per code point, preserves a single deadline, and gives completed click dispatch a mutation-sensitive slow-handler proof. BLOCKERS: a guard callback can still dispatch after its waiter returned timeout; baseline/dispatch/settle transactions are not serialized, so one ACK can satisfy two callers; and post-dispatch errors other than Timeout retain no debt. The tests direct-call the adapter rather than traversing the real socket/router/engine/vtable chain. Mailed both owners as message 4575. |
 
 ## Open findings
 
@@ -153,12 +154,14 @@ parse leak, NUL truncation, bounded sleep, simple counter reset, and end-caret
 subfindings. `904acaf` closes the remaining router/fake findings. `fe5638e`
 closes non-navigating click completion and supplies the isolated-world token;
 `631cd01` carries an owned copy through PagePort and gives document change a
-terminal/retry contract. Status: **OPEN (cc_1 / BlackRobin)** for the live
-adapter and socket proof. It must still atomically guard GTK dispatch against
-navigation and waiter abandonment, serialize transactions that share the
-primary WebView, drain timed-out click/keyup debt, stop text after each
-post-character document ACK, and cover a Draft-style native contenteditable
-through the real socket. Agent Mail messages 4545–4549 and 4554–4573.
+terminal/retry contract. `85424b9` wires the live adapter, makes the
+navigation-token check and dispatch one non-yielding GTK callback, stops text
+after each post-character ACK, and adds initial ACK-debt tracking. Status:
+**OPEN (cc_1 / BlackRobin)** because the callback can still dispatch after its
+waiter returned timeout, complete native transactions are not serialized, and
+ambiguous post-dispatch failures do not retain debt. The real socket path also
+still lacks native click/type/press coverage, including Draft-style cancelled
+`beforeinput`. Agent Mail messages 4545–4549 and 4554–4575.
 
 ### BLOCKER — native locate and physical dispatch are not bound to one document
 
@@ -169,14 +172,15 @@ validated against A to hit an unrelated target at the same coordinates in B.
 The same gap lets a fully counted one-codepoint send (notably Enter) navigate
 without giving delayed typing an independent signal to stop its suffix.
 
-Status: **OPEN (cc_1 / BlackRobin)** after `fe5638e` and `631cd01` close the
-producer/engine halves. The current shim WIP moves the comparison into the GTK
-guard callback, but its first version can still dispatch after the waiter has
-moved the job to ABANDONED and returned timeout. The token-match-to-dispatch
-commit must be atomic against abandonment as well as navigation. Tests must
-force A to replace itself precisely between locate and dispatch and put a
-destructive target at the same coordinates in B; delayed and undelayed
-`"a\\nb"` must prove `b` never reaches B. Mailed as 4568.
+Status: **OPEN (cc_1 / BlackRobin)** after `85424b9`. That commit closes the
+navigation half: the token comparison and physical dispatch occur in one GTK
+callback with no main-loop yield, and the direct live test puts a destructive
+target at the same coordinates in B and covers delayed/undelayed `"a\\nb"`.
+The timeout half remains open: `auto_job_wait` can move the guarded job to
+ABANDONED, after which the callback still dispatches on a matching token. The
+callback must atomically commit to dispatch only while RUNNING, and a held
+guard must prove no physical input occurs after timeout. Mailed as 4568 and
+4575.
 
 ### BLOCKER — timed-out native input leaves unowned acknowledgement debt
 
@@ -186,16 +190,15 @@ events can satisfy the next operation's wait and make it return before its own
 keyup. `b0bf83b` acknowledges the behavior but only drains it inside the live
 test before issuing the next operation.
 
-Status: **OPEN (cc_1 / BlackRobin)**. The GTK adapter knows the exact modifier,
-key, and completed-click counts dispatched and must retain per-page
-outstanding debt. A later native call must drain that debt within its own
-deadline before sampling a new baseline or dispatching new input. The current
-WIP records absolute debt targets, but it does not serialize the whole
-baseline/dispatch/settle transaction: two threads can share one baseline and
-one ACK can release both. Serialize by underlying WebView, not only by the
-client-supplied queue key. Regressions: a timed-out large text immediately
-followed by one key with no test-side drain, and two concurrent native calls
-that cannot acknowledge each other. Mailed as 4572.
+Status: **OPEN (cc_1 / BlackRobin)** after `85424b9`. The adapter now records
+absolute debt on Timeout, drains it before the next baseline, and directly
+tests a timed-out large text immediately followed by one key with no
+test-side drain. Two correctness gaps remain: it does not serialize the whole
+baseline/dispatch/settle transaction, so two threads can share one baseline
+and one ACK can release both; and it records debt only for Timeout, not an
+ambiguous EvalFailed/Cancelled/NoPage after dispatch. Serialize by underlying
+WebView with deadline-aware acquisition and retain debt until ACK or definite
+document replacement. Add the two-thread regression. Mailed as 4572 and 4575.
 
 ### BLOCKER — capped recent traces can discard their root span
 
