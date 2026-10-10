@@ -118,6 +118,41 @@ int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_t
 
 void zb_automation_free(char *p);
 
+/* --- Cookie store (the primary window's context, i.e. the profile) ---
+ * Same blocking/threading/ownership rules as the ops above; they wait for the
+ * primary window but not for its first load. Error text never contains
+ * cookie values. */
+enum {
+  ZB_COOKIE_SAME_SITE_UNSET = 0,
+  ZB_COOKIE_SAME_SITE_NONE = 1,
+  ZB_COOKIE_SAME_SITE_LAX = 2,
+  ZB_COOKIE_SAME_SITE_STRICT = 3,
+};
+
+typedef struct {
+  const char *name;
+  const char *value;
+  const char *domain; /* "host" = host-only, ".host" = domain cookie */
+  const char *path;
+  long long expires;  /* unix seconds; -1 = session cookie */
+  int http_only;
+  int secure;
+  int same_site;      /* ZB_COOKIE_SAME_SITE_* */
+} ZbCookie;
+
+/* *out_json: JSON array of {name, value, domain, path, expires, httpOnly,
+ * secure, sameSite}. url NULL = every cookie in the store, else the cookies
+ * that would be sent to `url`. */
+int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,
+                       char **out_json, char **out_err);
+/* Adds or replaces the cookie (all fields are copied before queuing). */
+int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_ms,
+                   char **out_err);
+/* Deletes every cookie called `name` on `domain` (leading dot ignored);
+ * domain NULL = on every domain. Deleting nothing is not an error. */
+int zb_cookies_delete(ZbWindow *win, const char *name, const char *domain,
+                      unsigned int timeout_ms, char **out_err);
+
 /* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
 int zb_automation_debug_live_jobs(void);
 

@@ -257,6 +257,7 @@ const gfile = struct {
     extern fn g_filename_to_uri(filename: [*:0]const u8, hostname: ?[*:0]const u8, err: ?*?*anyopaque) ?[*:0]u8;
     extern fn g_free(mem: ?*anyopaque) void;
     extern fn gtk_main_quit() void;
+    extern fn g_get_real_time() i64;
 };
 
 const fixture_a =
@@ -490,7 +491,64 @@ const LiveDriver = struct {
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "navigate after a timed-out load returns OK");
 
+        self.runCookies();
         _ = c.zb_main_invoke_sync(quit, null, 5000);
+    }
+
+    fn cookiesJson(self: *LiveDriver, url: ?[*:0]const u8) ?[]const u8 {
+        var out: [*c]u8 = null;
+        var err: [*c]u8 = null;
+        const rc = c.zb_cookies_get_all(null, url, 5000, &out, &err);
+        defer c.zb_automation_free(out);
+        defer c.zb_automation_free(err);
+        if (rc != c.ZB_AUTO_OK or out == null) return null;
+        return self.allocator.dupe(u8, std.mem.span(out)) catch null;
+    }
+
+    fn has(json: ?[]const u8, needle: []const u8) bool {
+        return json != null and std.mem.indexOf(u8, json.?, needle) != null;
+    }
+
+    // N5: the cookie store of the primary window's (profile) context.
+    fn runCookies(self: *LiveDriver) void {
+        var err: [*c]u8 = null;
+        const persistent: c.ZbCookie = .{
+            .name = "zbc", .value = "s3cr\"et", .domain = "example.test", .path = "/",
+            .expires = @divTrunc(gfile.g_get_real_time(), std.time.us_per_s) + 3600, .http_only = 1, .secure = 0, .same_site = c.ZB_COOKIE_SAME_SITE_LAX,
+        };
+        var rc = c.zb_cookies_add(null, &persistent, 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "cookie add returns OK");
+        const session: c.ZbCookie = .{
+            .name = "zbsession", .value = "v", .domain = "other.test", .path = "/app",
+            .expires = -1, .http_only = 0, .secure = 1, .same_site = c.ZB_COOKIE_SAME_SITE_UNSET,
+        };
+        rc = c.zb_cookies_add(null, &session, 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "session cookie add returns OK");
+
+        const all = self.cookiesJson(null);
+        self.check(has(all, "\"name\":\"zbc\",\"value\":\"s3cr\\\"et\",\"domain\":\"example.test\",\"path\":\"/\""), "getAll lists the cookie with an escaped value");
+        self.check(has(all, "\"httpOnly\":true,\"secure\":false,\"sameSite\":\"Lax\""), "getAll reports flags and sameSite");
+        self.check(has(all, "\"name\":\"zbsession\"") and has(all, "\"expires\":-1,\"httpOnly\":false,\"secure\":true"), "session cookie has expires -1");
+        const for_url = self.cookiesJson("http://example.test/page");
+        self.check(has(for_url, "\"name\":\"zbc\"") and !has(for_url, "zbsession"), "getAll(url) returns only cookies for that URL");
+
+        rc = c.zb_cookies_delete(null, "zbc", null, 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "cookie delete returns OK");
+        rc = c.zb_cookies_delete(null, "zbsession", "elsewhere.test", 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "deleting on a non-matching domain is not an error");
+        const after = self.cookiesJson(null);
+        self.check(after != null and !has(after, "\"zbc\"") and has(after, "\"zbsession\""), "delete removed only the named cookie");
+        rc = c.zb_cookies_delete(null, "zbsession", "other.test", 5000, &err);
+        c.zb_automation_free(err);
+        self.check(rc == c.ZB_AUTO_OK and !has(self.cookiesJson(null), "zbsession"), "delete on the matching domain removes it");
     }
 };
 

@@ -1196,6 +1196,8 @@ struct ZbAutoJob {
   char *url;
   GCancellable *cancellable;
   int op;
+  SoupCookie *cookie;   /* add */
+  GList *cookie_queue;  /* delete: matching cookies still to delete */
   int load_armed;    /* saw LOAD_STARTED for `url` */
   int load_displaced; /* another URI committed over this load */
   int same_document; /* `url` differs from the page only by fragment */
@@ -1244,6 +1246,10 @@ static void auto_job_unref(gpointer data) {
   if (job->cancellable != NULL) {
     g_object_unref(job->cancellable);
   }
+  if (job->cookie != NULL) {
+    soup_cookie_free(job->cookie);
+  }
+  g_list_free_full(job->cookie_queue, (GDestroyNotify)soup_cookie_free);
   g_free(job);
   g_atomic_int_add(&zb_auto_live_jobs, -1);
 }
@@ -1440,6 +1446,9 @@ enum {
   ZB_OP_NAVIGATE,
   ZB_OP_RELOAD,
   ZB_OP_URL,
+  ZB_OP_COOKIES_GET,
+  ZB_OP_COOKIES_ADD,
+  ZB_OP_COOKIES_DELETE,
 };
 
 #define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
@@ -1886,7 +1895,9 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
   }
 
   gint64 deadline = auto_deadline(timeout_ms);
-  int code = auto_wait_for_primary(deadline, job->op != ZB_OP_NAVIGATE);
+  int need_ready = job->op != ZB_OP_NAVIGATE && job->op != ZB_OP_COOKIES_GET &&
+                   job->op != ZB_OP_COOKIES_ADD && job->op != ZB_OP_COOKIES_DELETE;
+  int code = auto_wait_for_primary(deadline, need_ready);
   if (code != ZB_AUTO_OK) {
     return code;
   }
@@ -1915,9 +1926,15 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
   return code;
 }
 
+static void auto_start_cookies(ZbAutoJob *job);
+
 static ZbAutoJob *auto_op_new(int op) {
-  int is_async = op == ZB_OP_EVAL || op == ZB_OP_NAVIGATE || op == ZB_OP_RELOAD;
+  int is_cookie = op == ZB_OP_COOKIES_GET || op == ZB_OP_COOKIES_ADD ||
+                  op == ZB_OP_COOKIES_DELETE;
+  int is_async = op == ZB_OP_EVAL || op == ZB_OP_NAVIGATE || op == ZB_OP_RELOAD ||
+                 is_cookie;
   ZbAutoStartFn start = op == ZB_OP_EVAL ? auto_start_eval
+                        : is_cookie     ? auto_start_cookies
                         : is_async      ? auto_start_load
                                         : auto_start_get;
   ZbAutoJob *job = auto_job_new(start, is_async);
@@ -1979,6 +1996,276 @@ int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_t
 
 void zb_automation_free(char *p) {
   g_free(p);
+}
+
+/* ---- Cookie store ----
+ * Jobs run on the GTK thread against the primary window's context (the
+ * profile context when one is set). Messages never include cookie values. */
+
+static WebKitCookieManager *auto_cookie_manager(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL || win->view == NULL) {
+    return NULL;
+  }
+  return webkit_web_context_get_cookie_manager(webkit_web_view_get_context(win->view));
+}
+
+static int auto_cookie_cancelled(GError *error) {
+  return g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+}
+
+static void auto_cookie_fail(ZbAutoJob *job, GError *error, const char *what) {
+  int code = auto_cookie_cancelled(error) ? ZB_AUTO_ERR_CANCELLED : ZB_AUTO_ERR_INTERNAL;
+  auto_job_complete(job, code, NULL, g_strdup(what));
+}
+
+/* JSON string literal; invalid UTF-8 is repaired, control characters and
+ * quotes are escaped. */
+static void auto_json_string(GString *out, const char *text) {
+  char *valid = g_utf8_make_valid(text != NULL ? text : "", -1);
+  g_string_append_c(out, '"');
+  for (const unsigned char *p = (const unsigned char *)valid; *p != '\0'; p++) {
+    if (*p == '"' || *p == '\\') {
+      g_string_append_c(out, '\\');
+      g_string_append_c(out, (char)*p);
+    } else if (*p < 0x20) {
+      g_string_append_printf(out, "\\u%04x", *p);
+    } else {
+      g_string_append_c(out, (char)*p);
+    }
+  }
+  g_string_append_c(out, '"');
+  g_free(valid);
+}
+
+static const char *auto_same_site_name(SoupSameSitePolicy policy) {
+  switch (policy) {
+    case SOUP_SAME_SITE_POLICY_LAX:
+      return "Lax";
+    case SOUP_SAME_SITE_POLICY_STRICT:
+      return "Strict";
+    default:
+      return "None";
+  }
+}
+
+static char *auto_cookies_json(GList *cookies) {
+  GString *out = g_string_new("[");
+  for (GList *link = cookies; link != NULL; link = link->next) {
+    SoupCookie *cookie = (SoupCookie *)link->data;
+    if (link != cookies) {
+      g_string_append_c(out, ',');
+    }
+    GDateTime *expires = soup_cookie_get_expires(cookie);
+    g_string_append(out, "{\"name\":");
+    auto_json_string(out, soup_cookie_get_name(cookie));
+    g_string_append(out, ",\"value\":");
+    auto_json_string(out, soup_cookie_get_value(cookie));
+    g_string_append(out, ",\"domain\":");
+    auto_json_string(out, soup_cookie_get_domain(cookie));
+    g_string_append(out, ",\"path\":");
+    auto_json_string(out, soup_cookie_get_path(cookie));
+    g_string_append_printf(out,
+                           ",\"expires\":%" G_GINT64_FORMAT
+                           ",\"httpOnly\":%s,\"secure\":%s,\"sameSite\":\"%s\"}",
+                           expires != NULL ? g_date_time_to_unix(expires) : (gint64)-1,
+                           soup_cookie_get_http_only(cookie) ? "true" : "false",
+                           soup_cookie_get_secure(cookie) ? "true" : "false",
+                           auto_same_site_name(soup_cookie_get_same_site_policy(cookie)));
+  }
+  g_string_append_c(out, ']');
+  return g_string_free(out, FALSE);
+}
+
+static void on_auto_cookies_got(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  WebKitCookieManager *manager = WEBKIT_COOKIE_MANAGER(object);
+  GError *error = NULL;
+  GList *cookies = job->url != NULL
+                       ? webkit_cookie_manager_get_cookies_finish(manager, result, &error)
+                       : webkit_cookie_manager_get_all_cookies_finish(manager, result, &error);
+  if (error != NULL) {
+    auto_cookie_fail(job, error, "cookie store read failed");
+    g_error_free(error);
+  } else {
+    auto_job_complete(job, ZB_AUTO_OK, auto_cookies_json(cookies), NULL);
+  }
+  g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
+  auto_job_unref(job);
+}
+
+static void on_auto_cookie_added(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  GError *error = NULL;
+  if (webkit_cookie_manager_add_cookie_finish(WEBKIT_COOKIE_MANAGER(object), result, &error)) {
+    auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+  } else {
+    auto_cookie_fail(job, error, "cookie store write failed");
+    g_clear_error(&error);
+  }
+  auto_job_unref(job);
+}
+
+static void auto_cookie_delete_next(ZbAutoJob *job, WebKitCookieManager *manager);
+
+static void on_auto_cookie_deleted(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  WebKitCookieManager *manager = WEBKIT_COOKIE_MANAGER(object);
+  GError *error = NULL;
+  if (!webkit_cookie_manager_delete_cookie_finish(manager, result, &error)) {
+    auto_cookie_fail(job, error, "cookie store delete failed");
+    g_clear_error(&error);
+  } else {
+    auto_cookie_delete_next(job, manager);
+  }
+  auto_job_unref(job);
+}
+
+/* Deletes the queued cookies one at a time; completes when none are left. */
+static void auto_cookie_delete_next(ZbAutoJob *job, WebKitCookieManager *manager) {
+  if (job->cookie_queue == NULL) {
+    auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+    return;
+  }
+  if (g_cancellable_is_cancelled(job->cancellable)) {
+    auto_job_complete(job, ZB_AUTO_ERR_CANCELLED, NULL, g_strdup("cancelled"));
+    return;
+  }
+  GList *head = job->cookie_queue;
+  job->cookie_queue = g_list_remove_link(job->cookie_queue, head);
+  SoupCookie *cookie = (SoupCookie *)head->data;
+  g_list_free(head);
+  webkit_cookie_manager_delete_cookie(manager, cookie, job->cancellable,
+                                      on_auto_cookie_deleted, auto_job_ref(job));
+  soup_cookie_free(cookie);
+}
+
+static int auto_cookie_domain_matches(const char *domain, const char *wanted) {
+  if (wanted == NULL) {
+    return 1;
+  }
+  const char *a = domain != NULL && domain[0] == '.' ? domain + 1 : domain;
+  const char *b = wanted[0] == '.' ? wanted + 1 : wanted;
+  return a != NULL && g_ascii_strcasecmp(a, b) == 0;
+}
+
+static void on_auto_cookies_listed_for_delete(GObject *object, GAsyncResult *result,
+                                              gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  WebKitCookieManager *manager = WEBKIT_COOKIE_MANAGER(object);
+  GError *error = NULL;
+  GList *cookies = webkit_cookie_manager_get_all_cookies_finish(manager, result, &error);
+  if (error != NULL) {
+    auto_cookie_fail(job, error, "cookie store read failed");
+    g_error_free(error);
+    auto_job_unref(job);
+    return;
+  }
+
+  for (GList *link = cookies; link != NULL; link = link->next) {
+    SoupCookie *cookie = (SoupCookie *)link->data;
+    if (g_strcmp0(soup_cookie_get_name(cookie), job->body) == 0 &&
+        auto_cookie_domain_matches(soup_cookie_get_domain(cookie), job->world)) {
+      job->cookie_queue = g_list_prepend(job->cookie_queue, soup_cookie_copy(cookie));
+    }
+  }
+  g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
+  auto_cookie_delete_next(job, manager);
+  auto_job_unref(job);
+}
+
+static void auto_start_cookies(ZbAutoJob *job) {
+  WebKitCookieManager *manager = auto_cookie_manager(job);
+  if (manager == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+
+  switch (job->op) {
+    case ZB_OP_COOKIES_GET:
+      if (job->url != NULL) {
+        webkit_cookie_manager_get_cookies(manager, job->url, job->cancellable,
+                                          on_auto_cookies_got, auto_job_ref(job));
+      } else {
+        webkit_cookie_manager_get_all_cookies(manager, job->cancellable,
+                                              on_auto_cookies_got, auto_job_ref(job));
+      }
+      break;
+    case ZB_OP_COOKIES_ADD:
+      webkit_cookie_manager_add_cookie(manager, job->cookie, job->cancellable,
+                                       on_auto_cookie_added, auto_job_ref(job));
+      break;
+    default:
+      webkit_cookie_manager_get_all_cookies(manager, job->cancellable,
+                                            on_auto_cookies_listed_for_delete,
+                                            auto_job_ref(job));
+      break;
+  }
+}
+
+int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,
+                       char **out_json, char **out_err) {
+  ZbAutoJob *job = auto_op_new(ZB_OP_COOKIES_GET);
+  job->url = g_strdup(url);
+  int code = auto_run_op(job, win, timeout_ms, out_json, out_err);
+  auto_job_unref(job);
+  return code;
+}
+
+static SoupSameSitePolicy auto_same_site_policy(int same_site) {
+  switch (same_site) {
+    case ZB_COOKIE_SAME_SITE_LAX:
+      return SOUP_SAME_SITE_POLICY_LAX;
+    case ZB_COOKIE_SAME_SITE_STRICT:
+      return SOUP_SAME_SITE_POLICY_STRICT;
+    default:
+      return SOUP_SAME_SITE_POLICY_NONE;
+  }
+}
+
+int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_ms,
+                   char **out_err) {
+  if (out_err != NULL) {
+    *out_err = NULL;
+  }
+  if (cookie == NULL || cookie->name == NULL || cookie->value == NULL ||
+      cookie->domain == NULL || cookie->domain[0] == '\0') {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+
+  ZbAutoJob *job = auto_op_new(ZB_OP_COOKIES_ADD);
+  job->cookie = soup_cookie_new(cookie->name, cookie->value, cookie->domain,
+                                cookie->path != NULL && cookie->path[0] != '\0' ? cookie->path : "/",
+                                -1);
+  if (cookie->expires >= 0) {
+    GDateTime *expires = g_date_time_new_from_unix_utc(cookie->expires);
+    soup_cookie_set_expires(job->cookie, expires);
+    g_date_time_unref(expires);
+  }
+  soup_cookie_set_http_only(job->cookie, cookie->http_only != 0);
+  soup_cookie_set_secure(job->cookie, cookie->secure != 0);
+  if (cookie->same_site != ZB_COOKIE_SAME_SITE_UNSET) {
+    soup_cookie_set_same_site_policy(job->cookie, auto_same_site_policy(cookie->same_site));
+  }
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_cookies_delete(ZbWindow *win, const char *name, const char *domain,
+                      unsigned int timeout_ms, char **out_err) {
+  if (out_err != NULL) {
+    *out_err = NULL;
+  }
+  if (name == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_COOKIES_DELETE);
+  job->body = g_strdup(name);
+  job->world = g_strdup(domain);
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  auto_job_unref(job);
+  return code;
 }
 
 static char *zb_profile_dir; /* set before zb_app_run */
