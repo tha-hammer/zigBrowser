@@ -166,7 +166,10 @@ const Ack = struct {
     doc: [doc_len]u8 = undefined,
     keyup: i64 = 0,
     click: i64 = 0,
-    /// A cross-document navigation has started from this document.
+    /// Cross-document navigations started from this document so far.
+    navigations: i64 = 0,
+    /// One of them is still in flight (not cancelled, stopped, or ended
+    /// without a new document): this document may be going away.
     leaving: bool = false,
 
     fn isDocument(self: Ack, token: []const u8) bool {
@@ -237,11 +240,11 @@ fn readAckFromPage(_: *anyopaque, deadline: i64) PortError!?Ack {
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     if (std.mem.eql(u8, out, "null")) return null;
-    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, leaving: bool = false };
+    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, navigations: i64 = 0, leaving: bool = false };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
     defer parsed.deinit();
     if (!isDocumentToken(parsed.value.doc)) return error.EvalFailed;
-    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .leaving = parsed.value.leaving };
+    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .navigations = parsed.value.navigations, .leaving = parsed.value.leaving };
     @memcpy(&ack.doc, parsed.value.doc);
     return ack;
 }
@@ -275,7 +278,9 @@ const AckTracker = struct {
         while (true) {
             if (try self.read(deadline)) |now| {
                 if (!now.isDocument(&target.doc)) return .document_changed;
-                if (now.click >= target.click and now.keyup >= target.keyup) return if (now.leaving) .leaving else .acknowledged;
+                // A navigation started since `target`'s baseline (even one
+                // the page cancels later) ends the current sequence.
+                if (now.click >= target.click and now.keyup >= target.keyup) return if (now.navigations != target.navigations) .leaving else .acknowledged;
             }
             sleepMs(@min(5, try remainingMs(deadline)));
         }
@@ -298,7 +303,7 @@ const AckTracker = struct {
         defer self.debt_mutex.unlock();
         if (self.debt) |current| {
             if (std.mem.eql(u8, &current.doc, &target.doc)) {
-                self.debt = .{ .doc = target.doc, .click = @max(current.click, target.click), .keyup = @max(current.keyup, target.keyup) };
+                self.debt = .{ .doc = target.doc, .click = @max(current.click, target.click), .keyup = @max(current.keyup, target.keyup), .navigations = target.navigations };
                 return;
             }
         }
@@ -386,7 +391,7 @@ pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout
     const rc = c.zb_native_click(null, x, y, 1, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup }, deadline);
+    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup, .navigations = base.navigations }, deadline);
 }
 
 /// One real key press (DOM key name) with modifiers: bit0 Shift, bit1
@@ -408,7 +413,7 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]con
     const rc = c.zb_native_key(null, key_z.ptr, @intCast(modifiers & 0x0f), expected, clampMs(try remainingMs(deadline)), &releases, &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click, .keyup = base.keyup + releases }, deadline);
+    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click, .keyup = base.keyup + releases, .navigations = base.navigations }, deadline);
 }
 
 /// Types `text` one code point at a time with real key events. `sent_chars`
@@ -425,7 +430,9 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
     var acked = try page_acks.begin(document, deadline);
-    // The previous input already started a navigation: type nothing here.
+    // A navigation that earlier input started is still in flight: type
+    // nothing into a document that may be going away. It clears once that
+    // navigation is cancelled or ends without a new document.
     if (acked.leaving) return error.DocumentChanged;
     var doc_z: [doc_len + 1]u8 = undefined;
     // Without an explicit token the baseline document is the one to stay in.
@@ -515,6 +522,26 @@ test "debt is settled by an acknowledgement or a document change" {
     var acks2 = moved.tracker();
     try std.testing.expectEqual(AckOutcome.document_changed, try acks2.settle(testAck(6), deadlineAfter(1000)));
     try std.testing.expect(acks2.owed() == null);
+}
+
+test "a navigation started during a sequence ends it, even after the page cancelled it" {
+    var base = testAck(5);
+    base.navigations = 2;
+    // Started and cancelled between two reads: nothing is pending any more,
+    // but the count moved, so this sequence stops.
+    var cancelled = testAck(6);
+    cancelled.navigations = 3;
+    var page: FakeAcks = .{ .steps = &.{.{ .ack = cancelled }} };
+    var acks = page.tracker();
+    var target = base;
+    target.keyup = 6;
+    try std.testing.expectEqual(AckOutcome.leaving, try acks.settle(target, deadlineAfter(1000)));
+
+    // The next sequence's baseline carries the new count: the same document,
+    // with nothing in flight, acknowledges normally.
+    var calm: FakeAcks = .{ .steps = &.{.{ .ack = cancelled }} };
+    var acks2 = calm.tracker();
+    try std.testing.expectEqual(AckOutcome.acknowledged, try acks2.settle(cancelled, deadlineAfter(1000)));
 }
 
 test "C error codes map onto PortError" {

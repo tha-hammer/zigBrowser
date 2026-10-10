@@ -99,6 +99,15 @@ struct ZbWindow {
   /* Last dispatched native pointer position; guarded by zb_auto_mutex. */
   int auto_pointer_valid;
   double auto_pointer_x, auto_pointer_y;
+  /* Recent navigation requests (id, URL; a redirect keeps its request's
+   * id), so a load that ends without a new document can name the request
+   * it belonged to. auto_nav_seq numbers the requests (never 0). */
+  unsigned int auto_nav_seq;
+  int auto_nav_next;
+  struct {
+    int id;
+    char *url;
+  } auto_nav_recent[8];
   gulong sig_uri_notify;
 };
 
@@ -139,6 +148,9 @@ static void auto_window_destroyed(ZbWindow *win);
 static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri);
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
 static void auto_nav_blocked(ZbWindow *win, const char *candidate);
+static int auto_navigation_requested(ZbWindow *win, const char *url, int is_redirect);
+static int auto_navigation_id_for(ZbWindow *win, const char *url);
+static void auto_navigation_ended(ZbWindow *win, int id);
 static int auto_window_owns_load_deadline(ZbWindow *win);
 static void auto_uri_changed(ZbWindow *win, const char *uri);
 static void auto_first_load_done(ZbWindow *win);
@@ -381,6 +393,9 @@ static void window_free(ZbWindow *win) {
   g_free(win->seed_uri);
   g_free(win->pending_nav_uri);
   g_free(win->load_error_message);
+  for (gsize i = 0; i < G_N_ELEMENTS(win->auto_nav_recent); i++) {
+    g_free(win->auto_nav_recent[i].url);
+  }
   g_free(win);
 }
 
@@ -786,7 +801,6 @@ static gboolean on_window_load_failed(WebKitWebView *view,
                                       GError *error,
                                       gpointer user_data) {
   (void)view;
-  (void)load_event;
 
   ZbWindow *win = (ZbWindow *)user_data;
   if (win == NULL) {
@@ -794,6 +808,13 @@ static gboolean on_window_load_failed(WebKitWebView *view,
   }
 
   remove_source(&win->timeout_source_id);
+
+  /* A provisional load that failed on its own (204, download, network
+   * error), not one a newer navigation replaced: that request's navigation
+   * is over and the page keeps its document. */
+  if (load_event != WEBKIT_LOAD_COMMITTED && !is_cancelled_network_error(error)) {
+    auto_navigation_ended(win, auto_navigation_id_for(win, uri));
+  }
 
   /* An automation-driven load that fails gets no WebKit error page: that
    * page loads asynchronously and would displace the client's next command. */
@@ -898,6 +919,13 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
     emit_protocol1(app, "BLOCKED", "(null)");
     return TRUE;
   }
+  int nav_id = 0;
+  if (win != NULL && type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
+    WebKitNavigationAction *action = webkit_navigation_policy_decision_get_navigation_action(
+        WEBKIT_NAVIGATION_POLICY_DECISION(decision));
+    nav_id = auto_navigation_requested(win, candidate,
+                                       action != NULL && webkit_navigation_action_is_redirect(action));
+  }
 
   if (win != NULL && win->seed_pending && win->is_child &&
       dtype == ZB_DTYPE_NAVIGATION) {
@@ -934,6 +962,7 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
   emit_protocol1(app, "BLOCKED", candidate);
   if (win != NULL && dtype == ZB_DTYPE_NAVIGATION) {
     auto_nav_blocked(win, candidate);
+    auto_navigation_ended(win, nav_id);
   }
   return TRUE;
 }
@@ -1514,6 +1543,67 @@ static void auto_install_script(ZbWindow *win) {
   webkit_user_content_manager_add_script(win->ucm, script);
   webkit_user_script_unref(script);
   g_object_set_data(G_OBJECT(win->ucm), ZB_AUTO_SCRIPT_KEY, GINT_TO_POINTER(1));
+}
+
+/* GTK thread: fire-and-forget call into automation.js in `win` (no
+ * callback, nothing waits for it). Calls into one view arrive in order. */
+static void auto_navigation_notify(ZbWindow *win, const char *body, int id, const char *url) {
+  if (win == NULL || win->view == NULL || id <= 0 || zb_auto_script_source == NULL) {
+    return;
+  }
+  GVariantDict dict;
+  g_variant_dict_init(&dict, NULL);
+  g_variant_dict_insert(&dict, "id", "i", id);
+  g_variant_dict_insert(&dict, "url", "s", url != NULL ? url : "");
+  GVariant *args = g_variant_ref_sink(g_variant_dict_end(&dict));
+  webkit_web_view_call_async_javascript_function(win->view, body, -1, args, ZB_AUTOMATION_WORLD,
+                                                  NULL, NULL, NULL, NULL);
+  g_variant_unref(args);
+}
+
+/* GTK thread, at the navigation-action policy decision: number the request
+ * (a redirect continues the latest one) and tell the page. WebKit fires the
+ * page's 'navigate' event after this decision; automation.js matches the
+ * number to that navigation by URL in either order. Returns the id. */
+static int auto_navigation_requested(ZbWindow *win, const char *url, int is_redirect) {
+  if (!is_redirect || win->auto_nav_seq == 0) {
+    win->auto_nav_seq = win->auto_nav_seq >= G_MAXINT ? 1 : win->auto_nav_seq + 1;
+  }
+  int id = (int)win->auto_nav_seq;
+  int slot = win->auto_nav_next;
+  g_free(win->auto_nav_recent[slot].url);
+  win->auto_nav_recent[slot].id = id;
+  win->auto_nav_recent[slot].url = g_strdup(url);
+  win->auto_nav_next = (slot + 1) % (int)G_N_ELEMENTS(win->auto_nav_recent);
+  if (!is_redirect) {
+    auto_navigation_notify(win,
+                           "const a = globalThis.__zbAutomation; if (a && a.navigationRequested) "
+                           "a.navigationRequested(id, url); return 0;",
+                           id, url);
+  }
+  return id;
+}
+
+/* The request a failed load of `url` belongs to: the latest one for that
+ * URL, else (an unrecorded redirect target) the latest request. */
+static int auto_navigation_id_for(ZbWindow *win, const char *url) {
+  int n = (int)G_N_ELEMENTS(win->auto_nav_recent);
+  for (int k = 1; k <= n; k++) {
+    int slot = (win->auto_nav_next - k + n) % n;
+    if (win->auto_nav_recent[slot].url != NULL && g_strcmp0(win->auto_nav_recent[slot].url, url) == 0) {
+      return win->auto_nav_recent[slot].id;
+    }
+  }
+  return (int)win->auto_nav_seq;
+}
+
+/* GTK thread: request `id` ended without replacing the document (see
+ * inputAck.pending in automation.js). */
+static void auto_navigation_ended(ZbWindow *win, int id) {
+  auto_navigation_notify(win,
+                         "const a = globalThis.__zbAutomation; if (a && a.navigationEnded) "
+                         "a.navigationEnded(id); return 0;",
+                         id, NULL);
 }
 
 /* GTK thread: publish the live windows (index 0 = primary) and whether each

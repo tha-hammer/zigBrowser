@@ -1612,3 +1612,206 @@ test "a window closed by its own input event is never touched afterwards" {
     try std.testing.expectEqual(@as(u32, 0), driver.failures);
     c.zb_automation_loop_mark(1);
 }
+
+// Native text and navigations that never replace the document. Typing that
+// starts a cross-document navigation stops that sequence; when the
+// navigation then ends without a new document (the page cancels it, or the
+// response is a 204), a fresh native text call in the same document types
+// normally instead of being refused forever.
+const nav_fixture =
+    \\<!doctype html><html><head><title>Nav</title></head><body>
+    \\<form action="/next"><input id="q" name="q" style="position:fixed;left:20px;top:40px;width:200px;height:30px"></form>
+    \\<form action="/204"><input id="r" name="r" style="position:fixed;left:20px;top:100px;width:200px;height:30px"></form>
+    \\<form action="/hold"><input id="s" name="s" style="position:fixed;left:20px;top:160px;width:200px;height:30px"></form>
+    \\<script>window.cancelNav = false; window.cancelled = 0;
+    \\navigation.addEventListener('navigate', function (e) {
+    \\  if (window.cancelNav && !e.destination.sameDocument) { e.preventDefault(); window.cancelled += 1; } });</script>
+    \\</body></html>
+;
+
+/// HTTP server: "GET /204..." answers 204 No Content, "GET /hold..." the
+/// same after 1.5 s, anything else the nav fixture. One request per
+/// connection, one connection at a time, until closed.
+const NoContentServer = struct {
+    fd: c_int,
+    port: u16,
+    thread: ?std.Thread = null,
+
+    fn open() !NoContentServer {
+        const listener = try StalledServer.open();
+        return .{ .fd = listener.fd, .port = listener.port };
+    }
+
+    fn start(self: *NoContentServer) !void {
+        self.thread = try std.Thread.spawn(.{}, serve, .{self});
+    }
+
+    fn serve(self: *NoContentServer) void {
+        while (true) {
+            const conn = std.c.accept(self.fd, null, null);
+            if (conn < 0) return;
+            defer _ = std.c.close(conn);
+            var req: [4096]u8 = undefined;
+            const n = std.c.read(conn, &req, req.len);
+            if (n <= 0) continue;
+            var head: [256]u8 = undefined;
+            const hold = std.mem.startsWith(u8, req[0..@intCast(n)], "GET /hold");
+            if (hold) sleepMs(1500);
+            const reply = if (hold or std.mem.startsWith(u8, req[0..@intCast(n)], "GET /204"))
+                "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+            else
+                std.fmt.bufPrint(&head, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{nav_fixture.len}) catch continue;
+            // The browser may have dropped a held request: no SIGPIPE.
+            _ = std.c.send(conn, reply.ptr, reply.len, std.c.MSG.NOSIGNAL);
+            if (!std.mem.startsWith(u8, reply, "HTTP/1.1 204")) _ = std.c.send(conn, nav_fixture.ptr, nav_fixture.len, std.c.MSG.NOSIGNAL);
+        }
+    }
+
+    fn close(self: *NoContentServer) void {
+        _ = std.c.shutdown(self.fd, 2);
+        _ = std.c.close(self.fd);
+        if (self.thread) |t| t.join();
+    }
+};
+
+const NavEndDriver = struct {
+    failures: u32 = 0,
+    buf: [512]u8 = undefined,
+
+    fn check(self: *NavEndDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("ended-navigation check failed: {s}\n", .{what});
+            self.failures += 1;
+        }
+    }
+
+    /// Page-world (or automation-world) eval; the answer is copied into
+    /// `self.buf` ("" on failure).
+    fn eval(self: *NavEndDriver, body: [:0]const u8, world: ?[*:0]const u8) []const u8 {
+        var out: [*c]u8 = null;
+        var err: [*c]u8 = null;
+        const rc = c.zb_automation_eval_json(null, body.ptr, null, world, 5000, &out, &err);
+        defer c.zb_automation_free(out);
+        c.zb_automation_free(err);
+        if (rc != c.ZB_AUTO_OK or out == null) return "";
+        const text = std.mem.span(out);
+        const n = @min(text.len, self.buf.len);
+        @memcpy(self.buf[0..n], text[0..n]);
+        return self.buf[0..n];
+    }
+
+    fn token(self: *NavEndDriver, out: *[17]u8) ?[*:0]const u8 {
+        const t = self.eval("return globalThis.__zbAutomation.documentToken;", c.ZB_AUTOMATION_WORLD);
+        if (t.len != 16) return null;
+        @memcpy(out[0..16], t);
+        out[16] = 0;
+        return @ptrCast(out);
+    }
+
+    fn waitNotLeaving(self: *NavEndDriver) bool {
+        var waited: u32 = 0;
+        while (waited < 8000) : (waited += 20) {
+            const r = self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD);
+            if (std.mem.eql(u8, r, "false")) return true;
+            sleepMs(20);
+        }
+        return false;
+    }
+
+    /// The pending navigation's request id once the browser numbered it,
+    /// when it differs from `not` (0 = any).
+    fn pendingId(self: *NavEndDriver, not: i64) ?i64 {
+        var waited: u32 = 0;
+        while (waited < 3000) : (waited += 10) {
+            const r = self.eval("const p = globalThis.__zbAutomation.debugPendingNavigation(); return String(p && p.id !== null ? p.id : 0);", c.ZB_AUTOMATION_WORLD);
+            const id = std.fmt.parseInt(i64, r, 10) catch 0;
+            if (id != 0 and id != not) return id;
+            sleepMs(10);
+        }
+        return null;
+    }
+
+    fn run(self: *NavEndDriver) void {
+        const port = gtk_port.pagePort().?;
+        _ = self.eval("return 1;", null);
+        var tok: [17]u8 = undefined;
+
+        // 1. The page cancels the navigation its Enter starts.
+        _ = self.eval("window.cancelNav = true; return 0;", null);
+        gtk_port.nativeClick(port.ptr, 120, 55, null, 5000) catch return self.check(false, "focus #q");
+        const t1 = self.token(&tok) orelse return self.check(false, "token");
+        var sent: usize = 0;
+        const stopped = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t1), 10_000, &sent);
+        self.check(if (stopped) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a navigation stops");
+        self.check(sent == 2, "'a' and Enter were sent, 'b' was not");
+        self.check(std.mem.eql(u8, self.eval("return String(window.cancelled);", null), "1"), "the page cancelled the navigation");
+        self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed");
+        var fresh: usize = 0;
+        gtk_port.nativeText(port.ptr, "cd", std.mem.span(t1), 5000, &fresh) catch self.check(false, "a fresh native text after the cancelled navigation types");
+        self.check(fresh == 2, "both characters of the fresh call were sent");
+        self.check(std.mem.eql(u8, self.eval("return document.getElementById('q').value;", null), "acd"), "the fresh call typed into the same document");
+
+        // 2. A navigation whose response is 204: the browser ends it, the
+        // document stays.
+        _ = self.eval("window.cancelNav = false; return 0;", null);
+        gtk_port.nativeClick(port.ptr, 120, 115, null, 5000) catch return self.check(false, "focus #r");
+        const t2 = self.token(&tok) orelse return self.check(false, "token");
+        sent = 0;
+        const stopped_204 = gtk_port.nativeText(port.ptr, "x\ny", std.mem.span(t2), 10_000, &sent);
+        self.check(if (stopped_204) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a 204 navigation stops");
+        self.check(sent == 2, "'x' and Enter were sent, 'y' was not");
+        self.check(self.waitNotLeaving(), "the 204 navigation ended in the page");
+        self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after the 204");
+        fresh = 0;
+        gtk_port.nativeText(port.ptr, "z", std.mem.span(t2), 5000, &fresh) catch self.check(false, "a fresh native text after the 204 navigation types");
+        self.check(std.mem.eql(u8, self.eval("return document.getElementById('r').value;", null), "xz"), "the fresh call after the 204 typed into the same document");
+
+        // 3. An older navigation's end never clears a newer one to the same
+        // URL. Navigation A (held 1.5 s, then 204) gets request id a; the
+        // page then starts B to the same URL, which supersedes A (A's
+        // abort must not clear B) and gets id b. A late end for a leaves B
+        // pending; only B's own 204 clears it.
+        gtk_port.nativeClick(port.ptr, 120, 175, null, 5000) catch return self.check(false, "focus #s");
+        const t3 = self.token(&tok) orelse return self.check(false, "token");
+        sent = 0;
+        const stopped_hold = gtk_port.nativeText(port.ptr, "u\nv", std.mem.span(t3), 10_000, &sent);
+        self.check(if (stopped_hold) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a held navigation stops");
+        const id_a = self.pendingId(0) orelse return self.check(false, "navigation A got a request id");
+        _ = self.eval("location.href = '/hold?s=u'; return 0;", null);
+        const id_b = self.pendingId(id_a) orelse return self.check(false, "navigation B got its own request id");
+        var stale: [96]u8 = undefined;
+        const stale_body = std.fmt.bufPrintZ(&stale, "globalThis.__zbAutomation.navigationEnded({d}); return 0;", .{id_a}) catch return;
+        _ = self.eval(stale_body, c.ZB_AUTOMATION_WORLD);
+        self.check(std.mem.eql(u8, self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD), "true"), "A's late end leaves B pending");
+        self.check(id_b != id_a, "A and B have different ids");
+        self.check(self.waitNotLeaving(), "B's own 204 ends it");
+        self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after both held navigations");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "native text: a navigation that ends without a new document stops one sequence, not later ones" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var server = try NoContentServer.open();
+    try server.start();
+    defer server.close();
+    var uri_buf: [64]u8 = undefined;
+    const uri = try std.fmt.bufPrintZ(&uri_buf, "http://127.0.0.1:{d}/", .{server.port});
+    var driver: NavEndDriver = .{};
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, NavEndDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.failures);
+    c.zb_automation_loop_mark(1);
+}

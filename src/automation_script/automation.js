@@ -25,7 +25,7 @@
   // `doc` identifies this document: input that navigates lands in a new
   // document whose counters start again at zero, which callers must treat as
   // delivered rather than wait for counts that will never come.
-  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, leaving: false };
+  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, navigations: 0, pending: null };
   function randomDocumentId() {
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
@@ -41,12 +41,39 @@
   }, true);
   // A cross-document navigation (form submission, link, location change)
   // fires 'navigate' in this document synchronously when it starts, before
-  // later input is handled; native text stops there instead of typing into
-  // the document that replaces this one. Conservative: a page that cancels
-  // the navigation still stops the typing.
+  // later input is handled. `navigations` counts those starts: native text
+  // stops as soon as it changes during a sequence, instead of typing into
+  // the document that replaces this one (conservative: one the page cancels
+  // stops that sequence too). `pending` is the navigation still in flight,
+  // so a new sequence does not start into a document that is going away.
+  // It ends without a new document when it is cancelled, stopped or
+  // superseded (its own signal aborts), or when the response replaces
+  // nothing (204, download). For those the browser numbers each request at
+  // its policy decision (navigationRequested; WebKit decides before this
+  // 'navigate' event fires, so the number usually waits in navRequests to
+  // be claimed), then reports the number that ended (navigationEnded).
+  // Only that navigation's own end clears it, never an older one's: the
+  // abort is bound to its object, the browser end to its id.
+  const navRequests = [];
+  const MAX_NAV_REQUESTS = 4;
   if (globalScope.navigation && typeof globalScope.navigation.addEventListener === 'function') {
     globalScope.navigation.addEventListener('navigate', (event) => {
-      if (!(event.destination && event.destination.sameDocument)) inputAck.leaving = true;
+      if (event.destination && event.destination.sameDocument) return;
+      const started = { url: event.destination ? event.destination.url : '' };
+      for (let i = navRequests.length - 1; i >= 0; i -= 1) {
+        if (navRequests[i].url === started.url) {
+          started.id = navRequests[i].id;
+          navRequests.splice(0, i + 1); // this request and older, unclaimed ones
+          break;
+        }
+      }
+      inputAck.navigations += 1;
+      inputAck.pending = started;
+      const ended = () => { if (inputAck.pending === started) inputAck.pending = null; };
+      if (event.signal) {
+        if (event.signal.aborted) ended();
+        else event.signal.addEventListener('abort', ended);
+      }
     });
   }
 
@@ -1011,7 +1038,29 @@
       version: 'phase1-m4-actionability',
       handle,
       inputAck() {
-        return { doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click, leaving: inputAck.leaving };
+        return {
+          doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click,
+          navigations: inputAck.navigations, leaving: inputAck.pending !== null
+        };
+      },
+      // Browser side: request `id` is the pending navigation to `url`.
+      navigationRequested(id, url) {
+        const pending = inputAck.pending;
+        if (pending !== null && pending.id === undefined && pending.url === url) {
+          pending.id = id;
+          return;
+        }
+        navRequests.push({ id, url });
+        if (navRequests.length > MAX_NAV_REQUESTS) navRequests.shift();
+      },
+      // Browser side: request `id` ended and this document stays.
+      navigationEnded(id) {
+        const pending = inputAck.pending;
+        if (pending !== null && pending.id !== undefined && pending.id === id) inputAck.pending = null;
+      },
+      debugPendingNavigation() {
+        const pending = inputAck.pending;
+        return pending === null ? null : { url: pending.url, id: pending.id === undefined ? null : pending.id };
       },
       documentToken: inputAck.doc,
       debugOutstandingWaits() {
