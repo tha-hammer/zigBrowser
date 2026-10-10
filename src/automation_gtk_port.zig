@@ -186,7 +186,21 @@ const SpinLock = struct {
     fn unlock(self: *SpinLock) void {
         self.held.store(false, .release);
     }
+
+    /// Acquire within the caller's deadline (Timeout, nothing sent, if a
+    /// longer transaction holds it past that).
+    fn lockUntil(self: *SpinLock, deadline: i64) PortError!void {
+        while (self.held.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            sleepMs(@min(1, try remainingMs(deadline)));
+        }
+    }
 };
+
+/// One native transaction (drain debt, baseline, guarded dispatch, settle) at
+/// a time for the WebView: concurrent calls sharing a baseline could each be
+/// satisfied by the other's acknowledgement. The adapter targets only the
+/// primary window today; per-WebView state comes with multi-window ports.
+var txn_lock: SpinLock = .{};
 
 fn monotonicMs() i64 {
     var ts: std.c.timespec = undefined;
@@ -279,12 +293,17 @@ fn addDebt(target: Ack) void {
     debt = target;
 }
 
-/// Wait for `target`; on Timeout the counts become debt for the next call.
+/// Called right after a successful dispatch: the counts are owed from now on
+/// and stay owed through any failure (Timeout, a failed read, a cancel),
+/// since the events still reach the page. Only an acknowledgement or a
+/// document change settles them.
 fn settle(target: Ack, deadline: i64) PortError!AckOutcome {
-    return waitAck(target, deadline) catch |e| {
-        if (e == error.Timeout) addDebt(target);
-        return e;
-    };
+    addDebt(target);
+    const outcome = try waitAck(target, deadline);
+    debt_mutex.lock();
+    debt = null; // transactions are serialized: the debt was this target's
+    debt_mutex.unlock();
+    return outcome;
 }
 
 fn mapNativeCode(rc: c_int) PortError!void {
@@ -307,6 +326,8 @@ fn begin(document: ?[]const u8, deadline: i64) PortError!Ack {
 /// the page's click dispatch has finished, or the click navigated.
 pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
     const deadline = deadlineAfter(timeout_ms);
+    try txn_lock.lockUntil(deadline);
+    defer txn_lock.unlock();
     const base = try begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
@@ -326,6 +347,8 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]con
     const gpa = std.heap.c_allocator;
     const key_z = try gpa.dupeZ(u8, key);
     defer gpa.free(key_z);
+    try txn_lock.lockUntil(deadline);
+    defer txn_lock.unlock();
     const base = try begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
@@ -348,6 +371,8 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
     if (std.mem.indexOfScalar(u8, text, 0) != null) return error.EvalFailed;
     if (!std.unicode.utf8ValidateSlice(text)) return error.EvalFailed;
     const deadline = deadlineAfter(timeout_ms);
+    try txn_lock.lockUntil(deadline);
+    defer txn_lock.unlock();
     var acked = try begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     // Without an explicit token the baseline document is the one to stay in.

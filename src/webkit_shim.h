@@ -212,6 +212,10 @@ int zb_automation_debug_live_jobs(void);
 void zb_automation_debug_cookie_delay(unsigned int ms);
 /* Test hook: how many cookie ops have entered that held (RUNNING) state. */
 int zb_automation_debug_cookie_delay_hits(void);
+/* Test hook: hold a matched native-input guard verdict for `ms` before the
+ * commit-to-dispatch decision (0 = off), and count how often that happened. */
+void zb_automation_debug_native_guard_hold(unsigned int ms);
+int zb_automation_debug_native_guard_hold_hits(void);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);

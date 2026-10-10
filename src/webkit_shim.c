@@ -1203,6 +1203,7 @@ struct ZbAutoJob {
   int releases;         /* native key/text: key releases sent */
   guint delay_source;   /* cookie test hook: pending hold timer */
   char *expected_doc;   /* native input: required documentToken (or NULL) */
+  int guard_verdict;    /* native guard: ZB_AUTO_OK = token matched, else the error */
   GList *cookie_queue;  /* delete: matching cookies still to delete */
   int load_armed;    /* saw LOAD_STARTED for `url` */
   int load_displaced; /* another URI committed over this load */
@@ -2551,33 +2552,89 @@ static int auto_keyval_needs_shift(GdkWindow *window, guint keyval) {
 
 static void auto_native_dispatch(ZbAutoJob *job, ZbWindow *win);
 
-/* GTK thread: the document guard's token read came back. The comparison and
- * the GDK delivery happen in this one callback, so no main-loop work (load
- * commits, page navigation notifications) can run between them. */
+static gint zb_auto_debug_guard_hold_ms;
+static gint zb_auto_debug_guard_hold_hits;
+
+void zb_automation_debug_native_guard_hold(unsigned int ms) {
+  g_atomic_int_set(&zb_auto_debug_guard_hold_ms, (gint)ms);
+}
+
+int zb_automation_debug_native_guard_hold_hits(void) {
+  return g_atomic_int_get(&zb_auto_debug_guard_hold_hits);
+}
+
+/* GTK thread: act on the guard's verdict. On a match the job commits to
+ * delivery only if its waiter is still waiting: under zb_auto_mutex a
+ * RUNNING job becomes non-abandonable (is_async = 0, so the waiter waits the
+ * short synchronous dispatch out); a job its waiter already gave up on
+ * (ABANDONED) sends nothing. The dispatch itself runs outside the mutex,
+ * since completing the job takes it. */
+static void auto_native_guard_decide(ZbAutoJob *job) {
+  job->target = NULL;
+  auto_untrack(job);
+  if (job->guard_verdict != ZB_AUTO_OK) {
+    auto_job_complete(job, job->guard_verdict, NULL,
+                      g_strdup(job->guard_verdict == ZB_AUTO_ERR_DOC_CHANGED ? "document changed"
+                                                                             : "document guard failed"));
+    return;
+  }
+
+  g_mutex_lock(&zb_auto_mutex);
+  int commit = job->state == ZB_JOB_RUNNING;
+  if (commit) {
+    job->is_async = 0;
+  }
+  g_mutex_unlock(&zb_auto_mutex);
+  if (!commit) {
+    return;
+  }
+
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+  auto_native_dispatch(job, win);
+}
+
+/* Test hook path: the verdict is held, the job still tracked and RUNNING. */
+static gboolean auto_native_guard_hold_fired(gpointer data) {
+  ZbAutoJob *job = (ZbAutoJob *)data;
+  job->delay_source = 0;
+  auto_native_guard_decide(job);
+  auto_async_release(job);
+  return G_SOURCE_REMOVE;
+}
+
+/* GTK thread: the document guard's token read came back. Comparison and the
+ * commit-to-dispatch decision happen in this callback, with no return to the
+ * main loop before the GDK delivery. */
 static void on_auto_native_guard(GObject *object, GAsyncResult *result, gpointer user_data) {
   ZbAutoJob *job = (ZbAutoJob *)user_data;
   GError *error = NULL;
   JSCValue *value = webkit_web_view_call_async_javascript_function_finish(
       WEBKIT_WEB_VIEW(object), result, &error);
-  auto_untrack(job);
 
   if (value == NULL) {
-    int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
-                                                                       : ZB_AUTO_ERR_DOC_CHANGED;
-    auto_job_complete(job, code, NULL, g_strdup("document guard failed"));
+    job->guard_verdict = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)
+                             ? ZB_AUTO_ERR_CANCELLED
+                             : ZB_AUTO_ERR_DOC_CHANGED;
     g_clear_error(&error);
   } else {
     char *token = jsc_value_is_string(value) ? jsc_value_to_string(value) : NULL;
     g_object_unref(value);
-    ZbWindow *win = auto_resolve_window(job->requested);
-    if (win == NULL) {
-      auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
-    } else if (token == NULL || strcmp(token, job->expected_doc) != 0) {
-      auto_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, g_strdup("document changed"));
-    } else {
-      auto_native_dispatch(job, win);
-    }
+    job->guard_verdict = token != NULL && strcmp(token, job->expected_doc) == 0
+                             ? ZB_AUTO_OK
+                             : ZB_AUTO_ERR_DOC_CHANGED;
     g_free(token);
+  }
+
+  guint hold = (guint)g_atomic_int_get(&zb_auto_debug_guard_hold_ms);
+  if (hold > 0 && job->target != NULL) {
+    g_atomic_int_inc(&zb_auto_debug_guard_hold_hits);
+    job->delay_source = g_timeout_add(hold, auto_native_guard_hold_fired, auto_async_ref(job));
+  } else {
+    auto_native_guard_decide(job);
   }
   auto_async_release(job);
 }

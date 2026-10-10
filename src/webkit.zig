@@ -297,6 +297,7 @@ const StderrCapture = struct {
 // a driver thread plays the automation server and exercises every op.
 
 const gtk_port = @import("automation_gtk_port.zig");
+const page_port_mod = @import("automation/page_port.zig");
 
 test {
     _ = gtk_port;
@@ -326,7 +327,8 @@ const fixture_a =
     \\window.lastTrustedClick = 0; window.lastTrustedKeyUp = 0;
     \\function nowUs() { return Math.round((performance.timeOrigin + performance.now()) * 1000); }
     \\document.addEventListener('click', function (e) { if (e.isTrusted) window.lastTrustedClick = nowUs(); });
-    \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = nowUs(); });</script>
+    \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = nowUs(); });
+    \\window.keyupAt = {}; document.addEventListener('keyup', function (e) { if (e.isTrusted) window.keyupAt[e.key] = nowUs(); });</script>
     \\<button id="hold" style="position:fixed;left:300px;top:120px;width:120px;height:40px">Hold</button>
     \\<script>window.holdDone = 0; document.getElementById('hold').addEventListener('click', function (e) {
     \\  var until = performance.now() + 40; while (performance.now() < until) {}
@@ -835,9 +837,11 @@ const LiveDriver = struct {
         const locate_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
         const located = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
         const want = self.center("nb") orelse return self.check(false, "button center");
-        const Located = struct { ok: bool, value: struct { x: f64, y: f64 } };
+        const Located = struct { ok: bool, value: struct { x: f64, y: f64, document: []const u8 } };
         const loc = if (located.out) |out| std.json.parseFromSliceLeaky(Located, gpa, out, .{ .ignore_unknown_fields = true }) catch null else null;
         self.check(loc != null and loc.?.ok and @abs(loc.?.value.x - want[0]) < 0.5 and @abs(loc.?.value.y - want[1]) < 0.5, "locate returns the element centre in viewport px");
+        const page_token = self.documentToken();
+        self.check(loc != null and page_token != null and loc.?.value.document.len == 16 and std.mem.eql(u8, loc.?.value.document, page_token.?), "locate returns this document's 16-hex token");
 
         // Obscured target: locate refuses it like an action would.
         _ = self.eval(null, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
@@ -907,6 +911,50 @@ const LiveDriver = struct {
         self.check(eq(last_key.out, "q"), "the key after a partial type is the last keyup when it returns");
         self.check(self.pageStampBefore("lastTrustedKeyUp", q_returned), "the key after a partial type returned only after its own keyup");
         self.check(if (gtk_port.nativeKey(port.ptr, "F1x", 0, null, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey rejects unknown keys");
+
+        // A guard verdict held past the caller's deadline must not dispatch:
+        // the waiter gave up (TIMEOUT), so nothing may reach the page later.
+        {
+            const token_now = self.documentToken() orelse return self.check(false, "token for the held guard");
+            const token_z = std.fmt.allocPrintSentinel(gpa, "{s}", .{token_now}, 0) catch return;
+            _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
+            const hits = c.zb_automation_debug_native_guard_hold_hits();
+            c.zb_automation_debug_native_guard_hold(300);
+            var held_err: [*c]u8 = null;
+            const held_rc = c.zb_native_click(null, want[0], want[1], 1, token_z.ptr, 50, &held_err);
+            c.zb_automation_free(held_err);
+            sleepMs(600);
+            c.zb_automation_debug_native_guard_hold(0);
+            self.check(held_rc == c.ZB_AUTO_ERR_TIMEOUT, "a held guarded click returns TIMEOUT");
+            self.check(c.zb_automation_debug_native_guard_hold_hits() == hits + 1, "the guard verdict was held after the token matched");
+            self.check(std.mem.eql(u8, self.nativeLog(), ""), "no click reached the page after the timeout");
+        }
+
+        // Native transactions are serialized: while one is in flight (its
+        // guard held 300 ms by the test hook), a second call cannot start;
+        // with a 100 ms deadline it returns Timeout and sends nothing.
+        {
+            const field = self.center("ni") orelse return self.check(false, "input center");
+            gtk_port.nativeClick(port.ptr, field[0], field[1], null, 5000) catch return self.check(false, "focus for the serialization check");
+            _ = self.eval(null, "window.keyupAt = {}; nativeLog.length = 0; return 0;", null, null, 5000);
+            const token_now = self.documentToken() orelse return self.check(false, "token for the serialization check");
+            const token_copy = gpa.dupe(u8, token_now) catch return;
+            c.zb_automation_debug_native_guard_hold(300);
+            var holder = ClickHolder{ .x = want[0], .y = want[1], .document = token_copy };
+            const t = std.Thread.spawn(.{}, ClickHolder.run, .{ &holder, port }) catch return self.check(false, "spawn holder");
+            sleepMs(50);
+            const blocked_start = monotonicMs();
+            const second = gtk_port.nativeKey(port.ptr, "w", 0, null, 100);
+            const blocked_ms = monotonicMs() - blocked_start;
+            t.join();
+            c.zb_automation_debug_native_guard_hold(0);
+            self.check(holder.ok, "the transaction holding the lock completes");
+            self.check(if (second) |_| false else |e| e == error.Timeout, "a second native call during a transaction times out");
+            self.check(blocked_ms < 250, "it gave up at its own deadline, not after the other transaction");
+            sleepMs(200);
+            const w_up = self.eval(null, "return String(window.keyupAt['w'] || 0);", null, null, 5000);
+            self.check(eq(w_up.out, "0"), "the blocked call sent no key");
+        }
 
         // Click completion: a synchronous page click handler that runs for
         // 40 ms has finished (and stamped) before nativeClick returns.
@@ -1004,6 +1052,18 @@ const LiveDriver = struct {
     }
 
     var nav_rc_dummy: c_int = 0;
+
+    const ClickHolder = struct {
+        x: f64,
+        y: f64,
+        document: []const u8,
+        ok: bool = false,
+
+        fn run(self: *ClickHolder, port: page_port_mod.PagePort) void {
+            gtk_port.nativeClick(port.ptr, self.x, self.y, self.document, 5000) catch return;
+            self.ok = true;
+        }
+    };
 
     fn documentToken(self: *LiveDriver) ?[]const u8 {
         const r = self.eval(null, "return globalThis.__zbAutomation.documentToken;", null, c.ZB_AUTOMATION_WORLD, 5000);
