@@ -113,6 +113,11 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `75710c9` — native locate and ACK-waiting GTK port methods | Exact script/adapter/live-test diff review; author reports 71/71 steps, 486/486 tests | **BLOCKED**. | One monotonic budget spans baseline, dispatch, and polling; C-owned strings are freed; partial dispatched-character progress survives error mapping. BLOCKERS: document-local ACK counters reset on navigation; `parseFromSliceLeaky` leaks every poll; NUL-bearing key/text truncates at the C ABI; `locate` ignores force and focus does not place the caret at the end; and post-return evals do not prove the method itself waited for ACK. Poll sleep can overrun the remaining deadline. Mailed cc_1 as message 4544. |
 | `30b7fed` — PagePort-v3, router, and native engine plumbing | Exact diff review; clean export of this commit under Xvfb | **GREEN gate: 71/71 steps, 506/506 tests; CODE BLOCKED**. | Locate retries and native dispatch share one deadline; trial is side-effect free; keys/NUL are validated; typed secrets stay out of script payloads; dispatch is terminal. BLOCKERS: partial failures are always mislabeled `action_timeout`; short successful sends are accepted as complete; and native force can hit an overlay/prior focus. SHOULD: unsupported `options.input` is silently ignored by several verbs, root telemetry omits required `input.mode`, and fake-port append OOM leaks duplicated input. Mailed cc_2 as message 4551. |
 | In-progress N7 PagePort-v3 integration after `75710c9` | Exact live-diff/interface review | **BLOCKED**. | `src/automation_gtk_port.zig` defines native methods but does not install them in its `PagePort.VTable`, so the engine reaches the default `Unsupported` stubs. The live tests call adapter functions directly and bypass this production seam. Additional blockers: mouseup is not click completion; whole-string dispatch can type into a replacement document after mid-string navigation; native `force` can physically hit an overlay or prior focus instead of the resolved target; partial failures lose their source error class; and short successful sends are accepted as full success. Mailed both owners as messages 4546–4549. |
+| `6d52cd3` — N7 router/engine review follow-up | Exact diff review; clean export under Xvfb | **GREEN gate: 71/71 steps, 510/510 tests; PARTIAL**. | Closes partial-input error-class preservation, short-success rejection, native-force rejection for click/type, bounded root `input.mode`, and native input on unsupported verbs. Still open: the fake port's append-OOM ownership leak; explicit synthetic input remains accepted on unsupported verbs; and press silently accepts unsupported force/trial. The adapter still needs an independent document-change result even when a one-character call reports full progress. Mailed cc_2 as messages 4557–4558. |
+| `b0bf83b` — native ACK/navigation/parser follow-up | Exact diff review; clean export with `timeout 900 xvfb-run -a`, followed by automatic tree deletion | **GREEN gate: 71/71 steps, 510/510 tests; CODE BLOCKED**. | Closes ACK parse ownership, bounded polling sleep, direct NUL rejection, caret-at-end, and the simple post-input navigation wait. BLOCKERS: the production vtable still omits native functions; locate returns no document binding; expected-document validation is not atomic with dispatch; whole-string text can cross navigation; timed-out ACK debt can satisfy a later operation; and click waits for mouseup rather than completed dispatch. The test manually drains debt and direct-calls adapter methods, bypassing the production chain. Mailed cc_1 as message 4566. |
+| `904acaf` — strict native option grammar and fake ownership | Exact diff review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED: 71/71 steps, 510/510 tests**. | Closes explicit synthetic input on unsupported verbs, press force/trial acceptance, and fake native-payload ownership on append OOM. No new finding. Mailed cc_2 as message 4567. |
+| `fe5638e` — completed-click ACK and locate token producer | Exact diff review; clean export with bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 510/510 tests; PARTIAL**. | The queued trusted-click counter runs after non-navigating event dispatch/default activation, closing the mouseup-as-completion implementation defect. Locate now returns the isolated-world document token. Production vtable, token crossing/atomic guard, ACK debt, and socket-chain evidence remain open. SHOULD: make the timestamp proof mutation-sensitive and assert the token in the live test. Mailed cc_1 as message 4570. |
+| `631cd01` — PagePort v3.1 document binding | Exact diff/lifetime/error review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED for engine/interface: 71/71 steps, 514/514 tests; integration blocked**. | The engine owns the token, relocalizes only before progress, terminates after progress (including full-count one-codepoint `DocumentChanged`), preserves IDs, and does not emit token/text telemetry. SHOULD: validate the producer's exact token/C-string shape, test repeated changes through deadline, and make the no-yield/timeout-atomic contract explicit. The live adapter must still prove the contract. Mailed cc_2 as message 4573. |
 
 ## Open findings
 
@@ -142,16 +147,55 @@ and has a non-vacuous proof that the method returns after the trusted ACK. The
 engine contract must also preserve force/trial semantics, existing
 `dom.type.delay_ms`, end-caret placement, and terminal partial-input handling.
 
-The current uncommitted follow-up closes the parse leak, NUL truncation,
-document-local counter reset, and end-caret placement, but is still not a
-production-chain implementation: the GTK vtable omits all three native
-methods, while its tests call those functions directly. It also acknowledges
-`mouseup` rather than completed `click`, dispatches a whole string before
-observing document replacement, and treats `force` as permission to send
-physical input at coordinates that may belong to an overlay. The engine still
-maps every post-prefix port failure to `action_timeout` and accepts a short
-successful send as complete. Status: **OPEN (cc_1 / BlackRobin and cc_2 /
-BlueBeaver)**; Agent Mail messages 4545–4549.
+Commit `6d52cd3` closes the engine-side error-class, short-success,
+native-force, and root-input-mode defects. Commit `b0bf83b` closes the ACK
+parse leak, NUL truncation, bounded sleep, simple counter reset, and end-caret
+subfindings. `904acaf` closes the remaining router/fake findings. `fe5638e`
+closes non-navigating click completion and supplies the isolated-world token;
+`631cd01` carries an owned copy through PagePort and gives document change a
+terminal/retry contract. Status: **OPEN (cc_1 / BlackRobin)** for the live
+adapter and socket proof. It must still atomically guard GTK dispatch against
+navigation and waiter abandonment, serialize transactions that share the
+primary WebView, drain timed-out click/keyup debt, stop text after each
+post-character document ACK, and cover a Draft-style native contenteditable
+through the real socket. Agent Mail messages 4545–4549 and 4554–4573.
+
+### BLOCKER — native locate and physical dispatch are not bound to one document
+
+The engine resolves a selector to viewport coordinates, then the adapter
+samples whichever document is current before sending physical input. Page A
+can replace itself with page B between those operations, allowing an action
+validated against A to hit an unrelated target at the same coordinates in B.
+The same gap lets a fully counted one-codepoint send (notably Enter) navigate
+without giving delayed typing an independent signal to stop its suffix.
+
+Status: **OPEN (cc_1 / BlackRobin)** after `fe5638e` and `631cd01` close the
+producer/engine halves. The current shim WIP moves the comparison into the GTK
+guard callback, but its first version can still dispatch after the waiter has
+moved the job to ABANDONED and returned timeout. The token-match-to-dispatch
+commit must be atomic against abandonment as well as navigation. Tests must
+force A to replace itself precisely between locate and dispatch and put a
+destructive target at the same coordinates in B; delayed and undelayed
+`"a\\nb"` must prove `b` never reaches B. Mailed as 4568.
+
+### BLOCKER — timed-out native input leaves unowned acknowledgement debt
+
+After a timed-out native text call, already-dispatched keyups continue to
+arrive. ACK counters are cumulative and not request-tagged, so those late
+events can satisfy the next operation's wait and make it return before its own
+keyup. `b0bf83b` acknowledges the behavior but only drains it inside the live
+test before issuing the next operation.
+
+Status: **OPEN (cc_1 / BlackRobin)**. The GTK adapter knows the exact modifier,
+key, and completed-click counts dispatched and must retain per-page
+outstanding debt. A later native call must drain that debt within its own
+deadline before sampling a new baseline or dispatching new input. The current
+WIP records absolute debt targets, but it does not serialize the whole
+baseline/dispatch/settle transaction: two threads can share one baseline and
+one ACK can release both. Serialize by underlying WebView, not only by the
+client-supplied queue key. Regressions: a timed-out large text immediately
+followed by one key with no test-side drain, and two concurrent native calls
+that cannot acknowledge each other. Mailed as 4572.
 
 ### BLOCKER — capped recent traces can discard their root span
 
