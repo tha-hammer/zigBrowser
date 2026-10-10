@@ -123,6 +123,12 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `a4d1dc5` — X totality/budget/queue follow-up | Exact source/test diff review; clean export with bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 520/520 tests; CODE BLOCKED**. | Closes zero-copy pacing, the four-candidate cap, malformed-result stale errors/missing IDs, and the old queue false-pass. BLOCKERS: clearing every failure on any successful substep makes missing-composer and mixed-candidate exhaustion return fabricated `-32603`; waitFor starts with timeout zero when less than native grace remains and can exceed the flow deadline; the queue test still uses a 1.5 s scheduling grace to establish enqueue and can false-fail. SHOULD: the advertised 10 s Post search is checked only between whole rounds and may run to the 120 s flow limit. Mailed cc_2 as message 4581. |
 | `b8344ce` — X sticky-failure, sub-grace deadline, and deterministic queue proof | Exact source/test diff review; clean export with `timeout 900 xvfb-run -a`, followed by automatic tree deletion | **APPROVED: 71/71 steps, 523/523 tests**. | Closes the three remaining X blockers: successful fallback probes preserve the failure that stopped the flow; waitFor is refused at or below its native-grace requirement and the expired latch prevents fallback work; a real socket/server/queue/engine integration waits for `pendingCount(page_id) == 1` while a blocking PagePort holds the flow. SHOULD: clear the fake hold with `defer`, otherwise an assertion failure before release can hang fixture teardown; the nominal 10 s Post search remains checked only between whole rounds. NIT: update the stale runner-contract comment in `src/x.zig`. Mailed cc_2 as message 4585. |
 | `a7bd845` — exact document-token contract and repeated relocation | Exact source/test diff review; touched clean export to avoid stale cache metadata, then bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 524/524 tests; PARTIAL**. | Exact 16-lowercase-hex validation matches the producer/native seam, rejects malformed length/case/NUL, and the PagePort atomicity wording is correct. BLOCKER: a contract-valid final re-locate Timeout returns `action_timeout` before the new post-locate deadline check; the test instead lets its fake overrun the supplied timeout by 50 ms and weakens the hard-deadline oracle to 1050 ms. Preserve the last document-change evidence through a bounded final locate and assert at/below the 1000 ms deadline. Mailed cc_2 as message 4593. |
+| `d699683` — native guarded-commit, transaction serialization, and debt retention | Exact C/Zig state-machine review; independent no-lock mutant; touched clean-export bounded Xvfb gate | **SOURCE PARTIAL; gate RED 69/71**. All 524 Zig tests and native-input E2E passed; automation-core independently flaked from expected `element_not_found` to `action_timeout`. | Late guarded dispatch and whole-transaction serialization are CLOSED: the commit point is mutex-atomic with abandonment, and the no-lock mutant fails only the two intended assertions. Debt is now recorded before every post-dispatch wait, but its non-Timeout behavior lacked red/green evidence in this commit. The unrelated engine retry flake is owned by cc_2. Mailed as messages 4596, 4600, and 4601. |
+| `0db5b78` — honest fake deadlines, X test budgets, and local Post bound | Exact diff review; touched clean export with fresh local cache, bounded Xvfb gate, and automatic deletion | **GREEN gate: 71/71 steps, 525/525 tests; CODE BLOCKED**. | Fake eval and X budget seams now respect PagePort deadlines; queue teardown and the runner comment are fixed; production query/probe timeouts obey the 10-second search bound. BLOCKER: the repeated-relocation override converts every failure at the deadline, including cancelled/internal/session failures, to `document_changed`. SHOULD: the first Post-bound test does not prove `start + timeout <= deadline` and survives removal of either clamp. Mailed cc_2 as message 4602. |
+| `d1f708e` — ambiguous-debt, Unicode, Draft trust, and reflected-type evidence | Exact diff/thread-safety review; touched clean-export bounded Xvfb gate with fresh local cache | **RED: 69/71 steps, 526/527 tests**. | Unicode, trusted cancelled-`beforeinput`, zero `input`, reflected invalid button type, and the intended debt-state oracle are correct in isolation. BLOCKER: the test swaps a process-global `ack_reader` and resets global debt while the live WebKit test runs concurrently, causing the live navigation/text assertions to consume fake ACKs. Replace the global seam with local reader/context injection. Mailed cc_1 as message 4605. |
+| `be28b36` — relocation mapping and mutation-sensitive Post bound | Exact source/test and error-provenance review | **CODE BLOCKED; gate pending the independent N7 race fix**. | Cancelled, session, internal, and direct script-not-found failures retain their classes, and the Post deadline oracle is now mutation-sensitive. BLOCKER: public `-32009 action_timeout` does not prove PagePort Timeout; a final retryable covered/unstable target also ends through `deadlineFailure` as `action_timeout` and is incorrectly rewritten to `document_changed`. Approval 4609 retracted in message 4614. |
+| `36a2844` — Python/Node X wrappers and automation docs | Exact diff review; clean archived SDK dependency install, tests, and TypeScript type-check; automatic tree deletion | **Python GREEN 80/80; Node tests GREEN 48/48 + 1 skipped; TypeScript RED**. | Wrapper wire shapes and result types match the routed X contract, and the docs accurately describe X/native/timing behavior. BLOCKER: `@types/node` is not declared in `sdk/node/package.json` or its lockfile, so a clean `npm ci && npx tsc --noEmit` cannot resolve `node:fs`, `node:net`, or `Buffer`. Mailed cc_2 as message 4617. |
+| `f3391f6` — isolate native ACK reader/debt test state | Exact diff/thread-safety review; touched clean-export bounded Xvfb gate with fresh local cache and automatic deletion | **APPROVED: 71/71 steps, 528/528 tests**. | Production `page_acks` remains permanently bound to the live reader; tests use independent reader/context/debt tracker values and never mutate production state. Debt locking and failed-read retention remain intact. Closes the `d1f708e` race and the final N7 ACK evidence blocker. Mailed cc_1 as message 4619. |
 
 ## Open findings
 
@@ -134,15 +140,14 @@ later native step proceed before the prior trusted event arrives. The tests
 call `zb_native_*` directly and cover only a plain input, not the socket chain
 or a Draft-style contenteditable that cancels `beforeinput`.
 
-Status: **OPEN (cc_1 / BlackRobin and cc_2 / BlueBeaver)**. Commit `87aba0d`
-closes the unbounded-text subfinding by dispatching one character at a time
-with the remaining deadline. Commit `b768329` closes spoofable acknowledgement
-and exact `F1` through `F12` parsing. Still required before N7 is green:
-socket-to-page click/type/press through the production PagePort, cancelled
-Draft-style contenteditable behavior, public invalid-key `-32602` mapping, and
-partial native-text timeout semantics that cannot duplicate an already-typed
-prefix on retry. Mailed 2026-10-10; cookie-related STOP lifted after
-`366344b`.
+Status: **CLOSED by `f3391f6`**. The production behavior and feature evidence
+cover trusted ACKs, exact key grammar, per-code-point bounded text, document
+binding, partial-prefix handling, a real socket/router/engine/vtable chain,
+native Unicode, and a Draft-style editor with trusted cancelled `beforeinput`
+and zero `input`. `d699683` closes late dispatch and transaction races;
+`f3391f6` keeps the debt oracle while moving all reader/context/debt test state
+into independent tracker values. The clean gate is green 71/71, 528/528.
+Mailed as 4605 and 4619.
 
 Live PagePort-v3 review after `ff68c95`: the proposed GTK adapter preserves one
 deadline and reports C-side progress, but remains blocked until it handles ACK
@@ -160,14 +165,12 @@ closes non-navigating click completion and supplies the isolated-world token;
 `631cd01` carries an owned copy through PagePort and gives document change a
 terminal/retry contract. `85424b9` wires the live adapter, makes the
 navigation-token check and dispatch one non-yielding GTK callback, stops text
-after each post-character ACK, and adds initial ACK-debt tracking. Status:
-**OPEN (cc_1 / BlackRobin)** because the callback can still dispatch after its
-waiter returned timeout, complete native transactions are not serialized, and
-ambiguous post-dispatch failures do not retain debt. `74d7baf` closes the basic
-real-socket production-chain gap for ASCII click/type/press, Draft model
-updates, invalid keys, and partial-prefix debt, but does not exercise the three
-synchronization races and has no native Unicode case. Agent Mail messages
-4545–4549 and 4554–4580.
+after each post-character ACK, and adds initial ACK-debt tracking. `d699683`
+atomically commits only a still-RUNNING guarded job, serializes each complete
+native transaction, and records debt before every post-dispatch wait.
+`74d7baf` and `d1f708e` provide the real socket, Unicode, trusted-Draft,
+invalid-key, and partial-prefix evidence. `f3391f6` removes the thread-unsafe
+test seam without weakening the debt oracle. Agent Mail messages 4545–4619.
 
 ### BLOCKER — native locate and physical dispatch are not bound to one document
 
@@ -178,15 +181,12 @@ validated against A to hit an unrelated target at the same coordinates in B.
 The same gap lets a fully counted one-codepoint send (notably Enter) navigate
 without giving delayed typing an independent signal to stop its suffix.
 
-Status: **OPEN (cc_1 / BlackRobin)** after `85424b9`. That commit closes the
-navigation half: the token comparison and physical dispatch occur in one GTK
-callback with no main-loop yield, and the direct live test puts a destructive
-target at the same coordinates in B and covers delayed/undelayed `"a\\nb"`.
-The timeout half remains open: `auto_job_wait` can move the guarded job to
-ABANDONED, after which the callback still dispatches on a matching token. The
-callback must atomically commit to dispatch only while RUNNING, and a held
-guard must prove no physical input occurs after timeout. Mailed as 4568 and
-4575.
+Status: **CLOSED by `631cd01`, `85424b9`, and `d699683`**. The engine carries
+an owned 16-hex document token and gives pre-dispatch replacement a bounded
+re-location contract. The GTK callback compares that token and commits input
+without a main-loop yield, only if the job remains RUNNING; a timed-out held
+guard sends no late click. Live A-to-B and navigating `"a\\nb"` cases prove the
+target binding and suffix stop. Mailed as 4568, 4575, 4596, and 4601.
 
 ### BLOCKER — timed-out native input leaves unowned acknowledgement debt
 
@@ -196,15 +196,75 @@ events can satisfy the next operation's wait and make it return before its own
 keyup. `b0bf83b` acknowledges the behavior but only drains it inside the live
 test before issuing the next operation.
 
-Status: **OPEN (cc_1 / BlackRobin)** after `85424b9`. The adapter now records
-absolute debt on Timeout, drains it before the next baseline, and directly
-tests a timed-out large text immediately followed by one key with no
-test-side drain. Two correctness gaps remain: it does not serialize the whole
-baseline/dispatch/settle transaction, so two threads can share one baseline
-and one ACK can release both; and it records debt only for Timeout, not an
-ambiguous EvalFailed/Cancelled/NoPage after dispatch. Serialize by underlying
-WebView with deadline-aware acquisition and retain debt until ACK or definite
-document replacement. Add the two-thread regression. Mailed as 4572 and 4575.
+Status: **CLOSED by `d699683`, `d1f708e`, and `f3391f6`**. The whole native
+transaction is serialized; debt is recorded immediately after dispatch and
+retained through Timeout, EvalFailed, Cancelled, and NoPage until ACK or
+document replacement. The failed-read/drain/settlement oracle kills the
+Timeout-only mutant, and `f3391f6` runs it through a test-local tracker rather
+than swapping production globals. The clean live gate is green. Mailed as
+4572, 4575, 4601, 4605, and 4619.
+
+### BLOCKER — relocation exhaustion must not mask a non-timeout failure
+
+`0db5b78` preserves `document_changed` when the last bounded re-locate times
+out, but applies that override to every failure observed at the deadline. A
+Cancelled, EvalFailed, NoPage, session, or script-specific locate failure can
+therefore be rewritten as `-32001 document_changed`, breaking JSON-RPC error
+mapping.
+
+Status: **OPEN (cc_2 / BlueBeaver)** after `be28b36`. Cancelled, NoPage,
+EvalFailed, and direct script `element_not_found` are now preserved, but the
+code equates public `action_timeout` with a PagePort Timeout. A retryable
+actionability failure such as `element_obscured` also becomes
+`action_timeout` through `deadlineFailure`; after relocation it is therefore
+still masked as `document_changed`. Preserve provenance and add that boundary
+case. Mailed as 4604, 4609 (approval retracted), and 4614.
+
+### BLOCKER — a final tiny native timeout must not erase retry evidence
+
+The DOM retry loop may sleep after a retryable selector failure, begin one
+last eval with about 1 ms remaining, and return that PagePort Timeout directly.
+The client then receives `-32009 action_timeout` instead of the accumulated
+selector-specific deadline result. An exact `d699683` gate observed the live
+missing-selector contract flip from `-32001 element_not_found` to `-32009`.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Preserve `LastFailure` when a later
+retry's native Timeout reaches the command deadline, while keeping a genuine
+first-attempt native Timeout as `action_timeout`. Add a deterministic
+fake-clock regression. This must be fixed before further queued N-series work.
+Mailed as 4600 and 4609.
+
+### BLOCKER — N8 humanize proposals disagree on observable input semantics
+
+The proposed engine contract has three conflicting variants: an unknown
+pointer starts at the target versus at an off-target in-viewport point; a
+known over-budget schedule is compressed versus rejected before any dispatch;
+and production randomness comes from a command identifier versus OS entropy.
+Starting at the target takes `generateMousePath`'s degenerate zero-distance
+branch and cannot produce the promised approach path. Compressing delays can
+violate the existing 80–200 ms key and 300–600 ms word-pause profile bounds.
+
+Status: **OPEN (cc_1 / BlackRobin and cc_2 / BlueBeaver)**. The `nativeMove`
+PagePort seam is acceptable, but before implementation the owners must define
+an off-target initial position (or obtain the real pointer), preflight the
+known schedule against the deadline and fail before dispatch when it cannot
+fit, and keep production RNG non-deterministic while injecting it in tests.
+The current locate result has no viewport bounds, so it cannot yet guarantee
+that an invented start is in-view. A document change after one or more moves
+must stop without relocating/clicking the replacement, while the cached
+pointer advances after each move that did dispatch. Also decide and test the
+`delay_ms` plus `humanize` router rule. Mailed as 4611 and 4612.
+
+### BLOCKER — Node SDK type-check is not reproducible from a clean checkout
+
+`36a2844` adds typed X wrappers and reports a clean TypeScript build “with
+`@types/node`,” but does not declare that package. After `npm ci`, the runtime
+tests pass while `tsc --noEmit` cannot resolve `node:fs`, `node:net`, or
+`Buffer` in `sdk/node/src/client.ts`.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Add a compatible `@types/node` to the
+Node SDK dev dependencies and lockfile, then prove clean install, tests, and
+type-check. Python's declared dev-extra gate is green 80/80. Mailed as 4617.
 
 ### BLOCKER — capped recent traces can discard their root span
 
