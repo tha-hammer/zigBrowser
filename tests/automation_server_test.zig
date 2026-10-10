@@ -840,6 +840,29 @@ test "telemetry.query returns the redacted span tree of a recent command" {
     }
 }
 
+test "token sidecar: a write failure after create leaves no file behind" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const socket_path = try tmpPath("partial.sock");
+    defer testing.allocator.free(socket_path);
+    const token_path = try tmpPath("partial.sock.token");
+    defer testing.allocator.free(token_path);
+    cleanupSocketPath(socket_path);
+    cleanupSocketPath(token_path);
+
+    automation_server.testing_hooks.fail_token_write = true;
+    defer automation_server.testing_hooks.fail_token_write = false;
+    var server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = socket_path,
+        .token = "0123456789abcdef",
+        .token_file_path = token_path,
+    });
+    defer server.deinit();
+    try testing.expectError(error.InjectedTokenWriteFailure, server.start());
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, token_path, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, socket_path, .{}));
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

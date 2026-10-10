@@ -510,6 +510,11 @@ pub const RecentTraceStore = struct {
         self.acquire();
         defer self.lock.unlock();
         const trace = try self.traceFor(trace_id);
+        if (is_root and !trace.has_root and trace.spans.items.len >= max_spans_per_trace) {
+            // The root (command outcome) arrives last; make room by dropping
+            // the newest child rather than losing the root.
+            self.allocator.free(trace.spans.pop().?);
+        }
         if (trace.spans.items.len >= max_spans_per_trace) {
             self.allocator.free(json);
             return;

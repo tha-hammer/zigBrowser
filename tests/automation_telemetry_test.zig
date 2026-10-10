@@ -512,3 +512,20 @@ test "RecentTraceStore caps spans per trace" {
     defer parsed.deinit();
     try std.testing.expectEqual(telemetry.RecentTraceStore.max_spans_per_trace, parsed.value.object.get("spans").?.array.items.len);
 }
+
+test "RecentTraceStore keeps a late root even after the child cap is reached" {
+    var store = telemetry.RecentTraceStore.init(gpa, 2);
+    defer store.deinit();
+    const sink = store.sink();
+    for (0..telemetry.RecentTraceStore.max_spans_per_trace + 6) |_| {
+        try sink.recordChildSpan(.{ .name = "automation.platform.eval", .trace_id = "t", .parent_span_id = "r", .command_id = "c", .attributes = &.{} });
+    }
+    try sink.recordCommandSpan(rootAttrs("t", "r"));
+    const json = try store.queryJson(gpa, "t");
+    defer gpa.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    const spans = parsed.value.object.get("spans").?.array.items;
+    try std.testing.expectEqual(telemetry.RecentTraceStore.max_spans_per_trace, spans.len);
+    try std.testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
+}

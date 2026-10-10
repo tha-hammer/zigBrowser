@@ -576,6 +576,12 @@ pub fn tokensEqual(given: []const u8, expected: []const u8) bool {
     return std.crypto.timing_safe.eql([Sha256.digest_length]u8, given_digest, expected_digest);
 }
 
+/// Test-only fault injection; never set outside tests.
+pub const testing_hooks = struct {
+    /// Make the token sidecar write fail after the file was created.
+    pub var fail_token_write: bool = false;
+};
+
 /// Unlinks whatever is at `path` (unlink never follows a symlink), then
 /// creates a brand-new 0600 file exclusively. If something re-appears in
 /// between, the exclusive create fails and so does startup.
@@ -587,6 +593,9 @@ fn writeTokenFile(io: std.Io, path: []const u8, token: []const u8) !void {
         .permissions = .fromMode(0o600),
     });
     defer file.close(io);
+    // Created: from here on any failure removes the partial file.
+    errdefer cleanupSocketPath(io, path) catch {};
+    if (testing_hooks.fail_token_write) return error.InjectedTokenWriteFailure;
     var buf: [256]u8 = undefined;
     var writer = file.writer(io, &buf);
     try writer.interface.writeAll(token);

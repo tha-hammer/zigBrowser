@@ -11,7 +11,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { AutomationError, ZigBrowser } from "../src/index";
 
-const binary = process.env.ZB_BINARY;
+const binary = process.env.ZB_BINARY ? path.resolve(process.env.ZB_BINARY) : undefined;
 const live = binary && process.env.DISPLAY ? describe : describe.skip;
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Node SDK Live</title></head>
@@ -27,6 +27,19 @@ async function waitFor(check: () => boolean, timeoutMs: number): Promise<void> {
   while (!check()) {
     if (Date.now() > deadline) throw new Error("timed out");
     await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** SIGINT, wait up to 8 s, then SIGKILL; never waits on an already-exited child. */
+async function stopBrowser(proc: ChildProcess): Promise<void> {
+  const exited = () => proc.exitCode !== null || proc.signalCode !== null;
+  if (exited()) return;
+  const done = new Promise<void>((r) => proc.once("exit", () => r()));
+  proc.kill("SIGINT");
+  const timedOut = await Promise.race([done.then(() => false), new Promise<boolean>((r) => setTimeout(() => r(true), 8000))]);
+  if (timedOut && !exited()) {
+    proc.kill("SIGKILL");
+    await Promise.race([done, new Promise<void>((r) => setTimeout(r, 5000))]);
   }
 }
 
@@ -66,8 +79,7 @@ live("Node SDK against the real binary", () => {
 
       await zb.disconnect();
     } finally {
-      proc.kill("SIGINT");
-      await new Promise((r) => proc.once("exit", r));
+      await stopBrowser(proc);
       server.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
