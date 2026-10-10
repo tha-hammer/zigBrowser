@@ -896,6 +896,36 @@ test "docs/how-to-automate.md documents every method the SDKs send, and every er
     }
 }
 
+test "x.* is routed: x.post runs its steps on the page and returns the flow result" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("x-post", .{ .sink = &sink, .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true}}" });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi from the socket\",\"compose_url\":\"http://127.0.0.1:9/compose\"},\"id\":1}");
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", response);
+    try testing.expectEqual(@as(u32, 5), fixture.fake.evals.load(.acquire));
+
+    const bad = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"\"},\"id\":2}");
+    defer testing.allocator.free(bad);
+    try testing.expect(std.mem.indexOf(u8, bad, "\"code\":-32602") != null);
+    const unknown = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.delete\",\"id\":3}");
+    defer testing.allocator.free(unknown);
+    try testing.expect(std.mem.indexOf(u8, unknown, "\"code\":-32601") != null);
+    fixture.server.stop();
+
+    var x_roots: usize = 0;
+    for (sink.spans.items) |span| {
+        if (std.mem.eql(u8, span.name, "automation.command") and std.mem.eql(u8, span.attr("rpc.method").?, "x.post")) x_roots += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), x_roots);
+    try testing.expect(!sink.containsRaw("hi from the socket"));
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

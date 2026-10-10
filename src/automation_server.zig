@@ -8,6 +8,7 @@ const engine_mod = automation.engine;
 const queue_mod = automation.queue;
 const social_routes = automation.social_routes;
 const cookie_routes = automation.cookie_routes;
+const x_routes = automation.x_routes;
 
 /// The automation API drives the primary window's page.
 pub const primary_route = automation.router.RouteContext{ .page_id = "page-1", .window_id = "window-1" };
@@ -62,6 +63,8 @@ pub const AutomationApiServer = struct {
     recent_traces: automation.telemetry.RecentTraceStore,
     /// Fans spans out to recent_traces and the configured sink.
     tee: TeeSink = undefined,
+    /// x.* pacing (50 X actions per UTC day).
+    x_state: x_routes.XState = undefined,
     /// social.* state: RateLimiter + pause window (N6).
     social: social_routes.SocialState = undefined,
 
@@ -115,6 +118,7 @@ pub const AutomationApiServer = struct {
         // command answers session_invalid through the engine (ids + span).
         self.engine = engine_mod.Engine.init(self.config.page_port orelse page_port.no_page, self.clock.clock());
         self.social = social_routes.SocialState.init(wallClockMs, self.clock.clock());
+        self.x_state = x_routes.XState.init(wallClockMs);
         self.tee = .{ .recent = self.recent_traces.sink(), .configured = self.config.telemetry_sink };
         // A previous stop() shut the queue down for good; give a restarted
         // server a fresh one (every ticket was released when stop() joined
@@ -293,7 +297,7 @@ pub const AutomationApiServer = struct {
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
         route.telemetry_sink = self.tee.sink();
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping }, &self.recent_traces);
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping }, &self.recent_traces, &self.x_state);
     }
 };
 
@@ -361,6 +365,7 @@ fn handleRequestWith(
     build_info: automation.telemetry.BuildInfo,
     cookies: CookieContext,
     recent_traces: *automation.telemetry.RecentTraceStore,
+    x_state: *x_routes.XState,
 ) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -405,6 +410,9 @@ fn handleRequestWith(
     }
     if (cookie_routes.verbFromMethod(method)) |verb| {
         return handleCookies(allocator, id_json, method, verb, params_json, engine, cookies, route, build_info);
+    }
+    if (x_routes.verbFromMethod(method)) |verb| {
+        return handleX(allocator, id_json, method, verb, params_json, engine, queue, x_state, route, build_info);
     }
     if (social_routes.verbFromMethod(method)) |verb| {
         return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
@@ -478,6 +486,54 @@ fn handleCookies(
         .verb = verb,
         .params_json = params_json,
     }, CookieCall.run);
+    defer outcome.deinit(allocator);
+    return switch (outcome) {
+        .result => |result_json| std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+            .{ result_json, id_json },
+        ),
+        .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
+    };
+}
+
+/// x.* drive the page, so they hold its queue ticket for the whole flow.
+fn handleX(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    method: []const u8,
+    verb: x_routes.Verb,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    queue: *queue_mod.PageCommandQueue,
+    x_state: *x_routes.XState,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    // Cancelled while queued -> no ticket; the flow then starts already
+    // cancelled, so the reply still has ids and a root span.
+    const ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Cancelled => null,
+    };
+    defer if (ticket) |t| queue.release(t);
+    const already_cancelled = std.atomic.Value(bool).init(true);
+
+    const XCall = struct {
+        state: *x_routes.XState,
+        verb: x_routes.Verb,
+        params_json: []const u8,
+
+        fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            return x_routes.handle(gpa, self.state, ext, self.verb, self.params_json);
+        }
+    };
+    var outcome = try engine.executeExternal(allocator, method, "x", .{
+        .cancel = if (ticket) |t| &t.cancelled else &already_cancelled,
+        .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
+        .route = route,
+        .build = build_info,
+    }, XCall{ .state = x_state, .verb = verb, .params_json = params_json }, XCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

@@ -114,6 +114,27 @@ pub const ExecuteOptions = struct {
 pub const External = struct {
     engine: *Engine,
     run: *Run,
+    options: ExecuteOptions,
+
+    /// Runs one router command (e.g. a dom.* step of an x.* flow) inside
+    /// this command's lifecycle: same trace/ids, cancel flag and sink, so
+    /// its page calls become children of the one root span.
+    pub fn runCommand(self: *External, gpa: std.mem.Allocator, method: []const u8, params_json: []const u8) error{OutOfMemory}!Outcome {
+        var command = router.parse(gpa, method, params_json, .{ .page_id = self.options.route.page_id, .window_id = self.options.route.window_id }) catch |err| return .{ .failure = .{
+            .code = switch (err) {
+                error.UnknownCommand => -32601,
+                error.BadArgs => -32602,
+            },
+            .message = switch (err) {
+                error.UnknownCommand => "Method not found",
+                error.BadArgs => "Invalid params",
+            },
+        } };
+        defer command.deinit();
+        var step_options = self.options;
+        step_options.queue_wait_ms = 0;
+        return self.engine.executeRun(gpa, &command, step_options, self.run);
+    }
 
     pub fn ids(self: *const External) script_command.Ids {
         return self.run.ids;
@@ -254,7 +275,7 @@ pub const Engine = struct {
             .build = options.build,
         };
         const started = self.clock.nowMs();
-        var ext = External{ .engine = self, .run = &run };
+        var ext = External{ .engine = self, .run = &run, .options = options };
         const outcome = if (run.cancelled())
             try automationFailure(gpa, .cancelled, null, run.ids)
         else
