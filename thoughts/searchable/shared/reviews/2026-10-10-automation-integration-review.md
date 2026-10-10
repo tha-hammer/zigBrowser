@@ -136,6 +136,16 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `56a3988` — non-vacuous cross-target symbol gate | Exact diff review; clean-export `zig build cross-check` with a 300-second bound and automatic deletion | **APPROVED: cross-check GREEN for COFF and both Mach-O targets**. | The production objects must expose `zb_app_run` and `zb_version_line`; a parser returning an empty needed set now fails. A fixture requires one real core symbol plus one deliberately absent symbol, and the checker requires exactly that missing symbol for each object format. Closes the N12 vacuity blocker. Mailed cc_2 after review. |
 | `04fee3a` — per-window pointer cache and navigation-start ACK | Exact committed C/Zig/JS lifetime and live-oracle review; author reports bounded gate 75/75, 533/533 plus 10/10 standalone | **CODE BLOCKED**. | Per-window ownership and the immediate strict Enter/suffix oracle close the original two `2f0e179` defects. BLOCKERS: the post-event cache write dereferences a raw window without revalidating its lifetime, and canceled/failed navigation leaves a permanent `leaving` latch that rejects every future native text call in the surviving document. Mailed cc_1 as 4637. |
 | `c00fc02` — N13 `x.selfcheck` | Exact route/flow/SDK/docs/test review; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 536/536 tests**. | The report is read-only, unpaced, derived from the single selector table, and all-or-error on malformed page answers. The real socket/browser test mutates one selector match and observes exactly that count change without navigation. Shared wire cases and both SDKs are aligned; author additionally reports Python 81/81, Node 49/49, and clean `tsc`. Mailed cc_2 as 4639. |
+| `c4572e9` — N8 PagePort/router/engine humanize implementation | Exact interface, schedule, RNG, error, telemetry, and unit-test review; author reports fresh-cache gate 79/79, 547/547 | **CODE BLOCKED**. | The preflight/no-compression and post-progress document-change shape are correct. BLOCKERS: a cached pointer at the target starts at the target; the first generated key delay is omitted from both preflight and dispatch; injected RNG state is shared unsafely by concurrent page queues. SHOULD: no `input.humanize=true` telemetry assertion. Mailed cc_2 as 4642 and 4644. |
+| `7a033a7` — N8 engine review follow-up | Exact committed diff; author reports fresh-cache gate 79/79, 551/551 | **PARTIAL**. | Closes cached-target restart, first-code-point timing, concurrent RNG mutation, and unsupported-motion detection. Zig 0.16 has no `std.crypto.random`; `Io.randomSecure` is the pinned toolchain's OS-entropy equivalent. BLOCKER: the bounded fallback changes from the required radial 80–240 px construction to a uniform viewport point. SHOULD: pin one-character preflight failure and humanize=true telemetry. Mailed cc_2 as 4647. |
+| `b2d07d0` — GTK PagePort-v3.2 wiring and real humanized-click E2E | Exact adapter and socket-E2E diff; included in cc_2's later reported gate 79/79, 554/554 | **APPROVED for wiring/evidence; N8 still blocked**. | The GTK vtable now installs the nominally identical `page_port.Point`, `nativeMove`, and per-window `pointer` functions. The real socket path observes trusted mousemoves ending at the clicked button. The two inherited `04fee3a` lifetime/navigation-latch blockers remain open. Mailed cc_1 as 4649. |
+| `cf7361b` — exact N8 start construction and regression completion | Exact committed diff; author reports combined fresh-cache gate 79/79, 554/554 (one unrelated live move-oracle flake on the first run, immediate rerun green) | **APPROVED for engine/router N8 contract**. | Every attempted unknown start is target plus a radial 80–240 px offset then viewport-clamped; exhaustion returns without dispatch. One-code-point insufficient budget is `-32009`/`humanize_budget` with zero native calls, and root telemetry proves `input.humanize=true` on that path. N8 awaits the native follow-ups and final reviewer gate. Mailed cc_2 as 4652. |
+| `410461f` — post-dispatch pointer-cache lifetime | Exact C/Zig lifetime and oracle review; author reports combined gate 79/79, 555/555 | **APPROVED; pointer lifetime BLOCKER CLOSED**. | After reentrant GDK dispatch the stale `ZbWindow *` is only compared by identity under the published-window mutex; only the resolved live entry is written. GdkWindow refs and destruction checks stop the rest of a pointer sequence after synchronous close. A live self-close seam and raw-write mutant prove the former UAF. The held-timeout oracle still rejects motion at the forbidden coordinates while ignoring unrelated replay. Mailed cc_1 as 4655. |
+| `551b235` — N16 LinkedIn/Instagram production routes, shared runner and flow helpers | Exact source/test/ownership review; clean-export bounded Xvfb gate with automatic deletion | **GREEN 79/79 steps, 557/557 tests; CODE BLOCKED**. | The X extraction preserves its accepted behavior, and each social route has one external root, queue turn, and flow budget with pre-pacing scalar validation. BLOCKERS: cap admission races across page queues; URLs are not platform-bound; login follows navigation; two user payloads use fill; story_view never advances; production-chain and social telemetry closure evidence is absent. Mailed cc_2 as 4658, 4660, and 4664. |
+| `e44e8a9` — N8 humanize/delay router correction | Exact two-file diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 557/557 tests**. | The router checks top-level `delay_ms` presence rather than the type-only parsed slot, so click/type/press all reject the forbidden combination, including zero. Closes the reopened N8 rule-5 router gap. Mailed cc_2 as 4663. |
+| `e4b6864` — failed/canceled navigation latch recovery | Exact C/Zig/isolated-world/live-test diff; clean-export `timeout 900 xvfb-run -a zig build test --summary all`, with automatic tree deletion | **GREEN 79/79 steps, 559/559 tests; CODE BLOCKED**. | C-owned request URLs are released and the real isolated-world/GTK adapter path is exercised. Canceled and 204 navigations no longer poison every later text sequence. BLOCKER: a late request-ID callback is assigned to the current unnumbered same-URL navigation, and the live oracle waits for A's ID before starting B, excluding the A-callback-after-B-start race. Retain/order started records and prove immediate same-URL supersession plus policy-block completion. Mailed cc_1 as 4667. |
+| `a6241b6` — N16 login/cap/URL/typing/story/telemetry follow-up | Exact 12-file diff; clean-export bounded Xvfb gate with automatic deletion | **GREEN 79/79 steps, 564/564 tests; CODE BLOCKED**. | Approves exact platform hosts, removal of request `baseUrl`, pre-page cookie plus post-nav DOM gates, typed payloads, note truncation, basic story iteration, redacted EV7/EV8 shape, and sequential socket routing. BLOCKERS: admitted success can be silently uncounted after pacing reconfiguration; the cookie gate and default-30s story URL read escape the 120s budget; a >64-child trace drops late EV8; concurrency bypasses queue/flow/PagePort; closure does not start at an SDK. SHOULD: conversation/session hash schema. Mailed cc_2 as 4668 and 4671. |
+| `1219446` — navigation arrival barrier, policy-block recovery, and native-input reentrancy | Exact six-file diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 565/565 tests; N8 BLOCKER CLOSED**. | Each page navigation owns its shell arrival sequence; immediate same-URL C/D proves two page starts and two arrivals, stale completion cannot clear the newer navigation, and live canceled/204/policy-block cases all permit later input without touching a replacement document. The handler is isolated-world, once per shared content manager, synchronous, and has no window userdata. Focus/key self-close retains GObjects and stops later events. The socket E2E proves a repeated-target humanized path starts off-target and ends on-target with trusted moves. Mailed cc_1 approval after the exact gate. |
 
 ## Open findings
 
@@ -252,14 +262,10 @@ after at least one move is terminal with no relocation or click, preserving
 the last dispatched cached point. `delay_ms` plus humanize and synthetic plus
 humanize are both `-32602`.
 
-Status: **OPEN for implementation (cc_1 / BlackRobin and cc_2 / BlueBeaver)**.
-The policy dispute is CLOSED by the orchestrator decision, but the code/evidence
-is not present yet. `nativeMove(...)->void` alone also gives an engine-owned
-path generator no way to read cc_1's authoritative cache; PagePort needs an
-agreed cached-position read seam (or an equivalent concrete contract) rather
-than a duplicate engine cache. The native evidence must prove stale/held
-guards send no move, and the E2E must cover the five fixed rules. Mailed as
-4611, 4612, 4618, and 4620.
+Status: **CLOSED by `c4572e9`, `7a033a7`, `b2d07d0`, `cf7361b`, `e44e8a9`,
+`410461f`, and `1219446`**. The intermediate defects and their closure are
+recorded chronologically below. The final exact clean-export gate at `1219446`
+is green: 79/79 steps and 565/565 tests.
 
 Commit `2f0e179` remains blocked. Its process-global coordinate crosses window
 identity when the old primary closes, and its live test permits a navigating
@@ -288,6 +294,176 @@ discards the first per-code-point delay, so a one-character type runs with a
 zero-millisecond key delay outside the 80–200 ms bound. Mailed as 4641 and
 4642 before commit.
 
+The engine scheduling portion is **CLOSED by `7a033a7` and `cf7361b`**. Cached
+target positions use the same off-target construction as unknown positions;
+every key delay is both preflighted and consumed; each command gets a private
+CSPRNG whose injected seed source is serialized; and tests pin the one-key
+budget error, zero dispatch, telemetry, corners, repeated targets, and
+document-change behavior. Zig 0.16 removed `std.crypto.random`, so
+`std.Io.randomSecure` is the available OS-entropy equivalent rather than a
+semantic deviation. `b2d07d0` also closes the missing GTK-vtable wiring and
+proves trusted motion through the real socket chain.
+
+The router portion is **CLOSED by `e44e8a9`**. `router.zig` now rejects the
+combination based on top-level field presence for click, type, and press,
+including `delay_ms:0`; the exact clean gate is green. Mailed as 4656 and
+4663.
+
+`410461f` **CLOSES the window-lifetime blocker**: it revalidates the stale
+pointer as identity under the published-window mutex, writes only the resolved
+live entry, and proves synchronous self-close with a live seam and mutant.
+
+Status remains **OPEN (cc_1 / BlackRobin)** after `e4b6864` and its green exact
+clean-export gate (79/79, 559/559). Canceled and 204 navigations now recover,
+and an already-numbered older completion does not clear a newer pending
+navigation. The request-ID association is still racy: asynchronously delivered
+`navigationRequested(A, url)` attaches A's ID to the current unnumbered
+same-URL pending object, which may already be B. The live test waits for A's ID
+before starting B, excluding that interleaving. Retain/order started records
+and prove immediate same-URL supersession; also prove a policy-block request/end
+cannot be lost before association. Mailed as 4649, 4651, 4655, 4657, 4662, and
+4667.
+
+The next working diff replaces URL/request matching with a page-to-shell
+arrival barrier: each JS navigation object receives its own monotonically
+increasing shell sequence, and an end snapshot clears only an object whose
+reply arrived by that snapshot. This closes the structural A-ID-on-B race.
+Evidence is still OPEN: the immediate C/D test assumes `id_d - 1` belongs to C
+without proving C produced a navigation/report, so deleting/coalescing C can
+leave the test green. It must pin two starts/arrivals. A live policy-block test
+must also prove the page report reaches GTK before the policy-end snapshot;
+otherwise that blocked navigation remains conservatively pending forever.
+Mailed as 4669.
+
+The revised working diff now pins both same-task navigation starts and both
+shell arrivals (`navigations == before + 2`, `id_d == id_b + 2`) and adds a live
+policy-block recovery test. The isolated-world handler is installed once per
+shared content manager, uses no window userdata, and replies synchronously with
+a correctly released transfer-none `JSCValue`. One SHOULD remains: installation
+marks the script installed even if handler registration fails, permanently
+leaving a script that can create unnumbered pending navigations. Mailed as
+4673; no native navigation blocker remains subject to the committed gate.
+
+`1219446` closes the remaining native blocker. It returns the policy verdict
+with the page-owned sequence, so a policy decision that precedes the page's
+report still ends that exact navigation. The live test requires a blocked
+script navigation to increment the page counter, clear pending state, preserve
+the document, and allow fresh native text. Immediate C/D and focus/key
+self-close oracles are mutation-sensitive. The exact clean gate is green.
+
+### BLOCKER — N16 social action admission must be atomic
+
+The in-progress N16 route checks `SocialState.remaining()` before a compound
+flow and calls `consume()` after success under a separate lock. Two page queues
+can therefore both enter with one slot remaining and both perform an external
+action; the second `recordAction` failure is ignored. Reserve capacity
+atomically before the flow, release it on failure, and commit it on success so
+only successful actions count. A cap-one, two-page concurrency test must prove
+that at most one flow touches its page.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Mailed as 4658 during diff review.
+
+The follow-up WIP adds a locked `in_flight` count, but admission ownership is
+still not exact-once: `commit`/`release` saturating-decrement, and `commit`
+silently discards `recordAction` failure. Lowering `daily_cap` while an action
+is reserved can therefore let the admitted action succeed without ever being
+counted. `rate_status` also reports limiter capacity without subtracting
+reservations. The concurrency test calls `reserve` directly rather than
+running two page-queue flows and proving that only one touches its PagePort.
+Mailed as 4665 and 4668.
+
+The next working diff introduces an exact-once `Reservation` and a dedicated
+`countAdmitted` transition, but also makes both `PacingPort` methods acquire the
+state spin lock while the route still holds that same non-reentrant lock.
+`social.rate_status` and `social.set_pacing` therefore deadlock. A bounded
+route-level regression is required in addition to the still-missing two-flow
+concurrency oracle. The author's own bounded gate then stalled in the social
+socket-routing test; GDB showed its 99%-CPU worker spinning in
+`SocialState.acquire -> PacingPort.getState -> social.rateStatus`, while the
+client waited for the response. Mailed as 4672 and 4674.
+
+### BLOCKER — N16 URLs must be bound to their platform
+
+`551b235` preflights required values, UTF-8/text limits, query type, username,
+and a generic absolute-http URL shape before pacing. Its URL check still lets
+externally supplied profile, post, conversation, and public `baseUrl` values
+navigate to unrelated hosts (including userinfo/lookalike forms). Require
+parsed HTTPS LinkedIn/Instagram ownership for every external URL. The fixture
+base override must be injected below the public trust boundary rather than
+making arbitrary navigation part of the production RPC.
+
+Status: **CLOSED by `a6241b6`**. Public request URLs are restricted to exact
+HTTPS platform hosts, fixture origins come only from server configuration, and
+lookalike/userinfo/non-default-port cases are covered.
+
+### BLOCKER — N16 user text must go through typing behavior
+
+The in-progress LinkedIn invitation-note and Instagram-comment flows put the
+user payload directly into `dom.fill`. The behavioral contract requires user
+text to be emitted through `dom.type`; `dom.fill` may clear an editor before
+typing but must not write the payload. Production primitive-call tests need to
+reject any payload-bearing fill step.
+
+Status: **CLOSED by `a6241b6`**. Invitation notes and Instagram comments now
+send the user payload only through `dom.type`, with primitive-call tests that
+reject payload-bearing `dom.fill`.
+
+### BLOCKER — N16 login, story, telemetry, and closure tests drift from Phase 5
+
+The in-progress platform flows navigate before checking login state, while the
+accepted LinkedIn behavior and C31 require a logged-out failure before page
+dispatch. Instagram `story_view` waits for one media element but never advances
+through story frames. The new route emits only the generic external-command
+root, with no platform/action compound telemetry or deny-list proof. Finally,
+the current tests direct-call the route with one universal fake reply, bypassing
+the server route, page queue, socket framing, and SDK closure path while failing
+to assert primitive order and payloads. These are production contracts, not
+unit-only details.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Mailed as 4660 during diff review.
+
+HEAD `1219446` substatus for the 4658/4660 review set:
+
+- **CLOSED by `a6241b6`:** platform-bound URLs and server-only fixture origin;
+  scalar/text/URL validation before pacing or page work; payloads sent through
+  `dom.type`; login cookie gate before navigation plus DOM gate after it; basic
+  story frame iteration; redacted EV7/EV8 schema; sequential raw-socket routing.
+- **OPEN (cc_2 / BlueBeaver):** exact-once cap accounting under concurrent
+  queue/flow/PagePort execution; one absolute deadline including the cookie
+  gate and every story step; failure-preserving story completion; retention of
+  the late EV8 compound span beyond 64 children; SDK-to-socket production
+  closure and aligned SDK/docs. The uncommitted working-tree follow-up does not
+  change these HEAD statuses and currently has the separately mailed deadlock
+  and story-failure blockers.
+
+The follow-up WIP closes the host, payload-typing, pre-navigation cookie-gate,
+and basic EV7/EV8 redaction gaps, but three blocking seams remain. The absolute
+120-second budget is reconstructed only after the fixed 10-second cookie read,
+and `story_view` then calls `page.url` with its independent default 30-second
+timeout after reserving only 16.5 seconds. The fake runner makes primitive
+commands instantaneous, so its deadline assertion cannot catch that overrun.
+EV8 is emitted after every step; a long story produces more than the bounded
+trace store's 64 children, causing the late compound span to be dropped as an
+ordinary child. Finally, the raw-socket fake-PagePort test does not start from
+an SDK and is sequential, while the Phase-5 blocking closure begins at the
+SDK. The Python namespace and alignment-test prose still state that these
+methods are unrouted. Conversation URLs are also hashed under
+`profile.id_hash` instead of required `conversation.id_hash`, and
+`session.id_hash` is absent. Mailed as 4665 and 4668.
+
+The next working diff puts the cookie gate under an absolute deadline and
+removes the independently timed `page.url` probe, but its story replacement
+currently treats any failed Next click followed by zero media as successful
+completion. That masks unrelated element/actionability/timeout/cancellation
+failures, and the new unit test codifies the ambiguity. The timeout test also
+checks only `timeout_ms <= 120000`, not `step_start + timeout_ms <= deadline`.
+The completion signal must discriminate the expected viewer-close condition,
+and a fake-clock boundary test must exercise the absolute deadline. Mailed as
+4672. Two deadline SHOULDs were mailed as 4675: a CookiePort timeout at the
+flow boundary still reports `session_cookie_unreadable` instead of the platform
+flow-deadline reason, and the story frame-fit precheck budgets only one of its
+two queries.
+
 ### SHOULD — closing one window terminates every related WebKit child process
 
 `on_window_destroy` calls `webkit_web_view_terminate_web_process` before
@@ -296,9 +472,9 @@ process, so closing the primary also kills the child page that becomes the new
 primary. The `04fee3a` pointer-identity regression consequently needs its own
 `zb_app_run` and proves ownership only before that replacement page is used.
 
-Status: **OPEN (cc_1 / BlackRobin; architectural decision)**. This behavior
-predates N8 and changing shutdown semantics is outside the pointer-cache fix,
-so it does not block N8. Record and decide whether single-window close should
+Status: **DEFERRED by orchestrator to a follow-up**. This behavior predates N8
+and changing shutdown semantics is outside the pointer-cache fix, so it does
+not block N8. The follow-up must decide whether single-window close should
 preserve related live pages. Reported by cc_1 in message 4636 and classified
 in review response 4637.
 
@@ -482,7 +658,7 @@ touching WebKit objects.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10.
 
-Closed for the primary path by `e0a101f`: the bridge continues to use explicit
+Status: **CLOSED by `e0a101f`** for the primary path. The bridge continues to use explicit
 idle sources and now tracks/destroys queued sources atomically with loop end.
 
 ### BLOCKER — loop shutdown must release queued sources and cover early exits
@@ -496,7 +672,7 @@ broadcast to waiters.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10.
 
-Closed by `e0a101f`; every `zb_app_run` exit marks the loop ended, pending
+Status: **CLOSED by `e0a101f`**. Every `zb_app_run` exit marks the loop ended, pending
 sources are destroyed, and the live-job counter reaches zero in the green gate.
 
 ### BLOCKER — exactly-once completion requires heap/refcounted state
@@ -511,7 +687,7 @@ server thread is joined.
 Owner: cc_1 / BlackRobin, with engine cancellation mapping owned by cc_2 /
 BlueBeaver. Mailed 2026-10-10.
 
-Closed for the reviewed operations by `e0a101f` plus the existing engine
+Status: **CLOSED by `e0a101f`** plus the existing engine
 cancellation mapping. The timeout, loop-end, window-destruction, and late eval
 paths retain refcounted state and release all jobs in the live test.
 
@@ -525,7 +701,7 @@ passes a returned Promise result to the completion callback. Plain
 Owners: cc_1 and cc_2. The proposed `PagePort.evalJson` contract now explicitly
 requires the async-function API.
 
-Closed by `274928b`; WebKitGTK uses
+Status: **CLOSED by `274928b`**. WebKitGTK uses
 `webkit_web_view_call_async_javascript_function`, and the live Promise test is
 green in the `e0a101f`/`5712919` gate.
 
@@ -539,7 +715,7 @@ native chain.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-Closed by `afe0498`: the real binary is driven over a persistent external UDS
+Status: **CLOSED by `afe0498`**. The real binary is driven over a persistent external UDS
 connection for all ten priority methods and verifies page-derived results and
 side effects. `e0a101f` additionally makes the lifecycle E2E's first RPC a
 title read, covering the startup race without a DOM synchronization command.
@@ -567,7 +743,7 @@ native wait; ordinary retry attempts must fit the remaining command budget.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-Commit `0fc312a` closes the minimum-250-ms extension and all reported ordinary
+Status: **CLOSED by `0fc312a`**. It closes the minimum-250-ms extension and all reported ordinary
 retry overruns. A zero-timeout command still begins one 1-ms native attempt at
 the already-reached deadline; this residual is tracked as SHOULD.
 
@@ -581,7 +757,7 @@ text must preserve the same target-validation semantics as the undelayed path.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-Commit `0fc312a` closes the overflow, over-deadline sleep, and empty-text
+Status: **CLOSED by `0fc312a`**. It closes the overflow, over-deadline sleep, and empty-text
 bypass. A separate M8 blocker remains: queue shutdown cannot interrupt a legal
 long inter-character sleep once it has started.
 
@@ -596,7 +772,7 @@ Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
 Still present in `4644087` at `src/automation_server.zig:253,331-340`.
 
-Closed by `1441fd3`, which rejects the invalid ID before router/queue/engine and
+Status: **CLOSED by `1441fd3`**. It rejects the invalid ID before router/queue/engine and
 asserts zero PagePort calls.
 
 ### BLOCKER — startup commands must not observe the transient empty document
@@ -611,7 +787,7 @@ socket command immediately, without first polling lifecycle readiness.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10 after orchestrator reproduction.
 
-Closed for the primary socket path by `e0a101f`. The shim publishes readiness
+Status: **CLOSED by `e0a101f`** for the primary socket path. The shim publishes readiness
 only after the first load finishes or fails and waits on it for reads/evals
 within the caller's deadline. DOM commands additionally retain the engine's
 deadline-bounded `script_not_ready` retry. The lifecycle E2E's first RPC is now
@@ -629,7 +805,7 @@ DOM operation. If the budget is exhausted, PagePort must not be touched.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-Closed by `f1daa1f`; queue wait is subtracted from every operation budget and an
+Status: **CLOSED by `f1daa1f`**. Queue wait is subtracted from every operation budget and an
 exhausted budget fails without touching PagePort.
 
 ### BLOCKER — shutdown must interrupt delayed typing waits
@@ -642,7 +818,7 @@ checks, with a test that cancels during a long delay.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-Closed by `1441fd3`; long delays sleep in at-most-16-ms slices with cancellation
+Status: **CLOSED by `1441fd3`**. Long delays sleep in at-most-16-ms slices with cancellation
 checks, including a one-hour-delay cancellation test.
 
 ### BLOCKER — raw command data still crosses the `TelemetrySink` boundary
@@ -658,7 +834,7 @@ in-memory implementation cannot detect this abstraction-boundary leak.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10 with plan lines 805-809.
 
-Closed by `5712919`; `CommandSpanAttrs` structurally contains only a
+Status: **CLOSED by `5712919`**. `CommandSpanAttrs` structurally contains only a
 `RedactedCommand`, and an alternate spy sink checks the vtable boundary.
 
 ### BLOCKER — M11 telemetry must match the full schema and every routed outcome
@@ -673,7 +849,7 @@ engine emitter and can create two roots for one command.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-Commits `a5a28ad` and `7ff7d72` close the missing schema keys, duplicate-root
+Status: **CLOSED by `a5a28ad` and `7ff7d72`**. These commits close the missing schema keys, duplicate-root
 path, no-page root/IDs, queued-cancellation root/IDs, queue-inclusive duration,
 URL userinfo output, and unbounded selector-kind issues. Pre-sink redaction
 remains separately blocked above.
@@ -688,8 +864,8 @@ bounded parsing/normalization plus denylist tests.
 
 Owner: cc_2 / BlueBeaver. Mailed 2026-10-10.
 
-URL authority normalization landed in `a5a28ad`; bounded selector kinds landed
-in `7ff7d72`. Those output-specific leaks are closed.
+Status: **CLOSED by `a5a28ad` and `7ff7d72`**. URL authority normalization
+landed in `a5a28ad`; bounded selector kinds landed in `7ff7d72`.
 
 ### BLOCKER — native test must not mutate process-global environment in-process
 
@@ -702,7 +878,7 @@ invalidated.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10 with GDB evidence.
 
-Closed by `e0a101f`: the test replaces the existing `DISPLAY` value rather than
+Status: **CLOSED by `e0a101f`**. The test replaces the existing `DISPLAY` value rather than
 removing its environment slot. The reviewer reran the full gate successfully
 with 379/379 tests.
 
@@ -750,7 +926,7 @@ stop a newer command's navigation.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10.
 
-Closed by `e0a101f`; abandonment runs on GTK, checks window load generation and
+Status: **CLOSED by `e0a101f`**. Abandonment runs on GTK, checks window load generation and
 displacement, stops only the owned load, untracks it, and the stalled-load live
 case leaves zero jobs before the next navigation.
 
@@ -764,7 +940,7 @@ and PagePort command deadline need one authoritative policy.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10.
 
-Closed by `e0a101f`; automation-owned loads remove the legacy timer and use the
+Status: **CLOSED by `e0a101f`**. Automation-owned loads remove the legacy timer and use the
 caller's deadline.
 
 ### BLOCKER — command payloads must not become generated-code injection
