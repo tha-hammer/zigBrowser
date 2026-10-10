@@ -66,6 +66,11 @@ pub const AutomationApiServer = struct {
         io: std.Io,
         config: Config,
     ) !AutomationApiServer {
+        const socket_path = try allocator.dupe(u8, config.socket_path);
+        errdefer allocator.free(socket_path);
+        const token = try allocator.dupe(u8, config.token);
+        errdefer allocator.free(token);
+        const token_file_path = try allocator.dupe(u8, config.token_file_path);
         return .{
             .allocator = allocator,
             .io = io,
@@ -73,9 +78,9 @@ pub const AutomationApiServer = struct {
             .queue = queue_mod.PageCommandQueue.init(allocator, io),
             .config = .{
                 .enabled = config.enabled,
-                .socket_path = try allocator.dupe(u8, config.socket_path),
-                .token = try allocator.dupe(u8, config.token),
-                .token_file_path = try allocator.dupe(u8, config.token_file_path),
+                .socket_path = socket_path,
+                .token = token,
+                .token_file_path = token_file_path,
                 .page_port = config.page_port,
                 .telemetry_sink = config.telemetry_sink,
                 .build_info = config.build_info,
@@ -600,9 +605,11 @@ fn handleWebSocketUpgrade(reader: anytype, writer: anytype, initial: *const [4]u
     // The event channel is authenticated like JSON-RPC requests:
     // "Authorization: Bearer <token>" when a token is configured.
     if (token.len > 0) {
-        const bearer_prefix = "Bearer ";
+        // Header names and the auth scheme are case-insensitive (RFC 9110).
+        const bearer_prefix = "bearer ";
         const authorization = webSocketHeader(request_text, "Authorization") orelse "";
-        const given = if (std.mem.startsWith(u8, authorization, bearer_prefix)) authorization[bearer_prefix.len..] else "";
+        const has_bearer = authorization.len > bearer_prefix.len and std.ascii.eqlIgnoreCase(authorization[0..bearer_prefix.len], bearer_prefix);
+        const given = if (has_bearer) std.mem.trim(u8, authorization[bearer_prefix.len..], " \t") else "";
         if (!tokensEqual(given, token)) {
             try writer.interface.writeAll("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             try writer.interface.flush();
@@ -640,7 +647,7 @@ fn webSocketHeader(request: []const u8, comptime name: []const u8) ?[]const u8 {
     var lines = std.mem.splitSequence(u8, request, "\r\n");
     const prefix = name ++ ":";
     while (lines.next()) |line| {
-        if (!std.mem.startsWith(u8, line, prefix)) continue;
+        if (line.len < prefix.len or !std.ascii.eqlIgnoreCase(line[0..prefix.len], prefix)) continue;
         return std.mem.trim(u8, line[prefix.len..], " \t");
     }
     return null;

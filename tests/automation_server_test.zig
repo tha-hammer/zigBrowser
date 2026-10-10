@@ -611,6 +611,9 @@ test "websocket upgrade requires the token (Authorization: Bearer) when one is c
         .{ .header = "", .expect = "HTTP/1.1 401" },
         .{ .header = "Authorization: Bearer wrong\r\n", .expect = "HTTP/1.1 401" },
         .{ .header = "Authorization: Bearer s3cret\r\n", .expect = "HTTP/1.1 101" },
+        .{ .header = "authorization: bearer s3cret\r\n", .expect = "HTTP/1.1 101" },
+        .{ .header = "AUTHORIZATION: BEARER s3cret\r\n", .expect = "HTTP/1.1 101" },
+        .{ .header = "authorization: bearer S3CRET\r\n", .expect = "HTTP/1.1 401" },
     }) |case| {
         var stream = try fixture.connect();
         defer stream.close(testing.io);
@@ -767,6 +770,21 @@ test "token sidecar: whitespace-only token refused; failed start leaves no sidec
     defer broken.deinit();
     try testing.expect(std.meta.isError(broken.start()));
     try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, token_path, .{}));
+}
+
+test "AutomationApiServer.init frees everything when an allocation fails" {
+    const Init = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var server = try automation_server.AutomationApiServer.init(allocator, testing.io, .{
+                .enabled = true,
+                .socket_path = "/tmp/zigbrowser-init-oom.sock",
+                .token = "0123456789abcdef",
+                .token_file_path = "/tmp/zigbrowser-init-oom.sock.token",
+            });
+            server.deinit();
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Init.run, .{});
 }
 
 const FixtureOptions = struct {
