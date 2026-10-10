@@ -2,17 +2,10 @@
 //! fixed sequence of ordinary automation commands (page.navigate, dom.*),
 //! so it gets the engine's retries, actionability checks and telemetry.
 //!
-//! The runner is duck-typed:
-//! - `run(method, params_json)` executes one command and returns its
-//!   JSON-RPC result, or null when the command failed (the runner keeps that
-//!   failure for the caller until a newer failure replaces it).
-//! - `nowMs()` and `remainingMs()`: the clock and what is left of the whole
-//!   flow's budget. Every step's timeout is clamped to the budget.
-//! - `pause(ms)`: waits (cancellable); false if the flow was cancelled.
-//! - `malformed()`: records "a step succeeded but its answer was unusable".
-//! - `notFound(reason)`: records element_not_found with `reason`.
-//! Whenever a flow returns null, the runner holds the failure for it.
+//! The runner is duck-typed; see src/flow_steps.zig for its contract and
+//! the shared step helpers.
 const std = @import("std");
+const flow = @import("flow_steps.zig");
 
 /// Every X selector, in one place. X changes its markup often; update here.
 /// data-testid hooks are X's most stable handles.
@@ -56,10 +49,6 @@ const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;
 /// Typing up to 280 characters, one event sequence per character.
 const type_timeout_ms = 30_000;
-/// dom.query answers at once (an empty list is a valid answer, never
-/// retried); its timeout only bounds the native page call, so it must be a
-/// real duration, not 0.
-const query_timeout_ms = 5_000;
 /// One trial-click probe of a Post button copy.
 const probe_timeout_ms = 1_000;
 /// How long to look for an actionable Post button: rounds over every copy
@@ -68,9 +57,6 @@ const probe_timeout_ms = 1_000;
 pub const post_button_wait_ms = 10_000;
 /// Pause between two Post-button rounds.
 pub const post_button_poll_ms = 250;
-/// The engine gives a waitFor's native call this much on top of its JS
-/// timeout; budget clamping leaves room for it.
-const wait_for_grace_ms = 1_000;
 
 pub const Verb = enum { post, schedule_post, login_check, selfcheck };
 
@@ -82,7 +68,7 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
     return null;
 }
 
-pub const Error = error{ OutOfMemory, InvalidParams, LoggedOut };
+pub const Error = flow.Error;
 
 pub const PostParams = struct {
     text: []const u8,
@@ -255,56 +241,11 @@ fn findPostButton(gpa: std.mem.Allocator, runner: anytype, buf: []u8) Error!?[]c
     return null;
 }
 
-/// `ms`, clamped to what is left of the flow's budget.
-fn budget(runner: anytype, ms: u64) u64 {
-    return @min(ms, runner.remainingMs());
-}
-
-/// Like `budget`, leaving room for the engine's waitFor native grace.
-fn waitBudget(runner: anytype, ms: u64) u64 {
-    return @min(ms, runner.remainingMs() -| wait_for_grace_ms);
-}
-
-/// Runs one command; true if it succeeded.
-fn step(gpa: std.mem.Allocator, runner: anytype, method: []const u8, params: anytype) Error!bool {
-    const json = try std.json.Stringify.valueAlloc(gpa, params, .{});
-    defer gpa.free(json);
-    return (try runner.run(method, json)) != null;
-}
-
-/// Number of elements matching `selector` right now (one attempt), or null
-/// when the query itself failed.
-/// A successful answer that cannot be used is recorded as malformed, so the
-/// caller never sees a stale failure from an earlier step.
-fn countMatches(gpa: std.mem.Allocator, runner: anytype, selector: []const u8) Error!?usize {
-    return countMatchesWithin(gpa, runner, selector, std.math.maxInt(u64));
-}
-
-/// countMatches with the query also clamped to end by `until_ms`.
-fn countMatchesWithin(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, until_ms: u64) Error!?usize {
-    const timeout_ms = budget(runner, @min(query_timeout_ms, until_ms -| runner.nowMs()));
-    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = timeout_ms }, .{});
-    defer gpa.free(params);
-    const result = (try runner.run("dom.query", params)) orelse return null;
-    const parsed = std.json.parseFromSlice(std.json.Value, gpa, result, .{}) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return try malformed(runner),
-    };
-    defer parsed.deinit();
-    const elements = switch (parsed.value) {
-        .object => |o| o.get("elements") orelse return try malformed(runner),
-        else => return try malformed(runner),
-    };
-    return switch (elements) {
-        .array => |a| a.items.len,
-        else => try malformed(runner),
-    };
-}
-
-fn malformed(runner: anytype) Error!?usize {
-    try runner.malformed();
-    return null;
-}
+const budget = flow.budget;
+const waitBudget = flow.waitBudget;
+const step = flow.step;
+const countMatches = flow.countMatches;
+const countMatchesWithin = flow.countMatchesWithin;
 
 const When = struct { year: u32, month: u32, day: u32, hour12: u32, minute: u32, pm: bool };
 

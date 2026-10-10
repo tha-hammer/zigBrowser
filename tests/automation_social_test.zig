@@ -241,3 +241,130 @@ test "social failures carry the command ids" {
     try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"trace_id\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"command_id\":\"cmd-") != null);
 }
+
+// ---- N16: linkedin.* / instagram.* through the engine ----
+
+const social_flow_routes = automation.social_flow_routes;
+
+/// Answers every page step with a success that also reads as a one-element
+/// dom.query result.
+const flow_ok = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true,\"text\":\"Ada\",\"elements\":[{\"id\":\"zb-1\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}}" };
+
+fn flowCall(h: *Harness, method: []const u8, params: []const u8) !engine.Outcome {
+    const Call = struct {
+        state: *social_routes.SocialState,
+        call: social_flow_routes.Call,
+        params: []const u8,
+        fn run(c: @This(), a: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
+            return social_flow_routes.handle(a, c.state, ext, c.call, c.params);
+        }
+    };
+    const call = social_flow_routes.callFromMethod(method).?;
+    return h.engine.executeExternal(gpa, method, call.namespace(), .{}, Call{ .state = &h.state, .call = call, .params = params }, Call.run);
+}
+
+test "linkedin.*/instagram.* methods route; social.* and x.* do not" {
+    for ([_][]const u8{ "linkedin.visit", "linkedin.connect", "linkedin.message", "linkedin.like", "linkedin.comment", "linkedin.follow", "linkedin.search", "linkedin.extract", "linkedin.selfcheck", "instagram.follow", "instagram.like", "instagram.comment", "instagram.dm", "instagram.story_view", "instagram.selfcheck" }) |m| {
+        try std.testing.expect(social_flow_routes.callFromMethod(m) != null);
+    }
+    for ([_][]const u8{ "linkedin.post", "instagram.reel", "social.pause", "x.post", "linkedin" }) |m| {
+        try std.testing.expect(social_flow_routes.callFromMethod(m) == null);
+    }
+}
+
+test "an action pauses within the pacing range, runs, and consumes one action" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{flow_ok};
+    const before = h.state.remaining();
+    var outcome = try flowCall(&h, "linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
+    try std.testing.expectEqual(before - 1, h.state.remaining());
+    var slept: u64 = 0;
+    for (h.clock.sleeps.items) |ms| slept += ms;
+    const config = h.state.pacingConfig();
+    try std.testing.expect(slept >= config.min_delay_ms and slept <= config.max_delay_ms);
+    try std.testing.expectEqualStrings("https://www.linkedin.com/in/ada/", h.fake.navigate_calls.items[0]);
+}
+
+test "at the daily cap an action fails social_daily_cap without touching the page; reads still work" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{flow_ok};
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 1 });
+    var first = try flowCall(&h, "instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\"}");
+    defer first.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", first.result);
+    var capped = try flowCall(&h, "linkedin.visit", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    defer capped.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32010), capped.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, capped.failure.data_json.?, "social_daily_cap") != null);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.navigate_calls.items.len);
+    var read = try flowCall(&h, "linkedin.selfcheck", "{}");
+    defer read.deinit(gpa);
+    try std.testing.expect(std.mem.startsWith(u8, read.result, "{\"signed_in\":1,"));
+}
+
+test "a failed action does not consume; logged out is -32011 logged_out" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+    // signed-in marker wait fails; the login link is there.
+    h.fake.eval_replies = &.{
+        .{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" },
+        flow_ok,
+    };
+    var outcome = try flowCall(&h, "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32011), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "logged_out") != null);
+    try std.testing.expectEqual(@as(u32, 5), h.state.remaining());
+}
+
+test "strict params: unknown, missing, wrong-typed or invalid -> -32602 before pacing or the page" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{flow_ok};
+    for ([_][2][]const u8{
+        .{ "linkedin.visit", "{}" },
+        .{ "linkedin.visit", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"x\":\"y\"}" },
+        .{ "linkedin.visit", "{\"profileUrl\":1}" },
+        .{ "linkedin.message", "{\"text\":\"hi\"}" },
+        .{ "linkedin.message", "{\"text\":\"hi\",\"conversationUrl\":\"https://a.b/c\",\"profileUrl\":\"https://a.b/d\"}" },
+        .{ "linkedin.search", "{\"query\":\"zig\",\"searchType\":\"groups\"}" },
+        .{ "linkedin.search", "{\"query\":\"  \"}" },
+        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"note\":\"" ++ "n" ** 301 ++ "\"}" },
+        .{ "instagram.dm", "{\"username\":\"a b\",\"text\":\"hi\"}" },
+        .{ "instagram.story_view", "{\"username\":\"ada\",\"baseUrl\":\"file:///etc\"}" },
+        .{ "instagram.selfcheck", "{\"x\":\"y\"}" },
+    }) |case| {
+        var outcome = try flowCall(&h, case[0], case[1]);
+        defer outcome.deinit(gpa);
+        if (outcome != .failure or outcome.failure.code != -32602) {
+            std.debug.print("accepted {s} {s}\n", .{ case[0], case[1] });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), h.fake.navigate_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 0), h.clock.sleeps.items.len);
+}
+
+test "linkedin.search navigates to the built URL; extract and selfcheck are not paced" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{flow_ok};
+    var search = try flowCall(&h, "linkedin.search", "{\"query\":\"zig & c\",\"searchType\":\"companies\",\"baseUrl\":\"http://127.0.0.1:9\"}");
+    defer search.deinit(gpa);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9/search/results/companies/?keywords=zig%20%26%20c", h.fake.navigate_calls.items[0]);
+    const remaining = h.state.remaining();
+    var extract = try flowCall(&h, "linkedin.extract", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    defer extract.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"name\":\"Ada\",\"headline\":\"Ada\",\"location\":\"Ada\"}", extract.result);
+    try std.testing.expectEqual(remaining, h.state.remaining());
+}

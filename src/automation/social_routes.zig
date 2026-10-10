@@ -66,6 +66,33 @@ pub const SocialState = struct {
         return self.limiter.config;
     }
 
+    /// Actions left today (linkedin.*/instagram.* flows share this cap
+    /// with social.rate_status / social.set_pacing).
+    pub fn remaining(self: *SocialState) u32 {
+        self.acquire();
+        defer self.lock.unlock();
+        return self.limiter.remaining();
+    }
+
+    /// Records one successful action.
+    pub fn consume(self: *SocialState) void {
+        self.acquire();
+        defer self.lock.unlock();
+        var prng = std.Random.DefaultPrng.init(0);
+        _ = self.limiter.recordAction(prng.random()) catch {};
+    }
+
+    /// The pause before an action: uniform in [min_delay_ms, max_delay_ms]
+    /// of the current pacing config.
+    pub fn actionDelayMs(self: *SocialState, random: std.Random) u64 {
+        self.acquire();
+        defer self.lock.unlock();
+        const config = self.limiter.config;
+        const low: u64 = @min(config.min_delay_ms, config.max_delay_ms);
+        const high: u64 = @max(config.min_delay_ms, config.max_delay_ms);
+        return low + random.uintAtMost(u64, high - low);
+    }
+
     fn acquire(self: *SocialState) void {
         while (!self.lock.tryLock()) std.atomic.spinLoopHint();
     }

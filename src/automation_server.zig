@@ -9,6 +9,7 @@ const queue_mod = automation.queue;
 const social_routes = automation.social_routes;
 const cookie_routes = automation.cookie_routes;
 const x_routes = automation.x_routes;
+const social_flow_routes = automation.social_flow_routes;
 
 /// The automation API drives the primary window's page.
 pub const primary_route = automation.router.RouteContext{ .page_id = "page-1", .window_id = "window-1" };
@@ -414,6 +415,9 @@ fn handleRequestWith(
     if (x_routes.verbFromMethod(method)) |verb| {
         return handleX(allocator, id_json, method, verb, params_json, engine, queue, x_state, route, build_info);
     }
+    if (social_flow_routes.callFromMethod(method)) |call| {
+        return handleSocialFlow(allocator, id_json, method, call, params_json, engine, queue, social, route, build_info);
+    }
     if (social_routes.verbFromMethod(method)) |verb| {
         return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
     }
@@ -534,6 +538,55 @@ fn handleX(
         .route = route,
         .build = build_info,
     }, XCall{ .state = x_state, .verb = verb, .params_json = params_json }, XCall.run);
+    defer outcome.deinit(allocator);
+    return switch (outcome) {
+        .result => |result_json| std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+            .{ result_json, id_json },
+        ),
+        .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
+    };
+}
+
+/// linkedin.* / instagram.* drive the page, so like x.* they hold its queue
+/// ticket for the whole flow.
+fn handleSocialFlow(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    method: []const u8,
+    call: social_flow_routes.Call,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    queue: *queue_mod.PageCommandQueue,
+    social: *social_routes.SocialState,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    // Cancelled while queued -> no ticket; the flow then starts already
+    // cancelled, so the reply still has ids and a root span.
+    const ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Cancelled => null,
+    };
+    defer if (ticket) |t| queue.release(t);
+    const already_cancelled = std.atomic.Value(bool).init(true);
+
+    const FlowCall = struct {
+        state: *social_routes.SocialState,
+        call: social_flow_routes.Call,
+        params_json: []const u8,
+
+        fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            return social_flow_routes.handle(gpa, self.state, ext, self.call, self.params_json);
+        }
+    };
+    var outcome = try engine.executeExternal(allocator, method, call.namespace(), .{
+        .cancel = if (ticket) |t| &t.cancelled else &already_cancelled,
+        .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
+        .route = route,
+        .build = build_info,
+    }, FlowCall{ .state = social, .call = call, .params_json = params_json }, FlowCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

@@ -1,200 +1,260 @@
+//! N16: LinkedIn flows as sequences of page.*/dom.* steps (src/linkedin.zig).
 const std = @import("std");
 const linkedin = @import("linkedin");
 
-const CommandRecord = struct {
-    method: []const u8,
-    params_json: []const u8,
-};
+const gpa = std.testing.allocator;
 
-const MockEngine = struct {
-    logged_in: bool = true,
-    platform: []const u8 = "linkedin",
-    cmds: [32]CommandRecord = undefined,
-    cmd_count: usize = 0,
-    fail_on_method: ?[]const u8 = null,
+const Step = struct { method: []u8, params: []u8 };
 
-    pub fn loginCheck(self: *const MockEngine) linkedin.LoginState {
-        return .{ .logged_in = self.logged_in, .platform = self.platform };
-    }
+/// Scripted answer: the first rule whose method matches and whose `contains`
+/// occurs in the params wins. `result = null` fails the step.
+const Rule = struct { method: []const u8, contains: []const u8 = "", result: ?[]const u8 };
 
-    pub fn dispatch(self: *MockEngine, method: []const u8, params_json: []const u8) !void {
-        if (self.fail_on_method) |fail_method| {
-            if (std.mem.eql(u8, method, fail_method)) return error.ElementNotFound;
+const FakeRunner = struct {
+    steps: std.ArrayListUnmanaged(Step) = .empty,
+    rules: []const Rule = &.{},
+    now_ms: u64 = 0,
+    budget_ms: u64 = 120_000,
+    malformed_calls: usize = 0,
+
+    fn deinit(self: *FakeRunner) void {
+        for (self.steps.items) |s| {
+            gpa.free(s.method);
+            gpa.free(s.params);
         }
-        self.cmds[self.cmd_count] = .{ .method = method, .params_json = params_json };
-        self.cmd_count += 1;
+        self.steps.deinit(gpa);
     }
 
-    pub fn commandLog(self: *const MockEngine) []const CommandRecord {
-        return self.cmds[0..self.cmd_count];
+    pub fn run(self: *FakeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
+        try self.steps.append(gpa, .{ .method = try gpa.dupe(u8, method), .params = try gpa.dupe(u8, params_json) });
+        for (self.rules) |rule| {
+            if (std.mem.eql(u8, rule.method, method) and std.mem.indexOf(u8, params_json, rule.contains) != null) return rule.result;
+        }
+        if (std.mem.eql(u8, method, "dom.query")) return "{\"elements\":[{\"id\":\"e\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}";
+        return "{\"ok\":true}";
+    }
+    pub fn nowMs(self: *const FakeRunner) u64 {
+        return self.now_ms;
+    }
+    pub fn remainingMs(self: *const FakeRunner) u64 {
+        return self.budget_ms -| self.now_ms;
+    }
+    pub fn pause(self: *FakeRunner, ms: u64) bool {
+        self.now_ms += ms;
+        return true;
+    }
+    pub fn malformed(self: *FakeRunner) error{OutOfMemory}!void {
+        self.malformed_calls += 1;
+    }
+    pub fn notFound(_: *FakeRunner, _: []const u8) error{OutOfMemory}!void {}
+
+    fn methods(self: *const FakeRunner, buf: [][]const u8) [][]const u8 {
+        for (self.steps.items, 0..) |s, i| buf[i] = s.method;
+        return buf[0..self.steps.items.len];
     }
 
-    pub fn lastCommand(self: *const MockEngine) CommandRecord {
-        return self.cmds[self.cmd_count - 1];
+    fn selectorOf(self: *const FakeRunner, index: usize) ![]u8 {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, self.steps.items[index].params, .{});
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        const value = obj.get("selector") orelse obj.get("url").?;
+        return gpa.dupe(u8, value.string);
     }
 };
 
-// --- Behavior 2.1: linkedin.visit ---
-
-test "visit navigates to profile URL" {
-    var engine = MockEngine{};
-    const result = try linkedin.visit(&engine, .{
-        .profile_url = "https://www.linkedin.com/in/john-doe/",
-    });
-    try std.testing.expect(result.ok);
-    try std.testing.expectEqualStrings("page.navigate", engine.lastCommand().method);
-    try std.testing.expect(std.mem.indexOf(u8, engine.lastCommand().params_json, "john-doe") != null);
+fn expectMethods(runner: *const FakeRunner, expected: []const []const u8) !void {
+    var buf: [64][]const u8 = undefined;
+    const actual = runner.methods(&buf);
+    if (actual.len != expected.len) {
+        std.debug.print("steps: {any}\n", .{actual});
+        return error.TestUnexpectedStepCount;
+    }
+    for (expected, actual) |e, a| try std.testing.expectEqualStrings(e, a);
 }
 
-test "visit fails if not logged in" {
-    var engine = MockEngine{ .logged_in = false };
-    const result = linkedin.visit(&engine, .{
-        .profile_url = "https://www.linkedin.com/in/john-doe/",
-    });
-    try std.testing.expectError(error.SessionInvalid, result);
+fn expectSelector(runner: *const FakeRunner, index: usize, expected: []const u8) !void {
+    const actual = try runner.selectorOf(index);
+    defer gpa.free(actual);
+    try std.testing.expectEqualStrings(expected, actual);
 }
 
-test "visit rejects non-linkedin URL" {
-    var engine = MockEngine{};
-    const result = linkedin.visit(&engine, .{
-        .profile_url = "https://www.instagram.com/john/",
-    });
-    try std.testing.expectError(error.InvalidParams, result);
+const profile = "https://www.linkedin.com/in/ada-lovelace/";
+
+test "method table: every linkedin.* the SDKs send, nothing else" {
+    for ([_][]const u8{ "visit", "connect", "message", "like", "comment", "follow", "search", "extract", "selfcheck" }) |name| {
+        var buf: [32]u8 = undefined;
+        const method = try std.fmt.bufPrint(&buf, "linkedin.{s}", .{name});
+        try std.testing.expect(linkedin.verbFromMethod(method) != null);
+    }
+    try std.testing.expect(linkedin.verbFromMethod("linkedin.post") == null);
+    try std.testing.expect(linkedin.verbFromMethod("instagram.follow") == null);
+    try std.testing.expect(!linkedin.isAction(.extract) and !linkedin.isAction(.selfcheck));
+    try std.testing.expect(linkedin.isAction(.connect) and linkedin.isAction(.search));
 }
 
-// --- Behavior 2.2: linkedin.connect ---
-
-test "connect without note sends connection request" {
-    var engine = MockEngine{};
-    const result = try linkedin.connect(&engine, .{
-        .profile_url = "https://www.linkedin.com/in/jane/",
-        .note = null,
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expectEqualStrings("page.navigate", cmds[0].method);
-    try std.testing.expectEqualStrings("dom.click", cmds[1].method);
-    try std.testing.expect(std.mem.indexOf(u8, cmds[1].params_json, "Connect") != null);
+test "visit: navigate, login gate, ok" {
+    var runner = FakeRunner{};
+    defer runner.deinit();
+    const result = (try linkedin.visit(gpa, &runner, profile)).?;
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("{\"ok\":true}", result);
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor" });
+    try expectSelector(&runner, 0, profile);
+    try expectSelector(&runner, 1, linkedin.selectors.signed_in);
 }
 
-test "connect with note fills note field" {
-    var engine = MockEngine{};
-    const result = try linkedin.connect(&engine, .{
-        .profile_url = "https://www.linkedin.com/in/jane/",
-        .note = "Hi Jane!",
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expect(cmds.len >= 5);
-    try std.testing.expectEqualStrings("dom.fill", cmds[3].method);
-    try std.testing.expect(std.mem.indexOf(u8, cmds[3].params_json, "Hi Jane!") != null);
+test "logged out (no signed-in marker, a sign-in link): LoggedOut, nothing clicked" {
+    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.waitFor", .result = null }} };
+    defer runner.deinit();
+    try std.testing.expectError(error.LoggedOut, linkedin.connect(gpa, &runner, profile, null));
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.query" });
+    try expectSelector(&runner, 2, linkedin.selectors.login_link);
 }
 
-test "connect fails if not logged in" {
-    var engine = MockEngine{ .logged_in = false };
-    const result = linkedin.connect(&engine, .{
-        .profile_url = "https://www.linkedin.com/in/jane/",
-        .note = null,
-    });
-    try std.testing.expectError(error.SessionInvalid, result);
+test "no signed-in marker and no sign-in link: the wait failure stands (null)" {
+    var runner = FakeRunner{ .rules = &.{
+        .{ .method = "dom.waitFor", .result = null },
+        .{ .method = "dom.query", .result = "{\"elements\":[]}" },
+    } };
+    defer runner.deinit();
+    try std.testing.expect((try linkedin.follow(gpa, &runner, profile)) == null);
 }
 
-// --- Behavior 2.3: linkedin.message ---
-
-test "message sends text to conversation" {
-    var engine = MockEngine{};
-    const result = try linkedin.message(&engine, .{
-        .conversation_url = "https://www.linkedin.com/messaging/thread/123/",
-        .text = "Hello!",
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expectEqualStrings("page.navigate", cmds[0].method);
-    try std.testing.expectEqualStrings("dom.fill", cmds[1].method);
-    try std.testing.expect(std.mem.indexOf(u8, cmds[1].params_json, "Hello!") != null);
-    try std.testing.expectEqualStrings("dom.click", cmds[2].method);
+test "connect without a note: Connect, Send without a note, wait for Pending" {
+    var runner = FakeRunner{};
+    defer runner.deinit();
+    const result = (try linkedin.connect(gpa, &runner, profile, null)).?;
+    gpa.free(result);
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.waitFor" });
+    try expectSelector(&runner, 2, linkedin.selectors.connect_button);
+    try expectSelector(&runner, 3, linkedin.selectors.send_without_note_button);
+    try expectSelector(&runner, 4, linkedin.selectors.pending_button);
 }
 
-// --- Behavior 2.4: linkedin.like ---
+test "connect with a note: Add a note, fill it, Send; notes over 300 characters are rejected first" {
+    var runner = FakeRunner{};
+    defer runner.deinit();
+    const result = (try linkedin.connect(gpa, &runner, profile, "Hi Ada, loved your notes on the Engine.")).?;
+    gpa.free(result);
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.fill", "dom.click", "dom.waitFor" });
+    try expectSelector(&runner, 3, linkedin.selectors.add_note_button);
+    try expectSelector(&runner, 4, linkedin.selectors.note_input);
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[4].params, "loved your notes") != null);
+    try expectSelector(&runner, 5, linkedin.selectors.send_invite_button);
 
-test "like clicks like button on post" {
-    var engine = MockEngine{};
-    const result = try linkedin.like(&engine, .{
-        .post_url = "https://www.linkedin.com/feed/update/urn:li:activity:123/",
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expectEqualStrings("page.navigate", cmds[0].method);
-    try std.testing.expectEqualStrings("dom.click", cmds[1].method);
-    try std.testing.expect(std.mem.indexOf(u8, cmds[1].params_json, "Like") != null);
+    var strict = FakeRunner{};
+    defer strict.deinit();
+    try std.testing.expectError(error.InvalidParams, linkedin.connect(gpa, &strict, profile, "é" ** 301));
+    try std.testing.expectError(error.InvalidParams, linkedin.connect(gpa, &strict, profile, "   "));
+    try std.testing.expectEqual(@as(usize, 0), strict.steps.items.len);
 }
 
-// --- Behavior 2.5: linkedin.comment ---
+test "message: in a conversation, or from a profile's Message button" {
+    var conv = FakeRunner{};
+    defer conv.deinit();
+    const a = (try linkedin.message(gpa, &conv, .{ .conversation_url = "https://www.linkedin.com/messaging/thread/2-abc/" }, "Hello there")).?;
+    gpa.free(a);
+    try expectMethods(&conv, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.click" });
+    try expectSelector(&conv, 2, linkedin.selectors.message_input);
+    try expectSelector(&conv, 5, linkedin.selectors.message_send_button);
 
-test "comment posts text on linkedin post" {
-    var engine = MockEngine{};
-    const result = try linkedin.comment(&engine, .{
-        .post_url = "https://www.linkedin.com/feed/update/urn:li:activity:456/",
-        .text = "Great post!",
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expect(cmds.len >= 3);
+    var prof = FakeRunner{};
+    defer prof.deinit();
+    const b = (try linkedin.message(gpa, &prof, .{ .profile_url = profile }, "Hello there")).?;
+    gpa.free(b);
+    try expectSelector(&prof, 2, linkedin.selectors.message_button);
 }
 
-// --- Behavior 2.6: linkedin.follow ---
+test "like waits for the pressed state; comment types into the comment box; follow waits for Following" {
+    var l = FakeRunner{};
+    defer l.deinit();
+    gpa.free((try linkedin.like(gpa, &l, "https://www.linkedin.com/feed/update/urn:li:activity:1/")).?);
+    try expectMethods(&l, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.waitFor" });
+    try expectSelector(&l, 3, linkedin.selectors.liked_button);
 
-test "follow clicks follow button on profile" {
-    var engine = MockEngine{};
-    const result = try linkedin.follow(&engine, .{
-        .profile_url = "https://www.linkedin.com/in/leader/",
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expectEqualStrings("page.navigate", cmds[0].method);
-    try std.testing.expectEqualStrings("dom.click", cmds[1].method);
-    try std.testing.expect(std.mem.indexOf(u8, cmds[1].params_json, "Follow") != null);
+    var c = FakeRunner{};
+    defer c.deinit();
+    gpa.free((try linkedin.comment(gpa, &c, "https://www.linkedin.com/feed/update/urn:li:activity:1/", "Great post")).?);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.fill", "dom.type", "dom.click" });
+    try expectSelector(&c, 3, linkedin.selectors.comment_input);
+    try expectSelector(&c, 6, linkedin.selectors.comment_submit);
+
+    var f = FakeRunner{};
+    defer f.deinit();
+    gpa.free((try linkedin.follow(gpa, &f, profile)).?);
+    try expectSelector(&f, 2, linkedin.selectors.follow_button);
+    try expectSelector(&f, 3, linkedin.selectors.following_button);
 }
 
-// --- Behavior 2.7: linkedin.search ---
+test "search builds the real URL from query and searchType (percent-encoded) and counts results" {
+    const url = try linkedin.searchUrl(gpa, " Zig dev & café ", "people", linkedin.base_url);
+    defer gpa.free(url);
+    try std.testing.expectEqualStrings("https://www.linkedin.com/search/results/people/?keywords=Zig%20dev%20%26%20caf%C3%A9", url);
+    const companies = try linkedin.searchUrl(gpa, "anthropic", "companies", "http://127.0.0.1:9/");
+    defer gpa.free(companies);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9/search/results/companies/?keywords=anthropic", companies);
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "x", "groups", linkedin.base_url));
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "  ", "people", linkedin.base_url));
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "x", "people", "ftp://example.com"));
 
-test "search executes linkedin search" {
-    var engine = MockEngine{};
-    const result = try linkedin.search(&engine, .{
-        .query = "software engineer",
-        .search_type = "people",
-    });
-    try std.testing.expect(result.ok);
-    const cmds = engine.commandLog();
-    try std.testing.expectEqualStrings("page.navigate", cmds[0].method);
-    try std.testing.expect(std.mem.indexOf(u8, cmds[0].params_json, "linkedin.com/search") != null);
+    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "reusable-search", .result = "{\"elements\":[{\"id\":\"a\",\"tag\":\"li\",\"text\":\"\",\"bbox\":{}},{\"id\":\"b\",\"tag\":\"li\",\"text\":\"\",\"bbox\":{}}]}" }} };
+    defer runner.deinit();
+    const result = (try linkedin.search(gpa, &runner, "zig", "people", linkedin.base_url)).?;
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("{\"ok\":true,\"url\":\"https://www.linkedin.com/search/results/people/?keywords=zig\",\"resultCount\":2}", result);
 }
 
-// --- Behavior 2.8: linkedin.visit rejects non-linkedin URL ---
-// (covered in 2.1 test above)
-
-// --- Behavior 2.9: linkedin verb dispatch ---
-
-test "linkedinVerb routes linkedin.visit" {
-    const verb = linkedin.linkedinVerb("linkedin.visit");
-    try std.testing.expect(verb != null);
-    try std.testing.expectEqual(linkedin.LinkedInVerb.visit, verb.?);
+test "extract: name, headline, location; absent optional fields are null" {
+    var runner = FakeRunner{ .rules = &.{
+        .{ .method = "dom.getText", .contains = "main h1", .result = "{\"text\":\" Ada Lovelace \"}" },
+        .{ .method = "dom.getText", .contains = "text-body-medium", .result = "{\"text\":\"Analyst at the Analytical Engine\"}" },
+        .{ .method = "dom.query", .contains = "t-black--light", .result = "{\"elements\":[]}" },
+    } };
+    defer runner.deinit();
+    const result = (try linkedin.extract(gpa, &runner, profile)).?;
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("{\"name\":\"Ada Lovelace\",\"headline\":\"Analyst at the Analytical Engine\",\"location\":null}", result);
+    for (runner.steps.items) |s| try std.testing.expect(!std.mem.eql(u8, s.method, "dom.click"));
 }
 
-test "linkedinVerb routes linkedin.connect" {
-    const verb = linkedin.linkedinVerb("linkedin.connect");
-    try std.testing.expect(verb != null);
-    try std.testing.expectEqual(linkedin.LinkedInVerb.connect, verb.?);
+test "extract: an unusable getText answer is malformed" {
+    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.getText", .result = "{\"value\":1}" }} };
+    defer runner.deinit();
+    try std.testing.expect((try linkedin.extract(gpa, &runner, profile)) == null);
+    try std.testing.expectEqual(@as(usize, 1), runner.malformed_calls);
 }
 
-test "linkedinVerb rejects unknown method" {
-    const verb = linkedin.linkedinVerb("linkedin.unknown");
-    try std.testing.expect(verb == null);
+test "selfcheck reports every selector-table entry, read-only" {
+    var runner = FakeRunner{};
+    defer runner.deinit();
+    const result = (try linkedin.selfCheck(gpa, &runner)).?;
+    defer gpa.free(result);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, result, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@typeInfo(linkedin.selectors).@"struct".decls.len, parsed.value.object.count());
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("connect_button").?.integer);
+    for (runner.steps.items) |s| try std.testing.expectEqualStrings("dom.query", s.method);
 }
 
-test "isLinkedInMethod identifies linkedin namespace" {
-    try std.testing.expect(linkedin.isLinkedInMethod("linkedin.visit"));
-    try std.testing.expect(linkedin.isLinkedInMethod("linkedin.connect"));
-    try std.testing.expect(!linkedin.isLinkedInMethod("social.login_check"));
-    try std.testing.expect(!linkedin.isLinkedInMethod("dom.click"));
+test "URLs must be absolute http(s) without spaces" {
+    var runner = FakeRunner{};
+    defer runner.deinit();
+    for ([_][]const u8{ "linkedin.com/in/x", "ftp://www.linkedin.com/in/x", "https:///in/x", "https://www.linkedin.com/in/a b/", "" }) |bad| {
+        try std.testing.expectError(error.InvalidParams, linkedin.visit(gpa, &runner, bad));
+    }
+    try std.testing.expectEqual(@as(usize, 0), runner.steps.items.len);
+}
+
+test "every step's timeout is clamped to the flow budget" {
+    var runner = FakeRunner{ .budget_ms = 4_000 };
+    defer runner.deinit();
+    gpa.free((try linkedin.connect(gpa, &runner, profile, "note")).?);
+    for (runner.steps.items) |s| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        const ms = if (obj.get("timeout_ms")) |t| t.integer else obj.get("options").?.object.get("timeout_ms").?.integer;
+        try std.testing.expect(ms <= 4_000);
+        if (std.mem.eql(u8, s.method, "dom.waitFor")) try std.testing.expect(ms <= 3_000);
+    }
 }

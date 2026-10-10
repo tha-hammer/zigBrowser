@@ -9,6 +9,8 @@ pub const social_routes = @import("automation/social_routes.zig");
 pub const cookie_port = @import("automation/cookie_port.zig");
 pub const cookie_routes = @import("automation/cookie_routes.zig");
 pub const x_routes = @import("automation/x_routes.zig");
+pub const flow_runner = @import("automation/flow_runner.zig");
+pub const social_flow_routes = @import("automation/social_flow_routes.zig");
 
 pub const phase1_command_verbs = [_][]const u8{
     "dom.query",
