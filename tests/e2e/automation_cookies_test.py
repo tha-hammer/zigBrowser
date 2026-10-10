@@ -57,8 +57,12 @@ class Browser:
         )
         assert self.proc.stdout is not None and self.proc.stderr is not None
         self.output: list[str] = []
-        for stream in (self.proc.stdout, self.proc.stderr):
-            threading.Thread(target=_read_lines, args=(stream, self.output), daemon=True).start()
+        self.readers = [
+            threading.Thread(target=_read_lines, args=(stream, self.output), daemon=True)
+            for stream in (self.proc.stdout, self.proc.stderr)
+        ]
+        for reader in self.readers:
+            reader.start()
         self.next_id = 1
 
     def rpc(self, method: str, params: dict, timeout: float):
@@ -68,11 +72,17 @@ class Browser:
     def js(self, expression: str, timeout: float):
         return self.rpc("page.evaluate", {"expression": expression}, timeout)["result"]
 
-    def close(self) -> None:
+    def close(self) -> list[str]:
+        """Stop the browser, wait for both output readers to hit EOF, and
+        return everything it printed (so shutdown output is included)."""
         rc = terminate(self.proc)
-        time.sleep(0.2)
+        for reader in self.readers:
+            reader.join(timeout=5)
+            if reader.is_alive():
+                raise AssertionError("browser output reader did not finish")
         if rc not in (0, 130, -2):
             raise AssertionError(f"browser did not exit cleanly: {rc}")
+        return list(self.output)
 
 
 def names(result: dict) -> dict[str, dict]:
@@ -122,13 +132,29 @@ def main() -> int:
                 if "zbhttp" in first.js("document.cookie", t):
                     raise AssertionError("httpOnly cookie leaked into document.cookie")
 
+                # Exact round-trip through socket -> CookiePort -> WebKit store,
+                # bound to each named cookie object.
+                expiry = int(time.time()) + 3600
+                expect_equal("set secure persistent cookie", first.rpc("cookies.set", {
+                    "name": "zbsecure", "value": f"sec-{SECRET}", "domain": "127.0.0.1", "path": "/",
+                    "secure": True, "expires": expiry}, t), {"ok": True})
+                listed = names(first.rpc("cookies.getAll", {}, t))
+                expect_equal("secure cookie attributes",
+                             {k: listed["zbsecure"][k] for k in ("domain", "path", "expires", "httpOnly", "secure")},
+                             {"domain": "127.0.0.1", "path": "/", "expires": expiry, "httpOnly": False, "secure": True})
+                expect_equal("httpOnly session cookie attributes",
+                             {k: listed["zbhttp"][k] for k in ("expires", "httpOnly", "secure")},
+                             {"expires": -1, "httpOnly": True, "secure": False})
+                expect_equal("script cookie attributes",
+                             {k: listed["zbjs"][k] for k in ("expires", "httpOnly", "secure")},
+                             {"expires": -1, "httpOnly": False, "secure": False})
+
                 expect_equal("delete", first.rpc("cookies.delete", {"name": "zbjs"}, t), {"ok": True})
                 if "zbjs" in first.js("document.cookie", t):
                     raise AssertionError("deleted cookie still visible to the page")
                 if "zbjs" in names(first.rpc("cookies.getAll", {}, t)):
                     raise AssertionError("deleted cookie still in getAll")
 
-                expiry = int(time.time()) + 3600
                 cookies_txt = tmp / "cookies.txt"
                 cookies_txt.write_text(
                     "# Netscape HTTP Cookie File\n"
@@ -138,8 +164,7 @@ def main() -> int:
                 expect_equal("import", first.rpc("cookies.import", {"path": str(cookies_txt), "format": "netscape"}, t),
                              {"imported": 1, "skipped": 0})
             finally:
-                outputs.extend(first.output)
-                first.close()
+                outputs.extend(first.close())
 
             # Restart on the same profile: the imported cookie is sent to the server.
             second = Browser(binary, prefix, env, profile, f"{base}/echo", tmp, "second")
@@ -149,9 +174,13 @@ def main() -> int:
                     raise AssertionError(f"imported cookie not sent after restart: {received!r}")
                 if "zbjs" in received:
                     raise AssertionError("deleted cookie came back after restart")
+                restored = names(second.rpc("cookies.getAll", {}, t))
+                expect_equal("imported cookie expiry after restart", restored["zbimport"]["expires"], expiry)
+                expect_equal("secure cookie survived restart", restored["zbsecure"]["secure"], True)
+                if "zbhttp" in restored:
+                    raise AssertionError("session cookie survived a restart")
             finally:
-                outputs.extend(second.output)
-                second.close()
+                outputs.extend(second.close())
 
             leaked = [line for line in outputs if SECRET in line]
             if leaked:
