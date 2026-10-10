@@ -178,16 +178,35 @@ test "page.evaluate preserves results larger than 4 KB" {
     try expectResult(outcome, expected);
 }
 
-test "page.evaluate JS exception maps to -32603 with exception data" {
+test "page.evaluate JS exception maps to -32603 with only the exception class" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
-    h.fake.eval_replies = &.{.{ .json = "{\"ok\":false,\"error\":\"script_exception\",\"retryable\":false,\"data\":{\"reason\":\"script_exception\",\"name\":\"TypeError\",\"message\":\"boom\"}}" }};
+    // Even if a script answer carried a message, it must not reach the client.
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":false,\"error\":\"script_exception\",\"retryable\":false,\"data\":{\"reason\":\"script_exception\",\"name\":\"TypeError\",\"message\":\"token=s3cret\"}}" }};
 
     var outcome = try h.run("page.evaluate", "{\"expression\":\"null.x\"}");
     defer outcome.deinit(gpa);
     try expectFailure(outcome, -32603, "script_exception");
-    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "TypeError") != null);
+    try std.testing.expectEqualStrings("{\"name\":\"TypeError\"}", outcome.failure.data_json.?);
+}
+
+test "page.evaluate body never reports the exception message" {
+    const body = try script_command.buildEvaluateBody(gpa, "1");
+    defer gpa.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "e.message") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "String(e") == null);
+}
+
+test "page.evaluate passes a null arg" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":1}" }};
+
+    var outcome = try h.run("page.evaluate", "{\"expression\":\"1\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("null", h.fake.eval_calls.items[0].arg);
 }
 
 test "page.screenshot is not supported by PagePort yet" {
@@ -214,10 +233,11 @@ test "dom.click sends a click op to automation.js in the automation world" {
 
     const call = h.fake.eval_calls.items[0];
     try std.testing.expectEqual(automation.page_port.World.automation, call.world);
-    try std.testing.expect(std.mem.indexOf(u8, call.body, "globalThis.__zbAutomation") != null);
-    try std.testing.expect(std.mem.indexOf(u8, call.body, "\"op\":\"click\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, call.body, "\"selector\":\"css=#go\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, call.body, "\"options\":{\"force\":true,\"trial\":false}") != null);
+    try std.testing.expectEqualStrings(script_command.handle_body, call.body);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"op\":\"click\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"selector\":\"css=#go\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"options\":{\"force\":true,\"trial\":false}") != null);
+    try std.testing.expectEqual(@as(u64, 30000), call.timeout_ms);
 }
 
 test "dom.query returns the script's elements value verbatim" {
@@ -251,7 +271,11 @@ test "non-retryable script error maps to its automation code" {
     var outcome = try h.run("dom.click", "{\"selector\":\"nope\"}");
     defer outcome.deinit(gpa);
     try expectFailure(outcome, -32001, "element_not_found");
-    try std.testing.expectEqualStrings("{\"reason\":\"malformed_selector\"}", outcome.failure.data_json.?);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqualStrings("malformed_selector", data.value.object.get("reason").?.string);
+    try std.testing.expectEqual(@as(usize, 32), data.value.object.get("trace_id").?.string.len);
+    try std.testing.expect(std.mem.startsWith(u8, data.value.object.get("command_id").?.string, "cmd-"));
 }
 
 test "malformed script JSON maps to -32603 without echoing the payload" {
@@ -304,14 +328,14 @@ test "cancelled port call maps to cancelled -32012" {
 fn commandJson(method: []const u8, params: []const u8) ![]u8 {
     var command = try router.parse(gpa, method, params, .{});
     defer command.deinit();
-    return script_command.buildCommandJson(gpa, &command, .{ .trace_id = "t1", .command_id = "c1" }, null);
+    return script_command.buildCommandJson(gpa, &command, .{ .trace_id = "t1", .parent_span_id = "p1", .command_id = "c1" }, null);
 }
 
 test "fill maps selector, value, strict default true, options and ids" {
     const json = try commandJson("dom.fill", "{\"selector\":\"css=#email\",\"value\":\"a@b.c\",\"options\":{\"trial\":true}}");
     defer gpa.free(json);
     try std.testing.expectEqualStrings(
-        "{\"op\":\"fill\",\"selector\":\"css=#email\",\"value\":\"a@b.c\",\"strict\":true,\"options\":{\"force\":false,\"trial\":true},\"trace_id\":\"t1\",\"command_id\":\"c1\"}",
+        "{\"op\":\"fill\",\"selector\":\"css=#email\",\"value\":\"a@b.c\",\"strict\":true,\"options\":{\"force\":false,\"trial\":true},\"trace_id\":\"t1\",\"parent_span_id\":\"p1\",\"command_id\":\"c1\",\"attempt_index\":0}",
         json,
     );
 }
@@ -348,7 +372,7 @@ test "query keeps strict false by default" {
 test "page verbs are not dom commands" {
     var command = try router.parse(gpa, "page.url", "{}", .{});
     defer command.deinit();
-    try std.testing.expectError(error.NotADomCommand, script_command.buildCommandJson(gpa, &command, .{ .trace_id = "t", .command_id = "c" }, null));
+    try std.testing.expectError(error.NotADomCommand, script_command.buildCommandJson(gpa, &command, .{ .trace_id = "t", .parent_span_id = "p", .command_id = "c" }, null));
 }
 
 test "page.evaluate keeps numbers exactly as the script produced them" {
@@ -360,4 +384,112 @@ test "page.evaluate keeps numbers exactly as the script produced them" {
     var outcome = try h.run("page.evaluate", "{\"expression\":\"x\"}");
     defer outcome.deinit(gpa);
     try expectResult(outcome, "{\"result\":[2.5,1e21,-0.1,12345678901234567890]}");
+}
+
+test "automation errors from the port carry trace_id and command_id" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.url_result = error.NoPage;
+
+    var outcome = try h.run("page.url", "{}");
+    defer outcome.deinit(gpa);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expect(data.value.object.get("trace_id") != null);
+    try std.testing.expect(data.value.object.get("command_id") != null);
+    try std.testing.expect(data.value.object.get("reason") == null);
+}
+
+test "dom command carries the root span id as parent_span_id and the same trace in errors" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":false,\"error\":\"element_disabled\",\"retryable\":false,\"data\":{\"reason\":\"enabled\"}}" }};
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\"}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32005, "element_disabled");
+
+    const arg = try std.json.parseFromSlice(std.json.Value, gpa, h.fake.eval_calls.items[0].arg, .{});
+    defer arg.deinit();
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqual(@as(usize, 16), arg.value.object.get("parent_span_id").?.string.len);
+    try std.testing.expectEqualStrings(arg.value.object.get("trace_id").?.string, data.value.object.get("trace_id").?.string);
+    try std.testing.expectEqualStrings(arg.value.object.get("command_id").?.string, data.value.object.get("command_id").?.string);
+}
+
+test "each command gets a distinct command_id and trace_id" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    var a = try h.run("dom.click", "{\"selector\":\"css=#b\"}");
+    defer a.deinit(gpa);
+    var b = try h.run("dom.click", "{\"selector\":\"css=#b\"}");
+    defer b.deinit(gpa);
+    const arg_a = try std.json.parseFromSlice(std.json.Value, gpa, h.fake.eval_calls.items[0].arg, .{});
+    defer arg_a.deinit();
+    const arg_b = try std.json.parseFromSlice(std.json.Value, gpa, h.fake.eval_calls.items[1].arg, .{});
+    defer arg_b.deinit();
+    try std.testing.expect(!std.mem.eql(u8, arg_a.value.object.get("command_id").?.string, arg_b.value.object.get("command_id").?.string));
+    try std.testing.expect(!std.mem.eql(u8, arg_a.value.object.get("trace_id").?.string, arg_b.value.object.get("trace_id").?.string));
+}
+
+test "adversarial selector/value/text never reach the JS source and round-trip exactly" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    // quotes, backslash, newline, </script>, U+2028, U+2029, and a JS breakout attempt
+    const nasty = "a\"b'c\\d\ne</script>\u{2028}\u{2029}`);alert(1);//";
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = nasty, .value = nasty }, .{});
+    defer gpa.free(params);
+
+    var outcome = try h.run("dom.fill", params);
+    defer outcome.deinit(gpa);
+    const call = h.fake.eval_calls.items[0];
+    try std.testing.expectEqualStrings(script_command.handle_body, call.body);
+    const arg = try std.json.parseFromSlice(std.json.Value, gpa, call.arg, .{});
+    defer arg.deinit();
+    try std.testing.expectEqualStrings(nasty, arg.value.object.get("selector").?.string);
+    try std.testing.expectEqualStrings(nasty, arg.value.object.get("value").?.string);
+}
+
+test "waitFor: JS timeout is the command timeout, native deadline adds grace" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    var outcome = try h.run("dom.waitFor", "{\"selector\":\"css=#x\",\"timeout_ms\":700}");
+    defer outcome.deinit(gpa);
+    const call = h.fake.eval_calls.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"timeout_ms\":700") != null);
+    try std.testing.expectEqual(@as(u64, 700 + engine.wait_for_native_grace_ms), call.timeout_ms);
+}
+
+test "waitFor default timeout is sent explicitly to the script" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    var outcome = try h.run("dom.waitFor", "{\"selector\":\"css=#x\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"timeout_ms\":30000") != null);
+}
+
+test "waitFor script timeout maps to element_not_found, not a platform timeout" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":true,\"data\":{\"reason\":\"timeout\"}}" }};
+
+    var outcome = try h.run("dom.waitFor", "{\"selector\":\"css=#never\",\"timeout_ms\":50}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32001, "element_not_found");
 }

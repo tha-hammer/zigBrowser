@@ -8,7 +8,12 @@ const router = @import("router.zig");
 
 pub const Ids = struct {
     trace_id: []const u8,
+    /// Root `automation.command` span id; automation.js uses it as the parent
+    /// of its selector/actionability child spans.
+    parent_span_id: []const u8,
     command_id: []const u8,
+    /// 0-based retry attempt index for child-span telemetry.
+    attempt_index: u32 = 0,
 };
 
 /// Script error used when `__zbAutomation` is not installed in the page yet.
@@ -52,7 +57,9 @@ const ScriptCommand = struct {
     state: ?[]const u8 = null,
     timeout_ms: ?u64 = null,
     trace_id: []const u8,
+    parent_span_id: []const u8,
     command_id: []const u8,
+    attempt_index: u32,
 };
 
 /// JSON for `__zbAutomation.handle(...)`. `timeout_ms` overrides the parsed
@@ -75,30 +82,31 @@ pub fn buildCommandJson(
         .state = if (command.verb == .dom_wait_for) @tagName(command.wait_state) else null,
         .timeout_ms = timeout_ms orelse command.timeout_ms,
         .trace_id = ids.trace_id,
+        .parent_span_id = ids.parent_span_id,
         .command_id = ids.command_id,
+        .attempt_index = ids.attempt_index,
     };
     return std.json.Stringify.valueAlloc(gpa, script_command, .{ .emit_null_optional_fields = false });
 }
 
-/// Async-function body that calls the injected script and always returns a
-/// JSON string, even when the script is missing or throws.
-pub fn buildHandleBody(gpa: std.mem.Allocator, command_json: []const u8) error{OutOfMemory}![]u8 {
-    return std.fmt.allocPrint(
-        gpa,
-        "try {{\n" ++
-            "  const h = globalThis.__zbAutomation;\n" ++
-            "  if (!h || typeof h.handle !== 'function') return JSON.stringify({{ok:false,error:'" ++ script_not_ready ++ "',retryable:true,data:{{reason:'" ++ script_not_ready ++ "'}}}});\n" ++
-            "  return JSON.stringify(await h.handle({s}));\n" ++
-            "}} catch (e) {{\n" ++
-            "  return JSON.stringify({{ok:false,error:'" ++ script_exception ++ "',retryable:false,data:{{reason:'" ++ script_exception ++ "'}}}});\n" ++
-            "}}",
-        .{command_json},
-    );
-}
+/// Fixed async-function body that calls the injected script with the command
+/// JSON bound to the JS variable `arg` (see PagePort.evalJson). It always
+/// returns a JSON string, even when the script is missing or throws. Command
+/// data is never spliced into this source.
+pub const handle_body =
+    "try {\n" ++
+    "  const h = globalThis.__zbAutomation;\n" ++
+    "  if (!h || typeof h.handle !== 'function') return JSON.stringify({ok:false,error:'" ++ script_not_ready ++ "',retryable:true,data:{reason:'" ++ script_not_ready ++ "'}});\n" ++
+    "  return JSON.stringify(await h.handle(JSON.parse(arg)));\n" ++
+    "} catch (e) {\n" ++
+    "  return JSON.stringify({ok:false,error:'" ++ script_exception ++ "',retryable:false,data:{reason:'" ++ script_exception ++ "'}});\n" ++
+    "}";
 
-/// Async-function body for page.evaluate. The expression is pasted in as code
-/// (not passed to eval) so page CSP `unsafe-eval` rules do not apply. A syntax
-/// error in the expression fails the whole native call.
+/// Async-function body for page.evaluate. The expression is code by
+/// definition, so it is pasted in (not passed to eval), which also keeps page
+/// CSP `unsafe-eval` rules out of the way. A syntax error in the expression
+/// fails the native call. On a JS exception only the exception's constructor
+/// name is reported; the message can carry page data and is not returned.
 pub fn buildEvaluateBody(gpa: std.mem.Allocator, expression: []const u8) error{OutOfMemory}![]u8 {
     return std.fmt.allocPrint(
         gpa,
@@ -106,7 +114,8 @@ pub fn buildEvaluateBody(gpa: std.mem.Allocator, expression: []const u8) error{O
             "  const __zbValue = await (\n{s}\n);\n" ++
             "  return JSON.stringify({{ok:true,value:__zbValue === undefined ? null : __zbValue}});\n" ++
             "}} catch (e) {{\n" ++
-            "  return JSON.stringify({{ok:false,error:'" ++ script_exception ++ "',retryable:false,data:{{reason:'" ++ script_exception ++ "',name:String(e && e.name || 'Error'),message:String(e && e.message || e)}}}});\n" ++
+            "  const name = (e && typeof e.name === 'string' && /^[A-Za-z]{{1,64}}$/.test(e.name)) ? e.name : 'Error';\n" ++
+            "  return JSON.stringify({{ok:false,error:'" ++ script_exception ++ "',retryable:false,data:{{reason:'" ++ script_exception ++ "',name:name}}}});\n" ++
             "}}",
         .{expression},
     );

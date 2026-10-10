@@ -8,6 +8,7 @@ const engine = automation.engine;
 pub const EvalCall = struct {
     world: page_port.World,
     body: []u8,
+    arg: []u8,
     timeout_ms: u64,
 };
 
@@ -38,7 +39,10 @@ pub const FakePagePort = struct {
     }
 
     pub fn deinit(self: *FakePagePort) void {
-        for (self.eval_calls.items) |call| self.gpa.free(call.body);
+        for (self.eval_calls.items) |call| {
+            self.gpa.free(call.body);
+            self.gpa.free(call.arg);
+        }
         self.eval_calls.deinit(self.gpa);
         for (self.navigate_calls.items) |u| self.gpa.free(u);
         self.navigate_calls.deinit(self.gpa);
@@ -61,12 +65,13 @@ pub const FakePagePort = struct {
         return @ptrCast(@alignCast(ptr));
     }
 
-    fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
+    fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg_json: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         const self = from(ptr);
         const index = self.eval_calls.items.len;
         self.eval_calls.append(self.gpa, .{
             .world = world,
             .body = self.gpa.dupe(u8, body) catch return error.OutOfMemory,
+            .arg = self.gpa.dupe(u8, arg_json) catch return error.OutOfMemory,
             .timeout_ms = timeout_ms,
         }) catch return error.OutOfMemory;
         if (self.clock) |clock| clock.now_ms += self.eval_cost_ms;
@@ -92,13 +97,15 @@ pub const FakePagePort = struct {
         return self.reload_result;
     }
 
-    fn url(ptr: *anyopaque, gpa: std.mem.Allocator) page_port.PortError![]u8 {
+    fn url(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
+        _ = timeout_ms;
         const self = from(ptr);
         if (self.url_result) |err| return err;
         return gpa.dupe(u8, self.current_url);
     }
 
-    fn title(ptr: *anyopaque, gpa: std.mem.Allocator) page_port.PortError![]u8 {
+    fn title(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
+        _ = timeout_ms;
         const self = from(ptr);
         return gpa.dupe(u8, self.current_title);
     }

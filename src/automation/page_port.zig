@@ -8,10 +8,13 @@
 //! - Every vtable function is called from a NON-GTK thread (the automation
 //!   server thread) and BLOCKS until the page work completes or `timeout_ms`
 //!   elapses. Implementations marshal to the GTK main context themselves
-//!   (e.g. g_main_context_invoke + GMutex/GCond) and never touch GTK objects
+//!   (an idle GSource on the GTK context + GMutex/GCond) and never touch GTK objects
 //!   on the calling thread.
-//! - Returned slices are allocated with the `gpa` passed in and owned by the
-//!   caller.
+//! - Input slices are only borrowed for the duration of the call: native code
+//!   copies anything it queues, and never keeps a Zig pointer after returning
+//!   (including on timeout). Results live in native memory until the calling
+//!   thread duplicates them into the `gpa` passed in; the caller owns that copy.
+//!   No Zig allocator is ever used on the GTK thread.
 //! - If no page/view exists yet (the server starts before the window), the
 //!   implementation waits for one up to `timeout_ms`, then returns
 //!   `error.NoPage`.
@@ -46,23 +49,25 @@ pub const PagePort = struct {
     pub const VTable = struct {
         /// Run `function_body` as the body of an async JS function in `world`
         /// (WebKitGTK: webkit_web_view_call_async_javascript_function, so
-        /// `await` is allowed and a returned Promise is awaited). The body
-        /// always returns a string (JSON text); the port returns those bytes
-        /// verbatim, allocated with `gpa`.
-        evalJson: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, world: World, function_body: []const u8, timeout_ms: u64) PortError![]u8,
+        /// `await` is allowed and a returned Promise is awaited). `arg_json`
+        /// is bound to the JS variable `arg` as a string (the body calls
+        /// `JSON.parse(arg)`), so command data is never spliced into source.
+        /// The body always returns a string (JSON text); the port returns
+        /// those bytes verbatim, allocated with `gpa`.
+        evalJson: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8,
         /// Load `url` and block until the load finishes (load-changed
         /// FINISHED) or fails (load-failed -> NavigationFailed).
         navigate: *const fn (ptr: *anyopaque, url: []const u8, timeout_ms: u64) PortError!void,
         /// Reload the current page and block until the load finishes/fails.
         reload: *const fn (ptr: *anyopaque, timeout_ms: u64) PortError!void,
         /// Current committed URI ("" if none).
-        url: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator) PortError![]u8,
+        url: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
         /// Current document title ("" if none).
-        title: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator) PortError![]u8,
+        title: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
     };
 
-    pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, timeout_ms: u64) PortError![]u8 {
-        return self.vtable.evalJson(self.ptr, gpa, world, function_body, timeout_ms);
+    pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
+        return self.vtable.evalJson(self.ptr, gpa, world, function_body, arg_json, timeout_ms);
     }
 
     pub fn navigate(self: PagePort, url_text: []const u8, timeout_ms: u64) PortError!void {
@@ -73,11 +78,11 @@ pub const PagePort = struct {
         return self.vtable.reload(self.ptr, timeout_ms);
     }
 
-    pub fn url(self: PagePort, gpa: std.mem.Allocator) PortError![]u8 {
-        return self.vtable.url(self.ptr, gpa);
+    pub fn url(self: PagePort, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
+        return self.vtable.url(self.ptr, gpa, timeout_ms);
     }
 
-    pub fn title(self: PagePort, gpa: std.mem.Allocator) PortError![]u8 {
-        return self.vtable.title(self.ptr, gpa);
+    pub fn title(self: PagePort, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
+        return self.vtable.title(self.ptr, gpa, timeout_ms);
     }
 };
