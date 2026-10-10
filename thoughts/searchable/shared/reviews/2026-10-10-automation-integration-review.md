@@ -147,6 +147,44 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `a6241b6` — N16 login/cap/URL/typing/story/telemetry follow-up | Exact 12-file diff; clean-export bounded Xvfb gate with automatic deletion | **GREEN 79/79 steps, 564/564 tests; CODE BLOCKED**. | Approves exact platform hosts, removal of request `baseUrl`, pre-page cookie plus post-nav DOM gates, typed payloads, note truncation, basic story iteration, redacted EV7/EV8 shape, and sequential socket routing. BLOCKERS: admitted success can be silently uncounted after pacing reconfiguration; the cookie gate and default-30s story URL read escape the 120s budget; a >64-child trace drops late EV8; concurrency bypasses queue/flow/PagePort; closure does not start at an SDK. SHOULD: conversation/session hash schema. Mailed cc_2 as 4668 and 4671. |
 | `1219446` — navigation arrival barrier, policy-block recovery, and native-input reentrancy | Exact six-file diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 565/565 tests; N8 BLOCKER CLOSED**. | Each page navigation owns its shell arrival sequence; immediate same-URL C/D proves two page starts and two arrivals, stale completion cannot clear the newer navigation, and live canceled/204/policy-block cases all permit later input without touching a replacement document. The handler is isolated-world, once per shared content manager, synchronous, and has no window userdata. Focus/key self-close retains GObjects and stops later events. The socket E2E proves a repeated-target humanized path starts off-target and ends on-target with trusted moves. Mailed cc_1 approval after the exact gate. |
 
+## Closure audit at `b9299f6`
+
+Gate evidence: a clean `git archive HEAD` export at `b9299f6`, run under
+`timeout 900 xvfb-run -a zig build test --summary all`, passed **79/79 build
+steps and 565/565 tests**. The output included `PASS sdk-python-live`; the
+throwaway export was deleted with `find -delete` immediately after the gate.
+
+The closure oracle below is
+`tests/e2e/sdk_python_live_test.py::scenario` (build step
+`sdk-python-live-e2e`). It launches the production binary with
+`--automation-api` at lines 82-95, imports the production SDK at lines 19-24,
+and uses only `ZigBrowser` calls. Lines 41-63 navigate, read the title, type,
+observe the resulting live DOM text, arm and click a delayed element, observe
+the click's live DOM effect, and verify a real JSON-RPC error plus telemetry.
+It therefore crosses the entire chain without replacing any production seam.
+
+| Map item | Production implementation at HEAD | Non-bypassing evidence | Classification |
+|---|---|---|---|
+| Node 0 — SDK call | `sdk/python/src/zigbrowser/client.py:17-40` maps DOM methods to `ZigBrowser.call`; `:416-448` creates the JSON-RPC request and sends/receives the length-prefixed frame. | `sdk_python_live_test.py::scenario`, especially lines 41-59; the test imports the production SDK rather than a socket mock. | Production-covered. |
+| Node 1 — server handles request | `src/app.zig:41-55` starts `AutomationApiServer` alongside the browser; `src/automation_server.zig:287-326` reads each framed request, calls `handleRequest`, and writes the response. | Same live SDK scenario, launched against the real `zigBrowser --automation-api` process at lines 82-96. | Production-covered. |
+| Node 2 — router parses | `src/automation_server.zig:450-480` calls `automation.router.parse`, queues, executes, and maps the outcome; `src/automation/router.zig:86-140,222-243` validates parameters and maps the method table. | Same scenario: `page.navigate`, `page.title`, `dom.type`, `dom.getText`, `page.evaluate`, and both successful and failing `dom.click` requests are parsed by the production router. | Production-covered. |
+| Node 3 — server thread to GTK main-thread handoff | `src/automation/page_port.zig:7-20` defines the blocking cross-thread contract; `src/automation_gtk_port.zig:82-100` invokes the C ABI; `src/webkit_shim.c:1325-1369,2043-2086` attaches an idle source to the default GTK main context and waits for completion. | Same scenario's DOM operations must cross the live GTK PagePort; their resulting mirror/status text is checked at lines 45-50. | Production-covered. |
+| Node 4 — native eval plus injected script | `src/app.zig:41-43` installs before window creation; `src/automation_gtk_port.zig:28-40,82-100` embeds the script and selects the automation world; `src/webkit_shim.c:1507-1538,1891-1936,2115-2128` installs at document start in the named world and evaluates asynchronously there. | Same scenario's `dom.type` and `dom.click` succeed in the live WebKit page and their DOM effects are read back; no direct injection/eval test seam is used. | Production-covered. |
+| Node 5 — `automation.js` handle to action | `src/automation/script_command.zig:74-121` maps the parsed command to `{op,...}` and calls `__zbAutomation.handle`; `src/automation/engine.zig:405-413,449-503` executes/retries; `src/automation_script/automation.js:92-124,149-185,684-720,1040-1068` dispatches and performs the actual actions from the published isolated-world object. | Same scenario proves both script typing and clicking through observable page state at lines 45-50, including delayed-element retry. | Production-covered. |
+| Node 6 — eval result through server/JSON-RPC to SDK return | `src/webkit_shim.c:1891-1936` completes async evaluation; `src/automation_gtk_port.zig:92-100` copies then frees the C result; `src/automation/engine.zig:479-503` parses it; `src/automation_server.zig:467-480,794-800` serializes and frames the reply; `client.py:430-448` receives result/error. | Same scenario asserts typed results, live values, and the stable `AutomationError` path at lines 42-63. | Production-covered. |
+| Edge 0→1 — UDS | SDK framing is `client.py:416-448`; server framing is `automation_server.zig:287-320,794-800`. | Same real-process SDK scenario, lines 82-96. | **Production-covered; not test-only.** |
+| Edge 1→2 — same-thread router | `automation_server.zig:323-326,450-480` passes the decoded request directly into production routing and execution. | Same scenario exercises several successful methods and one routed failure. | **Production-covered; not test-only.** |
+| Edge 2→3 — cross-thread PagePort | `engine.zig:405-413,449-503` calls the configured port; `automation_gtk_port.zig:82-100` enters the blocking native adapter; `webkit_shim.c:1325-1369` schedules GTK work. | Same scenario runs against the application-installed GTK port, not `FakePagePort`. | **Production-covered; not test-only.** |
+| Edge 3→4 — Zig to C shim | `automation_gtk_port.zig:82-100` owns NUL-terminated inputs/result copying; `webkit_shim.c:2115-2128` owns the matching eval ABI and job lifetime. | Same scenario's real WebKit DOM effects require this ABI call. | **Production-covered; not test-only.** |
+| Edge 4→5 — native to page JS | `webkit_shim.c:1507-1538,1891-1936` injects/evaluates in `zigbrowser-automation`; `automation.js:1040-1068` exports the handler in that world. | Same scenario observes type and click effects produced by that handler. | **Production-covered; not test-only.** |
+| Edge 5→6 — async completion to reply | `webkit_shim.c:1891-1936` completes the job; `automation_gtk_port.zig:92-100`, `engine.zig:479-503`, `automation_server.zig:467-480,794-800`, and `client.py:430-448` carry its result back. | Same scenario asserts both a success result and an error with its trace ID. | **Production-covered; not test-only.** |
+
+No closure edge is covered only by test-only code. Lower-level tests that use
+`FakePagePort`, directly evaluate `automation.js`, or open a raw socket are
+valuable fault-localization tests, but they are not credited for this audit
+because they bypass one or more nodes. The live Python SDK scenario is the
+non-bypassing proof for all six edges.
+
 ## Open findings
 
 ### BLOCKER — trusted native input is not proven end to end
@@ -382,6 +420,13 @@ socket-routing test; GDB showed its 99%-CPU worker spinning in
 `SocialState.acquire -> PacingPort.getState -> social.rateStatus`, while the
 client waited for the response. Mailed as 4672 and 4674.
 
+The current WIP adds the missing two-flow/PagePort cap oracle, but its spawned
+page-A thread is released and joined only after fallible page-B assertions. A
+failed assertion therefore leaves page A spinning forever instead of reporting
+the cap regression. The release/join must be installed as unconditional
+cleanup, and the wait for page A to enter its held step must be bounded. The
+non-reentrant route/port lock recursion itself remains present. Mailed as 4679.
+
 ### BLOCKER — N16 URLs must be bound to their platform
 
 `551b235` preflights required values, UTF-8/text limits, query type, username,
@@ -463,6 +508,21 @@ and a fake-clock boundary test must exercise the absolute deadline. Mailed as
 flow boundary still reports `session_cookie_unreadable` instead of the platform
 flow-deadline reason, and the story frame-fit precheck budgets only one of its
 two queries.
+
+### BLOCKER — N17 set-input-files loses its deadline after chooser dispatch
+
+The in-progress native set-files job starts as asynchronous, but the
+`run-file-chooser` callback changes it to synchronous immediately after the
+chooser arrives. `auto_job_wait` consequently ignores the deadline while it is
+still waiting for the WebKit-process async JavaScript completion callback. A
+delayed or lost callback after file selection can therefore pin the socket
+worker indefinitely. Keep the side-effect commit exactly once without making
+that remaining IPC wait unbounded, and cover the chooser-arrived / JS-callback-
+withheld boundary deterministically. The current job also claims the next file
+chooser on the window rather than proving it came from the requested element;
+that association race needs serialization or explicit WebKit ordering evidence.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4680 during WIP review.
 
 ### SHOULD — closing one window terminates every related WebKit child process
 
