@@ -11,7 +11,6 @@ import argparse
 import subprocess
 import tempfile
 import threading
-import time
 from pathlib import Path
 
 from automation_api_lifecycle_test import _read_lines, call_rpc, expect_equal, terminate
@@ -28,21 +27,40 @@ def text_of(socket_path: Path, selector: str, req_id: int, timeout: float) -> st
 
 def run_contenteditable(socket_path: Path, t: float) -> None:
     ok = {"ok": True}
-    expect_equal("type into plain", call_rpc(socket_path, "dom.type", {"selector": "css=#plain", "text": "Hello"}, 10, t), ok)
-    expect_equal("plain text after type", text_of(socket_path, "css=#plain", 11, t), "Hello")
-    if not evaluate(socket_path, "window.plainInputs", 12, t) >= 5:
-        raise AssertionError("plain contenteditable did not receive one input event per character")
-    expect_equal("type appends to plain", call_rpc(socket_path, "dom.type", {"selector": "css=#plain", "text": " there"}, 13, t), ok)
-    expect_equal("plain text after second type", text_of(socket_path, "css=#plain", 14, t), "Hello there")
-    expect_equal("fill plain", call_rpc(socket_path, "dom.fill", {"selector": "css=#plain", "value": "Replaced"}, 15, t), ok)
-    expect_equal("plain text after fill", text_of(socket_path, "css=#plain", 16, t), "Replaced")
+    ids = iter(range(10, 100))
 
-    expect_equal("type into draft", call_rpc(socket_path, "dom.type", {"selector": "css=#draft", "text": "Hi X"}, 20, t), ok)
-    expect_equal("draft model after type", evaluate(socket_path, "window.draftModel", 21, t), "Hi X")
-    expect_equal("draft text after type", text_of(socket_path, "css=#draft", 22, t), "Hi X")
-    expect_equal("fill draft", call_rpc(socket_path, "dom.fill", {"selector": "css=#draft", "value": "New post"}, 23, t), ok)
-    expect_equal("draft model after fill", evaluate(socket_path, "window.draftModel", 24, t), "New post")
-    expect_equal("draft text after fill", text_of(socket_path, "css=#draft", 25, t), "New post")
+    def rpc(method: str, params: dict):
+        return call_rpc(socket_path, method, params, next(ids), t)
+
+    def plain_inputs() -> int:
+        return evaluate(socket_path, "window.plainInputs", next(ids), t)
+
+    # Plain editor: exactly one input event per typed character and one per
+    # fill, so a duplicated native + synthetic input fails the test.
+    expect_equal("type into plain", rpc("dom.type", {"selector": "css=#plain", "text": "Hello"}), ok)
+    expect_equal("plain text after type", text_of(socket_path, "css=#plain", next(ids), t), "Hello")
+    expect_equal("input events after type", plain_inputs(), 5)
+    expect_equal("type appends to plain", rpc("dom.type", {"selector": "css=#plain", "text": " there"}), ok)
+    expect_equal("plain text after second type", text_of(socket_path, "css=#plain", next(ids), t), "Hello there")
+    expect_equal("input events after second type", plain_inputs(), 11)
+    expect_equal("fill plain", rpc("dom.fill", {"selector": "css=#plain", "value": "Replaced"}), ok)
+    expect_equal("plain text after fill", text_of(socket_path, "css=#plain", next(ids), t), "Replaced")
+    expect_equal("input events after fill", plain_inputs(), 12)
+    expect_equal("empty fill plain", rpc("dom.fill", {"selector": "css=#plain", "value": ""}), ok)
+    expect_equal("plain text after empty fill", evaluate(socket_path, "document.getElementById('plain').textContent", next(ids), t), "")
+    expect_equal("input events after empty fill", plain_inputs(), 13)
+
+    # Draft.js-like editor: it cancels beforeinput and owns the edit.
+    expect_equal("type into draft", rpc("dom.type", {"selector": "css=#draft", "text": "Hi X"}), ok)
+    expect_equal("draft model after type", evaluate(socket_path, "window.draftModel", next(ids), t), "Hi X")
+    expect_equal("draft text after type", text_of(socket_path, "css=#draft", next(ids), t), "Hi X")
+    expect_equal("draft beforeinputs after type", evaluate(socket_path, "window.draftBeforeInputs", next(ids), t), 4)
+    expect_equal("fill draft", rpc("dom.fill", {"selector": "css=#draft", "value": "New post"}), ok)
+    expect_equal("draft model after fill", evaluate(socket_path, "window.draftModel", next(ids), t), "New post")
+    expect_equal("draft text after fill", text_of(socket_path, "css=#draft", next(ids), t), "New post")
+    expect_equal("empty fill draft", rpc("dom.fill", {"selector": "css=#draft", "value": ""}), ok)
+    expect_equal("draft model after empty fill", evaluate(socket_path, "window.draftModel", next(ids), t), "")
+    expect_equal("draft DOM after empty fill", evaluate(socket_path, "document.getElementById('draft').textContent", next(ids), t), "")
 
 
 def main() -> int:
@@ -91,8 +109,6 @@ def main() -> int:
             eprint(f"stderr={stderr_lines[-20:]}")
             terminate(proc)
             return 1
-        finally:
-            time.sleep(0)
 
         terminate(proc)
 

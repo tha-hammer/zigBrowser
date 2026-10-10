@@ -64,13 +64,17 @@ fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError
     if (comptime builtin.os.tag != .linux) return;
     const explicit = spec.profile_dir != null;
     const dir = spec.profile_dir orelse
-        (cli.defaultProfileDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse
+        (cli.defaultProfileDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse {
+        // No profile resolved: make sure no earlier run's profile lingers.
+        _ = c.zb_app_set_profile_dir(null, null);
         return;
+    };
     const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
 
     var err: [*c]u8 = null;
     if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return;
     defer c.zb_automation_free(err);
+    // On failure the shim already cleared any previous profile.
     std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
     if (explicit) return error.WriteFailed;
 }
