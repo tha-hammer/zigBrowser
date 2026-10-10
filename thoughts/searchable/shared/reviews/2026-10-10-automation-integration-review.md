@@ -158,6 +158,10 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `9b32f84` — flow `timeout_ms` and humanized budget sizing | Exact router/flow/deadline/arithmetic/unit/E2E diff; clean-export gate at `5a9031c` | **APPROVED after `8a16668`: 81/81 steps, 583/583 tests at `5a9031c`**. | Parsing, precedence, allowlists, absolute social deadlines and code-point budget arithmetic are correct. The original E2E did not distinguish sizing from a fixed 120-second route, so this was blocked in 4737. `8a16668` adds a route-level 3-second seeded oracle that dies if `humanized_text` is removed from the production sizing call and corrects the E2E's evidence claim. |
 | `5a9031c` — N15 handoff follow-up | Exact documentation diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 81/81 steps, 583/583 tests; one NIT closed by `8a16668`**. | The X evidence now distinguishes default SDK shapes from raw-socket options and the deferred section records window-close, session-hash, in-memory pacing, and SDK option gaps. `8a16668` clarifies that LinkedIn and Instagram share one social cap while X has its separate cap. Mailed cc_2 as 4737. |
 | `8a16668` — route-level humanized-budget oracle | Exact test/handoff diff and mutant-sensitivity review; clean export pinned to the commit under bounded Xvfb, with automatic deletion | **APPROVED: 81/81 steps, 584/584 tests**. | `handleWithBudget` receives a 3-second injected default, a seeded native/humanized engine, and 40 code points whose schedule cannot fit that default. Passing `null` instead of the text to `flowBudgetMs` makes the no-timeout request fail; explicit 3000 ms is the control and emits zero typed characters. The long E2E is now described only as trusted long-text evidence, and the pacing wording is exact. Closes 4737. Mailed cc_2 as 4743. |
+| `2a4e6ee` — N19 native screenshots | Exact C/Zig async-state, ownership, deadline, size-limit and live-test review | **CODE BLOCKED; integrated gate pending**. | C/Zig byte ownership, async refs, cancellation, window teardown and TooLarge transfer are balanced. BLOCKER: once the snapshot callback starts, synchronous Cairo encoding blocks GTK without observing abandonment/deadline, so a timed-out call can leave the browser main thread doing unbounded abandoned work; the 1 ms test does not hold the writer across expiry. SHOULD: overflow-safe/first-chunk TooLarge classification and a raw-pixel bound for full-page surfaces. NIT: remove the test's `zb-shot-*` directory. Public PagePort/router/socket evidence remains pending. Mailed cc_1 as 4746. |
+| `ee19e40` — PagePort v3.3/v3.4 and N17/N18/N19 engine/routes | Exact PagePort/router/engine/SDK/fake/live-test diff review | **CODE BLOCKED; native integration pending**. | BLOCKER: after a selector wheel succeeds, the next `measure` can come from a replacement document and be accepted as success or drive another wheel; preserve/compare the dispatched document token and return `document_changed`. SHOULD: screenshot base64/JSON allocation and encoding sit outside the PagePort deadline. Parser ownership, file-path isolation, terminal port-error mapping, native hover and synthetic socket evidence otherwise look coherent. Mailed cc_2 as 4749. |
+| `314a14e` — N20 platform rate-limit signals | Exact automation.js and live-WebKit test review | **CODE BLOCKED; flow integration pending**. | BLOCKER: signal `text_hash` is the existing 32-bit FNV-1a, not the Phase-4 contract's SHA-256; the test checks only that a hash-shaped field exists. SHOULD: hidden Arkose/authwall nodes are treated as user-visible blocking signals. Platform scoping, hidden-toast handling, raw-text omission and real isolated-world injection are otherwise covered. Mailed cc_1 as 4750. |
+| Shared N17–N20 WIP before mutation checkpoint | Bounded `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 612/613 tests**. | Every real-binary E2E passed, including the new native screenshot/file/scroll and platform-signal cases. The sole failure is `automation_server_test.zig:1056`: the routed x.post oracle expects 8 evals, while the new N20 scans make 14. Mailed cc_2 as 4752; this is owner WIP, not a committed-HEAD regression. |
 
 ## Mutation audit at `137dfa1`
 
@@ -181,6 +185,10 @@ Checkpoint gate after restoring guards 1-5: the same clean export passed
 | 6 | Startup readiness: set the native bridge's `need_ready` guard to false so commands may run before the first load completes. | `webkit.test.automation bridge drives a live WebKitGTK page` — failed 10 checks, including initial title and injected-automation availability. | `automation_readiness_test.py` — passed despite the mutation. | **KILLED** by the focused live-WebKit unit. The dedicated readiness E2E does not independently detect removal of the native barrier. |
 | 7 | Isolated-world injection: install `automation.js` in the default page world instead of `ZB_AUTOMATION_WORLD`. | The live WebKit bridge unit failed 14 checks, including the missing automation-world object and page-world visibility. | `automation_core_test.py` timed out/failed. | **KILLED** by both layers. |
 | 8 | Contenteditable insertion: force the `execCommand('insertText'/'delete')` branch to return false so the Range-splice fallback performs every edit. | All 15 `js_contract` units passed. | `automation_input_test.py` passed at audit target `137dfa1`, including its Draft-style cancellation checks. | **SURVIVED at `137dfa1`; CLOSED by `3bcfbe3`.** The follow-up real-binary undo-history oracle fails on this exact mutant because a Range splice creates no browser undo step. Mailed cc_1 as 4722; reviewed closure mailed as 4732. |
+| 9 | Native no-dispatch-after-abandonment: force the document-guard commit decision true even after the waiter changed the job from RUNNING to ABANDONED. | Root native live-WebKit unit — failed: the page saw the late trusted click and move at `(30,30)`, and the pointer cache changed; 86/87 tests passed. | `automation_input_test.py` — passed. | **KILLED** by the focused native live unit. The public E2E does not exercise the held-guard deadline race. |
+| 10 | Humanize budget preflight: delete the whole-path fit check for a humanized click. | `automation_engine_test` — failed: the tight-budget click reached dispatch logic and returned `deadline_before_input` instead of pre-dispatch `humanize_budget`; 77/78 tests passed. | `automation_input_test.py` — passed. | **KILLED** by the focused engine unit. The public E2E exercises humanized input but no tight-budget/no-dispatch case. |
+| 11 | Cookie telemetry redaction: copy the raw cookie value into the owned telemetry `name_hash` buffer instead of hashing the cookie name. | `automation_cookie_test` — failed its rejecting-sink assertion with `raw value crossed the sink: s3cret-v4lue`; 26/27 tests passed. | `automation_cookies_test.py` — passed. | **KILLED** by the focused telemetry unit. The real-binary E2E checks process output, not the TelemetrySink boundary. |
+| 12 | Strict Netscape import parsing: disable the check that the include-subdomains flag agrees with the domain's leading dot. | `automation_cookie_test` — failed the dedicated scope check: `imported:4, skipped:0` instead of `imported:2, skipped:2`; 26/27 tests passed. | `automation_cookies_test.py` — passed. | **KILLED** by the focused parser unit. The live E2E imports only well-formed lines. |
 
 ## Closure audit at `b9299f6`
 
@@ -804,6 +812,33 @@ no wheel dispatch. The agreed PagePort contract returns settled
 `ScrollOffsets`; closure still requires that interface to be wired and the
 socket E2E to read offsets immediately. Native-slice approval was mailed as
 4738.
+
+### BLOCKER — N18 selector scrolling accepts a replacement document after dispatch
+
+`ee19e40` binds each wheel to the document returned by that iteration's
+`measure`, but after a successful wheel it discards that token. The next
+`measure` is allowed to come from another document; if that replacement has
+the same selector, the engine can report success or dispatch another wheel
+there. This violates the agreed rule that a document change after any wheel is
+terminal and no replacement target is acted upon.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Preserve the first successfully
+dispatched document token, compare every later measure before success or
+dispatch, and add a regression with doc A/out-of-view followed by doc
+B/in-view that requires one wheel and `-32001 document_changed`. Mailed as
+4749.
+
+### BLOCKER — N20 signal text hashing does not meet the SHA-256 contract
+
+`314a14e` sends only `text_hash`, but `hashText` is 32-bit FNV-1a. The
+Phase-4 rate-limit contract explicitly requires SHA-256. The current small
+hash is collision-prone and readily reversible for predictable platform modal
+strings, so the value is not a sufficient telemetry redaction boundary.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Use SHA-256 (or cryptographically hash
+before telemetry without exposing raw text) and pin the algorithm with an
+independent known vector / 64-hex-character oracle. Hidden Arkose and authwall
+nodes being treated as visible signals is a separate SHOULD. Mailed as 4750.
 
 ### SHOULD — closing one window terminates every related WebKit child process
 
