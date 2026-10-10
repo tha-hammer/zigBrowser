@@ -24,7 +24,9 @@ pub const WaitState = enum { attached, visible, hidden, detached };
 pub const RouteContext = struct {
     page_id: []const u8 = "page-unknown",
     window_id: []const u8 = "window-unknown",
-    telemetry_sink: ?*telemetry.InMemoryTelemetrySink = null,
+    /// Used by the engine for the root command span and its children
+    /// (router.parse never records telemetry).
+    telemetry_sink: ?telemetry.TelemetrySink = null,
 };
 
 pub const ParsedCommand = struct {
@@ -58,6 +60,7 @@ pub fn parse(
     params_json: []const u8,
     context: RouteContext,
 ) (error{ UnknownCommand, BadArgs })!ParsedCommand {
+    _ = context;
     const verb = verbFromMethod(method) orelse return error.UnknownCommand;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -139,19 +142,6 @@ pub fn parse(
     }
 
     command.arena = arena;
-
-    if (context.telemetry_sink) |sink| {
-        sink.recordRootCommand(.{
-            .method = method,
-            .namespace = @tagName(command.namespace),
-            .page_id = context.page_id,
-            .window_id = context.window_id,
-            .selector = command.selector,
-            .selector_strict = command.strict,
-            .typed_value = command.value orelse command.text,
-            .url = command.url,
-        }) catch {};
-    }
 
     return command;
 }

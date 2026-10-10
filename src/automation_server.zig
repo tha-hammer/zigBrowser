@@ -20,9 +20,10 @@ pub const Config = struct {
     /// session_invalid (-32011).
     page_port: ?page_port.PagePort = null,
     /// Receives one root `automation.command` span (plus child spans) per
-    /// command. Optional; the in-memory sink grows without bound, so only
-    /// tests and diagnostics should set it.
-    telemetry_sink: ?*automation.telemetry.InMemoryTelemetrySink = null,
+    /// command. Optional; must be thread-safe.
+    telemetry_sink: ?automation.telemetry.TelemetrySink = null,
+    /// Backend/version dimensions stamped on every span.
+    build_info: automation.telemetry.BuildInfo = .{},
 };
 
 /// One accepted client. Each connection has its own thread and may carry any
@@ -64,6 +65,7 @@ pub const AutomationApiServer = struct {
                 .token = try allocator.dupe(u8, config.token),
                 .page_port = config.page_port,
                 .telemetry_sink = config.telemetry_sink,
+                .build_info = config.build_info,
             },
         };
     }
@@ -242,7 +244,7 @@ pub const AutomationApiServer = struct {
         const engine: ?*engine_mod.Engine = if (self.engine) |*e| e else null;
         var route = primary_route;
         route.telemetry_sink = self.config.telemetry_sink;
-        return handleRequestWith(allocator, payload, self.config.token, engine, &self.queue, route);
+        return handleRequestWith(allocator, payload, self.config.token, engine, &self.queue, route, self.config.build_info);
     }
 };
 
@@ -253,6 +255,7 @@ fn handleRequestWith(
     engine: ?*engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
     route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -318,6 +321,7 @@ fn handleRequestWith(
         .cancel = &ticket.cancelled,
         .queue_wait_ms = ticket.wait_ms,
         .route = route,
+        .build = build_info,
     });
     defer outcome.deinit(allocator);
     return switch (outcome) {

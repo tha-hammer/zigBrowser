@@ -279,7 +279,7 @@ const Fixture = struct {
             .socket_path = self.socket_path,
             .token = "",
             .page_port = if (options.with_port) self.fake.port() else null,
-            .telemetry_sink = options.sink,
+            .telemetry_sink = if (options.sink) |sink| sink.sink() else null,
         });
         try self.server.start();
         return self;

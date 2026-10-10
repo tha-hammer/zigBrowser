@@ -105,15 +105,28 @@ pub const ExecuteOptions = struct {
     /// Page/window identity and the telemetry sink (M11). Without a sink no
     /// spans are recorded.
     route: router.RouteContext = .{},
+    /// Backend/version dimensions for spans.
+    build: telemetry.BuildInfo = .{},
 };
 
 /// State for one command execution.
 const Run = struct {
     ids: script_command.Ids,
     cancel: ?*const std.atomic.Value(bool),
-    sink: ?*telemetry.InMemoryTelemetrySink,
+    sink: ?telemetry.TelemetrySink,
+    route: router.RouteContext,
+    build: telemetry.BuildInfo,
+    /// Deadline handed to the native layer for the current call.
+    native_timeout_ms: u64 = 0,
     /// Monotonic across the whole command (retries and per-character ops).
     attempts: u32 = 0,
+    /// selector.match_count from the script's latest selector.resolve span.
+    match_count_buf: [16]u8 = undefined,
+    match_count_len: usize = 0,
+
+    fn matchCount(self: *const Run) ?[]const u8 {
+        return if (self.match_count_len == 0) null else self.match_count_buf[0..self.match_count_len];
+    }
 
     fn cancelled(self: *const Run) bool {
         const flag = self.cancel orelse return false;
@@ -138,10 +151,17 @@ pub const Engine = struct {
     /// span for it (when a sink is configured).
     pub fn executeWith(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, options: ExecuteOptions) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
-        var run = Run{ .ids = self.nextIds(&ids_buf), .cancel = options.cancel, .sink = options.route.telemetry_sink };
+        var run = Run{
+            .ids = self.nextIds(&ids_buf),
+            .cancel = options.cancel,
+            .sink = options.route.telemetry_sink,
+            .route = options.route,
+            .build = options.build,
+        };
         const started = self.clock.nowMs();
         const outcome = try self.executeRun(gpa, command, options, &run);
-        recordRootSpan(command, options, &run, &outcome, self.clock.nowMs() -| started);
+        // duration_ms covers enqueue -> completion (queue wait included).
+        recordRootSpan(command, options, &run, &outcome, options.queue_wait_ms +| (self.clock.nowMs() -| started));
         return outcome;
     }
 
@@ -153,11 +173,12 @@ pub const Engine = struct {
             return timeoutWithReason(gpa, timeoutErrorFor(command.verb), "queued_past_deadline", ids, 0);
         }
         const timeout_ms = requested_ms - options.queue_wait_ms;
+        run.native_timeout_ms = timeout_ms;
         return switch (command.verb) {
             .page_url => {
                 const started = self.clock.nowMs();
                 const value = self.port.url(gpa, timeout_ms) catch |err| {
-                    self.platformSpan(run, "url", null, 0, 0, started, "error");
+                    self.platformSpan(run, "url", null, 0, 0, started, @errorName(err));
                     return portFailure(gpa, err, .action, ids);
                 };
                 defer gpa.free(value);
@@ -167,7 +188,7 @@ pub const Engine = struct {
             .page_title => {
                 const started = self.clock.nowMs();
                 const value = self.port.title(gpa, timeout_ms) catch |err| {
-                    self.platformSpan(run, "title", null, 0, 0, started, "error");
+                    self.platformSpan(run, "title", null, 0, 0, started, @errorName(err));
                     return portFailure(gpa, err, .action, ids);
                 };
                 defer gpa.free(value);
@@ -177,7 +198,7 @@ pub const Engine = struct {
             .page_navigate => {
                 const started = self.clock.nowMs();
                 self.port.navigate(command.url.?, timeout_ms) catch |err| {
-                    self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, "error");
+                    self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, @errorName(err));
                     return portFailure(gpa, err, .navigation, ids);
                 };
                 self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, "ok");
@@ -186,7 +207,7 @@ pub const Engine = struct {
             .page_reload => {
                 const started = self.clock.nowMs();
                 self.port.reload(timeout_ms) catch |err| {
-                    self.platformSpan(run, "reload", null, 0, 0, started, "error");
+                    self.platformSpan(run, "reload", null, 0, 0, started, @errorName(err));
                     return portFailure(gpa, err, .navigation, ids);
                 };
                 self.platformSpan(run, "reload", null, 0, 0, started, "ok");
@@ -211,7 +232,7 @@ pub const Engine = struct {
         defer gpa.free(body);
         const started = self.clock.nowMs();
         const text = self.port.evalJson(gpa, .page, body, "null", timeout_ms) catch |err| {
-            self.platformSpan(run, "evalJson", .page, body.len, 0, started, "error");
+            self.platformSpan(run, "evalJson", .page, body.len, 0, started, @errorName(err));
             return portFailure(gpa, err, .action, ids);
         };
         defer gpa.free(text);
@@ -285,6 +306,7 @@ pub const Engine = struct {
             // call gets extra grace on top so JS settles first.
             const script_timeout: ?u64 = if (is_wait) remaining else null;
             const native_timeout = if (is_wait) remaining + wait_for_native_grace_ms else @max(remaining, 1);
+            run.native_timeout_ms = native_timeout;
 
             const command_json = script_command.buildCommandJson(gpa, command, ids, script_timeout) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -294,7 +316,7 @@ pub const Engine = struct {
 
             const started = self.clock.nowMs();
             const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| {
-                self.platformSpanAttempt(run, ids.attempt_index, command_json.len, 0, started, "error");
+                self.platformSpanAttempt(run, ids.attempt_index, command_json.len, 0, started, @errorName(err));
                 return portFailure(gpa, err, .action, ids);
             };
             defer gpa.free(text);
@@ -306,6 +328,7 @@ pub const Engine = struct {
             };
             defer script_result.deinit();
             forwardScriptSpans(run, &script_result);
+            captureMatchCount(run, &script_result);
 
             if (script_result.ok) {
                 return .{ .result = try std.json.Stringify.valueAlloc(gpa, script_result.value, .{}) };
@@ -332,19 +355,21 @@ pub const Engine = struct {
         return !run.cancelled();
     }
 
-    fn platformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {
-        self.recordPlatformSpan(run, op, world, 0, payload_bytes, result_bytes, started, status);
+    /// `error_class`: "ok", or the PortError name (a bounded enum).
+    fn platformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, payload_bytes: usize, result_bytes: usize, started: u64, error_class: []const u8) void {
+        self.recordPlatformSpan(run, op, world, 0, payload_bytes, result_bytes, started, error_class);
     }
 
-    fn platformSpanAttempt(self: *Engine, run: *const Run, attempt_index: u32, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {
-        self.recordPlatformSpan(run, "evalJson", .automation, attempt_index, payload_bytes, result_bytes, started, status);
+    fn platformSpanAttempt(self: *Engine, run: *const Run, attempt_index: u32, payload_bytes: usize, result_bytes: usize, started: u64, error_class: []const u8) void {
+        self.recordPlatformSpan(run, "evalJson", .automation, attempt_index, payload_bytes, result_bytes, started, error_class);
     }
 
     /// `automation.platform.eval` child span: sizes and timing only, never
     /// the script, expression, URL or result bodies.
-    fn recordPlatformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, attempt_index: u32, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {
+    fn recordPlatformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, attempt_index: u32, payload_bytes: usize, result_bytes: usize, started: u64, error_class: []const u8) void {
         const sink = run.sink orelse return;
-        var bufs: [4][24]u8 = undefined;
+        const ok = std.mem.eql(u8, error_class, "ok");
+        var bufs: [5][24]u8 = undefined;
         const entries = [_]telemetry.AttrMap.Entry{
             .{ .key = "page_port.op", .value = op },
             .{ .key = "script.world", .value = if (world) |w| @tagName(w) else "none" },
@@ -352,9 +377,21 @@ pub const Engine = struct {
             .{ .key = "payload.bytes", .value = std.fmt.bufPrint(&bufs[1], "{d}", .{payload_bytes}) catch unreachable },
             .{ .key = "result.bytes", .value = std.fmt.bufPrint(&bufs[2], "{d}", .{result_bytes}) catch unreachable },
             .{ .key = "duration_ms", .value = std.fmt.bufPrint(&bufs[3], "{d}", .{self.clock.nowMs() -| started}) catch unreachable },
-            .{ .key = "result.status", .value = status },
+            .{ .key = "result.status", .value = if (ok) "ok" else "error" },
+            .{ .key = "platform.error_class", .value = if (ok) "" else error_class },
+            .{ .key = "timeout_ms", .value = std.fmt.bufPrint(&bufs[4], "{d}", .{run.native_timeout_ms}) catch unreachable },
+            .{ .key = "backend.name", .value = run.build.backend_name },
+            .{ .key = "backend.version", .value = run.build.backend_version },
+            .{ .key = "page.id", .value = run.route.page_id },
+            .{ .key = "window.id", .value = run.route.window_id },
         };
-        sink.recordChildSpan("automation.platform.eval", run.ids.trace_id, null, run.ids.parent_span_id, run.ids.command_id, &entries) catch {};
+        sink.recordChildSpan(.{
+            .name = "automation.platform.eval",
+            .trace_id = run.ids.trace_id,
+            .parent_span_id = run.ids.parent_span_id,
+            .command_id = run.ids.command_id,
+            .attributes = &entries,
+        }) catch {};
     }
 
     const IdsBuf = struct {
@@ -416,6 +453,8 @@ fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions,
         .action_name = actionName(command.verb),
         .action_force = command.force,
         .action_trial = command.trial,
+        .selector_match_count = run.matchCount(),
+        .build = options.build,
         .timeout_ms = commandTimeout(command),
         .queue_wait_ms = options.queue_wait_ms,
         .duration_ms = duration_ms,
@@ -442,6 +481,7 @@ fn forwardScriptSpans(run: *const Run, script_result: *const script_command.Scri
         if (!inList(&telemetry.script_child_span_names, name)) continue;
 
         var entries: [telemetry.script_child_attribute_allowlist.len]telemetry.AttrMap.Entry = undefined;
+        var number_bufs: [telemetry.script_child_attribute_allowlist.len][32]u8 = undefined;
         var count: usize = 0;
         if (span.get("attributes")) |attributes_value| switch (attributes_value) {
             .object => |attributes| {
@@ -452,6 +492,8 @@ fn forwardScriptSpans(run: *const Run, script_result: *const script_command.Scri
                     const value: []const u8 = switch (entry.value_ptr.*) {
                         .string => |text| text,
                         .number_string => |text| text,
+                        .integer => |n| std.fmt.bufPrint(&number_bufs[count], "{d}", .{n}) catch continue,
+                        .float => |f| std.fmt.bufPrint(&number_bufs[count], "{d}", .{f}) catch continue,
                         .bool => |b| if (b) "true" else "false",
                         else => continue,
                     };
@@ -461,7 +503,40 @@ fn forwardScriptSpans(run: *const Run, script_result: *const script_command.Scri
             },
             else => {},
         };
-        sink.recordChildSpan(name, run.ids.trace_id, stringField(span, "span_id"), run.ids.parent_span_id, run.ids.command_id, entries[0..count]) catch {};
+        sink.recordChildSpan(.{
+            .name = name,
+            .trace_id = run.ids.trace_id,
+            .span_id = stringField(span, "span_id"),
+            .parent_span_id = run.ids.parent_span_id,
+            .command_id = run.ids.command_id,
+            .attributes = entries[0..count],
+        }) catch {};
+    }
+}
+
+/// Copies selector.match_count from the latest selector.resolve span (a
+/// bounded decimal count) for the root span.
+fn captureMatchCount(run: *Run, script_result: *const script_command.ScriptResult) void {
+    const spans = switch (script_result.telemetry orelse return) {
+        .array => |array| array.items,
+        else => return,
+    };
+    for (spans) |span_value| {
+        const span = switch (span_value) {
+            .object => |object| object,
+            else => continue,
+        };
+        const name = stringField(span, "name") orelse continue;
+        if (!std.mem.eql(u8, name, "automation.selector.resolve")) continue;
+        const attributes = switch (span.get("attributes") orelse continue) {
+            .object => |object| object,
+            else => continue,
+        };
+        const count = stringField(attributes, "selector.match_count") orelse continue;
+        if (count.len == 0 or count.len > run.match_count_buf.len) continue;
+        for (count) |c| if (!std.ascii.isDigit(c)) return;
+        @memcpy(run.match_count_buf[0..count.len], count);
+        run.match_count_len = count.len;
     }
 }
 

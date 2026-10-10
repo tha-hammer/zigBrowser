@@ -86,7 +86,7 @@ test "router applies omitted optional params and strict selector defaults" {
     try std.testing.expectEqual(false, screenshot.full_page);
 }
 
-test "router records root telemetry context without raw params" {
+test "router.parse never records telemetry; the engine owns the root span" {
     var sink = telemetry.InMemoryTelemetrySink.init(std.testing.allocator);
     defer sink.deinit();
 
@@ -95,45 +95,14 @@ test "router records root telemetry context without raw params" {
         .{
             .page_id = "page-123",
             .window_id = "window-456",
-            .telemetry_sink = &sink,
+            .telemetry_sink = sink.sink(),
         },
     );
     defer fill.deinit();
 
-    var nav = try router.parse(std.testing.allocator, "page.navigate",
-        "{\"url\":\"https://example.test/inbox?token=xyz\",\"timeout_ms\":1000}",
-        .{
-            .page_id = "page-123",
-            .window_id = "window-456",
-            .telemetry_sink = &sink,
-        },
-    );
-    defer nav.deinit();
-
-    try std.testing.expectEqual(@as(usize, 2), sink.spanCount());
-
-    const fill_span = sink.spanAt(0);
-    try std.testing.expectEqualStrings("automation.command", fill_span.name);
-    try std.testing.expect(fill_span.trace_id.len > 0);
-    try std.testing.expect(fill_span.command_id.len > 0);
-    try std.testing.expectEqualStrings("dom.fill", fill_span.attr("rpc.method").?);
-    try std.testing.expectEqualStrings("dom", fill_span.attr("rpc.namespace").?);
-    try std.testing.expectEqualStrings("page-123", fill_span.attr("page.id").?);
-    try std.testing.expect(fill_span.attr("selector.hash") != null);
-    try std.testing.expectEqualStrings("12", fill_span.attr("typed.length").?);
-    try std.testing.expectEqualStrings("secret-like", fill_span.attr("typed.class").?);
-
-    const nav_span = sink.spanAt(1);
-    try std.testing.expectEqualStrings("page.navigate", nav_span.attr("rpc.method").?);
-    try std.testing.expectEqualStrings("page", nav_span.attr("rpc.namespace").?);
-    try std.testing.expectEqualStrings("example.test", nav_span.attr("target.host").?);
-    try std.testing.expect(nav_span.attr("target.origin_hash") != null);
-    try std.testing.expect(nav_span.attr("target.path_hash") != null);
-
-    try std.testing.expect(!sink.containsRaw("css=#password"));
-    try std.testing.expect(!sink.containsRaw("password=abc"));
-    try std.testing.expect(!sink.containsRaw("token=xyz"));
-    try std.testing.expect(!sink.containsRaw("https://example.test/inbox?token=xyz"));
+    try std.testing.expectEqual(@as(usize, 0), sink.spanCount());
+    // Redaction of these same params is covered through the engine in
+    // tests/automation_telemetry_test.zig.
 }
 
 test "getText and getAttribute accept timeout_ms at top level or in options" {

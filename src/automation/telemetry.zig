@@ -53,17 +53,6 @@ pub const Span = struct {
     }
 };
 
-pub const RootCommandAttrs = struct {
-    method: []const u8,
-    namespace: []const u8,
-    page_id: []const u8,
-    window_id: []const u8,
-    selector: ?[]const u8 = null,
-    selector_strict: ?bool = null,
-    typed_value: ?[]const u8 = null,
-    url: ?[]const u8 = null,
-};
-
 /// Root `automation.command` span recorded by the engine after a command
 /// finishes. Raw selector/typed values/URLs are hashed or classified by the
 /// sink and never stored.
@@ -82,12 +71,58 @@ pub const CommandSpanAttrs = struct {
     action_name: ?[]const u8 = null,
     action_force: bool = false,
     action_trial: bool = false,
+    /// From the script's last selector.resolve span (already a count).
+    selector_match_count: ?[]const u8 = null,
+    build: BuildInfo = .{},
     timeout_ms: u64,
     queue_wait_ms: u64,
     duration_ms: u64,
     retry_count: u32,
     result_status: []const u8,
     automation_error: ?[]const u8 = null,
+};
+
+/// Static dimensions describing the binary/backend. Unknown values stay
+/// "unknown" rather than being omitted, so queries can group on them.
+pub const BuildInfo = struct {
+    backend_name: []const u8 = "unknown",
+    backend_version: []const u8 = "unknown",
+    app_version: []const u8 = "unknown",
+    git_sha: []const u8 = "unknown",
+    /// automation.js `version` string.
+    script_version: []const u8 = "phase1-m4-actionability",
+    api_version: []const u8 = "phase1",
+};
+
+pub const ChildSpan = struct {
+    name: []const u8,
+    trace_id: []const u8,
+    /// null: the sink assigns one.
+    span_id: ?[]const u8 = null,
+    parent_span_id: []const u8,
+    command_id: []const u8,
+    attributes: []const AttrMap.Entry,
+};
+
+/// Production sink contract (BC11). The engine only talks to this; the
+/// in-memory sink below is the test implementation. Implementations receive
+/// already-redacted attributes and must be thread-safe.
+pub const TelemetrySink = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        recordCommandSpan: *const fn (ptr: *anyopaque, attrs: CommandSpanAttrs) anyerror!void,
+        recordChildSpan: *const fn (ptr: *anyopaque, span: ChildSpan) anyerror!void,
+    };
+
+    pub fn recordCommandSpan(self: TelemetrySink, attrs: CommandSpanAttrs) anyerror!void {
+        return self.vtable.recordCommandSpan(self.ptr, attrs);
+    }
+
+    pub fn recordChildSpan(self: TelemetrySink, span: ChildSpan) anyerror!void {
+        return self.vtable.recordChildSpan(self.ptr, span);
+    }
 };
 
 /// Child span attribute keys accepted from automation.js. Anything else the
@@ -154,6 +189,25 @@ pub const InMemoryTelemetrySink = struct {
         return false;
     }
 
+    pub fn sink(self: *InMemoryTelemetrySink) TelemetrySink {
+        return .{ .ptr = self, .vtable = &sink_vtable };
+    }
+
+    const sink_vtable = TelemetrySink.VTable{
+        .recordCommandSpan = sinkRecordCommandSpan,
+        .recordChildSpan = sinkRecordChildSpan,
+    };
+
+    fn sinkRecordCommandSpan(ptr: *anyopaque, attrs: CommandSpanAttrs) anyerror!void {
+        const self: *InMemoryTelemetrySink = @ptrCast(@alignCast(ptr));
+        return self.recordCommandSpan(attrs);
+    }
+
+    fn sinkRecordChildSpan(ptr: *anyopaque, span: ChildSpan) anyerror!void {
+        const self: *InMemoryTelemetrySink = @ptrCast(@alignCast(ptr));
+        return self.recordChildSpan(span.name, span.trace_id, span.span_id, span.parent_span_id, span.command_id, span.attributes);
+    }
+
     fn acquire(self: *InMemoryTelemetrySink) void {
         while (!self.lock.tryLock()) std.atomic.spinLoopHint();
     }
@@ -176,6 +230,14 @@ pub const InMemoryTelemetrySink = struct {
         try self.putOwnedAttr(&attributes, "retry.count", try self.formatInt(attrs.retry_count));
         try self.putAttr(&attributes, "result.status", attrs.result_status);
         try self.putAttr(&attributes, "automation.error", attrs.automation_error orelse "");
+        try self.putAttr(&attributes, "platform.name", @tagName(builtin.os.tag));
+        try self.putAttr(&attributes, "backend.name", attrs.build.backend_name);
+        try self.putAttr(&attributes, "backend.version", attrs.build.backend_version);
+        try self.putAttr(&attributes, "app.version", attrs.build.app_version);
+        try self.putAttr(&attributes, "git.sha", attrs.build.git_sha);
+        try self.putAttr(&attributes, "automation.script.version", attrs.build.script_version);
+        try self.putAttr(&attributes, "api.version", attrs.build.api_version);
+        if (attrs.selector_match_count) |count| try self.putAttr(&attributes, "selector.match_count", count);
 
         if (attrs.selector) |selector| {
             try self.putAttr(&attributes, "selector.kind", selectorKind(selector));
@@ -196,7 +258,7 @@ pub const InMemoryTelemetrySink = struct {
         if (attrs.url) |url| {
             const parsed = parseUrl(url);
             if (parsed.host.len > 0) try self.putAttr(&attributes, "target.host", parsed.host);
-            try self.putOwnedAttr(&attributes, "target.origin_hash", try self.hashText(parsed.origin));
+            try self.putOwnedAttr(&attributes, "target.origin_hash", try self.hashOrigin(parsed));
             try self.putOwnedAttr(&attributes, "target.path_hash", try self.hashText(parsed.path));
         }
 
@@ -246,50 +308,6 @@ pub const InMemoryTelemetrySink = struct {
         return count;
     }
 
-    pub fn recordRootCommand(self: *InMemoryTelemetrySink, attrs: RootCommandAttrs) !void {
-        self.acquire();
-        defer self.lock.unlock();
-        const trace_id = try self.nextId("trace");
-        const span_id = try self.nextId("span");
-        const command_id = try self.nextId("cmd");
-        var attributes = AttrMap.init();
-        errdefer attributes.deinit(self.allocator);
-
-        try self.putAttr(&attributes, "rpc.method", attrs.method);
-        try self.putAttr(&attributes, "rpc.namespace", attrs.namespace);
-        try self.putAttr(&attributes, "page.id", attrs.page_id);
-        try self.putAttr(&attributes, "window.id", attrs.window_id);
-
-        if (attrs.selector) |selector| {
-            try self.putAttr(&attributes, "selector.kind", selectorKind(selector));
-            try self.putOwnedAttr(&attributes, "selector.hash", try self.hashText(selector));
-            if (attrs.selector_strict) |strict| {
-                try self.putAttr(&attributes, "selector.strict", if (strict) "true" else "false");
-            }
-        }
-
-        if (attrs.typed_value) |value| {
-            try self.putOwnedAttr(&attributes, "typed.length", try self.formatInt(value.len));
-            try self.putAttr(&attributes, "typed.class", classifyTypedValue(value));
-        }
-
-        if (attrs.url) |url| {
-            const parsed = parseUrl(url);
-            if (parsed.host.len > 0) try self.putAttr(&attributes, "target.host", parsed.host);
-            try self.putOwnedAttr(&attributes, "target.origin_hash", try self.hashText(parsed.origin));
-            try self.putOwnedAttr(&attributes, "target.path_hash", try self.hashText(parsed.path));
-        }
-
-        try self.spans.append(self.allocator, .{
-            .name = "automation.command",
-            .trace_id = trace_id,
-            .span_id = span_id,
-            .parent_span_id = null,
-            .command_id = command_id,
-            .attributes = attributes,
-        });
-    }
-
     fn putAttr(self: *InMemoryTelemetrySink, attrs: *AttrMap, key: []const u8, value: []const u8) !void {
         try attrs.put(self.allocator, key, try self.dupe(value));
     }
@@ -313,6 +331,17 @@ pub const InMemoryTelemetrySink = struct {
 
     fn formatInt(self: *InMemoryTelemetrySink, value: u64) ![]const u8 {
         const owned = try std.fmt.allocPrint(self.allocator, "{d}", .{value});
+        try self.owned_strings.append(self.allocator, owned);
+        return owned;
+    }
+
+    /// Hash of scheme://host[:port] -- never includes userinfo.
+    fn hashOrigin(self: *InMemoryTelemetrySink, parsed: ParsedUrl) ![]const u8 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(parsed.scheme);
+        hasher.update(url_scheme_separator);
+        hasher.update(parsed.host);
+        const owned = try std.fmt.allocPrint(self.allocator, "{x}", .{hasher.final()});
         try self.owned_strings.append(self.allocator, owned);
         return owned;
     }
@@ -352,27 +381,28 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 }
 
 const ParsedUrl = struct {
+    scheme: []const u8,
+    /// host[:port] with any `user:password@` userinfo removed.
     host: []const u8,
-    origin: []const u8,
     path: []const u8,
 };
 
 fn parseUrl(url: []const u8) ParsedUrl {
-    const scheme_end = std.mem.indexOf(u8, url, url_scheme_separator) orelse return .{ .host = "", .origin = "", .path = "" };
+    const scheme_end = std.mem.indexOf(u8, url, url_scheme_separator) orelse return .{ .scheme = "", .host = "", .path = "" };
     const authority_start = scheme_end + url_scheme_separator.len;
     const after_authority_rel = std.mem.indexOfAny(u8, url[authority_start..], "/?#") orelse url[authority_start..].len;
     const authority_end = authority_start + after_authority_rel;
-    const host = url[authority_start..authority_end];
-    const origin = url[0..authority_end];
+    const authority = url[authority_start..authority_end];
+    const host = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| authority[at + 1 ..] else authority;
 
     const path_start = authority_end;
     if (path_start >= url.len or url[path_start] != '/') {
-        return .{ .host = host, .origin = origin, .path = url_default_path };
+        return .{ .scheme = url[0..scheme_end], .host = host, .path = url_default_path };
     }
     const query_start_rel = std.mem.indexOfAny(u8, url[path_start..], "?#") orelse url[path_start..].len;
     return .{
+        .scheme = url[0..scheme_end],
         .host = host,
-        .origin = origin,
         .path = url[path_start .. path_start + query_start_rel],
     };
 }

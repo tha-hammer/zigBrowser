@@ -10,9 +10,19 @@ const telemetry = automation.telemetry;
 
 const gpa = std.testing.allocator;
 
+/// Plan M11 root attributes (session.id_hash is optional and there is no
+/// session concept yet; target.* only exist for URL commands).
 const required_root_attrs = [_][]const u8{
-    "rpc.method",  "rpc.namespace", "page.id",     "window.id",     "os.name",       "arch",
-    "timeout_ms",  "queue.wait_ms", "duration_ms", "retry.count",   "result.status", "automation.error",
+    "rpc.method",      "rpc.namespace",   "page.id",         "window.id",                 "platform.name", "backend.name",
+    "backend.version", "os.name",         "arch",            "app.version",               "git.sha",       "automation.script.version",
+    "api.version",     "queue.wait_ms",   "duration_ms",     "timeout_ms",                "retry.count",   "result.status",
+    "automation.error", "selector.kind",  "selector.hash",   "selector.strict",           "selector.match_count", "action.name",
+    "action.force",    "action.trial",
+};
+
+const required_platform_attrs = [_][]const u8{
+    "page_port.op", "script.world", "attempt.index", "payload.bytes", "result.bytes", "duration_ms",
+    "result.status", "platform.error_class", "timeout_ms", "backend.name", "backend.version", "page.id", "window.id",
 };
 
 const Harness = struct {
@@ -40,7 +50,8 @@ const Harness = struct {
         defer command.deinit();
         return self.engine.executeWith(gpa, &command, .{
             .queue_wait_ms = queue_wait_ms,
-            .route = .{ .page_id = "page-7", .window_id = "window-3", .telemetry_sink = &self.sink },
+            .route = .{ .page_id = "page-7", .window_id = "window-3", .telemetry_sink = self.sink.sink() },
+            .build = .{ .backend_name = "webkitgtk", .backend_version = "2.52", .app_version = "0.1.0", .git_sha = "abc1234" },
         });
     }
 
@@ -93,7 +104,23 @@ test "exactly one root span per command with the required attributes" {
     try std.testing.expectEqualStrings("30000", root.attr("timeout_ms").?);
     try std.testing.expectEqualStrings("click", root.attr("action.name").?);
     try std.testing.expectEqualStrings("css", root.attr("selector.kind").?);
+    try std.testing.expectEqualStrings("1", root.attr("selector.match_count").?);
+    try std.testing.expectEqualStrings("webkitgtk", root.attr("backend.name").?);
+    try std.testing.expectEqualStrings("abc1234", root.attr("git.sha").?);
     try std.testing.expect(root.parent_span_id == null);
+
+    for (h.sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.platform.eval")) continue;
+        for (required_platform_attrs) |key| {
+            if (span.attr(key) == null) {
+                std.debug.print("missing platform attr {s}\n", .{key});
+                return error.TestMissingAttr;
+            }
+        }
+        try std.testing.expectEqualStrings("page-7", span.attr("page.id").?);
+        try std.testing.expectEqualStrings("30000", span.attr("timeout_ms").?);
+        try std.testing.expectEqualStrings("", span.attr("platform.error_class").?);
+    }
 }
 
 test "root span ids are the ids sent to the script; children hang off the root" {
@@ -275,4 +302,70 @@ test "no sink configured records nothing and still works" {
     var outcome = try eng.executeWith(gpa, &command, .{});
     defer outcome.deinit(gpa);
     try std.testing.expectEqualStrings("{\"url\":\"about:blank\"}", outcome.result);
+}
+
+test "URL credentials, query and fragment never reach the sink" {
+    var h: Harness = undefined;
+    h.init(&.{});
+    defer h.deinit();
+
+    const urls = [_][]const u8{
+        "https://alice:hunter2@example.com/path?token=q1#frag1",
+        "https://bob@example.com:8443/a%2Fb?x=y",
+        "http://user:pw@[::1]:8080/v6?s=1",
+    };
+    for (urls) |url| {
+        const params = try std.json.Stringify.valueAlloc(gpa, .{ .url = url }, .{});
+        defer gpa.free(params);
+        var outcome = try h.run("page.navigate", params, 0);
+        outcome.deinit(gpa);
+    }
+    for ([_][]const u8{ "alice", "hunter2", "bob@", "user:pw", "token=q1", "frag1", "x=y", "s=1", "/path", "a%2Fb" }) |needle| {
+        if (h.sink.containsRaw(needle)) {
+            std.debug.print("leaked: {s}\n", .{needle});
+            return error.TestRawValueLeaked;
+        }
+    }
+    var hosts: [3][]const u8 = undefined;
+    var i: usize = 0;
+    for (h.sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        hosts[i] = span.attr("target.host").?;
+        i += 1;
+    }
+    try std.testing.expectEqualStrings("example.com", hosts[0]);
+    try std.testing.expectEqualStrings("example.com:8443", hosts[1]);
+    try std.testing.expectEqualStrings("[::1]:8080", hosts[2]);
+}
+
+test "same origin with and without credentials hashes identically" {
+    var h: Harness = undefined;
+    h.init(&.{});
+    defer h.deinit();
+
+    var a = try h.run("page.navigate", "{\"url\":\"https://u:p@example.com/x\"}", 0);
+    a.deinit(gpa);
+    var b = try h.run("page.navigate", "{\"url\":\"https://example.com/y\"}", 0);
+    b.deinit(gpa);
+    var origins: [2][]const u8 = undefined;
+    var i: usize = 0;
+    for (h.sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        origins[i] = span.attr("target.origin_hash").?;
+        i += 1;
+    }
+    try std.testing.expectEqualStrings(origins[0], origins[1]);
+}
+
+test "root duration covers queue wait plus execution" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 7;
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\"}", 40);
+    defer outcome.deinit(gpa);
+    const root = try h.root();
+    try std.testing.expectEqualStrings("47", root.attr("duration_ms").?);
 }
