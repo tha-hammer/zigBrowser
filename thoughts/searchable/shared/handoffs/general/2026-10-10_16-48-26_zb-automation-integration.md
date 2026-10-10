@@ -21,7 +21,8 @@ everywhere; real (trusted) pointer and key input, optionally human-paced,
 works on the Linux/GTK build, as do file uploads through the browser's own
 file chooser, real wheel scrolling, real hover and PNG screenshots. X,
 LinkedIn and Instagram flows are built from those commands, with a login
-gate, pacing (saved in the profile across restarts), one selector table
+gate, pacing (saving it in the profile is built, but not yet wired into
+the real binary: see "What is NOT verified"), one selector table
 per site, and a stop on the platforms' own checkpoint, CAPTCHA and limit
 pages. Everything is tested against local fixtures and the real binary. **No live
 site (x.com, linkedin.com, instagram.com) has been touched by any test.**
@@ -63,10 +64,11 @@ error codes). Build notes for other platforms: `docs/how-to-build.md`.
    user) is trusted.
 3. Native input, humanize and the site flows are new opt-in features; plain
    synthetic `dom.*` behaves as before.
-4. **Pacing survives a restart.** The day's action counts (the shared
-   LinkedIn/Instagram cap and the X cap) and the `social.set_pacing`
-   settings are kept in `<profile dir>/automation-pacing.json` (mode
-   0600). To reset them by hand, stop the browser and delete that file.
+4. **Pacing will survive a restart (pending).** The store and server that
+   keep the day's action counts and the `social.set_pacing` settings in
+   `<profile dir>/automation-pacing.json` (mode 0600) are done, but the
+   real binary does not pass the profile path yet (cc_1's `app.zig`
+   hunk), so today a restart still resets pacing.
 5. **Site flows stop on platform stop signs.** A checkpoint, CAPTCHA or
    limit dialog/toast ends an `x.*`, `linkedin.*` or `instagram.*` flow
    with -32010 and `data.signal` before anything else is clicked, and the
@@ -83,16 +85,16 @@ Python SDK.
 | Method(s) | What it does | Verified by |
 |---|---|---|
 | `page.navigate`, `page.reload`, `page.url`, `page.title`, `page.evaluate` | Page control; evaluate returns JSON, exceptions as -32603 with the class name only | U, S, E (`automation_core_test.py`, readiness), SDK, L (`sdk_python_live_test.py`) |
-| `page.screenshot` | `{data: base64 PNG, width, height}` of the viewport or (`fullPage`) the document; deadline-bounded, at most 16 MiB and 32 MiP, else -32603 `screenshot_too_large` | U, E (`automation_native_ports_test.py`: valid PNG, size = viewport × dpr, a known pixel colour), webkit live tests |
+| `page.screenshot` | `{data: base64 PNG, width, height}` of the viewport or (`fullPage`) the document; at most 16 MiB and 32 MiP, else -32603 `screenshot_too_large`; meant to be deadline-bounded, but a known race (RoseCat 4768, open with cc_1) can let a capture finish after its deadline | U, E (`automation_native_ports_test.py`: valid PNG, size = viewport × dpr, a known pixel colour), webkit live tests |
 | `dom.query`, `dom.getText`, `dom.getAttribute`, `dom.waitFor` | Reads and waits with selector engines `css=`, `xpath=`, `text=`, `testid=`, `role=` | U, S, E, SDK, L |
 | `dom.click`, `dom.fill`, `dom.type`, `dom.press`, `dom.selectOption` | Actions with actionability checks (visible, stable, not covered, enabled, editable), retried until the deadline; contenteditable/Draft editors; `trial`, `force`, `strict`, `delay_ms` | U (incl. retry/deadline mutation tests), E (`automation_input_test.py`), SDK, L |
 | `dom.setInputFiles` | Chooses files through WebKit's own file chooser (hidden inputs fine); absolute readable files only (-32602 `bad_file`, nothing clicked); applied-but-unconfirmed is -32009 `files_unconfirmed`, never repeated | U, S, E (`automation_native_ports_test.py`: trusted `change` with exact names and sizes, single and multiple, `bad_file`), SDK |
 | `dom.hover` | Synthetic: events only (no CSS `:hover`); native: a real pointer move (humanized: a curved path), so `:hover` menus open | U, S, E (`automation_scroll_test.py`: `:hover` style only for native), SDK |
-| `dom.scroll` | A selector into view, or the page by x/y; native: real wheel events, answered once scrolling has settled, never with a replaced page's offsets | U, S, E (`automation_scroll_test.py`, `automation_native_ports_test.py`: offsets read in the next command equal the answer, trusted wheels), webkit live tests, SDK |
+| `dom.scroll` | A selector into view, or the page by x/y; native: real wheel events, answered once scrolling has settled; the engine never accepts a replaced page (`6f12c70`), and the adapter's last step (no offsets from a page replaced after the wheel, `569e47a`) is still under review | U, S, E (`automation_scroll_test.py`, `automation_native_ports_test.py`: offsets read in the next command equal the answer, trusted wheels), webkit live tests, SDK |
 | `options.input: "native"` on click/type/press/hover/scroll | Real GDK pointer/key/wheel events (`isTrusted`), bound to the located document, partial-input reporting, never retried after dispatch | U (engine with fake port, document change, partial input), E (socket native e2e by cc_1), webkit live tests |
 | `options.humanize` (native only) | Curved pointer path from the last pointer position, 80-200 ms key gaps, 300-600 ms word pauses, whole schedule pre-checked (`humanize_budget`) | U (seeded RNG, budget, corners, document change), E (cc_1 humanized click/type e2e) |
 | `cookies.getAll`, `cookies.set`, `cookies.delete`, `cookies.import` (Netscape/JSON) | Cookie store; values never logged or traced | U, S, E (`automation_cookies` e2e), SDK |
-| `social.login_check`, `social.rate_status`, `social.set_pacing`, `social.pause` | Login heuristic, shared social pacing (default 100/day, 3-8 s pause, saved in the profile), queue pause | U, S (restart on the same file, corrupt file), SDK, L |
+| `social.login_check`, `social.rate_status`, `social.set_pacing`, `social.pause` | Login heuristic, shared social pacing (default 100/day, 3-8 s pause; profile persistence pending, see "What is NOT verified"), queue pause | U, S (restart on the same file, corrupt file), SDK, L |
 | Platform stop signs in every site flow (N20) | automation.js `rateLimitScan` after every navigation, before actions, after a failed step and before success; -32010 `{signal, platform}`; nothing clicked after a detection; one absolute flow deadline and cancellation respected | U (incl. scan latency, cancellation, mutants), S, E (`x_flows_test.py`: Arkose challenge, daily-limit toast; `social_flows_test.py`: LinkedIn checkpoint redirect, invitation-limit modal, Instagram "Try Again Later") |
 | `x.post`, `x.schedule_post`, `x.login_check`, `x.selfcheck` | X composer flows (stale-draft clear, Post button picked by trial probes, toast confirmation, schedule dialog), 50/day cap, 120 s budget (`timeout_ms` up to 600 s), `options.input/humanize` | U (`x_test.zig`, `automation_x_test.zig`), S (deterministic one-queue-turn proof), E (`x_flows_test.py` on `tests/fixtures/x/composer.html`, including a humanized 280-character post; cc_1's `x_native_test.py` proves native, humanized input is trusted), SDK for the default X call shapes only: the Python/Node `x` wrappers cannot pass `options` or `timeout_ms` yet, so those are covered over the raw socket |
 | `linkedin.visit/connect/follow/message/like/comment/search/extract/selfcheck` | LinkedIn flows; session-cookie gate before navigation; https://www.linkedin.com URLs only; typed text; note cut to 300 | U (`linkedin_test.zig`, `automation_social_test.zig`), S (socket chain), L (`social_flows_test.py` on `tests/fixtures/linkedin/`), SDK |
@@ -212,7 +214,9 @@ Never start with a personal or production account.
   `dom.setInputFiles`, `dom.hover`, `dom.scroll`, `page.screenshot`, the
   GTK adapter wiring (with a test that fails the build if any PagePort
   method keeps its "unsupported" default), one real-binary e2e for all
-  three, and the document-replacement and screenshot-deadline fixes.
+  three, and the document-replacement and screenshot-deadline work (the
+  adapter-side follow-ups `569e47a` and the 4768 deadline race are still
+  open with cc_1).
 - **N20 (`314a14e`, `f11596b`, `eb49169`, `4f9c341`, `85797af`):**
   platform stop signs (see the table), SHA-256 `text_hash`, hidden nodes
   ignored, the absolute deadline and cancellation kept across scans.
@@ -279,8 +283,9 @@ Known, not fixed in this branch, and deliberately left for later:
   raised it as a SHOULD and the orchestrator deferred it.
 - **`session.id_hash` is not implemented.** The compound social span has
   no session id hash because there is no session concept yet.
-- ~~Pacing state is in memory only~~: done in N21 (`4dafb3a`), pending
-  only the profile wiring noted above.
+- **Pacing state is still in memory on the real binary.** The N21 store
+  and server (`4dafb3a`) are done; the profile wiring (`app.zig`, cc_1)
+  and its real-binary e2e are pending.
 - **SDK `x` wrappers lack `options` and `timeout_ms`.** The Python and
   Node `x.post` / `x.schedule_post` wrappers send only the default call
   shape; native input, humanize and `timeout_ms` need a raw socket call
