@@ -77,6 +77,10 @@
     <!-- Room to scroll any control out of the viewport. -->
     <div id="spacer" style="height: 3000px"></div>
 
+    <!-- Controls below the fold: actions must scroll them into view. -->
+    <button id="below" onclick="window.belowClicks = (window.belowClicks || 0) + 1">Below</button>
+    <input id="belowinput" />
+
     <script>
       window.selInputs = 0;
       window.selChanges = 0;

@@ -96,6 +96,9 @@
     const telemetry = resolved.telemetry.slice();
 
     if (!force) {
+      // The receives-events check hit-tests the element's centre, which
+      // fails outside the viewport: bring the target into view first.
+      if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
       const check = runActionabilityChecks(element, action);
       telemetry.push(actionabilitySpan(command, action, check));
       if (!check.passed) {

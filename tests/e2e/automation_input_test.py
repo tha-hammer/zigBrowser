@@ -267,6 +267,25 @@ def run_select(socket_path: Path, t: float) -> None:
     expect_equal("aria-disabled option not selected", js("document.querySelector('#lb [data-value=three]').getAttribute('aria-selected')"), "false")
 
 
+def run_below_fold(socket_path: Path, t: float) -> None:
+    ids = iter(range(600, 650))
+
+    def js(expression: str):
+        return evaluate(socket_path, expression, next(ids), t)
+
+    def scrolled_away(element_id: str) -> None:
+        js("window.scrollTo(0, 0)")
+        if js(f"(function(){{var r=document.getElementById('{element_id}').getBoundingClientRect(); return r.top < window.innerHeight;}})()"):
+            raise AssertionError(f"precondition: #{element_id} should start below the viewport")
+
+    scrolled_away("below")
+    expect_equal("click below the fold", call_rpc(socket_path, "dom.click", {"selector": "css=#below", "options": {"timeout_ms": 2000}}, next(ids), t), {"ok": True})
+    expect_equal("below-the-fold click landed", js("window.belowClicks"), 1)
+    scrolled_away("belowinput")
+    expect_equal("fill below the fold", call_rpc(socket_path, "dom.fill", {"selector": "css=#belowinput", "value": "deep", "options": {"timeout_ms": 2000}}, next(ids), t), {"ok": True})
+    expect_equal("below-the-fold fill landed", js("document.getElementById('belowinput').value"), "deep")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -313,6 +332,9 @@ def main() -> int:
             scenario = "selectOption"
             run_select(socket_path, args.timeout_sec)
             print("PASS\tdom.selectOption")
+            scenario = "below-the-fold"
+            run_below_fold(socket_path, args.timeout_sec)
+            print("PASS\tactions scroll targets into view")
         except Exception as exc:
             print(f"FAIL\t{scenario}")
             eprint(f"error={exc}")
