@@ -67,15 +67,15 @@ error codes). Build notes for other platforms: `docs/how-to-build.md`.
    LinkedIn/Instagram cap and the X cap) and the `social.set_pacing`
    settings are kept in `<profile dir>/automation-pacing.json` (mode
    0600). To reset them by hand, stop the browser and delete that file.
-6. **Windows (N23).** `page.list` lists the open windows (a login popup
-   appears with its opener), `window_id` sends any `page.*`/`dom.*` call to
-   one of them, and `page.close` closes a popup. Closing a popup unloads
-   its opener's page (they share a web process): `page.navigate` the
-   opener again afterwards.
 5. **Site flows stop on platform stop signs.** A checkpoint, CAPTCHA or
    limit dialog/toast ends an `x.*`, `linkedin.*` or `instagram.*` flow
    with -32010 and `data.signal` before anything else is clicked, and the
    action is not counted.
+6. **Windows (N23).** `page.list` lists the open windows (a login popup
+   appears with its opener), `window_id` sends any other `page.*` call and
+   any `dom.*` call to one of them, and `page.close` closes a popup.
+   Closing a popup, by `page.close` or by its own `window.close()`, leaves
+   its opener's page loaded and working, with its page state (`1088651`).
 
 ## Every method and how it is verified
 
@@ -98,7 +98,7 @@ Python SDK.
 | `options.humanize` (native only) | Curved pointer path from the last pointer position, 80-200 ms key gaps, 300-600 ms word pauses, whole schedule pre-checked (`humanize_budget`) | U (seeded RNG, budget, corners, document change), E (cc_1 humanized click/type e2e) |
 | `cookies.getAll`, `cookies.set`, `cookies.delete`, `cookies.import` (Netscape/JSON) | Cookie store; values never logged or traced | U, S, E (`automation_cookies` e2e), SDK |
 | `social.login_check`, `social.rate_status`, `social.set_pacing`, `social.pause` | Login heuristic, shared social pacing (default 100/day, 3-8 s pause, saved in the profile), queue pause | U, S (restart on the same file, corrupt file), E (`automation_pacing_persist_test.py`: restart, profile isolation, corrupt file), SDK, L |
-| `page.list`, `page.close`, `window_id` on `page.*`/`dom.*` (N23) | Window targeting: one queue per window; a gone window is -32011 `no_window` with no page work; the primary cannot be closed | U, S (targeting, close FIFO, gone/unknown ids on every page path, telemetry), E (`automation_windows_test.py`: popup listed with its opener, targeted fill/eval only in the popup, close, `no_window`, opener restored by navigate), webkit live matrix (cc_1), SDK |
+| `page.list`, `page.close`, `window_id` on `page.*`/`dom.*` (N23) | Window targeting: one queue per window; a gone window is -32011 `no_window` with no page work; the primary cannot be closed | U, S (targeting, close FIFO, gone/unknown ids on every page path, telemetry), E (`automation_windows_test.py`: popup listed with its opener, targeted fill/eval only in the popup, popup login and postMessage to the opener, close by `page.close` and by the popup's own `window.close()` with the opener still working, `no_window`; the exact URL/state oracle is being tightened per RoseCat 4852/4853), webkit live matrix (cc_1), SDK |
 | Platform stop signs in every site flow (N20) | automation.js `rateLimitScan` after every navigation, before actions, after a failed step and before success; -32010 `{signal, platform}`; nothing clicked after a detection; one absolute flow deadline and cancellation respected | U (incl. scan latency, cancellation, mutants), S, E (`x_flows_test.py`: Arkose challenge, daily-limit toast; `social_flows_test.py`: LinkedIn checkpoint redirect, invitation-limit modal, Instagram "Try Again Later") |
 | `x.post`, `x.schedule_post`, `x.login_check`, `x.selfcheck` | X composer flows (stale-draft clear, Post button picked by trial probes, toast confirmation, schedule dialog), 50/day cap, 120 s budget (`timeout_ms` up to 600 s), `options.input/humanize` | U (`x_test.zig`, `automation_x_test.zig`), S (deterministic one-queue-turn proof), E (`x_flows_test.py` on `tests/fixtures/x/composer.html`, including a humanized 280-character post; cc_1's `x_native_test.py` proves native, humanized input is trusted), SDK for the default X call shapes only: the Python/Node `x` wrappers cannot pass `options` or `timeout_ms` yet, so those are covered over the raw socket |
 | `linkedin.visit/connect/follow/message/like/comment/search/extract/selfcheck` | LinkedIn flows; session-cookie gate before navigation; https://www.linkedin.com URLs only; typed text; note cut to 300 | U (`linkedin_test.zig`, `automation_social_test.zig`), S (socket chain), L (`social_flows_test.py` on `tests/fixtures/linkedin/`), SDK |
@@ -132,9 +132,6 @@ log for the reviewer's independent gates).
   CAPTCHA and limit pages" in `docs/how-to-automate.md`), but only from the
   English text, paths and frames the fixtures model: a localized or
   redesigned page may still surface as an element failure.
-- **Closing a popup unloads its opener's page** (shared WebKit web
-  process; documented, not changed, per the orchestrator). The opener needs
-  a `page.navigate` afterwards; the windows e2e asserts exactly this.
 - File uploads, real hover/scroll and screenshots are proven on local
   fixtures only (no site-specific upload widgets).
 - `selfcheck` reports counts only: no pass/fail policy, no visibility or
@@ -235,9 +232,9 @@ The running review log is
 (RoseCat). Updated for N22 (after RoseCat's mails up to 4785):
 
 - **Open:** the joint N23 commit `3528d84` awaits RoseCat's final review
-  (its WIP findings 4791-4846 were addressed before the commit). Deferred
-  by the orchestrator: closing a popup ends the web process it shares with
-  its opener (see "What is NOT verified"). Only if site flows ever accept
+  (its WIP findings 4791-4846 were addressed before the commit). The
+  popup-close fix (`1088651`: the shared web process ends only with
+  its last window) awaits RoseCat's review. Only if site flows ever accept
   `window_id` does the two-window X cap oracle (RoseCat 4785) become due;
   today they refuse it.
 - **APPROVED or CLOSED since the first handoff:** `8a16668` (closes 4737),
@@ -282,9 +279,10 @@ Earlier items, kept for the record:
 
 Known, not fixed in this branch, and deliberately left for later:
 
-- **Closing one window ends related windows' web process.** Windows that
-  share a WebKit web process lose it when one of them is closed. This predates the automation work; RoseCat
-  raised it as a SHOULD and the orchestrator deferred it.
+- ~~Closing one window ends related windows' web process~~: fixed in
+  `1088651` after the orchestrator reversed the deferral (the
+  process is terminated only when its last window closes; a single hung
+  window keeps the timeout and termination).
 - **`session.id_hash` is not implemented.** The compound social span has
   no session id hash because there is no session concept yet.
 - ~~Pacing state is in memory only~~: done in N21.

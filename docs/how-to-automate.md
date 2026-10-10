@@ -162,10 +162,9 @@ own command queue. A window that is gone answers -32011 with
 -32011 `unsupported`. The site flows (`x.*`, `linkedin.*`, `instagram.*`)
 always use the primary window.
 
-Known behaviour: a popup shares its opener's WebKit web process, and
-closing the popup with `page.close` ends that process. The opener's page is then unloaded: `page.url` answers `""` and
-other page calls fail with -32603 until you `page.navigate` it again (which
-works at once). Navigate the opener back after closing a popup.
+Closing a popup, with `page.close` or by the page's own `window.close()`
+(for example when a login popup finishes), leaves its opener's page as it
+was: same URL, same page state.
 
 ### DOM
 
