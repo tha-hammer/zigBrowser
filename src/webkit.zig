@@ -2400,3 +2400,147 @@ test "screenshot returns a PNG of the viewport or the whole document" {
     try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
     c.zb_automation_loop_mark(1);
 }
+
+// N20: platform rate-limit and challenge signals in rateLimitScan.
+const ScanServer = struct {
+    fd: c_int,
+    port: u16,
+    thread: ?std.Thread = null,
+
+    const Page = struct { prefix: []const u8, body: []const u8 };
+    const pages = [_]Page{
+        .{ .prefix = "/x/toast", .body = "<div data-testid=\"toast\" role=\"alert\">Something went wrong, but don't fret.</div>" },
+        .{ .prefix = "/x/hidden-toast", .body = "<div data-testid=\"toast\" role=\"alert\" style=\"display:none\">Something went wrong</div>" },
+        .{ .prefix = "/x/arkose", .body = "<iframe id=\"arkose_iframe\" src=\"about:blank\" title=\"arkose challenge\"></iframe>" },
+        .{ .prefix = "/x/clean", .body = "<div data-testid=\"toast\" role=\"alert\">Your post was sent.</div>" },
+        .{ .prefix = "/checkpoint/challenge/abc", .body = "<p>Let's do a quick security check</p>" },
+        .{ .prefix = "/authwall", .body = "<p>Join LinkedIn</p>" },
+        .{ .prefix = "/in/invite", .body = "<div class=\"artdeco-modal\" role=\"dialog\" aria-modal=\"true\">You've reached the weekly invitation limit</div>" },
+        .{ .prefix = "/challenge/xyz", .body = "<p>Help us confirm it's you</p>" },
+        .{ .prefix = "/p/later", .body = "<div role=\"dialog\">Try Again Later. We restrict certain activity to protect our community.</div>" },
+        .{ .prefix = "/clean", .body = "<p>Nothing to see</p>" },
+    };
+
+    fn open() !ScanServer {
+        const listener = try StalledServer.open();
+        return .{ .fd = listener.fd, .port = listener.port };
+    }
+
+    fn start(self: *ScanServer) !void {
+        self.thread = try std.Thread.spawn(.{}, serve, .{self});
+    }
+
+    fn serve(self: *ScanServer) void {
+        while (true) {
+            const conn = std.c.accept(self.fd, null, null);
+            if (conn < 0) return;
+            defer _ = std.c.close(conn);
+            var req: [4096]u8 = undefined;
+            const n = std.c.read(conn, &req, req.len);
+            if (n <= 0) continue;
+            const line = req[0..@intCast(n)];
+            var body: []const u8 = "<p>not found</p>";
+            for (pages) |page| {
+                var pat: [128]u8 = undefined;
+                const want = std.fmt.bufPrint(&pat, "GET {s}", .{page.prefix}) catch continue;
+                if (std.mem.startsWith(u8, line, want)) body = page.body;
+            }
+            var out: [2048]u8 = undefined;
+            const reply = std.fmt.bufPrint(&out, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n<!doctype html><html><body>{s}</body></html>", .{ body.len + 41, body }) catch continue;
+            _ = std.c.send(conn, reply.ptr, reply.len, std.c.MSG.NOSIGNAL);
+        }
+    }
+
+    fn close(self: *ScanServer) void {
+        _ = std.c.shutdown(self.fd, 2);
+        _ = std.c.close(self.fd);
+        if (self.thread) |t| t.join();
+    }
+};
+
+const ScanDriver = struct {
+    nav: NavEndDriver = .{},
+    port: u16,
+
+    fn check(self: *ScanDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("rate-limit scan check failed: {s}\n", .{what});
+            self.nav.failures += 1;
+        }
+    }
+
+    /// Navigates to `path` and runs rateLimitScan with `platform`; the
+    /// answer JSON (in nav.buf).
+    fn scan(self: *ScanDriver, path: []const u8, platform: []const u8) []const u8 {
+        var url_buf: [256]u8 = undefined;
+        const url = std.fmt.bufPrintZ(&url_buf, "http://127.0.0.1:{d}{s}", .{ self.port, path }) catch return "";
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_navigate(null, url.ptr, 10_000, &err);
+        c.zb_automation_free(err);
+        var body_buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrintZ(&body_buf, "return JSON.stringify(globalThis.__zbAutomation.handle({{ op: 'rateLimitScan', options: {{ platform: '{s}' }} }}));", .{platform}) catch return "";
+        return self.nav.eval(body, c.ZB_AUTOMATION_WORLD);
+    }
+
+    fn expectSignal(self: *ScanDriver, path: []const u8, platform: []const u8, comptime kind: []const u8, comptime what: []const u8) void {
+        const out = self.scan(path, platform);
+        const ok = std.mem.indexOf(u8, out, "\"error\":\"platform_rate_limited\"") != null and
+            std.mem.indexOf(u8, out, "\"signal\":\"" ++ kind ++ "\"") != null;
+        if (!ok) std.debug.print("{s}: {s}\n", .{ what, out });
+        self.check(ok, what);
+    }
+
+    fn expectClean(self: *ScanDriver, path: []const u8, platform: []const u8, comptime what: []const u8) void {
+        const out = self.scan(path, platform);
+        const ok = std.mem.eql(u8, out, "{\"ok\":true,\"value\":{\"signals\":[]},\"telemetry\":[]}");
+        if (!ok) std.debug.print("{s}: {s}\n", .{ what, out });
+        self.check(ok, what);
+    }
+
+    fn run(self: *ScanDriver) void {
+        _ = self.nav.eval("return 1;", null);
+        self.expectSignal("/x/toast", "x", "toast", "X: a 'Something went wrong' toast");
+        self.expectSignal("/x/arkose", "x", "challenge", "X: the arkose challenge iframe");
+        self.expectClean("/x/hidden-toast", "x", "X: a hidden toast is not a signal");
+        self.expectClean("/x/clean", "x", "X: an ordinary toast is not a signal");
+        self.expectSignal("/checkpoint/challenge/abc", "linkedin", "challenge", "LinkedIn: the /checkpoint/ path");
+        self.expectSignal("/authwall", "linkedin", "authwall", "LinkedIn: the authwall");
+        self.expectSignal("/in/invite", "linkedin", "invitation_limit", "LinkedIn: the weekly invitation limit modal");
+        self.expectSignal("/challenge/xyz", "instagram", "challenge", "Instagram: the /challenge/ path");
+        self.expectSignal("/p/later", "instagram", "action_blocked", "Instagram: the 'Try again later' dialog");
+        self.expectClean("/clean", "instagram", "a clean page has no signals");
+        // Platform checks apply to their platform: an X toast pattern on a
+        // LinkedIn page is not an X signal.
+        self.expectClean("/x/toast", "linkedin", "an X toast is not a LinkedIn signal");
+        // The text itself never leaves the page: only a hash.
+        const out = self.scan("/in/invite", "linkedin");
+        self.check(std.mem.indexOf(u8, out, "invitation limit") == null and std.mem.indexOf(u8, out, "\"text_hash\":\"") != null, "the modal text is reported only as a hash");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "rateLimitScan reports X, LinkedIn and Instagram block signals" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var server = try ScanServer.open();
+    try server.start();
+    defer server.close();
+    var uri_buf: [64]u8 = undefined;
+    const uri = try std.fmt.bufPrintZ(&uri_buf, "http://127.0.0.1:{d}/clean", .{server.port});
+    var driver: ScanDriver = .{ .port = server.port };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 90_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, ScanDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
+    c.zb_automation_loop_mark(1);
+}

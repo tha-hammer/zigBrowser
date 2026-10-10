@@ -717,14 +717,78 @@
     });
   }
 
-  function rateLimitScan(command) {
-    const platform = (command.options && command.options.platform) || 'unknown';
+  // Platform-specific rate-limit, challenge and block signals (N20). Each
+  // check looks at what the platform shows the user; text is reported only
+  // as a hash. A platform given in options wins over the hostname; with
+  // neither, every platform's checks run.
+  const PLATFORM_HOSTS = [
+    ['x', /(^|\.)(x|twitter)\.com$/i],
+    ['linkedin', /(^|\.)linkedin\.com$/i],
+    ['instagram', /(^|\.)instagram\.com$/i]
+  ];
+  const X_TOAST_PATTERN = /something went wrong|rate limit|over the daily limit|try again later/i;
+  const LINKEDIN_INVITATION_PATTERN = /weekly invitation limit|invitation limit/i;
+  const INSTAGRAM_TRY_LATER_PATTERN = /try again later|we restrict certain activity/i;
+  const PLATFORM_SIGNAL_CONFIDENCE = { toast: 0.85, challenge: 0.95, authwall: 0.9, invitation_limit: 0.9, action_blocked: 0.9 };
+
+  function scanPlatform(command) {
+    const given = command.options && command.options.platform;
+    if (typeof given === 'string' && given.length > 0 && given !== 'unknown') return given;
+    const host = document.location.hostname;
+    for (const [name, pattern] of PLATFORM_HOSTS) if (pattern.test(host)) return name;
+    return 'unknown';
+  }
+
+  function textSignal(kind, element, seen) {
+    seen.add(element);
+    const text = (element.textContent || '').trim().substring(0, RATE_LIMIT_TEXT_HASH_LIMIT);
+    return { kind, text_hash: hashText(text), confidence: PLATFORM_SIGNAL_CONFIDENCE[kind] };
+  }
+
+  function visibleMatches(selector, pattern) {
+    return Array.from(document.querySelectorAll(selector))
+      .filter((element) => isElementVisibleEnough(element) && pattern.test(element.textContent || ''));
+  }
+
+  function platformSignals(platform, seen) {
+    const all = platform === 'unknown';
+    const path = document.location.pathname;
     const signals = [];
+    if (all || platform === 'x') {
+      for (const toast of visibleMatches('[data-testid="toast"], [role="alert"]', X_TOAST_PATTERN)) {
+        signals.push(textSignal('toast', toast, seen));
+      }
+      const arkose = document.querySelector('iframe[src*="arkoselabs" i], iframe[id*="arkose" i], iframe[title*="arkose" i]');
+      if (arkose) signals.push({ kind: 'challenge', text_hash: '', confidence: PLATFORM_SIGNAL_CONFIDENCE.challenge });
+    }
+    if (all || platform === 'linkedin') {
+      if (/\/checkpoint\//i.test(path)) signals.push({ kind: 'challenge', text_hash: '', confidence: PLATFORM_SIGNAL_CONFIDENCE.challenge });
+      if (/^\/authwall/i.test(path) || document.querySelector('[data-test-id="authwall"], .authwall-join-form')) {
+        signals.push({ kind: 'authwall', text_hash: '', confidence: PLATFORM_SIGNAL_CONFIDENCE.authwall });
+      }
+      for (const modal of visibleMatches('.artdeco-modal, [role="dialog"], [role="alertdialog"]', LINKEDIN_INVITATION_PATTERN)) {
+        signals.push(textSignal('invitation_limit', modal, seen));
+      }
+    }
+    if (all || platform === 'instagram') {
+      if (/\/challenge\//i.test(path)) signals.push({ kind: 'challenge', text_hash: '', confidence: PLATFORM_SIGNAL_CONFIDENCE.challenge });
+      for (const dialog of visibleMatches('[role="dialog"], [role="alertdialog"]', INSTAGRAM_TRY_LATER_PATTERN)) {
+        signals.push(textSignal('action_blocked', dialog, seen));
+      }
+    }
+    return signals;
+  }
+
+  function rateLimitScan(command) {
+    const platform = scanPlatform(command);
+    const seen = new Set();
+    const signals = platformSignals(platform, seen);
     for (let i = 0; i < RATE_LIMIT_MODAL_SELECTORS.length; i++) {
       const modal = document.querySelector(RATE_LIMIT_MODAL_SELECTORS[i]);
-      if (modal) {
+      if (modal && !seen.has(modal)) {
         const text = modal.textContent || '';
         if (RATE_LIMIT_TEXT_PATTERN.test(text)) {
+          seen.add(modal);
           signals.push({
             kind: 'modal',
             text_hash: hashText(text.trim().substring(0, RATE_LIMIT_TEXT_HASH_LIMIT)),
@@ -733,7 +797,7 @@
         }
       }
     }
-    if (RATE_LIMIT_PATH_PATTERN.test(document.location.pathname)) {
+    if (RATE_LIMIT_PATH_PATTERN.test(document.location.pathname) && !signals.some((signal) => signal.kind === 'challenge')) {
       signals.push({ kind: 'challenge', text_hash: '', confidence: RATE_LIMIT_CHALLENGE_CONFIDENCE });
     }
     if (signals.length > 0) {
