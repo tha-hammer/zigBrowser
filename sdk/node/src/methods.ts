@@ -186,3 +186,35 @@ export class SocialNamespace {
     return this.call("social.set_pacing", wire({ min_delay_ms: opts.minDelayMs, max_delay_ms: opts.maxDelayMs, daily_cap: opts.dailyCap })) as Promise<OkResult>;
   }
 }
+
+export interface XLoginCheckResult {
+  loggedIn: boolean;
+  platform: "x";
+}
+
+export interface SchedulePostResult extends OkResult {
+  /** "YYYY-MM-DDTHH:MM", as requested. */
+  scheduledFor: string;
+}
+
+/**
+ * x.com flows. Each call is one command that drives the composer in the
+ * current profile (log in first). Posts and scheduled posts are capped at 50
+ * per UTC day (-32010, reason "x_daily_cap").
+ */
+export class XNamespace {
+  constructor(private readonly call: Caller) {}
+
+  /** Post `text` (1-280 characters) now. `composeUrl` overrides the page the flow opens. */
+  post(text: string, opts: { composeUrl?: string } = {}): Promise<OkResult> {
+    return this.call("x.post", wire({ text, compose_url: opts.composeUrl })) as Promise<OkResult>;
+  }
+  /** Schedule `text` for `date` ("YYYY-MM-DD") at `time` ("HH:MM", 24-hour), X account local time. */
+  schedulePost(text: string, date: string, time: string, opts: { composeUrl?: string } = {}): Promise<SchedulePostResult> {
+    return this.call("x.schedule_post", wire({ text, date, time, compose_url: opts.composeUrl })) as Promise<SchedulePostResult>;
+  }
+  /** Whether the composer is on the current page. Does not navigate. */
+  loginCheck(): Promise<XLoginCheckResult> {
+    return this.call("x.login_check", {}) as Promise<XLoginCheckResult>;
+  }
+}

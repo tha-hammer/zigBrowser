@@ -45,6 +45,10 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "social.rate_status": (zb) => zb.social.rateStatus(),
   "social.pause": (zb) => zb.social.pause(5),
   "social.set_pacing": (zb) => zb.social.setPacing({ dailyCap: 5 }),
+  "x.post": (zb) => zb.x.post("hello from zigBrowser"),
+  "x.post.compose_url": (zb) => zb.x.post("hello", { composeUrl: "http://127.0.0.1:9/compose" }),
+  "x.schedule_post": (zb) => zb.x.schedulePost("later", "2026-11-05", "14:07"),
+  "x.login_check": (zb) => zb.x.loginCheck(),
 };
 
 describe("typed wrappers", () => {

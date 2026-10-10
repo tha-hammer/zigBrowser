@@ -285,6 +285,32 @@ class CookiesNamespace:
         return self._client.call("cookies.import", {"path": path, "format": format})
 
 
+class XNamespace:
+    """x.com flows. Each call is one command that drives the composer in the
+    current profile (log in first). Posts and scheduled posts are capped at
+    50 per UTC day (-32010, reason "x_daily_cap")."""
+
+    def __init__(self, client: "ZigBrowser"):
+        self._client = client
+
+    def post(self, text: str, compose_url: str | None = None) -> dict:
+        """Post text (1-280 characters) now. compose_url overrides the page
+        the flow opens (default https://x.com/compose/post)."""
+        return self._client.call("x.post", _drop_none(text=text, compose_url=compose_url))
+
+    def schedule_post(self, text: str, date: str, time: str, compose_url: str | None = None) -> dict:
+        """Schedule text for date ("YYYY-MM-DD") at time ("HH:MM", 24-hour),
+        in the X account's local time."""
+        return self._client.call(
+            "x.schedule_post", _drop_none(text=text, date=date, time=time, compose_url=compose_url)
+        )
+
+    def login_check(self) -> dict:
+        """{loggedIn, platform: "x"}: whether the composer is on the current
+        page. Does not navigate."""
+        return self._client.call("x.login_check")
+
+
 def _sidecar_token(socket_path: str) -> str | None:
     """Per-session token the browser writes next to its socket
     (<socket>.token, mode 0600) when no --automation-token-file is used."""
@@ -316,6 +342,7 @@ class ZigBrowser:
         self.instagram = InstagramNamespace(self)
         self.social = SocialNamespace(self)
         self.cookies = CookiesNamespace(self)
+        self.x = XNamespace(self)
 
     @property
     def connected(self) -> bool:

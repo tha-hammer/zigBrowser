@@ -27,6 +27,10 @@
     {"id": "social.login_check", "method": "social.login_check", "params": {}},
     {"id": "social.rate_status", "method": "social.rate_status", "params": {}},
     {"id": "social.pause", "method": "social.pause", "params": {"duration_ms": 5}},
-    {"id": "social.set_pacing", "method": "social.set_pacing", "params": {"daily_cap": 5}}
+    {"id": "social.set_pacing", "method": "social.set_pacing", "params": {"daily_cap": 5}},
+    {"id": "x.post", "method": "x.post", "params": {"text": "hello from zigBrowser"}},
+    {"id": "x.post.compose_url", "method": "x.post", "params": {"text": "hello", "compose_url": "http://127.0.0.1:9/compose"}},
+    {"id": "x.schedule_post", "method": "x.schedule_post", "params": {"text": "later", "date": "2026-11-05", "time": "14:07"}},
+    {"id": "x.login_check", "method": "x.login_check", "params": {}}
   ]
 }

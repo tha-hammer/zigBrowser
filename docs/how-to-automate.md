@@ -114,10 +114,16 @@ is non-strict by default.
 
 ## Waiting, retries and timeouts
 
-- Every command has a deadline, `timeout_ms`, which defaults to 30000.
-  The deadline also bounds the page call itself, so keep it to at least a
-  few hundred milliseconds; `timeout_ms: 0` leaves the call almost no time
-  and usually fails with `action_timeout`.
+- Every `page.*` and `dom.*` command has a deadline, `timeout_ms`, which
+  defaults to 30000. The deadline also bounds the page call itself, so keep
+  it to at least a few hundred milliseconds. `timeout_ms: 0` still makes
+  exactly one attempt, but leaves the page call almost no time, so it
+  usually fails with `action_timeout`.
+- Other namespaces have their own timing: `cookies.*` calls take up to 10 s
+  (`cookies.import` up to 30 s for the whole file); `x.*` flows run their
+  steps under one 120 s budget; `social.pause` waits for its
+  `duration_ms`; `social.login_check`, `social.rate_status`,
+  `social.set_pacing` and `telemetry.query` answer at once.
 - If the element is missing or not yet actionable (not visible, moving,
   covered, disabled, read-only), the command is retried every 16 ms until
   the deadline. You rarely need an explicit wait before a click.
@@ -151,10 +157,10 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | Method | Params | Result |
 |---|---|---|
 | `dom.query` | `selector`, `timeout_ms?`, `strict?` (false) | `{elements:[{id, tag, text, bbox}]}` |
-| `dom.click` | `selector`, `options?: {force?, trial?, timeout_ms?, strict?}` | `{ok:true}` |
+| `dom.click` | `selector`, `options?: {force?, trial?, timeout_ms?, strict?, input?}` | `{ok:true}` |
 | `dom.fill` | `selector`, `value`, `options?` | `{ok:true}` (replaces the content) |
-| `dom.type` | `selector`, `text`, `delay_ms?`, `options?` | `{ok:true}` (types character by character) |
-| `dom.press` | `key`, `selector?`, `modifiers?` (`Shift`, `Control`, `Alt`, `Meta`), `timeout_ms?` | `{ok:true}` |
+| `dom.type` | `selector`, `text`, `delay_ms?`, `options?` (with `input?`) | `{ok:true}` (types character by character) |
+| `dom.press` | `key`, `selector?`, `modifiers?` (`Shift`, `Control`, `Alt`, `Meta`), `timeout_ms?`, `options?: {input?}` | `{ok:true}` |
 | `dom.selectOption` | `selector`, exactly one of `value`, `label`, `index`, `timeout_ms?` | `{value}` |
 | `dom.getText` | `selector`, `timeout_ms?`, `strict?` | `{text}` |
 | `dom.getAttribute` | `selector`, `name`, `timeout_ms?`, `strict?` | `{value}` (null if absent) |
@@ -192,6 +198,31 @@ restart. Cookie values are never logged or written to telemetry.
 `linkedin.*` and `instagram.*` wrappers exist in the SDKs but are not served
 by the socket yet; they answer -32601.
 
+### X (x.com)
+
+| Method | Params | Result |
+|---|---|---|
+| `x.post` | `text` (1-280 characters), `compose_url?` | `{ok:true}` once X shows its confirmation |
+| `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
+| `x.login_check` | — | `{loggedIn, platform:"x"}` (composer on the current page; does not navigate) |
+
+- Each flow is one command: it opens the composer (`https://x.com/compose/post`
+  unless `compose_url` names another page, e.g. a test fixture), clears any
+  restored draft, types the text, picks the Post button that is actually
+  clickable, clicks it and waits for X's confirmation. Other page commands
+  wait until the whole flow has finished.
+- Use a logged-in profile (`--profile-dir`, or import cookies). On a
+  logged-out page the flow stops with -32011 and `data.reason =
+  "logged_out"`, and nothing is typed.
+- At most 50 posts and scheduled posts per UTC day; the next one fails with
+  -32010 and `data.reason = "x_daily_cap"` without touching the page. Only
+  successful posts count.
+- The whole flow has 120 s; when that runs out it stops with -32009 and
+  `data.reason = "x_flow_deadline"`. With no Post button at all after 10 s:
+  -32001 and `data.reason = "x_post_button_missing"`.
+- Selectors live in one table at the top of `src/x.zig`; update it when X
+  changes its markup.
+
 ### Diagnostics
 
 | Method | Params | Result |
@@ -208,7 +239,8 @@ or cookie values; those are hashed or reduced to lengths.
 `dom.fill` and `dom.type` work on `<input>`, `<textarea>` and
 `contenteditable` editors such as the X or LinkedIn composers:
 
-- The element is focused and the caret moves to the end.
+- The element is focused. `dom.type` moves the caret to the end and inserts
+  there; `dom.fill` selects the whole content and replaces it.
 - `dom.type`: for each character the page receives `keydown`, a cancelable
   `beforeinput` (`insertText`), the inserted text, then `keyup`.
 - `dom.fill`: the existing content is selected and replaced in one edit: a
@@ -224,13 +256,32 @@ preview the site shows.
 
 ## Native and synthetic input
 
-All `dom.*` input is **synthetic**: zigBrowser's script dispatches DOM events
-inside the page. They behave like real input for nearly all sites, but
-`event.isTrusted` is `false`. A site that ignores untrusted events will not
-react.
+By default `dom.*` input is **synthetic**: zigBrowser's script dispatches DOM
+events inside the page. They behave like real input for nearly all sites,
+but `event.isTrusted` is `false`. A site that ignores untrusted events will
+not react.
 
-Native input (real GDK pointer and key events, `isTrusted: true`) is being
-built (milestone N7) and is not exposed over the socket yet.
+`options: {input: "native"}` on `dom.click`, `dom.type` and `dom.press`
+sends real pointer and key events instead (`isTrusted: true`; Linux/GTK
+build only, elsewhere -32011 with `data.reason = "unsupported"`):
+
+- The target is found and checked like a synthetic action (retried until the
+  deadline), then the events go to its centre. `dom.type` and `dom.press`
+  focus it first (caret at the end); there is no extra click.
+- `trial: true` only checks the target. `force: true` is not allowed with
+  native input (-32602): a real click on a covered element would hit the
+  cover.
+- Native `dom.press` keys: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`,
+  `Insert`, `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`,
+  `PageUp`, `PageDown`, `Space`, `Shift`, `Control`, `Alt`, `Meta`, `F1`-`F12`,
+  or exactly one character. Anything else is -32602.
+- Input is bound to the page it was aimed at: if the page navigates away
+  before anything is sent, the target is found again; once input was sent
+  nothing is repeated.
+- A `dom.type` that stops part-way (deadline, or the page navigated, e.g. a
+  newline submitted a form) reports `data.reason = "partial_input"` and
+  `data.sent_chars`: that many characters were typed and the rest were not.
+  Do not retype the whole text.
 
 ## Import cookies from another browser
 
@@ -281,7 +332,7 @@ channel sends one notification, `automation.ready`.
 | -32602 | Invalid params | Missing, unknown or wrong-typed params; `data.reason` explains file problems for `cookies.import` |
 | -32603 | Internal error | Page script exception, malformed page answer, unsupported method |
 | -32000 | Authentication failed | Missing or wrong `auth` token |
-| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`) |
+| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`) |
 | -32002 | element_not_visible | Matched but hidden or zero-size |
 | -32003 | element_not_stable | Matched but still moving |
 | -32004 | element_obscured | Another element covers the click point |
@@ -290,8 +341,8 @@ channel sends one notification, `automation.ready`.
 | -32007 | navigation_timeout | Navigation did not finish before the deadline |
 | -32008 | navigation_failed | The load failed |
 | -32009 | action_timeout | Deadline passed (`data.last_error` names the last actionability failure) |
-| -32010 | platform_rate_limited | Pacing limit reached |
-| -32011 | session_invalid | No page or cookie store is available |
+| -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`) |
+| -32011 | session_invalid | No page or cookie store is available; `logged_out` for `x.*`; `unsupported` when the build has no native input |
 | -32012 | cancelled | The browser stopped while the command was queued or running |
 
 Errors -32001 to -32012 carry `data.trace_id` and `data.command_id`; the SDKs

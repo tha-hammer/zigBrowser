@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import { AutomationError } from "./errors.js";
-import { CookiesNamespace, DomNamespace, PageNamespace, SocialNamespace } from "./methods.js";
+import { CookiesNamespace, DomNamespace, PageNamespace, SocialNamespace, XNamespace } from "./methods.js";
 
 type EventCallback = (params: Record<string, unknown>) => void;
 
@@ -20,6 +20,7 @@ export class ZigBrowser {
   readonly page: PageNamespace;
   readonly cookies: CookiesNamespace;
   readonly social: SocialNamespace;
+  readonly x: XNamespace;
 
   /** `token`: sent as `auth` on every request (--automation-token-file). */
   constructor(opts: { socketPath: string; token?: string }) {
@@ -31,6 +32,7 @@ export class ZigBrowser {
     this.page = new PageNamespace(call);
     this.cookies = new CookiesNamespace(call);
     this.social = new SocialNamespace(call);
+    this.x = new XNamespace(call);
   }
 
   async connect(): Promise<void> {

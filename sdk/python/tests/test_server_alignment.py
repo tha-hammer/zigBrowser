@@ -48,6 +48,10 @@ INVOCATIONS = {
     "social.rate_status": lambda zb: zb.social.rate_status(),
     "social.pause": lambda zb: zb.social.pause(5),
     "social.set_pacing": lambda zb: zb.social.set_pacing(daily_cap=5),
+    "x.post": lambda zb: zb.x.post("hello from zigBrowser"),
+    "x.post.compose_url": lambda zb: zb.x.post("hello", compose_url="http://127.0.0.1:9/compose"),
+    "x.schedule_post": lambda zb: zb.x.schedule_post("later", "2026-11-05", "14:07"),
+    "x.login_check": lambda zb: zb.x.login_check(),
 }
 
 
