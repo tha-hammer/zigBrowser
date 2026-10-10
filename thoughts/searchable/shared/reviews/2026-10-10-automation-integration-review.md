@@ -148,6 +148,26 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `1219446` — navigation arrival barrier, policy-block recovery, and native-input reentrancy | Exact six-file diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 565/565 tests; N8 BLOCKER CLOSED**. | Each page navigation owns its shell arrival sequence; immediate same-URL C/D proves two page starts and two arrivals, stale completion cannot clear the newer navigation, and live canceled/204/policy-block cases all permit later input without touching a replacement document. The handler is isolated-world, once per shared content manager, synchronous, and has no window userdata. Focus/key self-close retains GObjects and stops later events. The socket E2E proves a repeated-target humanized path starts off-target and ends on-target with trusted moves. Mailed cc_1 approval after the exact gate. |
 | `57a56fd` — N17 native set-input-files | Exact C/JS/live-WebKit diff; clean-export `timeout 900 xvfb-run -a zig build test --summary all`, with automatic deletion | **GREEN 79/79 steps, 566/566 tests; CODE BLOCKED**. | Closes the unbounded post-chooser wait: the job stays async and a withheld WebKit callback returns bounded `FILES_UNCONFIRMED`. Paths are copied/validated without logging content, the handler is in the isolated world, and token ordering rejects an earlier unrelated chooser. BLOCKERS: an applied selection followed by JS/window/process failure loses unconfirmed provenance; the same state is set before the single-file rejection; an armed late chooser after timeout can become an unclaimed default dialog. SHOULD: missing `zbFiles` still clicks. Mailed cc_1 as 4693. |
 
+## Mutation audit at `137dfa1`
+
+Each row changes exactly one production guard in one clean `git archive HEAD`
+export. The focused test and relevant live E2E are timeout-bounded; the source is
+restored before the next mutation. **KILLED** means at least one test failed.
+**SURVIVED** means every test run stayed green and is a blocker for the owning
+test suite.
+
+Checkpoint gate after restoring guards 1-5: the same clean export passed
+`timeout 900 xvfb-run -a zig build test --summary all` with **79/79 steps and
+566/566 tests**.
+
+| # | Guard and mutation | Focused test | Relevant E2E | Result |
+|---|---|---|---|---|
+| 1 | Auth token comparison: replace `std.crypto.timing_safe.eql` with ordinary early-exit `std.mem.eql`. | `automation_server_test`: `tokensEqual is exact for equal, different and different-length tokens` — pass. | `automation_api_lifecycle_test.py` — pass, including missing/wrong/correct token behavior. | **SURVIVED.** Functional auth tests do not protect the constant-time primitive. Mailed cc_2 as 4706. |
+| 2 | Socket permission guard: change the post-bind `chmod` from `0600` to `0666`. | `automation_server_test`: `the socket file is created with mode 0600` — failed (`0666` observed). | `automation_api_lifecycle_test.py` — pass; it checks the token sidecar mode, not the socket mode. | **KILLED** by the focused unit. The live E2E has no socket-mode assertion. |
+| 3 | Invalid JSON-RPC IDs: serialize object/array/bool IDs instead of rejecting them. | `automation_server_test`: `object/array/bool ids are Invalid Request and never dispatch` — failed on the first object ID because the command dispatched. | `automation_api_lifecycle_test.py` — pass; it sends only valid integer IDs. | **KILLED** by the focused unit. The live E2E does not cover invalid IDs. |
+| 4 | Queue FIFO head guard: flip the uncontended/head comparison so queued waiters return immediately. | `automation_queue_test`: `same-page commands run strictly FIFO` — timed out/panicked with unreleased waiters. | `x_flows_test.py` — failed: the mid-flow racer bypassed serialization and the post timed out. | **KILLED** by both layers. |
+| 5 | Retry deadline guard: flip the full-poll-fit condition so a retryable failure terminates while budget remains. | `automation_retry_test`: `actionability failures until the deadline map to action_timeout; no attempt starts at the deadline` — failed after preserving the wrong first-attempt evidence. | `automation_core_test.py` — failed: a click stopped after one invisible attempt instead of retrying until actionable. | **KILLED** by both layers. |
+
 ## Closure audit at `b9299f6`
 
 Gate evidence: a clean `git archive HEAD` export at `b9299f6`, run under
@@ -641,6 +661,15 @@ flow boundary still reports `session_cookie_unreadable` instead of the platform
 flow-deadline reason, and the story frame-fit precheck budgets only one of its
 two queries.
 
+The subsequent WIP also replaces the story URL check with the broad
+`section video, section img` selector. A real profile grid can satisfy that
+after the last Next leaves the viewer, incrementing `framesViewed` once too
+many; the fixture profile omits this exact decoy. The new Python live E2E does
+start at the production SDK and launch the real binary with an isolated
+profile, closing the earlier SDK-boundary shape once it is build-gated, but it
+cannot validate this live-page assumption as written. Mailed as 4696 together
+with the still-present deadlock, masked-click and hanging-test blockers.
+
 ### BLOCKER — N17 set-input-files loses its deadline after chooser dispatch
 
 The in-progress native set-files job starts as asynchronous, but the
@@ -698,6 +727,30 @@ native dialog and waits for timeout instead of failing before side effects.
 Require the handler and token, and diagnose `zbFiles` registration failure.
 
 Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4693.
+
+### BLOCKER — N18 synthetic hover does not establish browser hover state
+
+The in-progress `automation.js` hover op dispatches mouse events directly on
+the element. Script dispatch neither moves WebKit's pointer nor establishes
+CSS `:hover`, so listener-only fixtures can pass while hover-driven menus and
+tooltips stay closed; pointerover/enter/move are also absent. Native hover must
+finish with a real pointer move and the live oracle must assert a
+`:hover`-dependent effect, or the API must explicitly document a weaker
+event-only synthetic contract.
+
+Status: **OPEN (cc_1 / BlackRobin, cc_2 / BlueBeaver seam)**. Mailed as 4699.
+
+### BLOCKER — N18 wheel acknowledgement is not scroll completion
+
+The in-progress GTK port returns when the page acknowledges the trusted wheel
+event, but its own native test then polls for up to three seconds outside the
+method because smooth scrolling continues. A socket command built directly on
+that port can return while the offset is still moving, racing the next command.
+The PagePort/engine must verify a stable final offset under the same deadline,
+or the public API must be defined as one wheel dispatch rather than completed
+scrolling. The socket E2E must read the offset immediately after the response.
+
+Status: **OPEN (cc_1 / BlackRobin, cc_2 / BlueBeaver seam)**. Mailed as 4699.
 
 ### SHOULD — closing one window terminates every related WebKit child process
 
