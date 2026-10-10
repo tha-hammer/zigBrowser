@@ -672,3 +672,35 @@ test "N20 cancellation (RoseCat 4766): a step that comes back cancelled stops th
     try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
     try std.testing.expectEqual(@as(usize, 1), h.fake.scan_calls);
 }
+
+test "N20 cancellation (RoseCat 4772): a stop during a failed step's reclassification scan answers -32012, with no later work" {
+    var h: Harness = undefined;
+    // Every step succeeds except the last one (the confirmation wait), so
+    // no later step can notice the stop: the reclassification scan after
+    // it is the last page work.
+    const failed = fakes.EvalReply{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" };
+    h.init(&.{ ok_reply, ok_reply, ok_reply, ok_reply, ok_reply, ok_reply, ok_reply, failed });
+    defer h.deinit();
+    h.fake.cancel = &h.cancel;
+    // Scans: 0 after the navigation, 1-4 before fill/type/probe/Post, 5
+    // after the failed confirmation wait.
+    h.fake.cancel_at_scan = 5;
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 6), h.fake.scan_calls);
+    try std.testing.expectEqual(@as(usize, 8), h.fake.eval_calls.items.len);
+}
+
+test "N20 cancellation: a platform signal found by a scan that a stop raced still wins (the page showed it)" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.scan_replies = &.{.{ .json = fakes.detectedScan("challenge", "x") }};
+    h.fake.cancel = &h.cancel;
+    h.fake.cancel_at_scan = 0;
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32010), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+}

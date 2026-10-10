@@ -104,7 +104,11 @@ pub const Runner = struct {
                     self.expired = true;
                     return null;
                 }
-                if (self.platform != null) _ = try self.scan();
+                if (self.platform != null) {
+                    // A stop during this scan: -32012 is the answer. A signal
+                    // the scan found first still wins (the page showed it).
+                    if (try self.scan() != .detected and self.ext.cancelled()) return self.cancelStop();
+                }
                 return null;
             },
         }
