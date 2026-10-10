@@ -1732,7 +1732,28 @@ affected case again took `never started`. That passing sample is useful load
 evidence but does not close the orchestrator's reproduced hang or repair the
 deterministic cleanup/deadline defects above.
 
-Status: **OPEN (cc_1 / BlackRobin).** Mailed as 4871/4872/4874/4875.
+cc_1's repeated 96-test root-binary run under eight CPU workers completed
+29/30 green. Iteration 8 failed in the earlier bridge scenario: the single
+Enter code point was sent, but `nativeText("\\n")` did not return the required
+`DocumentChanged`; the next call with the old token was refused and no key
+reached page B. The test does not print whether the first result was success,
+Timeout, or another error, so the production-ordering-race hypothesis is not
+yet established; the 10-second settle deadline may instead have expired under
+stress. The policy-blocked-navigation case itself passed all 30 iterations.
+Preserve and diagnose the exact result before changing production behavior.
+Mailed as 4879 with the qualification/correction in 4880.
+
+cc_1 reports that the orchestrator's failing-process excerpt contains `panic:
+attempt to use null value` before the watchdog exit. Thus the process had
+panicked rather than merely remaining inside the policy wait, while the
+watchdog/panic-handler interaction hid the useful stack trace. The fix still
+has to make every driver exit quit the main loop and identify the last live
+stage. A bounded worktree gate begun at `262f54d` passed 85/85 steps and
+642/642 tests, but cc_1's source WIP appeared while it was running, so this is
+only a checkpoint and not clean-export closure evidence.
+
+Status: **OPEN (cc_1 / BlackRobin).** Mailed as
+4871/4872/4874/4875/4879/4880/4882.
 
 ## Deferred scope note
 
