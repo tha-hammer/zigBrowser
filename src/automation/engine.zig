@@ -504,6 +504,8 @@ pub const Engine = struct {
             .dom_press => "press",
             else => unreachable, // the router accepts native for these only
         };
+        // A backend without native input says so before any page work.
+        if (!self.port.supportsNativeInput()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
         var relocated = false;
         while (true) {
             var target: Target = .{};

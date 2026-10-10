@@ -683,6 +683,73 @@ test "SDK conformance: every shared wire case is routed and accepted by the real
     }
 }
 
+test "N12: a build without platform ports (WebView2/WKWebView today) answers every SDK request cleanly" {
+    // On non-GTK backends app.zig passes no PagePort and no CookiePort.
+    // Every method the SDKs send must still be routed and answer either a
+    // result (pure server-side helpers) or -32011 session_invalid, never a
+    // crash, -32601/-32602 or an internal error.
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const text = try std.Io.Dir.cwd().readFileAlloc(testing.io, "tests/fixtures/automation/sdk_wire_cases.json", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(text);
+    const doc = try std.json.parseFromSlice(std.json.Value, testing.allocator, text, .{});
+    defer doc.deinit();
+
+    var fixture = try Fixture.start("no-backend", .{ .with_port = false });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    var requests: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (requests.items) |r| testing.allocator.free(r);
+        requests.deinit(testing.allocator);
+    }
+    for (doc.value.object.get("cases").?.array.items, 0..) |case, i| {
+        const obj = case.object;
+        try requests.append(testing.allocator, try std.json.Stringify.valueAlloc(testing.allocator, .{
+            .jsonrpc = "2.0",
+            .method = obj.get("method").?.string,
+            .params = obj.get("params").?,
+            .id = i,
+        }, .{}));
+    }
+
+    var answered_by_server: usize = 0;
+    for (requests.items) |request| {
+        const response = try roundTrip(stream, request);
+        defer testing.allocator.free(response);
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+        defer parsed.deinit();
+        const err = parsed.value.object.get("error") orelse {
+            answered_by_server += 1;
+            continue;
+        };
+        const code = err.object.get("code").?.integer;
+        if (code == -32011) continue;
+        std.debug.print("unclean answer without a backend: {s} -> {s}\n", .{ request, response });
+        return error.TestUnexpectedResult;
+    }
+    // social.rate_status / set_pacing / pause need no page.
+    try testing.expect(answered_by_server >= 3);
+
+    // Native input is a capability this backend lacks: -32011 with the
+    // documented reason "unsupported" (not a missing page), for every
+    // native verb.
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}},\"id\":997}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.type\",\"params\":{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"native\"}},\"id\":998}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.press\",\"params\":{\"key\":\"Enter\",\"options\":{\"input\":\"native\"}},\"id\":999}",
+    }) |request| {
+        const native = try roundTrip(stream, request);
+        defer testing.allocator.free(native);
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, native, .{});
+        defer parsed.deinit();
+        const err = parsed.value.object.get("error").?.object;
+        try testing.expectEqual(@as(i64, -32011), err.get("code").?.integer);
+        try testing.expectEqualStrings("unsupported", err.get("data").?.object.get("reason").?.string);
+    }
+}
+
 fn tmpPath(comptime tag: []const u8) ![]u8 {
     return std.fmt.allocPrint(testing.allocator, "/tmp/zigbrowser-sidecar-" ++ tag ++ "-{x}", .{testing.random_seed});
 }

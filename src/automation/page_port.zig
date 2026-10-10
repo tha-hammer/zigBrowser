@@ -129,6 +129,12 @@ pub const PagePort = struct {
         return self.vtable.title(self.ptr, gpa, timeout_ms);
     }
 
+    /// False when this backend has no native input at all (the vtable kept
+    /// the Unsupported defaults, or this is `no_page`).
+    pub fn supportsNativeInput(self: PagePort) bool {
+        return self.vtable.nativeClick != &unsupportedClick and self.vtable.nativeClick != &noPageClick;
+    }
+
     pub fn nativeClick(self: PagePort, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
         return self.vtable.nativeClick(self.ptr, x, y, document, timeout_ms);
     }
@@ -154,9 +160,11 @@ fn unsupportedText(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64, sent_ch
     return error.Unsupported;
 }
 
-/// Port for a server with no page attached: every operation fails with
-/// `error.NoPage` (-> session_invalid), so such commands still run through
-/// the engine and get ids and a root span.
+/// Port for a server with no page attached (a backend without a PagePort,
+/// e.g. WebView2/WKWebView today): page operations fail with
+/// `error.NoPage` and native input with `error.Unsupported` (both
+/// session_invalid; the latter with reason "unsupported"), so such commands
+/// still run through the engine and get ids and a root span.
 pub const no_page: PagePort = .{ .ptr = @constCast(&no_page_state), .vtable = &no_page_vtable };
 
 var no_page_state: u8 = 0;
@@ -185,12 +193,12 @@ fn noPageRead(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]u8 {
     return error.NoPage;
 }
 fn noPageClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
-    return error.NoPage;
+    return error.Unsupported;
 }
 fn noPageKey(_: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) PortError!void {
-    return error.NoPage;
+    return error.Unsupported;
 }
 fn noPageText(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64, sent_chars: *usize) PortError!void {
     sent_chars.* = 0;
-    return error.NoPage;
+    return error.Unsupported;
 }

@@ -221,6 +221,35 @@ pub fn build(b: *std.Build) void {
     const ipc_windows_step = b.step("ipc-test-win", "Compile backend-free IPC module for x86_64-windows");
     ipc_windows_step.dependOn(&ipc_windows_compile.step);
 
+    // N12: a WebView2/WKWebView build must not need a GTK-only shim symbol
+    // (zb_automation_*, zb_cookies_*, zb_native_*, ...). Compile src/main.zig
+    // to an object for each non-GTK target (no SDK, no link) and check that
+    // every zb_* symbol it leaves undefined is defined by that target's shim.
+    const cross_check = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py" });
+    cross_check.addFileInput(b.path("tools/check_cross_symbols.py"));
+    const cross_targets = [_]struct { query: std.Target.Query, shim: []const u8 }{
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .shim = "src/webview2_shim.cpp" },
+        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
+    };
+    for (cross_targets) |cross| {
+        const cross_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .imports = &.{
+                .{ .name = "build_options", .module = site_options_module },
+            },
+            .target = b.resolveTargetQuery(cross.query),
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        cross_module.addIncludePath(b.path("src"));
+        const cross_object = b.addObject(.{ .name = "zigBrowser-cross", .root_module = cross_module });
+        cross_check.addFileArg(cross_object.getEmittedBin());
+        cross_check.addFileArg(b.path(cross.shim));
+    }
+    const cross_check_step = b.step("cross-check", "Check that Windows/macOS builds need only zb_* symbols their shims define");
+    cross_check_step.dependOn(&cross_check.step);
+
     const afunix_spike_module = b.createModule(.{
         .root_source_file = b.path("tests/spikes/af_unix_roundtrip.zig"),
         .target = target,
@@ -632,6 +661,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_profile_e2e.step);
     test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
+    test_step.dependOn(&cross_check.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);
     test_step.dependOn(&run_pacing_tests.step);

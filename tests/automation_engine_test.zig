@@ -794,6 +794,8 @@ test "native input on a backend without it: session_invalid reason unsupported, 
     var outcome = try e.execute(gpa, &command);
     defer outcome.deinit(gpa);
     try expectFailureData(outcome, -32011, "session_invalid", "\"reason\":\"unsupported\"");
+    // Said before any page work: no locate eval either.
+    try std.testing.expectEqual(@as(usize, 0), fake.eval_calls.items.len);
 }
 
 test "a malformed locate answer is an internal error, and nothing is clicked" {
