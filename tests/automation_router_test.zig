@@ -181,3 +181,67 @@ test "dom.selectOption: selector plus exactly one of value/label/index" {
         try std.testing.expectError(error.BadArgs, router.parse(allocator, "dom.selectOption", params, .{}));
     }
 }
+
+test "options.input: synthetic by default, native for click/type/press only, anything else BadArgs" {
+    const allocator = std.testing.allocator;
+    var plain = try router.parse(allocator, "dom.click", "{\"selector\":\"css=#b\"}", .{});
+    defer plain.deinit();
+    try std.testing.expectEqual(router.InputMode.synthetic, plain.input);
+    try std.testing.expect(plain.locate == null);
+
+    for ([_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}" },
+        .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"native\"}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"Enter\",\"options\":{\"input\":\"native\"}}" },
+    }) |case| {
+        var command = try router.parse(allocator, case.method, case.params, .{});
+        defer command.deinit();
+        try std.testing.expectEqual(router.InputMode.native, command.input);
+    }
+    var synthetic = try router.parse(allocator, "dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"synthetic\"}}", .{});
+    defer synthetic.deinit();
+    try std.testing.expectEqual(router.InputMode.synthetic, synthetic.input);
+
+    for ([_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"trusted\"}}" },
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":true}}" },
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"Native\"}}" },
+        .{ .method = "dom.fill", .params = "{\"selector\":\"css=#q\",\"value\":\"x\",\"options\":{\"input\":\"native\"}}" },
+        .{ .method = "dom.selectOption", .params = "{\"selector\":\"css=#s\",\"value\":\"a\",\"options\":{\"input\":\"native\"}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"Enter\",\"options\":{\"input\":\"x\"}}" },
+    }) |case| {
+        try std.testing.expectError(error.BadArgs, router.parse(allocator, case.method, case.params, .{}));
+    }
+}
+
+test "native dom.press accepts exactly the shim's key names or one code point" {
+    const allocator = std.testing.allocator;
+    for (router.native_key_names) |name| try std.testing.expect(router.isNativeKey(name));
+    for ([_][]const u8{ "a", "Z", "1", " ", "\n", "é", "✓", "😀" }) |key| try std.testing.expect(router.isNativeKey(key));
+    for ([_][]const u8{ "F0", "F13", "F1x", "F01", "enter", "ENTER", "Enter ", "ab", "aé", "\x00", "Spacebar", "Return", "Esc", "\xff" }) |key| {
+        try std.testing.expect(!router.isNativeKey(key));
+    }
+
+    var ok = try router.parse(allocator, "dom.press", "{\"key\":\"F12\",\"modifiers\":[\"Shift\"],\"options\":{\"input\":\"native\"}}", .{});
+    defer ok.deinit();
+    try std.testing.expectEqualStrings("F12", ok.key.?);
+    for ([_][]const u8{
+        "{\"key\":\"F13\",\"options\":{\"input\":\"native\"}}",
+        "{\"key\":\"ab\",\"options\":{\"input\":\"native\"}}",
+        "{\"key\":\"\\u0000\",\"options\":{\"input\":\"native\"}}",
+        "{\"key\":\"a\\u0000\",\"options\":{\"input\":\"native\"}}",
+    }) |params| {
+        try std.testing.expectError(error.BadArgs, router.parse(allocator, "dom.press", params, .{}));
+    }
+    // Synthetic keys keep their wider KeyboardEvent.key contract.
+    var synthetic = try router.parse(allocator, "dom.press", "{\"key\":\"MediaPlayPause\"}", .{});
+    defer synthetic.deinit();
+}
+
+test "native dom.type rejects text with an embedded NUL (it would truncate at the C ABI)" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.BadArgs, router.parse(allocator, "dom.type", "{\"selector\":\"css=#q\",\"text\":\"a\\u0000b\",\"options\":{\"input\":\"native\"}}", .{}));
+    var synthetic = try router.parse(allocator, "dom.type", "{\"selector\":\"css=#q\",\"text\":\"a\\u0000b\"}", .{});
+    defer synthetic.deinit();
+    try std.testing.expectEqual(@as(usize, 3), synthetic.text.?.len);
+}

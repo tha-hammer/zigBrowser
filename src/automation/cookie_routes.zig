@@ -598,5 +598,6 @@ fn portFailure(gpa: std.mem.Allocator, err: cookie_port_mod.PortError, ids: scri
         error.Cancelled => .cancelled,
         error.Timeout => .action_timeout,
         error.NavigationFailed, error.EvalFailed => return internal("Cookie store failed"),
+        error.Unsupported => return engine_mod.automationFailure(gpa, .session_invalid, "unsupported", ids),
     }, null, ids);
 }

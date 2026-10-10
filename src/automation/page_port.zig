@@ -40,7 +40,16 @@ pub const PortError = error{
     EvalFailed,
     Cancelled,
     OutOfMemory,
+    /// The backend cannot do this at all (e.g. native input on a platform
+    /// without a GDK shim). Never retried.
+    Unsupported,
 };
+
+/// Native key modifier bits (PagePort.nativeKey).
+pub const modifier_shift: u8 = 1 << 0;
+pub const modifier_control: u8 = 1 << 1;
+pub const modifier_alt: u8 = 1 << 2;
+pub const modifier_meta: u8 = 1 << 3;
 
 pub const PagePort = struct {
     ptr: *anyopaque,
@@ -67,6 +76,21 @@ pub const PagePort = struct {
         url: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
         /// Current document title ("" if none).
         title: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
+
+        // --- v3: native (trusted) input. Backends without it keep the
+        // defaults, which return error.Unsupported. ---
+
+        /// Real pointer motion + left click at viewport CSS px. Returns once
+        /// the page acknowledged the trusted mouseup, or Timeout. Once this
+        /// is called the input may have reached the page: never retried.
+        nativeClick: *const fn (ptr: *anyopaque, x: f64, y: f64, timeout_ms: u64) PortError!void = unsupportedClick,
+        /// One key (DOM key name, or one code point) with `modifier_*` bits.
+        /// Returns after the trusted keyups are acknowledged.
+        nativeKey: *const fn (ptr: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64) PortError!void = unsupportedKey,
+        /// Types `text` with real key events. `sent_chars` is ALWAYS set,
+        /// also on error: code points fully dispatched. An error with
+        /// sent_chars > 0 is a partial side effect; never retype the prefix.
+        nativeText: *const fn (ptr: *anyopaque, text: []const u8, timeout_ms: u64, sent_chars: *usize) PortError!void = unsupportedText,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -88,7 +112,31 @@ pub const PagePort = struct {
     pub fn title(self: PagePort, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
         return self.vtable.title(self.ptr, gpa, timeout_ms);
     }
+
+    pub fn nativeClick(self: PagePort, x: f64, y: f64, timeout_ms: u64) PortError!void {
+        return self.vtable.nativeClick(self.ptr, x, y, timeout_ms);
+    }
+
+    pub fn nativeKey(self: PagePort, key: []const u8, modifiers: u8, timeout_ms: u64) PortError!void {
+        return self.vtable.nativeKey(self.ptr, key, modifiers, timeout_ms);
+    }
+
+    pub fn nativeText(self: PagePort, text: []const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
+        sent_chars.* = 0;
+        return self.vtable.nativeText(self.ptr, text, timeout_ms, sent_chars);
+    }
 };
+
+fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: u64) PortError!void {
+    return error.Unsupported;
+}
+fn unsupportedKey(_: *anyopaque, _: []const u8, _: u8, _: u64) PortError!void {
+    return error.Unsupported;
+}
+fn unsupportedText(_: *anyopaque, _: []const u8, _: u64, sent_chars: *usize) PortError!void {
+    sent_chars.* = 0;
+    return error.Unsupported;
+}
 
 /// Port for a server with no page attached: every operation fails with
 /// `error.NoPage` (-> session_invalid), so such commands still run through
@@ -103,6 +151,9 @@ const no_page_vtable = PagePort.VTable{
     .reload = noPageReload,
     .url = noPageRead,
     .title = noPageRead,
+    .nativeClick = noPageClick,
+    .nativeKey = noPageKey,
+    .nativeText = noPageText,
 };
 
 fn noPageEval(_: *anyopaque, _: std.mem.Allocator, _: World, _: []const u8, _: []const u8, _: u64) PortError![]u8 {
@@ -115,5 +166,15 @@ fn noPageReload(_: *anyopaque, _: u64) PortError!void {
     return error.NoPage;
 }
 fn noPageRead(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]u8 {
+    return error.NoPage;
+}
+fn noPageClick(_: *anyopaque, _: f64, _: f64, _: u64) PortError!void {
+    return error.NoPage;
+}
+fn noPageKey(_: *anyopaque, _: []const u8, _: u8, _: u64) PortError!void {
+    return error.NoPage;
+}
+fn noPageText(_: *anyopaque, _: []const u8, _: u64, sent_chars: *usize) PortError!void {
+    sent_chars.* = 0;
     return error.NoPage;
 }

@@ -586,3 +586,229 @@ test "dom.selectOption no_option is retried until the deadline" {
     try expectResult(outcome, "{\"value\":\"late\"}");
     try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
 }
+
+// ---- N7: native (trusted) input ----
+
+const located_reply = "{\"ok\":true,\"value\":{\"x\":10.5,\"y\":20}}";
+
+fn expectFailureData(outcome: engine.Outcome, code: i64, message: []const u8, data_fragment: []const u8) !void {
+    try expectFailure(outcome, code, message);
+    const data = outcome.failure.data_json orelse return error.TestUnexpectedResult;
+    if (std.mem.indexOf(u8, data, data_fragment) == null) {
+        std.debug.print("data {s} lacks {s}\n", .{ data, data_fragment });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "native dom.click: locate (no focus, no text), then one trusted click at the centre within the same deadline" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 300;
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"timeout_ms\":1000,\"force\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+    const arg = h.fake.eval_calls.items[0].arg;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"op\":\"locate\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"action\":\"click\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"focus\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"force\":true") != null);
+
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    const click = h.fake.native_calls.items[0];
+    try std.testing.expect(click.kind == .click);
+    try std.testing.expectEqual(@as(f64, 10.5), click.x);
+    try std.testing.expectEqual(@as(f64, 20), click.y);
+    // One deadline: 1000 ms minus the 300 ms locate.
+    try std.testing.expectEqual(@as(u64, 700), click.timeout_ms);
+}
+
+test "native dom.click retries locate until actionable, then clicks once" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{
+        .{ .json = "{\"ok\":false,\"error\":\"element_obscured\",\"retryable\":true,\"data\":{\"reason\":\"covered\"}}" },
+        .{ .json = located_reply },
+    };
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+}
+
+test "native trial: locate without focus, no native input at all" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    for ([_][]const u8{
+        "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"trial\":true}}",
+    }) |params| {
+        var outcome = try h.run("dom.click", params);
+        defer outcome.deinit(gpa);
+        try expectResult(outcome, "{\"ok\":true}");
+    }
+    var typed = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"native\",\"trial\":true}}");
+    defer typed.deinit(gpa);
+    try expectResult(typed, "{\"ok\":true}");
+    for (h.fake.eval_calls.items) |call| try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"focus\":false") != null);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+}
+
+test "native click that times out after dispatch is terminal: no second click" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_fail_at = 0;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32009, "action_timeout");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+}
+
+test "native dom.type: locate with focus (text never sent to the script), then the whole text natively" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"secret café\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    const arg = h.fake.eval_calls.items[0].arg;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"action\":\"type\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"focus\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "secret") == null);
+    // No click side effect: exactly one native call, the text.
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    try std.testing.expect(h.fake.native_calls.items[0].kind == .text);
+    try std.testing.expectEqualStrings("secret café", h.fake.native_calls.items[0].data);
+}
+
+test "native dom.type partial timeout: partial_input with sent_chars, the prefix is never retyped" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_fail_at = 0;
+    h.fake.native_failed_sent = 3;
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"abcdef\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"partial_input\",");
+    try expectFailureData(outcome, -32009, "action_timeout", "\"sent_chars\":3");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+}
+
+test "native dom.type failing before any character keeps the port error (no partial)" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.NoPage;
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"ab\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32011, "session_invalid");
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "sent_chars") == null);
+}
+
+test "native dom.type with delay_ms: one code point per call, delays between, progress counted across calls" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"aéb\",\"delay_ms\":50,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    try std.testing.expectEqual(@as(usize, 3), h.fake.native_calls.items.len);
+    try std.testing.expectEqualStrings("é", h.fake.native_calls.items[1].data);
+    var total: u64 = 0;
+    for (h.clock.sleeps.items) |ms| total += ms;
+    try std.testing.expectEqual(@as(u64, 100), total);
+
+    // The second character fails: one already typed -> partial_input, sent_chars 1.
+    var h2: Harness = undefined;
+    h2.init();
+    defer h2.deinit();
+    h2.fake.eval_replies = &.{.{ .json = located_reply }};
+    h2.fake.native_fail_at = 1;
+    var failed = try h2.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"aéb\",\"delay_ms\":50,\"options\":{\"input\":\"native\"}}");
+    defer failed.deinit(gpa);
+    try expectFailureData(failed, -32009, "action_timeout", "\"sent_chars\":1");
+    try std.testing.expectEqual(@as(usize, 2), h2.fake.native_calls.items.len);
+}
+
+test "native dom.type with delay_ms stops before a delay that would pass the deadline" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"abc\",\"delay_ms\":600,\"options\":{\"input\":\"native\",\"timeout_ms\":1000}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32009, "action_timeout", "\"sent_chars\":2");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
+}
+
+test "native dom.press: no selector -> key only; selector -> locate+focus then the key, modifier bits" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var bare = try h.run("dom.press", "{\"key\":\"Enter\",\"modifiers\":[\"Shift\",\"Meta\"],\"options\":{\"input\":\"native\"}}");
+    defer bare.deinit(gpa);
+    try expectResult(bare, "{\"ok\":true}");
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+    try std.testing.expectEqualStrings("Enter", h.fake.native_calls.items[0].data);
+    try std.testing.expectEqual(@as(u8, 0b1001), h.fake.native_calls.items[0].modifiers);
+
+    var targeted = try h.run("dom.press", "{\"selector\":\"css=#q\",\"key\":\"a\",\"modifiers\":[\"Control\",\"Alt\"],\"options\":{\"input\":\"native\"}}");
+    defer targeted.deinit(gpa);
+    try expectResult(targeted, "{\"ok\":true}");
+    const arg = h.fake.eval_calls.items[0].arg;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"action\":\"press\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"focus\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"key\"") == null);
+    try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
+    try std.testing.expect(h.fake.native_calls.items[1].kind == .key);
+    try std.testing.expectEqual(@as(u8, 0b0110), h.fake.native_calls.items[1].modifiers);
+}
+
+test "native input on a backend without it: session_invalid reason unsupported, nothing dispatched" {
+    var fake = FakePagePort.init(gpa);
+    defer fake.deinit();
+    var clock = FakeClock.init(gpa);
+    defer clock.deinit();
+    var e = engine.Engine.init(fake.portWithoutNative(), clock.clock());
+    fake.eval_replies = &.{.{ .json = located_reply }};
+    var command = try router.parse(gpa, "dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}", .{});
+    defer command.deinit();
+    var outcome = try e.execute(gpa, &command);
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32011, "session_invalid", "\"reason\":\"unsupported\"");
+}
+
+test "a malformed locate answer is an internal error, and nothing is clicked" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    for ([_][]const u8{
+        "{\"ok\":true,\"value\":{\"x\":\"1\",\"y\":2}}",
+        "{\"ok\":true,\"value\":{\"x\":1}}",
+        "{\"ok\":true,\"value\":[1,2]}",
+    }) |reply| {
+        h.fake.eval_replies = &.{.{ .json = reply }};
+        var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}");
+        defer outcome.deinit(gpa);
+        try expectFailure(outcome, -32603, "Malformed script result");
+    }
+    try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+}

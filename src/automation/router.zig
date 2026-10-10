@@ -23,6 +23,19 @@ pub const Verb = enum {
 
 pub const WaitState = enum { attached, visible, hidden, detached };
 
+/// `options.input`: synthetic DOM events from automation.js (default), or
+/// real platform input (PagePort.native*, `event.isTrusted === true`).
+/// Native is accepted for dom.click, dom.type and dom.press only.
+pub const InputMode = enum { synthetic, native };
+
+/// Internal (never parsed from JSON): turns a dom.* command into the
+/// automation.js `locate` op that native input uses to find, scroll, check
+/// and optionally focus its target.
+pub const Locate = struct {
+    action: []const u8,
+    focus: bool,
+};
+
 pub const RouteContext = struct {
     page_id: []const u8 = "page-unknown",
     window_id: []const u8 = "window-unknown",
@@ -58,6 +71,8 @@ pub const ParsedCommand = struct {
     label: ?[]const u8 = null,
     /// dom.selectOption: 0-based option index.
     option_index: ?u64 = null,
+    input: InputMode = .synthetic,
+    locate: ?Locate = null,
 
     pub fn deinit(self: *ParsedCommand) void {
         self.arena.deinit();
@@ -105,12 +120,15 @@ pub fn parse(
             command.selector = try requiredString(arena_allocator, obj, "selector");
             command.value = try requiredString(arena_allocator, obj, "value");
             applyActionOptions(&command, obj, true) catch return error.BadArgs;
+            if (command.input == .native) return error.BadArgs;
         },
         .dom_type => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
             command.text = try requiredString(arena_allocator, obj, "text");
             command.delay_ms = optionalU64(obj, "delay_ms") catch return error.BadArgs;
             applyActionOptions(&command, obj, true) catch return error.BadArgs;
+            // Native text crosses the C ABI: an embedded NUL would truncate it.
+            if (command.input == .native and std.mem.indexOfScalar(u8, command.text.?, 0) != null) return error.BadArgs;
         },
         .dom_get_text => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
@@ -136,6 +154,8 @@ pub fn parse(
             command.modifiers = try parseModifiers(arena_allocator, obj);
             command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
             command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+            command.input = parseInputMode(obj) catch return error.BadArgs;
+            if (command.input == .native and !isNativeKey(command.key.?)) return error.BadArgs;
         },
         .dom_select_option => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
@@ -146,6 +166,7 @@ pub fn parse(
             if (choices != 1) return error.BadArgs;
             command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
             command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+            if ((parseInputMode(obj) catch return error.BadArgs) == .native) return error.BadArgs;
         },
         .page_navigate => {
             command.url = try requiredCString(arena_allocator, obj, "url");
@@ -332,6 +353,47 @@ fn applyActionOptions(command: *ParsedCommand, obj: std.json.ObjectMap, strict_d
     command.force = optionalBool(options_obj, "force", false) catch return error.BadArgs;
     command.trial = optionalBool(options_obj, "trial", false) catch return error.BadArgs;
     command.timeout_ms = optionalU64(options_obj, "timeout_ms") catch return error.BadArgs;
+    command.input = try parseInputMode(obj);
+}
+
+/// `options.input`: absent or "synthetic" -> synthetic, "native" -> native,
+/// anything else is BadArgs.
+fn parseInputMode(obj: std.json.ObjectMap) error{BadArgs}!InputMode {
+    const options = obj.get("options") orelse return .synthetic;
+    const options_obj = switch (options) {
+        .object => |object| object,
+        else => return error.BadArgs,
+    };
+    const value = options_obj.get("input") orelse return .synthetic;
+    const text = switch (value) {
+        .string => |t| t,
+        else => return error.BadArgs,
+    };
+    if (std.mem.eql(u8, text, "synthetic")) return .synthetic;
+    if (std.mem.eql(u8, text, "native")) return .native;
+    return error.BadArgs;
+}
+
+/// Key names the native backend can press (mirrors the shim's table).
+pub const native_key_names = [_][]const u8{
+    "Enter",     "Tab",        "Escape",  "Backspace", "Delete",   "Insert",
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home",     "End",
+    "PageUp",    "PageDown",   "Space",   "Shift",     "Control",  "Alt",
+    "Meta",      "F1",         "F2",      "F3",        "F4",       "F5",
+    "F6",        "F7",         "F8",      "F9",        "F10",      "F11",
+    "F12",
+};
+
+/// Native dom.press key: one of `native_key_names`, or exactly one Unicode
+/// code point other than NUL (NUL would truncate the C string).
+pub fn isNativeKey(key: []const u8) bool {
+    for (native_key_names) |name| {
+        if (std.mem.eql(u8, name, key)) return true;
+    }
+    const len = std.unicode.utf8ByteSequenceLength(key[0]) catch return false;
+    if (len != key.len) return false;
+    const code_point = std.unicode.utf8Decode(key) catch return false;
+    return code_point != 0;
 }
 
 fn parseWaitState(text: []const u8) ?WaitState {

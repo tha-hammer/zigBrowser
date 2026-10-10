@@ -373,6 +373,7 @@ pub const Engine = struct {
 
     fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
         const deadline = self.clock.nowMs() +| timeout_ms;
+        if (command.input == .native) return self.runNative(gpa, command, deadline, run);
         if (command.verb == .dom_type and command.text.?.len > 0) {
             if (command.delay_ms) |delay_ms| {
                 if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, run);
@@ -469,6 +470,114 @@ pub const Engine = struct {
             if (now +| poll_interval_ms >= deadline) return deadlineFailure(gpa, &last, ids, run.attempts);
             self.clock.sleepMs(poll_interval_ms);
         }
+    }
+
+    /// N7 native input (dom.click / dom.type / dom.press with
+    /// `options.input: "native"`). One deadline covers everything: the
+    /// `locate` op is retried like any action until it finds an actionable
+    /// target (type/press also focus it, the caret at the end), then the
+    /// PagePort sends real input with the time that is left. Once native
+    /// input was dispatched nothing is retried. `trial` stops after locate:
+    /// no focus, no input.
+    fn runNative(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
+        const action: []const u8 = switch (command.verb) {
+            .dom_click => "click",
+            .dom_type => "type",
+            .dom_press => "press",
+            else => unreachable, // the router accepts native for these only
+        };
+        var point: Point = .{ .x = 0, .y = 0 };
+        if (command.selector != null) {
+            var locate_command = command.*;
+            locate_command.locate = .{ .action = action, .focus = command.verb != .dom_click and !command.trial };
+            var located = try self.runDomUntil(gpa, &locate_command, deadline, run);
+            switch (located) {
+                .failure => return located,
+                .result => |json| {
+                    defer located.deinit(gpa);
+                    point = parsePoint(gpa, json) orelse return malformedResult();
+                },
+            }
+        }
+        if (command.trial) return okResult(gpa);
+        if (run.cancelled()) return automationFailure(gpa, .cancelled, null, run.ids);
+
+        switch (command.verb) {
+            .dom_click => {
+                const remaining = deadline -| self.clock.nowMs();
+                if (remaining == 0) return timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts);
+                run.native_timeout_ms = remaining;
+                const started = self.clock.nowMs();
+                self.port.nativeClick(point.x, point.y, remaining) catch |err| {
+                    self.platformSpan(run, "nativeClick", null, 0, 0, started, @errorName(err));
+                    return portFailure(gpa, err, .action, run.ids);
+                };
+                self.platformSpan(run, "nativeClick", null, 0, 0, started, "ok");
+            },
+            .dom_press => {
+                const remaining = deadline -| self.clock.nowMs();
+                if (remaining == 0) return timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts);
+                run.native_timeout_ms = remaining;
+                const started = self.clock.nowMs();
+                self.port.nativeKey(command.key.?, modifierBits(command.modifiers), remaining) catch |err| {
+                    self.platformSpan(run, "nativeKey", null, command.key.?.len, 0, started, @errorName(err));
+                    return portFailure(gpa, err, .action, run.ids);
+                };
+                self.platformSpan(run, "nativeKey", null, command.key.?.len, 0, started, "ok");
+            },
+            .dom_type => return self.nativeType(gpa, command, deadline, run),
+            else => unreachable,
+        }
+        return okResult(gpa);
+    }
+
+    /// Native dom.type: the whole text in one PagePort call, or with
+    /// delay_ms one code point per call with sleeps in between. Progress is
+    /// counted in code points; a failure after any was sent is terminal
+    /// `partial_input` with `sent_chars`, and nothing is retyped.
+    fn nativeType(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
+        const text = command.text.?;
+        if (text.len == 0) return okResult(gpa);
+        const delay_ms = command.delay_ms orelse 0;
+        var sent_total: usize = 0;
+        if (delay_ms == 0) {
+            if (try self.nativeTextCall(gpa, text, deadline, run, &sent_total)) |failure| return failure;
+            return okResult(gpa);
+        }
+        var characters = (std.unicode.Utf8View.init(text) catch return malformedResult()).iterator();
+        var first = true;
+        while (characters.nextCodepointSlice()) |character| {
+            if (!first) {
+                if (self.clock.nowMs() +| delay_ms >= deadline) {
+                    return partialInput(gpa, .action_timeout, "type_delay_exceeds_timeout", sent_total, run);
+                }
+                if (!self.sleepUnlessCancelled(delay_ms, run)) return partialInput(gpa, .cancelled, null, sent_total, run);
+            }
+            first = false;
+            if (try self.nativeTextCall(gpa, character, deadline, run, &sent_total)) |failure| return failure;
+        }
+        return okResult(gpa);
+    }
+
+    /// One PagePort.nativeText call with the remaining deadline. Returns
+    /// null on success, else the failure (partial when anything was sent).
+    fn nativeTextCall(self: *Engine, gpa: std.mem.Allocator, text: []const u8, deadline: u64, run: *Run, sent_total: *usize) error{OutOfMemory}!?Outcome {
+        if (run.cancelled()) return try partialInput(gpa, .cancelled, null, sent_total.*, run);
+        const remaining = deadline -| self.clock.nowMs();
+        if (remaining == 0) return try partialInput(gpa, .action_timeout, "deadline_before_input", sent_total.*, run);
+        run.native_timeout_ms = remaining;
+        const started = self.clock.nowMs();
+        var sent: usize = 0;
+        self.port.nativeText(text, remaining, &sent) catch |err| {
+            sent_total.* += sent;
+            self.platformSpan(run, "nativeText", null, text.len, 0, started, @errorName(err));
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            if (sent_total.* > 0) return try partialInput(gpa, .action_timeout, "partial_input", sent_total.*, run);
+            return try portFailure(gpa, err, .action, run.ids);
+        };
+        sent_total.* += sent;
+        self.platformSpan(run, "nativeText", null, text.len, 0, started, "ok");
+        return null;
     }
 
     /// Sleeps `ms` in poll-interval slices so cancellation is noticed within
@@ -718,6 +827,8 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
     const automation_error: errors.AutomationError = switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.EvalFailed => return .{ .failure = .{ .code = internal_error_code, .message = "Evaluation failed" } },
+        // The backend lacks the capability (e.g. native input off GTK).
+        error.Unsupported => return automationFailure(gpa, .session_invalid, "unsupported", ids),
         error.NoPage => .session_invalid,
         error.Cancelled => .cancelled,
         error.NavigationFailed => .navigation_failed,
@@ -746,6 +857,8 @@ const AutomationErrorData = struct {
     last_error: ?[]const u8 = null,
     /// For deadline failures: how many attempts ran.
     attempts: ?u32 = null,
+    /// Native dom.type that stopped early: code points already typed.
+    sent_chars: ?usize = null,
     trace_id: []const u8,
     command_id: []const u8,
 };
@@ -810,6 +923,62 @@ fn deadlineFailure(gpa: std.mem.Allocator, last: *const LastFailure, ids: script
     return .{ .failure = .{
         .code = errors.downstreamCode(timed_out_error),
         .message = errors.name(timed_out_error),
+        .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
+    } };
+}
+
+const Point = struct { x: f64, y: f64 };
+
+/// `{x, y}` from the locate op: finite viewport CSS px, else null.
+fn parsePoint(gpa: std.mem.Allocator, json: []const u8) ?Point {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return null;
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |o| o,
+        else => return null,
+    };
+    const point = Point{
+        .x = jsonNumber(object.get("x") orelse return null) orelse return null,
+        .y = jsonNumber(object.get("y") orelse return null) orelse return null,
+    };
+    if (!std.math.isFinite(point.x) or !std.math.isFinite(point.y)) return null;
+    return point;
+}
+
+/// A JSON number (never a string that looks like one).
+fn jsonNumber(value: std.json.Value) ?f64 {
+    return switch (value) {
+        .integer => |n| @floatFromInt(n),
+        .float => |f| f,
+        .number_string => |text| std.fmt.parseFloat(f64, text) catch null,
+        else => null,
+    };
+}
+
+fn modifierBits(modifiers: []const []const u8) u8 {
+    var bits: u8 = 0;
+    for (modifiers) |name| {
+        if (std.mem.eql(u8, name, "Shift")) bits |= page_port.modifier_shift;
+        if (std.mem.eql(u8, name, "Control")) bits |= page_port.modifier_control;
+        if (std.mem.eql(u8, name, "Alt")) bits |= page_port.modifier_alt;
+        if (std.mem.eql(u8, name, "Meta")) bits |= page_port.modifier_meta;
+    }
+    return bits;
+}
+
+/// A native type that stopped early. With `sent_chars > 0` the reason is
+/// always `partial_input`: the page already has that prefix.
+fn partialInput(gpa: std.mem.Allocator, automation_error: errors.AutomationError, reason: ?[]const u8, sent_chars: usize, run: *const Run) error{OutOfMemory}!Outcome {
+    const data = AutomationErrorData{
+        .reason = if (sent_chars > 0) "partial_input" else reason,
+        .sent_chars = if (sent_chars > 0) sent_chars else null,
+        .attempts = run.attempts,
+        .trace_id = run.ids.trace_id,
+        .command_id = run.ids.command_id,
+    };
+    return .{ .failure = .{
+        .code = errors.downstreamCode(automation_error),
+        .message = errors.name(automation_error),
         .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
     } };
 }

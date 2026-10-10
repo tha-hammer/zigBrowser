@@ -62,6 +62,9 @@ const ScriptCommand = struct {
     label: ?[]const u8 = null,
     index: ?u64 = null,
     timeout_ms: ?u64 = null,
+    /// `locate` op only: the action whose checks apply, and whether to focus.
+    action: ?[]const u8 = null,
+    focus: ?bool = null,
     trace_id: []const u8,
     parent_span_id: []const u8,
     command_id: []const u8,
@@ -77,20 +80,25 @@ pub fn buildCommandJson(
     timeout_ms: ?u64,
 ) error{ OutOfMemory, NotADomCommand }![]u8 {
     const op = opName(command.verb) orelse return error.NotADomCommand;
+    // Native input locates its target in the page and sends the input
+    // itself: the typed text and key never go to the script.
+    const locate = command.locate;
     const script_command = ScriptCommand{
-        .op = op,
+        .op = if (locate != null) "locate" else op,
         .selector = command.selector,
-        .value = command.value,
-        .text = command.text,
+        .value = if (locate != null) null else command.value,
+        .text = if (locate != null) null else command.text,
         .name = command.name,
         .strict = command.strict,
         .options = .{ .force = command.force, .trial = command.trial },
         .state = if (command.verb == .dom_wait_for) @tagName(command.wait_state) else null,
-        .key = command.key,
-        .modifiers = if (command.verb == .dom_press) command.modifiers else null,
+        .key = if (locate != null) null else command.key,
+        .modifiers = if (command.verb == .dom_press and locate == null) command.modifiers else null,
         .label = command.label,
         .index = command.option_index,
         .timeout_ms = timeout_ms orelse command.timeout_ms,
+        .action = if (locate) |l| l.action else null,
+        .focus = if (locate) |l| l.focus else null,
         .trace_id = ids.trace_id,
         .parent_span_id = ids.parent_span_id,
         .command_id = ids.command_id,

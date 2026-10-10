@@ -17,6 +17,16 @@ pub const EvalReply = union(enum) {
     err: page_port.PortError,
 };
 
+pub const NativeCall = struct {
+    kind: enum { click, key, text },
+    x: f64 = 0,
+    y: f64 = 0,
+    /// Key name or typed text.
+    data: []u8 = &.{},
+    modifiers: u8 = 0,
+    timeout_ms: u64,
+};
+
 pub const FakePagePort = struct {
     gpa: std.mem.Allocator,
     eval_calls: std.ArrayListUnmanaged(EvalCall) = .empty,
@@ -37,6 +47,13 @@ pub const FakePagePort = struct {
     /// Simulated readiness wait inside url() (advances `clock`).
     url_cost_ms: u64 = 0,
     url_calls: usize = 0,
+    native_calls: std.ArrayListUnmanaged(NativeCall) = .empty,
+    /// The native call with this index fails with `native_error`, after
+    /// typing `native_failed_sent` code points (text calls).
+    native_fail_at: ?usize = null,
+    native_error: page_port.PortError = error.Timeout,
+    native_failed_sent: usize = 0,
+    native_cost_ms: u64 = 0,
 
     pub fn init(gpa: std.mem.Allocator) FakePagePort {
         return .{ .gpa = gpa };
@@ -51,6 +68,19 @@ pub const FakePagePort = struct {
         for (self.navigate_calls.items) |u| self.gpa.free(u);
         self.navigate_calls.deinit(self.gpa);
         self.navigate_timeouts.deinit(self.gpa);
+        for (self.native_calls.items) |call| self.gpa.free(call.data);
+        self.native_calls.deinit(self.gpa);
+    }
+
+    /// The typed texts of the native text calls, concatenated.
+    pub fn nativeTyped(self: *const FakePagePort, buf: []u8) []const u8 {
+        var len: usize = 0;
+        for (self.native_calls.items) |call| {
+            if (call.kind != .text) continue;
+            @memcpy(buf[len..][0..call.data.len], call.data);
+            len += call.data.len;
+        }
+        return buf[0..len];
     }
 
     pub fn port(self: *FakePagePort) page_port.PagePort {
@@ -63,7 +93,54 @@ pub const FakePagePort = struct {
         .reload = reload,
         .url = url,
         .title = title,
+        .nativeClick = nativeClick,
+        .nativeKey = nativeKey,
+        .nativeText = nativeText,
     };
+
+    /// A port with the v2 vtable only (no native input), like a non-GTK
+    /// backend.
+    pub fn portWithoutNative(self: *FakePagePort) page_port.PagePort {
+        return .{ .ptr = self, .vtable = &v2_vtable };
+    }
+
+    const v2_vtable = page_port.PagePort.VTable{
+        .evalJson = evalJson,
+        .navigate = navigate,
+        .reload = reload,
+        .url = url,
+        .title = title,
+    };
+
+    fn recordNative(self: *FakePagePort, call: NativeCall) page_port.PortError!?page_port.PortError {
+        const index = self.native_calls.items.len;
+        self.native_calls.append(self.gpa, call) catch return error.OutOfMemory;
+        if (self.clock) |clock| clock.now_ms += self.native_cost_ms;
+        // As an optional payload: a bare error value would take the error branch.
+        if (self.native_fail_at) |at| if (at == index) return @as(?page_port.PortError, self.native_error);
+        return null;
+    }
+
+    fn nativeClick(ptr: *anyopaque, x: f64, y: f64, timeout_ms: u64) page_port.PortError!void {
+        const self = from(ptr);
+        if (try self.recordNative(.{ .kind = .click, .x = x, .y = y, .timeout_ms = timeout_ms })) |err| return err;
+    }
+
+    fn nativeKey(ptr: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64) page_port.PortError!void {
+        const self = from(ptr);
+        const data = self.gpa.dupe(u8, key) catch return error.OutOfMemory;
+        if (try self.recordNative(.{ .kind = .key, .data = data, .modifiers = modifiers, .timeout_ms = timeout_ms })) |err| return err;
+    }
+
+    fn nativeText(ptr: *anyopaque, text: []const u8, timeout_ms: u64, sent_chars: *usize) page_port.PortError!void {
+        const self = from(ptr);
+        const data = self.gpa.dupe(u8, text) catch return error.OutOfMemory;
+        if (try self.recordNative(.{ .kind = .text, .data = data, .timeout_ms = timeout_ms })) |err| {
+            sent_chars.* = self.native_failed_sent;
+            return err;
+        }
+        sent_chars.* = std.unicode.utf8CountCodepoints(text) catch text.len;
+    }
 
     fn from(ptr: *anyopaque) *FakePagePort {
         return @ptrCast(@alignCast(ptr));
