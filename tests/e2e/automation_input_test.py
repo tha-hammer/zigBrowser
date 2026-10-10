@@ -284,6 +284,9 @@ def run_below_fold(socket_path: Path, t: float) -> None:
     scrolled_away("belowinput")
     expect_equal("fill below the fold", call_rpc(socket_path, "dom.fill", {"selector": "css=#belowinput", "value": "deep", "options": {"timeout_ms": 2000}}, next(ids), t), {"ok": True})
     expect_equal("below-the-fold fill landed", js("document.getElementById('belowinput').value"), "deep")
+    scrolled_away("belowinput")
+    expect_equal("type below the fold", call_rpc(socket_path, "dom.type", {"selector": "css=#belowinput", "text": "er", "options": {"timeout_ms": 2000}}, next(ids), t), {"ok": True})
+    expect_equal("below-the-fold type landed", js("document.getElementById('belowinput').value"), "deeper")
 
 
 def main() -> int:
