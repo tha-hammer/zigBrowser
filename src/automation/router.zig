@@ -11,6 +11,8 @@ pub const Verb = enum {
     dom_get_text,
     dom_get_attribute,
     dom_wait_for,
+    dom_press,
+    dom_select_option,
     page_navigate,
     page_reload,
     page_url,
@@ -48,6 +50,14 @@ pub const ParsedCommand = struct {
     wait_state: WaitState = .visible,
     wait_until: ?[]const u8 = null,
     full_page: bool = false,
+    /// dom.press: KeyboardEvent.key value.
+    key: ?[]const u8 = null,
+    /// dom.press: subset of Shift/Control/Alt/Meta, no duplicates.
+    modifiers: []const []const u8 = &.{},
+    /// dom.selectOption: option label (`value` holds the option value).
+    label: ?[]const u8 = null,
+    /// dom.selectOption: 0-based option index.
+    option_index: ?u64 = null,
 
     pub fn deinit(self: *ParsedCommand) void {
         self.arena.deinit();
@@ -119,6 +129,24 @@ pub fn parse(
             command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
             command.wait_state = parseWaitState(optionalStringRaw(obj, "state") orelse "visible") orelse return error.BadArgs;
         },
+        .dom_press => {
+            command.selector = try optionalString(arena_allocator, obj, "selector");
+            command.key = try requiredString(arena_allocator, obj, "key");
+            if (command.key.?.len == 0) return error.BadArgs;
+            command.modifiers = try parseModifiers(arena_allocator, obj);
+            command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+        },
+        .dom_select_option => {
+            command.selector = try requiredString(arena_allocator, obj, "selector");
+            command.value = try optionalString(arena_allocator, obj, "value");
+            command.label = try optionalString(arena_allocator, obj, "label");
+            command.option_index = optionalU64(obj, "index") catch return error.BadArgs;
+            const choices = @as(u8, @intFromBool(command.value != null)) + @intFromBool(command.label != null) + @intFromBool(command.option_index != null);
+            if (choices != 1) return error.BadArgs;
+            command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+        },
         .page_navigate => {
             command.url = try requiredCString(arena_allocator, obj, "url");
             command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
@@ -161,6 +189,8 @@ fn verbFromMethod(method: []const u8) ?Verb {
         .{ .method = "dom.getText", .verb = .dom_get_text },
         .{ .method = "dom.getAttribute", .verb = .dom_get_attribute },
         .{ .method = "dom.waitFor", .verb = .dom_wait_for },
+        .{ .method = "dom.press", .verb = .dom_press },
+        .{ .method = "dom.selectOption", .verb = .dom_select_option },
         .{ .method = "page.navigate", .verb = .page_navigate },
         .{ .method = "page.reload", .verb = .page_reload },
         .{ .method = "page.url", .verb = .page_url },
@@ -183,6 +213,8 @@ fn namespaceFromVerb(verb: Verb) Namespace {
         .dom_get_text,
         .dom_get_attribute,
         .dom_wait_for,
+        .dom_press,
+        .dom_select_option,
         => .dom,
         .page_navigate,
         .page_reload,
@@ -200,6 +232,30 @@ fn requiredString(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: []
         .string => |text| allocator.dupe(u8, text) catch return error.BadArgs,
         else => error.BadArgs,
     };
+}
+
+const allowed_modifiers = [_][]const u8{ "Shift", "Control", "Alt", "Meta" };
+
+fn parseModifiers(allocator: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}![]const []const u8 {
+    const value = obj.get("modifiers") orelse return &.{};
+    const items = switch (value) {
+        .array => |array| array.items,
+        else => return error.BadArgs,
+    };
+    if (items.len > allowed_modifiers.len) return error.BadArgs;
+    const out = allocator.alloc([]const u8, items.len) catch return error.BadArgs;
+    for (items, 0..) |item, i| {
+        const name = switch (item) {
+            .string => |text| text,
+            else => return error.BadArgs,
+        };
+        const canonical = for (allowed_modifiers) |allowed| {
+            if (std.mem.eql(u8, allowed, name)) break allowed;
+        } else return error.BadArgs;
+        for (out[0..i]) |seen| if (std.mem.eql(u8, seen, canonical)) return error.BadArgs;
+        out[i] = canonical;
+    }
+    return out;
 }
 
 /// Like requiredString, but rejects embedded NUL: these values are passed to

@@ -523,3 +523,66 @@ test "url and title receive the command deadline" {
     defer outcome.deinit(gpa);
     try std.testing.expectEqual(@as(u64, 30000), h.fake.last_read_timeout_ms);
 }
+
+test "dom.press maps to the press op with key and modifiers" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    var outcome = try h.run("dom.press", "{\"selector\":\"css=#q\",\"key\":\"Enter\",\"modifiers\":[\"Shift\"]}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    const arg = try std.json.parseFromSlice(std.json.Value, gpa, h.fake.eval_calls.items[0].arg, .{});
+    defer arg.deinit();
+    const obj = arg.value.object;
+    try std.testing.expectEqualStrings("press", obj.get("op").?.string);
+    try std.testing.expectEqualStrings("Enter", obj.get("key").?.string);
+    try std.testing.expectEqualStrings("Shift", obj.get("modifiers").?.array.items[0].string);
+    try std.testing.expectEqualStrings("css=#q", obj.get("selector").?.string);
+}
+
+test "dom.press without selector omits it (focused element)" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    var outcome = try h.run("dom.press", "{\"key\":\"Tab\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"selector\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"modifiers\":[]") != null);
+}
+
+test "dom.selectOption maps value/label/index and returns the selected value" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"value\":\"fr\"}}" }};
+
+    var by_label = try h.run("dom.selectOption", "{\"selector\":\"css=#c\",\"label\":\"France\"}");
+    defer by_label.deinit(gpa);
+    try expectResult(by_label, "{\"value\":\"fr\"}");
+    var by_index = try h.run("dom.selectOption", "{\"selector\":\"css=#c\",\"index\":3}");
+    defer by_index.deinit(gpa);
+
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"op\":\"selectOption\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"label\":\"France\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"index\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[1].arg, "\"index\":3") != null);
+}
+
+test "dom.selectOption no_option is retried until the deadline" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{
+        .{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":true,\"data\":{\"reason\":\"no_option\"}}" },
+        .{ .json = "{\"ok\":true,\"value\":{\"value\":\"late\"}}" },
+    };
+
+    var outcome = try h.run("dom.selectOption", "{\"selector\":\"css=#c\",\"value\":\"late\"}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"value\":\"late\"}");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
+}

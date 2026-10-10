@@ -222,6 +222,8 @@ pub const Engine = struct {
             .dom_get_text,
             .dom_get_attribute,
             .dom_wait_for,
+            .dom_press,
+            .dom_select_option,
             => self.runDom(gpa, command, timeout_ms, run),
         };
     }
@@ -427,7 +429,7 @@ fn timeoutErrorFor(verb: router.Verb) errors.AutomationError {
 
 fn actionName(verb: router.Verb) ?[]const u8 {
     return switch (verb) {
-        .dom_click, .dom_fill, .dom_type => script_command.opName(verb),
+        .dom_click, .dom_fill, .dom_type, .dom_press, .dom_select_option => script_command.opName(verb),
         else => null,
     };
 }

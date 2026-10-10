@@ -125,3 +125,59 @@ test "embedded NUL in url or expression is BadArgs (they reach C strings)" {
     var ok = try router.parse(allocator, "page.navigate", "{\"url\":\"http://a/\"}", .{});
     ok.deinit();
 }
+
+test "dom.press: key required, selector optional, modifiers validated" {
+    const allocator = std.testing.allocator;
+    var focused = try router.parse(allocator, "dom.press", "{\"key\":\"Enter\"}", .{});
+    defer focused.deinit();
+    try std.testing.expectEqual(router.Verb.dom_press, focused.verb);
+    try std.testing.expect(focused.selector == null);
+    try std.testing.expectEqualStrings("Enter", focused.key.?);
+    try std.testing.expectEqual(@as(usize, 0), focused.modifiers.len);
+
+    var chord = try router.parse(allocator, "dom.press", "{\"selector\":\"css=#q\",\"key\":\"a\",\"modifiers\":[\"Control\",\"Shift\"],\"timeout_ms\":500}", .{});
+    defer chord.deinit();
+    try std.testing.expectEqualStrings("css=#q", chord.selector.?);
+    try std.testing.expectEqual(@as(usize, 2), chord.modifiers.len);
+    try std.testing.expectEqualStrings("Shift", chord.modifiers[1]);
+    try std.testing.expectEqual(@as(?u64, 500), chord.timeout_ms);
+
+    for ([_][]const u8{
+        "{}",
+        "{\"key\":\"\"}",
+        "{\"key\":1}",
+        "{\"key\":\"a\",\"modifiers\":[\"Hyper\"]}",
+        "{\"key\":\"a\",\"modifiers\":\"Shift\"}",
+        "{\"key\":\"a\",\"modifiers\":[\"Shift\",\"Shift\"]}",
+    }) |params| {
+        try std.testing.expectError(error.BadArgs, router.parse(allocator, "dom.press", params, .{}));
+    }
+}
+
+test "dom.selectOption: selector plus exactly one of value/label/index" {
+    const allocator = std.testing.allocator;
+    var by_value = try router.parse(allocator, "dom.selectOption", "{\"selector\":\"css=#c\",\"value\":\"fr\"}", .{});
+    defer by_value.deinit();
+    try std.testing.expectEqual(router.Verb.dom_select_option, by_value.verb);
+    try std.testing.expectEqualStrings("fr", by_value.value.?);
+
+    var by_label = try router.parse(allocator, "dom.selectOption", "{\"selector\":\"css=#c\",\"label\":\"France\",\"timeout_ms\":250}", .{});
+    defer by_label.deinit();
+    try std.testing.expectEqualStrings("France", by_label.label.?);
+    try std.testing.expectEqual(@as(?u64, 250), by_label.timeout_ms);
+
+    var by_index = try router.parse(allocator, "dom.selectOption", "{\"selector\":\"css=#c\",\"index\":2}", .{});
+    defer by_index.deinit();
+    try std.testing.expectEqual(@as(?u64, 2), by_index.option_index);
+
+    for ([_][]const u8{
+        "{\"value\":\"fr\"}",
+        "{\"selector\":\"css=#c\"}",
+        "{\"selector\":\"css=#c\",\"value\":\"fr\",\"label\":\"France\"}",
+        "{\"selector\":\"css=#c\",\"value\":\"fr\",\"index\":1}",
+        "{\"selector\":\"css=#c\",\"index\":-1}",
+        "{\"selector\":\"css=#c\",\"value\":3}",
+    }) |params| {
+        try std.testing.expectError(error.BadArgs, router.parse(allocator, "dom.selectOption", params, .{}));
+    }
+}
