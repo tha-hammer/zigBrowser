@@ -1,6 +1,9 @@
 pub const errors = @import("automation/error.zig");
 pub const router = @import("automation/router.zig");
 pub const telemetry = @import("automation/telemetry.zig");
+pub const page_port = @import("automation/page_port.zig");
+pub const script_command = @import("automation/script_command.zig");
+pub const engine = @import("automation/engine.zig");
 
 pub const phase1_command_verbs = [_][]const u8{
     "dom.query",

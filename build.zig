@@ -303,6 +303,17 @@ pub fn build(b: *std.Build) void {
     const run_automation_router_tests = b.addRunArtifact(automation_router_tests);
     run_automation_router_tests.skip_foreign_checks = true;
 
+    const automation_engine_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_engine_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_engine_tests_module.addImport("automation", automation_module);
+    const automation_engine_tests = b.addTest(.{ .root_module = automation_engine_tests_module });
+    const run_automation_engine_tests = b.addRunArtifact(automation_engine_tests);
+    run_automation_engine_tests.skip_foreign_checks = true;
+
     const automation_server_module = b.createModule(.{
         .root_source_file = b.path("src/automation_server.zig"),
         .target = target,
@@ -459,6 +470,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
     test_step.dependOn(&run_automation_router_tests.step);
+    test_step.dependOn(&run_automation_engine_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&automation_api_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
