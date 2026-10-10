@@ -129,6 +129,9 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `be28b36` — relocation mapping and mutation-sensitive Post bound | Exact source/test and error-provenance review | **CODE BLOCKED; gate pending the independent N7 race fix**. | Cancelled, session, internal, and direct script-not-found failures retain their classes, and the Post deadline oracle is now mutation-sensitive. BLOCKER: public `-32009 action_timeout` does not prove PagePort Timeout; a final retryable covered/unstable target also ends through `deadlineFailure` as `action_timeout` and is incorrectly rewritten to `document_changed`. Approval 4609 retracted in message 4614. |
 | `36a2844` — Python/Node X wrappers and automation docs | Exact diff review; clean archived SDK dependency install, tests, and TypeScript type-check; automatic tree deletion | **Python GREEN 80/80; Node tests GREEN 48/48 + 1 skipped; TypeScript RED**. | Wrapper wire shapes and result types match the routed X contract, and the docs accurately describe X/native/timing behavior. BLOCKER: `@types/node` is not declared in `sdk/node/package.json` or its lockfile, so a clean `npm ci && npx tsc --noEmit` cannot resolve `node:fs`, `node:net`, or `Buffer`. Mailed cc_2 as message 4617. |
 | `f3391f6` — isolate native ACK reader/debt test state | Exact diff/thread-safety review; touched clean-export bounded Xvfb gate with fresh local cache and automatic deletion | **APPROVED: 71/71 steps, 528/528 tests**. | Production `page_acks` remains permanently bound to the live reader; tests use independent reader/context/debt tracker values and never mutate production state. Debt locking and failed-read retention remain intact. Closes the `d1f708e` race and the final N7 ACK evidence blocker. Mailed cc_1 as message 4619. |
+| `2f0e179` — N8 native move, cache, and locate viewport | Exact C/Zig lifetime, GTK commit, window-identity, and live-oracle review; included in clean export at `78699a4` | **GREEN gate 71/71, 531/531; CODE BLOCKED**. | Guarded move commit is atomic with abandonment, C owns queued strings, stale/held moves have no side effect, successful move/click updates the cache before later settlement, and viewport values are live. BLOCKERS: the cache is process-global rather than keyed to the actual window, and the navigating-codepoint test now hides the production suffix race behind an explicit navigation wait. Mailed cc_1 as 4624, 4625, and 4629. |
+| `78699a4` — retry-timeout evidence and relocation provenance | Exact engine/test diff review; touched clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 71/71 steps, 531/531 tests**. | A final deadline-cut-short PagePort call preserves accumulated selector evidence; a first/early PagePort timeout remains `action_timeout`; relocation fallback uses an internal bare-timeout flag rather than public `-32009`. Closes the two retry/provenance blockers. Mailed cc_2 as 4628. |
+| `226d85f` — declared Node ambient types | Exact full-archive `npm ci`, runtime suite, and type-check; automatic deletion | **APPROVED: 48 passed, 1 skipped; `tsc --noEmit` GREEN**. | `@types/node` and its transitive lock entry are declared; the lock root version now matches the package. The earlier partial-tree run was discarded because it omitted the shared fixture. Mailed cc_2 as 4628. |
 
 ## Open findings
 
@@ -212,13 +215,12 @@ Cancelled, EvalFailed, NoPage, session, or script-specific locate failure can
 therefore be rewritten as `-32001 document_changed`, breaking JSON-RPC error
 mapping.
 
-Status: **OPEN (cc_2 / BlueBeaver)** after `be28b36`. Cancelled, NoPage,
-EvalFailed, and direct script `element_not_found` are now preserved, but the
-code equates public `action_timeout` with a PagePort Timeout. A retryable
-actionability failure such as `element_obscured` also becomes
-`action_timeout` through `deadlineFailure`; after relocation it is therefore
-still masked as `document_changed`. Preserve provenance and add that boundary
-case. Mailed as 4604, 4609 (approval retracted), and 4614.
+Status: **CLOSED by `78699a4`**. Cancelled, NoPage, EvalFailed, direct script
+failures, and retry-exhausted actionability evidence keep their classes. Only
+an internally recorded bare PagePort Timeout at the relocated deadline yields
+to `document_changed`; the code no longer infers provenance from public
+`-32009`. The relocated-obscured regression and exact clean gate are green.
+Mailed as 4604, 4609 (approval retracted), 4614, and 4628.
 
 ### BLOCKER — a final tiny native timeout must not erase retry evidence
 
@@ -228,32 +230,47 @@ The client then receives `-32009 action_timeout` instead of the accumulated
 selector-specific deadline result. An exact `d699683` gate observed the live
 missing-selector contract flip from `-32001 element_not_found` to `-32009`.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Preserve `LastFailure` when a later
-retry's native Timeout reaches the command deadline, while keeping a genuine
-first-attempt native Timeout as `action_timeout`. Add a deterministic
-fake-clock regression. This must be fixed before further queued N-series work.
-Mailed as 4600 and 4609.
+Status: **CLOSED by `78699a4`**. `LastFailure.recorded` distinguishes a final
+deadline-cut-short call after script evidence from a genuine first/early
+platform timeout. Deterministic fake-clock tests cover not-found,
+actionability, and first-call Timeout, and the exact clean gate is green.
+Mailed as 4600, 4609, and 4628.
 
-### BLOCKER — N8 humanize proposals disagree on observable input semantics
+### BLOCKER — N8 humanize implementation must satisfy the fixed contract
 
-The proposed engine contract has three conflicting variants: an unknown
-pointer starts at the target versus at an off-target in-viewport point; a
-known over-budget schedule is compressed versus rejected before any dispatch;
-and production randomness comes from a command identifier versus OS entropy.
-Starting at the target takes `generateMousePath`'s degenerate zero-distance
-branch and cannot produce the promised approach path. Compressing delays can
-violate the existing 80–200 ms key and 300–600 ms word-pause profile bounds.
+The orchestrator resolved the earlier proposal disagreement: the native side
+owns a per-window last-pointer cache; an unknown start is a random 80–240 px
+offset from the target, clamped inside returned viewport bounds and never the
+target itself. The unchanged complete schedule must fit before any dispatch,
+otherwise the command returns `-32009` / `humanize_budget`. Production uses
+`std.crypto.random`; tests inject deterministic randomness. A document change
+after at least one move is terminal with no relocation or click, preserving
+the last dispatched cached point. `delay_ms` plus humanize and synthetic plus
+humanize are both `-32602`.
 
-Status: **OPEN (cc_1 / BlackRobin and cc_2 / BlueBeaver)**. The `nativeMove`
-PagePort seam is acceptable, but before implementation the owners must define
-an off-target initial position (or obtain the real pointer), preflight the
-known schedule against the deadline and fail before dispatch when it cannot
-fit, and keep production RNG non-deterministic while injecting it in tests.
-The current locate result has no viewport bounds, so it cannot yet guarantee
-that an invented start is in-view. A document change after one or more moves
-must stop without relocating/clicking the replacement, while the cached
-pointer advances after each move that did dispatch. Also decide and test the
-`delay_ms` plus `humanize` router rule. Mailed as 4611 and 4612.
+Status: **OPEN for implementation (cc_1 / BlackRobin and cc_2 / BlueBeaver)**.
+The policy dispute is CLOSED by the orchestrator decision, but the code/evidence
+is not present yet. `nativeMove(...)->void` alone also gives an engine-owned
+path generator no way to read cc_1's authoritative cache; PagePort needs an
+agreed cached-position read seam (or an equivalent concrete contract) rather
+than a duplicate engine cache. The native evidence must prove stale/held
+guards send no move, and the E2E must cover the five fixed rules. Mailed as
+4611, 4612, 4618, and 4620.
+
+Commit `2f0e179` remains blocked. Its process-global coordinate crosses window
+identity when the old primary closes, and its live test permits a navigating
+Enter to return success then waits for navigation before trying the suffix,
+bypassing the production per-character race. Mailed as 4624, 4625, and 4629.
+
+The follow-up working diff moves the cache into `ZbWindow`, adds a
+primary-replacement regression, and restores the strict no-suffix oracle, but
+has two new blockers. It dereferences `win` to record the pointer after
+`gtk_main_do_event` has run arbitrary page handlers that may close the window;
+revalidate against the mutex-protected published snapshot first. Its new
+Navigation API latch is permanent even when the page cancels or the navigation
+fails, making every future native text command in the unchanged document fail
+`document_changed`. Stop the current action conservatively, but clear a failed
+navigation without racing a newer one. Mailed as 4630 and 4631.
 
 ### BLOCKER — Node SDK type-check is not reproducible from a clean checkout
 
@@ -262,9 +279,39 @@ pointer advances after each move that did dispatch. Also decide and test the
 tests pass while `tsc --noEmit` cannot resolve `node:fs`, `node:net`, or
 `Buffer` in `sdk/node/src/client.ts`.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Add a compatible `@types/node` to the
-Node SDK dev dependencies and lockfile, then prove clean install, tests, and
-type-check. Python's declared dev-extra gate is green 80/80. Mailed as 4617.
+Status: **CLOSED by `226d85f`**. The SDK declares and locks `@types/node`; an
+exact full archive passes `npm ci`, 48 runtime tests with one live test skipped,
+and `tsc --noEmit`. Python's declared dev-extra gate remains green 80/80.
+Mailed as 4617 and 4628.
+
+### BLOCKER — N12 no-backend test hides the documented unsupported reason
+
+The N12 working test accepts any `-32011` from a native request when no backend
+is installed. The public SDK documentation promises `reason: "unsupported"`
+on non-GTK targets, but the application currently supplies no PagePort there;
+the server therefore follows the no-page path and returns `session_invalid`
+without that reason. A code-only assertion permits this contract drift.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Either make the production no-backend
+chain return the documented stable reason or revise the public contract, then
+assert the full error data. Mailed as 4622. This is queued after the three
+orchestrator-priority fixes.
+
+The working diff now fails native verbs before page work with
+`session_invalid` / `unsupported` and checks click, type, and press through the
+real socket/server/engine chain. Status remains OPEN until commit and exact
+gate evidence.
+
+### BLOCKER — N12 cross-symbol check can pass with no symbols examined
+
+`tools/check_cross_symbols.py` regards an empty parsed undefined-symbol set as
+success. A parser/layout/reachability regression can therefore print
+`needs []` for every object and leave the platform gate green without checking
+any shim definition.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Require a known core-symbol baseline per
+target and prove COFF and Mach-O missing-symbol detection fails under a
+mutation or parser fixture. Mailed as 4627.
 
 ### BLOCKER — capped recent traces can discard their root span
 
