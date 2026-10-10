@@ -250,6 +250,7 @@ const gtk_port = @import("automation_gtk_port.zig");
 test {
     _ = gtk_port;
     _ = @import("automation_gtk_cookie_port.zig");
+    _ = @import("app.zig");
 }
 
 const gfile = struct {
@@ -506,50 +507,90 @@ const LiveDriver = struct {
         return self.allocator.dupe(u8, std.mem.span(out)) catch null;
     }
 
-    fn has(json: ?[]const u8, needle: []const u8) bool {
-        return json != null and std.mem.indexOf(u8, json.?, needle) != null;
+    const CookieOut = struct {
+        name: []const u8,
+        value: []const u8,
+        domain: []const u8,
+        path: []const u8,
+        expires: i64,
+        httpOnly: bool,
+        secure: bool,
+        sameSite: []const u8,
+    };
+
+    /// The store's cookies parsed from the shim's JSON (null on failure).
+    fn cookies(self: *LiveDriver, url: ?[*:0]const u8) ?[]const CookieOut {
+        const json = self.cookiesJson(url) orelse return null;
+        const parsed = std.json.parseFromSliceLeaky([]const CookieOut, self.allocator, json, .{}) catch return null;
+        return parsed;
     }
 
-    // N5: the cookie store of the primary window's (profile) context.
-    fn runCookies(self: *LiveDriver) void {
+    fn find(list: ?[]const CookieOut, name: []const u8) ?CookieOut {
+        for (list orelse return null) |cookie| {
+            if (std.mem.eql(u8, cookie.name, name)) return cookie;
+        }
+        return null;
+    }
+
+    fn addCookie(self: *LiveDriver, cookie: c.ZbCookie, comptime what: []const u8) void {
         var err: [*c]u8 = null;
-        const persistent: c.ZbCookie = .{
-            .name = "zbc", .value = "s3cr\"et", .domain = "example.test", .path = "/",
-            .expires = @divTrunc(gfile.g_get_real_time(), std.time.us_per_s) + 3600, .http_only = 1, .secure = 0, .same_site = c.ZB_COOKIE_SAME_SITE_LAX,
-        };
-        var rc = c.zb_cookies_add(null, &persistent, 5000, &err);
+        const rc = c.zb_cookies_add(null, &cookie, 5000, &err);
         c.zb_automation_free(err);
-        err = null;
-        self.check(rc == c.ZB_AUTO_OK, "cookie add returns OK");
-        const session: c.ZbCookie = .{
-            .name = "zbsession", .value = "v", .domain = "other.test", .path = "/app",
-            .expires = -1, .http_only = 0, .secure = 1, .same_site = c.ZB_COOKIE_SAME_SITE_UNSET,
-        };
-        rc = c.zb_cookies_add(null, &session, 5000, &err);
-        c.zb_automation_free(err);
-        err = null;
-        self.check(rc == c.ZB_AUTO_OK, "session cookie add returns OK");
+        self.check(rc == c.ZB_AUTO_OK, what);
+    }
 
-        const all = self.cookiesJson(null);
-        self.check(has(all, "\"name\":\"zbc\",\"value\":\"s3cr\\\"et\",\"domain\":\"example.test\",\"path\":\"/\""), "getAll lists the cookie with an escaped value");
-        self.check(has(all, "\"httpOnly\":true,\"secure\":false,\"sameSite\":\"Lax\""), "getAll reports flags and sameSite");
-        self.check(has(all, "\"name\":\"zbsession\"") and has(all, "\"expires\":-1,\"httpOnly\":false,\"secure\":true"), "session cookie has expires -1");
-        const for_url = self.cookiesJson("http://example.test/page");
-        self.check(has(for_url, "\"name\":\"zbc\"") and !has(for_url, "zbsession"), "getAll(url) returns only cookies for that URL");
+    fn deleteCookie(_: *LiveDriver, name: [*:0]const u8, domain: ?[*:0]const u8) c_int {
+        var err: [*c]u8 = null;
+        const rc = c.zb_cookies_delete(null, name, domain, 5000, &err);
+        c.zb_automation_free(err);
+        return rc;
+    }
 
-        rc = c.zb_cookies_delete(null, "zbc", null, 5000, &err);
+    // N5: the cookie store of the primary window's (profile) context. Each
+    // cookie is checked as its own parsed object, so attributes cannot be
+    // satisfied by a different cookie.
+    fn runCookies(self: *LiveDriver) void {
+        const expires = @divTrunc(gfile.g_get_real_time(), std.time.us_per_s) + 3600;
+        self.addCookie(.{ .name = "zbc", .value = "s3cr\"et", .domain = "example.test", .path = "/", .expires = expires, .http_only = 1, .secure = 0, .same_site = c.ZB_COOKIE_SAME_SITE_LAX }, "add Lax cookie");
+        self.addCookie(.{ .name = "zbsession", .value = "v", .domain = "other.test", .path = "/app", .expires = -1, .http_only = 0, .secure = 1, .same_site = c.ZB_COOKIE_SAME_SITE_UNSET }, "add session cookie");
+        self.addCookie(.{ .name = "zbstrict", .value = "s", .domain = "example.test", .path = "/", .expires = expires, .http_only = 0, .secure = 0, .same_site = c.ZB_COOKIE_SAME_SITE_STRICT }, "add Strict cookie");
+        self.addCookie(.{ .name = "zbnone", .value = "n", .domain = "example.test", .path = "/", .expires = expires, .http_only = 0, .secure = 1, .same_site = c.ZB_COOKIE_SAME_SITE_NONE }, "add None cookie");
+
+        const all = self.cookies(null);
+        self.check(all != null, "getAll returns a parsable JSON array");
+        if (find(all, "zbc")) |cookie| {
+            self.check(std.mem.eql(u8, cookie.value, "s3cr\"et") and std.mem.eql(u8, cookie.domain, "example.test") and
+                std.mem.eql(u8, cookie.path, "/") and cookie.expires == expires and cookie.httpOnly and !cookie.secure and
+                std.mem.eql(u8, cookie.sameSite, "Lax"), "zbc round-trips value, domain, path, exact expiry, flags, Lax");
+        } else self.check(false, "zbc listed");
+        if (find(all, "zbsession")) |cookie| {
+            self.check(std.mem.eql(u8, cookie.domain, "other.test") and std.mem.eql(u8, cookie.path, "/app") and
+                cookie.expires == -1 and !cookie.httpOnly and cookie.secure, "zbsession is a secure session cookie on /app");
+        } else self.check(false, "zbsession listed");
+        if (find(all, "zbstrict")) |cookie| {
+            self.check(std.mem.eql(u8, cookie.sameSite, "Strict") and cookie.expires == expires, "Strict round-trips");
+        } else self.check(false, "zbstrict listed");
+        if (find(all, "zbnone")) |cookie| {
+            self.check(std.mem.eql(u8, cookie.sameSite, "None") and cookie.secure, "None round-trips");
+        } else self.check(false, "zbnone listed");
+
+        const for_url = self.cookies("http://example.test/page");
+        self.check(find(for_url, "zbc") != null and find(for_url, "zbsession") == null, "getAll(url) returns only cookies for that URL");
+
+        // A failing add with a sentinel value never echoes the value.
+        var err: [*c]u8 = null;
+        const bad: c.ZbCookie = .{ .name = "zbbad", .value = "SENTINEL-zb-value", .domain = "", .path = "/", .expires = -1, .http_only = 0, .secure = 0, .same_site = 0 };
+        const bad_rc = c.zb_cookies_add(null, &bad, 5000, &err);
+        self.check(bad_rc != c.ZB_AUTO_OK and (err == null or std.mem.indexOf(u8, std.mem.span(err), "SENTINEL") == null), "failed add reports no cookie value");
         c.zb_automation_free(err);
-        err = null;
-        self.check(rc == c.ZB_AUTO_OK, "cookie delete returns OK");
-        rc = c.zb_cookies_delete(null, "zbsession", "elsewhere.test", 5000, &err);
-        c.zb_automation_free(err);
-        err = null;
-        self.check(rc == c.ZB_AUTO_OK, "deleting on a non-matching domain is not an error");
-        const after = self.cookiesJson(null);
-        self.check(after != null and !has(after, "\"zbc\"") and has(after, "\"zbsession\""), "delete removed only the named cookie");
-        rc = c.zb_cookies_delete(null, "zbsession", "other.test", 5000, &err);
-        c.zb_automation_free(err);
-        self.check(rc == c.ZB_AUTO_OK and !has(self.cookiesJson(null), "zbsession"), "delete on the matching domain removes it");
+
+        self.check(self.deleteCookie("zbc", null) == c.ZB_AUTO_OK, "delete by name returns OK");
+        self.check(self.deleteCookie("zbsession", "elsewhere.test") == c.ZB_AUTO_OK, "non-matching domain delete is not an error");
+        const after = self.cookies(null);
+        self.check(after != null and find(after, "zbc") == null and find(after, "zbsession") != null, "delete removed only the named cookie");
+        self.check(self.deleteCookie("zbsession", "other.test") == c.ZB_AUTO_OK and find(self.cookies(null), "zbsession") == null, "delete on the matching domain removes it");
+        _ = self.deleteCookie("zbstrict", null);
+        _ = self.deleteCookie("zbnone", null);
     }
 };
 
@@ -619,6 +660,10 @@ test "automation bridge drives a live WebKitGTK page" {
 
     var watchdog: Watchdog = .{};
     const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 90_000) });
+    errdefer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
     const t = try std.Thread.spawn(.{}, LiveDriver.run, .{&driver});
     _ = c.zb_app_run(driver.uri_a.ptr, 0, 0);
     t.join();

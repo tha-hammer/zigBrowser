@@ -105,21 +105,43 @@ fn buildAutomationConfig(
 ) !automation_server.Config {
     return .{
         .enabled = true,
-        .socket_path = try automationSocketPath(allocator),
+        .socket_path = try automationSocketPath(allocator, io),
         .token = try automationToken(allocator, io, spec.automation_token_file),
         .page_port = automation_gtk_port.pagePort(),
         .cookie_port = automation_gtk_cookie_port.cookiePort(),
     };
 }
 
-fn automationSocketPath(allocator: std.mem.Allocator) ![]const u8 {
+fn automationSocketPath(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     if (getenvOwned(allocator, "ZIGBROWSER_SOCKET")) |socket_path| {
         return socket_path;
     }
 
     const base_dir = getenvOwned(allocator, "XDG_RUNTIME_DIR") orelse try allocator.dupe(u8, "/tmp");
-    const nonce: u64 = @intCast(std.c.getpid());
-    return automation_transport.planSocketPath(allocator, platform(), base_dir, nonce);
+    return automation_transport.planSocketPath(allocator, platform(), base_dir, try socketNonce(io));
+}
+
+/// Unpredictable socket-name nonce from OS entropy (no PID, no fallback), so
+/// another local user cannot guess the default socket path.
+fn socketNonce(io: std.Io) !u64 {
+    var bytes: [8]u8 = undefined;
+    try io.randomSecure(&bytes);
+    return std.mem.readInt(u64, &bytes, .little);
+}
+
+test "default socket names use OS entropy, not the PID" {
+    const io = std.testing.io;
+    const a = try socketNonce(io);
+    const b = try socketNonce(io);
+    try std.testing.expect(a != b);
+    try std.testing.expect(a != @as(u64, @intCast(std.c.getpid())));
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const path = try automation_transport.planSocketPath(arena.allocator(), platform(), "/run/user/1000", a);
+    var pid_hex: [32]u8 = undefined;
+    const pid_text = try std.fmt.bufPrint(&pid_hex, "{x}", .{@as(u64, @intCast(std.c.getpid()))});
+    try std.testing.expect(std.mem.indexOf(u8, path, pid_text) == null or pid_text.len < 4);
 }
 
 fn getenvOwned(allocator: std.mem.Allocator, comptime name: [*:0]const u8) ?[]const u8 {
