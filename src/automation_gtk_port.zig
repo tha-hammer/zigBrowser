@@ -433,20 +433,40 @@ pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, d
     const rc = c.zb_native_scroll(null, x, y, delta_x, delta_y, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    var target = base;
-    target.wheel += 1;
-    if (try page_acks.settle(target, deadline) == .acknowledged) try waitScrollSettled(&page_acks, base.scrolls, deadline);
-    return readScrollOffsets(deadline);
+    return finishScroll(&page_acks, base, readScrollOffsets, deadline);
 }
 
-/// The page's scrollX/scrollY once the scroll settled (same deadline).
-fn readScrollOffsets(deadline: i64) PortError!page_port.ScrollOffsets {
+/// Offsets as read from the page, with the document they were read in.
+const OffsetsRead = struct { x: f64, y: f64, doc: [doc_len]u8 };
+
+/// After a dispatched wheel: its acknowledgement, the scrolling it started
+/// settling, then the offsets, all in the document the wheel went to. A
+/// replaced (or leaving) document at any of those points is
+/// DocumentReplaced: the wheel happened, and nothing from the replacement
+/// page is ever returned (RoseCat 4756).
+fn finishScroll(acks: *AckTracker, base: Ack, offsets: *const fn (deadline: i64) PortError!OffsetsRead, deadline: i64) PortError!page_port.ScrollOffsets {
+    var target = base;
+    target.wheel += 1;
+    if (try acks.settle(target, deadline) != .acknowledged) return error.DocumentReplaced;
+    try waitScrollSettled(acks, base, deadline);
+    const read = try offsets(deadline);
+    if (!base.isDocument(&read.doc)) return error.DocumentReplaced;
+    return .{ .x = read.x, .y = read.y };
+}
+
+/// The page's scrollX/scrollY and document token (same deadline).
+fn readScrollOffsets(deadline: i64) PortError!OffsetsRead {
     const gpa = std.heap.c_allocator;
-    const out = try evalJson(&port_tag, gpa, .automation, "return JSON.stringify([globalThis.scrollX, globalThis.scrollY]);", "null", try remainingMs(deadline));
+    const out = try evalJson(&port_tag, gpa, .automation, "const a = globalThis.__zbAutomation; return JSON.stringify([globalThis.scrollX, globalThis.scrollY, a ? a.documentToken : '']);", "null", try remainingMs(deadline));
     defer gpa.free(out);
-    const offsets = std.json.parseFromSlice([2]f64, gpa, out, .{}) catch return error.EvalFailed;
-    defer offsets.deinit();
-    return .{ .x = offsets.value[0], .y = offsets.value[1] };
+    const Wire = struct { f64, f64, []const u8 };
+    const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
+    defer parsed.deinit();
+    // No automation script answering: the document is being replaced.
+    if (!isDocumentToken(parsed.value[2])) return error.DocumentReplaced;
+    var read: OffsetsRead = .{ .x = parsed.value[0], .y = parsed.value[1], .doc = undefined };
+    @memcpy(&read.doc, parsed.value[2]);
+    return read;
 }
 
 /// PagePort v3.3: answer the file chooser that `function_body`'s op (the
@@ -484,14 +504,14 @@ pub fn setInputFiles(_: *anyopaque, gpa: std.mem.Allocator, function_body: []con
 /// After the wheel was acknowledged: wait until the scrolling it started
 /// (scroll events past `scrolls_before`) has been quiet for
 /// scroll_quiet_ms, or none started within scroll_start_ms.
-fn waitScrollSettled(acks: *AckTracker, scrolls_before: i64, deadline: i64) PortError!void {
+fn waitScrollSettled(acks: *AckTracker, base: Ack, deadline: i64) PortError!void {
     const acked_at = monotonicMs();
     while (true) {
-        if (try acks.read(deadline)) |now| {
-            if (now.scrolls > scrolls_before) {
-                if (now.scroll_quiet_ms >= scroll_quiet_ms) return;
-            } else if (monotonicMs() - acked_at >= scroll_start_ms) return;
-        } else return; // the document is being replaced
+        const now = (try acks.read(deadline)) orelse return error.DocumentReplaced;
+        if (!now.isDocument(&base.doc) or now.navigations != base.navigations) return error.DocumentReplaced;
+        if (now.scrolls > base.scrolls) {
+            if (now.scroll_quiet_ms >= scroll_quiet_ms) return;
+        } else if (monotonicMs() - acked_at >= scroll_start_ms) return;
         sleepMs(@min(10, try remainingMs(deadline)));
     }
 }
@@ -686,8 +706,61 @@ test "a scroll returns only once its scrolling went quiet" {
     quiet.scroll_quiet_ms = 120;
     var page: FakeAcks = .{ .steps = &.{ .{ .ack = moving }, .{ .ack = moving }, .{ .ack = quiet } } };
     var acks = page.tracker();
-    try waitScrollSettled(&acks, 0, deadlineAfter(1000));
+    try waitScrollSettled(&acks, testAck(5), deadlineAfter(1000));
     try std.testing.expectEqual(@as(usize, 3), page.index);
+}
+
+/// Offsets reader for finishScroll tests: counts calls, answers `doc`.
+const FakeOffsets = struct {
+    var calls: usize = 0;
+    var doc: [doc_len]u8 = "0123456789abcdef".*;
+
+    fn read(_: i64) PortError!OffsetsRead {
+        calls += 1;
+        return .{ .x = 0, .y = 300, .doc = doc };
+    }
+};
+
+test "a scroll whose document is replaced after the wheel is DocumentReplaced, never the new page's offsets" {
+    const base = testAck(5);
+    var other = testAck(5);
+    other.wheel = 1;
+    @memcpy(&other.doc, "fedcba9876543210");
+    var leaving = testAck(5);
+    leaving.wheel = 1;
+    leaving.navigations = 1;
+    leaving.leaving = true;
+    var settled = testAck(5);
+    settled.wheel = 1;
+    settled.scrolls = 2;
+    settled.scroll_quiet_ms = 150;
+
+    // The acknowledgement already shows document B: no offsets are read.
+    FakeOffsets.calls = 0;
+    var replaced: FakeAcks = .{ .steps = &.{.{ .ack = other }} };
+    var acks = replaced.tracker();
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectEqual(@as(usize, 0), FakeOffsets.calls);
+
+    // The page started navigating away during the wheel: the same.
+    var going: FakeAcks = .{ .steps = &.{.{ .ack = leaving }} };
+    var acks2 = going.tracker();
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks2, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectEqual(@as(usize, 0), FakeOffsets.calls);
+
+    // Replaced between the settle and the read: the read's own token says so.
+    FakeOffsets.doc = "fedcba9876543210".*;
+    defer FakeOffsets.doc = "0123456789abcdef".*;
+    var late: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
+    var acks3 = late.tracker();
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks3, base, FakeOffsets.read, deadlineAfter(1000)));
+
+    // Same document throughout: the settled offsets.
+    FakeOffsets.doc = "0123456789abcdef".*;
+    var same: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
+    var acks4 = same.tracker();
+    const offsets = try finishScroll(&acks4, base, FakeOffsets.read, deadlineAfter(1000));
+    try std.testing.expectEqual(@as(f64, 300), offsets.y);
 }
 
 test "C error codes map onto PortError" {

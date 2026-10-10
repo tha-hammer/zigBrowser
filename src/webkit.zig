@@ -2276,6 +2276,13 @@ const ScrollDriver = struct {
         self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "a stale document token scrolls nothing");
         sleepMs(200);
         self.check(std.mem.eql(u8, d.eval("return JSON.stringify(window.wheels);", null), "[]"), "no wheel event after the refusal");
+
+        // A wheel whose own handler navigates away: the wheel happened, the
+        // answer is DocumentReplaced, never the next page's offsets.
+        _ = d.eval("document.addEventListener('wheel', function () { location.href = 'next.html'; }); return 0;", null);
+        const t2 = d.token(&tok) orelse return self.check(false, "token before the navigating wheel");
+        const replaced = gtk_port.nativeScroll(port.ptr, 200, 300, 0, 100, std.mem.span(t2), 5000);
+        self.check(if (replaced) |_| false else |e| e == error.DocumentReplaced, "a wheel that navigated is DocumentReplaced");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -2291,6 +2298,9 @@ test "native scroll sends a trusted wheel event that scrolls the scroller under 
     defer removeTree(dir);
     const path = try std.fmt.allocPrintSentinel(arena, "{s}/scroll.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path, scroll_fixture.ptr, scroll_fixture.len, null) != 0);
+    const next = try std.fmt.allocPrintSentinel(arena, "{s}/next.html", .{dir}, 0);
+    const next_page = "<!doctype html><title>Next</title><div style=\"height:9000px\"></div><script>scrollTo(0, 777)</script>";
+    try std.testing.expect(gfile.g_file_set_contents(next, next_page.ptr, next_page.len, null) != 0);
     const raw = gfile.g_filename_to_uri(path, null, null) orelse return error.UriFailed;
     defer gfile.g_free(raw);
     const uri = try arena.dupeZ(u8, std.mem.span(raw));
