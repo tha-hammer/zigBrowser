@@ -39,6 +39,9 @@ pub const max_import_cookies = 5000;
 /// left, so a stalled store cannot hold the command (or server shutdown)
 /// for longer than this.
 pub const import_budget_ms: u64 = 30_000;
+/// Latest representable expiry (9999-12-31T23:59:59Z): GLib's GDateTime
+/// cannot represent later dates, so later values are rejected everywhere.
+pub const max_expires_s: i64 = 253402300799;
 const max_name_len = 256;
 const max_value_len = 4096;
 const max_domain_len = 253;
@@ -249,6 +252,10 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
     const format: Format = if (std.mem.eql(u8, format_name, "netscape")) .netscape else if (std.mem.eql(u8, format_name, "json")) .json else return invalidParams(gpa, "unknown_format", ids);
     span.scope = @tagName(format);
 
+    // One deadline for the whole import, starting before any file I/O.
+    const deadline = ext.nowMs() +| import_budget_ms;
+    if (ext.cancelled()) return cancelledImport(gpa, span, ids);
+
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_import_bytes + 1)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StreamTooLong => return invalidParams(gpa, "file_too_large", ids),
@@ -292,7 +299,7 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
         },
     }
 
-    const deadline = ext.nowMs() +| import_budget_ms;
+    if (ext.cancelled()) return cancelledImport(gpa, span, ids);
     for (cookies.items, 0..) |cookie, index| {
         const remaining = deadline -| ext.nowMs();
         const failure: ?engine_mod.Outcome = if (ext.cancelled()) blk: {
@@ -312,6 +319,11 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
     }
     span.count = counts.imported;
     return .{ .result = try std.json.Stringify.valueAlloc(gpa, counts, .{}) };
+}
+
+fn cancelledImport(gpa: std.mem.Allocator, span: *SpanInfo, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+    span.error_class = "Cancelled";
+    return engine_mod.automationFailure(gpa, .cancelled, null, ids);
 }
 
 /// Same error code as the failing set, with data saying how far the import
@@ -358,7 +370,7 @@ fn parseNetscapeLine(line_in: []const u8) ??Cookie {
     if (n != fields.len) return @as(?Cookie, null);
 
     const expires = std.fmt.parseInt(i64, fields[4], 10) catch return @as(?Cookie, null);
-    if (expires < 0) return @as(?Cookie, null);
+    if (expires < 0 or expires > max_expires_s) return @as(?Cookie, null);
     _ = netscapeBool(fields[1]) orelse return @as(?Cookie, null); // include-subdomains column
     const cookie = Cookie{
         .domain = fields[0],
@@ -387,7 +399,7 @@ fn cookieFromSetParams(params: std.json.ObjectMap) ?Cookie {
     };
     if (params.get("path")) |_| cookie.path = stringField(params, "path") orelse return null;
     if (params.get("expires")) |value| cookie.expires = switch (value) {
-        .integer => |n| if (n >= -1) n else return null,
+        .integer => |n| if (n >= -1 and n <= max_expires_s) n else return null,
         else => return null,
     };
     if (params.get("httpOnly")) |value| cookie.httpOnly = boolValue(value) orelse return null;
@@ -415,20 +427,24 @@ fn cookieFromJsonExport(object: std.json.ObjectMap) ?Cookie {
     if (object.get("secure")) |value| cookie.secure = boolValue(value) orelse return null;
     const session_value = object.get("session");
     const session = if (session_value) |value| boolValue(value) orelse return null else false;
-    // An explicit non-session cookie must say when it expires.
-    if (session_value != null and !session and object.get("expirationDate") == null and object.get("expires") == null) return null;
+    const expiration_date = object.get("expirationDate");
+    const expires_value = object.get("expires");
+    // Two expiry fields can disagree; refuse rather than pick one.
+    if (expiration_date != null and expires_value != null) return null;
 
-    if (object.get("expirationDate")) |value| {
-        const seconds = exportSeconds(value) orelse return null;
-        if (!session) cookie.expires = seconds;
+    var expiry: ?i64 = null; // null = session
+    if (expiration_date) |value| expiry = exportSeconds(value) orelse return null;
+    if (expires_value) |value| expiry = switch (value) {
+        .integer => |n| if (n == -1) null else if (n > 0 and n <= max_expires_s) n else return null,
+        else => return null,
+    };
+    if (session_value != null) {
+        // session must agree with the expiry: session:true has none,
+        // session:false must have a real one.
+        if (session and expiration_date != null) return null;
+        if (!session and expiry == null) return null;
     }
-    if (object.get("expires")) |value| {
-        const seconds: i64 = switch (value) {
-            .integer => |n| if (n == -1) -1 else if (n > 0) n else return null,
-            else => return null,
-        };
-        if (!session) cookie.expires = seconds;
-    }
+    if (!session) cookie.expires = expiry orelse -1;
     if (object.get("sameSite")) |value| {
         const text = switch (value) {
             .string => |s| s,
@@ -442,8 +458,8 @@ fn cookieFromJsonExport(object: std.json.ObjectMap) ?Cookie {
 /// expirationDate: positive unix seconds (fractional allowed).
 fn exportSeconds(value: std.json.Value) ?i64 {
     return switch (value) {
-        .integer => |n| if (n > 0) n else null,
-        .float => |f| if (f > 0 and f < 9.0e15) @as(i64, @intFromFloat(@floor(f))) else null,
+        .integer => |n| if (n > 0 and n <= max_expires_s) n else null,
+        .float => |f| if (f > 0 and f < @as(f64, @floatFromInt(max_expires_s + 1))) @as(i64, @intFromFloat(@floor(f))) else null,
         else => null,
     };
 }

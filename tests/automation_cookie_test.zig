@@ -716,3 +716,82 @@ test "session:false without an expiry is contradictory and skipped" {
     defer outcome.deinit(gpa);
     try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":1}", outcome.result);
 }
+
+test "contradictory or dual expiry fields are skipped, never weakened to session" {
+    const text =
+        \\[
+        \\  {"name":"a","value":"1","domain":"x.test","session":false,"expirationDate":1893456000,"expires":-1},
+        \\  {"name":"b","value":"1","domain":"x.test","session":false,"expires":-1},
+        \\  {"name":"c","value":"1","domain":"x.test","expirationDate":1893456000,"expires":1893456000},
+        \\  {"name":"d","value":"1","domain":"x.test","session":true,"expirationDate":1893456000},
+        \\  {"name":"ok","value":"1","domain":"x.test","session":false,"expirationDate":1893456000}
+        \\]
+    ;
+    const path = try writeTemp("contradict2.json", text);
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "json");
+    defer gpa.free(params);
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var outcome = try call(&fake, "cookies.import", params);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":4}", outcome.result);
+    try std.testing.expect(std.mem.indexOf(u8, fake.sets.items[0], "\"expires\":1893456000") != null);
+}
+
+test "expiry beyond year 9999 (253402300799) is rejected for set, netscape and json" {
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var edge = try call(&fake, "cookies.set", "{\"name\":\"a\",\"value\":\"v\",\"domain\":\"d.test\",\"expires\":253402300799}");
+    defer edge.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", edge.result);
+    var over = try call(&fake, "cookies.set", "{\"name\":\"a\",\"value\":\"v\",\"domain\":\"d.test\",\"expires\":253402300800}");
+    defer over.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32602), over.failure.code);
+
+    const ns = try writeTemp("far.txt", "x.test\tFALSE\t/\tFALSE\t253402300800\tfar\tv\nx.test\tFALSE\t/\tFALSE\t253402300799\tedge\tv\n");
+    defer gpa.free(ns);
+    defer std.Io.Dir.deleteFileAbsolute(io, ns) catch {};
+    const ns_params = try importParams(ns, "netscape");
+    defer gpa.free(ns_params);
+    var ns_out = try call(&fake, "cookies.import", ns_params);
+    defer ns_out.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":1}", ns_out.result);
+
+    const js = try writeTemp("far.json", "[{\"name\":\"far\",\"value\":\"v\",\"domain\":\"x.test\",\"expirationDate\":253402300800.5},{\"name\":\"big\",\"value\":\"v\",\"domain\":\"x.test\",\"expirationDate\":9.0e14}]");
+    defer gpa.free(js);
+    defer std.Io.Dir.deleteFileAbsolute(io, js) catch {};
+    const js_params = try importParams(js, "json");
+    defer gpa.free(js_params);
+    var js_out = try call(&fake, "cookies.import", js_params);
+    defer js_out.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":0,\"skipped\":2}", js_out.result);
+}
+
+test "the import deadline covers reading and parsing: a pre-cancelled import touches nothing" {
+    const path = try writeTemp("precancel.txt", "x.test\tFALSE\t/\tFALSE\t0\tc\tv\n");
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "netscape");
+    defer gpa.free(params);
+
+    var flag = std.atomic.Value(bool).init(false);
+    var store = CancellingStore{ .flag = &flag, .cancel_after = 99 };
+    const Call = struct {
+        port: cookie_port.CookiePort,
+        params: []const u8,
+        flag: *std.atomic.Value(bool),
+        fn run(c: @This(), a: std.mem.Allocator, ext: *automation.engine.External) error{OutOfMemory}!automation.engine.Outcome {
+            c.flag.store(true, .release); // cancelled after the root started, before any I/O
+            return cookie_routes.handle(a, io, c.port, ext, .import, c.params);
+        }
+    };
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
+    var outcome = try eng.executeExternal(gpa, "cookies.import", "cookies", .{ .cancel = &flag }, Call{ .port = store.port(), .params = params, .flag = &flag }, Call.run);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 0), store.sets);
+}
