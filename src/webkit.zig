@@ -620,6 +620,7 @@ const LiveDriver = struct {
 
         self.runCookies();
         self.runNative();
+        self.runNativePort();
         self.runChildWindow();
 
         // Loop end with work in flight: an eval that never settles is still
@@ -787,6 +788,7 @@ const LiveDriver = struct {
         const long_text = "x" ** 2000;
         var long_releases: c_int = 0;
         var long_chars: c_int = 0;
+        const long_base = self.inputAck() orelse return self.check(false, "inputAck available");
         const long_start = monotonicMs();
         rc = c.zb_native_text(null, long_text, 50, &long_releases, &long_chars, &err);
         const long_ms = monotonicMs() - long_start;
@@ -796,6 +798,52 @@ const LiveDriver = struct {
         self.check(long_ms < 500, "long native text returned promptly after the deadline");
         self.check(long_releases > 0 and long_releases < 2000, "long native text was only partially sent");
         self.check(long_chars == long_releases, "chars sent are reported exactly (one release per plain char)");
+        // Every reported key was handed to WebKit and still reaches the page
+        // after the timeout; wait for them so later steps start clean.
+        self.check(self.waitInputAck(long_base, 0, long_releases), "all keys reported as sent reach the page");
+    }
+
+    // N7 port layer: locate gives the actionable centre; the GTK port's native
+    // methods return only after the page acknowledged their trusted events.
+    fn runNativePort(self: *LiveDriver) void {
+        const gpa = self.allocator;
+        const port = gtk_port.pagePort().?;
+        _ = self.eval(null, "nativeLog.length = 0; document.getElementById('ni').value = ''; return 0;", null, null, 5000);
+
+        const locate_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
+        const located = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
+        const want = self.center("nb") orelse return self.check(false, "button center");
+        const Located = struct { ok: bool, value: struct { x: f64, y: f64 } };
+        const loc = if (located.out) |out| std.json.parseFromSliceLeaky(Located, gpa, out, .{ .ignore_unknown_fields = true }) catch null else null;
+        self.check(loc != null and loc.?.ok and @abs(loc.?.value.x - want[0]) < 0.5 and @abs(loc.?.value.y - want[1]) < 0.5, "locate returns the element centre in viewport px");
+
+        // Obscured target: locate refuses it like an action would.
+        _ = self.eval(null, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
+        const blocked = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
+        self.check(blocked.out != null and std.mem.indexOf(u8, blocked.out.?, "element_obscured") != null, "locate refuses an obscured element");
+        _ = self.eval(null, "document.getElementById('nbcover').remove(); return 0;", null, null, 5000);
+
+        // nativeClick returns after the page saw the trusted click: no extra wait.
+        gtk_port.nativeClick(port.ptr, want[0], want[1], 5000) catch return self.check(false, "port nativeClick on the button succeeds");
+        self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "port nativeClick returns after the trusted click is handled");
+
+        const input = self.center("ni") orelse return self.check(false, "input center");
+        gtk_port.nativeClick(port.ptr, input[0], input[1], 5000) catch return self.check(false, "port nativeClick on the input succeeds");
+        var sent: usize = 0;
+        gtk_port.nativeText(port.ptr, "ok", 5000, &sent) catch return self.check(false, "port nativeText succeeds");
+        self.check(sent == 2, "port nativeText reports 2 chars sent");
+        const value = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        self.check(eq(value.out, "ok"), "port nativeText typed before returning");
+        gtk_port.nativeKey(port.ptr, "a", 1, 5000) catch return self.check(false, "port nativeKey succeeds");
+        const shifted = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        self.check(eq(shifted.out, "okA"), "port nativeKey(Shift+a) typed before returning");
+
+        var partial: usize = 0;
+        const long_text = "y" ** 2000;
+        const partial_result = gtk_port.nativeText(port.ptr, long_text, 50, &partial);
+        self.check(if (partial_result) |_| false else |e| e == error.Timeout, "port nativeText times out on long text");
+        self.check(partial > 0 and partial < 2000, "port nativeText reports partial progress on timeout");
+        self.check(if (gtk_port.nativeKey(port.ptr, "F1x", 0, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey rejects unknown keys");
     }
 
     // Explicit child windows wait for their own first load, not the primary's.

@@ -131,6 +131,98 @@ fn title(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 
     return takeString(gpa, out);
 }
 
+// --- Native (trusted) input: the PagePort v3 methods (N7) ---
+//
+// Each call reads the page's trusted-input acknowledgement counters
+// (__zbAutomation.inputAck() in the automation world), sends real GDK events
+// through the shim, then waits until the page has acknowledged them - all
+// within the one `timeout_ms`. WebKit delivers native events asynchronously
+// (and mouse and key queues are not ordered against each other), so without
+// the wait a following step could run before the page saw the input.
+
+const ack_body = "const a = globalThis.__zbAutomation; if (!a) return 'null'; const c = a.inputAck(); return JSON.stringify([c.mouseup, c.keyup]);";
+
+fn monotonicMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), std.time.ns_per_ms);
+}
+
+fn sleepMs(ms: u64) void {
+    var ts: std.c.timespec = .{ .sec = @intCast(ms / 1000), .nsec = @intCast((ms % 1000) * std.time.ns_per_ms) };
+    _ = std.c.nanosleep(&ts, &ts);
+}
+
+fn remainingMs(deadline: i64) PortError!u64 {
+    const left = deadline - monotonicMs();
+    if (left <= 0) return error.Timeout;
+    return @intCast(left);
+}
+
+fn readAck(deadline: i64) PortError![2]i64 {
+    const gpa = std.heap.c_allocator;
+    const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
+    defer gpa.free(out);
+    return std.json.parseFromSliceLeaky([2]i64, gpa, out, .{}) catch error.EvalFailed;
+}
+
+/// Wait until the page acknowledged `mouseups` / `keyups` more trusted events.
+fn waitAck(base: [2]i64, mouseups: i64, keyups: i64, deadline: i64) PortError!void {
+    while (true) {
+        const now = try readAck(deadline);
+        if (now[0] >= base[0] + mouseups and now[1] >= base[1] + keyups) return;
+        _ = try remainingMs(deadline);
+        sleepMs(5);
+    }
+}
+
+/// Real pointer motion + left click at viewport CSS px (x, y).
+pub fn nativeClick(_: *anyopaque, x: f64, y: f64, timeout_ms: u64) PortError!void {
+    const deadline = monotonicMs() + @as(i64, @intCast(@min(timeout_ms, std.math.maxInt(i32))));
+    const base = try readAck(deadline);
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_click(null, x, y, 1, clampMs(try remainingMs(deadline)), &err);
+    c.zb_automation_free(err);
+    try mapCode(rc);
+    try waitAck(base, 1, 0, deadline);
+}
+
+/// One real key press (DOM key name) with modifiers: bit0 Shift, bit1
+/// Control, bit2 Alt, bit3 Meta. Unknown keys are EvalFailed.
+pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64) PortError!void {
+    const deadline = monotonicMs() + @as(i64, @intCast(@min(timeout_ms, std.math.maxInt(i32))));
+    const gpa = std.heap.c_allocator;
+    const key_z = try gpa.dupeZ(u8, key);
+    defer gpa.free(key_z);
+    const base = try readAck(deadline);
+    var releases: c_int = 0;
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_key(null, key_z.ptr, @intCast(modifiers & 0x0f), clampMs(try remainingMs(deadline)), &releases, &err);
+    c.zb_automation_free(err);
+    try mapCode(rc);
+    try waitAck(base, 0, releases, deadline);
+}
+
+/// Types `text` with real key events. `sent_chars` is always set, also on
+/// error: the code points handed to the page. Timeout with sent_chars > 0 is
+/// a partial side effect; callers must not retype the prefix.
+pub fn nativeText(_: *anyopaque, text: []const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
+    sent_chars.* = 0;
+    const deadline = monotonicMs() + @as(i64, @intCast(@min(timeout_ms, std.math.maxInt(i32))));
+    const gpa = std.heap.c_allocator;
+    const text_z = try gpa.dupeZ(u8, text);
+    defer gpa.free(text_z);
+    const base = try readAck(deadline);
+    var releases: c_int = 0;
+    var chars: c_int = 0;
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_text(null, text_z.ptr, clampMs(try remainingMs(deadline)), &releases, &chars, &err);
+    c.zb_automation_free(err);
+    sent_chars.* = @intCast(chars);
+    try mapCode(rc);
+    try waitAck(base, 0, releases, deadline);
+}
+
 test "C error codes map onto PortError" {
     if (!supported) return error.SkipZigTest;
     try mapCode(c.ZB_AUTO_OK);

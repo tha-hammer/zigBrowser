@@ -54,6 +54,8 @@
         return press(command);
       case 'selectOption':
         return selectOption(command);
+      case 'locate':
+        return locate(command);
       case 'waitFor':
         return waitFor(command);
       case 'rateLimitScan':
@@ -122,6 +124,27 @@
     if (action === 'type') synthesizeType(element, command.text || '');
     if (action === 'press') synthesizePress(element, command.key, command.modifiers || []);
     return success({ ok: true }, telemetry);
+  }
+
+  // Native input (N7): resolve, scroll into view and check the target exactly
+  // as the action would, optionally focus it, and return its centre in
+  // viewport CSS px for the shim's real GDK events.
+  function locate(command) {
+    const action = typeof command.action === 'string' ? command.action : 'click';
+    const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+    if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
+
+    const element = resolved.elements[0];
+    const telemetry = resolved.telemetry.slice();
+    if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+    const check = runActionabilityChecks(element, action);
+    telemetry.push(actionabilitySpan(command, action, check));
+    if (!check.passed) return actionFailure(check.error, check.check, telemetry);
+
+    if (command.focus === true && typeof element.focus === 'function') element.focus();
+    const rect = element.getBoundingClientRect();
+    return success({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, telemetry);
   }
 
   // dom.press: with a selector the element is resolved, checked and focused
