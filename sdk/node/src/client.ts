@@ -14,6 +14,7 @@ export class ZigBrowser {
   private buffer = Buffer.alloc(0);
   private eventListeners = new Map<string, EventCallback[]>();
   private token: string | undefined;
+  private readonly explicitToken: string | undefined;
 
   readonly dom: DomNamespace;
   readonly page: PageNamespace;
@@ -23,6 +24,7 @@ export class ZigBrowser {
   /** `token`: sent as `auth` on every request (--automation-token-file). */
   constructor(opts: { socketPath: string; token?: string }) {
     this.socketPath = opts.socketPath;
+    this.explicitToken = opts.token;
     this.token = opts.token;
     const call = (method: string, params?: Record<string, unknown>) => this.call(method, params);
     this.dom = new DomNamespace(call);
@@ -34,7 +36,10 @@ export class ZigBrowser {
   async connect(): Promise<void> {
     // Per-session token the browser writes next to its socket (mode 0600)
     // when no --automation-token-file is used.
-    if (this.token === undefined) {
+    // An explicit token always wins; otherwise re-read the sidecar on every
+    // connect, since a restarted browser has a new session token.
+    if (this.explicitToken === undefined) {
+      this.token = undefined;
       try {
         const sidecar = fs.readFileSync(`${this.socketPath}.token`, "utf-8").trim();
         if (sidecar) this.token = sidecar;

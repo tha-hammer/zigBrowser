@@ -301,6 +301,9 @@ class ZigBrowser:
 
     def __init__(self, socket_path: str, token: str | None = None):
         self._socket_path = socket_path
+        # An explicit token always wins; otherwise the per-session sidecar is
+        # re-read on every connect (a restarted browser has a new token).
+        self._explicit_token = token
         self._token = token
         self._sock: socket.socket | None = None
         self._event_listeners: dict[str, list[Callable]] = {}
@@ -327,7 +330,7 @@ class ZigBrowser:
                 f"Cannot connect to zigBrowser socket: {e}"
             ) from e
         self._sock = sock
-        if self._token is None:
+        if self._explicit_token is None:
             self._token = _sidecar_token(self._socket_path)
 
     def disconnect(self) -> None:
@@ -437,6 +440,9 @@ class AsyncZigBrowser:
 
     def __init__(self, socket_path: str, token: str | None = None):
         self._socket_path = socket_path
+        # An explicit token always wins; otherwise the per-session sidecar is
+        # re-read on every connect (a restarted browser has a new token).
+        self._explicit_token = token
         self._token = token
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -449,7 +455,7 @@ class AsyncZigBrowser:
         self._reader, self._writer = await asyncio.open_unix_connection(
             self._socket_path
         )
-        if self._token is None:
+        if self._explicit_token is None:
             self._token = _sidecar_token(self._socket_path)
 
     async def disconnect(self) -> None:

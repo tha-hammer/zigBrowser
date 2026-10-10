@@ -154,3 +154,50 @@ def test_async_client_reads_the_sidecar(mock_uds_server):
         assert mock_uds_server.last_request()["auth"] == "async-sidecar"
     finally:
         sidecar.unlink()
+
+
+def test_same_client_rereads_a_rotated_sidecar_on_reconnect(mock_uds_server):
+    sidecar = Path(mock_uds_server.path + ".token")
+    mock_uds_server.set_response(OK)
+    zb = ZigBrowser(socket_path=mock_uds_server.path)
+    try:
+        sidecar.write_text("first")
+        zb.connect()
+        zb.page.url()
+        assert mock_uds_server.last_request()["auth"] == "first"
+        zb.disconnect()
+
+        sidecar.write_text("second")  # browser restarted with a new session token
+        zb.connect()
+        zb.page.url()
+        assert mock_uds_server.last_request()["auth"] == "second"
+        zb.disconnect()
+
+        sidecar.unlink()  # restarted without a sidecar: stop sending the old one
+        zb.connect()
+        zb.page.url()
+        assert "auth" not in mock_uds_server.last_request()
+        zb.disconnect()
+    finally:
+        sidecar.unlink(missing_ok=True)
+
+
+def test_async_client_rereads_a_rotated_sidecar(mock_uds_server):
+    sidecar = Path(mock_uds_server.path + ".token")
+    mock_uds_server.set_response(OK)
+    zb = AsyncZigBrowser(socket_path=mock_uds_server.path)
+
+    async def once():
+        await zb.connect()
+        await zb.call("page.url")
+        await zb.disconnect()
+
+    try:
+        sidecar.write_text("a1")
+        asyncio.run(once())
+        assert mock_uds_server.last_request()["auth"] == "a1"
+        sidecar.write_text("a2")
+        asyncio.run(once())
+        assert mock_uds_server.last_request()["auth"] == "a2"
+    finally:
+        sidecar.unlink(missing_ok=True)

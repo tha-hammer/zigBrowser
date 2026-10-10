@@ -109,6 +109,34 @@ describe("typed wrappers", () => {
     }
   });
 
+  it("the same client re-reads a rotated sidecar on reconnect", async () => {
+    server = await createMockServer();
+    server.setResponse({ jsonrpc: "2.0", result: { ok: true }, id: 1 });
+    const sidecar = `${server.path}.token`;
+    const zb = new ZigBrowser({ socketPath: server.path });
+    try {
+      fs.writeFileSync(sidecar, "first");
+      await zb.connect();
+      await zb.page.url();
+      expect(server.lastRequest().auth).toBe("first");
+      await zb.disconnect();
+
+      fs.writeFileSync(sidecar, "second");
+      await zb.connect();
+      await zb.page.url();
+      expect(server.lastRequest().auth).toBe("second");
+      await zb.disconnect();
+
+      fs.unlinkSync(sidecar);
+      await zb.connect();
+      await zb.page.url();
+      expect("auth" in server.lastRequest()).toBe(false);
+      await zb.disconnect();
+    } finally {
+      if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
+    }
+  });
+
   it("selectOption requires exactly one choice", async () => {
     const zb = new ZigBrowser({ socketPath: "/nonexistent" });
     await expect(zb.dom.selectOption("css=#c", {} as never)).rejects.toThrow(/exactly one/);
