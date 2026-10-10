@@ -19,6 +19,8 @@ const Harness = struct {
     state: x_routes.XState,
     sink: automation.telemetry.InMemoryTelemetrySink,
     budget_ms: u64 = x_routes.flow_budget_ms,
+    /// The command's cancel flag (a server stop).
+    cancel: std.atomic.Value(bool) = .init(false),
 
     fn init(self: *Harness, replies: []const fakes.EvalReply) void {
         self.fake = fakes.FakePagePort.init(gpa);
@@ -28,6 +30,7 @@ const Harness = struct {
         self.state = x_routes.XState.init(fakeWall);
         self.sink = automation.telemetry.InMemoryTelemetrySink.init(gpa);
         self.budget_ms = x_routes.flow_budget_ms;
+        self.cancel = .init(false);
     }
 
     fn deinit(self: *Harness) void {
@@ -46,7 +49,7 @@ const Harness = struct {
                 return x_routes.handleWithBudget(a, c.state, ext, c.verb, c.params, c.budget_ms);
             }
         };
-        return self.engine.executeExternal(gpa, method, "x", .{ .route = .{ .telemetry_sink = self.sink.sink() } }, Call{
+        return self.engine.executeExternal(gpa, method, "x", .{ .cancel = &self.cancel, .route = .{ .telemetry_sink = self.sink.sink() } }, Call{
             .state = &self.state,
             .verb = x_routes.verbFromMethod(method).?,
             .params = params,
@@ -588,4 +591,84 @@ test "N20: a limit toast after the final Post click is not a success, and no pos
     try expectRateLimited(outcome, "toast", "x");
     try std.testing.expectEqual(@as(usize, 6), h.fake.scan_calls);
     try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap), h.state.remaining());
+}
+
+test "N20 deadline (RoseCat 4762): a scan that uses up the budget never lets the next action start, and an action after a slow scan gets only what is left" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.budget_ms = 10_000;
+    // After the navigation: 4 s (6 s left). Before the fill: 4 s (2 s
+    // left). Before the type: more than is left (times out at 0).
+    h.fake.scan_costs_ms = &.{4_000};
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "x_flow_deadline") != null);
+    var buf: [32][]const u8 = undefined;
+    const ops = try h.ops(&buf);
+    try std.testing.expectEqual(@as(usize, 3), ops.len);
+    try std.testing.expectEqualStrings("fill", ops[2]);
+    // The fill was clamped to the 2 s left after its scan, not the 6 s the
+    // flow had when it built the step.
+    try std.testing.expect(h.fake.eval_calls.items[2].timeout_ms <= 2_000);
+    try std.testing.expect(h.clock.now_ms <= 10_000);
+}
+
+test "N20 deadline (RoseCat 4762): when the final scan cannot finish in the budget, the post is not a success and is not counted" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.budget_ms = 4_000;
+    // Five quick scans, then a final one that needs more than is left of
+    // the 4 s budget (under the 5 s scan cap): it uses up the budget.
+    h.fake.scan_costs_ms = &.{ 0, 0, 0, 0, 0, 60_000 };
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "x_flow_deadline") != null);
+    try std.testing.expectEqual(@as(usize, 6), h.fake.scan_calls);
+    try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap), h.state.remaining());
+}
+
+test "N20 cancellation (RoseCat 4766): a stop during a scan ends the flow with -32012 before any more page work" {
+    // During the scan after the navigation: no step at all, no other scan.
+    var a: Harness = undefined;
+    a.init(&.{ok_reply});
+    defer a.deinit();
+    a.fake.cancel = &a.cancel;
+    a.fake.cancel_at_scan = 0;
+    var first = try a.call("x.post", "{\"text\":\"hi\"}");
+    defer first.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), first.failure.code);
+    try std.testing.expectEqual(@as(usize, 0), a.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), a.fake.scan_calls);
+
+    // During the scan before the fill: no fill, no reclassification scan.
+    var b: Harness = undefined;
+    b.init(&.{ok_reply});
+    defer b.deinit();
+    b.fake.cancel = &b.cancel;
+    b.fake.cancel_at_scan = 1;
+    var second = try b.call("x.post", "{\"text\":\"hi\"}");
+    defer second.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), second.failure.code);
+    var buf: [32][]const u8 = undefined;
+    const ops = try b.ops(&buf);
+    try std.testing.expectEqual(@as(usize, 2), ops.len);
+    try std.testing.expectEqualStrings("click", ops[1]);
+    try std.testing.expectEqual(@as(usize, 2), b.fake.scan_calls);
+}
+
+test "N20 cancellation (RoseCat 4766): a step that comes back cancelled stops the flow: no reclassification scan, no fallback probe" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .err = error.Cancelled }});
+    defer h.deinit();
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.scan_calls);
 }

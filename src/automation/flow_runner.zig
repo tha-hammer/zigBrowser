@@ -56,16 +56,22 @@ pub const Runner = struct {
         // No step starts without budget; a waitFor also needs room for the
         // engine's native grace on top of its (clamped) JS timeout.
         if (self.expired) return null;
+        if (self.ext.cancelled()) return self.cancelStop();
         const needed: u64 = if (std.mem.eql(u8, method, "dom.waitFor")) engine_mod.wait_for_native_grace_ms else 0;
-        if (self.remainingMs() <= needed) {
-            self.setFailure(try engine_mod.automationFailure(self.gpa, .action_timeout, self.deadline_reason, self.ext.ids()));
-            self.expired = true;
-            return null;
-        }
+        if (self.remainingMs() <= needed) return self.deadlineStop();
         const action = isAction(method);
-        if (action and (self.scan_due or self.clean_scans == 0) and !(try self.scanClean())) return null;
+        var clamped: ?[]u8 = null;
+        defer if (clamped) |c| self.gpa.free(c);
+        if (action and (self.scan_due or self.clean_scans == 0)) {
+            if (try self.scan() == .detected) return null;
+            if (self.ext.cancelled()) return self.cancelStop();
+            // The scan took time: the action may only start with budget
+            // left, and never with the timeout it was built with before.
+            if (self.remainingMs() <= needed) return self.deadlineStop();
+            clamped = try clampTimeouts(self.gpa, params_json, self.remainingMs());
+        }
         const started = self.ext.nowMs();
-        const outcome = try self.ext.runCommand(self.gpa, method, params_json);
+        const outcome = try self.ext.runCommand(self.gpa, method, clamped orelse params_json);
         if (self.observer) |o| o.on_step(o.ctx, method, params_json, outcome == .result, self.ext.nowMs() -| started);
         switch (outcome) {
             .result => |json| {
@@ -76,27 +82,69 @@ pub const Runner = struct {
                 if (action) self.scan_due = true;
                 if (isNavigation(method)) {
                     self.scan_due = true;
-                    if (!(try self.scanClean())) return null;
+                    const result = try self.scan();
+                    if (result != .detected and self.ext.cancelled()) return self.cancelStop();
+                    switch (result) {
+                        .detected => return null,
+                        // A required scan that could not run in the budget.
+                        .unknown => if (self.remainingMs() == 0) return self.deadlineStop(),
+                        .clean, .skipped => {},
+                    }
                 }
                 return json;
             },
             .failure => {
                 self.setFailure(outcome);
-                // A step that failed on a challenge or limit page: report that.
-                if (self.platform != null) _ = try self.scanClean();
+                // A step that failed on a challenge or limit page: report that
+                // (otherwise the step's own failure stands). Never after a
+                // cancellation: no page work once the command is cancelled.
+                const cancelled_step = outcome.failure.code == errors.downstreamCode(.cancelled);
+                // A cancelled step stops the flow: no fallback probe either.
+                if (cancelled_step or self.ext.cancelled()) {
+                    self.expired = true;
+                    return null;
+                }
+                if (self.platform != null) _ = try self.scan();
                 return null;
             },
         }
     }
 
-    /// One rateLimitScan of the current page. True when the flow may go on:
-    /// a clean page, no platform, or no evidence (no time left, the scan
-    /// itself failed, the script is not ready yet). False after recording
-    /// -32010 for a detected signal (the flow is stopped).
-    fn scanClean(self: *Runner) error{OutOfMemory}!bool {
-        const platform = self.platform orelse return true;
+    /// The command was cancelled (server stop): -32012, and the flow is
+    /// stopped before any more page work.
+    fn cancelStop(self: *Runner) error{OutOfMemory}!?[]const u8 {
+        self.setFailure(try engine_mod.automationFailure(self.gpa, .cancelled, null, self.ext.ids()));
+        self.expired = true;
+        return null;
+    }
+
+    /// The flow budget is spent: action_timeout `deadline_reason`, and the
+    /// flow is stopped.
+    fn deadlineStop(self: *Runner) error{OutOfMemory}!?[]const u8 {
+        self.setFailure(try engine_mod.automationFailure(self.gpa, .action_timeout, self.deadline_reason, self.ext.ids()));
+        self.expired = true;
+        return null;
+    }
+
+    const ScanResult = enum {
+        /// No platform: scanning is off.
+        skipped,
+        clean,
+        /// No evidence either way: no time left, the scan failed, or the
+        /// script is not ready.
+        unknown,
+        /// A signal: -32010 is recorded and the flow is stopped.
+        detected,
+    };
+
+    /// One rateLimitScan of the current page, bounded by the flow budget.
+    /// Nothing is dispatched once the command is cancelled (callers check
+    /// cancellation again after it returns).
+    fn scan(self: *Runner) error{OutOfMemory}!ScanResult {
+        const platform = self.platform orelse return .skipped;
+        if (self.ext.cancelled()) return .unknown;
         const timeout_ms = @min(scan_timeout_ms, self.remainingMs());
-        if (timeout_ms == 0) return true;
+        if (timeout_ms == 0) return .unknown;
         const ids = self.ext.ids();
         const arg = try std.json.Stringify.valueAlloc(self.gpa, .{
             .op = "rateLimitScan",
@@ -108,21 +156,21 @@ pub const Runner = struct {
         defer self.gpa.free(arg);
         const text = self.ext.evalJson(self.gpa, .automation, script_command.handle_body, arg, timeout_ms) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return true,
+            else => return .unknown,
         };
         defer self.gpa.free(text);
         var answer = script_command.parseScriptResult(self.gpa, text) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.MalformedScriptResult => return true,
+            error.MalformedScriptResult => return .unknown,
         };
         defer answer.deinit();
         if (answer.ok) {
             self.scan_due = false;
             self.clean_scans += 1;
             self.scanSpan(platform, "none");
-            return true;
+            return .clean;
         }
-        if (!std.mem.eql(u8, answer.error_name orelse "", errors.name(.platform_rate_limited))) return true;
+        if (!std.mem.eql(u8, answer.error_name orelse "", errors.name(.platform_rate_limited))) return .unknown;
         const signal = signalOf(&answer) orelse "unknown";
         self.scanSpan(platform, signal);
         const Data = struct { signal: []const u8, platform: []const u8, trace_id: []const u8, command_id: []const u8 };
@@ -132,14 +180,24 @@ pub const Runner = struct {
             .data_json = try std.json.Stringify.valueAlloc(self.gpa, Data{ .signal = signal, .platform = platform, .trace_id = ids.trace_id, .command_id = ids.command_id }, .{}),
         } });
         self.expired = true;
-        return false;
+        return .detected;
     }
 
     /// Before a flow reports success: scan once more if it acted since the
-    /// last scan. False after recording -32010 (report runner's failure).
+    /// last scan. False when the flow must not report success (the runner
+    /// holds the failure): a signal (-32010), or the scan could not run and
+    /// the budget is spent (action_timeout `deadline_reason`).
     pub fn finish(self: *Runner) error{OutOfMemory}!bool {
-        if (self.expired or !self.scan_due) return !self.expired;
-        return self.scanClean();
+        if (self.expired) return false;
+        if (self.ext.cancelled()) return (try self.cancelStop()) != null;
+        if (!self.scan_due) return true;
+        const result = try self.scan();
+        if (result != .detected and self.ext.cancelled()) return (try self.cancelStop()) != null;
+        return switch (result) {
+            .detected => false,
+            .unknown => if (self.remainingMs() == 0) (try self.deadlineStop()) != null else true,
+            .clean, .skipped => true,
+        };
     }
 
     fn scanSpan(self: *Runner, platform: []const u8, signal: []const u8) void {
@@ -205,6 +263,39 @@ pub const Runner = struct {
         return f;
     }
 };
+
+/// `params_json` with its `timeout_ms` and `options.timeout_ms` lowered to
+/// at most `max_ms`; null when nothing needed lowering (or the params are
+/// not an object).
+fn clampTimeouts(gpa: std.mem.Allocator, params_json: []const u8, max_ms: u64) error{OutOfMemory}!?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer parsed.deinit();
+    var root = switch (parsed.value) {
+        .object => |*o| o,
+        else => return null,
+    };
+    var changed = lower(root, max_ms);
+    if (root.getPtr("options")) |options| switch (options.*) {
+        .object => |*o| changed = lower(o, max_ms) or changed,
+        else => {},
+    };
+    if (!changed) return null;
+    return try std.json.Stringify.valueAlloc(gpa, parsed.value, .{});
+}
+
+fn lower(object: *std.json.ObjectMap, max_ms: u64) bool {
+    const value = object.getPtr("timeout_ms") orelse return false;
+    const current: u64 = switch (value.*) {
+        .integer => |n| if (n >= 0) @intCast(n) else return false,
+        else => return false,
+    };
+    if (current <= max_ms) return false;
+    value.* = .{ .integer = @intCast(@min(max_ms, std.math.maxInt(i64))) };
+    return true;
+}
 
 /// Steps that act on the page (a rate-limit scan runs before them).
 fn isAction(method: []const u8) bool {

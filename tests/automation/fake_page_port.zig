@@ -100,7 +100,17 @@ pub const FakePagePort = struct {
     /// `scan_calls` instead of `eval_calls`, so flow tests keep their step
     /// sequences. Default: a clean page.
     scan_replies: []const EvalReply = &.{.{ .json = clean_scan }},
+    /// Simulated time each scan takes on `clock` (by scan index; the last
+    /// repeats). A cost above the scan's timeout consumes the timeout and
+    /// returns Timeout, like a real port.
+    scan_costs_ms: []const u64 = &.{0},
     scan_calls: usize = 0,
+    /// The timeout each scan was given.
+    scan_timeouts: [64]u64 = undefined,
+    /// Sets `cancel` while scan number `cancel_at_scan` runs (a server stop
+    /// arriving mid-scan).
+    cancel: ?*std.atomic.Value(bool) = null,
+    cancel_at_scan: usize = 0,
     /// The platform each scan asked about (last one).
     scan_platform: [16]u8 = undefined,
     scan_platform_len: usize = 0,
@@ -305,7 +315,7 @@ pub const FakePagePort = struct {
 
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg_json: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         const self = from(ptr);
-        if (std.mem.indexOf(u8, arg_json, "\"op\":\"rateLimitScan\"") != null) return self.scan(gpa, arg_json);
+        if (std.mem.indexOf(u8, arg_json, "\"op\":\"rateLimitScan\"") != null) return self.scan(gpa, arg_json, timeout_ms);
         const index = self.eval_calls.items.len;
         self.eval_calls.append(self.gpa, .{
             .world = world,
@@ -334,10 +344,20 @@ pub const FakePagePort = struct {
         };
     }
 
-    fn scan(self: *FakePagePort, gpa: std.mem.Allocator, arg_json: []const u8) page_port.PortError![]u8 {
+    fn scan(self: *FakePagePort, gpa: std.mem.Allocator, arg_json: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         const index = self.scan_calls;
         if (index < self.scan_positions.len) self.scan_positions[index] = self.eval_calls.items.len;
+        if (index < self.scan_timeouts.len) self.scan_timeouts[index] = timeout_ms;
         self.scan_calls += 1;
+        if (self.cancel) |flag| if (index == self.cancel_at_scan) flag.store(true, .release);
+        if (self.clock) |clock| if (self.scan_costs_ms.len > 0) {
+            const cost = self.scan_costs_ms[@min(index, self.scan_costs_ms.len - 1)];
+            if (cost > timeout_ms) {
+                clock.now_ms += timeout_ms;
+                return error.Timeout;
+            }
+            clock.now_ms += cost;
+        };
         const parsed = std.json.parseFromSlice(std.json.Value, self.gpa, arg_json, .{}) catch return error.EvalFailed;
         defer parsed.deinit();
         if (parsed.value.object.get("options")) |options| if (options.object.get("platform")) |platform| {
