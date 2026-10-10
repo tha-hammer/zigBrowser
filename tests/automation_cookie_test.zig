@@ -795,3 +795,58 @@ test "the import deadline covers reading and parsing: a pre-cancelled import tou
     try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
     try std.testing.expectEqual(@as(usize, 0), store.sets);
 }
+
+test "session:true with a persistent expires is contradictory and skipped" {
+    const path = try writeTemp("session-expires.json", "[{\"name\":\"a\",\"value\":\"1\",\"domain\":\"x.test\",\"session\":true,\"expires\":1893456000},{\"name\":\"b\",\"value\":\"1\",\"domain\":\"x.test\",\"session\":true,\"expires\":-1}]");
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "json");
+    defer gpa.free(params);
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var outcome = try call(&fake, "cookies.import", params);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":1}", outcome.result);
+    try std.testing.expect(std.mem.indexOf(u8, fake.sets.items[0], "\"name\":\"b\"") != null);
+}
+
+extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;
+
+test "import refuses non-regular files (FIFO, directory) without blocking" {
+    const fifo = try std.fmt.allocPrintSentinel(gpa, "/tmp/zb-cookie-test-{x}-fifo", .{std.testing.random_seed}, 0);
+    defer gpa.free(fifo);
+    std.Io.Dir.deleteFileAbsolute(io, fifo) catch {};
+    try std.testing.expectEqual(@as(c_int, 0), mkfifo(fifo, 0o600));
+    defer std.Io.Dir.deleteFileAbsolute(io, fifo) catch {};
+
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    for ([_][]const u8{ fifo, "/tmp" }) |path| {
+        const params = try importParams(path, "netscape");
+        defer gpa.free(params);
+        var outcome = try call(&fake, "cookies.import", params);
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32602), outcome.failure.code);
+        try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "not_regular_file") != null);
+    }
+}
+
+test "netscape include-subdomains flag must agree with the leading dot" {
+    const text =
+        "example.com\tTRUE\t/\tFALSE\t0\tno_dot_true\tv\n" ++
+        ".example.com\tFALSE\t/\tFALSE\t0\tdot_false\tv\n" ++
+        ".example.com\tTRUE\t/\tFALSE\t0\tdot_true\tv\n" ++
+        "example.com\tFALSE\t/\tFALSE\t0\tno_dot_false\tv\n";
+    const path = try writeTemp("subdomains.txt", text);
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "netscape");
+    defer gpa.free(params);
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var outcome = try call(&fake, "cookies.import", params);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":2,\"skipped\":2}", outcome.result);
+    try std.testing.expect(std.mem.indexOf(u8, fake.sets.items[0], "\"name\":\"dot_true\",\"value\":\"v\",\"domain\":\".example.com\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.sets.items[1], "\"name\":\"no_dot_false\",\"value\":\"v\",\"domain\":\"example.com\"") != null);
+}

@@ -256,13 +256,14 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
     const deadline = ext.nowMs() +| import_budget_ms;
     if (ext.cancelled()) return cancelledImport(gpa, span, ids);
 
-    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_import_bytes + 1)) catch |err| switch (err) {
+    _ = io;
+    const text = readRegularFile(gpa, path) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.StreamTooLong => return invalidParams(gpa, "file_too_large", ids),
-        else => return invalidParams(gpa, "unreadable_file", ids),
+        error.TooLarge => return invalidParams(gpa, "file_too_large", ids),
+        error.NotRegularFile => return invalidParams(gpa, "not_regular_file", ids),
+        error.Unreadable => return invalidParams(gpa, "unreadable_file", ids),
     };
     defer gpa.free(text);
-    if (text.len > max_import_bytes) return invalidParams(gpa, "file_too_large", ids);
 
     // Collect and validate every entry first so caps apply before any set.
     var cookies: std.ArrayListUnmanaged(Cookie) = .empty;
@@ -321,6 +322,45 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
     return .{ .result = try std.json.Stringify.valueAlloc(gpa, counts, .{}) };
 }
 
+/// Reads at most max_import_bytes of a REGULAR file. The path is opened
+/// non-blocking (a FIFO cannot block the open) and the type is checked on the
+/// opened handle (no stat-then-open race), so FIFOs, devices and directories
+/// are refused before any read that could wait forever.
+fn readRegularFile(gpa: std.mem.Allocator, path: []const u8) error{ OutOfMemory, TooLarge, NotRegularFile, Unreadable }![]u8 {
+    const path_z = try gpa.dupeZ(u8, path);
+    defer gpa.free(path_z);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY, .NONBLOCK = true, .CLOEXEC = true });
+    if (fd < 0) return error.Unreadable;
+    defer _ = std.c.close(fd);
+
+    if (!(try isRegularFd(fd))) return error.NotRegularFile;
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var chunk: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = std.c.read(fd, &chunk, chunk.len);
+        if (n < 0) return error.Unreadable;
+        if (n == 0) break;
+        if (out.items.len + @as(usize, @intCast(n)) > max_import_bytes) return error.TooLarge;
+        try out.appendSlice(gpa, chunk[0..@intCast(n)]);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn isRegularFd(fd: std.c.fd_t) error{Unreadable}!bool {
+    if (@import("builtin").os.tag == .linux) {
+        const linux = std.os.linux;
+        var sx: linux.Statx = undefined;
+        const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .TYPE = true }, &sx);
+        if (linux.errno(rc) != .SUCCESS) return error.Unreadable;
+        return linux.S.ISREG(sx.mode);
+    }
+    var st: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &st) != 0) return error.Unreadable;
+    return std.c.S.ISREG(st.mode);
+}
+
 fn cancelledImport(gpa: std.mem.Allocator, span: *SpanInfo, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
     span.error_class = "Cancelled";
     return engine_mod.automationFailure(gpa, .cancelled, null, ids);
@@ -371,7 +411,10 @@ fn parseNetscapeLine(line_in: []const u8) ??Cookie {
 
     const expires = std.fmt.parseInt(i64, fields[4], 10) catch return @as(?Cookie, null);
     if (expires < 0 or expires > max_expires_s) return @as(?Cookie, null);
-    _ = netscapeBool(fields[1]) orelse return @as(?Cookie, null); // include-subdomains column
+    // The include-subdomains column must agree with the domain's leading dot
+    // (TRUE <-> ".example.com"); a mismatch would change the cookie's scope.
+    const include_subdomains = netscapeBool(fields[1]) orelse return @as(?Cookie, null);
+    if (include_subdomains != std.mem.startsWith(u8, fields[0], ".")) return @as(?Cookie, null);
     const cookie = Cookie{
         .domain = fields[0],
         .path = fields[2],
@@ -441,7 +484,7 @@ fn cookieFromJsonExport(object: std.json.ObjectMap) ?Cookie {
     if (session_value != null) {
         // session must agree with the expiry: session:true has none,
         // session:false must have a real one.
-        if (session and expiration_date != null) return null;
+        if (session and expiry != null) return null;
         if (!session and expiry == null) return null;
     }
     if (!session) cookie.expires = expiry orelse -1;
