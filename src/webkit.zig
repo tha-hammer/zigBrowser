@@ -534,6 +534,10 @@ test "automation bridge drives a live WebKitGTK page" {
 
     gtk_port.installScript();
     defer c.zb_automation_set_script(null, 0);
+    // Run the whole scenario on a profile-backed (non-default) WebKit context.
+    const profile_dir = try std.fmt.allocPrintSentinel(arena, "{s}/profile", .{dir}, 0);
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_OK), c.zb_app_set_profile_dir(profile_dir.ptr, null));
+    defer _ = c.zb_app_set_profile_dir(null, null);
 
     const t = try std.Thread.spawn(.{}, LiveDriver.run, .{&driver});
     _ = c.zb_app_run(driver.uri_a.ptr, 0, 0);
@@ -548,5 +552,49 @@ test "automation bridge drives a live WebKitGTK page" {
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), c.zb_automation_get_url(null, 5000, &out));
     // Every bridge job (including the abandoned eval and load) was released.
     try std.testing.expectEqual(@as(c_int, 0), c.zb_automation_debug_live_jobs());
+    // The profile-backed context stored its data under the profile directory.
+    for ([_][]const u8{ "cookies.sqlite", "data", "cache" }) |entry| {
+        const path = try std.fmt.allocPrintSentinel(arena, "{s}/{s}", .{ profile_dir, entry }, 0);
+        try std.testing.expect(gio.mode(path.ptr) != null);
+    }
     c.zb_automation_loop_mark(1);
+}
+
+// --- Persistent profile (N4) ---
+
+const gio = struct {
+    extern fn g_file_new_for_path(path: [*:0]const u8) *anyopaque;
+    extern fn g_file_query_info(file: *anyopaque, attributes: [*:0]const u8, flags: c_int, cancellable: ?*anyopaque, err: ?*?*anyopaque) ?*anyopaque;
+    extern fn g_file_info_get_attribute_uint32(info: *anyopaque, attribute: [*:0]const u8) u32;
+    extern fn g_object_unref(object: *anyopaque) void;
+
+    /// Unix mode bits of `path`, or null when it does not exist.
+    fn mode(path: [*:0]const u8) ?u32 {
+        const file = g_file_new_for_path(path);
+        defer g_object_unref(file);
+        const info = g_file_query_info(file, "unix::mode", 0, null, null) orelse return null;
+        defer g_object_unref(info);
+        return g_file_info_get_attribute_uint32(info, "unix::mode");
+    }
+};
+
+test "zb_app_set_profile_dir creates the directory 0700 and reports failures" {
+    try skipUnlessGtk();
+    const base = gfile.g_dir_make_tmp("zb-profile-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(base);
+    var buf: [512]u8 = undefined;
+    const dir = try std.fmt.bufPrintZ(&buf, "{s}/nested/profile", .{base});
+
+    var err: [*c]u8 = null;
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_OK), c.zb_app_set_profile_dir(dir.ptr, &err));
+    try std.testing.expect(err == null);
+    const mode = gio.mode(dir.ptr) orelse return error.ProfileDirMissing;
+    try std.testing.expectEqual(@as(u32, 0o700), mode & 0o777);
+
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_INTERNAL), c.zb_app_set_profile_dir("/proc/zb-not-creatable/profile", &err));
+    try std.testing.expect(err != null);
+    c.zb_automation_free(err);
+
+    // NULL / "" go back to the default (non-profile) context.
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_OK), c.zb_app_set_profile_dir(null, null));
 }

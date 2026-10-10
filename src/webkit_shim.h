@@ -64,6 +64,14 @@ int zb_main_invoke_sync(ZbMainJobFn fn, void *ctx, unsigned int timeout_ms);
  * submissions queue and wait (the server starts before zb_app_run). */
 void zb_automation_loop_mark(int running);
 
+/* Persistent profile. Call before zb_app_run. Creates `dir` (0700, with
+ * parents) and makes the main window and its children use a WebKitWebContext
+ * whose website data lives in <dir>/data, cache in <dir>/cache, and cookies in
+ * <dir>/cookies.sqlite. NULL or "" restores the default context. Returns
+ * ZB_AUTO_OK, or ZB_AUTO_ERR_INTERNAL with *out_err set (free with
+ * zb_automation_free) when the directory cannot be created. */
+int zb_app_set_profile_dir(const char *dir, char **out_err);
+
 /* Isolated script world shared by the injected automation script and evals. */
 #define ZB_AUTOMATION_WORLD "zigbrowser-automation"
 

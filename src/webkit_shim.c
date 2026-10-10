@@ -1981,6 +1981,53 @@ void zb_automation_free(char *p) {
   g_free(p);
 }
 
+static char *zb_profile_dir; /* set before zb_app_run */
+
+int zb_app_set_profile_dir(const char *dir, char **out_err) {
+  if (out_err != NULL) {
+    *out_err = NULL;
+  }
+  g_free(zb_profile_dir);
+  zb_profile_dir = NULL;
+  if (dir == NULL || dir[0] == '\0') {
+    return ZB_AUTO_OK;
+  }
+
+  if (g_mkdir_with_parents(dir, 0700) != 0 || g_chmod(dir, 0700) != 0) {
+    int saved = errno;
+    if (out_err != NULL) {
+      *out_err = g_strdup_printf("cannot create profile directory %s: %s", dir,
+                                 g_strerror(saved));
+    }
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  zb_profile_dir = g_strdup(dir);
+  return ZB_AUTO_OK;
+}
+
+/* The default context, or a new one whose website data, cache and cookies
+ * persist under the profile directory. Returns a new reference. */
+static WebKitWebContext *app_create_web_context(void) {
+  if (zb_profile_dir == NULL) {
+    return g_object_ref(webkit_web_context_get_default());
+  }
+
+  char *data_dir = g_build_filename(zb_profile_dir, "data", NULL);
+  char *cache_dir = g_build_filename(zb_profile_dir, "cache", NULL);
+  char *cookie_file = g_build_filename(zb_profile_dir, "cookies.sqlite", NULL);
+  WebKitWebsiteDataManager *manager = webkit_website_data_manager_new(
+      "base-data-directory", data_dir, "base-cache-directory", cache_dir, NULL);
+  WebKitWebContext *context = webkit_web_context_new_with_website_data_manager(manager);
+  g_object_unref(manager);
+  webkit_cookie_manager_set_persistent_storage(
+      webkit_web_context_get_cookie_manager(context), cookie_file,
+      WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+  g_free(data_dir);
+  g_free(cache_dir);
+  g_free(cookie_file);
+  return context;
+}
+
 static int app_run(const char *uri, int print_title, int e2e_protocol);
 
 /* Every exit, including early init failures, ends the automation loop so a
@@ -2010,7 +2057,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
   app.exit_code = ZB_EXIT_SUCCESS;
   app.app_base = derive_app_base(uri);
 
-  WebKitWebContext *web_context = webkit_web_context_get_default();
+  WebKitWebContext *web_context = app_create_web_context();
   WebKitCookieManager *cookie_mgr =
       webkit_web_context_get_cookie_manager(web_context);
   webkit_cookie_manager_set_accept_policy(
@@ -2019,13 +2066,16 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
   WebKitUserContentManager *ucm = webkit_user_content_manager_new();
   if (ucm == NULL) {
     fprintf(stderr, "failed to create WebKitUserContentManager\n");
+    g_object_unref(web_context);
     g_free(app.app_base);
     return ZB_EXIT_GTK_INIT_FAILED;
   }
 
-  WebKitWebView *main_view =
-      WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(ucm));
+  WebKitWebView *main_view = WEBKIT_WEB_VIEW(
+      g_object_new(WEBKIT_TYPE_WEB_VIEW, "web-context", web_context,
+                   "user-content-manager", ucm, NULL));
   g_object_unref(ucm); /* C14.11: constructor retained a reference */
+  g_object_unref(web_context); /* the view (and each ZbWindow) holds its own */
 
   if (main_view == NULL) {
     fprintf(stderr, "failed to create WebKitWebView\n");
