@@ -146,6 +146,7 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `e4b6864` — failed/canceled navigation latch recovery | Exact C/Zig/isolated-world/live-test diff; clean-export `timeout 900 xvfb-run -a zig build test --summary all`, with automatic tree deletion | **GREEN 79/79 steps, 559/559 tests; CODE BLOCKED**. | C-owned request URLs are released and the real isolated-world/GTK adapter path is exercised. Canceled and 204 navigations no longer poison every later text sequence. BLOCKER: a late request-ID callback is assigned to the current unnumbered same-URL navigation, and the live oracle waits for A's ID before starting B, excluding the A-callback-after-B-start race. Retain/order started records and prove immediate same-URL supersession plus policy-block completion. Mailed cc_1 as 4667. |
 | `a6241b6` — N16 login/cap/URL/typing/story/telemetry follow-up | Exact 12-file diff; clean-export bounded Xvfb gate with automatic deletion | **GREEN 79/79 steps, 564/564 tests; CODE BLOCKED**. | Approves exact platform hosts, removal of request `baseUrl`, pre-page cookie plus post-nav DOM gates, typed payloads, note truncation, basic story iteration, redacted EV7/EV8 shape, and sequential socket routing. BLOCKERS: admitted success can be silently uncounted after pacing reconfiguration; the cookie gate and default-30s story URL read escape the 120s budget; a >64-child trace drops late EV8; concurrency bypasses queue/flow/PagePort; closure does not start at an SDK. SHOULD: conversation/session hash schema. Mailed cc_2 as 4668 and 4671. |
 | `1219446` — navigation arrival barrier, policy-block recovery, and native-input reentrancy | Exact six-file diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 565/565 tests; N8 BLOCKER CLOSED**. | Each page navigation owns its shell arrival sequence; immediate same-URL C/D proves two page starts and two arrivals, stale completion cannot clear the newer navigation, and live canceled/204/policy-block cases all permit later input without touching a replacement document. The handler is isolated-world, once per shared content manager, synchronous, and has no window userdata. Focus/key self-close retains GObjects and stops later events. The socket E2E proves a repeated-target humanized path starts off-target and ends on-target with trusted moves. Mailed cc_1 approval after the exact gate. |
+| `57a56fd` — N17 native set-input-files | Exact C/JS/live-WebKit diff; clean-export `timeout 900 xvfb-run -a zig build test --summary all`, with automatic deletion | **GREEN 79/79 steps, 566/566 tests; CODE BLOCKED**. | Closes the unbounded post-chooser wait: the job stays async and a withheld WebKit callback returns bounded `FILES_UNCONFIRMED`. Paths are copied/validated without logging content, the handler is in the isolated world, and token ordering rejects an earlier unrelated chooser. BLOCKERS: an applied selection followed by JS/window/process failure loses unconfirmed provenance; the same state is set before the single-file rejection; an armed late chooser after timeout can become an unclaimed default dialog. SHOULD: missing `zbFiles` still clicks. Mailed cc_1 as 4693. |
 
 ## Closure audit at `b9299f6`
 
@@ -653,7 +654,50 @@ withheld boundary deterministically. The current job also claims the next file
 chooser on the window rather than proving it came from the requested element;
 that association race needs serialization or explicit WebKit ordering evidence.
 
-Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4680 during WIP review.
+Status: **CLOSED by `57a56fd`**. `ZB_OP_SET_FILES` remains asynchronous after
+the chooser is answered, and the live WebKit test withholds the JavaScript
+answer for two seconds under a 500 ms deadline. The call returns bounded
+`ZB_AUTO_ERR_FILES_UNCONFIRMED`; the former `is_async = 0` mutant fails that
+oracle. The token/message ordering also closes the original “next chooser”
+association concern for a chooser that precedes the job's token. Mailed as
+4680/4681; closing review and remaining distinct blockers mailed as 4693.
+
+### BLOCKER — N17 loses post-selection exactly-once provenance
+
+`57a56fd` records `files_answered = 1` before the single-file backstop, then
+uses that value to decide whether a timeout means files were applied. A
+deadline that wins between those operations can report `FILES_UNCONFIRMED`
+even though the chooser was cancelled. Conversely, after files really were
+selected, an asynchronous JavaScript error, process failure, navigation or
+window cancellation returns the ordinary JS/cancel error because only Timeout
+is remapped. A caller can therefore retry an already-triggered auto-upload.
+The native job needs a separate side-effect-committed state, set only at the
+selection call, and every ambiguous failure after it must be unconfirmed.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Add deterministic pre-commit and
+post-commit failure oracles. Mailed as 4693.
+
+### BLOCKER — N17 timeout can expose a late default file dialog
+
+On abandonment, `57a56fd` clears the job's target and removes it from the
+in-flight list. If the already-issued click's chooser signal arrives after
+that cleanup, the chooser callback finds no job and returns false, enabling
+WebKit's real default dialog after the socket caller already received Timeout.
+The live test globally cancels unmatched choosers through a debug mode, which
+masks that production branch. Preserve sufficient armed-job/tombstone state
+to cancel the associated late chooser and prove the production behavior with
+a deadline-before-chooser oracle.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4693.
+
+### SHOULD — N17 clicks when the isolated-world file handler is unavailable
+
+`automation.js` still calls `element.click()` if `zbFiles` is absent or the
+injected token is invalid. Handler registration failure therefore opens a
+native dialog and waits for timeout instead of failing before side effects.
+Require the handler and token, and diagnose `zbFiles` registration failure.
+
+Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4693.
 
 ### SHOULD — closing one window terminates every related WebKit child process
 
