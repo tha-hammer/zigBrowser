@@ -1936,3 +1936,173 @@ test "native text: a navigation blocked by policy does not refuse later typing" 
     try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
     c.zb_automation_loop_mark(1);
 }
+
+// N17: file inputs through WebKit's file chooser.
+const files_fixture =
+    \\<!doctype html><html><head><title>Files</title></head><body>
+    \\<input type="file" id="multi" multiple>
+    \\<input type="file" id="one" style="display:none">
+    \\<input type="file" id="off" disabled>
+    \\<input type="text" id="text">
+    \\<script>window.fileLog = [];
+    \\document.addEventListener('change', function (e) {
+    \\  if (e.target.type !== 'file') return;
+    \\  window.fileLog.push(e.target.id + ':' + e.isTrusted + ':' + Array.from(e.target.files).map(function (f) { return f.name + '/' + f.size; }).join(','));
+    \\}, true);</script>
+    \\</body></html>
+;
+
+const FilesDriver = struct {
+    nav: NavEndDriver = .{},
+    a: [:0]const u8,
+    b: [:0]const u8,
+    dir: [:0]const u8,
+
+    const handle_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
+
+    fn set(self: *FilesDriver, arg: [:0]const u8, body: [:0]const u8, paths: []const [*:0]const u8, timeout_ms: c_uint, out: *[512]u8) c_int {
+        _ = self;
+        var result: [*c]u8 = null;
+        var err: [*c]u8 = null;
+        const rc = c.zb_set_input_files(null, body.ptr, arg.ptr, @ptrCast(paths.ptr), @intCast(paths.len), timeout_ms, &result, &err);
+        c.zb_automation_free(err);
+        defer c.zb_automation_free(result);
+        @memset(out, 0);
+        if (result != null) {
+            const text = std.mem.span(result);
+            @memcpy(out[0..@min(text.len, out.len - 1)], text[0..@min(text.len, out.len - 1)]);
+        }
+        return rc;
+    }
+
+    fn log(self: *FilesDriver) []const u8 {
+        return self.nav.eval("return window.fileLog.join('|');", null);
+    }
+
+    fn check(self: *FilesDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("set-files check failed: {s}\n", .{what});
+            self.nav.failures += 1;
+        }
+    }
+
+    fn run(self: *FilesDriver) void {
+        const d = &self.nav;
+        _ = d.eval("return 1;", null);
+        var out: [512]u8 = undefined;
+        const both = [_][*:0]const u8{ self.a.ptr, self.b.ptr };
+        const one = [_][*:0]const u8{self.a.ptr};
+
+        // A visible multiple input takes both files: trusted change, names and sizes.
+        var rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":2}", handle_body, &both, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.startsWith(u8, &out, "{\"ok\":true"), "both files set on the multiple input");
+        self.check(std.mem.eql(u8, self.log(), "multi:true:a.txt/5,b.bin/8"), "the page saw a trusted change with both files");
+
+        // A hidden single input takes one.
+        _ = d.eval("window.fileLog = []; return 0;", null);
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#one\",\"count\":1}", handle_body, &one, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.startsWith(u8, &out, "{\"ok\":true"), "one file set on the hidden input");
+        self.check(std.mem.eql(u8, self.log(), "one:true:a.txt/5"), "the hidden input got a trusted change");
+
+        // Refusals by the op: nothing clicked, nothing changed.
+        _ = d.eval("window.fileLog = []; return 0;", null);
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#one\",\"count\":2}", handle_body, &both, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.indexOf(u8, &out, "not_multiple") != null, "two files for a single input are refused");
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#text\",\"count\":1}", handle_body, &one, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.indexOf(u8, &out, "not_file_input") != null, "a text input is refused");
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#off\",\"count\":1}", handle_body, &one, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.indexOf(u8, &out, "element_disabled") != null, "a disabled input is refused");
+
+        // Bad paths: refused before anything runs.
+        const relative = [_][*:0]const u8{"a.txt"};
+        const missing = [_][*:0]const u8{"/nonexistent/zb-file"};
+        const directory = [_][*:0]const u8{self.dir.ptr};
+        self.check(self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &relative, 5000, &out) == c.ZB_AUTO_ERR_BAD_FILE, "a relative path is refused");
+        self.check(self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &missing, 5000, &out) == c.ZB_AUTO_ERR_BAD_FILE, "a missing file is refused");
+        self.check(self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &directory, 5000, &out) == c.ZB_AUTO_ERR_BAD_FILE, "a directory is refused");
+
+        // Backstop: a body that clicks a single input directly with two
+        // files; the shim cancels the chooser.
+        rc = self.set("{}", "globalThis.webkit.messageHandlers.zbFiles.postMessage(JSON.parse(arg).token); document.getElementById('one').click(); return JSON.stringify({ ok: true });", &both, 5000, &out);
+        self.check(rc == c.ZB_AUTO_ERR_BAD_FILE, "the shim refuses two files for a single-file chooser");
+        self.check(std.mem.eql(u8, self.log(), ""), "no refusal changed any input");
+
+        // A job whose click never happens times out and does not stay armed:
+        // the next one works.
+        rc = self.set("{}", "return JSON.stringify({ ok: true });", &one, 300, &out);
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "no chooser before the deadline is a timeout");
+        sleepMs(100);
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK, "a later set-files call is not blocked by the timed-out one");
+        self.check(std.mem.eql(u8, self.log(), "multi:true:a.txt/5"), "and its file arrives");
+
+        // The op's answer withheld past the deadline after the chooser was
+        // answered: a bounded, defined outcome, and the files are applied
+        // exactly once.
+        _ = d.eval("window.fileLog = []; return 0;", null);
+        const started = monotonicMs();
+        rc = self.set("{}", "globalThis.webkit.messageHandlers.zbFiles.postMessage(JSON.parse(arg).token); document.getElementById('multi').click(); await new Promise(function (r) { setTimeout(r, 2000); }); return JSON.stringify({ ok: true });", &both, 500, &out);
+        self.check(rc == c.ZB_AUTO_ERR_FILES_UNCONFIRMED, "chosen but unconfirmed by the deadline is FILES_UNCONFIRMED");
+        self.check(monotonicMs() - started < 1500, "the call ends at its deadline, not when the page answers");
+        sleepMs(2500);
+        self.check(std.mem.eql(u8, self.log(), "multi:true:a.txt/5,b.bin/8"), "the files were applied once");
+
+        // A chooser the op did not open (page script clicks another input
+        // after the job is armed, before the op runs) never gets the files.
+        // WebKit keeps one chooser per page, so the op's own click opens
+        // none while that one is pending: the call times out, and no input
+        // received anything.
+        _ = d.eval("window.fileLog = []; return 0;", null);
+        const unmatched_before = c.zb_automation_debug_files_unmatched_hits();
+        c.zb_automation_debug_files_preclick("document.getElementById('one').click()");
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 1000, &out);
+        c.zb_automation_debug_files_preclick(null);
+        self.check(c.zb_automation_debug_files_unmatched_hits() == unmatched_before + 1, "the page's chooser was not this job's");
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "the op's click opened no chooser of its own: timeout");
+        sleepMs(300);
+        self.check(std.mem.eql(u8, self.log(), ""), "no input received the files");
+        // And the next call works normally.
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.eql(u8, self.log(), "multi:true:a.txt/5"), "a later call sets the file");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "set input files answers the file chooser the input's click opens" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir_raw = gfile.g_dir_make_tmp("zb-files-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir_raw);
+    const dir = try arena.dupeZ(u8, std.mem.span(dir_raw));
+    const page = try std.fmt.allocPrintSentinel(arena, "{s}/files.html", .{dir}, 0);
+    const a = try std.fmt.allocPrintSentinel(arena, "{s}/a.txt", .{dir}, 0);
+    const b = try std.fmt.allocPrintSentinel(arena, "{s}/b.bin", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(page, files_fixture.ptr, files_fixture.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(a, "hello", 5, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(b, "abcdefgh", 8, null) != 0);
+    const raw = gfile.g_filename_to_uri(page, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw);
+    const uri = try arena.dupeZ(u8, std.mem.span(raw));
+    var driver: FilesDriver = .{ .a = a, .b = b, .dir = dir };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    // No GTK dialog in tests: unclaimed choosers are cancelled and counted.
+    c.zb_automation_debug_files_unmatched(1);
+    defer c.zb_automation_debug_files_unmatched(0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, FilesDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
+    c.zb_automation_loop_mark(1);
+}

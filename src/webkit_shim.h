@@ -49,6 +49,8 @@ enum {
   ZB_AUTO_ERR_INTERNAL = 6,   /* bad args, or async op called on the GTK thread */
   ZB_AUTO_ERR_CANCELLED = 7,  /* window destroyed while the job was in flight */
   ZB_AUTO_ERR_DOC_CHANGED = 8, /* native input: the page is no longer the expected document */
+  ZB_AUTO_ERR_BAD_FILE = 9,    /* set files: a path is not a readable regular file, or too many */
+  ZB_AUTO_ERR_FILES_UNCONFIRMED = 10, /* set files: chosen, but the page did not confirm in time */
 };
 
 typedef void (*ZbMainJobFn)(void *ctx);
@@ -184,6 +186,18 @@ enum {
  * with ZB_AUTO_ERR_DOC_CHANGED (nothing sent) or delivers the events. */
 
 /* One pointer-motion event to (x, y), no click (for humanized paths). */
+/* Set a file input's files through WebKit's file chooser: run
+ * `function_body` (bound `arg` = arg_json) in the automation world; the
+ * automation.js op it runs clicks the input, and the chooser that opens is
+ * answered with `paths` (absolute, readable regular files, checked first:
+ * ZB_AUTO_ERR_BAD_FILE, nothing run). Returns the op's JSON answer; when the
+ * op refuses, nothing was clicked. Several paths for a single-file input:
+ * the chooser is cancelled and ZB_AUTO_ERR_BAD_FILE. A deadline that passes
+ * after the files were chosen is ZB_AUTO_ERR_FILES_UNCONFIRMED (they were
+ * applied once; never repeat the call). */
+int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg_json,
+                       const char *const *paths, int n_paths, unsigned int timeout_ms,
+                       char **out_result, char **out_err);
 int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
                    unsigned int timeout_ms, char **out_err);
 
@@ -233,6 +247,13 @@ int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms);
 int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms);
 /* Test hook: pointer-cache writes dropped because the window had gone. */
 int zb_automation_debug_pointer_lost(void);
+/* Test hook: cancel (and count) file choosers no set-files job claimed,
+ * instead of opening the default dialog. */
+void zb_automation_debug_files_unmatched(int cancel);
+int zb_automation_debug_files_unmatched_hits(void);
+/* Test hook: page-world script each set-files job runs after it is armed
+ * and before its op (NULL = off). */
+void zb_automation_debug_files_preclick(const char *page_js);
 /* Test hook: like close_on_motion, from the view's key-press handler. */
 int zb_automation_debug_close_on_key(ZbWindow *win, unsigned int timeout_ms);
 /* Test hook: key events not sent because their window was destroyed. */

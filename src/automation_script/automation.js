@@ -16,6 +16,7 @@
   const FNV_PRIME_32 = 16777619;
   const BBOX_DECIMAL_SCALE = 100;
   const MAX_ATTEMPT_INDEX = 0xffffffff; // engine sends a u32
+  const FILES_SETTLE_MS = 2000;
 
   // Trusted-input acknowledgement: native (GDK) events reach the page
   // asynchronously, so callers compare these counts before and after sending
@@ -112,6 +113,8 @@
         return press(command);
       case 'selectOption':
         return selectOption(command);
+      case 'chooseFiles':
+        return chooseFiles(command);
       case 'locate':
         return locate(command);
       case 'waitFor':
@@ -281,6 +284,50 @@
       return clickAriaOption(listbox, command, telemetry);
     }
     return failure('not_selectable', command, telemetry, false);
+  }
+
+  // dom.setInputFiles: click the file input so the browser opens its file
+  // chooser, which the shell answers with the files. Hidden file inputs are
+  // the usual case (sites style a button instead), so there is no
+  // visibility or hit-test check: a script click from this world opens the
+  // chooser anyway. Refuses before clicking when the input cannot take
+  // `count` files.
+  function chooseFiles(command) {
+    const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+    if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
+    const element = resolved.elements[0];
+    const telemetry = resolved.telemetry.slice();
+    if (element.tagName.toLowerCase() !== 'input' || String(element.type).toLowerCase() !== 'file') {
+      return failure('not_file_input', command, telemetry, false);
+    }
+    if (isDisabled(element)) return actionFailure('element_disabled', 'enabled', telemetry);
+    const count = Number(command.count);
+    if (!Number.isInteger(count) || count < 1) return failure('malformed_command', command, telemetry, false);
+    if (count > 1 && !element.multiple) return failure('not_multiple', command, telemetry, false);
+    // Answer once the input took the files (its change event) or the
+    // chooser was cancelled; choosing the same files again may fire neither.
+    const settled = new Promise((resolve) => {
+      let timer = null;
+      const finish = (changed) => {
+        element.removeEventListener('change', onChange, true);
+        element.removeEventListener('cancel', onCancel, true);
+        clearTimeout(timer);
+        resolve(changed);
+      };
+      const onChange = () => finish(true);
+      const onCancel = () => finish(false);
+      element.addEventListener('change', onChange, true);
+      element.addEventListener('cancel', onCancel, true);
+      timer = setTimeout(() => finish(false), FILES_SETTLE_MS);
+    });
+    // Tell the shell which chooser is ours: the post and the click run in
+    // this one task, so the next chooser it sees is the one opened here.
+    const shell = globalScope.webkit && globalScope.webkit.messageHandlers &&
+      globalScope.webkit.messageHandlers.zbFiles;
+    if (shell && typeof command.token === 'string') Promise.resolve(shell.postMessage(command.token)).catch(() => {});
+    element.click();
+    return settled.then((changed) => success({ multiple: element.multiple, changed }, telemetry));
   }
 
   function selectNative(select, command, telemetry) {

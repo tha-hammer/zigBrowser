@@ -100,6 +100,7 @@ struct ZbWindow {
   int auto_pointer_valid;
   double auto_pointer_x, auto_pointer_y;
   gulong sig_uri_notify;
+  gulong sig_file_chooser;
 };
 
 struct ZbApp {
@@ -140,8 +141,12 @@ static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *ur
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
 static void auto_nav_blocked(ZbWindow *win, const char *candidate);
 static void auto_navigation_ended(ZbWindow *win);
+static gboolean on_window_file_chooser(WebKitWebView *view, WebKitFileChooserRequest *request,
+                                       gpointer user_data);
 static gboolean on_auto_navigation_message(WebKitUserContentManager *ucm, JSCValue *value,
                                            WebKitScriptMessageReply *reply, gpointer data);
+static gboolean on_auto_files_message(WebKitUserContentManager *ucm, JSCValue *value,
+                                      WebKitScriptMessageReply *reply, gpointer data);
 static int auto_window_owns_load_deadline(ZbWindow *win);
 static void auto_uri_changed(ZbWindow *win, const char *uri);
 static void auto_first_load_done(ZbWindow *win);
@@ -771,6 +776,10 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
       g_signal_handler_disconnect(win->view, win->sig_uri_notify);
       win->sig_uri_notify = 0;
     }
+    if (win->sig_file_chooser != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_file_chooser);
+      win->sig_file_chooser = 0;
+    }
   }
 
   if (win->ucm != NULL) {
@@ -1004,6 +1013,9 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   win->sig_uri_notify =
       g_signal_connect_data(view, "notify::uri",
                             G_CALLBACK(on_window_uri_notify), win, NULL, 0);
+  win->sig_file_chooser =
+      g_signal_connect_data(view, "run-file-chooser",
+                            G_CALLBACK(on_window_file_chooser), win, NULL, 0);
   win->sig_destroy = g_signal_connect_data(win->gtk_window, "destroy",
                                            G_CALLBACK(on_window_destroy), win,
                                            NULL, 0);
@@ -1223,6 +1235,12 @@ struct ZbAutoJob {
   int load_displaced; /* another URI committed over this load */
   int same_document; /* `url` differs from the page only by fragment */
   unsigned int load_gen;
+  char **paths;         /* set files: absolute regular files to choose */
+  int files_eval;       /* set files: 0 pending, 1 the op clicked the input */
+  int files_answered;   /* set files: 0 no chooser yet, 1 answered */
+  int files_armed;      /* set files: the op announced its click (files_token) */
+  char files_token[17]; /* set files: binds the op's click to this job */
+  char *files_result;   /* set files: the op's JSON answer, until both are in */
 };
 
 static GMutex zb_auto_mutex;
@@ -1265,6 +1283,8 @@ static void auto_job_unref(gpointer data) {
   g_free(job->world);
   g_free(job->url);
   g_free(job->expected_doc);
+  g_strfreev(job->paths);
+  g_free(job->files_result);
   if (job->cancellable != NULL) {
     g_object_unref(job->cancellable);
   }
@@ -1490,6 +1510,7 @@ enum {
   ZB_OP_NATIVE_KEY,
   ZB_OP_NATIVE_TEXT,
   ZB_OP_NATIVE_MOVE,
+  ZB_OP_SET_FILES,
 };
 
 #define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
@@ -1526,6 +1547,11 @@ static void auto_install_script(ZbWindow *win) {
           win->ucm, "zbNavigation", ZB_AUTOMATION_WORLD)) {
     g_signal_connect(win->ucm, "script-message-with-reply-received::zbNavigation",
                      G_CALLBACK(on_auto_navigation_message), NULL);
+    if (webkit_user_content_manager_register_script_message_handler_with_reply(
+            win->ucm, "zbFiles", ZB_AUTOMATION_WORLD)) {
+      g_signal_connect(win->ucm, "script-message-with-reply-received::zbFiles",
+                       G_CALLBACK(on_auto_files_message), NULL);
+    }
   } else {
     /* Without it no navigation gets an arrival number: a 204, download or
      * blocked navigation then keeps refusing native text until the page
@@ -1885,6 +1911,12 @@ static gboolean auto_abandon_dispatch(gpointer data) {
     job->target = NULL;
     auto_untrack(job);
   }
+  /* A set-files job its caller gave up on must not stay armed: a later
+   * chooser on this window gets the default dialog, never these files. */
+  if (win != NULL && job->op == ZB_OP_SET_FILES) {
+    job->target = NULL;
+    auto_untrack(job);
+  }
   return G_SOURCE_REMOVE;
 }
 
@@ -1934,6 +1966,194 @@ static void auto_start_eval(ZbAutoJob *job) {
       win->view, job->body, -1, args, job->world, NULL, job->cancellable,
       on_auto_eval_done, auto_async_ref(job));
   g_variant_unref(args); /* arguments are transfer-none */
+}
+
+/* ---- Set input files ----
+ * The job runs an automation.js op (chooseFiles) that clicks a file input;
+ * the click opens WebKit's file chooser, which on_window_file_chooser
+ * answers with the job's paths. Script clicks from the automation world
+ * count as user gestures, so hidden inputs work too. The chooser request
+ * usually arrives before the op's own answer; the job completes once both
+ * are in, or at once when the op reports a failure (nothing was clicked). */
+
+/* The tracked set-files job waiting for a chooser on `win`, if any. */
+static ZbAutoJob *auto_files_job_for(ZbWindow *win) {
+  for (GList *link = zb_auto_inflight; link != NULL; link = link->next) {
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->op == ZB_OP_SET_FILES && job->target == win && !job->files_answered) {
+      return job;
+    }
+  }
+  return NULL;
+}
+
+/* zbFiles: chooseFiles posts its job token right before it clicks, in the
+ * same task. Script messages and chooser requests reach this thread over
+ * the web process's one ordered connection, and nothing runs in the page
+ * between the post and the click, so the next chooser on that window is
+ * the one the click opened. A chooser before the token (page script, a
+ * person) is not this job's. */
+static gboolean on_auto_files_message(WebKitUserContentManager *ucm, JSCValue *value,
+                                      WebKitScriptMessageReply *reply, gpointer data) {
+  (void)ucm;
+  (void)data;
+  char *token = jsc_value_is_string(value) ? jsc_value_to_string(value) : NULL;
+  for (GList *link = zb_auto_inflight; token != NULL && link != NULL; link = link->next) {
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->op == ZB_OP_SET_FILES && job->target != NULL && !job->files_answered &&
+        strcmp(job->files_token, token) == 0) {
+      job->files_armed = 1;
+    }
+  }
+  g_free(token);
+  JSCValue *nothing = jsc_value_new_null(jsc_value_get_context(value));
+  webkit_script_message_reply_return_value(reply, nothing);
+  g_object_unref(nothing);
+  return TRUE;
+}
+
+static gint zb_auto_debug_files_unmatched_mode;
+static gint zb_auto_debug_files_unmatched;
+
+void zb_automation_debug_files_unmatched(int cancel) {
+  g_atomic_int_set(&zb_auto_debug_files_unmatched_mode, cancel);
+}
+
+int zb_automation_debug_files_unmatched_hits(void) {
+  return g_atomic_int_get(&zb_auto_debug_files_unmatched);
+}
+
+static gchar *zb_auto_debug_files_preclick; /* guarded by zb_auto_mutex */
+
+void zb_automation_debug_files_preclick(const char *page_js) {
+  g_mutex_lock(&zb_auto_mutex);
+  g_free(zb_auto_debug_files_preclick);
+  zb_auto_debug_files_preclick = g_strdup(page_js);
+  g_mutex_unlock(&zb_auto_mutex);
+}
+
+static void auto_files_maybe_complete(ZbAutoJob *job) {
+  if (job->files_eval != 1 || !job->files_answered) {
+    return;
+  }
+  char *result = job->files_result;
+  job->files_result = NULL;
+  job->target = NULL;
+  auto_job_complete(job, ZB_AUTO_OK, result, NULL);
+  auto_untrack(job);
+}
+
+static void on_auto_files_eval_done(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  GError *error = NULL;
+  JSCValue *value = webkit_web_view_call_async_javascript_function_finish(
+      WEBKIT_WEB_VIEW(object), result, &error);
+  if (value == NULL) {
+    int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
+                                                                         : ZB_AUTO_ERR_JS;
+    job->target = NULL;
+    auto_job_complete(job, code, NULL, g_strdup(error != NULL ? error->message : "eval failed"));
+    auto_untrack(job);
+    g_clear_error(&error);
+  } else {
+    char *out = jsc_value_is_string(value) ? jsc_value_to_string(value) : g_strdup("null");
+    g_object_unref(value);
+    if (!g_str_has_prefix(out, "{\"ok\":true")) {
+      /* The op refused (no match, not a file input, ...): nothing clicked. */
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_OK, out, NULL);
+      auto_untrack(job);
+    } else {
+      g_free(job->files_result);
+      job->files_result = out;
+      job->files_eval = 1;
+      auto_files_maybe_complete(job);
+    }
+  }
+  auto_async_release(job);
+}
+
+static void auto_start_files(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+  if (auto_files_job_for(win) != NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_INTERNAL, NULL,
+                      g_strdup("another file chooser answer is pending"));
+    return;
+  }
+  static guint32 counter;
+  g_snprintf(job->files_token, sizeof job->files_token, "%08x%08x", ++counter, g_random_int());
+  /* The op reads its token from the command: add it to `arg`. */
+  char *body = g_strconcat("{ const zbCommand = JSON.parse(arg); zbCommand.token = token; "
+                           "arg = JSON.stringify(zbCommand); }\n",
+                           job->body, NULL);
+  GVariantDict dict;
+  g_variant_dict_init(&dict, NULL);
+  g_variant_dict_insert(&dict, "arg", "s", job->arg);
+  g_variant_dict_insert(&dict, "token", "s", job->files_token);
+  GVariant *args = g_variant_ref_sink(g_variant_dict_end(&dict));
+  auto_track(job, win);
+  g_mutex_lock(&zb_auto_mutex);
+  gchar *preclick = g_strdup(zb_auto_debug_files_preclick);
+  g_mutex_unlock(&zb_auto_mutex);
+  if (preclick != NULL) {
+    /* Test hook: page script that runs (with its own gesture) after the job
+     * is tracked and before its op: a chooser that is not the job's. */
+    webkit_web_view_evaluate_javascript(win->view, preclick, -1, NULL, NULL, NULL, NULL, NULL);
+    g_free(preclick);
+  }
+  webkit_web_view_call_async_javascript_function(
+      win->view, body, -1, args, ZB_AUTOMATION_WORLD, NULL, job->cancellable,
+      on_auto_files_eval_done, auto_async_ref(job));
+  g_variant_unref(args);
+  g_free(body);
+}
+
+/* GTK thread: WebKit asks for files. The set-files job whose op announced
+ * its click on this window answers it; any other chooser gets the default
+ * dialog. A job its caller already gave up on answers nothing (the chooser
+ * is cancelled): once a caller saw a timeout, no files appear later. The
+ * job stays bound by its deadline after answering: the op's own answer
+ * crosses the process boundary and may never come. */
+static gboolean on_window_file_chooser(WebKitWebView *view, WebKitFileChooserRequest *request,
+                                       gpointer user_data) {
+  (void)view;
+  ZbWindow *win = (ZbWindow *)user_data;
+  ZbAutoJob *job = win != NULL ? auto_files_job_for(win) : NULL;
+  if (job == NULL || !job->files_armed) {
+    if (g_atomic_int_get(&zb_auto_debug_files_unmatched_mode)) {
+      g_atomic_int_inc(&zb_auto_debug_files_unmatched);
+      webkit_file_chooser_request_cancel(request);
+      return TRUE;
+    }
+    return FALSE;
+  }
+  g_mutex_lock(&zb_auto_mutex);
+  int live = job->state == ZB_JOB_RUNNING;
+  /* Decided under the mutex: a waiter that already gave up never sees files
+   * applied after its timeout; one that gives up later learns they were. */
+  job->files_answered = live ? 1 : -1;
+  g_mutex_unlock(&zb_auto_mutex);
+  guint count = g_strv_length(job->paths);
+  if (!live) {
+    webkit_file_chooser_request_cancel(request);
+    return TRUE;
+  }
+  if (count > 1 && !webkit_file_chooser_request_get_select_multiple(request)) {
+    webkit_file_chooser_request_cancel(request);
+    job->target = NULL;
+    auto_job_complete(job, ZB_AUTO_ERR_BAD_FILE, NULL,
+                      g_strdup("the file input accepts one file"));
+    auto_untrack(job);
+    return TRUE;
+  }
+  webkit_file_chooser_request_select_files(request, (const gchar *const *)job->paths);
+  /* Usually the op's answer is still on its way and completes the job. */
+  auto_files_maybe_complete(job);
+  return TRUE;
 }
 
 /* Mirrors zb_reload: mark the in-flight load superseded so its cancellation
@@ -2099,8 +2319,9 @@ static ZbAutoJob *auto_op_new(int op) {
   int is_cookie = op == ZB_OP_COOKIES_GET || op == ZB_OP_COOKIES_ADD ||
                   op == ZB_OP_COOKIES_DELETE;
   int is_async = op == ZB_OP_EVAL || op == ZB_OP_NAVIGATE || op == ZB_OP_RELOAD ||
-                 is_cookie;
-  ZbAutoStartFn start = op == ZB_OP_EVAL ? auto_start_eval
+                 op == ZB_OP_SET_FILES || is_cookie;
+  ZbAutoStartFn start = op == ZB_OP_EVAL         ? auto_start_eval
+                        : op == ZB_OP_SET_FILES ? auto_start_files
                         : is_cookie     ? auto_start_cookies
                         : is_async      ? auto_start_load
                                         : auto_start_get;
@@ -2963,6 +3184,50 @@ int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms) 
     return ZB_AUTO_ERR_INTERNAL;
   }
   return zb_main_invoke_sync(auto_debug_close_on_motion, win, timeout_ms);
+}
+
+int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg_json,
+                       const char *const *paths, int n_paths, unsigned int timeout_ms,
+                       char **out_result, char **out_err) {
+  if (out_result != NULL) {
+    *out_result = NULL;
+  }
+  if (out_err != NULL) {
+    *out_err = NULL;
+  }
+  if (function_body == NULL || paths == NULL || n_paths <= 0) {
+    return ZB_AUTO_ERR_BAD_FILE;
+  }
+  /* Only names are checked and copied; file contents are never read here
+   * (WebKit reads the chosen files) and never logged. */
+  for (int i = 0; i < n_paths; i++) {
+    const char *path = paths[i];
+    if (path == NULL || !g_path_is_absolute(path) ||
+        !g_file_test(path, G_FILE_TEST_IS_REGULAR) || g_access(path, R_OK) != 0) {
+      if (out_err != NULL) {
+        *out_err = g_strdup_printf("file %d is not an absolute path to a readable regular file", i);
+      }
+      return ZB_AUTO_ERR_BAD_FILE;
+    }
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_SET_FILES);
+  job->body = g_strdup(function_body);
+  job->arg = g_strdup(arg_json != NULL ? arg_json : "null");
+  job->paths = g_new0(char *, (gsize)n_paths + 1);
+  for (int i = 0; i < n_paths; i++) {
+    job->paths[i] = g_strdup(paths[i]);
+  }
+  int code = auto_run_op(job, win, timeout_ms, out_result, out_err);
+  g_mutex_lock(&zb_auto_mutex);
+  int chosen = job->files_answered == 1;
+  g_mutex_unlock(&zb_auto_mutex);
+  if (code == ZB_AUTO_ERR_TIMEOUT && chosen) {
+    /* The files went to the page; only its confirmation is missing. Never
+     * repeat this call. */
+    code = ZB_AUTO_ERR_FILES_UNCONFIRMED;
+  }
+  auto_job_unref(job);
+  return code;
 }
 
 int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
