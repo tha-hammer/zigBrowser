@@ -1475,6 +1475,7 @@ enum {
   ZB_OP_NATIVE_CLICK,
   ZB_OP_NATIVE_KEY,
   ZB_OP_NATIVE_TEXT,
+  ZB_OP_NATIVE_MOVE,
 };
 
 #define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
@@ -2001,7 +2002,8 @@ static void auto_start_cookies(ZbAutoJob *job);
 static void auto_start_native(ZbAutoJob *job);
 
 static ZbAutoJob *auto_op_new(int op) {
-  if (op == ZB_OP_NATIVE_CLICK || op == ZB_OP_NATIVE_KEY || op == ZB_OP_NATIVE_TEXT) {
+  if (op == ZB_OP_NATIVE_CLICK || op == ZB_OP_NATIVE_KEY || op == ZB_OP_NATIVE_TEXT ||
+      op == ZB_OP_NATIVE_MOVE) {
     ZbAutoJob *job = auto_job_new(auto_start_native, 0);
     job->op = op;
     return job;
@@ -2663,7 +2665,21 @@ static void auto_start_native(ZbAutoJob *job) {
 }
 
 /* GTK thread: deliver the job's events now (synchronous). */
+static void auto_native_move(ZbAutoJob *job, ZbWindow *win) {
+  GdkWindow *window = gtk_widget_get_window(GTK_WIDGET(win->view));
+  if (window == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("view not realized"));
+    return;
+  }
+  auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
+  auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+}
+
 static void auto_native_dispatch(ZbAutoJob *job, ZbWindow *win) {
+  if (job->op == ZB_OP_NATIVE_MOVE) {
+    auto_native_move(job, win);
+    return;
+  }
   if (job->op == ZB_OP_NATIVE_CLICK) {
     auto_native_click(job, win);
     return;
@@ -2707,6 +2723,17 @@ static void auto_native_guard(ZbAutoJob *job, const char *expected_doc) {
   job->expected_doc = g_strdup(expected_doc);
   job->is_async = 1;
   job->cancellable = g_cancellable_new();
+}
+
+int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
+                   unsigned int timeout_ms, char **out_err) {
+  ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_MOVE);
+  auto_native_guard(job, expected_doc);
+  job->x = x;
+  job->y = y;
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  auto_job_unref(job);
+  return code;
 }
 
 int zb_native_click(ZbWindow *win, double x, double y, int button,

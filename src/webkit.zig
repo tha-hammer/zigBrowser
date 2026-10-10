@@ -328,7 +328,8 @@ const fixture_a =
     \\function nowUs() { return Math.round((performance.timeOrigin + performance.now()) * 1000); }
     \\document.addEventListener('click', function (e) { if (e.isTrusted) window.lastTrustedClick = nowUs(); });
     \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = nowUs(); });
-    \\window.keyupAt = {}; document.addEventListener('keyup', function (e) { if (e.isTrusted) window.keyupAt[e.key] = nowUs(); });</script>
+    \\window.keyupAt = {}; document.addEventListener('keyup', function (e) { if (e.isTrusted) window.keyupAt[e.key] = nowUs(); });
+    \\window.moves = []; document.addEventListener('mousemove', function (e) { window.moves.push([e.clientX, e.clientY, e.isTrusted]); });</script>
     \\<button id="hold" style="position:fixed;left:300px;top:120px;width:120px;height:40px">Hold</button>
     \\<script>window.holdDone = 0; document.getElementById('hold').addEventListener('click', function (e) {
     \\  var until = performance.now() + 40; while (performance.now() < until) {}
@@ -417,7 +418,8 @@ fn fixtureDelay(buf: []u8, port: u16) []const u8 {
 const fixture_b =
     \\<!doctype html><html><head><title>Fixture B</title></head><body><p id="msg">Page B</p>
     \\<button id="danger" style="position:fixed;left:20px;top:120px;width:120px;height:40px" onclick="window.dangerClicked = (window.dangerClicked || 0) + 1">Danger</button>
-    \\<script>window.bKeys = []; document.addEventListener('keydown', function (e) { window.bKeys.push(e.key); }, true);</script>
+    \\<script>window.bKeys = []; document.addEventListener('keydown', function (e) { window.bKeys.push(e.key); }, true);
+    \\window.bMoves = 0; document.addEventListener('mousemove', function () { window.bMoves += 1; }, true);</script>
     \\</body></html>
 ;
 
@@ -837,11 +839,14 @@ const LiveDriver = struct {
         const locate_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
         const located = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
         const want = self.center("nb") orelse return self.check(false, "button center");
-        const Located = struct { ok: bool, value: struct { x: f64, y: f64, document: []const u8 } };
+        const Located = struct { ok: bool, value: struct { x: f64, y: f64, document: []const u8, viewport: struct { width: f64, height: f64 } } };
         const loc = if (located.out) |out| std.json.parseFromSliceLeaky(Located, gpa, out, .{ .ignore_unknown_fields = true }) catch null else null;
         self.check(loc != null and loc.?.ok and @abs(loc.?.value.x - want[0]) < 0.5 and @abs(loc.?.value.y - want[1]) < 0.5, "locate returns the element centre in viewport px");
         const page_token = self.documentToken();
         self.check(loc != null and page_token != null and loc.?.value.document.len == 16 and std.mem.eql(u8, loc.?.value.document, page_token.?), "locate returns this document's 16-hex token");
+        const inner = self.eval(null, "return JSON.stringify([innerWidth, innerHeight]);", null, null, 5000);
+        const wh = if (inner.out) |out| std.json.parseFromSliceLeaky([2]f64, gpa, out, .{}) catch null else null;
+        self.check(loc != null and wh != null and wh.?[0] > 0 and loc.?.value.viewport.width == wh.?[0] and loc.?.value.viewport.height == wh.?[1], "locate returns the viewport size");
 
         // Obscured target: locate refuses it like an action would.
         _ = self.eval(null, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
@@ -963,6 +968,75 @@ const LiveDriver = struct {
         const hold_returned = wallUs();
         self.check(self.pageStampBefore("holdDone", hold_returned), "nativeClick returned only after the page's slow click handler finished");
 
+        // N8 nativeMove: a curved series of real pointer moves, then a click.
+        // The page sees trusted mousemoves along the path (WebKit may
+        // coalesce some), ending at the target the click then lands on.
+        {
+            _ = self.eval(null, "window.moves = []; nativeLog.length = 0; return 0;", null, null, 5000);
+            const token_move = self.documentToken() orelse return self.check(false, "token for moves");
+            const start_x: f64 = 400;
+            const start_y: f64 = 400;
+            var step: usize = 1;
+            while (step <= 12) : (step += 1) {
+                const t = @as(f64, @floatFromInt(step)) / 12.0;
+                // Quadratic curve bowing away from the straight line.
+                const ctrl_x: f64 = 400;
+                const ctrl_y: f64 = 140;
+                const x = (1 - t) * (1 - t) * start_x + 2 * (1 - t) * t * ctrl_x + t * t * want[0];
+                const y = (1 - t) * (1 - t) * start_y + 2 * (1 - t) * t * ctrl_y + t * t * want[1];
+                gtk_port.nativeMove(port.ptr, x, y, token_move, 5000) catch return self.check(false, "native move succeeds");
+                sleepMs(8);
+            }
+            gtk_port.nativeClick(port.ptr, want[0], want[1], token_move, 5000) catch return self.check(false, "click after the moves");
+            const Move = struct { f64, f64, bool };
+            const moves_out = self.eval(null, "return JSON.stringify(window.moves);", null, null, 5000);
+            const moves = if (moves_out.out) |out| std.json.parseFromSliceLeaky([]const Move, gpa, out, .{}) catch null else null;
+            self.check(moves != null and moves.?.len >= 3, "the page saw several pointer moves");
+            if (moves) |list| {
+                var all_trusted = true;
+                var max_off: f64 = 0;
+                for (list) |m| {
+                    all_trusted = all_trusted and m[2];
+                    // Distance from the straight start->target line.
+                    const dx = want[0] - start_x;
+                    const dy = want[1] - start_y;
+                    const off = @abs(dy * m[0] - dx * m[1] + want[0] * start_y - want[1] * start_x) / @sqrt(dx * dx + dy * dy);
+                    max_off = @max(max_off, off);
+                }
+                self.check(all_trusted, "every mousemove is trusted");
+                const last = list[list.len - 1];
+                self.check(@abs(last[0] - want[0]) <= 1 and @abs(last[1] - want[1]) <= 1, "the moves end on the target");
+                self.check(max_off > 20, "the path is curved, not a straight jump");
+            }
+            self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "the click after the path lands on the button");
+            const cached = gtk_port.pointer(port.ptr);
+            self.check(cached != null and cached.?.x == want[0] and cached.?.y == want[1], "the pointer cache holds the last dispatched position");
+
+            // A move whose guard verdict is held past its deadline sends no
+            // motion, ever, and leaves the cache alone.
+            _ = self.eval(null, "window.moves = []; return 0;", null, null, 5000);
+            const token_hold = self.documentToken() orelse return self.check(false, "token for the held move");
+            const token_hold_z = std.fmt.allocPrintSentinel(gpa, "{s}", .{token_hold}, 0) catch return;
+            c.zb_automation_debug_native_guard_hold(300);
+            var move_err: [*c]u8 = null;
+            const held_move = c.zb_native_move(null, 30, 30, token_hold_z.ptr, 50, &move_err);
+            c.zb_automation_free(move_err);
+            sleepMs(600);
+            c.zb_automation_debug_native_guard_hold(0);
+            self.check(held_move == c.ZB_AUTO_ERR_TIMEOUT, "a held guarded move returns TIMEOUT");
+            const late = self.eval(null, "return window.moves.length;", null, null, 5000);
+            self.check(eq(late.out, "0"), "no motion reached the page after the timeout");
+            const port_held = blk: {
+                c.zb_automation_debug_native_guard_hold(300);
+                defer c.zb_automation_debug_native_guard_hold(0);
+                break :blk gtk_port.nativeMove(port.ptr, 31, 31, token_hold, 50);
+            };
+            self.check(if (port_held) |_| false else |e| e == error.Timeout, "a held port move times out");
+            sleepMs(600);
+            const after_hold = gtk_port.pointer(port.ptr);
+            self.check(after_hold != null and after_hold.?.x == want[0] and after_hold.?.y == want[1], "a timed-out move leaves the pointer cache unchanged");
+        }
+
         // Document binding (A -> B between locate and dispatch): A's token on
         // page B is refused before anything is sent; B's button at the same
         // coordinates is never clicked.
@@ -971,10 +1045,17 @@ const LiveDriver = struct {
         _ = c.zb_automation_navigate(null, self.uri_b.ptr, 15000, &bind_err);
         c.zb_automation_free(bind_err);
         bind_err = null;
+        const cache_before = gtk_port.pointer(port.ptr);
+        const stale_move = gtk_port.nativeMove(port.ptr, want[0] + 5, want[1] + 5, token_a, 5000);
+        self.check(if (stale_move) |_| false else |e| e == error.DocumentChanged, "native move with a stale document token is DocumentChanged");
+        const cache_after = gtk_port.pointer(port.ptr);
+        self.check(cache_before != null and cache_after != null and cache_after.?.x == cache_before.?.x and cache_after.?.y == cache_before.?.y, "a refused move leaves the pointer cache unchanged");
         const stale = gtk_port.nativeClick(port.ptr, want[0], want[1], token_a, 5000);
         self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "native click with a stale document token is DocumentChanged");
         const danger = self.eval(null, "return String(window.dangerClicked || 0);", null, null, 5000);
         self.check(eq(danger.out, "0"), "nothing on the new document was clicked");
+        const b_moves = self.eval(null, "return String(window.bMoves);", null, null, 5000);
+        self.check(eq(b_moves.out, "0"), "no motion reached the new document");
         var stale_sent: usize = 9;
         self.check(if (gtk_port.nativeText(port.ptr, "zz", token_a, 5000, &stale_sent)) |_| false else |e| e == error.DocumentChanged, "native text with a stale token is DocumentChanged");
         self.check(stale_sent == 0, "nothing was typed into the new document");
@@ -1004,10 +1085,14 @@ const LiveDriver = struct {
         const token_delay = self.documentToken() orelse return self.check(false, "document token on A");
         var one: usize = 0;
         gtk_port.nativeText(port.ptr, "a", token_delay, 5000, &one) catch return self.check(false, "first code point typed");
+        // Enter's keyup can be acknowledged in A before the navigation it
+        // triggers commits, so this call may return OK or DocumentChanged;
+        // either way the next code point is refused before dispatch.
         var enter_sent: usize = 0;
         const enter_one = gtk_port.nativeText(port.ptr, "\n", token_delay, 10_000, &enter_sent);
-        self.check(if (enter_one) |_| false else |e| e == error.DocumentChanged, "a single navigating code point reports DocumentChanged");
+        self.check(if (enter_one) |_| true else |e| e == error.DocumentChanged, "the navigating code point returns OK or DocumentChanged");
         self.check(enter_sent == 1, "that code point was sent");
+        self.waitUrlContains("b.html");
         var b_sent: usize = 9;
         const b_one = gtk_port.nativeText(port.ptr, "b", token_delay, 10_000, &b_sent);
         self.check(if (b_one) |_| false else |e| e == error.DocumentChanged, "the next code point with the old token is refused");

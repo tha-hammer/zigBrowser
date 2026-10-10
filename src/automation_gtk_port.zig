@@ -339,6 +339,46 @@ fn mapNativeCode(rc: c_int) PortError!void {
     return mapCode(rc);
 }
 
+/// A pointer position in viewport CSS px.
+pub const Point = struct { x: f64, y: f64 };
+
+/// Last pointer position actually dispatched to the window (primary only for
+/// now). Updated only after the shim delivered a move or click; refusals and
+/// timeouts leave it unchanged. It persists across documents of the window.
+var pointer_cache: ?Point = null;
+var pointer_mutex: SpinLock = .{};
+
+fn rememberPointer(x: f64, y: f64) void {
+    pointer_mutex.lock();
+    defer pointer_mutex.unlock();
+    pointer_cache = .{ .x = x, .y = y };
+}
+
+/// PagePort v3.2 `pointer`: the cached last dispatched position, or null.
+pub fn pointer(_: *anyopaque) ?Point {
+    pointer_mutex.lock();
+    defer pointer_mutex.unlock();
+    return pointer_cache;
+}
+
+/// One real pointer-motion event to viewport CSS px (x, y), no click (N8
+/// humanized paths). Guarded by `document` like nativeClick. Returns once
+/// dispatched: motion shares WebKit's FIFO mouse queue with the click that
+/// follows it, so it needs no acknowledgement (WebKit may coalesce moves).
+pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+    const deadline = deadlineAfter(timeout_ms);
+    try txn_lock.lockUntil(deadline);
+    defer txn_lock.unlock();
+    _ = try page_acks.begin(document, deadline);
+    var doc_z: [doc_len + 1]u8 = undefined;
+    const expected = if (document) |token| docZ(&doc_z, token) else null;
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_move(null, x, y, expected, clampMs(try remainingMs(deadline)), &err);
+    c.zb_automation_free(err);
+    try mapNativeCode(rc);
+    rememberPointer(x, y);
+}
+
 /// Real pointer motion + left click at viewport CSS px (x, y). Returns once
 /// the page's click dispatch has finished, or the click navigated.
 pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
@@ -352,6 +392,7 @@ pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout
     const rc = c.zb_native_click(null, x, y, 1, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
+    rememberPointer(x, y);
     _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup }, deadline);
 }
 

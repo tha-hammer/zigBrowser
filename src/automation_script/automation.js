@@ -167,7 +167,13 @@
     if (command.focus === true) focusForInput(element, action);
     const rect = element.getBoundingClientRect();
     // `document` binds the native dispatch to this document (PagePort v3.1).
-    return success({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, document: inputAck.doc }, telemetry);
+    // viewport lets the engine pick an in-view start for humanized paths (N8).
+    return success({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      document: inputAck.doc,
+      viewport: { width: globalScope.innerWidth, height: globalScope.innerHeight }
+    }, telemetry);
   }
 
   // Focus as the synthetic action would leave it: for typing, the caret goes

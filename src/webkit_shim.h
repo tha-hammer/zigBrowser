@@ -183,6 +183,10 @@ enum {
  * and, in the same callback with no return to the main loop, either refuses
  * with ZB_AUTO_ERR_DOC_CHANGED (nothing sent) or delivers the events. */
 
+/* One pointer-motion event to (x, y), no click (for humanized paths). */
+int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
+                   unsigned int timeout_ms, char **out_err);
+
 /* Pointer motion to (x, y), then press and release of `button` (1 = left). */
 int zb_native_click(ZbWindow *win, double x, double y, int button,
                     const char *expected_doc, unsigned int timeout_ms, char **out_err);
