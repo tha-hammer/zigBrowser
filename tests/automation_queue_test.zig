@@ -170,3 +170,42 @@ test "a command cancelled before it starts never touches the page" {
     defer outcome.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
 }
+
+test "cancellation interrupts a long inter-character type delay" {
+    var fake = fakes.FakePagePort.init(gpa);
+    defer fake.deinit();
+    fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    const CancellingClock = struct {
+        inner: fakes.FakeClock,
+        flag: *std.atomic.Value(bool),
+
+        fn clock(self: *@This()) engine.Clock {
+            return .{ .ptr = self, .vtable = &.{ .nowMs = nowMs, .sleepMs = sleepMs } };
+        }
+        fn nowMs(ptr: *anyopaque) u64 {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            return self.inner.now_ms;
+        }
+        fn sleepMs(ptr: *anyopaque, ms: u64) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.inner.now_ms += ms;
+            self.inner.sleeps.append(gpa, ms) catch {};
+            if (self.inner.sleeps.items.len == 3) self.flag.store(true, .release);
+        }
+    };
+    var flag = std.atomic.Value(bool).init(false);
+    var clock = CancellingClock{ .inner = fakes.FakeClock.init(gpa), .flag = &flag };
+    defer clock.inner.deinit();
+
+    var eng = engine.Engine.init(fake.port(), clock.clock());
+    var command = try router.parse(gpa, "dom.type", "{\"selector\":\"css=#q\",\"text\":\"ab\",\"delay_ms\":3600000,\"options\":{\"timeout_ms\":7200000}}", .{});
+    defer command.deinit();
+    var outcome = try eng.executeWith(gpa, &command, .{ .cancel = &flag });
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 1), fake.eval_calls.items.len);
+    // Slept in bounded slices, stopped right after the cancel.
+    try std.testing.expectEqual(@as(usize, 3), clock.inner.sleeps.items.len);
+    for (clock.inner.sleeps.items) |ms| try std.testing.expect(ms <= engine.poll_interval_ms);
+}

@@ -250,7 +250,7 @@ pub const Engine = struct {
             if (!first) {
                 const now = self.clock.nowMs();
                 if (now +| delay_ms >= deadline) return timeoutWithReason(gpa, .action_timeout, "type_delay_exceeds_timeout", run.ids, run.attempts);
-                self.clock.sleepMs(delay_ms);
+                if (!self.sleepUnlessCancelled(delay_ms, run)) return automationFailure(gpa, .cancelled, null, run.ids);
             }
             first = false;
 
@@ -317,6 +317,19 @@ pub const Engine = struct {
             if (now +| poll_interval_ms >= deadline) return deadlineFailure(gpa, &last, ids, run.attempts);
             self.clock.sleepMs(poll_interval_ms);
         }
+    }
+
+    /// Sleeps `ms` in poll-interval slices so cancellation is noticed within
+    /// one slice. Returns false if cancelled.
+    fn sleepUnlessCancelled(self: *Engine, ms: u64, run: *const Run) bool {
+        var left = ms;
+        while (left > 0) {
+            if (run.cancelled()) return false;
+            const slice = @min(left, poll_interval_ms);
+            self.clock.sleepMs(slice);
+            left -= slice;
+        }
+        return !run.cancelled();
     }
 
     fn platformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {

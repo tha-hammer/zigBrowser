@@ -221,6 +221,37 @@ test "server records one root span per command with the primary page/window ids"
     try testing.expectEqual(@as(usize, 2), roots);
 }
 
+test "object/array/bool ids are Invalid Request and never dispatch" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("badid", .{ .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true}}" });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    for ([_][]const u8{ "{\"a\":1}", "[1]", "true" }) |id| {
+        const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{{\"selector\":\"css=#b\"}},\"id\":{s}}}", .{id});
+        defer testing.allocator.free(request);
+        const response = try roundTrip(stream, request);
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid Request\"},\"id\":null}", response);
+    }
+    try testing.expectEqual(@as(u32, 0), fixture.fake.evals.load(.acquire));
+}
+
+test "server can be stopped and started again" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("restart", .{});
+    defer fixture.deinit();
+
+    fixture.server.stop();
+    try fixture.server.start();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":1}");
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "file:///fixture/index.html") != null);
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

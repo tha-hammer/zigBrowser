@@ -85,6 +85,13 @@ pub const AutomationApiServer = struct {
         // The engine keeps a pointer to `self.clock`, so it is built here,
         // once the server has reached its final address.
         if (self.config.page_port) |port| self.engine = engine_mod.Engine.init(port, self.clock.clock());
+        // A previous stop() shut the queue down for good; give a restarted
+        // server a fresh one (every ticket was released when stop() joined
+        // the connections).
+        if (self.queue.shutting_down) {
+            self.queue.deinit();
+            self.queue = queue_mod.PageCommandQueue.init(self.allocator, self.io);
+        }
 
         try cleanupSocketPath(self.io, self.config.socket_path);
         const address = try net.UnixAddress.init(self.config.socket_path);
@@ -258,7 +265,7 @@ fn handleRequestWith(
         else => return jsonRpcError(allocator, "null", -32600, "Invalid Request", null),
     };
 
-    const id_json = try idJson(allocator, obj.get("id"));
+    const id_json = (try idJson(allocator, obj.get("id"))) orelse return jsonRpcError(allocator, "null", -32600, "Invalid Request", null);
     defer allocator.free(id_json);
 
     const jsonrpc = switch (obj.get("jsonrpc") orelse return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null)) {
@@ -339,15 +346,18 @@ fn paramsJson(allocator: std.mem.Allocator, maybe_params: ?std.json.Value) error
     };
 }
 
-fn idJson(allocator: std.mem.Allocator, maybe_id: ?std.json.Value) error{OutOfMemory}![]u8 {
-    const id = maybe_id orelse return allocator.dupe(u8, "null");
+/// JSON text of a valid JSON-RPC id (string, number or null; absent -> null).
+/// Returns null for object/array/bool ids, which are Invalid Request.
+fn idJson(allocator: std.mem.Allocator, maybe_id: ?std.json.Value) error{OutOfMemory}!?[]u8 {
+    const id = maybe_id orelse return try allocator.dupe(u8, "null");
     return switch (id) {
         .null,
         .integer,
+        .float,
         .number_string,
         .string,
-        => std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(id, .{})}),
-        else => allocator.dupe(u8, "null"),
+        => try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(id, .{})}),
+        .bool, .object, .array => null,
     };
 }
 

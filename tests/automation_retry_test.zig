@@ -271,7 +271,8 @@ test "dom.type with delay_ms types one character per op with the delay between" 
     try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"text\":\"a\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[1].arg, "\"text\":\"é\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[2].arg, "\"text\":\"€\"") != null);
-    try std.testing.expectEqualSlices(u64, &.{ 40, 40 }, h.clock.sleeps.items);
+    // Two 40 ms gaps, slept in cancellable slices of at most one poll.
+    try std.testing.expectEqualSlices(u64, &.{ 16, 16, 8, 16, 16, 8 }, h.clock.sleeps.items);
 }
 
 test "dom.type without delay_ms sends the whole text in one op" {
