@@ -16,6 +16,9 @@
     <form id="form">
       <input id="q" name="q" />
       <input id="q2" name="q2" />
+      <!-- cancels every keydown: no default action may run -->
+      <input id="nokey" name="nokey" />
+      <input id="cb" type="checkbox" />
     </form>
 
     <script>
@@ -24,16 +27,21 @@
         event.preventDefault();
         window.submits += 1;
       });
+      document.getElementById('nokey').addEventListener('keydown', function (event) {
+        event.preventDefault();
+      });
+      // Every key event, in order, with the focused element at dispatch time.
       window.keylog = [];
-      document.addEventListener('keydown', function (event) {
-        window.keylog.push({
-          type: event.type, key: event.key, code: event.code, keyCode: event.keyCode,
-          shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey,
-          target: event.target.id || event.target.tagName
-        });
-      }, true);
-      window.keyupCount = 0;
-      document.addEventListener('keyup', function () { window.keyupCount += 1; }, true);
+      ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+        document.addEventListener(type, function (event) {
+          window.keylog.push({
+            type: event.type, key: event.key, code: event.code, keyCode: event.keyCode,
+            shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey,
+            target: event.target.id || event.target.tagName,
+            active: (document.activeElement && document.activeElement.id) || ''
+          });
+        }, true);
+      });
 
       window.plainInputs = 0;
       document.getElementById('plain').addEventListener('input', function () {
@@ -42,7 +50,9 @@
 
       window.draftModel = '';
       window.draftBeforeInputs = 0;
+      window.draftInputs = 0;
       var draft = document.getElementById('draft');
+      draft.addEventListener('input', function () { window.draftInputs += 1; });
       function renderDraft() {
         draft.textContent = window.draftModel;
         var range = document.createRange();

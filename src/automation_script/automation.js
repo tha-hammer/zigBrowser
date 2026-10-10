@@ -178,6 +178,9 @@
   }
 
   function synthesizePress(target, key, modifiers) {
+    // Focus first, so every key event (modifiers included) reaches a focused target.
+    if (target !== target.ownerDocument.activeElement && typeof target.focus === 'function') target.focus();
+
     const flags = { shiftKey: false, ctrlKey: false, altKey: false, metaKey: false };
     const held = [];
     for (const name of modifiers) {
@@ -188,13 +191,16 @@
       target.dispatchEvent(keyboardEvent('keydown', name, keyDescriptor(name), Object.assign({}, flags), true));
     }
 
-    if (target !== target.ownerDocument.activeElement && typeof target.focus === 'function') target.focus();
     const descriptor = keyDescriptor(key);
     const proceed = target.dispatchEvent(keyboardEvent('keydown', key, descriptor, Object.assign({}, flags), true));
-    const printable = key.length === 1 && !flags.ctrlKey && !flags.metaKey && !flags.altKey;
-    if (proceed && printable) {
-      const keypressOk = target.dispatchEvent(keyboardEvent('keypress', key, descriptor, Object.assign({}, flags), true));
-      if (keypressOk) insertPrintable(target, key);
+    const noCommand = !flags.ctrlKey && !flags.metaKey && !flags.altKey;
+    const printable = key.length === 1 && noCommand;
+    // keypress follows an uncancelled keydown for character keys and Enter,
+    // and its own cancellation suppresses the default action too.
+    if (proceed && (printable || (key === 'Enter' && noCommand))) {
+      const pressOk = target.dispatchEvent(keyboardEvent('keypress', key, descriptor, Object.assign({}, flags), true));
+      if (pressOk && printable) insertPrintable(target, key);
+      if (pressOk && !printable) runKeyDefault(target, key, flags);
     } else if (proceed) {
       runKeyDefault(target, key, flags);
     }
@@ -208,18 +214,37 @@
     }
   }
 
+  // Input types whose value is free text with a caret/selection.
+  const TEXT_INPUT_TYPES = ['text', 'search', 'url', 'tel', 'password'];
+  // Text-like types without the selection API: the character is appended.
+  const APPEND_INPUT_TYPES = ['email', 'number'];
+
   function insertPrintable(target, char) {
     if (target.isContentEditable) {
       editableInsert(target, char, 'insertText');
-    } else if (isTextField(target)) {
-      target.value = (target.value || '') + char;
-      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+      return;
     }
-  }
+    const tag = target.tagName ? target.tagName.toLowerCase() : '';
+    const type = tag === 'input' ? (target.type || 'text').toLowerCase() : '';
+    const caretField = tag === 'textarea' || TEXT_INPUT_TYPES.includes(type);
+    if (!caretField && !APPEND_INPUT_TYPES.includes(type)) return;
+    if (target.readOnly || isDisabled(target)) return;
 
-  function isTextField(element) {
-    const tag = element.tagName ? element.tagName.toLowerCase() : '';
-    return (tag === 'input' || tag === 'textarea') && !element.readOnly && !isDisabled(element);
+    const proceed = target.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: char
+    }));
+    if (!proceed) return;
+
+    const value = target.value || '';
+    if (caretField && typeof target.selectionStart === 'number') {
+      const start = target.selectionStart;
+      const end = typeof target.selectionEnd === 'number' ? target.selectionEnd : start;
+      target.value = value.slice(0, start) + char + value.slice(end);
+      target.setSelectionRange(start + char.length, start + char.length);
+    } else {
+      target.value = value + char;
+    }
+    target.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: char }));
   }
 
   // Browser default actions for the non-printable keys dom.press supports.

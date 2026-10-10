@@ -61,49 +61,85 @@ def run_contenteditable(socket_path: Path, t: float) -> None:
     expect_equal("empty fill draft", rpc("dom.fill", {"selector": "css=#draft", "value": ""}), ok)
     expect_equal("draft model after empty fill", evaluate(socket_path, "window.draftModel", next(ids), t), "")
     expect_equal("draft DOM after empty fill", evaluate(socket_path, "document.getElementById('draft').textContent", next(ids), t), "")
+    # Cancelled beforeinput means no input event ever reaches the editor.
+    expect_equal("draft input events", evaluate(socket_path, "window.draftInputs", next(ids), t), 0)
 
 
 def run_press(socket_path: Path, t: float) -> None:
     ok = {"ok": True}
-    ids = iter(range(200, 300))
+    ids = iter(range(200, 400))
 
     def rpc(method: str, params: dict):
         return call_rpc(socket_path, method, params, next(ids), t)
 
-    def last_key() -> dict:
-        return evaluate(socket_path, "window.keylog[window.keylog.length - 1]", next(ids), t)
+    def js(expression: str):
+        return evaluate(socket_path, expression, next(ids), t)
 
-    # Enter in a form input submits the form.
-    expect_equal("press Enter", rpc("dom.press", {"selector": "css=#q", "key": "Enter"}), ok)
-    expect_equal("Enter submitted the form", evaluate(socket_path, "window.submits", next(ids), t), 1)
-    entry = last_key()
-    expect_equal("Enter keydown fields", {k: entry[k] for k in ("key", "code", "keyCode", "target")},
-                 {"key": "Enter", "code": "Enter", "keyCode": 13, "target": "q"})
+    def press(params: dict) -> list[dict]:
+        """Run one dom.press and return exactly the key events it produced."""
+        js("(window.keylog = [], 0)")
+        expect_equal(f"press {params}", rpc("dom.press", params), ok)
+        return js("window.keylog")
+
+    def shape(events: list[dict], *fields: str) -> list[tuple]:
+        return [tuple(e[f] for f in fields) for e in events]
+
+    # Enter in a form input: keydown, keypress, keyup, then the form submits.
+    events = press({"selector": "css=#q", "key": "Enter"})
+    expect_equal("Enter event sequence", shape(events, "type", "key", "code", "keyCode", "target"),
+                 [("keydown", "Enter", "Enter", 13, "q"), ("keypress", "Enter", "Enter", 13, "q"),
+                  ("keyup", "Enter", "Enter", 13, "q")])
+    expect_equal("Enter submitted the form", js("window.submits"), 1)
 
     # Tab moves focus to the next tabbable element; Shift+Tab moves it back.
-    expect_equal("press Tab", rpc("dom.press", {"selector": "css=#q", "key": "Tab"}), ok)
-    expect_equal("focus after Tab", evaluate(socket_path, "document.activeElement.id", next(ids), t), "q2")
-    expect_equal("press Shift+Tab", rpc("dom.press", {"key": "Tab", "modifiers": ["Shift"]}), ok)
-    expect_equal("focus after Shift+Tab", evaluate(socket_path, "document.activeElement.id", next(ids), t), "q")
+    events = press({"selector": "css=#q", "key": "Tab"})
+    expect_equal("Tab event sequence", shape(events, "type", "target"), [("keydown", "q"), ("keyup", "q2")])
+    expect_equal("focus after Tab", js("document.activeElement.id"), "q2")
+    events = press({"key": "Tab", "modifiers": ["Shift"]})
+    expect_equal("Shift+Tab event sequence", shape(events, "type", "key", "shift"),
+                 [("keydown", "Shift", True), ("keydown", "Tab", True), ("keyup", "Tab", True), ("keyup", "Shift", False)])
+    expect_equal("focus after Shift+Tab", js("document.activeElement.id"), "q")
 
     # Without a selector the key goes to the focused element.
-    expect_equal("press Escape", rpc("dom.press", {"key": "Escape"}), ok)
-    entry = last_key()
-    expect_equal("Escape keydown fields", {k: entry[k] for k in ("key", "code", "keyCode", "target")},
-                 {"key": "Escape", "code": "Escape", "keyCode": 27, "target": "q"})
+    events = press({"key": "Escape"})
+    expect_equal("Escape event sequence", shape(events, "type", "key", "code", "keyCode", "target"),
+                 [("keydown", "Escape", "Escape", 27, "q"), ("keyup", "Escape", "Escape", 27, "q")])
 
-    # Modifier flags and the character code mapping.
-    expect_equal("press Control+a", rpc("dom.press", {"selector": "css=#q2", "key": "a", "modifiers": ["Control"]}), ok)
-    entry = last_key()
-    expect_equal("Control+a keydown fields", {k: entry[k] for k in ("key", "code", "keyCode", "ctrl", "shift", "target")},
-                 {"key": "a", "code": "KeyA", "keyCode": 65, "ctrl": True, "shift": False, "target": "q2"})
-    expect_equal("Control+a inserted nothing", evaluate(socket_path, "document.getElementById('q2').value", next(ids), t), "")
+    # Modifiers: the target is focused before the first key event.
+    events = press({"selector": "css=#q2", "key": "a", "modifiers": ["Control"]})
+    expect_equal("Control+a event sequence", shape(events, "type", "key", "code", "keyCode", "ctrl", "target", "active"),
+                 [("keydown", "Control", "ControlLeft", 17, True, "q2", "q2"),
+                  ("keydown", "a", "KeyA", 65, True, "q2", "q2"),
+                  ("keyup", "a", "KeyA", 65, True, "q2", "q2"),
+                  ("keyup", "Control", "ControlLeft", 17, False, "q2", "q2")])
+    expect_equal("Control+a inserted nothing", js("document.getElementById('q2').value"), "")
 
-    # A printable key on an input types its character.
-    expect_equal("press x", rpc("dom.press", {"selector": "css=#q2", "key": "x"}), ok)
-    expect_equal("x typed into q2", evaluate(socket_path, "document.getElementById('q2').value", next(ids), t), "x")
-    if evaluate(socket_path, "window.keyupCount", next(ids), t) < 6:
-        raise AssertionError("each press must end with keyup")
+    # A printable key: keydown, keypress, keyup, and the character is typed.
+    events = press({"selector": "css=#q2", "key": "x"})
+    expect_equal("x event sequence", shape(events, "type", "key", "code", "keyCode", "target"),
+                 [("keydown", "x", "KeyX", 88, "q2"), ("keypress", "x", "KeyX", 88, "q2"), ("keyup", "x", "KeyX", 88, "q2")])
+    expect_equal("x typed into q2", js("document.getElementById('q2').value"), "x")
+
+    # The character replaces the selection at the caret.
+    js("(function(){var e=document.getElementById('q2'); e.value='abcd'; e.focus(); e.setSelectionRange(1,3); return 0;})()")
+    press({"selector": "css=#q2", "key": "X"})
+    expect_equal("selection replaced", js("document.getElementById('q2').value"), "aXd")
+    expect_equal("caret after inserted char", js("document.getElementById('q2').selectionStart"), 2)
+
+    # A cancelled keydown suppresses every default action; keyup still fires.
+    submits = js("window.submits")
+    events = press({"selector": "css=#nokey", "key": "z"})
+    expect_equal("cancelled keydown sequence", shape(events, "type", "key"), [("keydown", "z"), ("keyup", "z")])
+    expect_equal("cancelled keydown typed nothing", js("document.getElementById('nokey').value"), "")
+    press({"selector": "css=#nokey", "key": "Enter"})
+    expect_equal("cancelled Enter did not submit", js("window.submits"), submits)
+    press({"selector": "css=#nokey", "key": "Tab"})
+    expect_equal("cancelled Tab kept focus", js("document.activeElement.id"), "nokey")
+
+    # Printable keys never type into non-text inputs.
+    press({"selector": "css=#cb", "key": "x"})
+    expect_equal("checkbox value unchanged", js("document.getElementById('cb').value"), "on")
+    expect_equal("checkbox not toggled", js("document.getElementById('cb').checked"), False)
 
 
 def main() -> int:
