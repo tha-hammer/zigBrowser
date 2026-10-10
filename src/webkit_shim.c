@@ -5,6 +5,7 @@
 #include <glib-unix.h>
 #include <glib/gstdio.h>
 #include <unistd.h>
+#include <math.h>
 
 #include <errno.h>
 #include <signal.h>
@@ -1224,6 +1225,7 @@ struct ZbAutoJob {
   int op;
   SoupCookie *cookie;   /* add */
   double x, y;          /* native click */
+  double dx, dy;        /* native scroll: CSS px */
   int button;
   int modifiers;        /* native key */
   int releases;         /* native key/text: key releases sent */
@@ -1513,6 +1515,7 @@ enum {
   ZB_OP_NATIVE_TEXT,
   ZB_OP_NATIVE_MOVE,
   ZB_OP_SET_FILES,
+  ZB_OP_NATIVE_SCROLL,
 };
 
 #define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
@@ -2387,7 +2390,7 @@ static void auto_start_native(ZbAutoJob *job);
 
 static ZbAutoJob *auto_op_new(int op) {
   if (op == ZB_OP_NATIVE_CLICK || op == ZB_OP_NATIVE_KEY || op == ZB_OP_NATIVE_TEXT ||
-      op == ZB_OP_NATIVE_MOVE) {
+      op == ZB_OP_NATIVE_MOVE || op == ZB_OP_NATIVE_SCROLL) {
     ZbAutoJob *job = auto_job_new(auto_start_native, 0);
     job->op = op;
     return job;
@@ -3127,7 +3130,52 @@ static void auto_native_move(ZbAutoJob *job, ZbWindow *win) {
   auto_native_finish_pointer(job, win);
 }
 
+/* One smooth-scroll event at (x, y). WebKitGTK scales a smooth delta of 1
+ * to floor(size^(2/3)) pixels along each axis, size being the view's
+ * (measured: 600 -> 71, 768 -> 83, 900 -> 93 px per unit; page zoom 1),
+ * so CSS px are converted with the view's allocation. */
+static void auto_native_scroll(ZbAutoJob *job, ZbWindow *win) {
+  GtkWidget *view = GTK_WIDGET(win->view);
+  GdkWindow *window = gtk_widget_get_window(view);
+  int width = gtk_widget_get_allocated_width(view);
+  int height = gtk_widget_get_allocated_height(view);
+  if (window == NULL || width <= 0 || height <= 0) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("view not realized"));
+    return;
+  }
+  g_object_ref(window);
+  int ox = 0;
+  int oy = 0;
+  gdk_window_get_origin(window, &ox, &oy);
+  GdkEvent *event = gdk_event_new(GDK_SCROLL);
+  event->scroll.window = g_object_ref(window);
+  event->scroll.time = auto_event_time();
+  event->scroll.x = job->x;
+  event->scroll.y = job->y;
+  event->scroll.x_root = job->x + ox;
+  event->scroll.y_root = job->y + oy;
+  event->scroll.direction = GDK_SCROLL_SMOOTH;
+  double step_w = floor(pow((double)width, 2.0 / 3.0));
+  double step_h = floor(pow((double)height, 2.0 / 3.0));
+  event->scroll.delta_x = job->dx / (step_w > 0 ? step_w : 1);
+  event->scroll.delta_y = job->dy / (step_h > 0 ? step_h : 1);
+  gdk_event_set_device(event, gdk_seat_get_pointer(auto_seat(window)));
+  gtk_main_do_event(event);
+  gdk_event_free(event);
+  int closed = gdk_window_is_destroyed(window);
+  g_object_unref(window);
+  if (closed) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("window closed during input"));
+    return;
+  }
+  auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+}
+
 static void auto_native_dispatch(ZbAutoJob *job, ZbWindow *win) {
+  if (job->op == ZB_OP_NATIVE_SCROLL) {
+    auto_native_scroll(job, win);
+    return;
+  }
   if (job->op == ZB_OP_NATIVE_MOVE) {
     auto_native_move(job, win);
     return;
@@ -3303,6 +3351,22 @@ int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg
      * Never repeat this call. */
     code = ZB_AUTO_ERR_FILES_UNCONFIRMED;
   }
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_native_scroll(ZbWindow *win, double x, double y, double delta_x, double delta_y,
+                     const char *expected_doc, unsigned int timeout_ms, char **out_err) {
+  if (!isfinite(x) || !isfinite(y) || !isfinite(delta_x) || !isfinite(delta_y)) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_SCROLL);
+  auto_native_guard(job, expected_doc);
+  job->x = x;
+  job->y = y;
+  job->dx = delta_x;
+  job->dy = delta_y;
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
   auto_job_unref(job);
   return code;
 }

@@ -2154,3 +2154,114 @@ test "set input files answers the file chooser the input's click opens" {
     c.zb_automation_loop_mark(1);
 }
 
+// N18: real wheel scrolling.
+const scroll_fixture =
+    \\<!doctype html><html><head><title>Scroll</title></head><body style="margin:0">
+    \\<div id="inner" style="position:fixed;left:400px;top:20px;width:200px;height:150px;overflow:auto">
+    \\<div style="height:2000px">inner</div></div>
+    \\<div style="height:6000px">page</div>
+    \\<script>window.wheels = [];
+    \\document.addEventListener('wheel', function (e) {
+    \\  window.wheels.push([e.target.id || e.target.tagName, Math.round(e.deltaY), e.isTrusted]); }, { capture: true, passive: true });</script>
+    \\</body></html>
+;
+
+const ScrollDriver = struct {
+    nav: NavEndDriver = .{},
+
+    fn check(self: *ScrollDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("native scroll check failed: {s}\n", .{what});
+            self.nav.failures += 1;
+        }
+    }
+
+    /// Waits for a smooth-scroll animation to settle at `want` (within 2 px).
+    fn settlesAt(self: *ScrollDriver, comptime expr: [:0]const u8, want: i64) bool {
+        var waited: u32 = 0;
+        while (waited < 3000) : (waited += 20) {
+            const v = std.fmt.parseInt(i64, self.nav.eval("return String(Math.round(" ++ expr ++ "));", null), 10) catch -1;
+            if (@abs(v - want) <= 2) return true;
+            sleepMs(20);
+        }
+        std.debug.print("{s} = {s}, wanted {d}\n", .{ expr, self.nav.eval("return String(Math.round(" ++ expr ++ "));", null), want });
+        return false;
+    }
+
+    fn run(self: *ScrollDriver) void {
+        const d = &self.nav;
+        const port = gtk_port.pagePort().?;
+        _ = d.eval("return 1;", null);
+        var tok: [17]u8 = undefined;
+        const t = d.token(&tok) orelse return self.check(false, "token");
+
+        gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "page scroll succeeds");
+        // Read at once: nativeScroll returns after the scrolling finished.
+        self.check(std.mem.eql(u8, d.eval("return String(Math.round(window.scrollY));", null), "300"), "the page scrolled by 300 CSS px by the time the call returned");
+        self.check(std.mem.eql(u8, d.eval("return JSON.stringify(window.wheels);", null), "[[\"DIV\",300,true]]"), "one trusted wheel event of 300 px on the page");
+
+        _ = d.eval("window.wheels = []; return 0;", null);
+        gtk_port.nativeScroll(port.ptr, 500, 95, 0, 100, std.mem.span(t), 5000) catch return self.check(false, "inner scroll succeeds");
+        self.check(std.mem.eql(u8, d.eval("return String(Math.round(document.getElementById('inner').scrollTop));", null), "100"), "the inner scroller under the point scrolled by 100 by the time the call returned");
+        self.check(self.settlesAt("window.scrollY", 300), "the page did not move");
+        self.check(std.mem.startsWith(u8, d.eval("return JSON.stringify(window.wheels);", null), "[[\"DIV\",100,true]"), "a trusted wheel event of 100 px reached the inner scroller");
+
+        // At the end of the page a wheel scrolls nothing: still returns.
+        _ = d.eval("window.scrollTo(0, document.body.scrollHeight); window.wheels = []; return 0;", null);
+        sleepMs(300);
+        const bottom = d.eval("return String(Math.round(window.scrollY));", null);
+        var bottom_copy: [32]u8 = undefined;
+        const bottom_v = bottom_copy[0..@min(bottom.len, 32)];
+        @memcpy(bottom_v, bottom[0..bottom_v.len]);
+        gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "a wheel at the end of the page returns");
+        self.check(std.mem.eql(u8, d.eval("return String(Math.round(window.scrollY));", null), bottom_v), "nothing moved at the end of the page");
+        _ = d.eval("window.scrollTo(0, 300); return 0;", null);
+        sleepMs(300);
+
+        // The shim's own guard (not only the adapter's baseline check).
+        _ = d.eval("window.wheels = []; return 0;", null);
+        var guard_err: [*c]u8 = null;
+        const guard_rc = c.zb_native_scroll(null, 200, 300, 0, 100, "0000000000000000", 5000, &guard_err);
+        c.zb_automation_free(guard_err);
+        self.check(guard_rc == c.ZB_AUTO_ERR_DOC_CHANGED, "the shim refuses a stale document token");
+        sleepMs(200);
+        self.check(std.mem.eql(u8, d.eval("return JSON.stringify(window.wheels);", null), "[]"), "the shim sent no wheel for it");
+
+        const stale = gtk_port.nativeScroll(port.ptr, 200, 300, 0, 100, "0000000000000000", 5000);
+        self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "a stale document token scrolls nothing");
+        sleepMs(200);
+        self.check(std.mem.eql(u8, d.eval("return JSON.stringify(window.wheels);", null), "[]"), "no wheel event after the refusal");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "native scroll sends a trusted wheel event that scrolls the scroller under the point" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-scroll-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    const path = try std.fmt.allocPrintSentinel(arena, "{s}/scroll.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path, scroll_fixture.ptr, scroll_fixture.len, null) != 0);
+    const raw = gfile.g_filename_to_uri(path, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw);
+    const uri = try arena.dupeZ(u8, std.mem.span(raw));
+    var driver: ScrollDriver = .{};
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, ScrollDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
+    c.zb_automation_loop_mark(1);
+}

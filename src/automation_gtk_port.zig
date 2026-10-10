@@ -166,6 +166,10 @@ const Ack = struct {
     doc: [doc_len]u8 = undefined,
     keyup: i64 = 0,
     click: i64 = 0,
+    wheel: i64 = 0,
+    /// Scroll events seen, and ms since the last one (-1: none yet).
+    scrolls: i64 = 0,
+    scroll_quiet_ms: f64 = -1,
     /// Cross-document navigations started from this document so far.
     navigations: i64 = 0,
     /// One of them is still in flight (not cancelled, stopped, or ended
@@ -240,11 +244,11 @@ fn readAckFromPage(_: *anyopaque, deadline: i64) PortError!?Ack {
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     if (std.mem.eql(u8, out, "null")) return null;
-    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, navigations: i64 = 0, leaving: bool = false };
+    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, wheel: i64 = 0, scrolls: i64 = 0, scrollQuietMs: f64 = -1, navigations: i64 = 0, leaving: bool = false };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
     defer parsed.deinit();
     if (!isDocumentToken(parsed.value.doc)) return error.EvalFailed;
-    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .navigations = parsed.value.navigations, .leaving = parsed.value.leaving };
+    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .wheel = parsed.value.wheel, .scrolls = parsed.value.scrolls, .scroll_quiet_ms = parsed.value.scrollQuietMs, .navigations = parsed.value.navigations, .leaving = parsed.value.leaving };
     @memcpy(&ack.doc, parsed.value.doc);
     return ack;
 }
@@ -280,7 +284,7 @@ const AckTracker = struct {
                 if (!now.isDocument(&target.doc)) return .document_changed;
                 // A navigation started since `target`'s baseline (even one
                 // the page cancels later) ends the current sequence.
-                if (now.click >= target.click and now.keyup >= target.keyup) return if (now.navigations != target.navigations) .leaving else .acknowledged;
+                if (now.click >= target.click and now.keyup >= target.keyup and now.wheel >= target.wheel) return if (now.navigations != target.navigations) .leaving else .acknowledged;
             }
             sleepMs(@min(5, try remainingMs(deadline)));
         }
@@ -303,7 +307,7 @@ const AckTracker = struct {
         defer self.debt_mutex.unlock();
         if (self.debt) |current| {
             if (std.mem.eql(u8, &current.doc, &target.doc)) {
-                self.debt = .{ .doc = target.doc, .click = @max(current.click, target.click), .keyup = @max(current.keyup, target.keyup), .navigations = target.navigations };
+                self.debt = .{ .doc = target.doc, .click = @max(current.click, target.click), .keyup = @max(current.keyup, target.keyup), .wheel = @max(current.wheel, target.wheel), .navigations = target.navigations };
                 return;
             }
         }
@@ -376,6 +380,52 @@ pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_
     const rc = c.zb_native_move(null, x, y, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
+}
+
+/// Scrolling that a wheel started is over once no scroll event came for
+/// this long (WebKit animates smooth scrolls over several frames).
+const scroll_quiet_ms: f64 = 100;
+/// A wheel that scrolls nothing (already at the end) never fires scroll
+/// events: done after this long without one.
+const scroll_start_ms: i64 = 250;
+
+/// One real smooth-scroll event at viewport CSS px (x, y) by (delta_x,
+/// delta_y) CSS px. Guarded by `document` like nativeClick. Returns once
+/// the page acknowledged the trusted wheel event and the scrolling it
+/// started has finished, so the next command sees the final offsets (or
+/// a navigation replaced the page). Timeout after dispatch is never
+/// retried.
+pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+    for ([_]f64{ x, y, delta_x, delta_y }) |v| if (!std.math.isFinite(v)) return error.EvalFailed;
+    const deadline = deadlineAfter(timeout_ms);
+    try txn_lock.lockUntil(deadline);
+    defer txn_lock.unlock();
+    const base = try page_acks.begin(document, deadline);
+    var doc_z: [doc_len + 1]u8 = undefined;
+    const expected = if (document) |token| docZ(&doc_z, token) else null;
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_scroll(null, x, y, delta_x, delta_y, expected, clampMs(try remainingMs(deadline)), &err);
+    c.zb_automation_free(err);
+    try mapNativeCode(rc);
+    var target = base;
+    target.wheel += 1;
+    if (try page_acks.settle(target, deadline) != .acknowledged) return;
+    try waitScrollSettled(&page_acks, base.scrolls, deadline);
+}
+
+/// After the wheel was acknowledged: wait until the scrolling it started
+/// (scroll events past `scrolls_before`) has been quiet for
+/// scroll_quiet_ms, or none started within scroll_start_ms.
+fn waitScrollSettled(acks: *AckTracker, scrolls_before: i64, deadline: i64) PortError!void {
+    const acked_at = monotonicMs();
+    while (true) {
+        if (try acks.read(deadline)) |now| {
+            if (now.scrolls > scrolls_before) {
+                if (now.scroll_quiet_ms >= scroll_quiet_ms) return;
+            } else if (monotonicMs() - acked_at >= scroll_start_ms) return;
+        } else return; // the document is being replaced
+        sleepMs(@min(10, try remainingMs(deadline)));
+    }
 }
 
 /// Real pointer motion + left click at viewport CSS px (x, y). Returns once
@@ -542,6 +592,34 @@ test "a navigation started during a sequence ends it, even after the page cancel
     var calm: FakeAcks = .{ .steps = &.{.{ .ack = cancelled }} };
     var acks2 = calm.tracker();
     try std.testing.expectEqual(AckOutcome.acknowledged, try acks2.settle(cancelled, deadlineAfter(1000)));
+}
+
+test "a scroll is acknowledged only by the page's trusted wheel count" {
+    var before = testAck(5);
+    before.wheel = 2;
+    var after = before;
+    after.wheel = 3;
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = before }, .{ .ack = before }, .{ .ack = after } } };
+    var acks = page.tracker();
+    var target = before;
+    target.wheel = 3;
+    try std.testing.expectEqual(AckOutcome.acknowledged, try acks.settle(target, deadlineAfter(1000)));
+    try std.testing.expectEqual(@as(usize, 3), page.index);
+}
+
+test "a scroll returns only once its scrolling went quiet" {
+    var acked = testAck(5);
+    acked.wheel = 1;
+    var moving = acked;
+    moving.scrolls = 3;
+    moving.scroll_quiet_ms = 5;
+    var quiet = moving;
+    quiet.scrolls = 6;
+    quiet.scroll_quiet_ms = 120;
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = moving }, .{ .ack = moving }, .{ .ack = quiet } } };
+    var acks = page.tracker();
+    try waitScrollSettled(&acks, 0, deadlineAfter(1000));
+    try std.testing.expectEqual(@as(usize, 3), page.index);
 }
 
 test "C error codes map onto PortError" {

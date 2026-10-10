@@ -26,7 +26,7 @@
   // `doc` identifies this document: input that navigates lands in a new
   // document whose counters start again at zero, which callers must treat as
   // delivered rather than wait for counts that will never come.
-  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, navigations: 0, pending: null };
+  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, wheel: 0, scrolls: 0, lastScrollAt: -1, navigations: 0, pending: null };
   function randomDocumentId() {
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
@@ -34,6 +34,14 @@
   }
   globalScope.addEventListener('mouseup', (event) => { if (event.isTrusted) inputAck.mouseup += 1; }, true);
   globalScope.addEventListener('keyup', (event) => { if (event.isTrusted) inputAck.keyup += 1; }, true);
+  globalScope.addEventListener('wheel', (event) => { if (event.isTrusted) inputAck.wheel += 1; }, { capture: true, passive: true });
+  // Scrolling (page or any element: capture sees non-bubbling scroll
+  // events) for native scroll completion: a wheel is done once its
+  // scrolling has gone quiet.
+  globalScope.addEventListener('scroll', () => {
+    inputAck.scrolls += 1;
+    inputAck.lastScrollAt = globalScope.performance.now();
+  }, { capture: true, passive: true });
   // Counted when the click starts dispatching: a reader's eval cannot run in
   // the middle of that synchronous dispatch, so once it observes the count
   // every listener (and the default action) of that click has run.
@@ -115,6 +123,10 @@
         return selectOption(command);
       case 'chooseFiles':
         return chooseFiles(command);
+      case 'hover':
+        return hover(command);
+      case 'scroll':
+        return scroll(command);
       case 'locate':
         return locate(command);
       case 'waitFor':
@@ -284,6 +296,51 @@
       return clickAriaOption(listbox, command, telemetry);
     }
     return failure('not_selectable', command, telemetry, false);
+  }
+
+  // dom.hover (synthetic): pointer and mouse events at the element's
+  // centre, after the actionability checks a click gets (except enabled).
+  // Event-only: script events do not move the browser's pointer, so CSS
+  // :hover (menus, tooltips styled with it) does not apply. A real hover is
+  // the native one (options.input "native"), a real pointer move.
+  function hover(command) {
+    const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+    if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
+    const element = resolved.elements[0];
+    const telemetry = resolved.telemetry.slice();
+    if (typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'nearest' });
+    const check = runActionabilityChecks(element, 'hover');
+    telemetry.push(actionabilitySpan(command, 'hover', check));
+    if (!check.passed) return actionFailure(check.error, check.check, telemetry);
+    const rect = element.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, view: globalScope,
+      clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+    const enter = Object.assign({}, at, { bubbles: false, cancelable: false });
+    element.dispatchEvent(new PointerEvent('pointerover', Object.assign({ pointerType: 'mouse', isPrimary: true }, at)));
+    element.dispatchEvent(new PointerEvent('pointerenter', Object.assign({ pointerType: 'mouse', isPrimary: true }, enter)));
+    element.dispatchEvent(new MouseEvent('mouseover', at));
+    element.dispatchEvent(new MouseEvent('mouseenter', enter));
+    element.dispatchEvent(new PointerEvent('pointermove', Object.assign({ pointerType: 'mouse', isPrimary: true }, at)));
+    element.dispatchEvent(new MouseEvent('mousemove', at));
+    return success({}, telemetry);
+  }
+
+  // dom.scroll (synthetic): a selector is scrolled into the middle of the
+  // view; {x, y} scrolls the page by that many CSS px.
+  function scroll(command) {
+    if (command.selector !== undefined && command.selector !== null) {
+      const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+      if (!resolved.ok) return resolved.response;
+      if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
+      resolved.elements[0].scrollIntoView({ block: 'center', inline: 'center' });
+      return success({ scrollX: globalScope.scrollX, scrollY: globalScope.scrollY }, resolved.telemetry);
+    }
+    const x = Number(command.x || 0);
+    const y = Number(command.y || 0);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return failure('malformed_command', command, [], false);
+    globalScope.scrollBy(x, y);
+    return success({ scrollX: globalScope.scrollX, scrollY: globalScope.scrollY }, []);
   }
 
   // dom.setInputFiles: click the file input so the browser opens its file
@@ -698,7 +755,8 @@
     if (!isElementVisibleEnough(element)) return failedCheck(element, 'visible', 'element_not_visible');
     if (element.getAttribute('data-moving') === 'true') return failedCheck(element, 'stable', 'element_not_stable');
     if (!receivesEvents(element)) return failedCheck(element, 'receives-events', 'element_obscured');
-    if (isDisabled(element)) return failedCheck(element, 'enabled', 'element_disabled');
+    // Hovering a disabled control is fine (tooltips explain why it is off).
+    if (action !== 'hover' && isDisabled(element)) return failedCheck(element, 'enabled', 'element_disabled');
     if ((action === 'fill' || action === 'type') && !isEditable(element)) {
       return failedCheck(element, 'editable', 'element_not_editable');
     }
@@ -1097,7 +1155,8 @@
       handle,
       inputAck() {
         return {
-          doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click,
+          doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click, wheel: inputAck.wheel, scrolls: inputAck.scrolls,
+          scrollQuietMs: inputAck.lastScrollAt < 0 ? -1 : globalScope.performance.now() - inputAck.lastScrollAt,
           navigations: inputAck.navigations, leaving: inputAck.pending !== null
         };
       },

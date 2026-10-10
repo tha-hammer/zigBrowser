@@ -198,6 +198,12 @@ enum {
 int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg_json,
                        const char *const *paths, int n_paths, unsigned int timeout_ms,
                        char **out_result, char **out_err);
+/* One real smooth-scroll (wheel) event at viewport CSS px (x, y), scrolling
+ * by (delta_x, delta_y) CSS px (positive = right/down; exact at page zoom
+ * 1). Guarded like zb_native_move; returns once dispatched (the caller
+ * acknowledges the page's trusted wheel event). */
+int zb_native_scroll(ZbWindow *win, double x, double y, double delta_x, double delta_y,
+                     const char *expected_doc, unsigned int timeout_ms, char **out_err);
 int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
                    unsigned int timeout_ms, char **out_err);
 
