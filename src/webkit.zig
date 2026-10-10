@@ -562,6 +562,7 @@ const LiveDriver = struct {
 
         self.runCookies();
         self.runNative();
+        self.runChildWindow();
 
         // Loop end with work in flight: an eval that never settles is still
         // pending when the loop quits; its waiter gets NO_LOOP and the job is
@@ -708,6 +709,32 @@ const LiveDriver = struct {
         self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "long native text times out at its deadline");
         self.check(long_ms < 500, "long native text returned promptly after the deadline");
         self.check(long_releases > 0 and long_releases < 2000, "long native text was only partially sent");
+    }
+
+    // Explicit child windows wait for their own first load, not the primary's.
+    fn runChildWindow(self: *LiveDriver) void {
+        var buf: [1024]u8 = undefined;
+        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return;
+        _ = self.eval(null, open_body, null, null, 5000);
+        var child: ?*c.ZbWindow = null;
+        var waited: u32 = 0;
+        while (waited < 3000) : (waited += 5) {
+            child = c.zb_automation_window_at(1);
+            if (child != null) break;
+            sleepMs(5);
+        }
+        self.check(child != null, "child window is published");
+        if (child == null) return;
+        self.check(c.zb_automation_main_window() != child, "primary window stays the first window");
+
+        // Sent the moment the child exists: it must see the child's real page.
+        const title = self.eval(child, "return document.title;", null, c.ZB_AUTOMATION_WORLD, 5000);
+        self.check(eq(title.out, "Fixture B"), "explicit child window op waits for its own first load");
+        const text = self.eval(child, "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));", "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", c.ZB_AUTOMATION_WORLD, 5000);
+        self.check(text.out != null and std.mem.indexOf(u8, text.out.?, "Page B") != null, "automation.js is injected into the child window");
+        // (Page-initiated window.close() is not wired in the shim, so the child
+        // stays open until teardown; stale pointers are covered by the bogus
+        // window check above.)
     }
 
     // N5: the cookie store of the primary window's (profile) context. Each

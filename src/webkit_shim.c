@@ -1477,8 +1477,12 @@ enum {
 
 static char *zb_auto_script_source; /* set before zb_app_run */
 static ZbApp *zb_auto_app;          /* GTK thread only */
-static ZbWindow *zb_auto_primary;   /* guarded by zb_auto_mutex */
-static int zb_auto_primary_ready;   /* guarded by zb_auto_mutex */
+/* Snapshot of the live windows in app order (index 0 = primary) and whether
+ * each one's first load has ended; guarded by zb_auto_mutex, published by the
+ * GTK thread whenever a window is added, removed or finishes its first load. */
+static ZbWindow *zb_auto_pub_windows[ZB_MAX_WINDOWS];
+static int zb_auto_pub_ready[ZB_MAX_WINDOWS];
+static int zb_auto_pub_count;
 static GList *zb_auto_inflight;     /* GTK thread only; holds one ref per job */
 
 void zb_automation_set_script(const char *source, size_t len) {
@@ -1506,11 +1510,18 @@ static void auto_install_script(ZbWindow *win) {
 /* GTK thread: publish the primary window and whether its first load has
  * ended, for waiters on the server thread. */
 static void auto_publish_primary(ZbApp *app) {
-  ZbWindow *primary =
-      (app != NULL && app->n_windows > 0) ? app->windows[0] : NULL;
+  int count = app != NULL ? app->n_windows : 0;
   g_mutex_lock(&zb_auto_mutex);
-  zb_auto_primary = primary;
-  zb_auto_primary_ready = primary != NULL && primary->auto_first_load_done;
+  zb_auto_pub_count = 0;
+  for (int i = 0; i < count && i < ZB_MAX_WINDOWS; i++) {
+    ZbWindow *win = app->windows[i];
+    if (win == NULL) {
+      continue;
+    }
+    zb_auto_pub_windows[zb_auto_pub_count] = win;
+    zb_auto_pub_ready[zb_auto_pub_count] = win->auto_first_load_done;
+    zb_auto_pub_count++;
+  }
   g_cond_broadcast(&zb_auto_cond);
   g_mutex_unlock(&zb_auto_mutex);
 }
@@ -1523,9 +1534,16 @@ static void auto_first_load_done(ZbWindow *win) {
   auto_publish_primary(win->app);
 }
 
+ZbWindow *zb_automation_window_at(int index) {
+  g_mutex_lock(&zb_auto_mutex);
+  ZbWindow *win = index >= 0 && index < zb_auto_pub_count ? zb_auto_pub_windows[index] : NULL;
+  g_mutex_unlock(&zb_auto_mutex);
+  return win;
+}
+
 ZbWindow *zb_automation_main_window(void) {
   g_mutex_lock(&zb_auto_mutex);
-  ZbWindow *win = zb_auto_primary;
+  ZbWindow *win = zb_auto_pub_count > 0 ? zb_auto_pub_windows[0] : NULL;
   g_mutex_unlock(&zb_auto_mutex);
   return win;
 }
@@ -1876,23 +1894,50 @@ static void auto_start_get(ZbAutoJob *job) {
 /* Wait until the primary window exists and, when `need_ready`, its first
  * load has ended, so commands sent while the start page is still loading do
  * not run against the empty initial document. */
-static int auto_wait_for_primary(gint64 deadline_us, int need_ready) {
+/* Index of `win` in the published snapshot (NULL = primary), or -1. */
+static int auto_pub_index_locked(ZbWindow *win) {
+  if (win == NULL) {
+    return zb_auto_pub_count > 0 ? 0 : -1;
+  }
+  for (int i = 0; i < zb_auto_pub_count; i++) {
+    if (zb_auto_pub_windows[i] == win) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/* Wait until the target window exists and, when `need_ready`, its own first
+ * load has ended, so commands sent while a page is still loading do not run
+ * against its empty initial document. NULL waits for the primary window to
+ * appear; an explicit window that is not alive is NO_WINDOW at once. */
+static int auto_wait_for_window(ZbWindow *target, gint64 deadline_us, int need_ready) {
   int code = ZB_AUTO_OK;
   g_mutex_lock(&zb_auto_mutex);
-  while (zb_auto_primary == NULL || (need_ready && !zb_auto_primary_ready)) {
+  for (;;) {
+    int index = auto_pub_index_locked(target);
     if (auto_loop_ended_locked()) {
       code = ZB_AUTO_ERR_NO_LOOP;
       break;
     }
+    if (index < 0 && target != NULL) {
+      code = ZB_AUTO_ERR_NO_WINDOW;
+      break;
+    }
+    if (index >= 0 && (!need_ready || zb_auto_pub_ready[index])) {
+      break;
+    }
     if (!g_cond_wait_until(&zb_auto_cond, &zb_auto_mutex, deadline_us)) {
-      if (zb_auto_primary == NULL) {
+      index = auto_pub_index_locked(target);
+      if (index < 0) {
         code = ZB_AUTO_ERR_NO_WINDOW;
         break;
       }
-      if (need_ready && !zb_auto_primary_ready) {
+      if (need_ready && !zb_auto_pub_ready[index]) {
         code = ZB_AUTO_ERR_TIMEOUT;
         break;
       }
+      break;
     }
   }
   if (code == ZB_AUTO_OK && auto_loop_ended_locked()) {
@@ -1919,7 +1964,7 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
   gint64 deadline = auto_deadline(timeout_ms);
   int need_ready = job->op != ZB_OP_NAVIGATE && job->op != ZB_OP_COOKIES_GET &&
                    job->op != ZB_OP_COOKIES_ADD && job->op != ZB_OP_COOKIES_DELETE;
-  int code = auto_wait_for_primary(deadline, need_ready);
+  int code = auto_wait_for_window(win, deadline, need_ready);
   if (code != ZB_AUTO_OK) {
     return code;
   }

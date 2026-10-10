@@ -84,10 +84,15 @@ void zb_automation_set_script(const char *source, size_t len);
  * and after the last window closes. Thread-safe snapshot; the ops below
  * re-validate the pointer on the GTK thread. */
 ZbWindow *zb_automation_main_window(void);
+/* The index-th live window in creation order (0 = primary), or NULL. Same
+ * snapshot semantics as zb_automation_main_window. */
+ZbWindow *zb_automation_window_at(int index);
 
 /* Ops below: win == NULL targets the primary window and waits for it to exist
- * until the deadline (ZB_AUTO_ERR_NO_WINDOW). Every op except navigate also
- * waits until the primary window's first load has finished or failed
+ * until the deadline (ZB_AUTO_ERR_NO_WINDOW); an explicit window that is not
+ * alive is ZB_AUTO_ERR_NO_WINDOW at once. Every op except navigate (and the
+ * cookie ops) also waits until the target window's own first load has
+ * finished or failed
  * (ZB_AUTO_ERR_TIMEOUT), so commands sent during startup see the start page.
  * On timeout, an in-flight eval is cancelled and a navigate/reload stops its
  * own load (never a newer one). Every input string is copied
