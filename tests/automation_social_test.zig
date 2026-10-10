@@ -879,3 +879,178 @@ test "N20: Instagram flows scan for their own platform; a blocked-action dialog 
     try std.testing.expect(report == .result);
     try std.testing.expectEqual(@as(usize, 0), g.h.fake.scan_calls);
 }
+
+// ---- N21: pacing state persists across restarts ----
+
+const pacing_store = automation.pacing_store;
+const x_routes = automation.x_routes;
+
+/// Absolute path of `name` inside a fresh test dir.
+const StoreDir = struct {
+    tmp: std.testing.TmpDir,
+    buf: [std.fs.max_path_bytes]u8 = undefined,
+    path: []const u8 = "",
+
+    fn init(self: *StoreDir) !void {
+        self.tmp = std.testing.tmpDir(.{ .iterate = true });
+        var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try self.tmp.dir.realPath(std.testing.io, &dir_buf);
+        self.path = try std.fmt.bufPrint(&self.buf, "{s}/{s}", .{ dir_buf[0..n], pacing_store.file_name });
+    }
+
+    fn deinit(self: *StoreDir) void {
+        self.tmp.cleanup();
+    }
+
+    fn write(self: *StoreDir, text: []const u8) !void {
+        try self.tmp.dir.writeFile(std.testing.io, .{ .sub_path = pacing_store.file_name, .data = text });
+    }
+
+    fn entries(self: *StoreDir) !usize {
+        var it = self.tmp.dir.iterate();
+        var n: usize = 0;
+        while (try it.next(std.testing.io)) |_| n += 1;
+        return n;
+    }
+};
+
+const day_now: i32 = @intCast(@divFloor(1_791_644_400_000, 86_400_000));
+
+test "N21 store: save then load round-trips; the file is 0600 and no temp file is left" {
+    var d: StoreDir = .{ .tmp = undefined };
+    try d.init();
+    defer d.deinit();
+    const io = std.testing.io;
+    try std.testing.expect(pacing_store.load(io, gpa, d.path) == .missing);
+    const snapshot = pacing_store.Snapshot{
+        .day = day_now,
+        .social = .{ .actions_today = 3, .daily_cap = 40, .min_delay_ms = 100, .max_delay_ms = 200 },
+        .x = .{ .actions_today = 7, .daily_cap = 50, .min_delay_ms = 0, .max_delay_ms = 0 },
+    };
+    try pacing_store.save(io, d.path, snapshot);
+    const loaded = pacing_store.load(io, gpa, d.path);
+    try std.testing.expect(loaded == .ok);
+    try std.testing.expectEqualDeep(snapshot, loaded.ok);
+    const stat = try d.tmp.dir.statFile(io, pacing_store.file_name, .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+    try std.testing.expectEqual(@as(usize, 1), try d.entries());
+    // A second save replaces it (still one file, still 0600).
+    var later = snapshot;
+    later.social.actions_today = 4;
+    try pacing_store.save(io, d.path, later);
+    try std.testing.expectEqual(@as(u32, 4), pacing_store.load(io, gpa, d.path).ok.social.actions_today);
+    try std.testing.expectEqual(@as(usize, 1), try d.entries());
+}
+
+test "N21 store: garbage, a wrong version, impossible values or an oversized file are corrupt (fall back to defaults)" {
+    var d: StoreDir = .{ .tmp = undefined };
+    try d.init();
+    defer d.deinit();
+    const io = std.testing.io;
+    const part = "{\"actions_today\":1,\"daily_cap\":10,\"min_delay_ms\":1,\"max_delay_ms\":2}";
+    for ([_][]const u8{
+        "not json",
+        "{\"version\":2,\"day\":1,\"social\":" ++ part ++ ",\"x\":" ++ part ++ "}",
+        "{\"version\":1,\"day\":1,\"social\":{\"actions_today\":1,\"daily_cap\":10,\"min_delay_ms\":5,\"max_delay_ms\":2},\"x\":" ++ part ++ "}",
+        "{\"version\":1,\"day\":1,\"social\":" ++ part ++ "}",
+        "{\"version\":1,\"day\":1,\"social\":{\"actions_today\":-1,\"daily_cap\":10,\"min_delay_ms\":1,\"max_delay_ms\":2},\"x\":" ++ part ++ "}",
+        "{\"version\":1,\"day\":1,\"social\":" ++ part ++ ",\"x\":" ++ part ++ "}" ++ " " ** 5000,
+        // Every field is required: no version, no count, no day.
+        "{\"day\":1,\"social\":" ++ part ++ ",\"x\":" ++ part ++ "}",
+        "{\"version\":1,\"day\":1,\"social\":{\"daily_cap\":10,\"min_delay_ms\":1,\"max_delay_ms\":2},\"x\":" ++ part ++ "}",
+        "{\"version\":1,\"social\":" ++ part ++ ",\"x\":" ++ part ++ "}",
+        "{\"version\":1,\"day\":1,\"social\":" ++ part ++ ",\"x\":" ++ part ++ ",\"extra\":1}",
+    }) |text| {
+        try d.write(text);
+        if (pacing_store.load(io, gpa, d.path) != .corrupt) {
+            std.debug.print("accepted {s}\n", .{text[0..@min(text.len, 80)]});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "N21 restore: today's counts and the config come back; a file from another UTC day keeps the config, not the counts" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    const part = pacing_store.Part{ .actions_today = 3, .daily_cap = 40, .min_delay_ms = 100, .max_delay_ms = 200 };
+    h.state.restore(part, day_now);
+    try std.testing.expectEqual(@as(u32, 37), h.state.remaining());
+    try std.testing.expectEqual(@as(u32, 200), h.state.pacingConfig().max_delay_ms);
+
+    var other: Harness = undefined;
+    other.init();
+    defer other.deinit();
+    other.state.restore(part, day_now - 1);
+    try std.testing.expectEqual(@as(u32, 40), other.state.remaining());
+    try std.testing.expectEqual(@as(u32, 100), other.state.pacingConfig().min_delay_ms);
+
+    var x = x_routes.XState.init(fakeWall);
+    x.restore(.{ .actions_today = 49, .daily_cap = 50, .min_delay_ms = 0, .max_delay_ms = 0 }, day_now);
+    try std.testing.expectEqual(@as(u32, 1), x.remaining());
+}
+
+const ChangeCounter = struct {
+    count: usize = 0,
+    fn hook(self: *ChangeCounter) automation.pacing.ChangeHook {
+        return .{ .ctx = self, .changed = changed };
+    }
+    fn changed(ctx: *anyopaque) void {
+        const self: *ChangeCounter = @ptrCast(@alignCast(ctx));
+        self.count += 1;
+    }
+};
+
+test "N21 hook: a counted action and social.set_pacing report a change; a released reservation and a read do not" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    var counter: ChangeCounter = .{};
+    h.state.on_change = counter.hook();
+    var released = h.state.reserve().?;
+    released.release();
+    try std.testing.expectEqual(@as(usize, 0), counter.count);
+    var committed = h.state.reserve().?;
+    committed.commit();
+    try std.testing.expectEqual(@as(usize, 1), counter.count);
+    var status = try h.call("social.rate_status", "{}");
+    defer status.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), counter.count);
+    var set = try h.call("social.set_pacing", "{\"daily_cap\":5}");
+    defer set.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 2), counter.count);
+    var bad = try h.call("social.set_pacing", "{\"daily_cap\":\"x\"}");
+    defer bad.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 2), counter.count);
+}
+
+test "N21 persister: actions are written as they count, and a fresh server state loaded from the file has the reduced remaining count" {
+    var d: StoreDir = .{ .tmp = undefined };
+    try d.init();
+    defer d.deinit();
+    const io = std.testing.io;
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    var x = x_routes.XState.init(fakeWall);
+    var persister = pacing_store.Persister{ .io = io, .path = d.path, .social = &h.state, .x = &x };
+    persister.attach();
+    for (0..2) |_| {
+        var r = h.state.reserve().?;
+        r.commit();
+    }
+    x.consume();
+    const saved = pacing_store.load(io, gpa, d.path).ok;
+    try std.testing.expectEqual(@as(u32, 2), saved.social.actions_today);
+    try std.testing.expectEqual(@as(u32, 1), saved.x.actions_today);
+
+    // "Restart": new states, loaded from the file.
+    var again: Harness = undefined;
+    again.init();
+    defer again.deinit();
+    var x2 = x_routes.XState.init(fakeWall);
+    var p2 = pacing_store.Persister{ .io = io, .path = d.path, .social = &again.state, .x = &x2 };
+    try std.testing.expect(p2.loadInto(gpa) == .ok);
+    try std.testing.expectEqual(@as(u32, 98), again.state.remaining());
+    try std.testing.expectEqual(@as(u32, 49), x2.remaining());
+}

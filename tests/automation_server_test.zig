@@ -1135,6 +1135,7 @@ const FixtureOptions = struct {
     sink: ?*automation_server.automation.telemetry.InMemoryTelemetrySink = null,
     cookies: ?*MemoryCookieStore = null,
     token: []const u8 = "",
+    pacing_state_path: []const u8 = "",
 };
 
 const Fixture = struct {
@@ -1159,6 +1160,7 @@ const Fixture = struct {
             .page_port = if (options.with_port) self.fake.port() else null,
             .telemetry_sink = if (options.sink) |sink| sink.sink() else null,
             .cookie_port = if (options.cookies) |store| store.port() else null,
+            .pacing_state_path = options.pacing_state_path,
         });
         try self.server.start();
         return self;
@@ -1333,4 +1335,53 @@ fn readFrame(stream: net.Stream) ![]u8 {
 
 fn cleanupSocketPath(path: []const u8) void {
     std.Io.Dir.deleteFileAbsolute(testing.io, path) catch {};
+}
+
+test "N21: the server loads <profile>/automation-pacing.json at start and saves every pacing change; a corrupt file means defaults" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/automation-pacing.json", .{dir_buf[0..dir_len]});
+    defer testing.allocator.free(path);
+
+    {
+        var fixture = try Fixture.start("pacing-a", .{ .pacing_state_path = path });
+        defer fixture.deinit();
+        var stream = try fixture.connect();
+        defer stream.close(testing.io);
+        const set = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"daily_cap\":7,\"min_delay_ms\":10,\"max_delay_ms\":20},\"id\":1}");
+        defer testing.allocator.free(set);
+        try testing.expect(std.mem.indexOf(u8, set, "\"result\"") != null);
+    }
+    const saved = automation_server.automation.pacing_store.load(testing.io, testing.allocator, path);
+    try testing.expectEqual(@as(u32, 7), saved.ok.social.daily_cap);
+
+    // Restart on the same file: the cap is back.
+    {
+        var fixture = try Fixture.start("pacing-b", .{ .pacing_state_path = path });
+        defer fixture.deinit();
+        var stream = try fixture.connect();
+        defer stream.close(testing.io);
+        const status = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"id\":2}");
+        defer testing.allocator.free(status);
+        try testing.expect(std.mem.indexOf(u8, status, "\"daily_cap\":7") != null);
+        try testing.expect(std.mem.indexOf(u8, status, "\"remaining_actions\":7") != null);
+    }
+
+    // A corrupt file: defaults (cap 100), and the next change rewrites it.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "automation-pacing.json", .data = "{garbage" });
+    {
+        var fixture = try Fixture.start("pacing-c", .{ .pacing_state_path = path });
+        defer fixture.deinit();
+        var stream = try fixture.connect();
+        defer stream.close(testing.io);
+        const status = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"id\":3}");
+        defer testing.allocator.free(status);
+        try testing.expect(std.mem.indexOf(u8, status, "\"daily_cap\":100") != null);
+        const set = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"daily_cap\":9},\"id\":4}");
+        defer testing.allocator.free(set);
+    }
+    try testing.expectEqual(@as(u32, 9), automation_server.automation.pacing_store.load(testing.io, testing.allocator, path).ok.social.daily_cap);
 }

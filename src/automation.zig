@@ -12,6 +12,8 @@ pub const x_routes = @import("automation/x_routes.zig");
 pub const flow_runner = @import("automation/flow_runner.zig");
 pub const social_flow_routes = @import("automation/social_flow_routes.zig");
 pub const flow_steps = @import("flow_steps.zig");
+pub const pacing = @import("automation/pacing.zig");
+pub const pacing_store = @import("automation/pacing_store.zig");
 
 pub const phase1_command_verbs = [_][]const u8{
     "dom.query",

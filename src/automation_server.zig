@@ -42,6 +42,11 @@ pub const Config = struct {
     /// variable ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN, else none (production).
     /// Requests can never change it.
     social_fixture_origin: ?[]const u8 = null,
+    /// N21: where the pacing state (daily counts, caps, delays) persists
+    /// across restarts: "<profile dir>/automation-pacing.json". Loaded at
+    /// start, saved after every counted action and social.set_pacing.
+    /// Empty: memory only.
+    pacing_state_path: []const u8 = "",
 };
 
 /// ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN, if it is an http(s) origin (scheme and
@@ -89,6 +94,8 @@ pub const AutomationApiServer = struct {
     x_state: x_routes.XState = undefined,
     /// social.* state: RateLimiter + pause window (N6).
     social: social_routes.SocialState = undefined,
+    /// N21: saves `social` and `x_state` to config.pacing_state_path.
+    persister: automation.pacing_store.Persister = undefined,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -102,6 +109,8 @@ pub const AutomationApiServer = struct {
         const token_file_path = try allocator.dupe(u8, config.token_file_path);
         errdefer allocator.free(token_file_path);
         const fixture_origin: ?[]const u8 = if (if (config.social_fixture_origin) |o| validFixtureOrigin(o) else fixtureOriginFromEnv()) |o| try allocator.dupe(u8, o) else null;
+        errdefer if (fixture_origin) |o| allocator.free(o);
+        const pacing_state_path = try allocator.dupe(u8, config.pacing_state_path);
         return .{
             .allocator = allocator,
             .io = io,
@@ -118,6 +127,7 @@ pub const AutomationApiServer = struct {
                 .build_info = config.build_info,
                 .cookie_port = config.cookie_port,
                 .social_fixture_origin = fixture_origin,
+                .pacing_state_path = pacing_state_path,
             },
         };
     }
@@ -131,7 +141,21 @@ pub const AutomationApiServer = struct {
         self.allocator.free(self.config.token);
         self.allocator.free(self.config.token_file_path);
         if (self.config.social_fixture_origin) |o| self.allocator.free(o);
+        self.allocator.free(self.config.pacing_state_path);
         self.* = undefined;
+    }
+
+    /// N21: restore the saved pacing state (or say why defaults are used,
+    /// never what the file holds), then save on every change.
+    fn loadPacing(self: *AutomationApiServer) void {
+        const path = self.config.pacing_state_path;
+        self.persister = .{ .io = self.io, .path = path, .social = &self.social, .x = &self.x_state };
+        switch (self.persister.loadInto(self.allocator)) {
+            .ok => {},
+            .missing => std.log.info("automation pacing: no saved state at {s}; using defaults", .{path}),
+            .corrupt => std.log.warn("automation pacing: saved state at {s} is unreadable or invalid; using defaults", .{path}),
+        }
+        self.persister.attach();
     }
 
     pub fn start(self: *AutomationApiServer) !void {
@@ -145,6 +169,7 @@ pub const AutomationApiServer = struct {
         self.engine = engine_mod.Engine.init(self.config.page_port orelse page_port.no_page, self.clock.clock());
         self.social = social_routes.SocialState.init(wallClockMs, self.clock.clock());
         self.x_state = x_routes.XState.init(wallClockMs);
+        if (self.config.pacing_state_path.len > 0) self.loadPacing();
         self.tee = .{ .recent = self.recent_traces.sink(), .configured = self.config.telemetry_sink };
         // A previous stop() shut the queue down for good; give a restarted
         // server a fresh one (every ticket was released when stop() joined

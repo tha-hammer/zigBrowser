@@ -20,6 +20,21 @@ pub const PacingDecision = struct {
 
 const ms_per_day: i64 = 86_400_000;
 
+/// N21: one limiter's state as saved in <profile>/automation-pacing.json.
+pub const Persisted = struct {
+    actions_today: u32 = 0,
+    daily_cap: u32,
+    min_delay_ms: u32,
+    max_delay_ms: u32,
+};
+
+/// N21: called after a change that must be persisted (a counted action, a
+/// new pacing config), never while a pacing state lock is held.
+pub const ChangeHook = struct {
+    ctx: *anyopaque,
+    changed: *const fn (ctx: *anyopaque) void,
+};
+
 pub const RateLimiter = struct {
     config: PacingConfig,
     actions_today: u32,
@@ -77,6 +92,25 @@ pub const RateLimiter = struct {
 
     pub fn updateConfig(self: *RateLimiter, config: PacingConfig) void {
         self.config = config;
+    }
+
+    /// The saved config always applies; the saved count only if it was
+    /// saved on today's UTC day (else the day has reset it).
+    pub fn restore(self: *RateLimiter, saved: Persisted, day: i32) void {
+        self.maybeResetDay();
+        self.config = .{ .min_delay_ms = saved.min_delay_ms, .max_delay_ms = saved.max_delay_ms, .daily_cap = saved.daily_cap };
+        self.actions_today = if (day == self.current_day) saved.actions_today else 0;
+    }
+
+    /// Today's state (UTC day, after any reset) for saving.
+    pub fn persisted(self: *RateLimiter) struct { part: Persisted, day: i32 } {
+        self.maybeResetDay();
+        return .{ .part = .{
+            .actions_today = self.actions_today,
+            .daily_cap = self.config.daily_cap,
+            .min_delay_ms = self.config.min_delay_ms,
+            .max_delay_ms = self.config.max_delay_ms,
+        }, .day = self.current_day };
     }
 
     fn consumeAction(self: *RateLimiter, random: std.Random) PacingDecision {

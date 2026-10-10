@@ -59,9 +59,29 @@ pub const SocialState = struct {
     in_flight: u32 = 0,
     /// Tests: seeds the pacing-delay randomness (production: OS entropy).
     random: ?std.Random = null,
+    /// N21: told after a counted action or a new pacing config (persisted
+    /// by the server), outside the lock.
+    on_change: ?pacing.ChangeHook = null,
 
     pub fn init(wall_ms: *const fn () i64, clock: engine_mod.Clock) SocialState {
         return .{ .limiter = pacing.RateLimiter.init(.{}, wall_ms), .clock = clock };
+    }
+
+    /// N21: state loaded at startup (see RateLimiter.restore).
+    pub fn restore(self: *SocialState, saved: pacing.Persisted, day: i32) void {
+        self.acquire();
+        defer self.lock.unlock();
+        self.limiter.restore(saved, day);
+    }
+
+    pub fn persisted(self: *SocialState) @typeInfo(@TypeOf(pacing.RateLimiter.persisted)).@"fn".return_type.? {
+        self.acquire();
+        defer self.lock.unlock();
+        return self.limiter.persisted();
+    }
+
+    fn changed(self: *SocialState) void {
+        if (self.on_change) |hook| hook.changed(hook.ctx);
     }
 
     pub fn pacingConfig(self: *SocialState) pacing.PacingConfig {
@@ -110,10 +130,11 @@ pub const SocialState = struct {
             if (!self.open) return;
             self.open = false;
             self.state.acquire();
-            defer self.state.lock.unlock();
             std.debug.assert(self.state.in_flight > 0);
             self.state.in_flight -= 1;
             if (counted) self.state.limiter.countAdmitted();
+            self.state.lock.unlock();
+            if (counted) self.state.changed();
         }
     };
 
@@ -249,16 +270,19 @@ pub fn handle(
             return jsonResult(gpa, social.rateStatus(&port));
         },
         .set_pacing => {
-            state.acquire();
-            defer state.lock.unlock();
-            const current = state.limiter.config;
-            const merged = social.SetPacingParams{
-                .min_delay_ms = (optionalU32(params, "min_delay_ms") catch return invalidParams()) orelse current.min_delay_ms,
-                .max_delay_ms = (optionalU32(params, "max_delay_ms") catch return invalidParams()) orelse current.max_delay_ms,
-                .daily_cap = (optionalU32(params, "daily_cap") catch return invalidParams()) orelse current.daily_cap,
+            const ok = blk: {
+                state.acquire();
+                defer state.lock.unlock();
+                const current = state.limiter.config;
+                const merged = social.SetPacingParams{
+                    .min_delay_ms = (optionalU32(params, "min_delay_ms") catch return invalidParams()) orelse current.min_delay_ms,
+                    .max_delay_ms = (optionalU32(params, "max_delay_ms") catch return invalidParams()) orelse current.max_delay_ms,
+                    .daily_cap = (optionalU32(params, "daily_cap") catch return invalidParams()) orelse current.daily_cap,
+                };
+                var port = PacingPort{ .state = state };
+                break :blk social.setPacing(&port, merged) catch return invalidParams();
             };
-            var port = PacingPort{ .state = state };
-            const ok = social.setPacing(&port, merged) catch return invalidParams();
+            state.changed();
             return jsonResult(gpa, ok);
         },
         .pause => {

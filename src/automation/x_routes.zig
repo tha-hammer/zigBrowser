@@ -33,6 +33,8 @@ pub const default_daily_cap: u32 = 50;
 pub const XState = struct {
     lock: std.atomic.Mutex = .unlocked,
     limiter: pacing.RateLimiter,
+    /// N21: told after a counted post (persisted by the server).
+    on_change: ?pacing.ChangeHook = null,
 
     pub fn init(wall_ms: *const fn () i64) XState {
         return .{ .limiter = pacing.RateLimiter.init(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = default_daily_cap }, wall_ms) };
@@ -44,11 +46,28 @@ pub const XState = struct {
         return self.limiter.remaining();
     }
 
-    fn consume(self: *XState) void {
+    /// Counts one successful post or scheduled post.
+    pub fn consume(self: *XState) void {
+        {
+            self.acquire();
+            defer self.lock.unlock();
+            var prng = std.Random.DefaultPrng.init(0);
+            _ = self.limiter.recordAction(prng.random()) catch {};
+        }
+        if (self.on_change) |hook| hook.changed(hook.ctx);
+    }
+
+    /// N21: state loaded at startup (see RateLimiter.restore).
+    pub fn restore(self: *XState, saved: pacing.Persisted, day: i32) void {
         self.acquire();
         defer self.lock.unlock();
-        var prng = std.Random.DefaultPrng.init(0);
-        _ = self.limiter.recordAction(prng.random()) catch {};
+        self.limiter.restore(saved, day);
+    }
+
+    pub fn persisted(self: *XState) @typeInfo(@TypeOf(pacing.RateLimiter.persisted)).@"fn".return_type.? {
+        self.acquire();
+        defer self.lock.unlock();
+        return self.limiter.persisted();
     }
 
     fn acquire(self: *XState) void {
