@@ -219,6 +219,17 @@ restart. Cookie values are never logged or written to telemetry.
 | `social.set_pacing` | `min_delay_ms?`, `max_delay_ms?`, `daily_cap?` | `{ok:true}` |
 | `social.pause` | `duration_ms` | `{ok:true}` after the pause; page commands wait behind it |
 
+The pacing state survives a restart: the day's counts (the shared
+LinkedIn/Instagram cap and the separate X cap) and the `social.set_pacing`
+settings are saved in `<profile dir>/automation-pacing.json` (mode 0600)
+after every counted action and every `social.set_pacing`, and loaded when
+the browser starts. The profile is `--profile-dir`, or the default one
+under `$XDG_DATA_HOME` / `~/.local/share`. Counts reset at UTC midnight as
+before (a file from an earlier day keeps its settings, not its counts). A
+missing or damaged file means defaults; the browser's log says so (without
+the file's contents). To reset the counts by hand, stop the browser and
+delete the file.
+
 ### LinkedIn and Instagram
 
 | Method | Params | Result |

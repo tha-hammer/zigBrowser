@@ -524,6 +524,15 @@ pub fn build(b: *std.Build) void {
     });
     automation_native_ports_e2e.addArtifactArg(exe);
 
+    // N21: pacing survives a restart on the same --profile-dir (real binary).
+    const automation_pacing_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_pacing_persist_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-pacing-e2e",
+    });
+    automation_pacing_e2e.addArtifactArg(exe);
+
     // Input verbs (contenteditable type/fill, ...) against the live page.
     const automation_input_e2e = b.addSystemCommand(&.{
         "sh",
@@ -716,6 +725,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_scroll_e2e.step);
     test_step.dependOn(&automation_native_ports_e2e.step);
+    test_step.dependOn(&automation_pacing_e2e.step);
     test_step.dependOn(&automation_profile_e2e.step);
     test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
