@@ -185,6 +185,8 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | Shared N23 WIP after the stable-id C/adapter seam was connected | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **GREEN 84/84 steps, 636/636 tests**. | All existing production-chain E2Es and the expanded server/engine/queue/adapter unit suites passed. This is an in-progress shared-tree gate, not commit evidence: the dedicated live popup/target-matrix E2E and its build wiring were not yet present, and cc_1's tracker-lifetime SHOULD 4824 remains open. |
 | Shared N23/native-fix WIP before this review checkpoint | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **RED: 81/83 steps, 634/635 tests**. | The sole failure is the deliberately fail-closed adapter completeness test: `PagePort.listWindows is not implemented by the GTK adapter`. All reached production E2Es passed, including core, SDK, profile, social, X, readiness, lifecycle, scroll, native ports and cookies. This is expected while cc_1's N23 registry/adapter half is absent, not a committed-HEAD regression. |
 | Shared N23 WIP with the stable-id GTK adapter and real socket popup test | Exact in-progress diff review; bounded shared-worktree Xvfb gate | **GREEN 85/85 steps, 639/639 tests; CODE/EVIDENCE PARTIAL; commit pending**. | Stable u32 ids, GTK-only pointer resolution, primary id 1, target-specific readiness, primary-first owned list JSON, exact-id close, all PagePort target propagation, id-exhaustion refusal, refused-child release and an in-flight work-counter barrier are present. The production binary/socket probe passes popup listing/opener identity, targeted title/fill/click/eval isolation, postMessage to the opener, primary-close refusal, popup close and later `no_window`, then stops without pinning the deferred broken-opener state. `page.list`/`page.close` use instrumented `External` wrappers; their sink regression checks three parented children, operation order, standard error mapping and absence of URL/title content. Queue OOM after a newly-created line now drops the empty line, with a failing-allocator regression that kills the mutant (closes 4840). Still open before commit: a per-id ACK/debt isolation oracle that kills a shared-tracker mutant (4830), a retained resolver for the pending close-race Promise (4833), and preservation of OOM while parsing the GTK list JSON (4837/4838). SHOULD: generation reset prevents cross-run debt, but UI close and expired post-close lock still retain tracker entries for the rest of a run. |
+| `3528d84` — joint N23 window targeting | Exact 22-file diff review, byte-for-byte comparison with the authors' clean gated snapshot, then reviewer `timeout 900 xvfb-run -a zig build test --summary all` on exact HEAD | **BLOCKED despite GREEN 85/85 steps, 641/641 tests.** | Stable ids, targeting, per-window queues, per-id native state, close cancellation, standard error/telemetry mapping, SDKs and popup login/postMessage all pass. The final tests close the popup and stop after `no_window`; they do not assert that the related opener remains usable. A real binary/SDK probe shows that `on_window_destroy` terminates the shared web process: the opener's URL/title become empty, eval fails, reload times out, and state is lost. Closing a related popup therefore defeats the OAuth use case. Orchestrator reversed the earlier deferral; this is now a BLOCKER. Mailed cc_1/cc_2 as 4848. |
+| `96571ce` — N23 handoff update | Exact documentation diff | **FOLLOW-UP REQUIRED.** | The N21, screenshot and scroll updates are accurate, but its N23 workaround/deferred-language became obsolete when the orchestrator reversed the deferral. After the native fix lands, cc_2 must remove the claims that closing a popup unloads the opener and that navigating it again is the supported recovery. |
 | Shared worktree after `4dafb3a`, pre-log-commit gate | `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 628/629 tests; committed N21 tests passed**. | The only failed test was uncommitted cc_1 screenshot WIP: `webkit.test.screenshot returns a PNG...` failed its late-encoder counter and both dynamic-growth assertions. The after-measure test hook starts an asynchronous JS evaluation and immediately starts the snapshot, so the capture can beat the growth. All reached socket E2Es passed. Mailed cc_1 as 4783. This is not an N21 or committed-HEAD regression. |
 | Shared N17–N20 WIP before mutation checkpoint | Bounded `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 612/613 tests**. | Every real-binary E2E passed, including the new native screenshot/file/scroll and platform-signal cases. The sole failure is `automation_server_test.zig:1056`: the routed x.post oracle expects 8 evals, while the new N20 scans make 14. Mailed cc_2 as 4752; this is owner WIP, not a committed-HEAD regression. |
 
@@ -1576,28 +1578,25 @@ existing native bridge also identifies the default window as current array
 index zero and compacts that array on close; after the original primary closes,
 an untargeted call can silently fall through to a popup.
 
-Status: **OPEN (cc_2 / BlueBeaver engine/server; cc_1 / BlackRobin native
-registry)**. Keep one engine and carry a per-run PagePort; the shared WIP now
-follows this shape. Use stable never-reused window ids at the C boundary, bind
-the default port permanently to original id 1, serialize `page.close` through
-that window's FIFO, and never target a replacement window after close. N23
-deliberately targets only `page.*`/`dom.*`; site flows stay on the primary
-queue, so their `window_id` support and the two-window X route oracle are
-deferred until that scope exists (the proactive global admission fix is
-`4497fbd`). The pre-existing behavior where closing one related WebKit view
-terminates the shared process is **DEFERRED by orchestrator** to a follow-up;
-it is documented rather than an N23 acceptance blocker. Retire empty queue
-lines, or explicitly bound their retention, so popup churn does not leak one
-entry per id. Seam review mailed as 4791, clarified in 4795.
+Status: **BLOCKED (cc_1 / BlackRobin shared-process close fix)**. The engine,
+stable-id registry, default-primary binding, per-window FIFO and empty-line
+retirement contracts are **CLOSED by `3528d84`**. N23 deliberately targets
+only `page.*`/`dom.*`; site-flow `window_id` support and its two-window X route
+oracle remain outside this slice (the proactive global admission fix is
+`4497fbd`). The orchestrator reversed the earlier close deferral after a real
+binary/SDK reproduction: closing a related popup terminates the process shared
+with its opener, losing its DOM state and breaking eval/navigation. N23 now
+requires shared-process-aware close behavior before approval. Seam review was
+mailed as 4791/4795; the reopened close BLOCKER was mailed as 4848.
 
-The four server/queue points mailed as 4798 are **closed in the current WIP,
-pending commit**: the out-of-deadline `listWindows` probe is gone; targeted
+The four server/queue points mailed as 4798 are **CLOSED by `3528d84`**: the
+out-of-deadline `listWindows` probe is gone; targeted
 `NoPage` is classified by the first ordinary bounded call; every idle queue
 line is removed under its mutex (500 arbitrary ids return to zero); and
 primary refusal is a real `-32602 primary_window` outcome before root-span
 recording. Re-review mailed as 4806.
 
-The server-fake half of 4812 is **closed in the current WIP, pending commit**:
+The server-fake half of 4812 is **CLOSED by `3528d84`**:
 every bounded fake-handle operation now returns `NoPage` when gone, and routed
 closed/unknown-window cases cover reload, screenshot, navigate, title,
 setInputFiles, native scroll, synthetic eval and native click with zero page,
@@ -1613,57 +1612,53 @@ and cancels an in-flight eval when its exact window closes. `ReplaceDriver` is
 inverted so the child at array index zero is never promoted. BlueBeaver's real
 binary/socket probe independently passes popup listing/opener identity,
 targeted title/fill/eval isolation, close and subsequent `no_window`. Mailed as
-4812/4818/4827; commit and a green joint gate are still pending.
+4812/4818/4827; this targeting matrix is committed and green in `3528d84`.
 
-The 4817 ACK/debt drift is **CODE CLOSED but EVIDENCE OPEN in the current WIP**:
-ACK trackers are keyed per stable id, their reader retains the targeted handle,
-and final scroll offsets use that same handle. However, the live matrix performs
-native work only on window 2 and then uses a page-world eval on window 1; a
-mutant that returns one shared tracker can survive. Require an id-1/id-2 tracker
-isolation/debt oracle (and preferably a real native id-1 call after id-2) before
-closing the test blocker. Mailed as 4830. The in-flight-close test now waits for
-the GTK work counter, but its pending Promise must retain its resolver as the
-older LiveDriver regression does; otherwise WebKit can fail it before close.
-Mailed as 4833.
+The 4817 ACK/debt drift is **CLOSED by `3528d84`**. ACK trackers are keyed per
+stable id, the unit oracle requires distinct tracker/context pointers and debt
+isolation, and the direct live matrix performs native work on id 1 after id 2.
+BlackRobin's shared-tracker mutant is killed by both tests. The retained
+`globalThis.__zbWindowHold` resolver keeps the in-flight Promise genuinely
+pending until exact-window close, closing 4833 as well.
 
-**OPEN SHOULD (4824):** tracker cleanup is best-effort only after
-`closeWindow`; an expired post-close lock and a user/UI close retain entries.
-The generation reset now clears all state before a later run can reuse id 1,
-closing the cross-run debt part; it does not bound serial popup churn inside
-one run. Prove a hard per-window lifetime bound or evict closed entries without
-racing an active native transaction.
+**CLOSED by `3528d84` (4824):** tracker lookup probes native window liveness and
+evicts gone entries; generation reset protects later runs. Native windows are
+hard-capped at 16, so even the fixed eight-entry cleanup batch leaves retention
+bounded. NIT: the nearby comment overstates immediate cleanup when more than
+eight windows disappear together, but the lifetime/memory safety concern is
+closed.
 
-The targeted-command `forWindow` telemetry finding 4819 is **closed in the
-current WIP, pending commit**. A refused handle is replaced by a complete
+The targeted-command `forWindow` telemetry finding 4819 is **CLOSED by
+`3528d84`**. A refused handle is replaced by a complete
 NoPage/Unsupported stand-in and the already-parsed command still runs through
 `executeWith`; the normal root therefore retains its real namespace and
 redacted command facts. The sink regression pins `dom`, `window-2` and
 `selector.kind` while the wire remains `-32011 unsupported`. Re-reviewed and
 mailed approval as 4826.
 
-The platform-child telemetry finding 4834 is **closed in the current WIP,
-pending commit**. `External.listWindows` and `External.closeWindow` emit the
+The platform-child telemetry finding 4834 is **CLOSED by `3528d84`**.
+`External.listWindows` and `External.closeWindow` emit the
 same `automation.platform.eval` child shape as the other PagePort calls, and
 `handleWindows` uses those wrappers. The sink regression observes one child
 for `page.list`, then list-plus-close for `page.close`, requires each child's
 parent to be a command root, and rejects representative URL/title content.
 It also pins `EvalFailed` as `-32603` and list timeout as `-32009`. The docs now
 correctly say only the other `page.*` calls and `dom.*` take an optional id.
-Re-reviewed and mailed as 4837; the joint green gate is still pending.
+Re-reviewed and mailed as 4837; the joint and reviewer gates are green.
 
-**OPEN SHOULD (4837/4838):** GTK `listWindows` parses its owned C JSON with
-`parseFromSlice(...) catch return error.EvalFailed`, which collapses allocator
-exhaustion into a wire-visible evaluation failure instead of propagating
-`OutOfMemory`. The server's standard mapping is otherwise correct: adapter
-`EvalFailed` becomes `-32603`, not `session_invalid`. Preserve OOM explicitly
-at the N23 parse boundary before the joint commit.
+**CLOSED by `3528d84` (4835/4837/4838):** GTK `listWindows` distinguishes
+`OutOfMemory` from malformed JSON; allocation failure propagates while malformed
+native output becomes `EvalFailed`. The server maps the latter to `-32603`, not
+`session_invalid`, and preserves timeout/cancellation mappings.
 
-The pre-existing opener loss after `page.close` is still **DEFERRED by
-orchestrator**, not an N23 gate. The real socket test now stops its required
-acceptance path after close plus later `no_window` and does not assert the
-current broken unloaded state. The user docs retain the measured workaround,
-without making it a regression oracle. This closes 4832 in the current WIP,
-pending commit.
+**REOPENED BLOCKER after `3528d84`: popup close must preserve its opener.** The
+real socket test stops after close plus later `no_window`, so the green gate is
+a false negative. The orchestrator's real binary/Python SDK probe proves both
+the symptom and its shared-process cause: `on_window_destroy` unconditionally
+calls `webkit_web_view_terminate_web_process`, taking down related live views.
+The fix must terminate only for the last live related view (retaining the sole
+hung-window fallback), and production-chain E2Es must prove opener URL and DOM
+state survive both automation `page.close` and popup-initiated `window.close()`.
 
 ## Deferred scope note
 
