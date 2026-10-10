@@ -41,6 +41,8 @@
         return runAction(command, 'fill');
       case 'type':
         return runAction(command, 'type');
+      case 'press':
+        return press(command);
       case 'waitFor':
         return waitFor(command);
       case 'rateLimitScan':
@@ -104,7 +106,153 @@
     if (action === 'click') synthesizeClick(element);
     if (action === 'fill') synthesizeFill(element, command.value || '');
     if (action === 'type') synthesizeType(element, command.text || '');
+    if (action === 'press') synthesizePress(element, command.key, command.modifiers || []);
     return success({ ok: true }, telemetry);
+  }
+
+  // dom.press: with a selector the element is resolved, checked and focused
+  // like any action; without one the key goes to the focused element.
+  function press(command) {
+    if (typeof command.key !== 'string' || command.key.length === 0) {
+      return failure('malformed_command', command, [], false);
+    }
+    if (command.selector !== undefined && command.selector !== null) {
+      return runAction(command, 'press');
+    }
+    const doc = globalScope.document;
+    const target = doc.activeElement || doc.body || doc.documentElement;
+    synthesizePress(target, command.key, command.modifiers || []);
+    return success({ ok: true }, []);
+  }
+
+  const MODIFIER_KEYS = {
+    Shift: { code: 'ShiftLeft', keyCode: 16, flag: 'shiftKey' },
+    Control: { code: 'ControlLeft', keyCode: 17, flag: 'ctrlKey' },
+    Alt: { code: 'AltLeft', keyCode: 18, flag: 'altKey' },
+    Meta: { code: 'MetaLeft', keyCode: 91, flag: 'metaKey' }
+  };
+
+  const NAMED_KEYS = {
+    Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, Space: 32,
+    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+    Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45,
+    Shift: 16, Control: 17, Alt: 18, Meta: 91
+  };
+
+  const PUNCTUATION_CODES = {
+    ' ': ['Space', 32], '-': ['Minus', 189], '=': ['Equal', 187], '[': ['BracketLeft', 219],
+    ']': ['BracketRight', 221], '\\': ['Backslash', 220], ';': ['Semicolon', 186],
+    "'": ['Quote', 222], ',': ['Comma', 188], '.': ['Period', 190], '/': ['Slash', 191],
+    '`': ['Backquote', 192]
+  };
+
+  // DOM key -> { code, keyCode } as a US keyboard reports them.
+  function keyDescriptor(key) {
+    if (MODIFIER_KEYS[key]) return { code: MODIFIER_KEYS[key].code, keyCode: MODIFIER_KEYS[key].keyCode };
+    if (NAMED_KEYS[key] !== undefined) return { code: key === 'Space' ? 'Space' : key, keyCode: NAMED_KEYS[key] };
+    if (/^F([1-9]|1[0-2])$/.test(key)) return { code: key, keyCode: 111 + Number(key.slice(1)) };
+    if (key.length === 1) {
+      if (/[a-z]/i.test(key)) return { code: 'Key' + key.toUpperCase(), keyCode: key.toUpperCase().charCodeAt(0) };
+      if (/[0-9]/.test(key)) return { code: 'Digit' + key, keyCode: key.charCodeAt(0) };
+      const punct = PUNCTUATION_CODES[key];
+      if (punct) return { code: punct[0], keyCode: punct[1] };
+    }
+    return { code: '', keyCode: 0 };
+  }
+
+  function keyboardEvent(type, key, descriptor, flags, cancelable) {
+    const init = Object.assign({
+      bubbles: true, cancelable, composed: true, key, code: descriptor.code,
+      keyCode: descriptor.keyCode, which: descriptor.keyCode,
+      charCode: type === 'keypress' ? key.charCodeAt(0) : 0,
+      view: globalScope
+    }, flags);
+    const event = new KeyboardEvent(type, init);
+    // Older engines ignore keyCode/which/charCode in the init dictionary.
+    for (const field of ['keyCode', 'which', 'charCode']) {
+      if (event[field] !== init[field]) {
+        try { Object.defineProperty(event, field, { get: () => init[field] }); } catch (_) {}
+      }
+    }
+    return event;
+  }
+
+  function synthesizePress(target, key, modifiers) {
+    const flags = { shiftKey: false, ctrlKey: false, altKey: false, metaKey: false };
+    const held = [];
+    for (const name of modifiers) {
+      const modifier = MODIFIER_KEYS[name];
+      if (!modifier || held.includes(name)) continue;
+      flags[modifier.flag] = true;
+      held.push(name);
+      target.dispatchEvent(keyboardEvent('keydown', name, keyDescriptor(name), Object.assign({}, flags), true));
+    }
+
+    if (target !== target.ownerDocument.activeElement && typeof target.focus === 'function') target.focus();
+    const descriptor = keyDescriptor(key);
+    const proceed = target.dispatchEvent(keyboardEvent('keydown', key, descriptor, Object.assign({}, flags), true));
+    const printable = key.length === 1 && !flags.ctrlKey && !flags.metaKey && !flags.altKey;
+    if (proceed && printable) {
+      const keypressOk = target.dispatchEvent(keyboardEvent('keypress', key, descriptor, Object.assign({}, flags), true));
+      if (keypressOk) insertPrintable(target, key);
+    } else if (proceed) {
+      runKeyDefault(target, key, flags);
+    }
+    // keyup goes to whatever holds focus now (Tab may have moved it).
+    const upTarget = target.ownerDocument.activeElement || target;
+    upTarget.dispatchEvent(keyboardEvent('keyup', key, descriptor, Object.assign({}, flags), true));
+
+    for (const name of held.reverse()) {
+      flags[MODIFIER_KEYS[name].flag] = false;
+      upTarget.dispatchEvent(keyboardEvent('keyup', name, keyDescriptor(name), Object.assign({}, flags), true));
+    }
+  }
+
+  function insertPrintable(target, char) {
+    if (target.isContentEditable) {
+      editableInsert(target, char, 'insertText');
+    } else if (isTextField(target)) {
+      target.value = (target.value || '') + char;
+      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+    }
+  }
+
+  function isTextField(element) {
+    const tag = element.tagName ? element.tagName.toLowerCase() : '';
+    return (tag === 'input' || tag === 'textarea') && !element.readOnly && !isDisabled(element);
+  }
+
+  // Browser default actions for the non-printable keys dom.press supports.
+  function runKeyDefault(target, key, flags) {
+    if (key === 'Enter') {
+      const tag = target.tagName ? target.tagName.toLowerCase() : '';
+      if (tag === 'input' && target.form) {
+        if (typeof target.form.requestSubmit === 'function') target.form.requestSubmit();
+        else target.form.submit();
+      }
+    } else if (key === 'Tab') {
+      moveFocus(target, flags.shiftKey ? -1 : 1);
+    }
+  }
+
+  function tabbableElements(doc) {
+    const candidates = Array.from(doc.querySelectorAll(
+      'a[href], button, input, select, textarea, iframe, [tabindex], [contenteditable="true"], [contenteditable=""]'
+    ));
+    const usable = candidates.filter((el) => el.tabIndex >= 0 && !isDisabled(el) &&
+      !(el.tagName.toLowerCase() === 'input' && el.type === 'hidden') && isElementVisibleEnough(el));
+    const positive = usable.filter((el) => el.tabIndex > 0).sort((a, b) => a.tabIndex - b.tabIndex);
+    return positive.concat(usable.filter((el) => el.tabIndex === 0));
+  }
+
+  function moveFocus(from, direction) {
+    const order = tabbableElements(from.ownerDocument);
+    if (order.length === 0) return;
+    const index = order.indexOf(from);
+    const next = index < 0
+      ? order[direction > 0 ? 0 : order.length - 1]
+      : order[(index + direction + order.length) % order.length];
+    next.focus();
   }
 
   function waitFor(command) {

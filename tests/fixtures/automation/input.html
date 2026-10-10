@@ -12,7 +12,29 @@
          beforeinput, applies the edit to its own model, and re-renders. -->
     <div id="draft" contenteditable="true" style="min-height: 20px; border: 1px solid #999"></div>
 
+    <!-- dom.press: Enter submits, Tab moves focus, Escape reaches the target. -->
+    <form id="form">
+      <input id="q" name="q" />
+      <input id="q2" name="q2" />
+    </form>
+
     <script>
+      window.submits = 0;
+      document.getElementById('form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        window.submits += 1;
+      });
+      window.keylog = [];
+      document.addEventListener('keydown', function (event) {
+        window.keylog.push({
+          type: event.type, key: event.key, code: event.code, keyCode: event.keyCode,
+          shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey,
+          target: event.target.id || event.target.tagName
+        });
+      }, true);
+      window.keyupCount = 0;
+      document.addEventListener('keyup', function () { window.keyupCount += 1; }, true);
+
       window.plainInputs = 0;
       document.getElementById('plain').addEventListener('input', function () {
         window.plainInputs += 1;

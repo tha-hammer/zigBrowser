@@ -63,6 +63,49 @@ def run_contenteditable(socket_path: Path, t: float) -> None:
     expect_equal("draft DOM after empty fill", evaluate(socket_path, "document.getElementById('draft').textContent", next(ids), t), "")
 
 
+def run_press(socket_path: Path, t: float) -> None:
+    ok = {"ok": True}
+    ids = iter(range(200, 300))
+
+    def rpc(method: str, params: dict):
+        return call_rpc(socket_path, method, params, next(ids), t)
+
+    def last_key() -> dict:
+        return evaluate(socket_path, "window.keylog[window.keylog.length - 1]", next(ids), t)
+
+    # Enter in a form input submits the form.
+    expect_equal("press Enter", rpc("dom.press", {"selector": "css=#q", "key": "Enter"}), ok)
+    expect_equal("Enter submitted the form", evaluate(socket_path, "window.submits", next(ids), t), 1)
+    entry = last_key()
+    expect_equal("Enter keydown fields", {k: entry[k] for k in ("key", "code", "keyCode", "target")},
+                 {"key": "Enter", "code": "Enter", "keyCode": 13, "target": "q"})
+
+    # Tab moves focus to the next tabbable element; Shift+Tab moves it back.
+    expect_equal("press Tab", rpc("dom.press", {"selector": "css=#q", "key": "Tab"}), ok)
+    expect_equal("focus after Tab", evaluate(socket_path, "document.activeElement.id", next(ids), t), "q2")
+    expect_equal("press Shift+Tab", rpc("dom.press", {"key": "Tab", "modifiers": ["Shift"]}), ok)
+    expect_equal("focus after Shift+Tab", evaluate(socket_path, "document.activeElement.id", next(ids), t), "q")
+
+    # Without a selector the key goes to the focused element.
+    expect_equal("press Escape", rpc("dom.press", {"key": "Escape"}), ok)
+    entry = last_key()
+    expect_equal("Escape keydown fields", {k: entry[k] for k in ("key", "code", "keyCode", "target")},
+                 {"key": "Escape", "code": "Escape", "keyCode": 27, "target": "q"})
+
+    # Modifier flags and the character code mapping.
+    expect_equal("press Control+a", rpc("dom.press", {"selector": "css=#q2", "key": "a", "modifiers": ["Control"]}), ok)
+    entry = last_key()
+    expect_equal("Control+a keydown fields", {k: entry[k] for k in ("key", "code", "keyCode", "ctrl", "shift", "target")},
+                 {"key": "a", "code": "KeyA", "keyCode": 65, "ctrl": True, "shift": False, "target": "q2"})
+    expect_equal("Control+a inserted nothing", evaluate(socket_path, "document.getElementById('q2').value", next(ids), t), "")
+
+    # A printable key on an input types its character.
+    expect_equal("press x", rpc("dom.press", {"selector": "css=#q2", "key": "x"}), ok)
+    expect_equal("x typed into q2", evaluate(socket_path, "document.getElementById('q2').value", next(ids), t), "x")
+    if evaluate(socket_path, "window.keyupCount", next(ids), t) < 6:
+        raise AssertionError("each press must end with keyup")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -103,6 +146,9 @@ def main() -> int:
         try:
             run_contenteditable(socket_path, args.timeout_sec)
             print("PASS\tcontenteditable type/fill")
+            scenario = "press"
+            run_press(socket_path, args.timeout_sec)
+            print("PASS\tdom.press")
         except Exception as exc:
             print(f"FAIL\t{scenario}")
             eprint(f"error={exc}")
