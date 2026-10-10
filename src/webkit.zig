@@ -1024,7 +1024,14 @@ const LiveDriver = struct {
             sleepMs(600);
             c.zb_automation_debug_native_guard_hold(0);
             self.check(held_move == c.ZB_AUTO_ERR_TIMEOUT, "a held guarded move returns TIMEOUT");
-            const late = self.eval(null, "return window.moves.length;", null, null, 5000);
+            // Only motion to the held move's own point counts: WebKit may
+            // replay the last real pointer position (a trusted mousemove at
+            // the previous target) after layout or hover changes.
+            const late = self.eval(null, "return String(window.moves.filter(function (m) { return m[0] === 30 && m[1] === 30; }).length);", null, null, 5000);
+            if (!eq(late.out, "0")) {
+                const seen = self.eval(null, "return JSON.stringify(window.moves);", null, null, 5000);
+                std.debug.print("late moves: {s}\n", .{seen.out orelse "?"});
+            }
             self.check(eq(late.out, "0"), "no motion reached the page after the timeout");
             const port_held = blk: {
                 c.zb_automation_debug_native_guard_hold(300);
@@ -1506,6 +1513,100 @@ test "the native pointer cache belongs to its window" {
         w.join();
     }
     const t = try std.Thread.spawn(.{}, ReplaceDriver.run, .{&driver});
+    _ = c.zb_app_run(uri_a.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.failures);
+    c.zb_automation_loop_mark(1);
+}
+
+// A window closed by its own input event: a GTK-level motion handler
+// destroys (and frees) the ZbWindow inside gtk_main_do_event. The pointer
+// cache write after dispatch must find the window gone instead of writing
+// through the stale pointer, and a click sends nothing after the motion that
+// closed its window.
+const SelfCloseDriver = struct {
+    uri_b: [:0]const u8,
+    failures: u32 = 0,
+
+    fn check(self: *SelfCloseDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("self-closing window check failed: {s}\n", .{what});
+            self.failures += 1;
+        }
+    }
+
+    fn openChild(self: *SelfCloseDriver, index: c_int) ?*c.ZbWindow {
+        var buf: [1024]u8 = undefined;
+        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return null;
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(null, open_body.ptr, null, null, 5000, null, &err);
+        c.zb_automation_free(err);
+        var waited: u32 = 0;
+        while (c.zb_automation_window_at(index) == null and waited < 5000) : (waited += 5) sleepMs(5);
+        const child = c.zb_automation_window_at(index) orelse return null;
+        err = null;
+        // Waits for the child's first load, so its view is realized.
+        _ = c.zb_automation_eval_json(child, "return 1;", null, null, 10_000, null, &err);
+        c.zb_automation_free(err);
+        return child;
+    }
+
+    fn run(self: *SelfCloseDriver) void {
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(null, "return 1;", null, null, 15_000, null, &err);
+        c.zb_automation_free(err);
+        err = null;
+        const moved = self.openChild(1) orelse return self.check(false, "first child opened");
+        const clicked = self.openChild(2) orelse return self.check(false, "second child opened");
+        const lost_before = c.zb_automation_debug_pointer_lost();
+
+        self.check(c.zb_automation_debug_close_on_motion(moved, 5000) == c.ZB_AUTO_OK, "arm close-on-motion (move)");
+        const move_rc = c.zb_native_move(moved, 10, 10, null, 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(move_rc == c.ZB_AUTO_ERR_NO_WINDOW, "a move that closed its window reports NO_WINDOW");
+        self.check(c.zb_automation_debug_pointer_lost() == lost_before + 1, "the cache write found the moved window gone");
+        self.check(c.zb_native_pointer(moved, null, null) == 0, "no pointer is cached for the closed window");
+
+        self.check(c.zb_automation_debug_close_on_motion(clicked, 5000) == c.ZB_AUTO_OK, "arm close-on-motion (click)");
+        const click_rc = c.zb_native_click(clicked, 10, 10, 1, null, 5000, &err);
+        c.zb_automation_free(err);
+        self.check(click_rc == c.ZB_AUTO_ERR_NO_WINDOW, "a click whose motion closed its window reports NO_WINDOW");
+        self.check(c.zb_automation_debug_pointer_lost() == lost_before + 2, "the cache write found the clicked window gone");
+        self.check(c.zb_automation_window_at(1) == null, "both children are gone, the primary remains");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "a window closed by its own input event is never touched afterwards" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-selfclose-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_b, fixture_b.ptr, fixture_b.len, null) != 0);
+    const raw_a = gfile.g_filename_to_uri(path_a, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_a);
+    const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_b);
+    const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
+    var driver: SelfCloseDriver = .{ .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, SelfCloseDriver.run, .{&driver});
     _ = c.zb_app_run(uri_a.ptr, 0, 0);
     t.join();
     try std.testing.expectEqual(@as(u32, 0), driver.failures);

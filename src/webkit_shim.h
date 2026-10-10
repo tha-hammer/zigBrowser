@@ -228,6 +228,11 @@ int zb_automation_debug_native_guard_hold_hits(void);
 /* Test hook: destroy `win`'s toplevel on the GTK thread (as a user closing
  * it would), so a test can make another window the primary. */
 int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms);
+/* Test hook: destroy `win`'s toplevel from its own motion-notify handler,
+ * i.e. synchronously inside the next pointer event dispatched to it. */
+int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms);
+/* Test hook: pointer-cache writes dropped because the window had gone. */
+int zb_automation_debug_pointer_lost(void);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);
