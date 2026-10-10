@@ -189,16 +189,15 @@ pub fn parse(
         },
     }
 
-    // `options.input` is validated for every method; native input exists
-    // only for click/type/press, and never with force (a trusted event at
-    // a covered element's centre would land on whatever covers it).
+    // `options.input` exists only on click/type/press: anywhere else even
+    // its presence is BadArgs. Native input never takes force (a trusted
+    // event at a covered element's centre would land on the cover), and
+    // dom.press has no force/trial at all.
     const input = parseInputMode(obj) catch return error.BadArgs;
-    if (input == .native) {
-        switch (verb) {
-            .dom_click, .dom_type, .dom_press => {},
-            else => return error.BadArgs,
-        }
-        if (command.force) return error.BadArgs;
+    switch (verb) {
+        .dom_click, .dom_type => if (input == .native and command.force) return error.BadArgs,
+        .dom_press => if (hasOption(obj, "force") or hasOption(obj, "trial")) return error.BadArgs,
+        else => if (hasOption(obj, "input")) return error.BadArgs,
     }
 
     command.arena = arena;
@@ -383,6 +382,14 @@ fn parseInputMode(obj: std.json.ObjectMap) error{BadArgs}!InputMode {
     if (std.mem.eql(u8, text, "synthetic")) return .synthetic;
     if (std.mem.eql(u8, text, "native")) return .native;
     return error.BadArgs;
+}
+
+fn hasOption(obj: std.json.ObjectMap, key: []const u8) bool {
+    const options = obj.get("options") orelse return false;
+    return switch (options) {
+        .object => |object| object.get(key) != null,
+        else => false,
+    };
 }
 
 /// Key names the native backend can press (mirrors the shim's table).

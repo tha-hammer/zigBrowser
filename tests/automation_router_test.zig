@@ -246,7 +246,7 @@ test "native dom.type rejects text with an embedded NUL (it would truncate at th
     try std.testing.expectEqual(@as(usize, 3), synthetic.text.?.len);
 }
 
-test "options.input is validated on every method; native only for click/type/press, never with force" {
+test "options.input only exists on click/type/press (presence elsewhere is BadArgs); native never with force; press has no force/trial" {
     const allocator = std.testing.allocator;
     for ([_]struct { method: []const u8, params: []const u8 }{
         .{ .method = "dom.query", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}" },
@@ -258,6 +258,14 @@ test "options.input is validated on every method; native only for click/type/pre
         .{ .method = "page.evaluate", .params = "{\"expression\":\"1\",\"options\":{\"input\":\"native\"}}" },
         .{ .method = "page.navigate", .params = "{\"url\":\"about:blank\",\"options\":{\"input\":\"native\"}}" },
         .{ .method = "dom.query", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"bogus\"}}" },
+        .{ .method = "dom.query", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"synthetic\"}}" },
+        .{ .method = "dom.fill", .params = "{\"selector\":\"css=#b\",\"value\":\"x\",\"options\":{\"input\":\"synthetic\"}}" },
+        .{ .method = "dom.selectOption", .params = "{\"selector\":\"css=#s\",\"value\":\"a\",\"options\":{\"input\":\"synthetic\"}}" },
+        .{ .method = "dom.getText", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"synthetic\"}}" },
+        .{ .method = "page.navigate", .params = "{\"url\":\"about:blank\",\"options\":{\"input\":\"synthetic\"}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"a\",\"options\":{\"input\":\"native\",\"force\":true}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"a\",\"options\":{\"force\":false}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"a\",\"options\":{\"trial\":true}}" },
         .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"force\":true}}" },
         .{ .method = "dom.type", .params = "{\"selector\":\"css=#b\",\"text\":\"x\",\"options\":{\"input\":\"native\",\"force\":true}}" },
     }) |case| {
@@ -269,8 +277,8 @@ test "options.input is validated on every method; native only for click/type/pre
         std.debug.print("accepted {s} {s}\n", .{ case.method, case.params });
         return error.TestUnexpectedResult;
     }
-    var synthetic_query = try router.parse(allocator, "dom.query", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"synthetic\"}}", .{});
-    defer synthetic_query.deinit();
+    var synthetic_type = try router.parse(allocator, "dom.type", "{\"selector\":\"css=#b\",\"text\":\"x\",\"options\":{\"input\":\"synthetic\"}}", .{});
+    defer synthetic_type.deinit();
     var forced_synthetic = try router.parse(allocator, "dom.click", "{\"selector\":\"css=#b\",\"options\":{\"force\":true}}", .{});
     defer forced_synthetic.deinit();
     try std.testing.expect(forced_synthetic.force);

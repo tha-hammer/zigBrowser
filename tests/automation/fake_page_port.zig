@@ -117,7 +117,11 @@ pub const FakePagePort = struct {
 
     fn recordNative(self: *FakePagePort, call: NativeCall) page_port.PortError!?page_port.PortError {
         const index = self.native_calls.items.len;
-        self.native_calls.append(self.gpa, call) catch return error.OutOfMemory;
+        // Takes ownership of call.data, also when the append fails.
+        self.native_calls.append(self.gpa, call) catch {
+            self.gpa.free(call.data);
+            return error.OutOfMemory;
+        };
         if (self.clock) |clock| clock.now_ms += self.native_cost_ms;
         // As an optional payload: a bare error value would take the error branch.
         if (self.native_fail_at) |at| if (at == index) return @as(?page_port.PortError, self.native_error);
