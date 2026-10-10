@@ -314,6 +314,63 @@ fn countRoots(sink: *const automation_server.automation.telemetry.InMemoryTeleme
     return count;
 }
 
+test "social.* methods are routed: rate_status, set_pacing, pause, login_check" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("social", .{ .eval_reply = "{\"ok\":true,\"value\":{\"logged_in\":false,\"username\":null}}" });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    const status = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"id\":1}");
+    defer testing.allocator.free(status);
+    try testing.expect(std.mem.indexOf(u8, status, "\"result\":{\"remaining_actions\":100,\"reset_at\":\"") != null);
+
+    const pacing = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"daily_cap\":7},\"id\":2}");
+    defer testing.allocator.free(pacing);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":2}", pacing);
+
+    const login = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.login_check\",\"id\":3}");
+    defer testing.allocator.free(login);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"logged_in\":false,\"platform\":\"unknown\",\"username\":null},\"id\":3}", login);
+
+    const unknown = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.post\",\"id\":4}");
+    defer testing.allocator.free(unknown);
+    try testing.expect(std.mem.indexOf(u8, unknown, "\"code\":-32601") != null);
+
+    const bad = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"min_delay_ms\":9000},\"id\":5}");
+    defer testing.allocator.free(bad);
+    try testing.expect(std.mem.indexOf(u8, bad, "\"code\":-32602") != null);
+}
+
+test "social.pause holds later page commands for the pause window" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("pause", .{});
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const paused = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.pause\",\"params\":{\"duration_ms\":200},\"id\":1}");
+    defer testing.allocator.free(paused);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", paused);
+
+    const started = std.Io.Clock.now(.awake, testing.io).toMilliseconds();
+    const url = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":2}");
+    defer testing.allocator.free(url);
+    const elapsed = std.Io.Clock.now(.awake, testing.io).toMilliseconds() - started;
+    try testing.expect(std.mem.indexOf(u8, url, "file:///fixture/index.html") != null);
+    try testing.expect(elapsed >= 150);
+
+    // A command whose whole budget is spent in the pause times out untouched.
+    const paused_again = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.pause\",\"params\":{\"duration_ms\":300},\"id\":3}");
+    defer testing.allocator.free(paused_again);
+    const evals_before = fixture.fake.evals.load(.acquire);
+    const short = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":50}},\"id\":4}");
+    defer testing.allocator.free(short);
+    try testing.expect(std.mem.indexOf(u8, short, "\"code\":-32009") != null);
+    try testing.expectEqual(evals_before, fixture.fake.evals.load(.acquire));
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

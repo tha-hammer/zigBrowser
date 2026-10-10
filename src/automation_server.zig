@@ -6,6 +6,7 @@ const net = std.Io.net;
 const page_port = automation.page_port;
 const engine_mod = automation.engine;
 const queue_mod = automation.queue;
+const social_routes = automation.social_routes;
 
 /// The automation API drives the primary window's page.
 pub const primary_route = automation.router.RouteContext{ .page_id = "page-1", .window_id = "window-1" };
@@ -48,6 +49,8 @@ pub const AutomationApiServer = struct {
     connections: std.ArrayListUnmanaged(*Connection) = .empty,
     /// Serializes commands per page (M8) and cancels them on stop().
     queue: queue_mod.PageCommandQueue,
+    /// social.* state: RateLimiter + pause window (N6).
+    social: social_routes.SocialState = undefined,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -88,6 +91,7 @@ pub const AutomationApiServer = struct {
         // once the server has reached its final address. Without a page every
         // command answers session_invalid through the engine (ids + span).
         self.engine = engine_mod.Engine.init(self.config.page_port orelse page_port.no_page, self.clock.clock());
+        self.social = social_routes.SocialState.init(wallClockMs, self.clock.clock());
         // A previous stop() shut the queue down for good; give a restarted
         // server a fresh one (every ticket was released when stop() joined
         // the connections).
@@ -244,7 +248,7 @@ pub const AutomationApiServer = struct {
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
         route.telemetry_sink = self.config.telemetry_sink;
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, route, self.config.build_info);
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info);
     }
 };
 
@@ -254,6 +258,7 @@ fn handleRequestWith(
     token: []const u8,
     engine: *engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
+    social: *social_routes.SocialState,
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
@@ -295,6 +300,10 @@ fn handleRequestWith(
     };
     defer allocator.free(params_json);
 
+    if (social_routes.verbFromMethod(method)) |verb| {
+        return handleSocial(allocator, id_json, verb, params_json, engine, queue, social, route);
+    }
+
     // The engine records the root span after execution; the router gets the
     // page identity only, so it does not record a second root span.
     var command = automation.router.parse(allocator, method, params_json, .{ .page_id = route.page_id, .window_id = route.window_id }) catch |err| switch (err) {
@@ -312,9 +321,18 @@ fn handleRequestWith(
     };
     defer if (maybe_ticket) |ticket| queue.release(ticket);
 
+    // A social.pause window holds page commands; the time spent counts as
+    // queue wait (and therefore against the command deadline).
+    var queue_wait_ms: u64 = 0;
+    if (maybe_ticket) |ticket| {
+        queue_wait_ms = ticket.wait_ms;
+        const budget = engine_mod.commandTimeoutMs(&command) -| queue_wait_ms;
+        queue_wait_ms +|= social.waitWhilePaused(&ticket.cancelled, budget) orelse 0;
+    }
+
     var outcome = try engine.executeWith(allocator, &command, .{
         .cancel = if (maybe_ticket) |ticket| &ticket.cancelled else &already_cancelled,
-        .queue_wait_ms = if (maybe_ticket) |ticket| ticket.wait_ms else 0,
+        .queue_wait_ms = queue_wait_ms,
         .route = route,
         .build = build_info,
     });
@@ -327,6 +345,48 @@ fn handleRequestWith(
         ),
         .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
     };
+}
+
+fn handleSocial(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    verb: social_routes.Verb,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    queue: *queue_mod.PageCommandQueue,
+    social: *social_routes.SocialState,
+    route: automation.router.RouteContext,
+) error{OutOfMemory}![]u8 {
+    // login_check reads the page, so it takes its turn in the page queue.
+    var ticket: ?queue_mod.Ticket = null;
+    if (verb == .login_check) {
+        ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Cancelled => {
+                const cancelled = automation.errors.AutomationError.cancelled;
+                return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(cancelled), automation.errors.name(cancelled), null);
+            },
+        };
+    }
+    defer if (ticket) |t| queue.release(t);
+
+    var outcome = try social_routes.handle(allocator, social, engine, verb, params_json);
+    defer outcome.deinit(allocator);
+    return switch (outcome) {
+        .result => |result_json| std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+            .{ result_json, id_json },
+        ),
+        .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
+    };
+}
+
+/// Wall-clock ms for the RateLimiter's UTC day rollover.
+fn wallClockMs() i64 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
 fn requestHasToken(obj: std.json.ObjectMap, token: []const u8) bool {

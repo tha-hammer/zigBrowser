@@ -5,6 +5,7 @@ pub const page_port = @import("automation/page_port.zig");
 pub const script_command = @import("automation/script_command.zig");
 pub const engine = @import("automation/engine.zig");
 pub const queue = @import("automation/queue.zig");
+pub const social_routes = @import("automation/social_routes.zig");
 
 pub const phase1_command_verbs = [_][]const u8{
     "dom.query",
