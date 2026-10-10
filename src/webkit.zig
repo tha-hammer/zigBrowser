@@ -265,6 +265,13 @@ const gfile = struct {
 const fixture_a =
     \\<!doctype html><html><head><title>Fixture A</title></head><body>
     \\<p id="msg">Hello fixture</p>
+    \\<button id="nb" style="position:fixed;left:20px;top:120px;width:120px;height:40px">Native</button>
+    \\<input id="ni" style="position:fixed;left:20px;top:180px;width:200px;height:30px">
+    \\<script>window.nativeLog = [];
+    \\['mousedown', 'mouseup', 'click'].forEach(function (t) {
+    \\  document.getElementById('nb').addEventListener(t, function (e) { nativeLog.push(t + ':' + e.isTrusted); }); });
+    \\document.getElementById('ni').addEventListener('keydown', function (e) {
+    \\  nativeLog.push('keydown:' + e.key + ':' + e.isTrusted + ':' + e.shiftKey); });</script>
     \\<script>window.pageMarker = 7; setTimeout(function () {
     \\  var p = document.createElement('p'); p.id = 'late'; p.textContent = 'late';
     \\  document.body.appendChild(p); }, 300);</script>
@@ -494,6 +501,7 @@ const LiveDriver = struct {
         self.check(rc == c.ZB_AUTO_OK, "navigate after a timed-out load returns OK");
 
         self.runCookies();
+        self.runNative();
         _ = c.zb_main_invoke_sync(quit, null, 5000);
     }
 
@@ -544,6 +552,83 @@ const LiveDriver = struct {
         const rc = c.zb_cookies_delete(null, name, domain, 5000, &err);
         c.zb_automation_free(err);
         return rc;
+    }
+
+    fn center(self: *LiveDriver, id: []const u8) ?[2]f64 {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrintZ(&buf, "const r = document.getElementById('{s}').getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2];", .{id}) catch return null;
+        const r = self.eval(null, body, null, null, 5000);
+        const out = r.out orelse return null;
+        const xy = std.json.parseFromSliceLeaky([2]f64, self.allocator, out, .{}) catch return null;
+        return xy;
+    }
+
+    fn nativeLog(self: *LiveDriver) []const u8 {
+        const r = self.eval(null, "return nativeLog.join(',');", null, null, 5000);
+        return r.out orelse "";
+    }
+
+    /// Native events reach the page asynchronously: wait (up to 3 s) until
+    /// the automation world has acknowledged `mouseups` / `keyups` more events.
+    fn waitInputAck(self: *LiveDriver, base: [2]i64, mouseups: i64, keyups: i64) bool {
+        var waited: u32 = 0;
+        while (waited < 3000) : (waited += 10) {
+            const now = self.inputAck() orelse return false;
+            if (now[0] >= base[0] + mouseups and now[1] >= base[1] + keyups) return true;
+            sleepMs(10);
+        }
+        return false;
+    }
+
+    fn inputAck(self: *LiveDriver) ?[2]i64 {
+        const r = self.eval(null, "const a = globalThis.__zbAutomation.inputAck(); return [a.mouseup, a.keyup];", null, c.ZB_AUTOMATION_WORLD, 5000);
+        const out = r.out orelse return null;
+        return std.json.parseFromSliceLeaky([2]i64, self.allocator, out, .{}) catch null;
+    }
+
+    // N7: real GDK input delivered to the view; the page must see isTrusted.
+    fn runNative(self: *LiveDriver) void {
+        var err: [*c]u8 = null;
+        _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
+        const button = self.center("nb") orelse return self.check(false, "button center");
+        var base = self.inputAck() orelse return self.check(false, "inputAck available");
+        var rc = c.zb_native_click(null, button[0], button[1], 1, 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "native click returns OK");
+        self.check(self.waitInputAck(base, 1, 0), "page acknowledged the native click");
+        self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "native click is trusted and ordered");
+
+        const input = self.center("ni") orelse return self.check(false, "input center");
+        _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
+        base = self.inputAck() orelse return self.check(false, "inputAck available");
+        rc = c.zb_native_click(null, input[0], input[1], 1, 5000, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(self.waitInputAck(base, 1, 0), "page acknowledged the focusing click");
+        var releases: c_int = 0;
+        base = self.inputAck() orelse return self.check(false, "inputAck available");
+        rc = c.zb_native_text(null, "hi", 5000, &releases, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK and releases == 2, "native text returns OK with 2 releases");
+        self.check(self.waitInputAck(base, 0, releases), "page acknowledged the typed keys");
+        const typed = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        self.check(eq(typed.out, "hi"), "native text typed into the focused input");
+
+        base = self.inputAck() orelse return self.check(false, "inputAck available");
+        rc = c.zb_native_key(null, "a", c.ZB_NATIVE_MOD_SHIFT, 5000, &releases, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK and releases == 2, "native Shift+a returns OK with 2 releases");
+        var more: c_int = 0;
+        rc = c.zb_native_key(null, "Enter", 0, 5000, &more, &err);
+        c.zb_automation_free(err);
+        self.check(rc == c.ZB_AUTO_OK and more == 1, "native Enter returns OK with 1 release");
+        self.check(self.waitInputAck(base, 0, releases + more), "page acknowledged Shift+a and Enter");
+        const after = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        self.check(eq(after.out, "hiA"), "Shift+a typed an upper-case A");
+        self.check(eq(self.nativeLog(), "keydown:h:true:false,keydown:i:true:false,keydown:Shift:true:true,keydown:A:true:true,keydown:Enter:true:false"), "native keys are trusted with key names and shift state");
     }
 
     // N5: the cookie store of the primary window's (profile) context. Each
@@ -660,15 +745,17 @@ test "automation bridge drives a live WebKitGTK page" {
 
     var watchdog: Watchdog = .{};
     const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 90_000) });
-    errdefer {
+    var watchdog_joined = false;
+    errdefer if (!watchdog_joined) {
         watchdog.done.store(true, .release);
         w.join();
-    }
+    };
     const t = try std.Thread.spawn(.{}, LiveDriver.run, .{&driver});
     _ = c.zb_app_run(driver.uri_a.ptr, 0, 0);
     t.join();
     watchdog.done.store(true, .release);
     w.join();
+    watchdog_joined = true;
 
     for (driver.failures.items) |f| std.debug.print("live bridge check failed: {s}\n", .{f});
     try std.testing.expectEqual(@as(usize, 0), driver.failures.items.len);

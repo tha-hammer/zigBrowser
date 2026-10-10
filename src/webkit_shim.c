@@ -1197,6 +1197,10 @@ struct ZbAutoJob {
   GCancellable *cancellable;
   int op;
   SoupCookie *cookie;   /* add */
+  double x, y;          /* native click */
+  int button;
+  int modifiers;        /* native key */
+  int releases;         /* native key/text: key releases sent */
   GList *cookie_queue;  /* delete: matching cookies still to delete */
   int load_armed;    /* saw LOAD_STARTED for `url` */
   int load_displaced; /* another URI committed over this load */
@@ -1449,6 +1453,9 @@ enum {
   ZB_OP_COOKIES_GET,
   ZB_OP_COOKIES_ADD,
   ZB_OP_COOKIES_DELETE,
+  ZB_OP_NATIVE_CLICK,
+  ZB_OP_NATIVE_KEY,
+  ZB_OP_NATIVE_TEXT,
 };
 
 #define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
@@ -1927,8 +1934,14 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
 }
 
 static void auto_start_cookies(ZbAutoJob *job);
+static void auto_start_native(ZbAutoJob *job);
 
 static ZbAutoJob *auto_op_new(int op) {
+  if (op == ZB_OP_NATIVE_CLICK || op == ZB_OP_NATIVE_KEY || op == ZB_OP_NATIVE_TEXT) {
+    ZbAutoJob *job = auto_job_new(auto_start_native, 0);
+    job->op = op;
+    return job;
+  }
   int is_cookie = op == ZB_OP_COOKIES_GET || op == ZB_OP_COOKIES_ADD ||
                   op == ZB_OP_COOKIES_DELETE;
   int is_async = op == ZB_OP_EVAL || op == ZB_OP_NAVIGATE || op == ZB_OP_RELOAD ||
@@ -2201,6 +2214,311 @@ static void auto_start_cookies(ZbAutoJob *job) {
                                             auto_job_ref(job));
       break;
   }
+}
+
+/* ---- Native (trusted) input ----
+ * Events go through gtk_main_do_event like real input from the display:
+ * pointer events to the view's own GdkWindow, key events to the toplevel,
+ * which forwards them to the focused view. The whole sequence runs in one
+ * GTK-thread dispatch (a sync job). */
+
+static guint32 auto_event_time(void) {
+  return (guint32)(g_get_monotonic_time() / 1000);
+}
+
+/* Give the view keyboard focus, and the toplevel a focus-in: under Xvfb
+ * there is no window manager to activate the window. */
+static void auto_native_focus(ZbWindow *win) {
+  GtkWidget *view = GTK_WIDGET(win->view);
+  if (!gtk_widget_has_focus(view)) {
+    gtk_widget_grab_focus(view);
+  }
+  GtkWidget *toplevel = gtk_widget_get_toplevel(view);
+  GdkWindow *window = gtk_widget_get_window(toplevel);
+  if (window != NULL && !gtk_window_has_toplevel_focus(GTK_WINDOW(toplevel))) {
+    GdkEvent *focus = gdk_event_new(GDK_FOCUS_CHANGE);
+    focus->focus_change.window = g_object_ref(window);
+    focus->focus_change.send_event = TRUE;
+    focus->focus_change.in = TRUE;
+    gdk_event_set_device(focus, gdk_seat_get_keyboard(
+                                    gdk_display_get_default_seat(gdk_window_get_display(window))));
+    gtk_widget_send_focus_change(toplevel, focus);
+    gdk_event_free(focus);
+  }
+}
+
+static GdkSeat *auto_seat(GdkWindow *window) {
+  return gdk_display_get_default_seat(gdk_window_get_display(window));
+}
+
+static void auto_native_pointer(GdkWindow *window, GdkEventType type, double x, double y,
+                                int button, GdkModifierType state) {
+  GdkEvent *event = gdk_event_new(type);
+  double root_x = x;
+  double root_y = y;
+  int ox = 0;
+  int oy = 0;
+  gdk_window_get_origin(window, &ox, &oy);
+  root_x += ox;
+  root_y += oy;
+  if (type == GDK_MOTION_NOTIFY) {
+    event->motion.window = g_object_ref(window);
+    event->motion.time = auto_event_time();
+    event->motion.x = x;
+    event->motion.y = y;
+    event->motion.x_root = root_x;
+    event->motion.y_root = root_y;
+    event->motion.state = state;
+  } else {
+    event->button.window = g_object_ref(window);
+    event->button.time = auto_event_time();
+    event->button.x = x;
+    event->button.y = y;
+    event->button.x_root = root_x;
+    event->button.y_root = root_y;
+    event->button.button = (guint)button;
+    event->button.state = state;
+  }
+  gdk_event_set_device(event, gdk_seat_get_pointer(auto_seat(window)));
+  gtk_main_do_event(event);
+  gdk_event_free(event);
+}
+
+static GdkModifierType auto_button_mask(int button) {
+  switch (button) {
+    case 2:
+      return GDK_BUTTON2_MASK;
+    case 3:
+      return GDK_BUTTON3_MASK;
+    default:
+      return GDK_BUTTON1_MASK;
+  }
+}
+
+static void auto_native_click(ZbAutoJob *job, ZbWindow *win) {
+  GdkWindow *window = gtk_widget_get_window(GTK_WIDGET(win->view));
+  if (window == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("view not realized"));
+    return;
+  }
+  auto_native_focus(win);
+  auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
+  auto_native_pointer(window, GDK_BUTTON_PRESS, job->x, job->y, job->button, 0);
+  auto_native_pointer(window, GDK_BUTTON_RELEASE, job->x, job->y, job->button,
+                      auto_button_mask(job->button));
+  auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+}
+
+typedef struct {
+  const char *name;
+  guint keyval;
+} ZbNamedKey;
+
+static const ZbNamedKey zb_named_keys[] = {
+    {"Enter", GDK_KEY_Return},       {"Tab", GDK_KEY_Tab},
+    {"Escape", GDK_KEY_Escape},      {"Backspace", GDK_KEY_BackSpace},
+    {"Delete", GDK_KEY_Delete},      {"Insert", GDK_KEY_Insert},
+    {"ArrowLeft", GDK_KEY_Left},     {"ArrowRight", GDK_KEY_Right},
+    {"ArrowUp", GDK_KEY_Up},         {"ArrowDown", GDK_KEY_Down},
+    {"Home", GDK_KEY_Home},          {"End", GDK_KEY_End},
+    {"PageUp", GDK_KEY_Page_Up},     {"PageDown", GDK_KEY_Page_Down},
+    {"Space", GDK_KEY_space},        {"Shift", GDK_KEY_Shift_L},
+    {"Control", GDK_KEY_Control_L},  {"Alt", GDK_KEY_Alt_L},
+    {"Meta", GDK_KEY_Meta_L},
+};
+
+/* DOM key name -> GDK keyval (0 when unknown). */
+static guint auto_keyval_for(const char *key) {
+  for (gsize i = 0; i < G_N_ELEMENTS(zb_named_keys); i++) {
+    if (strcmp(key, zb_named_keys[i].name) == 0) {
+      return zb_named_keys[i].keyval;
+    }
+  }
+  if (key[0] == 'F' && key[1] >= '1' && key[1] <= '9') {
+    int n = atoi(key + 1);
+    if (n >= 1 && n <= 12) {
+      return GDK_KEY_F1 + (guint)(n - 1);
+    }
+  }
+  if (g_utf8_validate(key, -1, NULL) && g_utf8_strlen(key, -1) == 1) {
+    gunichar ch = g_utf8_get_char(key);
+    return ch == '\n' ? GDK_KEY_Return : gdk_unicode_to_keyval(ch);
+  }
+  return 0;
+}
+
+static gboolean auto_is_modifier_keyval(guint keyval) {
+  return keyval == GDK_KEY_Shift_L || keyval == GDK_KEY_Control_L ||
+         keyval == GDK_KEY_Alt_L || keyval == GDK_KEY_Meta_L;
+}
+
+static void auto_native_key_event(GdkWindow *window, GdkEventType type, guint keyval,
+                                  GdkModifierType state) {
+  GdkEvent *event = gdk_event_new(type);
+  event->key.window = g_object_ref(window);
+  event->key.time = auto_event_time();
+  event->key.state = state;
+  event->key.keyval = keyval;
+  event->key.is_modifier = auto_is_modifier_keyval(keyval);
+
+  GdkKeymapKey *keys = NULL;
+  gint n_keys = 0;
+  GdkKeymap *keymap = gdk_keymap_get_for_display(gdk_window_get_display(window));
+  if (gdk_keymap_get_entries_for_keyval(keymap, keyval, &keys, &n_keys) && n_keys > 0) {
+    event->key.hardware_keycode = (guint16)keys[0].keycode;
+    event->key.group = (guint8)keys[0].group;
+  }
+  g_free(keys);
+
+  gunichar ch = gdk_keyval_to_unicode(keyval);
+  char utf8[8] = {0};
+  if (ch != 0 && !g_unichar_iscntrl(ch)) {
+    g_unichar_to_utf8(ch, utf8);
+  }
+  event->key.string = g_strdup(utf8);
+  event->key.length = (gint)strlen(utf8);
+  gdk_event_set_device(event, gdk_seat_get_keyboard(auto_seat(window)));
+  gtk_main_do_event(event);
+  gdk_event_free(event);
+}
+
+static const struct {
+  int bit;
+  guint keyval;
+  GdkModifierType mask;
+} zb_native_modifiers[] = {
+    {ZB_NATIVE_MOD_SHIFT, GDK_KEY_Shift_L, GDK_SHIFT_MASK},
+    {ZB_NATIVE_MOD_CONTROL, GDK_KEY_Control_L, GDK_CONTROL_MASK},
+    {ZB_NATIVE_MOD_ALT, GDK_KEY_Alt_L, GDK_MOD1_MASK},
+    {ZB_NATIVE_MOD_META, GDK_KEY_Meta_L, GDK_META_MASK},
+};
+
+/* Modifiers down (accumulating state), the key down and up, modifiers up in
+ * reverse order. Shift turns a letter into its upper-case keyval, as a
+ * keyboard would. */
+static int auto_native_press(GdkWindow *window, guint keyval, int modifiers) {
+  int releases = 1;
+  GdkModifierType state = 0;
+  for (gsize i = 0; i < G_N_ELEMENTS(zb_native_modifiers); i++) {
+    if (modifiers & zb_native_modifiers[i].bit) {
+      auto_native_key_event(window, GDK_KEY_PRESS, zb_native_modifiers[i].keyval, state);
+      state |= zb_native_modifiers[i].mask;
+    }
+  }
+  if (state & GDK_SHIFT_MASK) {
+    keyval = gdk_keyval_to_upper(keyval);
+  }
+  auto_native_key_event(window, GDK_KEY_PRESS, keyval, state);
+  auto_native_key_event(window, GDK_KEY_RELEASE, keyval, state);
+  for (gsize i = G_N_ELEMENTS(zb_native_modifiers); i > 0; i--) {
+    if (modifiers & zb_native_modifiers[i - 1].bit) {
+      state &= ~zb_native_modifiers[i - 1].mask;
+      auto_native_key_event(window, GDK_KEY_RELEASE, zb_native_modifiers[i - 1].keyval, state);
+      releases++;
+    }
+  }
+  return releases;
+}
+
+/* Whether typing `keyval` needs Shift on the current keymap (level 1). */
+static int auto_keyval_needs_shift(GdkWindow *window, guint keyval) {
+  GdkKeymapKey *keys = NULL;
+  gint n_keys = 0;
+  int shift = 0;
+  GdkKeymap *keymap = gdk_keymap_get_for_display(gdk_window_get_display(window));
+  if (gdk_keymap_get_entries_for_keyval(keymap, keyval, &keys, &n_keys) && n_keys > 0) {
+    shift = keys[0].level == 1;
+  }
+  g_free(keys);
+  return shift;
+}
+
+static void auto_start_native(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+  if (job->op == ZB_OP_NATIVE_CLICK) {
+    auto_native_click(job, win);
+    return;
+  }
+
+  GtkWidget *toplevel = gtk_widget_get_toplevel(GTK_WIDGET(win->view));
+  GdkWindow *window = gtk_widget_get_window(toplevel);
+  if (window == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("window not realized"));
+    return;
+  }
+  auto_native_focus(win);
+
+  if (job->op == ZB_OP_NATIVE_KEY) {
+    guint keyval = auto_keyval_for(job->body);
+    if (keyval == 0) {
+      auto_job_complete(job, ZB_AUTO_ERR_INTERNAL, NULL, g_strdup("unknown key"));
+      return;
+    }
+    job->releases = auto_native_press(window, keyval, job->modifiers);
+  } else {
+    for (const char *p = job->body; *p != '\0'; p = g_utf8_next_char(p)) {
+      gunichar ch = g_utf8_get_char(p);
+      guint keyval = ch == '\n' ? GDK_KEY_Return : gdk_unicode_to_keyval(ch);
+      int shift = keyval != GDK_KEY_Return && auto_keyval_needs_shift(window, keyval);
+      /* Pass the lower-case keyval with Shift so the press matches a
+       * keyboard; auto_native_press upper-cases it again. */
+      job->releases += auto_native_press(window, shift ? gdk_keyval_to_lower(keyval) : keyval,
+                                         shift ? ZB_NATIVE_MOD_SHIFT : 0);
+    }
+  }
+  auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+}
+
+int zb_native_click(ZbWindow *win, double x, double y, int button,
+                    unsigned int timeout_ms, char **out_err) {
+  ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_CLICK);
+  job->x = x;
+  job->y = y;
+  job->button = button > 0 ? button : 1;
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  auto_job_unref(job);
+  return code;
+}
+
+/* Runs a native key/text job and reports how many key releases it sent. */
+static int auto_run_native_keys(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
+                                int *out_releases, char **out_err) {
+  if (out_releases != NULL) {
+    *out_releases = 0;
+  }
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  g_mutex_lock(&zb_auto_mutex);
+  if (code == ZB_AUTO_OK && out_releases != NULL) {
+    *out_releases = job->releases;
+  }
+  g_mutex_unlock(&zb_auto_mutex);
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_native_key(ZbWindow *win, const char *key, int modifiers,
+                  unsigned int timeout_ms, int *out_releases, char **out_err) {
+  if (key == NULL || key[0] == '\0') {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_KEY);
+  job->body = g_strdup(key);
+  job->modifiers = modifiers;
+  return auto_run_native_keys(job, win, timeout_ms, out_releases, out_err);
+}
+
+int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
+                   int *out_releases, char **out_err) {
+  if (text == NULL || !g_utf8_validate(text, -1, NULL)) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_TEXT);
+  job->body = g_strdup(text);
+  return auto_run_native_keys(job, win, timeout_ms, out_releases, out_err);
 }
 
 int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,

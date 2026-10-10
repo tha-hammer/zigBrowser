@@ -17,6 +17,13 @@
   const BBOX_DECIMAL_SCALE = 100;
   const MAX_ATTEMPT_INDEX = 0xffffffff; // engine sends a u32
 
+  // Trusted-input acknowledgement: native (GDK) events reach the page
+  // asynchronously, so callers compare these counts before and after sending
+  // events to know the page has handled them. Counted in this isolated world.
+  const inputAck = { mouseup: 0, keyup: 0 };
+  globalScope.addEventListener('mouseup', () => { inputAck.mouseup += 1; }, true);
+  globalScope.addEventListener('keyup', () => { inputAck.keyup += 1; }, true);
+
   let nextElementId = 1;
   let nextSpanId = 1;
   let outstandingWaits = 0;
@@ -896,6 +903,9 @@
     value: {
       version: 'phase1-m4-actionability',
       handle,
+      inputAck() {
+        return { mouseup: inputAck.mouseup, keyup: inputAck.keyup };
+      },
       debugOutstandingWaits() {
         return outstandingWaits;
       }

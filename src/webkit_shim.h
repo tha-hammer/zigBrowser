@@ -153,6 +153,36 @@ int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_m
 int zb_cookies_delete(ZbWindow *win, const char *name, const char *domain,
                       unsigned int timeout_ms, char **out_err);
 
+/* --- Native (trusted) input ---
+ * Real GDK events delivered to the window's WebKitWebView on the GTK thread,
+ * so the page sees isTrusted === true. Coordinates are view (CSS viewport)
+ * pixels. Ops wait for the primary window's first load like the page ops.
+ * They return once the events are handed to WebKit, which delivers them to
+ * the page asynchronously (mouse and key queues are not ordered against each
+ * other); callers that need ordering wait for the page to see them, e.g. via
+ * __zbAutomation.inputAck(). */
+enum {
+  ZB_NATIVE_MOD_SHIFT = 1,
+  ZB_NATIVE_MOD_CONTROL = 2,
+  ZB_NATIVE_MOD_ALT = 4,
+  ZB_NATIVE_MOD_META = 8,
+};
+
+/* Pointer motion to (x, y), then press and release of `button` (1 = left). */
+int zb_native_click(ZbWindow *win, double x, double y, int button,
+                    unsigned int timeout_ms, char **out_err);
+/* Press and release one key: `key` is a DOM key name ("Enter", "Tab",
+ * "ArrowLeft", "a", ...); `modifiers` (ZB_NATIVE_MOD_*) are pressed before
+ * the key and released after it. ZB_AUTO_ERR_INTERNAL for unknown keys.
+ * *out_releases (optional) receives the number of key releases sent, so a
+ * caller can wait for that many keyup events to reach the page. */
+int zb_native_key(ZbWindow *win, const char *key, int modifiers,
+                  unsigned int timeout_ms, int *out_releases, char **out_err);
+/* Press and release a key for each character of UTF-8 `text` (Shift added
+ * where the keymap needs it; '\n' is Return). */
+int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
+                   int *out_releases, char **out_err);
+
 /* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
 int zb_automation_debug_live_jobs(void);
 
