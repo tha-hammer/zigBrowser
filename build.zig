@@ -372,6 +372,15 @@ pub fn build(b: *std.Build) void {
     });
     automation_api_e2e.addArtifactArg(exe);
 
+    // M12: external socket client drives the live page (fixture server).
+    const automation_core_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_core_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-core-e2e",
+    });
+    automation_core_e2e.addArtifactArg(exe);
+
     // --- Phase 4: Gaussian tests ---
     const gaussian_module = b.createModule(.{
         .root_source_file = b.path("src/automation/gaussian.zig"),
@@ -509,6 +518,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_telemetry_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&automation_api_e2e.step);
+    test_step.dependOn(&automation_core_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);
