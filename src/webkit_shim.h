@@ -276,6 +276,9 @@ int zb_automation_debug_png_stopped(void);
 void zb_automation_debug_png_ignore_abandon(int on);
 int zb_automation_debug_png_deadline_stops(void);
 void zb_automation_debug_shot_after_measure(const char *page_js);
+/* Test hook: a waiter whose deadline passed sleeps `ms` once more before
+ * giving up, so a late completion is what it reports (0 = off). */
+void zb_automation_debug_waiter_grace(unsigned int ms);
 int zb_automation_debug_shot_postcapture_refusals(void);
 /* Test hooks: choosers cancelled because their job's caller had given up;
  * block the GTK thread for `ms` at set-files stage 1 (job start, before

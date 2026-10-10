@@ -2471,12 +2471,23 @@ const ShotDriver = struct {
         c.zb_automation_debug_shot_after_measure("var g = document.createElement('div'); g.id = 'grown'; g.style.cssText = 'width:3000px;height:20000px'; document.body.appendChild(g); void document.body.offsetHeight;");
         const grown = gtk_port.screenshot(port.ptr, gpa, true, 15_000);
         c.zb_automation_debug_shot_after_measure(null);
-        if (grown) |shot| std.debug.print("grown shot: {d}x{d}\n", .{ shot.width, shot.height }) else |_| {}
         self.check(if (grown) |shot| blk: {
             gpa.free(shot.png);
             break :blk false;
         } else |e| e == error.TooLarge, "a document that grew after the measure is TooLarge");
         self.check(c.zb_automation_debug_shot_postcapture_refusals() == post_before + 1, "the captured size refused it");
+        _ = d.eval("document.getElementById('grown').remove(); return 0;", null);
+
+        // A capture that completes after the deadline, while its waiter wakes
+        // late, reports Timeout, not what it would otherwise be (TooLarge for
+        // this grown document).
+        c.zb_automation_debug_shot_after_measure("var g = document.createElement('div'); g.id = 'grown'; g.style.cssText = 'width:3000px;height:20000px'; document.body.appendChild(g); void document.body.offsetHeight; var t = Date.now() + 500; while (Date.now() < t) {}");
+        c.zb_automation_debug_waiter_grace(1500);
+        const late_shot = gtk_port.screenshot(port.ptr, gpa, true, 300);
+        c.zb_automation_debug_waiter_grace(0);
+        c.zb_automation_debug_shot_after_measure(null);
+        if (late_shot) |shot| gpa.free(shot.png) else |_| {}
+        self.check(if (late_shot) |_| false else |e| e == error.Timeout, "a capture completed after the deadline is a Timeout");
         _ = d.eval("document.getElementById('grown').remove(); return 0;", null);
 
         // A document over the pixel cap is refused before anything is

@@ -1403,8 +1403,15 @@ static int auto_job_submit(ZbAutoJob *job) {
 /* Waiter thread. Returns the job's code, or TIMEOUT / NO_LOOP after moving the
  * job to CANCELLED (never started) or ABANDONED (async op in flight). A sync
  * job that has already started is waited out regardless of the deadline. */
+static gint zb_auto_debug_waiter_grace_ms;
+
+void zb_automation_debug_waiter_grace(unsigned int ms) {
+  g_atomic_int_set(&zb_auto_debug_waiter_grace_ms, (gint)ms);
+}
+
 static int auto_job_wait(ZbAutoJob *job, gint64 deadline_us) {
   int code = ZB_AUTO_OK;
+  int graced = 0;
   g_mutex_lock(&zb_auto_mutex);
   for (;;) {
     if (job->state == ZB_JOB_DONE) {
@@ -1425,6 +1432,15 @@ static int auto_job_wait(ZbAutoJob *job, gint64 deadline_us) {
     }
 
     if (!give_up) {
+      continue;
+    }
+    guint grace = (guint)g_atomic_int_get(&zb_auto_debug_waiter_grace_ms);
+    if (grace > 0 && !graced && job->state == ZB_JOB_RUNNING) {
+      /* Test hook: a waiter that wakes late, so a late completion wins. */
+      graced = 1;
+      g_mutex_unlock(&zb_auto_mutex);
+      g_usleep((gulong)grace * 1000);
+      g_mutex_lock(&zb_auto_mutex);
       continue;
     }
     if (job->state == ZB_JOB_PENDING || job->state == ZB_JOB_CANCELLED) {
@@ -2337,6 +2353,16 @@ static void on_auto_snapshot_ready(GObject *object, GAsyncResult *result, gpoint
   cairo_surface_t *surface =
       webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(object), result, &error);
   auto_untrack(job);
+  /* At or past the deadline nothing else is classified: Timeout. */
+  if (g_get_monotonic_time() >= job->deadline_us) {
+    if (surface != NULL) {
+      cairo_surface_destroy(surface);
+    }
+    g_clear_error(&error);
+    auto_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, g_strdup("the deadline passed during the capture"));
+    auto_async_release(job);
+    return;
+  }
   if (surface == NULL) {
     int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
                                                                          : ZB_AUTO_ERR_INTERNAL;
@@ -3608,7 +3634,7 @@ int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned i
   job->max_png = max_bytes;
   job->deadline_us = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
   int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
-  if (code == ZB_AUTO_OK && g_get_monotonic_time() > job->deadline_us) {
+  if (code == ZB_AUTO_OK && g_get_monotonic_time() >= job->deadline_us) {
     /* Completed, but only after the deadline: never a late success. */
     code = ZB_AUTO_ERR_TIMEOUT;
   }

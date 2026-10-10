@@ -765,15 +765,19 @@ test "a scroll whose document is replaced after the wheel is DocumentReplaced, n
     var acks3 = late.tracker();
     try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks3, base, FakeOffsets.read, deadlineAfter(1000)));
 
-    // Settled in document A, but A started navigating away before the
-    // offsets eval: same token, a new navigation / leaving -> replaced.
+    // Settled in document A, but A started a navigation before the offsets
+    // eval: same token, each provenance field on its own -> replaced.
     FakeOffsets.doc = "0123456789abcdef".*;
     FakeOffsets.navigations = 1;
-    FakeOffsets.leaving = true;
-    var navigating: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
-    var acks_nav = navigating.tracker();
+    FakeOffsets.leaving = false;
+    var navigated: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
+    var acks_nav = navigated.tracker();
     try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_nav, base, FakeOffsets.read, deadlineAfter(1000)));
     FakeOffsets.navigations = 0;
+    FakeOffsets.leaving = true;
+    var going_away: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
+    var acks_leave = going_away.tracker();
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_leave, base, FakeOffsets.read, deadlineAfter(1000)));
     FakeOffsets.leaving = false;
 
     // Same document throughout: the settled offsets.
