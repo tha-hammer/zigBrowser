@@ -14,10 +14,6 @@ pub const default_timeout_ms: u64 = 30000;
 /// M7: delay between retries of a retryable script failure.
 pub const poll_interval_ms: u64 = 16;
 
-/// Floor for one attempt's native deadline, so the final attempts close to
-/// the command deadline still get a real chance to run.
-pub const min_native_attempt_ms: u64 = 250;
-
 /// Script `data.reason` values that can never succeed on retry, even though
 /// automation.js marks them retryable.
 const non_retryable_reasons = [_][]const u8{ "malformed_selector", "malformed_command", "unknown_op", "missing_attribute_name" };
@@ -63,7 +59,7 @@ pub const IoClock = struct {
 
     fn sleepMs(ptr: *anyopaque, ms: u64) void {
         const self: *IoClock = @ptrCast(@alignCast(ptr));
-        self.io.sleep(.fromMilliseconds(@intCast(ms)), .awake) catch {};
+        self.io.sleep(.fromMilliseconds(@intCast(@min(ms, std.math.maxInt(i64)))), .awake) catch {};
     }
 };
 
@@ -163,28 +159,35 @@ pub const Engine = struct {
 
     fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, ids: script_command.Ids) error{OutOfMemory}!Outcome {
         const deadline = self.clock.nowMs() +| timeout_ms;
-        if (command.verb == .dom_type) {
+        // One monotonic attempt counter for the whole command, including the
+        // per-character ops of a delayed dom.type.
+        var attempts: u32 = 0;
+        if (command.verb == .dom_type and command.text.?.len > 0) {
             if (command.delay_ms) |delay_ms| {
-                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, ids);
+                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, ids, &attempts);
             }
         }
-        return self.runDomUntil(gpa, command, deadline, ids);
+        return self.runDomUntil(gpa, command, deadline, ids, &attempts);
     }
 
     /// dom.type with delay_ms: one `type` op per character (UTF-8 code
     /// point), sleeping delay_ms between characters. Stops at the first
-    /// failing character.
-    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, ids: script_command.Ids) error{OutOfMemory}!Outcome {
-        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, ids);
+    /// failing character; never sleeps past the command deadline.
+    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, ids: script_command.Ids, attempts: *u32) error{OutOfMemory}!Outcome {
+        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, ids, attempts);
         var characters = view.iterator();
         var first = true;
         while (characters.nextCodepointSlice()) |character| {
-            if (!first) self.clock.sleepMs(delay_ms);
+            if (!first) {
+                const now = self.clock.nowMs();
+                if (now +| delay_ms >= deadline) return timeoutWithReason(gpa, .action_timeout, "type_delay_exceeds_timeout", ids, attempts.*);
+                self.clock.sleepMs(delay_ms);
+            }
             first = false;
 
             var single = command.*;
             single.text = character;
-            var outcome = try self.runDomUntil(gpa, &single, deadline, ids);
+            var outcome = try self.runDomUntil(gpa, &single, deadline, ids, attempts);
             switch (outcome) {
                 .failure => return outcome,
                 .result => outcome.deinit(gpa),
@@ -194,21 +197,22 @@ pub const Engine = struct {
     }
 
     /// M7 retry loop: retryable script failures are retried every
-    /// `poll_interval_ms` until `deadline`; the last failure decides the
-    /// timeout error. waitFor owns its own wait in JS, so only a missing
-    /// script is retried for it.
-    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, base_ids: script_command.Ids) error{OutOfMemory}!Outcome {
+    /// `poll_interval_ms` while a full poll interval still fits before
+    /// `deadline`; no attempt starts at or after the deadline and no native
+    /// call is given more than the remaining time. waitFor owns its own wait
+    /// in JS, so only a missing script is retried for it.
+    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, base_ids: script_command.Ids, attempts: *u32) error{OutOfMemory}!Outcome {
         const is_wait = command.verb == .dom_wait_for;
         var ids = base_ids;
         var last: LastFailure = .{};
-        var attempt: u32 = 0;
-        while (true) : (attempt += 1) {
-            ids.attempt_index = attempt;
+        while (true) {
+            ids.attempt_index = attempts.*;
+            attempts.* += 1;
             const remaining = deadline -| self.clock.nowMs();
             // waitFor: the script's JS timeout is authoritative; the native
             // call gets extra grace on top so JS settles first.
             const script_timeout: ?u64 = if (is_wait) remaining else null;
-            const native_timeout = if (is_wait) remaining + wait_for_native_grace_ms else @max(remaining, min_native_attempt_ms);
+            const native_timeout = if (is_wait) remaining + wait_for_native_grace_ms else @max(remaining, 1);
 
             const command_json = script_command.buildCommandJson(gpa, command, ids, script_timeout) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -232,8 +236,8 @@ pub const Engine = struct {
             last.record(&script_result);
 
             const now = self.clock.nowMs();
-            if (now >= deadline) return deadlineFailure(gpa, &last, ids, attempt + 1);
-            self.clock.sleepMs(@min(poll_interval_ms, deadline - now));
+            if (now +| poll_interval_ms >= deadline) return deadlineFailure(gpa, &last, ids, attempts.*);
+            self.clock.sleepMs(poll_interval_ms);
         }
     }
 
@@ -315,9 +319,13 @@ const LastFailure = struct {
     reason_buf: [64]u8 = undefined,
     reason_len: usize = 0,
 
+    /// Keeps the most specific evidence: once a match failed an
+    /// actionability check, a later "not found" does not erase it.
     fn record(self: *LastFailure, script_result: *const script_command.ScriptResult) void {
         const error_name = script_result.error_name.?;
-        self.automation_error = errors.fromName(error_name) catch .element_not_found;
+        const observed = errors.fromName(error_name) catch .element_not_found;
+        if (observed == .element_not_found and self.automation_error != .element_not_found) return;
+        self.automation_error = observed;
         const text = script_result.reason orelse error_name;
         self.reason_len = @min(text.len, self.reason_buf.len);
         @memcpy(self.reason_buf[0..self.reason_len], text[0..self.reason_len]);
@@ -327,6 +335,15 @@ const LastFailure = struct {
         return if (self.reason_len == 0) null else self.reason_buf[0..self.reason_len];
     }
 };
+
+fn timeoutWithReason(gpa: std.mem.Allocator, automation_error: errors.AutomationError, reason: []const u8, ids: script_command.Ids, attempts: u32) error{OutOfMemory}!Outcome {
+    const data = AutomationErrorData{ .reason = reason, .attempts = attempts, .trace_id = ids.trace_id, .command_id = ids.command_id };
+    return .{ .failure = .{
+        .code = errors.downstreamCode(automation_error),
+        .message = errors.name(automation_error),
+        .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
+    } };
+}
 
 /// Deadline reached while retrying: never matched -> element_not_found;
 /// matched but never actionable -> action_timeout carrying the last error.

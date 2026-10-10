@@ -109,7 +109,7 @@ test "attempt_index increases 0,1,2 and command/trace ids stay constant across r
     }
 }
 
-test "actionability failures until the deadline map to action_timeout with the last error" {
+test "actionability failures until the deadline map to action_timeout; no attempt starts at the deadline" {
     var h: Harness = undefined;
     h.init(&.{ obscured, not_visible });
     defer h.deinit();
@@ -120,10 +120,11 @@ test "actionability failures until the deadline map to action_timeout with the l
     try std.testing.expectEqualStrings("action_timeout", outcome.failure.message);
     try expectData(outcome, "last_error", "element_not_visible");
     try expectData(outcome, "reason", "visible");
-    // t=0,16,32,48 then a short final sleep to land exactly on the deadline.
-    try std.testing.expectEqualSlices(u64, &.{ 16, 16, 16, 2 }, h.clock.sleeps.items);
-    try std.testing.expectEqual(@as(usize, 5), h.evalCount());
-    try expectData(outcome, "attempts", "5");
+    // Attempts at t=0,16,32,48; another 16 ms would pass the 50 ms deadline.
+    try std.testing.expectEqualSlices(u64, &.{ 16, 16, 16 }, h.clock.sleeps.items);
+    try std.testing.expectEqual(@as(usize, 4), h.evalCount());
+    try expectData(outcome, "attempts", "4");
+    for (h.fake.eval_calls.items) |call| try std.testing.expect(call.timeout_ms <= 50);
 }
 
 test "never found until the deadline maps to element_not_found with the script reason" {
@@ -131,7 +132,7 @@ test "never found until the deadline maps to element_not_found with the script r
     h.init(&.{not_found});
     defer h.deinit();
 
-    var outcome = try h.run("dom.getText", "{\"selector\":\"css=#missing\",\"options\":{\"timeout_ms\":32}}");
+    var outcome = try h.run("dom.getText", "{\"selector\":\"css=#missing\",\"options\":{\"timeout_ms\":33}}");
     defer outcome.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
     try expectData(outcome, "reason", "strict_zero");
@@ -293,4 +294,78 @@ test "dom.type with delay stops at the first failing character" {
     defer outcome.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32006), outcome.failure.code);
     try std.testing.expectEqual(@as(usize, 2), h.evalCount());
+}
+
+test "a slow attempt that ends past the deadline is not followed by another attempt" {
+    var h: Harness = undefined;
+    h.init(&.{ not_found, ok });
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 60;
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":50}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 1), h.evalCount());
+    try std.testing.expectEqual(@as(u64, 50), h.fake.eval_calls.items[0].timeout_ms);
+}
+
+test "actionability evidence survives a later not-found before the deadline" {
+    var h: Harness = undefined;
+    h.init(&.{ obscured, not_found });
+    defer h.deinit();
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":40}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try expectData(outcome, "last_error", "element_obscured");
+}
+
+test "delayed typing never sleeps past the deadline, even for u64-max delay_ms" {
+    var h: Harness = undefined;
+    h.init(&.{ok});
+    defer h.deinit();
+
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"ab\",\"delay_ms\":18446744073709551615,\"options\":{\"timeout_ms\":1000}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try expectData(outcome, "reason", "type_delay_exceeds_timeout");
+    try std.testing.expectEqual(@as(usize, 1), h.evalCount());
+    try std.testing.expectEqual(@as(usize, 0), h.clock.sleeps.items.len);
+}
+
+test "delayed typing with delay larger than the timeout fails as action_timeout" {
+    var h: Harness = undefined;
+    h.init(&.{ok});
+    defer h.deinit();
+
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"ab\",\"delay_ms\":500,\"options\":{\"timeout_ms\":300}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+}
+
+test "empty text with delay_ms still resolves and checks the element once" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":false,\"error\":\"element_not_editable\",\"retryable\":false,\"data\":{\"reason\":\"editable\"}}" }});
+    defer h.deinit();
+
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"\",\"delay_ms\":10}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32006), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 1), h.evalCount());
+}
+
+test "delayed typing keeps one monotonic attempt_index across characters" {
+    var h: Harness = undefined;
+    h.init(&.{ not_found, ok, ok });
+    defer h.deinit();
+
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"ab\",\"delay_ms\":5}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
+    for (h.fake.eval_calls.items, 0..) |call, i| {
+        const arg = try std.json.parseFromSlice(std.json.Value, gpa, call.arg, .{});
+        defer arg.deinit();
+        try std.testing.expectEqual(@as(i64, @intCast(i)), arg.value.object.get("attempt_index").?.integer);
+    }
 }
