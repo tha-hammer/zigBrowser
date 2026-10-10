@@ -436,8 +436,9 @@ pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, d
     return finishScroll(&page_acks, base, readScrollOffsets, deadline);
 }
 
-/// Offsets as read from the page, with the document they were read in.
-const OffsetsRead = struct { x: f64, y: f64, doc: [doc_len]u8 };
+/// Offsets as read from the page, with the provenance read in the same
+/// eval: the document, its navigation count and whether it is leaving.
+const OffsetsRead = struct { x: f64, y: f64, doc: [doc_len]u8, navigations: i64 = 0, leaving: bool = false };
 
 /// After a dispatched wheel: its acknowledgement, the scrolling it started
 /// settling, then the offsets, all in the document the wheel went to. A
@@ -450,21 +451,27 @@ fn finishScroll(acks: *AckTracker, base: Ack, offsets: *const fn (deadline: i64)
     if (try acks.settle(target, deadline) != .acknowledged) return error.DocumentReplaced;
     try waitScrollSettled(acks, base, deadline);
     const read = try offsets(deadline);
-    if (!base.isDocument(&read.doc)) return error.DocumentReplaced;
+    if (!base.isDocument(&read.doc) or read.navigations != base.navigations or read.leaving) return error.DocumentReplaced;
     return .{ .x = read.x, .y = read.y };
 }
 
 /// The page's scrollX/scrollY and document token (same deadline).
 fn readScrollOffsets(deadline: i64) PortError!OffsetsRead {
     const gpa = std.heap.c_allocator;
-    const out = try evalJson(&port_tag, gpa, .automation, "const a = globalThis.__zbAutomation; return JSON.stringify([globalThis.scrollX, globalThis.scrollY, a ? a.documentToken : '']);", "null", try remainingMs(deadline));
+    const body =
+        \\const a = globalThis.__zbAutomation;
+        \\if (!a) return JSON.stringify([globalThis.scrollX, globalThis.scrollY, '', 0, true]);
+        \\const ack = a.inputAck();
+        \\return JSON.stringify([globalThis.scrollX, globalThis.scrollY, ack.doc, ack.navigations, ack.leaving]);
+    ;
+    const out = try evalJson(&port_tag, gpa, .automation, body, "null", try remainingMs(deadline));
     defer gpa.free(out);
-    const Wire = struct { f64, f64, []const u8 };
+    const Wire = struct { f64, f64, []const u8, i64, bool };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
     defer parsed.deinit();
     // No automation script answering: the document is being replaced.
     if (!isDocumentToken(parsed.value[2])) return error.DocumentReplaced;
-    var read: OffsetsRead = .{ .x = parsed.value[0], .y = parsed.value[1], .doc = undefined };
+    var read: OffsetsRead = .{ .x = parsed.value[0], .y = parsed.value[1], .doc = undefined, .navigations = parsed.value[3], .leaving = parsed.value[4] };
     @memcpy(&read.doc, parsed.value[2]);
     return read;
 }
@@ -710,14 +717,17 @@ test "a scroll returns only once its scrolling went quiet" {
     try std.testing.expectEqual(@as(usize, 3), page.index);
 }
 
-/// Offsets reader for finishScroll tests: counts calls, answers `doc`.
+/// Offsets reader for finishScroll tests: counts calls, answers `doc`
+/// with the given navigation provenance.
 const FakeOffsets = struct {
     var calls: usize = 0;
     var doc: [doc_len]u8 = "0123456789abcdef".*;
+    var navigations: i64 = 0;
+    var leaving: bool = false;
 
     fn read(_: i64) PortError!OffsetsRead {
         calls += 1;
-        return .{ .x = 0, .y = 300, .doc = doc };
+        return .{ .x = 0, .y = 300, .doc = doc, .navigations = navigations, .leaving = leaving };
     }
 };
 
@@ -755,8 +765,18 @@ test "a scroll whose document is replaced after the wheel is DocumentReplaced, n
     var acks3 = late.tracker();
     try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks3, base, FakeOffsets.read, deadlineAfter(1000)));
 
-    // Same document throughout: the settled offsets.
+    // Settled in document A, but A started navigating away before the
+    // offsets eval: same token, a new navigation / leaving -> replaced.
     FakeOffsets.doc = "0123456789abcdef".*;
+    FakeOffsets.navigations = 1;
+    FakeOffsets.leaving = true;
+    var navigating: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
+    var acks_nav = navigating.tracker();
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_nav, base, FakeOffsets.read, deadlineAfter(1000)));
+    FakeOffsets.navigations = 0;
+    FakeOffsets.leaving = false;
+
+    // Same document throughout: the settled offsets.
     var same: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
     var acks4 = same.tracker();
     const offsets = try finishScroll(&acks4, base, FakeOffsets.read, deadlineAfter(1000));
