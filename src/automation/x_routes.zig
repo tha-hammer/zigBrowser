@@ -110,7 +110,7 @@ pub fn handleWithBudget(
         }
     }
     const flow_ms = flow.flowBudgetMs(budget_ms, explicit_ms, humanized_text);
-    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| flow_ms, .deadline_reason = "x_flow_deadline" };
+    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| flow_ms, .deadline_reason = "x_flow_deadline", .platform = "x" };
     defer runner.deinit();
 
     const flow_result: x.Error!?[]u8 = switch (verb) {
@@ -142,6 +142,11 @@ pub fn handleWithBudget(
         error.LoggedOut => return engine_mod.automationFailure(gpa, .session_invalid, "logged_out", ids),
     };
     const json = result orelse return runner.takeFailure();
+    // N20: a limit dialog or toast after the last click is not a success.
+    if (!(try runner.finish())) {
+        gpa.free(json);
+        return runner.takeFailure();
+    }
     // Only posts and scheduled posts are paced; checks are read-only.
     if (verb == .post or verb == .schedule_post) state.consume();
     return .{ .result = json };

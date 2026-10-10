@@ -9,6 +9,10 @@
            /feed/update/<id>/          post (Like, Comment)
            /messaging/thread/<id>/     conversation
            /search/results/<type>/     search results (?keywords=)
+           /checkpoint/challenge/<id>/ a security checkpoint (the test server
+                                       redirects /in/checkpoint-me/ here; N20)
+           /in/limit-reached/          Connect opens the weekly invitation-limit
+                                       modal instead of the invite dialog (N20)
          ?loggedout=1 renders a signed-out page (sign-in link, no nav "Me").
          Everything the flows did is recorded in window.__li. -->
     <style>
@@ -56,7 +60,11 @@
         }
 
         var m;
-        if ((m = path.match(/^\/in\/([^/]+)\/$/))) {
+        if ((m = path.match(/^\/checkpoint\/challenge\/([^/]+)\/$/))) {
+          li.page = 'checkpoint';
+          main.innerHTML = '<h1>Let\u2019s do a quick security check</h1><form><button type="button" id="verify">Verify</button></form>';
+          document.getElementById('verify').addEventListener('click', function () { record('click:verify'); });
+        } else if ((m = path.match(/^\/in\/([^/]+)\/$/))) {
           li.page = 'profile:' + m[1];
           var name = 'Ada Lovelace';
           main.innerHTML =
@@ -80,7 +88,18 @@
             '';
           document.body.insertAdjacentHTML('beforeend', '<aside><button aria-label="Follow Charles Babbage">Follow</button></aside>');
           var invite = document.getElementById('invite');
-          document.getElementById('connect').addEventListener('click', function () { record('click:connect'); invite.hidden = false; });
+          var limited = m[1] === 'limit-reached';
+          document.getElementById('connect').addEventListener('click', function () {
+            record('click:connect');
+            if (limited) {
+              document.body.insertAdjacentHTML('beforeend',
+                '<div class="artdeco-modal" role="dialog" aria-modal="true"><h2>You\u2019ve reached the weekly invitation limit</h2>' +
+                '<button id="got-it">Got it</button></div>');
+              document.getElementById('got-it').addEventListener('click', function () { record('click:got_it'); });
+              return;
+            }
+            invite.hidden = false;
+          });
           function pending(note) {
             invite.hidden = true;
             li.result = { action: 'connect', note: note };
@@ -94,7 +113,7 @@
           var noteInput = invite.querySelector('textarea');
           noteInput.addEventListener('keydown', function () { record('keydown:note'); });
           invite.querySelector('[aria-label="Send invitation"]').addEventListener('click', function () { pending(noteInput.value); });
-          invite.querySelector('[aria-label="Send without a note"]').addEventListener('click', function () { pending(null); });
+          invite.querySelector('[aria-label="Send without a note"]').addEventListener('click', function () { record('click:send_without_note'); pending(null); });
           document.getElementById('follow').addEventListener('click', function () {
             var b = document.getElementById('follow');
             b.setAttribute('aria-label', 'Following ' + name);

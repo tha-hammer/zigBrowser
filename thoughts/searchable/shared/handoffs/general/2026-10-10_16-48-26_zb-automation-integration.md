@@ -105,9 +105,11 @@ green author gate before this handoff (at `3b4dd8f`): 80/80 steps,
   GTK-only C symbol; the shims' own compilation, the SDK link and running
   the socket on those systems are not verified. On those builds the page,
   cookie and native-input features answer -32011.
-- Proxy, CAPTCHA/checkpoint and platform rate-limit pages: not modelled.
-  The flows stop with an element/selector failure if one appears; they do
-  not detect them by name.
+- Proxies are not modelled. CAPTCHA/checkpoint and platform limit pages
+  are detected by name since N20 (-32010 with `data.signal`; see "Challenge,
+  CAPTCHA and limit pages" in `docs/how-to-automate.md`), but only from the
+  English text, paths and frames the fixtures model: a localized or
+  redesigned page may still surface as an element failure.
 - The social pacing state (counts, cap) is in memory: a restart resets it.
 - `selfcheck` reports counts only: no pass/fail policy, no visibility or
   actionability check, current page only (see "Safe first live run").
@@ -165,9 +167,10 @@ Never start with a personal or production account.
    `zb.call("telemetry.query", {"trace_id": ...})` (failed calls carry
    `trace_id` in the error).
 8. **Stop immediately** on: selector-count drift, a strict-match error
-   (`strict_multiple`), a checkpoint/authwall/CAPTCHA page, a platform
-   rate-limit message, unexpected navigation, or a result that does not show
-   in the window. Update the selector table, re-run the fixtures and the
+   (`strict_multiple`), any -32010 with a `data.signal` (checkpoint,
+   CAPTCHA, limit dialog or toast), a checkpoint/authwall/CAPTCHA page or
+   limit message that was NOT reported as one, unexpected navigation, or a
+   result that does not show in the window. Update the selector table, re-run the fixtures and the
    full gate, then repeat from step 4.
 
 ## Open review items at handoff

@@ -300,6 +300,30 @@ restart. Cookie values are never logged or written to telemetry.
   entries still match (a 0 for `composer` or both `post_button.*` means the
   table needs updating; `login_link` and `post_success` are normally 0).
 
+### Challenge, CAPTCHA and limit pages
+
+Every `x.*`, `linkedin.*` and `instagram.*` flow that navigates or acts
+checks the page for the platform's own stop signs: after every navigation,
+before its first action and before any action that follows an action (a
+click can open a limit dialog), after a failed step, and once more before
+it reports success. When one is showing, the flow stops at once with
+-32010 `platform_rate_limited` and `data.signal` / `data.platform`, and
+nothing more is clicked or typed. The flow does not count against the
+daily cap. Signals:
+
+| `data.signal` | What the page shows |
+|---|---|
+| `challenge` | A checkpoint or CAPTCHA (LinkedIn `/checkpoint/`, Instagram `/challenge/`, X's Arkose frame) |
+| `authwall` | LinkedIn's sign-in wall |
+| `invitation_limit` | LinkedIn's weekly invitation-limit dialog |
+| `action_blocked` | Instagram's "Try Again Later" dialog |
+| `toast` | X's error toast (daily post limit, "something went wrong") |
+| `modal` | Another dialog about limits, restrictions or verification |
+
+Stop and look at the page in the visible window before trying again.
+`x.selfcheck`, `x.login_check` and `linkedin.selfcheck` /
+`instagram.selfcheck` only read the current page and do not check.
+
 ### Diagnostics
 
 | Method | Params | Result |
@@ -429,7 +453,7 @@ channel sends one notification, `automation.ready`.
 | -32007 | navigation_timeout | Navigation did not finish before the deadline |
 | -32008 | navigation_failed | The load failed |
 | -32009 | action_timeout | Deadline passed (`data.last_error` names the last actionability failure) |
-| -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`, `social_daily_cap` for `linkedin.*`/`instagram.*`) |
+| -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`, `social_daily_cap` for `linkedin.*`/`instagram.*`), or the platform showed a challenge, CAPTCHA or limit page (`data.signal`, `data.platform`) |
 | -32011 | session_invalid | No page or cookie store is available; `logged_out` for `x.*`, `linkedin.*`, `instagram.*`; `unsupported` when the build has no native input |
 | -32012 | cancelled | The browser stopped while the command was queued or running |
 

@@ -193,6 +193,7 @@ fn execute(
         .deadline_ms = deadline_ms,
         .deadline_reason = call.deadlineReason(),
         .observer = trace.observer(),
+        .platform = call.namespace(),
     };
     defer runner.deinit();
 
@@ -218,6 +219,11 @@ fn execute(
         error.LoggedOut => return engine_mod.automationFailure(gpa, .session_invalid, "logged_out", ids),
     };
     const json = result orelse return runner.takeFailure();
+    // N20: a limit dialog or toast after the last click is not a success.
+    if (!(try runner.finish())) {
+        gpa.free(json);
+        return runner.takeFailure();
+    }
     if (reservation) |*r| r.commit();
     return .{ .result = json };
 }

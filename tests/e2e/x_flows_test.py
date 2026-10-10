@@ -222,6 +222,24 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     eprint(f"humanized 280-character post: {elapsed:.1f} s")
     passed.append("humanized-280")
 
+    # N20: an Arkose challenge on the composer stops x.post before any input;
+    # X's daily-limit toast after Post is not a success.
+    def x_signal(label, params):
+        response = rpc.raw("x.post", params)
+        error = response.get("error") or {}
+        data = error.get("data") or {}
+        expect_equal(f"{label} code", error.get("code"), -32010)
+        return data.get("signal"), data.get("platform")
+
+    expect_equal("captcha signal", x_signal("captcha", {"text": "blocked by a challenge", "compose_url": f"{base}?mode=compose&captcha=1"}), ("challenge", "x"))
+    trust = rpc.call("page.evaluate", {"expression": "window.__xTrust"})["result"]
+    if any(entry.startswith(("click:", "keydown:")) for entry in trust):
+        raise AssertionError(f"input reached a challenged page: {trust}")
+    expect_equal("captcha: nothing posted", recorded(), None)
+    expect_equal("limit toast signal", x_signal("limit", {"text": "one too many", "compose_url": f"{base}?mode=compose&limit=1"}), ("toast", "x"))
+    expect_equal("limit: nothing posted", recorded(), None)
+    passed.append("x-platform-signals")
+
     # Logged-out page: login link, no composer -> -32011 logged_out, nothing posted.
     response = rpc.raw("x.post", {"text": "should not post", "compose_url": f"{base}?mode=loggedout"})
     error = response.get("error") or {}

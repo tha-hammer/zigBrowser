@@ -1053,7 +1053,11 @@ test "x.* is routed: x.post runs its steps on the page and returns the flow resu
     const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi from the socket\",\"compose_url\":\"http://127.0.0.1:9/compose\"},\"id\":1}");
     defer testing.allocator.free(response);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", response);
-    try testing.expectEqual(@as(u32, 8), fixture.fake.evals.load(.acquire));
+    // 8 flow steps plus the N20 scans: after the navigation, before the
+    // fill, the type, the trial probe and the Post click, and before
+    // reporting success.
+    try testing.expectEqual(@as(u32, 6), fixture.fake.scans.load(.acquire));
+    try testing.expectEqual(@as(u32, 8 + 6), fixture.fake.evals.load(.acquire));
 
     const bad = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"\"},\"id\":2}");
     defer testing.allocator.free(bad);
@@ -1179,6 +1183,8 @@ const FakePort = struct {
     eval_reply: []const u8,
     eval_delay_ms: u64 = 0,
     evals: std.atomic.Value(u32) = .init(0),
+    /// N20 rateLimitScan evals among `evals`.
+    scans: std.atomic.Value(u32) = .init(0),
     in_flight: std.atomic.Value(u32) = .init(0),
     max_in_flight: std.atomic.Value(u32) = .init(0),
     /// While set, the first eval blocks (and sets `held`) until cleared.
@@ -1211,8 +1217,9 @@ const FakePort = struct {
     };
 
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
-        _ = .{ world, body, arg, timeout_ms };
+        _ = .{ world, body, timeout_ms };
         const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (std.mem.indexOf(u8, arg, "\"op\":\"rateLimitScan\"") != null) _ = self.scans.fetchAdd(1, .acq_rel);
         const now_in_flight = self.in_flight.fetchAdd(1, .acq_rel) + 1;
         defer _ = self.in_flight.fetchSub(1, .acq_rel);
         _ = self.max_in_flight.fetchMax(now_in_flight, .acq_rel);

@@ -101,13 +101,24 @@ test "x.post runs each flow step through the engine and records one x root span"
     }
     try std.testing.expectEqual(@as(usize, 1), roots);
     var children: usize = 0;
+    var scans: usize = 0;
     for (h.sink.spans.items) |span| {
         if (std.mem.eql(u8, span.name, "automation.platform.eval")) {
             children += 1;
             try std.testing.expectEqualStrings(root_trace, span.trace_id);
         }
+        if (std.mem.eql(u8, span.name, "automation.rate_limit_scan")) {
+            scans += 1;
+            try std.testing.expectEqualStrings("x", span.attr("platform").?);
+            try std.testing.expectEqualStrings("none", span.attr("signal").?);
+        }
     }
-    try std.testing.expectEqual(@as(usize, 9), children); // navigate + 8 evals
+    // N20 scans: after the navigation, before each action that follows an
+    // action (fill, type, trial probe, Post click), and once more before
+    // reporting success (the Post click was not scanned after).
+    try std.testing.expectEqual(@as(usize, 6), h.fake.scan_calls);
+    try std.testing.expectEqual(@as(usize, 6), scans);
+    try std.testing.expectEqual(@as(usize, 9 + 6), children); // navigate + 8 step evals + 6 scans
     try std.testing.expect(!h.sink.containsRaw("hello"));
 }
 
@@ -475,4 +486,106 @@ test "x.post humanized without timeout_ms: the route sizes its budget from the t
     defer cut.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32009), cut.failure.code);
     try std.testing.expectEqualStrings("", fixed.fake.nativeTyped(&typed_buf));
+}
+
+// ---- N20: platform rate-limit / challenge signals (automation.js rateLimitScan) ----
+
+fn expectRateLimited(outcome: engine.Outcome, signal: []const u8, platform: []const u8) !void {
+    if (outcome != .failure) {
+        std.debug.print("expected -32010, got {s}\n", .{outcome.result});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(i64, -32010), outcome.failure.code);
+    try std.testing.expectEqualStrings("platform_rate_limited", outcome.failure.message);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqualStrings(signal, data.value.object.get("signal").?.string);
+    try std.testing.expectEqualStrings(platform, data.value.object.get("platform").?.string);
+    try std.testing.expect(data.value.object.get("trace_id") != null);
+    try std.testing.expect(data.value.object.get("command_id") != null);
+}
+
+test "N20: a challenge right after navigation stops x.post with -32010 {signal, platform}; nothing on the page, no post counted" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.scan_replies = &.{.{ .json = fakes.detectedScan("challenge", "x") }};
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "challenge", "x");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.navigate_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.scan_calls);
+    try std.testing.expectEqualStrings("x", h.fake.scannedPlatform());
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap), h.state.remaining());
+}
+
+test "N20: a limit modal that appears after a click stops the flow before its next action" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    // Clean after the navigation, then the composer click opens a modal.
+    h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("toast", "x") } };
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "toast", "x");
+    var buf: [32][]const u8 = undefined;
+    const ops = try h.ops(&buf);
+    try std.testing.expectEqual(@as(usize, 2), ops.len);
+    try std.testing.expectEqualStrings("waitFor", ops[0]);
+    try std.testing.expectEqualStrings("click", ops[1]);
+    // The second scan ran after that click and before anything else.
+    try std.testing.expectEqual(@as(usize, 2), h.fake.scan_calls);
+    try std.testing.expectEqual(@as(usize, 2), h.fake.scan_positions[1]);
+}
+
+test "N20: a step that fails on a limit page is reported as platform_rate_limited, and no fallback probe runs" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" }});
+    defer h.deinit();
+    h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("modal", "x") } };
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "modal", "x");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+}
+
+test "N20: read-only x.* flows never scan; a scan that cannot run is not evidence" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.scan_replies = &.{.{ .json = fakes.detectedScan("challenge", "x") }};
+    var check = try h.call("x.login_check", "{}");
+    defer check.deinit(gpa);
+    try std.testing.expect(check == .result);
+    var report = try h.call("x.selfcheck", "{}");
+    defer report.deinit(gpa);
+    try std.testing.expect(report == .result);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.scan_calls);
+
+    var broken: Harness = undefined;
+    broken.init(&.{ok_reply});
+    defer broken.deinit();
+    broken.fake.scan_replies = &.{
+        .{ .err = error.EvalFailed },
+        .{ .json = "{\"ok\":false,\"error\":\"script_not_ready\",\"retryable\":true,\"data\":{\"reason\":\"script_not_ready\"}}" },
+        .{ .json = fakes.clean_scan },
+    };
+    var posted = try broken.call("x.post", "{\"text\":\"hi\"}");
+    defer posted.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", posted.result);
+    try std.testing.expect(broken.fake.scan_calls >= 3);
+}
+
+test "N20: a limit toast after the final Post click is not a success, and no post is counted" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    const clean = fakes.EvalReply{ .json = fakes.clean_scan };
+    h.fake.scan_replies = &.{ clean, clean, clean, clean, clean, .{ .json = fakes.detectedScan("toast", "x") } };
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "toast", "x");
+    try std.testing.expectEqual(@as(usize, 6), h.fake.scan_calls);
+    try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap), h.state.remaining());
 }

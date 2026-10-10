@@ -10,6 +10,8 @@
            /p/<id>/                  post (Like, comment)
            /stories/<username>/      three story frames; Next on the last one
                                      leaves the viewer for the profile
+           /p/blocked/               Like is refused with Instagram's
+                                     "Try Again Later" dialog (N20)
          ?loggedout=1 renders a logged-out page (login form).
          Everything the flows did is recorded in window.__ig. -->
     <style>
@@ -68,6 +70,12 @@
             '<form><textarea aria-label="Add a comment…"></textarea><div role="button" id="post">Post</div></form></article>';
           var like = document.getElementById('like');
           like.addEventListener('click', function () {
+            ig.events.push('click:like');
+            if (m[1] === 'blocked') {
+              document.body.insertAdjacentHTML('beforeend',
+                '<div role="dialog"><h3>Try Again Later</h3><p>We restrict certain activity to protect our community.</p></div>');
+              return;
+            }
             like.innerHTML = icon('Unlike');
             ig.result = { action: 'like' };
           });

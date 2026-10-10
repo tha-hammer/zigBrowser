@@ -32,7 +32,9 @@ from zigbrowser.errors import ZigBrowserError  # noqa: E402
 
 LINKEDIN = REPO / "tests/fixtures/linkedin/index.html"
 INSTAGRAM = REPO / "tests/fixtures/instagram/index.html"
-LINKEDIN_PREFIXES = ("/in/", "/feed/", "/messaging/", "/search/")
+LINKEDIN_PREFIXES = ("/in/", "/feed/", "/messaging/", "/search/", "/checkpoint/")
+# N20: LinkedIn sends a challenged session to its checkpoint by redirect.
+CHECKPOINT_REDIRECTS = {"/in/checkpoint-me/": "/checkpoint/challenge/ab12/"}
 
 
 class FixtureServer:
@@ -51,6 +53,12 @@ class FixtureServer:
             def do_GET(self) -> None:  # noqa: N802
                 with outer._lock:
                     outer.paths.append(self.path)
+                if self.path in CHECKPOINT_REDIRECTS:
+                    self.send_response(302)
+                    self.send_header("Location", CHECKPOINT_REDIRECTS[self.path])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 page = LINKEDIN if self.path.startswith(LINKEDIN_PREFIXES) else INSTAGRAM
                 body = page.read_bytes()
                 self.send_response(200)
@@ -180,6 +188,22 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_error("off-platform URL", lambda: zb.linkedin.visit("https://evil.example/in/ada/"), -32602)
     expect_error("other platform's URL", lambda: zb.instagram.follow("https://www.linkedin.com/in/ada/"), -32602)
     passed.append("platform-urls")
+
+    # N20: checkpoint, limit modal and blocked-action pages stop the flow with
+    # -32010 {signal, platform}; nothing is clicked after the detection.
+    err = expect_error("linkedin checkpoint", lambda: zb.linkedin.visit(f"{origin}/in/checkpoint-me/"), -32010)
+    expect_equal("checkpoint signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("challenge", "linkedin"))
+    expect_equal("checkpoint page reached", zb.page.evaluate("window.__li.page")["result"], "checkpoint")
+    expect_equal("checkpoint: nothing clicked", zb.page.evaluate("window.__li.events")["result"], [])
+    err = expect_error("linkedin invitation limit", lambda: zb.linkedin.connect(f"{origin}/in/limit-reached/"), -32010)
+    expect_equal("limit signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("invitation_limit", "linkedin"))
+    expect_equal("limit: only the Connect click", zb.page.evaluate("window.__li.events")["result"], ["click:connect"])
+    expect_equal("limit: no invitation", li(), None)
+    err = expect_error("instagram blocked like", lambda: zb.instagram.like(f"{origin}/p/blocked/"), -32010)
+    expect_equal("blocked signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("action_blocked", "instagram"))
+    expect_equal("blocked: one Like click", zb.page.evaluate("window.__ig.events")["result"], ["click:like"])
+    expect_equal("blocked: not liked", ig(), None)
+    passed.append("platform-signals")
 
     # Daily cap: shared with social.rate_status; nothing reaches the site.
     status = zb.social.rate_status()

@@ -799,3 +799,83 @@ test "timeout_ms on the text-typing social flows: accepted and used as the flow 
         }
     }
 }
+
+// ---- N20: platform rate-limit / challenge signals ----
+
+fn expectRateLimited(outcome: engine.Outcome, signal: []const u8, platform: []const u8) !void {
+    if (outcome != .failure) {
+        std.debug.print("expected -32010, got {s}\n", .{outcome.result});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(i64, -32010), outcome.failure.code);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqualStrings(signal, data.value.object.get("signal").?.string);
+    try std.testing.expectEqualStrings(platform, data.value.object.get("platform").?.string);
+}
+
+fn countOps(fake: *const fakes.FakePagePort, op: []const u8) usize {
+    var buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&buf, "\"op\":\"{s}\"", .{op}) catch unreachable;
+    var n: usize = 0;
+    for (fake.eval_calls.items) |call| {
+        if (std.mem.indexOf(u8, call.arg, needle) != null) n += 1;
+    }
+    return n;
+}
+
+test "N20: a LinkedIn checkpoint right after navigating stops the flow: -32010 {signal, platform}, no page step, no action counted" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.scan_replies = &.{.{ .json = fakes.detectedScan("challenge", "linkedin") }};
+    const before = f.h.state.remaining();
+    var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "challenge", "linkedin");
+    try std.testing.expectEqualStrings("linkedin", f.h.fake.scannedPlatform());
+    try std.testing.expectEqual(@as(usize, 1), f.h.fake.navigate_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 0), f.h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(before, f.h.state.remaining());
+    var compound: ?*const telemetry.Span = null;
+    for (f.sink.spans.items) |*span| {
+        if (std.mem.eql(u8, span.name, "automation.social.compound")) compound = span;
+    }
+    try std.testing.expectEqualStrings("platform_rate_limited", compound.?.attr("automation.error").?);
+}
+
+test "N20: an invitation-limit modal after the Connect click: the next click never happens" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    // Clean after the navigation; the Connect click opens the limit modal.
+    f.h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("invitation_limit", "linkedin") } };
+    var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "invitation_limit", "linkedin");
+    try std.testing.expectEqual(@as(usize, 1), countOps(&f.h.fake, "click"));
+    try std.testing.expectEqual(@as(usize, 2), f.h.fake.scan_calls);
+}
+
+test "N20: Instagram flows scan for their own platform; a blocked-action dialog stops a comment before typing" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("action_blocked", "instagram") } };
+    var outcome = try f.call("instagram.comment", "{\"postUrl\":\"https://www.instagram.com/p/C0ffee/\",\"text\":\"So good\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "action_blocked", "instagram");
+    try std.testing.expectEqualStrings("instagram", f.h.fake.scannedPlatform());
+    try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "type"));
+    try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "fill"));
+
+    // Read-only selfcheck never scans.
+    var g: FlowHarness = undefined;
+    g.init();
+    defer g.deinit();
+    g.h.fake.scan_replies = &.{.{ .json = fakes.detectedScan("challenge", "instagram") }};
+    var report = try g.call("instagram.selfcheck", "{}");
+    defer report.deinit(gpa);
+    try std.testing.expect(report == .result);
+    try std.testing.expectEqual(@as(usize, 0), g.h.fake.scan_calls);
+}

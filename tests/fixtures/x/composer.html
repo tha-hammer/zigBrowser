@@ -13,6 +13,9 @@
          &all=1: also render a toast, an inline Post button and a login link, so
                  every x.zig selector-table entry matches (for x.selfcheck)
          ?mode=loggedout: login link, no composer
+         &captcha=1: an Arkose-style challenge frame over the composer (N20)
+         &limit=1: Post is refused with X's daily-limit toast; nothing is
+                   posted (N20)
          The page records what was posted in window.__xResult. -->
     <style>
       body { font-family: sans-serif; margin: 16px; }
@@ -31,6 +34,8 @@
         var mode = params.get('mode') || 'compose';
         var hold = params.get('hold');
         var all = params.get('all') === '1';
+        var captcha = params.get('captcha') === '1';
+        var limit = params.get('limit') === '1';
         var app = document.getElementById('app');
         window.__xResult = null;
         window.__xPosts = 0;
@@ -70,7 +75,8 @@
           '  <button data-testid="scheduledConfirmationPrimaryAction">Confirm</button>' +
           '</div>' +
           '<div id="toasts">' + (all ? '<div data-testid="toast" role="alert">Shown for selfcheck</div>' : '') + '</div>' +
-          (all ? '<button data-testid="tweetButtonInline" disabled>Post</button><a href="/login">Log in</a>' : '');
+          (all ? '<button data-testid="tweetButtonInline" disabled>Post</button><a href="/login">Log in</a>' : '') +
+          (captcha ? '<iframe id="arkose-challenge" title="arkose challenge" srcdoc="<p>Verify you are human</p>"></iframe>' : '');
 
         function fill(select, values) {
           values.forEach(function (v) {
@@ -141,6 +147,14 @@
         function wire(button) {
           button.addEventListener('click', function () {
             if (button.disabled) return;
+            if (limit) {
+              var refused = document.createElement('div');
+              refused.setAttribute('data-testid', 'toast');
+              refused.setAttribute('role', 'alert');
+              refused.textContent = 'You are over the daily limit for sending posts.';
+              document.getElementById('toasts').appendChild(refused);
+              return;
+            }
             window.__xPosts += 1;
             window.__xResult = { text: model, scheduled: schedule, button: button.getAttribute('data-testid') };
             var message = schedule ? 'Your post will be sent' : 'Your post was sent.';
