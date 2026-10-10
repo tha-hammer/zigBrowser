@@ -182,8 +182,9 @@ def run_select(socket_path: Path, t: float) -> None:
 
     def expect_no_option(label: str, params: dict) -> None:
         error = rpc_error(socket_path, "dom.selectOption", dict(params, timeout_ms=300), next(ids), t)
-        expect_equal(f"{label} code", error["code"], -32001)
-        expect_equal(f"{label} reason", error["data"]["reason"], "no_option")
+        if error["code"] != -32001 or error.get("data", {}).get("reason") != "no_option":
+            # Full evidence: code, reason, last_error, attempts.
+            raise AssertionError(f"{label}: expected -32001/no_option, got {error}")
 
     # Native <select>: by value, label and index; input + change each time.
     expect_equal("select by value", rpc("dom.selectOption", {"selector": "css=#sel", "value": "b"}), {"value": "b"})
@@ -248,6 +249,11 @@ def run_select(socket_path: Path, t: float) -> None:
 
     # No ghost clicks: options that appear after the command timed out are
     # never clicked, because no script work outlives an attempt.
+    # Deterministic precondition: the combobox starts outside the viewport
+    # (selectOption must scroll it into view, as click-style checks need).
+    js("(function(){var g=document.getElementById('ghostcombo'); window.scrollTo(0, g.getBoundingClientRect().top + window.scrollY + window.innerHeight + 100); return 0;})()")
+    if js("(function(){var r=document.getElementById('ghostcombo').getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight;})()"):
+        raise AssertionError("precondition: ghost combobox should start outside the viewport")
     expect_no_option("ghost combobox before its options render", {"selector": "css=#ghostcombo", "value": "boo"})
     time.sleep(1.5)
     expect_equal("ghost option never clicked", js("window.ghostValue"), None)
