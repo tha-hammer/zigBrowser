@@ -225,8 +225,14 @@ pub fn build(b: *std.Build) void {
     // (zb_automation_*, zb_cookies_*, zb_native_*, ...). Compile src/main.zig
     // to an object for each non-GTK target (no SDK, no link) and check that
     // every zb_* symbol it leaves undefined is defined by that target's shim.
-    const cross_check = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py" });
+    // --require: the core symbols must show up, so a parser or object-layout
+    // change cannot make the check pass vacuously.
+    const cross_check = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py", "--require", "zb_app_run", "--require", "zb_version_line" });
     cross_check.addFileInput(b.path("tools/check_cross_symbols.py"));
+    // Self-test per object format: a fixture needing a symbol no shim
+    // defines must be reported as exactly that one missing symbol.
+    const cross_self_test = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py", "--require", "zb_app_run", "--expect-missing", "zb_cross_fixture_probe" });
+    cross_self_test.addFileInput(b.path("tools/check_cross_symbols.py"));
     const cross_targets = [_]struct { query: std.Target.Query, shim: []const u8 }{
         .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .shim = "src/webview2_shim.cpp" },
         .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
@@ -246,9 +252,19 @@ pub fn build(b: *std.Build) void {
         const cross_object = b.addObject(.{ .name = "zigBrowser-cross", .root_module = cross_module });
         cross_check.addFileArg(cross_object.getEmittedBin());
         cross_check.addFileArg(b.path(cross.shim));
+
+        const fixture_module = b.createModule(.{
+            .root_source_file = b.path("tests/fixtures/cross/missing_symbol.zig"),
+            .target = b.resolveTargetQuery(cross.query),
+            .optimize = optimize,
+        });
+        const fixture_object = b.addObject(.{ .name = "cross-fixture", .root_module = fixture_module });
+        cross_self_test.addFileArg(fixture_object.getEmittedBin());
+        cross_self_test.addFileArg(b.path(cross.shim));
     }
     const cross_check_step = b.step("cross-check", "Check that Windows/macOS builds need only zb_* symbols their shims define");
     cross_check_step.dependOn(&cross_check.step);
+    cross_check_step.dependOn(&cross_self_test.step);
 
     const afunix_spike_module = b.createModule(.{
         .root_source_file = b.path("tests/spikes/af_unix_roundtrip.zig"),
@@ -662,6 +678,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
+    test_step.dependOn(&cross_self_test.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);
     test_step.dependOn(&run_pacing_tests.step);

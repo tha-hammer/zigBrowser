@@ -8,9 +8,15 @@ source defines every one of them. A GTK-only symbol (zb_automation_*,
 zb_cookies_*, zb_native_*, ...) reaching a Windows or macOS build would fail
 its real link; this catches it on Linux.
 
-usage: check_cross_symbols.py <object> <shim source> [<object> <shim> ...]
+usage: check_cross_symbols.py [--require SYM]... [--expect-missing SYM]
+                              <object> <shim source> [<object> <shim> ...]
+--require SYM: SYM must be among the symbols the object needs (guards
+  against a vacuous pass if the parser or object layout stops exposing
+  them).
+--expect-missing SYM: self-test mode; passes only if exactly SYM is
+  reported missing (proves missing-symbol detection for that format).
 Reads COFF (plain and /bigobj) and 64-bit Mach-O objects. Exit 1 on a
-missing definition, 2 on an unreadable object.
+failed check, 2 on bad usage or an unreadable object.
 """
 
 from __future__ import annotations
@@ -98,11 +104,22 @@ def defined_zb_symbols(shim: Path) -> set[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or len(argv) % 2:
+    required: list[str] = []
+    expect_missing: str | None = None
+    args: list[str] = []
+    it = iter(argv)
+    for arg in it:
+        if arg == "--require":
+            required.append(next(it, ""))
+        elif arg == "--expect-missing":
+            expect_missing = next(it, "")
+        else:
+            args.append(arg)
+    if len(args) < 2 or len(args) % 2 or "" in required or expect_missing == "":
         print(__doc__, file=sys.stderr)
         return 2
-    missing_any = False
-    for obj, shim in zip(argv[0::2], argv[1::2]):
+    failed = False
+    for obj, shim in zip(args[0::2], args[1::2]):
         try:
             needed = undefined_zb_symbols(Path(obj))
         except (OSError, ValueError, struct.error) as exc:
@@ -112,10 +129,18 @@ def main(argv: list[str]) -> int:
         missing = sorted(needed - defined)
         label = Path(obj).name
         print(f"cross-check {label}: needs {sorted(needed)} from {Path(shim).name}")
-        if missing:
-            missing_any = True
+        absent = [sym for sym in required if sym not in needed]
+        if absent:
+            failed = True
+            print(f"cross-check {label}: required symbols not found in the object: {absent} (parser or object layout changed?)", file=sys.stderr)
+        if expect_missing is not None:
+            if missing != [expect_missing]:
+                failed = True
+                print(f"cross-check {label}: self-test expected exactly [{expect_missing!r}] missing, got {missing}", file=sys.stderr)
+        elif missing:
+            failed = True
             print(f"cross-check {label}: MISSING in {Path(shim).name}: {missing}", file=sys.stderr)
-    return 1 if missing_any else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
