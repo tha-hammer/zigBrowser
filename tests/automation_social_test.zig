@@ -34,7 +34,12 @@ const Harness = struct {
     }
 
     fn call(self: *Harness, method: []const u8, params: []const u8) !engine.Outcome {
-        return social_routes.handle(gpa, &self.state, &self.engine, social_routes.verbFromMethod(method).?, params);
+        return self.callWithCancel(method, params, false);
+    }
+
+    fn callWithCancel(self: *Harness, method: []const u8, params: []const u8, cancelled: bool) !engine.Outcome {
+        const flag = std.atomic.Value(bool).init(cancelled);
+        return social_routes.handle(gpa, &self.state, &self.engine, social_routes.verbFromMethod(method).?, params, &flag);
     }
 };
 
@@ -56,7 +61,7 @@ test "login_check combines page url (platform) with the in-page login probe" {
 
     var outcome = try h.call("social.login_check", "{}");
     defer outcome.deinit(gpa);
-    try std.testing.expectEqualStrings("{\"logged_in\":true,\"platform\":\"linkedin\",\"username\":\"Ada L\"}", outcome.result);
+    try std.testing.expectEqualStrings("{\"loggedIn\":true,\"platform\":\"linkedin\",\"username\":\"Ada L\"}", outcome.result);
     try std.testing.expectEqual(automation.page_port.World.automation, h.fake.eval_calls.items[0].world);
     try std.testing.expectEqualStrings(social_routes.login_check_body, h.fake.eval_calls.items[0].body);
 }
@@ -70,7 +75,7 @@ test "login_check on an unknown site reports not logged in with null username" {
 
     var outcome = try h.call("social.login_check", "{}");
     defer outcome.deinit(gpa);
-    try std.testing.expectEqualStrings("{\"logged_in\":false,\"platform\":\"unknown\",\"username\":null}", outcome.result);
+    try std.testing.expectEqualStrings("{\"loggedIn\":false,\"platform\":\"unknown\",\"username\":null}", outcome.result);
 }
 
 test "login_check without a page is session_invalid" {
@@ -135,49 +140,52 @@ test "set_pacing rejects min > max and bad types with -32602, leaving config unc
     try std.testing.expectEqual(@as(u32, 100), h.state.pacingConfig().daily_cap);
 }
 
-test "pause sets the pause window; waitWhilePaused sleeps it out in slices" {
+test "pause blocks for duration_ms in cancellable slices, then returns ok" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
 
-    var outcome = try h.call("social.pause", "{\"duration_ms\":50}");
+    var outcome = try h.callWithCancel("social.pause", "{\"duration_ms\":50}", false);
     defer outcome.deinit(gpa);
     try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
-
-    const flag = std.atomic.Value(bool).init(false);
-    try std.testing.expectEqual(@as(?u64, 50), h.state.waitWhilePaused(&flag, 1000));
     var total: u64 = 0;
     for (h.clock.sleeps.items) |ms| {
         try std.testing.expect(ms <= engine.poll_interval_ms);
         total += ms;
     }
     try std.testing.expectEqual(@as(u64, 50), total);
-    // Window over: no further waiting.
-    try std.testing.expectEqual(@as(?u64, 0), h.state.waitWhilePaused(&flag, 1000));
-    try std.testing.expectEqual(@as(u64, 50), h.clock.now_ms);
 }
 
-test "waitWhilePaused never waits past the caller's budget" {
+test "pause 0 returns immediately" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
 
-    var outcome = try h.call("social.pause", "{\"duration_ms\":600000}");
+    var outcome = try h.callWithCancel("social.pause", "{\"duration_ms\":0}", false);
     defer outcome.deinit(gpa);
-    const flag = std.atomic.Value(bool).init(false);
-    try std.testing.expectEqual(@as(?u64, 40), h.state.waitWhilePaused(&flag, 40));
-    try std.testing.expectEqual(@as(u64, 40), h.clock.now_ms);
+    try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
+    try std.testing.expectEqual(@as(usize, 0), h.clock.sleeps.items.len);
 }
 
-test "waitWhilePaused stops when cancelled" {
+test "pause cancelled while waiting returns cancelled" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
 
-    var outcome = try h.call("social.pause", "{\"duration_ms\":600000}");
+    var outcome = try h.callWithCancel("social.pause", "{\"duration_ms\":600000}", true);
     defer outcome.deinit(gpa);
-    const flag = std.atomic.Value(bool).init(true);
-    try std.testing.expectEqual(@as(?u64, null), h.state.waitWhilePaused(&flag, 1000));
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+}
+
+test "login_check and rate_status take no params" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    for ([_][]const u8{ "social.login_check", "social.rate_status" }) |method| {
+        var outcome = try h.call(method, "{\"x\":1}");
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32602), outcome.failure.code);
+    }
 }
 
 test "pause requires a non-negative u32 duration_ms" {

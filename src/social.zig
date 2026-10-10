@@ -4,6 +4,18 @@ pub const LoginCheckResult = struct {
     logged_in: bool,
     platform: []const u8,
     username: ?[]const u8,
+
+    /// Wire shape (Phase 5 contract): {loggedIn, platform, username}.
+    pub fn jsonStringify(self: LoginCheckResult, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("loggedIn");
+        try jws.write(self.logged_in);
+        try jws.objectField("platform");
+        try jws.write(self.platform);
+        try jws.objectField("username");
+        try jws.write(self.username);
+        try jws.endObject();
+    }
 };
 
 pub const LoginCheckScriptResult = struct {
@@ -92,8 +104,27 @@ pub fn isSocialMethod(method: []const u8) bool {
     return std.mem.startsWith(u8, method, "social.");
 }
 
+/// Platform from the URL's host only (not path/query/fragment/userinfo):
+/// the host must equal the platform domain or be a subdomain of it.
 pub fn detectPlatform(url: []const u8) []const u8 {
-    if (std.mem.indexOf(u8, url, "linkedin.com") != null) return "linkedin";
-    if (std.mem.indexOf(u8, url, "instagram.com") != null) return "instagram";
+    const host = urlHost(url) orelse return "unknown";
+    if (hostMatches(host, "linkedin.com")) return "linkedin";
+    if (hostMatches(host, "instagram.com")) return "instagram";
     return "unknown";
+}
+
+fn urlHost(url: []const u8) ?[]const u8 {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return null;
+    const rest = url[scheme_end + 3 ..];
+    const authority = rest[0 .. std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len];
+    const host_port = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| authority[at + 1 ..] else authority;
+    const host = host_port[0 .. std.mem.lastIndexOfScalar(u8, host_port, ':') orelse host_port.len];
+    return if (host.len == 0) null else host;
+}
+
+fn hostMatches(host: []const u8, domain: []const u8) bool {
+    if (host.len < domain.len) return false;
+    const tail = host[host.len - domain.len ..];
+    if (!std.ascii.eqlIgnoreCase(tail, domain)) return false;
+    return host.len == domain.len or host[host.len - domain.len - 1] == '.';
 }

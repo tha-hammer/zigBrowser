@@ -332,7 +332,7 @@ test "social.* methods are routed: rate_status, set_pacing, pause, login_check" 
 
     const login = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.login_check\",\"id\":3}");
     defer testing.allocator.free(login);
-    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"logged_in\":false,\"platform\":\"unknown\",\"username\":null},\"id\":3}", login);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"loggedIn\":false,\"platform\":\"unknown\",\"username\":null},\"id\":3}", login);
 
     const unknown = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.post\",\"id\":4}");
     defer testing.allocator.free(unknown);
@@ -343,32 +343,56 @@ test "social.* methods are routed: rate_status, set_pacing, pause, login_check" 
     try testing.expect(std.mem.indexOf(u8, bad, "\"code\":-32602") != null);
 }
 
-test "social.pause holds later page commands for the pause window" {
+test "social.pause returns after the pause and holds a concurrent client's page command" {
     if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
     var fixture = try Fixture.start("pause", .{});
     defer fixture.deinit();
 
+    const Pauser = struct {
+        fn run(f: *Fixture, out: *?[]u8) void {
+            var stream = f.connect() catch return;
+            defer stream.close(testing.io);
+            out.* = roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.pause\",\"params\":{\"duration_ms\":300},\"id\":1}") catch null;
+        }
+    };
+    var paused: ?[]u8 = null;
+    const started = std.Io.Clock.now(.awake, testing.io).toMilliseconds();
+    const t = try std.Thread.spawn(.{}, Pauser.run, .{ fixture, &paused });
+    // Let the pause take the page ticket first.
+    testing.io.sleep(.fromMilliseconds(50), .awake) catch {};
+
     var stream = try fixture.connect();
     defer stream.close(testing.io);
-    const paused = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.pause\",\"params\":{\"duration_ms\":200},\"id\":1}");
-    defer testing.allocator.free(paused);
-    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", paused);
-
-    const started = std.Io.Clock.now(.awake, testing.io).toMilliseconds();
     const url = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":2}");
     defer testing.allocator.free(url);
-    const elapsed = std.Io.Clock.now(.awake, testing.io).toMilliseconds() - started;
-    try testing.expect(std.mem.indexOf(u8, url, "file:///fixture/index.html") != null);
-    try testing.expect(elapsed >= 150);
+    const url_done = std.Io.Clock.now(.awake, testing.io).toMilliseconds() - started;
+    t.join();
+    defer if (paused) |p| testing.allocator.free(p);
 
-    // A command whose whole budget is spent in the pause times out untouched.
-    const paused_again = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.pause\",\"params\":{\"duration_ms\":300},\"id\":3}");
-    defer testing.allocator.free(paused_again);
-    const evals_before = fixture.fake.evals.load(.acquire);
-    const short = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":50}},\"id\":4}");
-    defer testing.allocator.free(short);
-    try testing.expect(std.mem.indexOf(u8, short, "\"code\":-32009") != null);
-    try testing.expectEqual(evals_before, fixture.fake.evals.load(.acquire));
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", paused.?);
+    try testing.expect(std.mem.indexOf(u8, url, "file:///fixture/index.html") != null);
+    try testing.expect(url_done >= 280); // held until the pause ended
+}
+
+test "stop() cancels a running social.pause" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("pause-cancel", .{});
+    defer fixture.deinit();
+
+    const Pauser = struct {
+        fn run(f: *Fixture, out: *?[]u8) void {
+            var stream = f.connect() catch return;
+            defer stream.close(testing.io);
+            out.* = roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.pause\",\"params\":{\"duration_ms\":600000},\"id\":1}") catch null;
+        }
+    };
+    var paused: ?[]u8 = null;
+    const t = try std.Thread.spawn(.{}, Pauser.run, .{ fixture, &paused });
+    testing.io.sleep(.fromMilliseconds(100), .awake) catch {};
+    fixture.server.stop();
+    t.join();
+    defer if (paused) |p| testing.allocator.free(p);
+    try testing.expect(std.mem.indexOf(u8, paused.?, "\"code\":-32012") != null);
 }
 
 const FixtureOptions = struct {

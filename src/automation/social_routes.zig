@@ -7,9 +7,10 @@
 //! - social.rate_status: the server's RateLimiter (automation/pacing.zig).
 //! - social.set_pacing: updates that RateLimiter; partial params merge into
 //!   the current config.
-//! - social.pause: holds the page's command queue for duration_ms (commands
-//!   wait it out in cancellable slices; the wait counts against their
-//!   deadline).
+//! - social.pause: runs under the page's queue ticket and sleeps duration_ms
+//!   in cancellable slices, so later page commands wait behind it (their
+//!   queue wait counts against their deadline). Returns {ok:true} after the
+//!   pause, or `cancelled` if the server stops meanwhile.
 //! Not routable: any other social.* (e.g. social.post) stays -32601.
 //! Note: no dom/page command consumes RateLimiter actions yet, so
 //! remaining_actions only changes with daily_cap / the UTC day rollover.
@@ -54,8 +55,6 @@ pub const SocialState = struct {
     lock: std.atomic.Mutex = .unlocked,
     limiter: pacing.RateLimiter,
     clock: engine_mod.Clock,
-    /// Monotonic ms (engine clock) until which page commands are held.
-    paused_until_ms: std.atomic.Value(u64) = .init(0),
 
     pub fn init(wall_ms: *const fn () i64, clock: engine_mod.Clock) SocialState {
         return .{ .limiter = pacing.RateLimiter.init(.{}, wall_ms), .clock = clock };
@@ -65,21 +64,6 @@ pub const SocialState = struct {
         self.acquire();
         defer self.lock.unlock();
         return self.limiter.config;
-    }
-
-    /// Blocks while a social.pause window is active, for at most
-    /// `budget_ms`, sleeping in poll-sized slices. Returns the ms waited, or
-    /// null if `cancel` was set first.
-    pub fn waitWhilePaused(self: *SocialState, cancel: *const std.atomic.Value(bool), budget_ms: u64) ?u64 {
-        const started = self.clock.nowMs();
-        const budget_end = started +| budget_ms;
-        while (true) {
-            if (cancel.load(.acquire)) return null;
-            const now = self.clock.nowMs();
-            const until = @min(self.paused_until_ms.load(.acquire), budget_end);
-            if (now >= until) return now - started;
-            self.clock.sleepMs(@min(until - now, engine_mod.poll_interval_ms));
-        }
     }
 
     fn acquire(self: *SocialState) void {
@@ -111,11 +95,24 @@ const PacingPort = struct {
     }
 };
 
+/// The caller holds the page's queue ticket, so sleeping here holds every
+/// later command for that page.
 const QueuePort = struct {
-    state: *SocialState,
+    clock: engine_mod.Clock,
+    cancel: *const std.atomic.Value(bool),
+    cancelled: bool = false,
 
     pub fn pauseFor(self: *QueuePort, duration_ms: u32) void {
-        self.state.paused_until_ms.store(self.state.clock.nowMs() +| duration_ms, .release);
+        var left: u64 = duration_ms;
+        while (left > 0) {
+            if (self.cancel.load(.acquire)) {
+                self.cancelled = true;
+                return;
+            }
+            const slice = @min(left, engine_mod.poll_interval_ms);
+            self.clock.sleepMs(slice);
+            left -= slice;
+        }
     }
 };
 
@@ -138,6 +135,8 @@ pub fn handle(
     engine: *engine_mod.Engine,
     verb: Verb,
     params_json: []const u8,
+    /// Set when the server stops; ends a running pause with `cancelled`.
+    cancel: *const std.atomic.Value(bool),
 ) error{OutOfMemory}!engine_mod.Outcome {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -148,6 +147,8 @@ pub fn handle(
         .object => |object| object,
         else => return invalidParams(),
     };
+
+    if ((verb == .login_check or verb == .rate_status) and params.count() != 0) return invalidParams();
 
     return switch (verb) {
         .login_check => loginCheck(gpa, engine),
@@ -172,8 +173,10 @@ pub fn handle(
         },
         .pause => {
             const duration_ms = (optionalU32(params, "duration_ms") catch return invalidParams()) orelse return invalidParams();
-            var port = QueuePort{ .state = state };
-            return jsonResult(gpa, social.pause(&port, .{ .duration_ms = duration_ms }));
+            var port = QueuePort{ .clock = state.clock, .cancel = cancel };
+            const ok = social.pause(&port, .{ .duration_ms = duration_ms });
+            if (port.cancelled) return portError(error.Cancelled);
+            return jsonResult(gpa, ok);
         },
     };
 }

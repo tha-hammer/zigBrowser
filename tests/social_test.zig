@@ -189,3 +189,28 @@ test "isSocialMethod returns false for other namespaces" {
     try std.testing.expect(!social.isSocialMethod("page.navigate"));
     try std.testing.expect(!social.isSocialMethod("linkedin.connect"));
 }
+
+test "detectPlatform matches the URL host exactly or as a subdomain" {
+    const cases = [_]struct { url: []const u8, platform: []const u8 }{
+        .{ .url = "https://linkedin.com/in/x", .platform = "linkedin" },
+        .{ .url = "https://www.linkedin.com/feed/", .platform = "linkedin" },
+        .{ .url = "https://WWW.LinkedIn.com:443/feed", .platform = "linkedin" },
+        .{ .url = "https://user:pw@www.instagram.com/p/1", .platform = "instagram" },
+        .{ .url = "https://instagram.com", .platform = "instagram" },
+        .{ .url = "https://notlinkedin.com/", .platform = "unknown" },
+        .{ .url = "https://linkedin.com.evil.example/", .platform = "unknown" },
+        .{ .url = "https://evil.example/?next=linkedin.com", .platform = "unknown" },
+        .{ .url = "https://evil.example/linkedin.com/feed", .platform = "unknown" },
+        .{ .url = "https://evil.example/#instagram.com", .platform = "unknown" },
+        .{ .url = "https://linkedin.com@evil.example/", .platform = "unknown" },
+        .{ .url = "about:blank", .platform = "unknown" },
+        .{ .url = "", .platform = "unknown" },
+    };
+    for (cases) |case| {
+        const actual = social.detectPlatform(case.url);
+        if (!std.mem.eql(u8, case.platform, actual)) {
+            std.debug.print("{s}: expected {s}, got {s}\n", .{ case.url, case.platform, actual });
+            return error.TestUnexpectedResult;
+        }
+    }
+}

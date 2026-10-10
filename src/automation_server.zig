@@ -321,18 +321,9 @@ fn handleRequestWith(
     };
     defer if (maybe_ticket) |ticket| queue.release(ticket);
 
-    // A social.pause window holds page commands; the time spent counts as
-    // queue wait (and therefore against the command deadline).
-    var queue_wait_ms: u64 = 0;
-    if (maybe_ticket) |ticket| {
-        queue_wait_ms = ticket.wait_ms;
-        const budget = engine_mod.commandTimeoutMs(&command) -| queue_wait_ms;
-        queue_wait_ms +|= social.waitWhilePaused(&ticket.cancelled, budget) orelse 0;
-    }
-
     var outcome = try engine.executeWith(allocator, &command, .{
         .cancel = if (maybe_ticket) |ticket| &ticket.cancelled else &already_cancelled,
-        .queue_wait_ms = queue_wait_ms,
+        .queue_wait_ms = if (maybe_ticket) |ticket| ticket.wait_ms else 0,
         .route = route,
         .build = build_info,
     });
@@ -357,9 +348,10 @@ fn handleSocial(
     social: *social_routes.SocialState,
     route: automation.router.RouteContext,
 ) error{OutOfMemory}![]u8 {
-    // login_check reads the page, so it takes its turn in the page queue.
+    // login_check reads the page and pause holds the page, so both take
+    // their turn in the page queue.
     var ticket: ?queue_mod.Ticket = null;
-    if (verb == .login_check) {
+    if (verb == .login_check or verb == .pause) {
         ticket = queue.acquire(route.page_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Cancelled => {
@@ -370,7 +362,8 @@ fn handleSocial(
     }
     defer if (ticket) |t| queue.release(t);
 
-    var outcome = try social_routes.handle(allocator, social, engine, verb, params_json);
+    const not_cancelled = std.atomic.Value(bool).init(false);
+    var outcome = try social_routes.handle(allocator, social, engine, verb, params_json, if (ticket) |t| &t.cancelled else &not_cancelled);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

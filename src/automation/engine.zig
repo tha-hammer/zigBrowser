@@ -424,11 +424,6 @@ pub const Engine = struct {
     }
 };
 
-/// The command's effective deadline budget (default + clamping applied).
-pub fn commandTimeoutMs(command: *const router.ParsedCommand) u64 {
-    return commandTimeout(command);
-}
-
 fn commandTimeout(command: *const router.ParsedCommand) u64 {
     return @min(command.timeout_ms orelse default_timeout_ms, max_timeout_ms);
 }
