@@ -863,6 +863,39 @@ test "token sidecar: a write failure after create leaves no file behind" {
     try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, socket_path, .{}));
 }
 
+test "docs/how-to-automate.md documents every method the SDKs send, and every error code" {
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/how-to-automate.md", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(doc);
+    const text = try std.Io.Dir.cwd().readFileAlloc(testing.io, "tests/fixtures/automation/sdk_wire_cases.json", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(text);
+    const cases = try std.json.parseFromSlice(std.json.Value, testing.allocator, text, .{});
+    defer cases.deinit();
+    for (cases.value.object.get("cases").?.array.items) |case| {
+        const method = case.object.get("method").?.string;
+        const heading = try std.fmt.allocPrint(testing.allocator, "`{s}`", .{method});
+        defer testing.allocator.free(heading);
+        if (std.mem.indexOf(u8, doc, heading) == null) {
+            std.debug.print("method not documented: {s}\n", .{method});
+            return error.TestUndocumentedMethod;
+        }
+    }
+    for ([_][]const u8{ "`telemetry.query`", "--automation-api", "--profile-dir", "--automation-token-file", "ZIGBROWSER_SOCKET", ".token", "contenteditable", "cookies.import" }) |needle| {
+        if (std.mem.indexOf(u8, doc, needle) == null) {
+            std.debug.print("missing in docs: {s}\n", .{needle});
+            return error.TestUndocumented;
+        }
+    }
+    var code: i64 = -32012;
+    while (code <= -32000) : (code += 1) {
+        const needle = try std.fmt.allocPrint(testing.allocator, "{d}", .{code});
+        defer testing.allocator.free(needle);
+        if (std.mem.indexOf(u8, doc, needle) == null) {
+            std.debug.print("error code not documented: {s}\n", .{needle});
+            return error.TestUndocumentedErrorCode;
+        }
+    }
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
