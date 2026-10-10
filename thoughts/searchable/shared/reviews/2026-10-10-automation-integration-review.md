@@ -185,6 +185,137 @@ valuable fault-localization tests, but they are not credited for this audit
 because they bypass one or more nodes. The live Python SDK scenario is the
 non-bypassing proof for all six edges.
 
+## Live-site readiness review at `53dfbfb`
+
+Documentation review only: no live site was touched. This is not approval for
+a live run while the open N16 blockers remain. The complete handoff was mailed
+to cc_2 as Agent Mail 4686 for N15.
+
+Gate evidence: a clean export of `53dfbfb` passed the bounded
+`timeout 900 xvfb-run -a zig build test --summary all` gate with **79/79 steps
+and 565/565 tests**. The export was deleted by its `find -delete` exit trap.
+
+### X selectors and assumptions
+
+| Selector | Assumption |
+|---|---|
+| `testid=tweetTextarea_0` | X retains this testid and the match is the active Draft/contenteditable composer. |
+| `testid=tweetButton`, then `testid=tweetButtonInline`; derived `xpath=(//*[@data-testid="<id>"])[n]` | These IDs still mean final post submission; document order plus the first copy that passes a trial click identifies this composer, not a reply/quote/other composer. |
+| `testid=toast` | Any attached toast means posting/scheduling succeeded. No toast text/type is checked, so an unrelated or error toast can false-positive. |
+| `testid=scheduleOption` | This testid still opens the schedule dialog. |
+| `select[aria-label="Month"]`, `Day`, `Year`, `Hour`, `Minute`, `AM/PM` | English labels, native selects, and exact option values 1-12, 1-31, YYYY, 1-12, 0-59 and AM/PM remain. |
+| `testid=scheduledConfirmationPrimaryAction` | This testid still confirms scheduling. |
+| `a[href="/login"], a[href="/i/flow/login"], [data-testid="loginButton"], [data-testid="signupButton"]` | These variants cover logged-out UI. `x.login_check` itself only tests composer presence, so a logged-in non-composer page reports false. |
+
+### LinkedIn selectors and assumptions
+
+| Selector | Assumption |
+|---|---|
+| `.global-nav__me, .global-nav__me-photo` | Desktop global-nav classes reliably mean authenticated, including neither checkpoint nor authwall. |
+| `a[href*="/login"], a[href*="/uas/login"], .sign-in-form` | Logged-out variants expose one; substring href matching does not select an unrelated link. |
+| `main button[aria-label^="Invite "][aria-label$=" to connect"]` | English aria-label grammar remains and Connect is directly visible rather than under More. |
+| `main button[aria-label^="Pending"]` | English Pending state remains a button in `main`. |
+| `main button[aria-label^="Follow "]` | English profile-target suffix remains and the direct action is visible. |
+| `main button[aria-label^="Following "], main button[aria-label^="Unfollow "]` | Either English label denotes the requested profile's successful followed state. |
+| `main a[href*="/messaging/compose"], main button[aria-label^="Message "]` | The first non-strict match is the intended profile message action. |
+| `button[aria-label="Add a note"]` | The connect dialog retains this exact English label. |
+| `textarea[name="message"]` | The invite note remains this textarea and no competing dialog field matches. |
+| `button[aria-label="Send invitation"], button[aria-label="Send now"]` | Either English label sends the note; the first non-strict match is correct. |
+| `button[aria-label="Send without a note"]` | The no-note action retains this exact English label. |
+| `.msg-form__contenteditable[contenteditable="true"]` | The active editor retains the legacy message-form class. |
+| `button.msg-form__send-button` | The send control retains the legacy class and is unique. |
+| `button.react-button__trigger[aria-pressed="false"]` | The first non-strict unpressed reaction on a post URL is that post's Like, not a feed/comment reaction. |
+| `button.react-button__trigger[aria-pressed="true"]` | The first pressed reaction proves the exact button just clicked changed state. |
+| `button[aria-label="Comment"]` | The exact English label and first non-strict match identify the post action. |
+| `.comments-comment-box__form [contenteditable="true"]` | The intended post's active comment editor retains these classes. |
+| `button.comments-comment-box__submit-button` | The first non-strict match submits that comment. |
+| `main h1` | The strict match is the profile name. |
+| `main .text-body-medium.break-words` | This class stack uniquely identifies the headline. |
+| `main .text-body-small.inline.t-black--light.break-words` | This class stack uniquely identifies location. |
+| `.reusable-search__result-container` | Each real result has exactly one legacy container, and placeholders/ads do not reuse it. |
+
+### Instagram selectors and assumptions
+
+| Selector | Assumption |
+|---|---|
+| `svg[aria-label="Home"], a[href="/direct/inbox/"]` | Desktop English Home or the exact inbox href is present whenever authenticated. |
+| `a[href^="/accounts/login"], input[name="username"]` | These cover logged-out variants. |
+| `//header//button[normalize-space(.)="Follow"]` | Exact English text on a header button is the intended profile action. |
+| Header button text `Following` or `Requested` | Exact English text represents the same profile's successful public/private follow state. |
+| Header button/role text `Message` | Exact English text is unique in the profile header. |
+| First `//section//svg[@aria-label="Like"]` | The first matching icon belongs to the target post and clicking its SVG dispatches the intended action. |
+| First `//section//svg[@aria-label="Unlike"]` | The first marker proves that same post changed state. |
+| `textarea[aria-label="Add a comment…"]` | English label with U+2026 (not three dots), native textarea and uniqueness remain. |
+| Form button/role text `Post` | Exact English text and the matching form identify the active comment. |
+| `div[aria-label="Message"][contenteditable="true"]` | The DM composer retains this English aria-label and contenteditable shape. |
+| Global button/role text `Send` | Exact English text is unique; strict execution deliberately fails on duplicates. |
+| `section video, section img` | The first matching section media is a story frame, not an avatar, decoration or post. |
+| `button[aria-label="Next"]` | Exact English label and first non-strict match identify story advance. |
+
+### Selfcheck coverage and blind spots
+
+All three selfchecks are read-only count reports for the current document.
+LinkedIn and Instagram use `flow.selectorReport`
+(`src/flow_steps.zig:103-120`); X's equivalent
+(`src/x.zig:140-167`) reports each post-button testid separately and excludes
+the derived indexed XPath template.
+
+They expose selector syntax/query failure, complete removals/renames when a
+human compares the correct page with a recorded baseline, surprising count
+changes/duplicates, and signed-in/logged-out marker coexistence. They do not
+have expected counts or a pass/fail policy: zero or duplicate matches still
+produce a successful report. One page normally has many zeros because each
+table spans several contexts. They do not navigate, verify the host, or test
+visibility, actionability, enabled/covered state, target semantics, events or
+terminal transitions. LinkedIn/Instagram selfcheck deliberately skips the
+session-cookie gate. The reports also miss localization, native schedule
+option values, toast meaning, post/profile binding, challenge/captcha and
+rate-limit UI, cookie freshness, and whether a later action works. X does not
+exercise the indexed-copy trial-click selection.
+
+### Rate-limit defaults
+
+- X has a separate in-memory per-server limiter. Only `x.post` and
+  `x.schedule_post` consume it: 50 successful actions per UTC day and no
+  pacing delay. `x.login_check`/`x.selfcheck` do not count, and
+  `social.set_pacing` cannot configure X.
+- LinkedIn and Instagram share one in-memory per-server limiter: 100
+  successful actions per UTC day and a uniform random 3,000-8,000 ms pause
+  before each action. `social.set_pacing` changes that shared min/max/cap and
+  `social.rate_status` reports it.
+- LinkedIn classifies visit, connect, message, like, comment, follow and search
+  as actions; extract and selfcheck are unpaced. Instagram classifies follow,
+  like, comment, DM and the whole story-view flow as one action; selfcheck is
+  unpaced. Each compound flow has a 120,000 ms hard budget. Only successful
+  flows count, and the counters reset on the UTC day or server restart.
+
+### First human live-run order
+
+1. Close the N16 blockers and obtain an exact clean-export green gate. Use
+   dedicated disposable accounts/content and a dedicated `--profile-dir`;
+   require a token and private socket permissions. Do not use a personal or
+   production account.
+2. Log in manually in the visible browser. Confirm `page.url`/title and
+   `social.login_check` on the intended host. Verify the required LinkedIn
+   `li_at` / Instagram `sessionid` cookie exists without recording its value;
+   on X, manually open the composer and run `x.login_check`.
+3. Capture separate selfcheck baselines for every relevant context: X composer
+   and opened schedule dialog; LinkedIn profile, post, conversation and search;
+   Instagram profile, post, DM and story. Inspect ambiguous counts and English
+   label/localization assumptions manually.
+4. Read `social.rate_status`, then set a deliberately low shared
+   LinkedIn/Instagram cap and long delay for the trial (for example one action
+   per fresh server/platform). X remains independently fixed at 50/no delay.
+5. Exercise selfchecks, login checks and `linkedin.extract` before mutation.
+   LinkedIn visit/search only navigate, but are still paced and counted.
+6. Perform exactly one low-impact action against controlled content, one
+   platform at a time. Verify the terminal state in the visible UI and query
+   its trace; never infer live success from `{"ok":true}` alone.
+7. Stop on selector-count drift, strict duplicates, checkpoint/authwall/captcha,
+   challenge or rate-limit UI, unexpected navigation, or a terminal state not
+   bound to the intended target. Update selectors/baselines, then rerun fixture
+   tests and the clean full gate before proceeding.
+
 ## Open findings
 
 ### BLOCKER — trusted native input is not proven end to end
