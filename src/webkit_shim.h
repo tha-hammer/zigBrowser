@@ -78,7 +78,11 @@ void zb_automation_set_script(const char *source, size_t len);
 ZbWindow *zb_automation_main_window(void);
 
 /* Ops below: win == NULL targets the primary window and waits for it to exist
- * until the deadline (ZB_AUTO_ERR_NO_WINDOW). Every input string is copied
+ * until the deadline (ZB_AUTO_ERR_NO_WINDOW). Every op except navigate also
+ * waits until the primary window's first load has finished or failed
+ * (ZB_AUTO_ERR_TIMEOUT), so commands sent during startup see the start page.
+ * On timeout, an in-flight eval is cancelled and a navigate/reload stops its
+ * own load (never a newer one). Every input string is copied
  * before the call queues work. *out_* strings are heap-allocated by the shim
  * (free with zb_automation_free) and are set only when the call says so.
  * *out_err is diagnostic text and may contain page data. */
@@ -105,6 +109,9 @@ int zb_automation_get_url(ZbWindow *win, unsigned int timeout_ms, char **out_url
 int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_title);
 
 void zb_automation_free(char *p);
+
+/* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
+int zb_automation_debug_live_jobs(void);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);

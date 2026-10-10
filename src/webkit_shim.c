@@ -92,6 +92,11 @@ struct ZbWindow {
 
   int is_child;
   struct ZbApp *app;
+
+  /* Automation bridge (GTK thread only). */
+  unsigned int auto_load_gen;  /* bumped per automation navigate/reload */
+  int auto_first_load_done;    /* first load reached FINISHED or failed */
+  gulong sig_uri_notify;
 };
 
 struct ZbApp {
@@ -131,6 +136,11 @@ static void auto_window_destroyed(ZbWindow *win);
 static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri);
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
 static void auto_nav_blocked(ZbWindow *win, const char *candidate);
+static int auto_window_owns_load_deadline(ZbWindow *win);
+static void auto_uri_changed(ZbWindow *win, const char *uri);
+static void auto_first_load_done(ZbWindow *win);
+static void on_window_uri_notify(WebKitWebView *view, GParamSpec *pspec,
+                                 gpointer user_data);
 
 static void emit_safe_field(const char *text) {
   const char *p = text != NULL ? text : "";
@@ -678,6 +688,7 @@ static gboolean on_window_timeout(gpointer user_data) {
                  win->load_error_code);
   GError timeout_error = {G_IO_ERROR, G_IO_ERROR_TIMED_OUT, (char *)"load timed out"};
   auto_load_failed(win, timed_out_uri, &timeout_error);
+  auto_first_load_done(win);
   g_free(timed_out_uri);
   return G_SOURCE_REMOVE;
 }
@@ -750,6 +761,10 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
       g_signal_handler_disconnect(win->view, win->sig_create);
       win->sig_create = 0;
     }
+    if (win->sig_uri_notify != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_uri_notify);
+      win->sig_uri_notify = 0;
+    }
   }
 
   if (win->ucm != NULL) {
@@ -780,6 +795,9 @@ static gboolean on_window_load_failed(WebKitWebView *view,
   /* An automation-driven load that fails gets no WebKit error page: that
    * page loads asynchronously and would displace the client's next command. */
   int automation_load = auto_load_failed(win, uri, error);
+  if (!is_cancelled_network_error(error)) {
+    auto_first_load_done(win);
+  }
 
   if (win->load_superseded && is_cancelled_network_error(error)) {
     return TRUE;
@@ -802,10 +820,16 @@ static void on_window_load_changed(WebKitWebView *view,
   }
 
   auto_load_event(win, load_event, webkit_web_view_get_uri(view));
+  if (load_event == WEBKIT_LOAD_FINISHED) {
+    auto_first_load_done(win);
+  }
 
   switch (load_event) {
     case WEBKIT_LOAD_STARTED:
       window_reset_load_state(win);
+      if (auto_window_owns_load_deadline(win)) {
+        remove_source(&win->timeout_source_id);
+      }
       break;
     case WEBKIT_LOAD_COMMITTED:
       win->load_superseded = 0;
@@ -964,6 +988,9 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   win->sig_create =
       g_signal_connect_data(view, "create", G_CALLBACK(on_window_create), app,
                             NULL, 0);
+  win->sig_uri_notify =
+      g_signal_connect_data(view, "notify::uri",
+                            G_CALLBACK(on_window_uri_notify), win, NULL, 0);
   win->sig_destroy = g_signal_connect_data(win->gtk_window, "destroy",
                                            G_CALLBACK(on_window_destroy), win,
                                            NULL, 0);
@@ -1169,14 +1196,27 @@ struct ZbAutoJob {
   char *url;
   GCancellable *cancellable;
   int op;
-  int load_armed; /* saw LOAD_STARTED for `url` */
+  int load_armed;    /* saw LOAD_STARTED for `url` */
+  int load_displaced; /* another URI committed over this load */
+  int same_document; /* `url` differs from the page only by fragment */
+  unsigned int load_gen;
 };
 
 static GMutex zb_auto_mutex;
 static GCond zb_auto_cond;
 static int zb_auto_loop_state = ZB_LOOP_PENDING;
+/* Sources attached for the GTK thread and not yet dispatched; guarded by
+ * zb_auto_mutex. Each entry owns one source ref. Ending the loop destroys
+ * them so their job refs are released. */
+static GList *zb_auto_queued;
+static gint zb_auto_live_jobs;
+
+int zb_automation_debug_live_jobs(void) {
+  return g_atomic_int_get(&zb_auto_live_jobs);
+}
 
 static ZbAutoJob *auto_job_new(ZbAutoStartFn start, int is_async) {
+  g_atomic_int_inc(&zb_auto_live_jobs);
   ZbAutoJob *job = g_new0(ZbAutoJob, 1);
   job->refcount = 1;
   job->state = ZB_JOB_PENDING;
@@ -1205,6 +1245,7 @@ static void auto_job_unref(gpointer data) {
     g_object_unref(job->cancellable);
   }
   g_free(job);
+  g_atomic_int_add(&zb_auto_live_jobs, -1);
 }
 
 /* GTK thread. Records the outcome once and wakes waiters; takes ownership of
@@ -1225,9 +1266,27 @@ static void auto_job_complete(ZbAutoJob *job, int code, char *result, char *err)
   g_free(err);
 }
 
+static int auto_loop_ended_locked(void);
+
+/* Dispatch side of auto_queue_on_gtk: drop the queued entry for the source
+ * being dispatched. Called with zb_auto_mutex held. */
+static void auto_forget_current_source_locked(void) {
+  GSource *source = g_main_current_source();
+  GList *link = g_list_find(zb_auto_queued, source);
+  if (link != NULL) {
+    zb_auto_queued = g_list_delete_link(zb_auto_queued, link);
+    g_source_unref(source);
+  }
+}
+
 static gboolean auto_job_dispatch(gpointer data) {
   ZbAutoJob *job = (ZbAutoJob *)data;
   g_mutex_lock(&zb_auto_mutex);
+  auto_forget_current_source_locked();
+  if (job->state == ZB_JOB_PENDING && auto_loop_ended_locked()) {
+    job->state = ZB_JOB_CANCELLED;
+    g_cond_broadcast(&zb_auto_cond);
+  }
   if (job->state != ZB_JOB_PENDING) {
     g_mutex_unlock(&zb_auto_mutex);
     return G_SOURCE_REMOVE;
@@ -1246,21 +1305,24 @@ static int auto_loop_ended_locked(void) {
 /* Queue the job on the default main context. An explicit idle source is used
  * instead of g_main_context_invoke, which would run the job on the calling
  * thread whenever no thread currently owns the default context. */
-static int auto_job_submit(ZbAutoJob *job) {
+static int auto_queue_on_gtk(GSourceFunc fn, ZbAutoJob *job) {
   g_mutex_lock(&zb_auto_mutex);
-  int ended = auto_loop_ended_locked();
-  g_mutex_unlock(&zb_auto_mutex);
-  if (ended) {
+  if (auto_loop_ended_locked()) {
+    g_mutex_unlock(&zb_auto_mutex);
     return ZB_AUTO_ERR_NO_LOOP;
   }
 
   GSource *source = g_idle_source_new();
   g_source_set_priority(source, G_PRIORITY_DEFAULT);
-  g_source_set_callback(source, auto_job_dispatch, auto_job_ref(job),
-                        auto_job_unref);
+  g_source_set_callback(source, fn, auto_job_ref(job), auto_job_unref);
   g_source_attach(source, g_main_context_default());
-  g_source_unref(source);
+  zb_auto_queued = g_list_prepend(zb_auto_queued, source);
+  g_mutex_unlock(&zb_auto_mutex);
   return ZB_AUTO_OK;
+}
+
+static int auto_job_submit(ZbAutoJob *job) {
+  return auto_queue_on_gtk(auto_job_dispatch, job);
 }
 
 /* Waiter thread. Returns the job's code, or TIMEOUT / NO_LOOP after moving the
@@ -1290,7 +1352,7 @@ static int auto_job_wait(ZbAutoJob *job, gint64 deadline_us) {
     if (!give_up) {
       continue;
     }
-    if (job->state == ZB_JOB_PENDING) {
+    if (job->state == ZB_JOB_PENDING || job->state == ZB_JOB_CANCELLED) {
       job->state = ZB_JOB_CANCELLED;
       code = give_up_code;
       break;
@@ -1352,8 +1414,22 @@ int zb_main_invoke_sync(ZbMainJobFn fn, void *ctx, unsigned int timeout_ms) {
 void zb_automation_loop_mark(int running) {
   g_mutex_lock(&zb_auto_mutex);
   zb_auto_loop_state = running ? ZB_LOOP_RUNNING : ZB_LOOP_ENDED;
+  GList *queued = NULL;
+  if (!running) {
+    queued = zb_auto_queued;
+    zb_auto_queued = NULL;
+  }
   g_cond_broadcast(&zb_auto_cond);
   g_mutex_unlock(&zb_auto_mutex);
+
+  /* Outside the lock: destroy notifies drop job refs. Waiters see ENDED and
+   * give up on their own. */
+  for (GList *link = queued; link != NULL; link = link->next) {
+    GSource *source = (GSource *)link->data;
+    g_source_destroy(source);
+    g_source_unref(source);
+  }
+  g_list_free(queued);
 }
 
 /* ---- Automation bridge: windows, script injection, page ops ---- */
@@ -1371,6 +1447,7 @@ enum {
 static char *zb_auto_script_source; /* set before zb_app_run */
 static ZbApp *zb_auto_app;          /* GTK thread only */
 static ZbWindow *zb_auto_primary;   /* guarded by zb_auto_mutex */
+static int zb_auto_primary_ready;   /* guarded by zb_auto_mutex */
 static GList *zb_auto_inflight;     /* GTK thread only; holds one ref per job */
 
 void zb_automation_set_script(const char *source, size_t len) {
@@ -1395,12 +1472,24 @@ static void auto_install_script(ZbWindow *win) {
   g_object_set_data(G_OBJECT(win->ucm), ZB_AUTO_SCRIPT_KEY, GINT_TO_POINTER(1));
 }
 
+/* GTK thread: publish the primary window and whether its first load has
+ * ended, for waiters on the server thread. */
 static void auto_publish_primary(ZbApp *app) {
-  g_mutex_lock(&zb_auto_mutex);
-  zb_auto_primary =
+  ZbWindow *primary =
       (app != NULL && app->n_windows > 0) ? app->windows[0] : NULL;
+  g_mutex_lock(&zb_auto_mutex);
+  zb_auto_primary = primary;
+  zb_auto_primary_ready = primary != NULL && primary->auto_first_load_done;
   g_cond_broadcast(&zb_auto_cond);
   g_mutex_unlock(&zb_auto_mutex);
+}
+
+static void auto_first_load_done(ZbWindow *win) {
+  if (win->auto_first_load_done) {
+    return;
+  }
+  win->auto_first_load_done = 1;
+  auto_publish_primary(win->app);
 }
 
 ZbWindow *zb_automation_main_window(void) {
@@ -1466,20 +1555,79 @@ static int auto_is_load(const ZbAutoJob *job) {
   return job->op == ZB_OP_NAVIGATE || job->op == ZB_OP_RELOAD;
 }
 
-/* WebKit may append a trailing slash ("http://h" -> "http://h/"). */
-static int auto_same_uri(const char *a, const char *b) {
+/* URI in a comparable form: scheme-normalized (default port dropped, empty
+ * path -> "/"), scheme and host lower-cased. NULL when unparsable. */
+static char *auto_canonical_uri(const char *uri, int drop_fragment) {
+  GUri *parsed = g_uri_parse(uri, G_URI_FLAGS_ENCODED | G_URI_FLAGS_SCHEME_NORMALIZE, NULL);
+  if (parsed == NULL) {
+    return NULL;
+  }
+  char *scheme = g_ascii_strdown(g_uri_get_scheme(parsed), -1);
+  const char *raw_host = g_uri_get_host(parsed);
+  char *host = raw_host != NULL ? g_ascii_strdown(raw_host, -1) : NULL;
+  char *out = g_uri_join(G_URI_FLAGS_ENCODED, scheme, g_uri_get_userinfo(parsed),
+                         host, g_uri_get_port(parsed), g_uri_get_path(parsed),
+                         g_uri_get_query(parsed),
+                         drop_fragment ? NULL : g_uri_get_fragment(parsed));
+  g_free(scheme);
+  g_free(host);
+  g_uri_unref(parsed);
+  return out;
+}
+
+static int auto_uri_equal(const char *a, const char *b, int drop_fragment) {
   if (a == NULL || b == NULL) {
     return 0;
   }
-  size_t la = strlen(a);
-  size_t lb = strlen(b);
-  if (la > 0 && a[la - 1] == '/') {
-    la--;
+  char *ca = auto_canonical_uri(a, drop_fragment);
+  char *cb = auto_canonical_uri(b, drop_fragment);
+  int same = ca != NULL && cb != NULL ? strcmp(ca, cb) == 0 : strcmp(a, b) == 0;
+  g_free(ca);
+  g_free(cb);
+  return same;
+}
+
+static int auto_same_uri(const char *a, const char *b) {
+  return auto_uri_equal(a, b, 0);
+}
+
+/* GTK thread: a tracked automation load owns the deadline for this window's
+ * current load, replacing the legacy fixed load timer. */
+static int auto_window_owns_load_deadline(ZbWindow *win) {
+  for (GList *link = zb_auto_inflight; link != NULL; link = link->next) {
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && auto_is_load(job) && !job->load_displaced) {
+      return 1;
+    }
   }
-  if (lb > 0 && b[lb - 1] == '/') {
-    lb--;
+  return 0;
+}
+
+/* Same-document (fragment-only) navigations fire no load events; the URI
+ * change completes them. */
+static void auto_uri_changed(ZbWindow *win, const char *uri) {
+  GList *link = zb_auto_inflight;
+  while (link != NULL) {
+    GList *next = link->next;
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && job->op == ZB_OP_NAVIGATE && job->same_document &&
+        auto_same_uri(job->url, uri)) {
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+    }
+    link = next;
   }
-  return la == lb && strncmp(a, b, la) == 0;
+}
+
+static void on_window_uri_notify(WebKitWebView *view, GParamSpec *pspec,
+                                 gpointer user_data) {
+  (void)pspec;
+  ZbWindow *win = (ZbWindow *)user_data;
+  if (win != NULL) {
+    auto_uri_changed(win, webkit_web_view_get_uri(view));
+  }
 }
 
 static void auto_window_destroyed(ZbWindow *win) {
@@ -1493,10 +1641,10 @@ static void auto_window_destroyed(ZbWindow *win) {
                         "window destroyed");
 }
 
-/* A load job follows its own URI: LOAD_STARTED for that URI arms it,
- * REDIRECTED moves it, a commit of any other URI disarms it (the load was
+/* A load job follows its own URI: LOAD_STARTED or COMMITTED for that URI arms
+ * it, REDIRECTED moves it, a commit of any other URI disarms it (the load was
  * displaced, e.g. by WebKit's error page for an earlier failure), and only
- * FINISHED for its URI completes it. */
+ * FINISHED for its URI on an armed job completes it. */
 static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri) {
   GList *link = zb_auto_inflight;
   while (link != NULL) {
@@ -1513,8 +1661,11 @@ static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *ur
     } else if (event == WEBKIT_LOAD_REDIRECTED && job->load_armed) {
       g_free(job->url);
       job->url = g_strdup(uri);
-    } else if (event == WEBKIT_LOAD_COMMITTED && !same) {
-      job->load_armed = 0;
+    } else if (event == WEBKIT_LOAD_COMMITTED) {
+      /* STARTED may still report the previous URI (e.g. for a request WebKit
+       * rewrites), so the commit of our URI also arms the job. */
+      job->load_armed = same;
+      job->load_displaced = !same;
     } else if (event == WEBKIT_LOAD_FINISHED && same && job->load_armed) {
       job->target = NULL;
       auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
@@ -1525,14 +1676,15 @@ static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *ur
   }
 }
 
-/* Fails armed load jobs for `uri`; returns whether any matched. */
+/* Fails load jobs for `uri` (a failure can precede any event that would arm
+ * the job); returns whether any matched. */
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error) {
   int matched = 0;
   GList *link = zb_auto_inflight;
   while (link != NULL) {
     GList *next = link->next;
     ZbAutoJob *job = (ZbAutoJob *)link->data;
-    if (job->target == win && auto_is_load(job) && job->load_armed &&
+    if (job->target == win && auto_is_load(job) && !job->load_displaced &&
         auto_same_uri(job->url, uri)) {
       const char *message = is_cancelled_network_error(error)
                                 ? "navigation interrupted by another load"
@@ -1567,19 +1719,31 @@ static void auto_nav_blocked(ZbWindow *win, const char *candidate) {
   }
 }
 
-static gboolean auto_cancel_dispatch(gpointer data) {
-  g_cancellable_cancel(G_CANCELLABLE(data));
-  return G_SOURCE_REMOVE;
-}
+/* GTK thread, after the waiter gave up (TIMEOUT / NO_LOOP). Eval: cancel the
+ * JS call (its callback then untracks). Load: stop the load only while it is
+ * still this window's newest automation load and nothing else committed over
+ * it, then untrack. Cancelling here, not on the server thread, keeps WebKit's
+ * "cancelled" handlers on the GTK thread. */
+static gboolean auto_abandon_dispatch(gpointer data) {
+  ZbAutoJob *job = (ZbAutoJob *)data;
+  g_mutex_lock(&zb_auto_mutex);
+  auto_forget_current_source_locked();
+  g_mutex_unlock(&zb_auto_mutex);
 
-/* Cancel on the GTK thread: "cancelled" handlers run in the cancelling
- * thread, and WebKit's handlers must not run on the server thread. */
-static void auto_cancel_on_gtk_thread(GCancellable *cancellable) {
-  GSource *source = g_idle_source_new();
-  g_source_set_callback(source, auto_cancel_dispatch, g_object_ref(cancellable),
-                        g_object_unref);
-  g_source_attach(source, g_main_context_default());
-  g_source_unref(source);
+  if (job->cancellable != NULL) {
+    g_cancellable_cancel(job->cancellable);
+  }
+  ZbWindow *win = job->target;
+  if (win != NULL && auto_is_load(job)) {
+    if (!job->load_displaced && job->load_gen == win->auto_load_gen &&
+        win->view != NULL && webkit_web_view_is_loading(win->view)) {
+      win->load_superseded = 1;
+      webkit_web_view_stop_loading(win->view);
+    }
+    job->target = NULL;
+    auto_untrack(job);
+  }
+  return G_SOURCE_REMOVE;
 }
 
 static void on_auto_eval_done(GObject *object, GAsyncResult *result,
@@ -1621,12 +1785,13 @@ static void auto_start_eval(ZbAutoJob *job) {
   GVariantDict dict;
   g_variant_dict_init(&dict, NULL);
   g_variant_dict_insert(&dict, "arg", "s", job->arg);
-  GVariant *args = g_variant_dict_end(&dict);
+  GVariant *args = g_variant_ref_sink(g_variant_dict_end(&dict));
 
   auto_track(job, win);
   webkit_web_view_call_async_javascript_function(
       win->view, job->body, -1, args, job->world, NULL, job->cancellable,
       on_auto_eval_done, auto_job_ref(job));
+  g_variant_unref(args); /* arguments are transfer-none */
 }
 
 /* Mirrors zb_reload: mark the in-flight load superseded so its cancellation
@@ -1639,6 +1804,17 @@ static void auto_start_load(ZbAutoJob *job) {
   }
 
   auto_track(job, win);
+  job->load_gen = ++win->auto_load_gen;
+  const char *current = webkit_web_view_get_uri(win->view);
+  job->same_document = job->op == ZB_OP_NAVIGATE && current != NULL &&
+                       !auto_same_uri(job->url, current) &&
+                       auto_uri_equal(job->url, current, 1) &&
+                       strchr(job->url, '#') != NULL;
+  if (job->same_document) {
+    webkit_web_view_load_uri(win->view, job->url);
+    return;
+  }
+
   win->load_superseded = 1;
   win->suppress_success_emit = 0;
   window_clear_pending_nav(win);
@@ -1666,19 +1842,30 @@ static void auto_start_get(ZbAutoJob *job) {
   auto_job_complete(job, ZB_AUTO_OK, g_strdup(value != NULL ? value : ""), NULL);
 }
 
-static int auto_wait_for_primary(gint64 deadline_us) {
+/* Wait until the primary window exists and, when `need_ready`, its first
+ * load has ended, so commands sent while the start page is still loading do
+ * not run against the empty initial document. */
+static int auto_wait_for_primary(gint64 deadline_us, int need_ready) {
   int code = ZB_AUTO_OK;
   g_mutex_lock(&zb_auto_mutex);
-  while (zb_auto_primary == NULL) {
+  while (zb_auto_primary == NULL || (need_ready && !zb_auto_primary_ready)) {
     if (auto_loop_ended_locked()) {
       code = ZB_AUTO_ERR_NO_LOOP;
       break;
     }
-    if (!g_cond_wait_until(&zb_auto_cond, &zb_auto_mutex, deadline_us) &&
-        zb_auto_primary == NULL) {
-      code = auto_loop_ended_locked() ? ZB_AUTO_ERR_NO_LOOP : ZB_AUTO_ERR_NO_WINDOW;
-      break;
+    if (!g_cond_wait_until(&zb_auto_cond, &zb_auto_mutex, deadline_us)) {
+      if (zb_auto_primary == NULL) {
+        code = ZB_AUTO_ERR_NO_WINDOW;
+        break;
+      }
+      if (need_ready && !zb_auto_primary_ready) {
+        code = ZB_AUTO_ERR_TIMEOUT;
+        break;
+      }
     }
+  }
+  if (code == ZB_AUTO_OK && auto_loop_ended_locked()) {
+    code = ZB_AUTO_ERR_NO_LOOP;
   }
   g_mutex_unlock(&zb_auto_mutex);
   return code;
@@ -1699,7 +1886,7 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
   }
 
   gint64 deadline = auto_deadline(timeout_ms);
-  int code = win == NULL ? auto_wait_for_primary(deadline) : ZB_AUTO_OK;
+  int code = auto_wait_for_primary(deadline, job->op != ZB_OP_NAVIGATE);
   if (code != ZB_AUTO_OK) {
     return code;
   }
@@ -1722,8 +1909,8 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
   }
   g_mutex_unlock(&zb_auto_mutex);
 
-  if (!done && job->cancellable != NULL) {
-    auto_cancel_on_gtk_thread(job->cancellable);
+  if (!done && job->is_async) {
+    auto_queue_on_gtk(auto_abandon_dispatch, job);
   }
   return code;
 }
@@ -1794,7 +1981,17 @@ void zb_automation_free(char *p) {
   g_free(p);
 }
 
+static int app_run(const char *uri, int print_title, int e2e_protocol);
+
+/* Every exit, including early init failures, ends the automation loop so a
+ * server thread waiting on a job is released before server shutdown. */
 int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
+  int code = app_run(uri, print_title, e2e_protocol);
+  zb_automation_loop_mark(0);
+  return code;
+}
+
+static int app_run(const char *uri, int print_title, int e2e_protocol) {
   const char *display = g_getenv("DISPLAY");
   if (display == NULL || display[0] == '\0') {
     fprintf(stderr, "DISPLAY is required (set DISPLAY or run under Xvfb).\n");

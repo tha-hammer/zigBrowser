@@ -139,6 +139,15 @@ def main() -> int:
         stderr_thread.start()
 
         try:
+            # Startup race regression: ask for the title the moment the socket
+            # accepts, before the start page has finished loading. The bridge
+            # must hold the command until the first load ends.
+            expect_equal(
+                "page.title at startup",
+                call_rpc(socket_path, "page.title", {}, 100, args.timeout_sec),
+                {"title": "Automation Lifecycle Fixture"},
+            )
+
             nav_deadline = time.monotonic() + args.timeout_sec
             while time.monotonic() < nav_deadline:
                 if any(line.startswith("NAV\t") for line in stdout_lines):

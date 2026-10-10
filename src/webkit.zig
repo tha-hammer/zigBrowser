@@ -136,6 +136,7 @@ test "zb_main_invoke_sync times out and never runs the job when the loop is not 
     // The queued source may still be dispatched now; it must not touch the job.
     TestLoop.pumpFor(20);
     try std.testing.expectEqual(@as(u32, 0), job.runs.load(.acquire));
+    try std.testing.expectEqual(@as(c_int, 0), c.zb_automation_debug_live_jobs());
 }
 
 test "zb_main_invoke_sync on the loop-owning thread runs inline instead of deadlocking" {
@@ -197,12 +198,47 @@ test "zb_main_invoke_sync wakes pending waiters with NO_LOOP once the loop has e
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), sub.rc.load(.acquire));
     try std.testing.expect(elapsed_ms < 2000);
 
+    // Ending the loop destroyed the queued source, releasing its job ref
+    // without any further dispatch.
+    try std.testing.expectEqual(@as(c_int, 0), c.zb_automation_debug_live_jobs());
+
     // After the loop has ended, new submissions fail fast too.
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), c.zb_main_invoke_sync(CountingJob.run, &job, 10_000));
     TestLoop.pumpFor(10);
     try std.testing.expectEqual(@as(u32, 0), job.runs.load(.acquire));
     c.zb_automation_loop_mark(1);
 }
+
+test "a waiter queued before zb_app_run is released when GTK init fails" {
+    try skipUnlessGtk();
+    c.zb_automation_loop_mark(1);
+
+    var job: CountingJob = .{};
+    var sub: Submitter = .{ .job = &job, .timeout_ms = 30_000 };
+    const t = try std.Thread.spawn(.{}, Submitter.main, .{&sub});
+    sleepMs(30);
+
+    // With an empty DISPLAY, zb_app_run fails before gtk_main(). The value is
+    // overwritten rather than unset: unsetenv shifts libc's environ array in
+    // place, which breaks Zig's own environment scan later in the process.
+    const saved = std.c.getenv("DISPLAY");
+    var saved_buf: [256]u8 = undefined;
+    const saved_copy: [:0]const u8 = if (saved) |d| try std.fmt.bufPrintZ(&saved_buf, "{s}", .{std.mem.span(d)}) else "";
+    _ = setenv("DISPLAY", "", 1);
+    const start = monotonicMs();
+    const rc = c.zb_app_run("about:blank", 0, 0);
+    _ = setenv("DISPLAY", saved_copy.ptr, 1);
+
+    t.join();
+    try std.testing.expectEqual(@as(c_int, c.ZB_EXIT_DISPLAY_UNAVAILABLE), rc);
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), sub.rc.load(.acquire));
+    try std.testing.expect(monotonicMs() - start < 2000);
+    try std.testing.expectEqual(@as(u32, 0), job.runs.load(.acquire));
+    try std.testing.expectEqual(@as(c_int, 0), c.zb_automation_debug_live_jobs());
+    c.zb_automation_loop_mark(1);
+}
+
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 // --- Live WebView bridge test (needs a display; run under xvfb-run) ---
 //
@@ -231,6 +267,35 @@ const fixture_a =
     \\  document.body.appendChild(p); }, 300);</script>
     \\</body></html>
 ;
+fn fixtureSlow(buf: []u8, port: u16) []const u8 {
+    return std.fmt.bufPrint(buf,
+        \\<!doctype html><html><head><title>Fixture Slow</title></head><body>
+        \\<img src="http://127.0.0.1:{d}/never.png"></body></html>
+    , .{port}) catch unreachable;
+}
+
+/// TCP listener that never accepts: connections complete in the kernel
+/// backlog and requests never get a response, so loads that need it stall.
+const StalledServer = struct {
+    fd: c_int,
+    port: u16,
+
+    fn open() !StalledServer {
+        const fd = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+        if (fd < 0) return error.SocketFailed;
+        var addr: std.c.sockaddr.in = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
+        if (std.c.bind(fd, @ptrCast(&addr), @sizeOf(std.c.sockaddr.in)) != 0) return error.BindFailed;
+        if (std.c.listen(fd, 16) != 0) return error.ListenFailed;
+        var len: std.c.socklen_t = @sizeOf(std.c.sockaddr.in);
+        if (std.c.getsockname(fd, @ptrCast(&addr), &len) != 0) return error.SockNameFailed;
+        return .{ .fd = fd, .port = std.mem.bigToNative(u16, addr.port) };
+    }
+
+    fn close(self: StalledServer) void {
+        _ = std.c.close(self.fd);
+    }
+};
+
 const fixture_b =
     \\<!doctype html><html><head><title>Fixture B</title></head><body><p id="msg">Page B</p></body></html>
 ;
@@ -240,6 +305,7 @@ const LiveDriver = struct {
     uri_a: [:0]const u8,
     uri_b: [:0]const u8,
     uri_missing: [:0]const u8,
+    uri_slow: [:0]const u8,
     failures: std.ArrayList([]const u8) = .empty,
 
     fn diag(_: *LiveDriver, what: []const u8, rc: c_int, err: [*c]u8) void {
@@ -290,6 +356,11 @@ const LiveDriver = struct {
         const automation_world: [:0]const u8 = c.ZB_AUTOMATION_WORLD;
         var rc: c_int = 0;
         var err: [*c]u8 = null;
+
+        // Startup readiness: the driver starts before zb_app_run, so this
+        // title request arrives while the start page is still loading. It
+        // must wait for that load instead of reading the empty initial page.
+        self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture A"), "page.title during startup waits for the first load");
 
         // NULL window waits for the primary window (driver starts before zb_app_run).
         rc = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &err);
@@ -387,6 +458,38 @@ const LiveDriver = struct {
         self.check(rc == c.ZB_AUTO_OK, "reload returns OK");
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture A"), "title after reload");
 
+        // Fragment-only navigation fires no load events; the URI change completes it.
+        const uri_frag = std.fmt.allocPrintSentinel(self.allocator, "{s}#frag", .{self.uri_a}, 0) catch return;
+        rc = c.zb_automation_navigate(null, uri_frag.ptr, 5000, &err);
+        self.diag("hash navigate", rc, err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "same-document hash navigation returns OK");
+        self.check(std.mem.eql(u8, self.str(&rc, .url), uri_frag), "url carries the fragment");
+
+        // WebKit canonicalizes the scheme; the job must still match its load.
+        const uri_upper = std.fmt.allocPrintSentinel(self.allocator, "FILE{s}", .{self.uri_b["file".len..]}, 0) catch return;
+        rc = c.zb_automation_navigate(null, uri_upper.ptr, 15000, &err);
+        self.diag("upper-case scheme navigate", rc, err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "navigate with non-canonical scheme returns OK");
+
+        // A load that cannot finish: the navigate times out, the shim stops
+        // that load, and the next navigate still works.
+        rc = c.zb_automation_navigate(null, self.uri_slow.ptr, 500, &err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "stalled load times out");
+        sleepMs(200);
+        r = self.eval(null, "return String(document.readyState);", null, null, 5000);
+        self.check(r.rc == c.ZB_AUTO_OK and r.out != null and !std.mem.eql(u8, r.out.?, "loading"), "timed-out load was stopped");
+        rc = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &err);
+        self.diag("navigate after stalled load", rc, err);
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_OK, "navigate after a timed-out load returns OK");
+
         _ = c.zb_main_invoke_sync(quit, null, 5000);
     }
 };
@@ -406,6 +509,12 @@ test "automation bridge drives a live WebKitGTK page" {
     const path_missing = try std.fmt.allocPrintSentinel(arena, "{s}/missing.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
     try std.testing.expect(gfile.g_file_set_contents(path_b, fixture_b.ptr, fixture_b.len, null) != 0);
+    const stalled = try StalledServer.open();
+    defer stalled.close();
+    var slow_buf: [512]u8 = undefined;
+    const slow_html = fixtureSlow(&slow_buf, stalled.port);
+    const path_slow = try std.fmt.allocPrintSentinel(arena, "{s}/slow.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_slow, slow_html.ptr, @intCast(slow_html.len), null) != 0);
 
     const uriOf = struct {
         fn f(a: std.mem.Allocator, path: [:0]const u8) ![:0]const u8 {
@@ -420,6 +529,7 @@ test "automation bridge drives a live WebKitGTK page" {
         .uri_a = try uriOf(arena, path_a),
         .uri_b = try uriOf(arena, path_b),
         .uri_missing = try uriOf(arena, path_missing),
+        .uri_slow = try uriOf(arena, path_slow),
     };
 
     gtk_port.installScript();
@@ -436,5 +546,7 @@ test "automation bridge drives a live WebKitGTK page" {
     try std.testing.expect(c.zb_automation_main_window() == null);
     var out: [*c]u8 = null;
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), c.zb_automation_get_url(null, 5000, &out));
+    // Every bridge job (including the abandoned eval and load) was released.
+    try std.testing.expectEqual(@as(c_int, 0), c.zb_automation_debug_live_jobs());
     c.zb_automation_loop_mark(1);
 }
