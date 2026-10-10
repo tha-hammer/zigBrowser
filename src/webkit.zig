@@ -249,6 +249,7 @@ const gtk_port = @import("automation_gtk_port.zig");
 
 test {
     _ = gtk_port;
+    _ = @import("automation_gtk_cookie_port.zig");
 }
 
 const gfile = struct {

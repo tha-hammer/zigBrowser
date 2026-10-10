@@ -430,6 +430,15 @@ pub fn build(b: *std.Build) void {
     });
     automation_profile_e2e.addArtifactArg(exe);
 
+    // cookies.* against the real cookie store (local HTTP, restart on profile).
+    const automation_cookies_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_cookies_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-cookies-e2e",
+    });
+    automation_cookies_e2e.addArtifactArg(exe);
+
     // --- Phase 4: Gaussian tests ---
     const gaussian_module = b.createModule(.{
         .root_source_file = b.path("src/automation/gaussian.zig"),
@@ -573,6 +582,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_readiness_e2e.step);
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_profile_e2e.step);
+    test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);

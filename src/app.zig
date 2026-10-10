@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
@@ -107,6 +108,7 @@ fn buildAutomationConfig(
         .socket_path = try automationSocketPath(allocator),
         .token = try automationToken(allocator, io, spec.automation_token_file),
         .page_port = automation_gtk_port.pagePort(),
+        .cookie_port = automation_gtk_cookie_port.cookiePort(),
     };
 }
 
