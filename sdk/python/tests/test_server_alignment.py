@@ -53,6 +53,24 @@ INVOCATIONS = {
     "x.schedule_post": lambda zb: zb.x.schedule_post("later", "2026-11-05", "14:07"),
     "x.login_check": lambda zb: zb.x.login_check(),
     "x.selfcheck": lambda zb: zb.x.selfcheck(),
+    "linkedin.visit": lambda zb: zb.linkedin.visit("https://www.linkedin.com/in/ada/"),
+    "linkedin.connect": lambda zb: zb.linkedin.connect("https://www.linkedin.com/in/ada/"),
+    "linkedin.connect.note": lambda zb: zb.linkedin.connect("https://www.linkedin.com/in/ada/", note="Hi Ada"),
+    "linkedin.follow": lambda zb: zb.linkedin.follow("https://www.linkedin.com/in/ada/"),
+    "linkedin.message.conversation": lambda zb: zb.linkedin.message("Hello", conversation_url="https://www.linkedin.com/messaging/thread/1/"),
+    "linkedin.message.profile": lambda zb: zb.linkedin.message("Hello", profile_url="https://www.linkedin.com/in/ada/"),
+    "linkedin.like": lambda zb: zb.linkedin.like("https://www.linkedin.com/feed/update/urn:li:activity:1/"),
+    "linkedin.comment": lambda zb: zb.linkedin.comment("https://www.linkedin.com/feed/update/urn:li:activity:1/", "Great post"),
+    "linkedin.search": lambda zb: zb.linkedin.search("zig"),
+    "linkedin.search.type": lambda zb: zb.linkedin.search("zig", search_type="companies"),
+    "linkedin.extract": lambda zb: zb.linkedin.extract("https://www.linkedin.com/in/ada/"),
+    "linkedin.selfcheck": lambda zb: zb.linkedin.selfcheck(),
+    "instagram.follow": lambda zb: zb.instagram.follow("https://www.instagram.com/ada/"),
+    "instagram.like": lambda zb: zb.instagram.like("https://www.instagram.com/p/C0ffee/"),
+    "instagram.comment": lambda zb: zb.instagram.comment("https://www.instagram.com/p/C0ffee/", "So good"),
+    "instagram.dm": lambda zb: zb.instagram.dm("ada", "hi"),
+    "instagram.story_view": lambda zb: zb.instagram.story_view("ada"),
+    "instagram.selfcheck": lambda zb: zb.instagram.selfcheck(),
 }
 
 
@@ -70,14 +88,14 @@ def test_wrapper_emits_the_shared_wire_case(mock_uds_server, case_id):
     assert req["params"] == WIRE_CASES[case_id]["params"]
 
 
-def test_linkedin_follow_wire_shape_only(mock_uds_server):
-    """linkedin.* is NOT routed by the automation socket yet (-32601); this
-    only pins the request shape for parity with src/linkedin.zig."""
-    mock_uds_server.set_response(OK)
-    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
-        zb.linkedin.follow("https://www.linkedin.com/in/x")
-    req = mock_uds_server.last_request()
-    assert req == {**req, "method": "linkedin.follow", "params": {"profileUrl": "https://www.linkedin.com/in/x"}}
+def test_linkedin_message_needs_exactly_one_target_and_search_type_is_checked():
+    zb = ZigBrowser(socket_path="/nonexistent")
+    with pytest.raises(ValueError):
+        zb.linkedin.message("hi")
+    with pytest.raises(ValueError):
+        zb.linkedin.message("hi", conversation_url="https://www.linkedin.com/messaging/thread/1/", profile_url="https://www.linkedin.com/in/x/")
+    with pytest.raises(ValueError):
+        zb.linkedin.search("zig", search_type="groups")
 
 
 def test_select_option_requires_exactly_one_choice():

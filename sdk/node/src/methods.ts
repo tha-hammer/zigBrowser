@@ -225,3 +225,93 @@ export class XNamespace {
     return this.call("x.selfcheck", {}) as Promise<Record<string, number>>;
   }
 }
+
+export type LinkedInSearchType = "people" | "companies" | "jobs" | "content" | "all";
+
+export interface LinkedInSearchResult extends OkResult {
+  url: string;
+  resultCount: number;
+}
+
+export interface LinkedInProfileSummary {
+  name: string;
+  headline: string | null;
+  location: string | null;
+}
+
+export interface StoryViewResult extends OkResult {
+  framesViewed: number;
+}
+
+/**
+ * linkedin.com flows. Each call is one command run by the browser: it needs
+ * a signed-in profile (the li_at session cookie; otherwise -32011
+ * "logged_out" before anything is opened), takes URLs on
+ * https://www.linkedin.com only, and actions share the social pacing
+ * (social.rateStatus / social.setPacing; -32010 "social_daily_cap").
+ */
+export class LinkedInNamespace {
+  constructor(private readonly call: Caller) {}
+
+  visit(profileUrl: string): Promise<OkResult> {
+    return this.call("linkedin.visit", { profileUrl }) as Promise<OkResult>;
+  }
+  /** A note longer than 300 characters is cut to 300. */
+  connect(profileUrl: string, opts: { note?: string } = {}): Promise<OkResult> {
+    return this.call("linkedin.connect", wire({ profileUrl, note: opts.note })) as Promise<OkResult>;
+  }
+  follow(profileUrl: string): Promise<OkResult> {
+    return this.call("linkedin.follow", { profileUrl }) as Promise<OkResult>;
+  }
+  /** Exactly one of conversationUrl / profileUrl. */
+  message(text: string, target: { conversationUrl: string } | { profileUrl: string }): Promise<OkResult> {
+    const t = target as { conversationUrl?: string; profileUrl?: string };
+    if ((t.conversationUrl === undefined) === (t.profileUrl === undefined)) {
+      throw new Error("message needs exactly one of conversationUrl, profileUrl");
+    }
+    return this.call("linkedin.message", wire({ text, conversationUrl: t.conversationUrl, profileUrl: t.profileUrl })) as Promise<OkResult>;
+  }
+  like(postUrl: string): Promise<OkResult> {
+    return this.call("linkedin.like", { postUrl }) as Promise<OkResult>;
+  }
+  comment(postUrl: string, text: string): Promise<OkResult> {
+    return this.call("linkedin.comment", { postUrl, text }) as Promise<OkResult>;
+  }
+  search(query: string, opts: { searchType?: LinkedInSearchType } = {}): Promise<LinkedInSearchResult> {
+    return this.call("linkedin.search", wire({ query, searchType: opts.searchType })) as Promise<LinkedInSearchResult>;
+  }
+  /** Read-only profile summary. */
+  extract(profileUrl: string): Promise<LinkedInProfileSummary> {
+    return this.call("linkedin.extract", { profileUrl }) as Promise<LinkedInProfileSummary>;
+  }
+  /** `{selector_name: count}` for LinkedIn's selector table on the current page. */
+  selfcheck(): Promise<Record<string, number>> {
+    return this.call("linkedin.selfcheck", {}) as Promise<Record<string, number>>;
+  }
+}
+
+/** instagram.com flows; same rules as LinkedInNamespace (sessionid cookie, https://www.instagram.com URLs, shared pacing). */
+export class InstagramNamespace {
+  constructor(private readonly call: Caller) {}
+
+  follow(profileUrl: string): Promise<OkResult> {
+    return this.call("instagram.follow", { profileUrl }) as Promise<OkResult>;
+  }
+  like(postUrl: string): Promise<OkResult> {
+    return this.call("instagram.like", { postUrl }) as Promise<OkResult>;
+  }
+  comment(postUrl: string, text: string): Promise<OkResult> {
+    return this.call("instagram.comment", { postUrl, text }) as Promise<OkResult>;
+  }
+  /** Opens username's profile, presses Message, sends text. */
+  dm(username: string, text: string): Promise<OkResult> {
+    return this.call("instagram.dm", { username, text }) as Promise<OkResult>;
+  }
+  storyView(username: string): Promise<StoryViewResult> {
+    return this.call("instagram.story_view", { username }) as Promise<StoryViewResult>;
+  }
+  /** `{selector_name: count}` for Instagram's selector table on the current page. */
+  selfcheck(): Promise<Record<string, number>> {
+    return this.call("instagram.selfcheck", {}) as Promise<Record<string, number>>;
+  }
+}

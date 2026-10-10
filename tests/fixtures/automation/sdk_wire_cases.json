@@ -32,6 +32,24 @@
     {"id": "x.post.compose_url", "method": "x.post", "params": {"text": "hello", "compose_url": "http://127.0.0.1:9/compose"}},
     {"id": "x.schedule_post", "method": "x.schedule_post", "params": {"text": "later", "date": "2026-11-05", "time": "14:07"}},
     {"id": "x.login_check", "method": "x.login_check", "params": {}},
-    {"id": "x.selfcheck", "method": "x.selfcheck", "params": {}}
+    {"id": "x.selfcheck", "method": "x.selfcheck", "params": {}},
+    {"id": "linkedin.visit", "method": "linkedin.visit", "params": {"profileUrl": "https://www.linkedin.com/in/ada/"}},
+    {"id": "linkedin.connect", "method": "linkedin.connect", "params": {"profileUrl": "https://www.linkedin.com/in/ada/"}},
+    {"id": "linkedin.connect.note", "method": "linkedin.connect", "params": {"profileUrl": "https://www.linkedin.com/in/ada/", "note": "Hi Ada"}},
+    {"id": "linkedin.follow", "method": "linkedin.follow", "params": {"profileUrl": "https://www.linkedin.com/in/ada/"}},
+    {"id": "linkedin.message.conversation", "method": "linkedin.message", "params": {"text": "Hello", "conversationUrl": "https://www.linkedin.com/messaging/thread/1/"}},
+    {"id": "linkedin.message.profile", "method": "linkedin.message", "params": {"text": "Hello", "profileUrl": "https://www.linkedin.com/in/ada/"}},
+    {"id": "linkedin.like", "method": "linkedin.like", "params": {"postUrl": "https://www.linkedin.com/feed/update/urn:li:activity:1/"}},
+    {"id": "linkedin.comment", "method": "linkedin.comment", "params": {"postUrl": "https://www.linkedin.com/feed/update/urn:li:activity:1/", "text": "Great post"}},
+    {"id": "linkedin.search", "method": "linkedin.search", "params": {"query": "zig"}},
+    {"id": "linkedin.search.type", "method": "linkedin.search", "params": {"query": "zig", "searchType": "companies"}},
+    {"id": "linkedin.extract", "method": "linkedin.extract", "params": {"profileUrl": "https://www.linkedin.com/in/ada/"}},
+    {"id": "linkedin.selfcheck", "method": "linkedin.selfcheck", "params": {}},
+    {"id": "instagram.follow", "method": "instagram.follow", "params": {"profileUrl": "https://www.instagram.com/ada/"}},
+    {"id": "instagram.like", "method": "instagram.like", "params": {"postUrl": "https://www.instagram.com/p/C0ffee/"}},
+    {"id": "instagram.comment", "method": "instagram.comment", "params": {"postUrl": "https://www.instagram.com/p/C0ffee/", "text": "So good"}},
+    {"id": "instagram.dm", "method": "instagram.dm", "params": {"username": "ada", "text": "hi"}},
+    {"id": "instagram.story_view", "method": "instagram.story_view", "params": {"username": "ada"}},
+    {"id": "instagram.selfcheck", "method": "instagram.selfcheck", "params": {}}
   ]
 }

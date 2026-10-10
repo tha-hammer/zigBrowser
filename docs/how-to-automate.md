@@ -120,8 +120,8 @@ is non-strict by default.
   exactly one attempt, but leaves the page call almost no time, so it
   usually fails with `action_timeout`.
 - Other namespaces have their own timing: `cookies.*` calls take up to 10 s
-  (`cookies.import` up to 30 s for the whole file); `x.*` flows run their
-  steps under one 120 s budget; `social.pause` waits for its
+  (`cookies.import` up to 30 s for the whole file); `x.*`, `linkedin.*`
+  and `instagram.*` flows run their steps under one 120 s budget; `social.pause` waits for its
   `duration_ms`; `social.login_check`, `social.rate_status`,
   `social.set_pacing` and `telemetry.query` answer at once.
 - If the element is missing or not yet actionable (not visible, moving,
@@ -195,15 +195,57 @@ restart. Cookie values are never logged or written to telemetry.
 | `social.set_pacing` | `min_delay_ms?`, `max_delay_ms?`, `daily_cap?` | `{ok:true}` |
 | `social.pause` | `duration_ms` | `{ok:true}` after the pause; page commands wait behind it |
 
-`linkedin.*` and `instagram.*` wrappers exist in the SDKs but are not served
-by the socket yet; they answer -32601.
+### LinkedIn and Instagram
+
+| Method | Params | Result |
+|---|---|---|
+| `linkedin.visit` | `profileUrl` | `{ok:true}` |
+| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters) | `{ok:true}` once the profile shows the invitation as pending |
+| `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following |
+| `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl` | `{ok:true}` |
+| `linkedin.like` | `postUrl` | `{ok:true}` once the Like is pressed |
+| `linkedin.comment` | `postUrl`, `text` | `{ok:true}` |
+| `linkedin.search` | `query`, `searchType?` (`people`, `companies`, `jobs`, `content`, `all`) | `{ok:true, url, resultCount}` |
+| `linkedin.extract` | `profileUrl` | `{name, headline, location}` (read-only; null when absent) |
+| `linkedin.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
+| `instagram.follow` | `profileUrl` | `{ok:true}` once it shows Following or Requested |
+| `instagram.like` | `postUrl` | `{ok:true}` once it shows Unlike |
+| `instagram.comment` | `postUrl`, `text` | `{ok:true}` |
+| `instagram.dm` | `username`, `text` | `{ok:true}` (profile, Message, send) |
+| `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes) |
+| `instagram.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
+
+- Each call is one command, like `x.*`: other page commands wait until it
+  has finished, and the whole flow has 120 s
+  (`linkedin_flow_deadline` / `instagram_flow_deadline`).
+- Logged in means the site's session cookie is in the profile (`li_at` for
+  LinkedIn, `sessionid` for Instagram). Without it the call fails with
+  -32011 `logged_out` before anything is opened. After opening the page the
+  flow also checks the page shows a signed-in account; a sign-in page is
+  -32011 `logged_out` too. Use `--profile-dir` and log in, or import
+  cookies. `selfcheck` needs no session.
+- URLs must be on `https://www.linkedin.com/` or `https://www.instagram.com/`
+  (exactly that host; no other host, port or user info): otherwise -32602.
+- Typed text (notes, messages, comments) goes in character by character,
+  like `dom.type`.
+- Actions share the social pacing: a random 3-8 s pause before each and at
+  most 100 a day (`social.set_pacing`, `social.rate_status`; only
+  successful actions count, actions in progress hold their place). At the
+  cap: -32010 `social_daily_cap`. `linkedin.extract` and the `selfcheck`
+  calls do not count and do not pause.
+- The selectors live in one table at the top of `src/linkedin.zig` and
+  `src/instagram.zig`; run the `selfcheck` on a logged-in page to see
+  which still match.
+- Testing only: `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN=http://127.0.0.1:<port>`
+  in the browser's environment lets both sites' flows run against local
+  fixture pages on that origin. Requests cannot change it.
 
 ### X (x.com)
 
 | Method | Params | Result |
 |---|---|---|
-| `x.post` | `text` (1-280 characters), `compose_url?` | `{ok:true}` once X shows its confirmation |
-| `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
+| `x.post` | `text` (1-280 characters), `compose_url?`, `options?: {input?, humanize?}` | `{ok:true}` once X shows its confirmation |
+| `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?`, `options?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
 | `x.login_check` | — | `{loggedIn, platform:"x"}` (composer on the current page; does not navigate) |
 | `x.selfcheck` | — | `{<selector name>: count, ...}` for every entry of the X selector table on the current page (read-only, not paced) |
 
@@ -215,6 +257,9 @@ by the socket yet; they answer -32601.
 - Use a logged-in profile (`--profile-dir`, or import cookies). On a
   logged-out page the flow stops with -32011 and `data.reason =
   "logged_out"`, and nothing is typed.
+- `options: {input: "native", humanize: true}` makes the composer click,
+  the typing, the Post click and the schedule clicks real (trusted,
+  human-paced) input, with the rules of [native input](#native-and-synthetic-input).
 - At most 50 posts and scheduled posts per UTC day; the next one fails with
   -32010 and `data.reason = "x_daily_cap"` without touching the page. Only
   successful posts count.
@@ -342,7 +387,7 @@ channel sends one notification, `automation.ready`.
 |---|---|---|
 | -32700 | Parse error | The frame is not JSON, or is larger than 64 KiB |
 | -32600 | Invalid Request | Not JSON-RPC 2.0, or `id` is an object, array or boolean |
-| -32601 | Method not found | Unknown method (including `linkedin.*`, `instagram.*`) |
+| -32601 | Method not found | Unknown method |
 | -32602 | Invalid params | Missing, unknown or wrong-typed params; `data.reason` explains file problems for `cookies.import` |
 | -32603 | Internal error | Page script exception, malformed page answer, unsupported method |
 | -32000 | Authentication failed | Missing or wrong `auth` token |
@@ -355,8 +400,8 @@ channel sends one notification, `automation.ready`.
 | -32007 | navigation_timeout | Navigation did not finish before the deadline |
 | -32008 | navigation_failed | The load failed |
 | -32009 | action_timeout | Deadline passed (`data.last_error` names the last actionability failure) |
-| -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`) |
-| -32011 | session_invalid | No page or cookie store is available; `logged_out` for `x.*`; `unsupported` when the build has no native input |
+| -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`, `social_daily_cap` for `linkedin.*`/`instagram.*`) |
+| -32011 | session_invalid | No page or cookie store is available; `logged_out` for `x.*`, `linkedin.*`, `instagram.*`; `unsupported` when the build has no native input |
 | -32012 | cancelled | The browser stopped while the command was queued or running |
 
 Errors -32001 to -32012 carry `data.trace_id` and `data.command_id`; the SDKs
