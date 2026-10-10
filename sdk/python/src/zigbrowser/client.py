@@ -285,6 +285,17 @@ class CookiesNamespace:
         return self._client.call("cookies.import", {"path": path, "format": format})
 
 
+def _sidecar_token(socket_path: str) -> str | None:
+    """Per-session token the browser writes next to its socket
+    (<socket>.token, mode 0600) when no --automation-token-file is used."""
+    try:
+        with open(socket_path + ".token", encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return None
+    return token or None
+
+
 class ZigBrowser:
     _id_counter = itertools.count(1)
 
@@ -316,6 +327,8 @@ class ZigBrowser:
                 f"Cannot connect to zigBrowser socket: {e}"
             ) from e
         self._sock = sock
+        if self._token is None:
+            self._token = _sidecar_token(self._socket_path)
 
     def disconnect(self) -> None:
         self._reader_running = False
@@ -436,6 +449,8 @@ class AsyncZigBrowser:
         self._reader, self._writer = await asyncio.open_unix_connection(
             self._socket_path
         )
+        if self._token is None:
+            self._token = _sidecar_token(self._socket_path)
 
     async def disconnect(self) -> None:
         if self._writer:

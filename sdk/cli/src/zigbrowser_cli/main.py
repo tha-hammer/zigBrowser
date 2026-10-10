@@ -69,7 +69,7 @@ def _execute(method, params):
         if e.trace_id:
             click.echo(f"  trace_id: {e.trace_id}", err=True)
             click.echo(
-                f"  Debug: zigbrowser-cli --trace {e.trace_id}", err=True
+                f"  Debug: zigbrowser-cli trace {e.trace_id}", err=True
             )
         raise SystemExit(1)
     except ConnectionError as e:

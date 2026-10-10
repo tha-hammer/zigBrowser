@@ -94,6 +94,21 @@ describe("typed wrappers", () => {
     await zb.disconnect();
   });
 
+  it("reads the token from the <socket>.token sidecar when none is given", async () => {
+    server = await createMockServer();
+    server.setResponse({ jsonrpc: "2.0", result: { ok: true }, id: 1 });
+    fs.writeFileSync(`${server.path}.token`, "sidecar-t0k");
+    try {
+      const zb = new ZigBrowser({ socketPath: server.path });
+      await zb.connect();
+      await zb.page.url();
+      expect(server.lastRequest().auth).toBe("sidecar-t0k");
+      await zb.disconnect();
+    } finally {
+      fs.unlinkSync(`${server.path}.token`);
+    }
+  });
+
   it("selectOption requires exactly one choice", async () => {
     const zb = new ZigBrowser({ socketPath: "/nonexistent" });
     await expect(zb.dom.selectOption("css=#c", {} as never)).rejects.toThrow(/exactly one/);

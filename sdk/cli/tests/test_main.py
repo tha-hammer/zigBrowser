@@ -33,7 +33,8 @@ def test_cli_shows_error_with_trace_id(mock_uds_server, monkeypatch):
     assert result.exit_code == 1
     assert "element_not_found" in result.output
     assert "t-abc123" in result.output
-    assert "zigbrowser-cli --trace t-abc123" in result.output
+    assert "zigbrowser-cli trace t-abc123" in result.output
+    assert "--trace" not in result.output
 
 
 def test_cli_no_socket_env():

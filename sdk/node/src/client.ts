@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import net from "node:net";
 import { AutomationError } from "./errors.js";
 import { CookiesNamespace, DomNamespace, PageNamespace, SocialNamespace } from "./methods.js";
@@ -31,6 +32,16 @@ export class ZigBrowser {
   }
 
   async connect(): Promise<void> {
+    // Per-session token the browser writes next to its socket (mode 0600)
+    // when no --automation-token-file is used.
+    if (this.token === undefined) {
+      try {
+        const sidecar = fs.readFileSync(`${this.socketPath}.token`, "utf-8").trim();
+        if (sidecar) this.token = sidecar;
+      } catch {
+        // no sidecar: unauthenticated server, or an explicit token is required
+      }
+    }
     return new Promise((resolve, reject) => {
       this.socket = net.createConnection(this.socketPath, () => resolve());
       this.socket.on("error", reject);

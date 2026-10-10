@@ -114,3 +114,43 @@ def test_async_client_sends_token(mock_uds_server):
 
     asyncio.run(run())
     assert mock_uds_server.last_request()["auth"] == "t0k"
+
+
+def test_token_is_read_from_the_socket_sidecar_when_not_given(mock_uds_server):
+    sidecar = Path(mock_uds_server.path + ".token")
+    sidecar.write_text("sidecar-t0k")
+    try:
+        mock_uds_server.set_response(OK)
+        with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+            zb.page.url()
+        assert mock_uds_server.last_request()["auth"] == "sidecar-t0k"
+    finally:
+        sidecar.unlink()
+
+
+def test_explicit_token_wins_over_the_sidecar(mock_uds_server):
+    sidecar = Path(mock_uds_server.path + ".token")
+    sidecar.write_text("sidecar-t0k")
+    try:
+        mock_uds_server.set_response(OK)
+        with ZigBrowser(socket_path=mock_uds_server.path, token="explicit") as zb:
+            zb.page.url()
+        assert mock_uds_server.last_request()["auth"] == "explicit"
+    finally:
+        sidecar.unlink()
+
+
+def test_async_client_reads_the_sidecar(mock_uds_server):
+    sidecar = Path(mock_uds_server.path + ".token")
+    sidecar.write_text("async-sidecar")
+    mock_uds_server.set_response(OK)
+
+    async def run():
+        async with AsyncZigBrowser(socket_path=mock_uds_server.path) as zb:
+            await zb.call("page.url")
+
+    try:
+        asyncio.run(run())
+        assert mock_uds_server.last_request()["auth"] == "async-sidecar"
+    finally:
+        sidecar.unlink()
