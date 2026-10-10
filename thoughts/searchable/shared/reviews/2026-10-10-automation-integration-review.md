@@ -119,6 +119,8 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `fe5638e` — completed-click ACK and locate token producer | Exact diff review; clean export with bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 510/510 tests; PARTIAL**. | The queued trusted-click counter runs after non-navigating event dispatch/default activation, closing the mouseup-as-completion implementation defect. Locate now returns the isolated-world document token. Production vtable, token crossing/atomic guard, ACK debt, and socket-chain evidence remain open. SHOULD: make the timestamp proof mutation-sensitive and assert the token in the live test. Mailed cc_1 as message 4570. |
 | `631cd01` — PagePort v3.1 document binding | Exact diff/lifetime/error review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED for engine/interface: 71/71 steps, 514/514 tests; integration blocked**. | The engine owns the token, relocalizes only before progress, terminates after progress (including full-count one-codepoint `DocumentChanged`), preserves IDs, and does not emit token/text telemetry. SHOULD: validate the producer's exact token/C-string shape, test repeated changes through deadline, and make the no-yield/timeout-atomic contract explicit. The live adapter must still prove the contract. Mailed cc_2 as message 4573. |
 | `85424b9` — native PagePort v3.1 adapter and GTK document guard | Exact C/Zig state-machine and production-vtable review; clean export with `timeout 900 xvfb-run -a`, followed by automatic tree deletion | **GREEN gate: 71/71 steps, 514/514 tests; CODE BLOCKED**. | Correctly wires the production vtable, owns the C token copy, checks the token and dispatches without yielding to the GTK loop, waits per code point, preserves a single deadline, and gives completed click dispatch a mutation-sensitive slow-handler proof. BLOCKERS: a guard callback can still dispatch after its waiter returned timeout; baseline/dispatch/settle transactions are not serialized, so one ACK can satisfy two callers; and post-dispatch errors other than Timeout retain no debt. The tests direct-call the adapter rather than traversing the real socket/router/engine/vtable chain. Mailed both owners as message 4575. |
+| `74d7baf` — real-socket trusted-input E2E and implicit submission | Exact production-chain/test-oracle review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED evidence slice: 71/71 steps, 514/514 tests; N7 remains blocked**. | Real socket calls reach native click/type/press through router, engine, and the installed PagePort and prove trusted events, Draft-owned editing, invalid-key mapping, partial-prefix reporting, and debt draining. BLOCKER evidence gap: all typed strings are ASCII, leaving the locale/keymap-sensitive Unicode seam unproved. SHOULD: assert trusted Draft `beforeinput` plus zero `input`; use HTML-reflected button type for implicit-submit default-button detection. The synchronization blockers in `85424b9` remain. Mailed cc_1 as message 4580. |
+| `a4d1dc5` — X totality/budget/queue follow-up | Exact source/test diff review; clean export with bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 520/520 tests; CODE BLOCKED**. | Closes zero-copy pacing, the four-candidate cap, malformed-result stale errors/missing IDs, and the old queue false-pass. BLOCKERS: clearing every failure on any successful substep makes missing-composer and mixed-candidate exhaustion return fabricated `-32603`; waitFor starts with timeout zero when less than native grace remains and can exceed the flow deadline; the queue test still uses a 1.5 s scheduling grace to establish enqueue and can false-fail. SHOULD: the advertised 10 s Post search is checked only between whole rounds and may run to the 120 s flow limit. Mailed cc_2 as message 4581. |
 
 ## Open findings
 
@@ -159,9 +161,11 @@ navigation-token check and dispatch one non-yielding GTK callback, stops text
 after each post-character ACK, and adds initial ACK-debt tracking. Status:
 **OPEN (cc_1 / BlackRobin)** because the callback can still dispatch after its
 waiter returned timeout, complete native transactions are not serialized, and
-ambiguous post-dispatch failures do not retain debt. The real socket path also
-still lacks native click/type/press coverage, including Draft-style cancelled
-`beforeinput`. Agent Mail messages 4545–4549 and 4554–4575.
+ambiguous post-dispatch failures do not retain debt. `74d7baf` closes the basic
+real-socket production-chain gap for ASCII click/type/press, Draft model
+updates, invalid keys, and partial-prefix debt, but does not exercise the three
+synchronization races and has no native Unicode case. Agent Mail messages
+4545–4549 and 4554–4580.
 
 ### BLOCKER — native locate and physical dispatch are not bound to one document
 
@@ -291,14 +295,17 @@ Post button and later clicks a non-strict selector. `visibility:hidden`, zero
 opacity, an overlay, or the first of multiple same-testid elements can make it
 choose a target that the click can never act on while a later target is valid.
 
-Status: **OPEN (cc_2 / BlueBeaver)** after `335031c`. Exact nth-element trial
+Status: **OPEN (cc_2 / BlueBeaver)** after `a4d1dc5`. Exact nth-element trial
 clicks and strict final targeting close the original bbox/non-strict defect,
-including hidden and duplicate fixtures. Three totality gaps remain: query
-rounds with zero copies have no pacing and therefore miss a first button that
-appears late; only four copies per testid are probed; and a malformed successful
-answer after an earlier failed probe still returns the stale failure. With no
-earlier failure, its `-32603` carries neither `trace_id` nor `command_id`.
-Mailed as Agent Mail 4542.
+including hidden and duplicate fixtures. `a4d1dc5` also closes zero-copy
+pacing, the four-copy cap, and malformed-result stale/missing-ID handling.
+However, clearing the recorded failure on every successful substep makes a
+failed composer wait followed by a successful zero-login-link query return a
+fabricated `-32603`; the same happens when an earlier testid's trial fails and
+a later testid query succeeds with zero copies. Preserve the failure until an
+explicit malformed/not-found replacement. The 10-second Post search is also
+checked only between whole query/probe rounds. Mailed as Agent Mail 4542 and
+4581.
 
 ### BLOCKER — X queue E2E does not prove one-turn execution
 
@@ -310,14 +317,16 @@ still passes. Conversely, `handleX` releases the queue ticket before
 can reach its client before the first client records its response and make the
 test fail.
 
-Status: **OPEN (cc_2 / BlueBeaver)** after `335031c`, but materially improved.
-The local HTTP fixture now holds confirmation between two flow steps, and the
-test asserts server request order, successful flow completion, and the final
-raced URL; a deliberately wrong-page queue mutant reportedly fails. The oracle
-still sleeps for a one-second grace after release, so sufficiently delayed
-unqueued dispatch can false-pass and the mutation check is not build-gated.
-Replace the grace with an enqueue/dispatch observation (or automate the mutant)
-before calling the proof deterministic. Mailed as Agent Mail 4542.
+Status: **OPEN (cc_2 / BlueBeaver)** after `a4d1dc5`, but materially improved.
+The local HTTP fixture holds confirmation between two flow steps, and the
+racer now must receive the server's own `queued_past_deadline` reason; this
+prevents the old delayed-unqueued false-pass. The test still has no enqueue
+handshake: it sends the racer and immediately releases the hold, then relies
+on a 1.5-second sleep for the server to parse/enqueue it. A correct build can
+therefore false-fail under scheduler delay. Pair the real-binary scenario with
+a deterministic AutomationApiServer/blocking-PagePort integration that waits
+for the pending queue entry before release. Mailed as Agent Mail 4542,
+4576, and 4581.
 
 ### BLOCKER — native select by label/index mishandles duplicate values
 
