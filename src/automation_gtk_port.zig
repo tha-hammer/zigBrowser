@@ -951,6 +951,9 @@ const FakeAlive = struct {
     fn except(id: c_uint) bool {
         return id != gone;
     }
+    fn onlyOne(id: c_uint) bool {
+        return id == 1;
+    }
 };
 
 test "each window has its own acknowledgement state; a gone window's is dropped" {
@@ -973,6 +976,21 @@ test "each window has its own acknowledgement state; a gone window's is dropped"
     _ = try acksForRun(&table, @ptrFromInt(1), 3, FakeAlive.except);
     try std.testing.expect(table.map.get(2) == null);
     try std.testing.expect(table.map.count() == 1);
+}
+
+test "one lookup drops every gone window's tracker, however many" {
+    var table: Trackers = .{};
+    defer {
+        table.syncGeneration(table.generation +% 1);
+        table.map.deinit(std.heap.c_allocator);
+    }
+    var id: usize = 1;
+    while (id <= 16) : (id += 1) _ = try acksForRun(&table, @ptrFromInt(id), 4, FakeAlive.all);
+    try std.testing.expectEqual(@as(u32, 16), table.map.count());
+    // Windows 2..16 closed: the next lookup (for 1) leaves only window 1.
+    _ = try acksForRun(&table, @ptrFromInt(1), 4, FakeAlive.onlyOne);
+    try std.testing.expectEqual(@as(u32, 1), table.map.count());
+    try std.testing.expect(table.map.get(1) != null);
 }
 
 test "C error codes map onto PortError" {
