@@ -251,6 +251,11 @@ int zb_automation_debug_pointer_lost(void);
  * instead of opening the default dialog. */
 void zb_automation_debug_files_unmatched(int cancel);
 int zb_automation_debug_files_unmatched_hits(void);
+/* Test hooks: choosers cancelled because their job's caller had given up;
+ * block the GTK thread for `ms` at set-files stage 1 (job start, before
+ * its op is sent) or 2 (chooser, before the commit decision); 0 = off. */
+int zb_automation_debug_files_late_cancels(void);
+void zb_automation_debug_files_hold(int stage, unsigned int ms);
 /* Test hook: page-world script each set-files job runs after it is armed
  * and before its op (NULL = off). */
 void zb_automation_debug_files_preclick(const char *page_js);

@@ -305,6 +305,14 @@
     const count = Number(command.count);
     if (!Number.isInteger(count) || count < 1) return failure('malformed_command', command, telemetry, false);
     if (count > 1 && !element.multiple) return failure('not_multiple', command, telemetry, false);
+    // Tell the shell which chooser is ours: the post and the click run in
+    // this one task, so the next chooser it sees is the one opened here.
+    // Without that channel nothing is clicked (no stray native dialog).
+    const shell = globalScope.webkit && globalScope.webkit.messageHandlers &&
+      globalScope.webkit.messageHandlers.zbFiles;
+    if (!shell || typeof command.token !== 'string' || command.token.length === 0) {
+      return failure('files_unavailable', command, telemetry, false);
+    }
     // Answer once the input took the files (its change event) or the
     // chooser was cancelled; choosing the same files again may fire neither.
     const settled = new Promise((resolve) => {
@@ -321,11 +329,7 @@
       element.addEventListener('cancel', onCancel, true);
       timer = setTimeout(() => finish(false), FILES_SETTLE_MS);
     });
-    // Tell the shell which chooser is ours: the post and the click run in
-    // this one task, so the next chooser it sees is the one opened here.
-    const shell = globalScope.webkit && globalScope.webkit.messageHandlers &&
-      globalScope.webkit.messageHandlers.zbFiles;
-    if (shell && typeof command.token === 'string') Promise.resolve(shell.postMessage(command.token)).catch(() => {});
+    Promise.resolve(shell.postMessage(command.token)).catch(() => {});
     element.click();
     return settled.then((changed) => success({ multiple: element.multiple, changed }, telemetry));
   }

@@ -2064,6 +2064,53 @@ const FilesDriver = struct {
         // And the next call works normally.
         rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 5000, &out);
         self.check(rc == c.ZB_AUTO_OK and std.mem.eql(u8, self.log(), "multi:true:a.txt/5"), "a later call sets the file");
+
+        // The files were applied, then the op fails: never a plain,
+        // retryable error.
+        _ = d.eval("window.fileLog = []; return 0;", null);
+        rc = self.set("{}", "globalThis.webkit.messageHandlers.zbFiles.postMessage(JSON.parse(arg).token); document.getElementById('multi').click(); await new Promise(function (r) { setTimeout(r, 300); }); throw new Error('lost');", &both, 5000, &out);
+        self.check(rc == c.ZB_AUTO_ERR_FILES_UNCONFIRMED, "a failure after the files were applied is FILES_UNCONFIRMED");
+        self.check(std.mem.eql(u8, self.log(), "multi:true:a.txt/5,b.bin/8"), "they were applied once");
+
+        // The deadline passes right at the commit (the GTK thread is held
+        // between the chooser and the decision): a plain timeout, nothing
+        // applied, for a fitting and for a too-small chooser.
+        _ = d.eval("window.fileLog = []; return 0;", null);
+        const late_before = c.zb_automation_debug_files_late_cancels();
+        c.zb_automation_debug_files_hold(2, 600);
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 300, &out);
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "a deadline before the commit is a plain timeout");
+        sleepMs(700);
+        rc = self.set("{}", "globalThis.webkit.messageHandlers.zbFiles.postMessage(JSON.parse(arg).token); document.getElementById('one').click(); return JSON.stringify({ ok: true });", &both, 300, &out);
+        c.zb_automation_debug_files_hold(0, 0);
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "a deadline before the single-file refusal is a plain timeout");
+        sleepMs(700);
+        self.check(std.mem.eql(u8, self.log(), ""), "nothing was applied past either deadline");
+        self.check(c.zb_automation_debug_files_late_cancels() == late_before + 2, "both late choosers were cancelled");
+
+        // Production path (no debug cancelling): the caller gives up before
+        // the op even ran; the op's chooser comes later and is cancelled,
+        // never left to the default dialog.
+        c.zb_automation_debug_files_unmatched(0);
+        const unmatched_before_late = c.zb_automation_debug_files_unmatched_hits();
+        const late_before_start = c.zb_automation_debug_files_late_cancels();
+        c.zb_automation_debug_files_hold(1, 600);
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 300, &out);
+        c.zb_automation_debug_files_hold(0, 0);
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "a deadline before the op ran is a plain timeout");
+        var waited: u32 = 0;
+        while (c.zb_automation_debug_files_late_cancels() == late_before_start and waited < 3000) : (waited += 20) sleepMs(20);
+        self.check(c.zb_automation_debug_files_late_cancels() == late_before_start + 1, "the op's late chooser was cancelled");
+        self.check(c.zb_automation_debug_files_unmatched_hits() == unmatched_before_late, "it never reached the default-dialog branch");
+        sleepMs(300);
+        self.check(std.mem.eql(u8, self.log(), ""), "no files after the timeout");
+        c.zb_automation_debug_files_unmatched(1);
+        rc = self.set("{\"op\":\"chooseFiles\",\"selector\":\"css=#multi\",\"count\":1}", handle_body, &one, 5000, &out);
+        self.check(rc == c.ZB_AUTO_OK and std.mem.eql(u8, self.log(), "multi:true:a.txt/5"), "the next call after the tombstone works");
+
+        // Without the shell's token the op refuses before clicking.
+        const bare = d.eval("return JSON.stringify(await globalThis.__zbAutomation.handle({ op: 'chooseFiles', selector: 'css=#multi', count: 1 }));", c.ZB_AUTOMATION_WORLD);
+        self.check(std.mem.indexOf(u8, bare, "files_unavailable") != null, "no token: files_unavailable, nothing clicked");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -2106,3 +2153,4 @@ test "set input files answers the file chooser the input's click opens" {
     try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
     c.zb_automation_loop_mark(1);
 }
+
