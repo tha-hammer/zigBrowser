@@ -501,10 +501,13 @@ pub const Engine = struct {
                 locate_command.locate = .{ .action = action, .focus = command.verb != .dom_click and !command.trial };
                 var located = try self.runDomUntil(gpa, &locate_command, deadline, run);
                 switch (located) {
-                    .failure => {
+                    .failure => |failure| {
                         // Out of time while chasing a document that kept
-                        // changing: report that, not the last locate's timeout.
-                        if (relocated and self.clock.nowMs() >= deadline) {
+                        // changing: the final locate's action_timeout yields
+                        // to that evidence. Any other failure (cancelled,
+                        // internal, session, the script's own not-found)
+                        // is reported as it is.
+                        if (relocated and self.clock.nowMs() >= deadline and failure.code == errors.downstreamCode(.action_timeout)) {
                             located.deinit(gpa);
                             return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
                         }

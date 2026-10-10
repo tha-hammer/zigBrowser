@@ -979,3 +979,43 @@ test "a page that keeps replacing its document: re-locate until the deadline, th
     // Hard deadline: no page call outlives the time it was given.
     try std.testing.expect(h.clock.now_ms <= 1000);
 }
+
+test "after a re-locate, only the final locate's timeout becomes document_changed; other failures stay as they are" {
+    // Timeline (timeout 116): locate 50 ms, native DocumentChanged, 16 ms
+    // pause, re-locate gets the last 50 ms and ends exactly at the deadline.
+    const cases = [_]struct { final: fakes.EvalReply, code: i64, message: []const u8, data: []const u8 }{
+        .{ .final = .{ .err = error.Cancelled }, .code = -32012, .message = "cancelled", .data = "\"trace_id\"" },
+        .{ .final = .{ .err = error.NoPage }, .code = -32011, .message = "session_invalid", .data = "\"trace_id\"" },
+        .{ .final = .{ .err = error.EvalFailed }, .code = -32603, .message = "Evaluation failed", .data = "" },
+        .{ .final = .{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"no_match\"}}" }, .code = -32001, .message = "element_not_found", .data = "\"reason\":\"no_match\"" },
+    };
+    for (cases) |case| {
+        var h: Harness = undefined;
+        h.init();
+        defer h.deinit();
+        h.fake.clock = &h.clock;
+        h.fake.eval_cost_ms = 50;
+        h.fake.eval_replies = &.{ .{ .json = located_reply }, case.final };
+        h.fake.native_fail_at = 0;
+        h.fake.native_error = error.DocumentChanged;
+        var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"timeout_ms\":116}}");
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(u64, 116), h.clock.now_ms);
+        if (case.data.len > 0) try expectFailureData(outcome, case.code, case.message, case.data) else try expectFailure(outcome, case.code, case.message);
+        try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    }
+
+    // The final re-locate's own PagePort Timeout yields to the evidence.
+    var t: Harness = undefined;
+    t.init();
+    defer t.deinit();
+    t.fake.clock = &t.clock;
+    t.fake.eval_cost_ms = 50;
+    t.fake.eval_replies = &.{.{ .json = located_reply }};
+    t.fake.native_fail_at = 0;
+    t.fake.native_error = error.DocumentChanged;
+    var timed_out = try t.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"timeout_ms\":100}}");
+    defer timed_out.deinit(gpa);
+    try expectFailureData(timed_out, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    try std.testing.expectEqual(@as(u64, 100), t.clock.now_ms);
+}

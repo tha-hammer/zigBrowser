@@ -4,7 +4,7 @@ const x = @import("x");
 
 const gpa = std.testing.allocator;
 
-const Step = struct { method: []u8, params: []u8 };
+const Step = struct { method: []u8, params: []u8, at_ms: u64 = 0 };
 
 /// Records every step; answers from a script keyed by method (default {"ok":true}).
 const FakeRunner = struct {
@@ -51,7 +51,7 @@ const FakeRunner = struct {
 
     pub fn run(self: *FakeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         const index = self.steps.items.len;
-        try self.steps.append(gpa, .{ .method = try gpa.dupe(u8, method), .params = try gpa.dupe(u8, params_json) });
+        try self.steps.append(gpa, .{ .method = try gpa.dupe(u8, method), .params = try gpa.dupe(u8, params_json), .at_ms = self.now_ms });
         if (self.fail_at) |i| if (i == index) return null;
         for (self.answers) |a| {
             if (std.mem.eql(u8, a.method, method)) return a.result;
@@ -98,6 +98,9 @@ const ProbeRunner = struct {
     actionable: ?[]const u8 = "xpath=(//*[@data-testid=\"tweetButton\"])[1]",
     /// Trial probes that fail before `actionable` starts passing.
     fail_probes_before: usize = 0,
+    /// A failing trial probe takes its whole timeout (like a real wait for
+    /// actionability) instead of no time.
+    failed_probe_uses_timeout: bool = false,
     probes: usize = 0,
     buf: [1024]u8 = undefined,
 
@@ -117,11 +120,20 @@ const ProbeRunner = struct {
         }
         if (std.mem.eql(u8, method, "dom.click") and std.mem.indexOf(u8, params_json, "\"trial\":true") != null) {
             self.probes += 1;
-            if (self.probes <= self.fail_probes_before) return null;
-            const wanted = self.actionable orelse return null;
-            const quoted = try std.json.Stringify.valueAlloc(gpa, wanted, .{});
-            defer gpa.free(quoted);
-            return if (std.mem.indexOf(u8, params_json, quoted) != null) "{\"ok\":true}" else null;
+            const passed = blk: {
+                if (self.probes <= self.fail_probes_before) break :blk false;
+                const wanted = self.actionable orelse break :blk false;
+                const quoted = try std.json.Stringify.valueAlloc(gpa, wanted, .{});
+                defer gpa.free(quoted);
+                break :blk std.mem.indexOf(u8, params_json, quoted) != null;
+            };
+            if (passed) return "{\"ok\":true}";
+            if (self.failed_probe_uses_timeout) {
+                const parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch @panic("probe params are JSON");
+                defer parsed.deinit();
+                self.inner.now_ms += @intCast(parsed.value.object.get("options").?.object.get("timeout_ms").?.integer);
+            }
+            return null;
         }
         return "{\"ok\":true}";
     }
@@ -457,27 +469,32 @@ test "x.zig never sends a 0 ms deadline (the native page call needs real time)" 
     }
 }
 
-test "the Post search is a hard bound: no query or probe outlives post_button_wait_ms" {
-    var runner = ProbeRunner{ .dialog_copies = 3, .actionable = null };
+test "the Post search is a hard bound: every query and probe ends by the search deadline" {
+    // Failing probes take their whole timeout, so rounds start late in the
+    // search; without the per-step clamps a probe (1 s) or query (5 s)
+    // started near the end would run past the 10 s bound.
+    var runner = ProbeRunner{ .dialog_copies = 3, .actionable = null, .failed_probe_uses_timeout = true };
     defer runner.inner.deinit();
     try std.testing.expect((try x.post(gpa, &runner, .{ .text = "hi" })) == null);
-    // Find where the search started (the first Post query) and check every
-    // later step's timeout ends by its deadline. ProbeRunner advances time
-    // only on pauses, so step start times are the pause sums.
-    var start: ?usize = null;
-    for (runner.inner.steps.items, 0..) |s, i| {
-        if (std.mem.eql(u8, s.method, "dom.query")) {
-            start = i;
-            break;
+    var search_start: ?u64 = null;
+    var checked: usize = 0;
+    for (runner.inner.steps.items) |s| {
+        if (search_start == null) {
+            if (!std.mem.eql(u8, s.method, "dom.query")) continue;
+            search_start = s.at_ms;
         }
-    }
-    try std.testing.expect(start != null);
-    for (runner.inner.steps.items[start.?..]) |s| {
         const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});
         defer parsed.deinit();
         const obj = parsed.value.object;
-        const ms = if (obj.get("timeout_ms")) |t| t.integer else obj.get("options").?.object.get("timeout_ms").?.integer;
-        try std.testing.expect(ms <= x.post_button_wait_ms);
+        const ms: u64 = @intCast(if (obj.get("timeout_ms")) |t| t.integer else obj.get("options").?.object.get("timeout_ms").?.integer);
+        if (s.at_ms + ms > search_start.? + x.post_button_wait_ms) {
+            std.debug.print("{s} at {d} + {d} ms passes the search deadline {d}\n", .{ s.method, s.at_ms, ms, search_start.? + x.post_button_wait_ms });
+            return error.TestUnexpectedResult;
+        }
+        checked += 1;
     }
-    try std.testing.expect(runner.inner.now_ms <= x.post_button_wait_ms);
+    // The search ran into its deadline (steps started close to it).
+    try std.testing.expect(checked > 10);
+    try std.testing.expect(runner.inner.now_ms <= search_start.? + x.post_button_wait_ms);
+    try std.testing.expect(runner.inner.now_ms + 1_000 > search_start.? + x.post_button_wait_ms);
 }
