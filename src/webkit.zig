@@ -353,6 +353,51 @@ const StalledServer = struct {
     }
 };
 
+/// HTTP server for one request: accepts, holds the response for `hold_ms`,
+/// then answers 200 with an empty body. `responded_ms` records when the
+/// response went out (monotonic ms), so a test can order events around it.
+const DelayServer = struct {
+    fd: c_int,
+    port: u16,
+    hold_ms: u64,
+    responded_ms: std.atomic.Value(i64) = .{ .raw = 0 },
+    thread: ?std.Thread = null,
+
+    fn open(hold_ms: u64) !DelayServer {
+        const stalled = try StalledServer.open();
+        return .{ .fd = stalled.fd, .port = stalled.port, .hold_ms = hold_ms };
+    }
+
+    fn start(self: *DelayServer) !void {
+        self.thread = try std.Thread.spawn(.{}, serve, .{self});
+    }
+
+    fn serve(self: *DelayServer) void {
+        const conn = std.c.accept(self.fd, null, null);
+        if (conn < 0) return;
+        defer _ = std.c.close(conn);
+        var req: [2048]u8 = undefined;
+        _ = std.c.read(conn, &req, req.len);
+        sleepMs(self.hold_ms);
+        const reply = "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        self.responded_ms.store(monotonicMs(), .release);
+        _ = std.c.write(conn, reply.ptr, reply.len);
+    }
+
+    fn close(self: *DelayServer) void {
+        _ = std.c.shutdown(self.fd, 2);
+        _ = std.c.close(self.fd);
+        if (self.thread) |t| t.join();
+    }
+};
+
+fn fixtureDelay(buf: []u8, port: u16) []const u8 {
+    return std.fmt.bufPrint(buf,
+        \\<!doctype html><html><head><title>Fixture Delay</title></head><body>
+        \\<p id="msg">Delayed child</p><img src="http://127.0.0.1:{d}/hold.gif"></body></html>
+    , .{port}) catch unreachable;
+}
+
 const fixture_b =
     \\<!doctype html><html><head><title>Fixture B</title></head><body><p id="msg">Page B</p></body></html>
 ;
@@ -363,6 +408,8 @@ const LiveDriver = struct {
     uri_b: [:0]const u8,
     uri_missing: [:0]const u8,
     uri_slow: [:0]const u8,
+    uri_delay: [:0]const u8 = "",
+    delay_server: ?*DelayServer = null,
     pending_eval: ?std.Thread = null,
     pending_eval_rc: std.atomic.Value(c_int) = .{ .raw = -1 },
     pending_cookie: ?std.Thread = null,
@@ -731,9 +778,13 @@ const LiveDriver = struct {
     }
 
     // Explicit child windows wait for their own first load, not the primary's.
+    // The child page's image is held by DelayServer for 800 ms, so the child
+    // is deterministically still loading when the command is issued; the
+    // command may only complete after the server responded.
     fn runChildWindow(self: *LiveDriver) void {
+        const server = self.delay_server orelse return self.check(false, "delay server available");
         var buf: [1024]u8 = undefined;
-        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return;
+        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_delay}) catch return;
         _ = self.eval(null, open_body, null, null, 5000);
         var child: ?*c.ZbWindow = null;
         var waited: u32 = 0;
@@ -746,11 +797,15 @@ const LiveDriver = struct {
         if (child == null) return;
         self.check(c.zb_automation_main_window() != child, "primary window stays the first window");
 
-        // Sent the moment the child exists: it must see the child's real page.
+        const responded_at_issue = server.responded_ms.load(.acquire);
         const title = self.eval(child, "return document.title;", null, c.ZB_AUTOMATION_WORLD, 5000);
-        self.check(eq(title.out, "Fixture B"), "explicit child window op waits for its own first load");
+        const done_ms = monotonicMs();
+        const responded_ms = server.responded_ms.load(.acquire);
+        self.check(responded_at_issue == 0, "child op was issued while the child was still loading");
+        self.check(responded_ms != 0 and done_ms >= responded_ms, "child op completed only after the child's load could finish");
+        self.check(eq(title.out, "Fixture Delay"), "explicit child window op sees the child's real page");
         const text = self.eval(child, "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));", "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", c.ZB_AUTOMATION_WORLD, 5000);
-        self.check(text.out != null and std.mem.indexOf(u8, text.out.?, "Page B") != null, "automation.js is injected into the child window");
+        self.check(text.out != null and std.mem.indexOf(u8, text.out.?, "Delayed child") != null, "automation.js is injected into the child window");
         // (Page-initiated window.close() is not wired in the shim, so the child
         // stays open until teardown; stale pointers are covered by the bogus
         // window check above.)
@@ -879,6 +934,13 @@ test "automation bridge drives a live WebKitGTK page" {
     const slow_html = fixtureSlow(&slow_buf, stalled.port);
     const path_slow = try std.fmt.allocPrintSentinel(arena, "{s}/slow.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path_slow, slow_html.ptr, @intCast(slow_html.len), null) != 0);
+    var delay_server = try DelayServer.open(800);
+    try delay_server.start();
+    defer delay_server.close();
+    var delay_buf: [512]u8 = undefined;
+    const delay_html = fixtureDelay(&delay_buf, delay_server.port);
+    const path_delay = try std.fmt.allocPrintSentinel(arena, "{s}/delay.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_delay, delay_html.ptr, @intCast(delay_html.len), null) != 0);
 
     const uriOf = struct {
         fn f(a: std.mem.Allocator, path: [:0]const u8) ![:0]const u8 {
@@ -894,6 +956,8 @@ test "automation bridge drives a live WebKitGTK page" {
         .uri_b = try uriOf(arena, path_b),
         .uri_missing = try uriOf(arena, path_missing),
         .uri_slow = try uriOf(arena, path_slow),
+        .uri_delay = try uriOf(arena, path_delay),
+        .delay_server = &delay_server,
     };
 
     gtk_port.installScript();

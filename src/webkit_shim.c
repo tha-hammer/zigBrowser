@@ -131,7 +131,7 @@ static void terminate_window_web_process(ZbWindow *win);
 
 /* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
 static void auto_install_script(ZbWindow *win);
-static void auto_publish_primary(ZbApp *app);
+static void auto_publish_windows(ZbApp *app);
 static void auto_window_destroyed(ZbWindow *win);
 static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri);
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
@@ -343,7 +343,7 @@ static void app_remove_window(ZbApp *app, ZbWindow *win) {
     app->windows[app->n_windows - 1] = NULL;
     app->n_windows--;
     app_emit_wincount(app);
-    auto_publish_primary(app);
+    auto_publish_windows(app);
   }
 
   if (app->n_windows == 0 && gtk_main_level() > 0) {
@@ -1000,7 +1000,7 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
 
   app->windows[app->n_windows++] = win;
   app_emit_wincount(app);
-  auto_publish_primary(app);
+  auto_publish_windows(app);
   gtk_widget_show_all(win->gtk_window);
   return win;
 }
@@ -1508,9 +1508,9 @@ static void auto_install_script(ZbWindow *win) {
   g_object_set_data(G_OBJECT(win->ucm), ZB_AUTO_SCRIPT_KEY, GINT_TO_POINTER(1));
 }
 
-/* GTK thread: publish the primary window and whether its first load has
- * ended, for waiters on the server thread. */
-static void auto_publish_primary(ZbApp *app) {
+/* GTK thread: publish the live windows (index 0 = primary) and whether each
+ * one's first load has ended, for waiters on the server thread. */
+static void auto_publish_windows(ZbApp *app) {
   int count = app != NULL ? app->n_windows : 0;
   g_mutex_lock(&zb_auto_mutex);
   zb_auto_pub_count = 0;
@@ -1532,7 +1532,7 @@ static void auto_first_load_done(ZbWindow *win) {
     return;
   }
   win->auto_first_load_done = 1;
-  auto_publish_primary(win->app);
+  auto_publish_windows(win->app);
 }
 
 ZbWindow *zb_automation_window_at(int index) {
@@ -2933,7 +2933,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
 
   auto_drain_async();
   zb_auto_app = NULL;
-  auto_publish_primary(NULL);
+  auto_publish_windows(NULL);
   g_free(app.app_base);
   g_free(app.pending_subwindow_seed_uri);
   app.app_base = NULL;
