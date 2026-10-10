@@ -204,6 +204,20 @@ def run_select(socket_path: Path, t: float) -> None:
     expect_equal("failed selections left the value alone", js("document.getElementById('sel').value"), "a")
     expect_equal("failed selections fired nothing", js("[window.selInputs, window.selChanges]"), [3, 3])
 
+    # Duplicate values: the option chosen by label or index is the selected one.
+    expect_equal("duplicate value by label", rpc("dom.selectOption", {"selector": "css=#dup", "label": "Second"}), {"value": "same"})
+    expect_equal("second duplicate selected", js("document.getElementById('dup').selectedIndex"), 1)
+    expect_equal("duplicate value by index", rpc("dom.selectOption", {"selector": "css=#dup", "index": 0}), {"value": "same"})
+    expect_equal("first duplicate selected", js("document.getElementById('dup').selectedIndex"), 0)
+    expect_equal("duplicate value by index 1", rpc("dom.selectOption", {"selector": "css=#dup", "index": 1}), {"value": "same"})
+    expect_equal("second duplicate selected again", js("document.getElementById('dup').selectedIndex"), 1)
+
+    # An ARIA option under an overlay fails like click does (obscured), unclicked.
+    error = rpc_error(socket_path, "dom.selectOption", {"selector": "css=#covered", "value": "under", "timeout_ms": 300}, next(ids), t)
+    if error["code"] not in (-32004, -32009):
+        raise AssertionError(f"covered option: expected element_obscured/action_timeout, got {error}")
+    expect_equal("covered option never clicked", js("window.coveredClicks"), 0)
+
     # A disabled <select> fails actionability and never changes.
     error = rpc_error(socket_path, "dom.selectOption", {"selector": "css=#sel-disabled", "value": "y", "timeout_ms": 300}, next(ids), t)
     if error["code"] not in (-32005, -32009):

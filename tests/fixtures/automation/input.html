@@ -41,6 +41,20 @@
       <li role="option" data-value="three" aria-selected="false" aria-disabled="true">Three</li>
     </ul>
 
+    <!-- Two options share a value: the chosen one must be the one selected. -->
+    <select id="dup">
+      <option value="same">First</option>
+      <option value="same">Second</option>
+    </select>
+
+    <!-- An option covered by an overlay cannot receive the click. -->
+    <div style="position: relative; display: inline-block">
+      <ul id="covered" role="listbox" style="margin: 0">
+        <li role="option" data-value="under">Under</li>
+      </ul>
+      <div id="cover" style="position: absolute; inset: 0; background: rgba(0,0,0,0.1)"></div>
+    </div>
+
     <select id="sel-disabled" disabled>
       <option value="x">X</option>
       <option value="y">Y</option>
@@ -66,6 +80,10 @@
       window.disabledSelChanges = 0;
       document.getElementById('sel-disabled').addEventListener('change', function () {
         window.disabledSelChanges += 1;
+      });
+      window.coveredClicks = 0;
+      document.querySelector('#covered [role=option]').addEventListener('click', function () {
+        window.coveredClicks += 1;
       });
       window.decoyClicks = 0;
       document.querySelectorAll('#decoy [role=option]').forEach(function (option) {

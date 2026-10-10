@@ -168,11 +168,9 @@
     if (option.matches(':disabled')) return optionDisabled(telemetry);
 
     select.focus();
-    if (select.multiple) {
-      for (const candidate of options) candidate.selected = candidate === option;
-    } else {
-      select.value = option.value;
-    }
+    // Select this exact option: assigning select.value would pick the first
+    // option with the same value when values repeat.
+    for (const candidate of options) candidate.selected = candidate === option;
     select.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     select.dispatchEvent(new Event('change', { bubbles: true }));
     return success({ value: option.value }, telemetry);
@@ -228,6 +226,11 @@
     const option = findAriaOption(container, command);
     if (!option || !isElementVisibleEnough(option)) return failure('no_option', command, telemetry, true);
     if (option.getAttribute('aria-disabled') === 'true') return optionDisabled(telemetry);
+    // The option is clicked, so it must pass the same checks as dom.click.
+    if (typeof option.scrollIntoView === 'function') option.scrollIntoView({ block: 'nearest' });
+    const check = runActionabilityChecks(option, 'click');
+    telemetry.push(actionabilitySpan(command, 'click', check));
+    if (!check.passed) return actionFailure(check.error, check.check, telemetry);
     const value = ariaOptionValue(option);
     synthesizeClick(option);
     return success({ value }, telemetry);
