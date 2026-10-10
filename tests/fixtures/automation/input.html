@@ -19,7 +19,21 @@
       <!-- cancels every keydown: no default action may run -->
       <input id="nokey" name="nokey" />
       <input id="cb" type="checkbox" />
+      <button id="formsubmit" type="submit">Go</button>
     </form>
+
+    <!-- Several text fields and no submit button: Enter must not submit. -->
+    <form id="nosubmit">
+      <input id="ns1" />
+      <input id="ns2" />
+    </form>
+    <script>
+      window.nosubmits = 0;
+      document.getElementById('nosubmit').addEventListener('submit', function (event) {
+        event.preventDefault();
+        window.nosubmits += 1;
+      });
+    </script>
 
     <!-- dom.selectOption: native select, ARIA combobox, ARIA listbox. -->
     <select id="sel">
@@ -73,6 +87,18 @@
       <li role="option" data-value="banana">Banana</li>
       <li role="option" data-value="late">Late</li>
     </ul>
+
+    <!-- Native (trusted) input over the socket. -->
+    <button id="nativebtn">Native</button>
+    <input id="nativein" />
+    <script>
+      window.trustLog = [];
+      ['click', 'keydown'].forEach(function (type) {
+        document.addEventListener(type, function (e) {
+          window.trustLog.push(type + ':' + (e.target.id || e.target.tagName) + ':' + e.isTrusted);
+        }, true);
+      });
+    </script>
 
     <!-- Room to scroll any control out of the viewport. -->
     <div id="spacer" style="height: 3000px"></div>

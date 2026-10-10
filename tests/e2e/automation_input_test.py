@@ -109,6 +109,11 @@ def run_press(socket_path: Path, t: float) -> None:
     expect_equal("Escape event sequence", shape(events, "type", "key", "code", "keyCode", "target"),
                  [("keydown", "Escape", "Escape", 27, "q"), ("keyup", "Escape", "Escape", 27, "q")])
 
+    # Several text fields and no submit button: Enter does not submit
+    # (HTML implicit submission), synthetic and native alike.
+    press({"selector": "css=#ns1", "key": "Enter"})
+    expect_equal("Enter without a default button does not submit", js("window.nosubmits"), 0)
+
     # Modifiers: the target is focused before the first key event.
     events = press({"selector": "css=#q2", "key": "a", "modifiers": ["Control"]})
     expect_equal("Control+a event sequence", shape(events, "type", "key", "code", "keyCode", "ctrl", "target", "active"),
@@ -289,6 +294,62 @@ def run_below_fold(socket_path: Path, t: float) -> None:
     expect_equal("below-the-fold type landed", js("document.getElementById('belowinput').value"), "deeper")
 
 
+def run_native(socket_path: Path, t: float) -> None:
+    ids = iter(range(700, 800))
+    native = {"input": "native"}
+
+    def rpc(method: str, params: dict):
+        return call_rpc(socket_path, method, params, next(ids), t)
+
+    def js(expression: str):
+        return evaluate(socket_path, expression, next(ids), t)
+
+    def trusted(kind: str, target: str) -> list[bool]:
+        return [entry.endswith(":true") for entry in js("window.trustLog") if entry.startswith(f"{kind}:{target}:")]
+
+    # dom.click with real input: the page sees a trusted click.
+    js("(window.trustLog = [], 0)")
+    expect_equal("native click", rpc("dom.click", {"selector": "css=#nativebtn", "options": native}), {"ok": True})
+    expect_equal("native click is trusted", trusted("click", "nativebtn"), [True])
+
+    # dom.type with real keys: trusted keydowns, text appended at the end.
+    js("(function(){var i=document.getElementById('nativein'); i.value='pre'; i.setSelectionRange(0,0); window.trustLog=[]; return 0;})()")
+    expect_equal("native type", rpc("dom.type", {"selector": "css=#nativein", "text": "Hi!", "options": native}), {"ok": True})
+    expect_equal("native type appended", js("document.getElementById('nativein').value"), "preHi!")
+    # Real typing presses Shift for 'H' and '!': Shift, H, i, Shift, !
+    expect_equal("native keydowns are trusted", trusted("keydown", "nativein"), [True] * 5)
+
+    # dom.press with a real key (Enter on a form input submits the form).
+    submits = js("window.submits")
+    expect_equal("native press", rpc("dom.press", {"selector": "css=#q", "key": "Enter", "options": native}), {"ok": True})
+    expect_equal("native Enter submitted the form", js("window.submits"), submits + 1)
+    expect_equal("native press without a default button", rpc("dom.press", {"selector": "css=#ns1", "key": "Enter", "options": native}), {"ok": True})
+    expect_equal("native Enter without a default button does not submit", js("window.nosubmits"), 0)
+
+    # A Draft.js-style editor (cancels beforeinput, owns its model) receives
+    # real typing: the browser's own trusted beforeinput reaches it.
+    js("(window.draftModel = '', document.getElementById('draft').textContent = '', 0)")
+    expect_equal("native type into draft", rpc("dom.type", {"selector": "css=#draft", "text": "Real", "options": native}), {"ok": True})
+    expect_equal("draft model after native type", js("window.draftModel"), "Real")
+
+    # Invalid native key names are rejected before anything is sent.
+    error = rpc_error(socket_path, "dom.press", {"selector": "css=#q", "key": "F1x", "options": native}, next(ids), t)
+    expect_equal("invalid native key", error["code"], -32602)
+
+    # A native type that runs out of time reports partial input, never retypes.
+    js("(document.getElementById('nativein').value = '', 0)")
+    error = rpc_error(socket_path, "dom.type", {"selector": "css=#nativein", "text": "y" * 3000,
+                      "options": dict(native, timeout_ms=300)}, next(ids), t)
+    if error.get("data", {}).get("reason") != "partial_input" or not error["data"].get("sent_chars"):
+        raise AssertionError(f"partial native type: expected partial_input with sent_chars, got {error}")
+    sent = error["data"]["sent_chars"]
+    # The next native command drains the timed-out prefix before it acts.
+    expect_equal("native type after a partial one", rpc("dom.type", {"selector": "css=#nativein", "text": "Z", "options": native}), {"ok": True})
+    value = js("document.getElementById('nativein').value")
+    if value != "y" * sent + "Z":
+        raise AssertionError(f"prefix duplicated or lost: sent {sent}, value length {len(value)}, ends {value[-3:]!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -338,6 +399,9 @@ def main() -> int:
             scenario = "below-the-fold"
             run_below_fold(socket_path, args.timeout_sec)
             print("PASS\tactions scroll targets into view")
+            scenario = "native input"
+            run_native(socket_path, args.timeout_sec)
+            print("PASS\tnative (trusted) input over the socket")
         except Exception as exc:
             print(f"FAIL\t{scenario}")
             eprint(f"error={exc}")

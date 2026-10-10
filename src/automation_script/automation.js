@@ -436,13 +436,35 @@
   function runKeyDefault(target, key, flags) {
     if (key === 'Enter') {
       const tag = target.tagName ? target.tagName.toLowerCase() : '';
-      if (tag === 'input' && target.form) {
-        if (typeof target.form.requestSubmit === 'function') target.form.requestSubmit();
-        else target.form.submit();
-      }
+      if (tag === 'input' && target.form) implicitSubmit(target.form);
     } else if (key === 'Tab') {
       moveFocus(target, flags.shiftKey ? -1 : 1);
     }
+  }
+
+  // HTML implicit submission (Enter in a form field), as a real browser does
+  // it: activate the form's default button; with no default button, submit
+  // only when exactly one field blocks implicit submission.
+  const BLOCKING_INPUT_TYPES = ['text', 'search', 'url', 'tel', 'email', 'password', 'date', 'month',
+    'week', 'time', 'datetime-local', 'number'];
+
+  function implicitSubmit(form) {
+    const controls = Array.from(form.elements);
+    const defaultButton = controls.find((el) => {
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      return (tag === 'button' && (type === '' || type === 'submit')) ||
+        (tag === 'input' && (type === 'submit' || type === 'image'));
+    });
+    if (defaultButton) {
+      if (!isDisabled(defaultButton)) defaultButton.click();
+      return;
+    }
+    const blocking = controls.filter((el) => el.tagName.toLowerCase() === 'input' &&
+      BLOCKING_INPUT_TYPES.includes((el.type || 'text').toLowerCase()));
+    if (blocking.length !== 1) return;
+    if (typeof form.requestSubmit === 'function') form.requestSubmit();
+    else form.submit();
   }
 
   function tabbableElements(doc) {
