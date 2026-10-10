@@ -115,7 +115,9 @@ is non-strict by default.
 ## Waiting, retries and timeouts
 
 - Every command has a deadline, `timeout_ms`, which defaults to 30000.
-  `timeout_ms: 0` means exactly one attempt.
+  The deadline also bounds the page call itself, so keep it to at least a
+  few hundred milliseconds; `timeout_ms: 0` leaves the call almost no time
+  and usually fails with `action_timeout`.
 - If the element is missing or not yet actionable (not visible, moving,
   covered, disabled, read-only), the command is retried every 16 ms until
   the deadline. You rarely need an explicit wait before a click.

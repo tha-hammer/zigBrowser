@@ -265,3 +265,20 @@ test "x method table" {
     try std.testing.expect(x.verbFromMethod("x.delete") == null);
     try std.testing.expect(x.verbFromMethod("dom.click") == null);
 }
+
+test "x.zig never sends a 0 ms deadline (the native page call needs real time)" {
+    var runner = DecoyRunner{};
+    defer runner.inner.deinit();
+    const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
+    defer gpa.free(result);
+    for (runner.inner.steps.items) |step_item| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, step_item.params, .{});
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        const top = if (obj.get("timeout_ms")) |t| t.integer else null;
+        const nested = if (obj.get("options")) |o| if (o.object.get("timeout_ms")) |t| t.integer else null else null;
+        for ([_]?i64{ top, nested }) |maybe| {
+            if (maybe) |ms| try std.testing.expect(ms >= 1000);
+        }
+    }
+}

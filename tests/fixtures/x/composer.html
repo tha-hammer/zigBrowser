@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>X Composer Fixture</title>
+    <!-- Imitates the structure of x.com's composer for src/x.zig flows.
+         ?mode=compose (default): compose page, Post = tweetButton
+         ?mode=home: timeline composer, hidden tweetButton decoy + visible tweetButtonInline
+         ?mode=loggedout: login link, no composer
+         The page records what was posted in window.__xResult. -->
+    <style>
+      body { font-family: sans-serif; margin: 16px; }
+      [data-testid="tweetTextarea_0"] { min-height: 40px; border: 1px solid #999; padding: 4px; }
+      button, [role="button"] { margin: 8px 4px; padding: 6px 12px; }
+      #schedule-dialog[hidden], .gone { display: none; }
+      [data-testid="toast"] { margin-top: 12px; }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script>
+      (function () {
+        var mode = new URLSearchParams(location.search).get('mode') || 'compose';
+        var app = document.getElementById('app');
+        window.__xResult = null;
+        window.__xPosts = 0;
+        window.__xEvents = [];
+
+        if (mode === 'loggedout') {
+          app.innerHTML = '<h1>Happening now</h1><a href="/login">Log in</a> <a href="/i/flow/signup">Sign up</a>';
+          return;
+        }
+
+        app.innerHTML =
+          '<div data-testid="tweetTextarea_0" contenteditable="true" role="textbox" aria-label="Post text"></div>' +
+          '<div>' +
+          '  <div data-testid="scheduleOption" role="button" tabindex="0" aria-label="Schedule post">Schedule</div>' +
+          (mode === 'home'
+            ? '  <button data-testid="tweetButton" class="gone" disabled>Post</button>' +
+              '  <button data-testid="tweetButtonInline" disabled>Post</button>'
+            : '  <button data-testid="tweetButton" disabled>Post</button>') +
+          '</div>' +
+          '<div id="schedule-dialog" role="dialog" aria-label="Schedule" hidden>' +
+          '  <select aria-label="Month"></select><select aria-label="Day"></select><select aria-label="Year"></select>' +
+          '  <select aria-label="Hour"></select><select aria-label="Minute"></select><select aria-label="AM/PM"></select>' +
+          '  <button data-testid="scheduledConfirmationPrimaryAction">Confirm</button>' +
+          '</div>' +
+          '<div id="toasts"></div>';
+
+        function fill(select, values) {
+          values.forEach(function (v) {
+            var o = document.createElement('option');
+            o.value = String(v);
+            o.textContent = String(v);
+            select.appendChild(o);
+          });
+        }
+        function range(a, b) { var r = []; for (var i = a; i <= b; i += 1) r.push(i); return r; }
+        var selects = {};
+        ['Month', 'Day', 'Year', 'Hour', 'Minute', 'AM/PM'].forEach(function (name) {
+          selects[name] = document.querySelector('select[aria-label="' + name + '"]');
+        });
+        fill(selects.Month, range(1, 12));
+        fill(selects.Day, range(1, 31));
+        fill(selects.Year, range(2026, 2028));
+        fill(selects.Hour, range(1, 12));
+        fill(selects.Minute, range(0, 59));
+        fill(selects['AM/PM'], ['AM', 'PM']);
+
+        // Draft.js-like editor: cancels every beforeinput and applies the
+        // edit to its own model. It starts with a restored, unsent draft.
+        var editor = document.querySelector('[data-testid="tweetTextarea_0"]');
+        var model = 'STALE DRAFT';
+        var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]'));
+        function render() {
+          editor.textContent = model;
+          var r = document.createRange();
+          r.selectNodeContents(editor);
+          r.collapse(false);
+          var sel = window.getSelection();
+          if (document.activeElement === editor) {
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+          buttons.forEach(function (b) { b.disabled = model.length === 0; });
+        }
+        editor.addEventListener('beforeinput', function (event) {
+          event.preventDefault();
+          window.__xEvents.push('beforeinput:' + event.inputType);
+          var sel = window.getSelection();
+          var replacingAll = sel.rangeCount > 0 && !sel.isCollapsed && sel.toString() === model;
+          if (event.inputType === 'insertText' || event.inputType === 'insertReplacementText') {
+            model = (replacingAll ? '' : model) + (event.data || '');
+          } else if (event.inputType === 'deleteContentBackward') {
+            model = replacingAll ? '' : model.slice(0, -1);
+          } else if (event.inputType === 'deleteContent' || event.inputType === 'deleteByCut') {
+            if (replacingAll) model = '';
+          }
+          render();
+        });
+        render();
+
+        var schedule = null;
+        document.querySelector('[data-testid="scheduleOption"]').addEventListener('click', function () {
+          document.getElementById('schedule-dialog').hidden = false;
+        });
+        document.querySelector('[data-testid="scheduledConfirmationPrimaryAction"]').addEventListener('click', function () {
+          schedule = {
+            month: selects.Month.value, day: selects.Day.value, year: selects.Year.value,
+            hour: selects.Hour.value, minute: selects.Minute.value, ampm: selects['AM/PM'].value
+          };
+          document.getElementById('schedule-dialog').hidden = true;
+          buttons.forEach(function (b) { b.textContent = 'Schedule'; });
+        });
+        buttons.forEach(function (button) {
+          button.addEventListener('click', function () {
+            if (button.disabled) return;
+            window.__xPosts += 1;
+            window.__xResult = { text: model, scheduled: schedule, button: button.getAttribute('data-testid') };
+            var toast = document.createElement('div');
+            toast.setAttribute('data-testid', 'toast');
+            toast.setAttribute('role', 'alert');
+            toast.textContent = schedule ? 'Your post will be sent' : 'Your post was sent.';
+            document.getElementById('toasts').appendChild(toast);
+            model = '';
+            schedule = null;
+            render();
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -43,6 +43,10 @@ const navigate_timeout_ms = 30_000;
 const composer_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;
+/// dom.query answers at once (an empty list is a valid answer, never
+/// retried); its timeout only bounds the native page call, so it must be a
+/// real duration, not 0.
+const query_timeout_ms = 5_000;
 
 pub const Verb = enum { post, schedule_post, login_check };
 
@@ -158,7 +162,7 @@ fn submit(gpa: std.mem.Allocator, runner: anytype) Error!bool {
 /// query step failed.
 fn pickPostButton(gpa: std.mem.Allocator, runner: anytype) Error!?[]const u8 {
     for (selectors.post_buttons) |candidate| {
-        const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = candidate, .timeout_ms = 0 }, .{});
+        const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = candidate, .timeout_ms = query_timeout_ms }, .{});
         defer gpa.free(params);
         const result = (try runner.run("dom.query", params)) orelse return null;
         if (try hasVisibleElement(gpa, result)) return candidate;
@@ -211,7 +215,7 @@ fn step(gpa: std.mem.Allocator, runner: anytype, method: []const u8, params: any
 /// Number of elements matching `selector` right now (one attempt), or null
 /// when the query itself failed.
 fn countMatches(gpa: std.mem.Allocator, runner: anytype, selector: []const u8) Error!?usize {
-    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = 0 }, .{});
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = query_timeout_ms }, .{});
     defer gpa.free(params);
     const result = (try runner.run("dom.query", params)) orelse return null;
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, result, .{}) catch |err| switch (err) {
