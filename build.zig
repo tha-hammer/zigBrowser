@@ -504,8 +504,8 @@ pub fn build(b: *std.Build) void {
     });
     social_flows_e2e.addArtifactArg(exe);
 
-    // N18: dom.scroll / dom.hover through the Python SDK; offsets read back
-    // in the next command (synthetic; native once the GTK adapter has it).
+    // N18: synthetic dom.scroll / dom.hover through the Python SDK; offsets
+    // read back in the next command.
     const automation_scroll_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -513,6 +513,16 @@ pub fn build(b: *std.Build) void {
         "automation-scroll-e2e",
     });
     automation_scroll_e2e.addArtifactArg(exe);
+
+    // PagePort v3.3/v3.4 on the real GTK adapter: screenshot PNG, file
+    // chooser, native wheel scrolling.
+    const automation_native_ports_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_native_ports_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-native-ports-e2e",
+    });
+    automation_native_ports_e2e.addArtifactArg(exe);
 
     // Input verbs (contenteditable type/fill, ...) against the live page.
     const automation_input_e2e = b.addSystemCommand(&.{
@@ -705,6 +715,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&social_flows_e2e.step);
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_scroll_e2e.step);
+    test_step.dependOn(&automation_native_ports_e2e.step);
     test_step.dependOn(&automation_profile_e2e.step);
     test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);

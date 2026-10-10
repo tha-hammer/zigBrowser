@@ -3,10 +3,9 @@
 Python SDK, on tests/fixtures/automation/scroll.html served locally.
 
 The scroll oracle reads the page's offsets in the very next command after
-dom.scroll returns: the answer and the page must already agree (no
-animation still running). Synthetic scroll and hover always run; the
-native (real wheel) scenario runs with --native. Exit 77 (skip) without a
-binary/display."""
+dom.scroll returns: the answer and the page must already agree. Native
+(real wheel) scrolling is covered by automation_native_ports_test.py.
+Exit 77 (skip) without a binary/display."""
 
 from __future__ import annotations
 
@@ -114,35 +113,11 @@ def synthetic(zb: ZigBrowser) -> list[str]:
     return passed
 
 
-def native(zb: ZigBrowser) -> list[str]:
-    passed: list[str] = []
-    reset(zb)
-    answer = zb.dom.scroll(y=300, input="native")
-    # Read back at once: native scroll returns only after scrolling settled.
-    expect_equal("native scroll by y page", offsets(zb), {"scrollX": answer["scrollX"], "scrollY": answer["scrollY"]})
-    expect_equal("native scroll by y answer", answer["scrollY"], 300)
-    wheels = page(zb, "window.__scroll.wheels")
-    if not wheels or not all(wheels):
-        raise AssertionError(f"native scroll: trusted wheel events expected, got {wheels}")
-    passed.append("native-scroll-by")
-
-    reset(zb)
-    answer = zb.dom.scroll("css=#far", input="native")
-    if not far_in_view(zb):
-        raise AssertionError("native scroll to #far: not in view right after the call")
-    expect_equal("native scroll to #far answer matches page", offsets(zb), answer)
-    if not all(page(zb, "window.__scroll.wheels")):
-        raise AssertionError("native scroll to #far: an untrusted wheel")
-    passed.append("native-scroll-to")
-    return passed
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
     parser.add_argument("--timeout-sec", type=float, default=20.0)
     parser.add_argument("--prefer-xvfb", action="store_true")
-    parser.add_argument("--native", action="store_true", help="also run the real-wheel scenario")
     args = parser.parse_args()
 
     browser = Path(args.binary)
@@ -171,8 +146,6 @@ def main() -> int:
             with ZigBrowser(socket_path=str(socket_path)) as zb:
                 zb.dom.wait_for("css=#far", state="attached", timeout_ms=15000)
                 passed = synthetic(zb)
-                if args.native:
-                    passed += native(zb)
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             print("FAIL\tautomation-scroll")
             eprint(f"error={exc!r}")

@@ -35,6 +35,15 @@ def test_protocol_error_for_standard_codes():
     err = AutomationError.from_rpc_error(rpc_error)
     assert isinstance(err, ProtocolError)
     assert not isinstance(err, AutomationError)
+    assert err.data == {}
+
+
+def test_protocol_error_keeps_its_data():
+    rpc_error = {"code": -32602, "message": "Invalid params", "data": {"reason": "bad_file", "trace_id": "t"}}
+    err = AutomationError.from_rpc_error(rpc_error)
+    assert isinstance(err, ProtocolError)
+    assert err.code == -32602
+    assert err.data["reason"] == "bad_file"
 
 
 ERROR_CODE_MAP = {

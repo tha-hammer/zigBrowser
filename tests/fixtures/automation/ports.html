@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Native Ports Fixture</title>
+    <!-- One page for the PagePort v3.3/v3.4 e2e
+         (tests/e2e/automation_native_ports_test.py):
+           #red     a fixed, solid rgb(255,0,0) block over the top-left
+                    100x100 CSS px (a known screenshot pixel);
+           #f       a hidden single-file input, #multi a multiple one;
+           #far     a target far below the fold.
+         window.__ports records file changes (name, size), clicks on the
+         inputs, and wheel events (isTrusted). -->
+    <style>
+      html, body { margin: 0; background: #fff; }
+      #red { position: fixed; left: 0; top: 0; width: 100px; height: 100px; background: rgb(255, 0, 0); }
+      #inputs { position: absolute; top: 120px; left: 0; }
+      #f { display: none; }
+      #spacer { height: 3000px; }
+      #far { width: 200px; height: 60px; background: #36c; }
+      #tail { height: 3000px; }
+    </style>
+  </head>
+  <body>
+    <div id="red"></div>
+    <div id="inputs"><input id="f" type="file"><input id="multi" type="file" multiple></div>
+    <div id="spacer"></div>
+    <div id="far">far target</div>
+    <div id="tail"></div>
+    <script>
+      (function () {
+        var log = window.__ports = { changes: [], clicks: 0, wheels: [] };
+        ['f', 'multi'].forEach(function (id) {
+          var input = document.getElementById(id);
+          input.addEventListener('click', function () { log.clicks += 1; });
+          input.addEventListener('change', function (e) {
+            log.changes.push({
+              id: id,
+              trusted: e.isTrusted,
+              files: Array.from(input.files).map(function (f) { return { name: f.name, size: f.size }; })
+            });
+          });
+        });
+        window.addEventListener('wheel', function (e) { log.wheels.push(e.isTrusted); }, { capture: true, passive: true });
+      })();
+    </script>
+  </body>
+</html>

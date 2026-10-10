@@ -3,9 +3,14 @@ class ZigBrowserError(Exception):
 
 
 class ProtocolError(ZigBrowserError):
-    def __init__(self, code: int, message: str):
+    """A JSON-RPC error outside the automation range (e.g. -32602 invalid
+    params). `data` is the error's data object (e.g. {"reason": "bad_file"}),
+    or {}."""
+
+    def __init__(self, code: int, message: str, data: dict | None = None):
         self.code = code
         self.message = message
+        self.data = data or {}
         super().__init__(f"JSON-RPC error {code}: {message}")
 
 
@@ -33,7 +38,8 @@ class AutomationError(ZigBrowserError):
         message = rpc_error["message"]
 
         if code not in cls.AUTOMATION_RANGE:
-            return ProtocolError(code, message)
+            data = rpc_error.get("data")
+            return ProtocolError(code, message, data if isinstance(data, dict) else None)
 
         data = dict(rpc_error.get("data", {}))
         trace_id = data.pop("trace_id", None)
