@@ -18,7 +18,7 @@ pub const EvalReply = union(enum) {
 };
 
 pub const NativeCall = struct {
-    kind: enum { click, key, text },
+    kind: enum { click, key, text, move },
     x: f64 = 0,
     y: f64 = 0,
     /// Key name or typed text.
@@ -27,6 +27,8 @@ pub const NativeCall = struct {
     /// The document token the call was bound to (null: none).
     document: ?[]u8 = null,
     timeout_ms: u64,
+    /// Fake clock time when the call started.
+    at_ms: u64 = 0,
 };
 
 pub const FakePagePort = struct {
@@ -63,6 +65,9 @@ pub const FakePagePort = struct {
     /// When set, a successful text call reports this many code points
     /// (simulates a backend that stopped short).
     native_success_sent: ?usize = null,
+    /// Simulated per-window pointer cache: set after a move or click was
+    /// dispatched (not on a failed call).
+    pointer_pos: ?page_port.Point = null,
 
     pub fn init(gpa: std.mem.Allocator) FakePagePort {
         return .{ .gpa = gpa };
@@ -108,6 +113,8 @@ pub const FakePagePort = struct {
         .nativeClick = nativeClick,
         .nativeKey = nativeKey,
         .nativeText = nativeText,
+        .nativeMove = nativeMove,
+        .pointer = pointer,
     };
 
     /// A port with the v2 vtable only (no native input), like a non-GTK
@@ -124,7 +131,9 @@ pub const FakePagePort = struct {
         .title = title,
     };
 
-    fn recordNative(self: *FakePagePort, call: NativeCall) page_port.PortError!?page_port.PortError {
+    fn recordNative(self: *FakePagePort, call_in: NativeCall) page_port.PortError!?page_port.PortError {
+        var call = call_in;
+        call.at_ms = if (self.clock) |clock| clock.now_ms else 0;
         const index = self.native_calls.items.len;
         // Takes ownership of call.data/document, also when the append fails.
         self.native_calls.append(self.gpa, call) catch {
@@ -147,6 +156,29 @@ pub const FakePagePort = struct {
         const self = from(ptr);
         const doc = try self.dupeDocument(document);
         if (try self.recordNative(.{ .kind = .click, .x = x, .y = y, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
+        self.pointer_pos = .{ .x = x, .y = y };
+    }
+
+    fn nativeMove(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) page_port.PortError!void {
+        const self = from(ptr);
+        const doc = try self.dupeDocument(document);
+        if (try self.recordNative(.{ .kind = .move, .x = x, .y = y, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
+        self.pointer_pos = .{ .x = x, .y = y };
+    }
+
+    fn pointer(ptr: *anyopaque) ?page_port.Point {
+        return from(ptr).pointer_pos;
+    }
+
+    /// Native calls of one kind.
+    pub fn nativeOf(self: *const FakePagePort, kind: @FieldType(NativeCall, "kind"), buf: []NativeCall) []NativeCall {
+        var n: usize = 0;
+        for (self.native_calls.items) |call| {
+            if (call.kind != kind) continue;
+            buf[n] = call;
+            n += 1;
+        }
+        return buf[0..n];
     }
 
     fn nativeKey(ptr: *anyopaque, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) page_port.PortError!void {

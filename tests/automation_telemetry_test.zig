@@ -17,7 +17,7 @@ const required_root_attrs = [_][]const u8{
     "backend.version", "os.name",         "arch",            "app.version",               "git.sha",       "automation.script.version",
     "api.version",     "queue.wait_ms",   "duration_ms",     "timeout_ms",                "retry.count",   "result.status",
     "automation.error", "selector.kind",  "selector.hash",   "selector.strict",           "selector.match_count", "action.name",
-    "action.force",    "action.trial",    "input.mode",
+    "action.force",    "action.trial",    "input.mode",    "input.humanize",
 };
 
 const required_platform_attrs = [_][]const u8{
@@ -539,6 +539,7 @@ test "native input is visible on the root span as input.mode=native" {
     defer outcome.deinit(gpa);
     const root = try h.root();
     try std.testing.expectEqualStrings("native", root.attr("input.mode").?);
+    try std.testing.expectEqualStrings("false", root.attr("input.humanize").?);
     var saw_native_span = false;
     for (h.sink.spans.items) |span| {
         const op = span.attr("page_port.op") orelse continue;

@@ -73,6 +73,9 @@ pub const ParsedCommand = struct {
     /// dom.selectOption: 0-based option index.
     option_index: ?u64 = null,
     input: InputMode = .synthetic,
+    /// `options.humanize` (N8): human-like timing and pointer paths for
+    /// native click/type/press; the engine owns the schedule.
+    humanize: bool = false,
     locate: ?Locate = null,
 
     pub fn deinit(self: *ParsedCommand) void {
@@ -197,8 +200,12 @@ pub fn parse(
     switch (verb) {
         .dom_click, .dom_type => if (input == .native and command.force) return error.BadArgs,
         .dom_press => if (hasOption(obj, "force") or hasOption(obj, "trial")) return error.BadArgs,
-        else => if (hasOption(obj, "input")) return error.BadArgs,
+        else => if (hasOption(obj, "input") or hasOption(obj, "humanize")) return error.BadArgs,
     }
+    // humanize: native input only (synthetic events have no pointer path)
+    // and never with delay_ms (humanize owns the timing).
+    command.humanize = humanizeOption(obj) catch return error.BadArgs;
+    if (command.humanize and (input != .native or command.delay_ms != null)) return error.BadArgs;
 
     command.arena = arena;
 
@@ -382,6 +389,14 @@ fn parseInputMode(obj: std.json.ObjectMap) error{BadArgs}!InputMode {
     if (std.mem.eql(u8, text, "synthetic")) return .synthetic;
     if (std.mem.eql(u8, text, "native")) return .native;
     return error.BadArgs;
+}
+
+fn humanizeOption(obj: std.json.ObjectMap) error{BadArgs}!bool {
+    const options = obj.get("options") orelse return false;
+    return switch (options) {
+        .object => |object| optionalBool(object, "humanize", false) catch error.BadArgs,
+        else => error.BadArgs,
+    };
 }
 
 fn hasOption(obj: std.json.ObjectMap, key: []const u8) bool {

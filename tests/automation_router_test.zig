@@ -283,3 +283,40 @@ test "options.input only exists on click/type/press (presence elsewhere is BadAr
     defer forced_synthetic.deinit();
     try std.testing.expect(forced_synthetic.force);
 }
+
+test "options.humanize: native click/type/press only, never with delay_ms or synthetic input" {
+    const allocator = std.testing.allocator;
+    for ([_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+        .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"Enter\",\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+    }) |case| {
+        var command = try router.parse(allocator, case.method, case.params, .{});
+        defer command.deinit();
+        try std.testing.expect(command.humanize);
+    }
+    var off = try router.parse(allocator, "dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":false}}", .{});
+    defer off.deinit();
+    try std.testing.expect(!off.humanize);
+
+    for ([_]struct { method: []const u8, params: []const u8 }{
+        // synthetic (explicit or default) + humanize
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"humanize\":true}}" },
+        .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"synthetic\",\"humanize\":true}}" },
+        // delay_ms + humanize
+        .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"delay_ms\":40,\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+        // wrong type
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":1}}" },
+        // other methods
+        .{ .method = "dom.fill", .params = "{\"selector\":\"css=#q\",\"value\":\"x\",\"options\":{\"humanize\":false}}" },
+        .{ .method = "dom.query", .params = "{\"selector\":\"css=#q\",\"options\":{\"humanize\":true}}" },
+    }) |case| {
+        var accepted = router.parse(allocator, case.method, case.params, .{}) catch |err| {
+            try std.testing.expectEqual(error.BadArgs, err);
+            continue;
+        };
+        accepted.deinit();
+        std.debug.print("accepted {s} {s}\n", .{ case.method, case.params });
+        return error.TestUnexpectedResult;
+    }
+}

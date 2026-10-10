@@ -1041,3 +1041,205 @@ test "after a re-locate, real evidence from the new document is kept (element_ob
     try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
     try std.testing.expect(h.clock.now_ms <= 200);
 }
+
+// ---- N8: humanized native input (orchestrator's 5 rules) ----
+
+const NativeCall = fakes.NativeCall;
+/// Target at (500, 400) in a 1000x800 viewport: an 80-240 px start never
+/// needs clamping.
+const human_located = "{\"ok\":true,\"value\":{\"x\":500,\"y\":400,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":1000,\"height\":800}}}";
+
+const HumanHarness = struct {
+    h: Harness,
+    prng: std.Random.DefaultPrng,
+
+    fn init(self: *HumanHarness, seed: u64) void {
+        self.h.init();
+        self.h.fake.clock = &self.h.clock;
+        self.h.fake.eval_replies = &.{.{ .json = human_located }};
+        self.prng = std.Random.DefaultPrng.init(seed);
+        self.h.engine.random = self.prng.random();
+    }
+
+    fn deinit(self: *HumanHarness) void {
+        self.h.deinit();
+    }
+};
+
+fn dist(a: NativeCall, x: f64, y: f64) f64 {
+    return @sqrt((a.x - x) * (a.x - x) + (a.y - y) * (a.y - y));
+}
+
+test "humanized click: unknown pointer starts 80-240 px off target in view, curved moves end on the target, then one click" {
+    var hh: HumanHarness = undefined;
+    hh.init(7);
+    defer hh.deinit();
+    const h = &hh.h;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+
+    var buf: [256]NativeCall = undefined;
+    const moves = h.fake.nativeOf(.move, &buf);
+    try std.testing.expect(moves.len >= 10);
+    const start = moves[0];
+    const start_distance = dist(start, 500, 400);
+    try std.testing.expect(start_distance >= 80 - 1e-9 and start_distance <= 240 + 1e-9);
+    try std.testing.expect(start.x >= 0 and start.x <= 999 and start.y >= 0 and start.y <= 799);
+    try std.testing.expect(dist(moves[moves.len - 1], 500, 400) < 1e-6);
+    for (moves) |m| try std.testing.expectEqualStrings("0123456789abcdef", m.document.?);
+    // The click is the last call, at the target, after every move.
+    const calls = h.fake.native_calls.items;
+    try std.testing.expect(calls[calls.len - 1].kind == .click);
+    try std.testing.expectEqual(@as(usize, moves.len + 1), calls.len);
+    try std.testing.expectEqual(@as(f64, 500), calls[calls.len - 1].x);
+    // Moves are paced (time passes between first move and click).
+    try std.testing.expect(calls[calls.len - 1].at_ms > start.at_ms);
+    // The window's pointer cache now holds the target.
+    try std.testing.expectEqual(@as(f64, 400), h.fake.pointer_pos.?.y);
+}
+
+test "humanized click starts from the window's cached pointer position" {
+    var hh: HumanHarness = undefined;
+    hh.init(11);
+    defer hh.deinit();
+    hh.h.fake.pointer_pos = .{ .x = 5, .y = 7 };
+    var outcome = try hh.h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    const first = hh.h.fake.native_calls.items[0];
+    try std.testing.expect(first.kind == .move);
+    try std.testing.expectEqual(@as(f64, 5), first.x);
+    try std.testing.expectEqual(@as(f64, 7), first.y);
+}
+
+test "humanize schedule that does not fit the deadline fails before any dispatch (humanize_budget)" {
+    for ([_][]const u8{
+        "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true,\"timeout_ms\":120}}",
+    }) |params| {
+        var hh: HumanHarness = undefined;
+        hh.init(3);
+        defer hh.deinit();
+        var outcome = try hh.h.run("dom.click", params);
+        defer outcome.deinit(gpa);
+        try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"humanize_budget\"");
+        try std.testing.expectEqual(@as(usize, 0), hh.h.fake.native_calls.items.len);
+    }
+    // Typing: 11 characters need at least 10 x 80 ms (+ a word pause).
+    var t: HumanHarness = undefined;
+    t.init(3);
+    defer t.deinit();
+    var typed = try t.h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"hello world\",\"options\":{\"input\":\"native\",\"humanize\":true,\"timeout_ms\":800}}");
+    defer typed.deinit(gpa);
+    try expectFailureData(typed, -32009, "action_timeout", "\"reason\":\"humanize_budget\"");
+    try std.testing.expectEqual(@as(usize, 0), t.h.fake.native_calls.items.len);
+    // Not compressed: the clock did not move past the locate.
+    try std.testing.expectEqual(@as(usize, 0), t.h.clock.sleeps.items.len);
+}
+
+test "document change after a dispatched move is terminal: no re-locate, no click, pointer stays at the last dispatched move" {
+    var hh: HumanHarness = undefined;
+    hh.init(5);
+    defer hh.deinit();
+    const h = &hh.h;
+    h.fake.native_fail_at = 3;
+    h.fake.native_error = error.DocumentChanged;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 4), h.fake.native_calls.items.len);
+    for (h.fake.native_calls.items) |c| try std.testing.expect(c.kind == .move);
+    const last_sent = h.fake.native_calls.items[2];
+    try std.testing.expectEqual(last_sent.x, h.fake.pointer_pos.?.x);
+    try std.testing.expectEqual(last_sent.y, h.fake.pointer_pos.?.y);
+}
+
+test "document change on the first move (nothing dispatched yet) re-locates" {
+    var hh: HumanHarness = undefined;
+    hh.init(9);
+    defer hh.deinit();
+    const h = &hh.h;
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.DocumentChanged;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
+}
+
+test "humanized type: one code point per call, gaps within the typing profile (80-200 ms, 300-600 ms before a space)" {
+    var hh: HumanHarness = undefined;
+    hh.init(13);
+    defer hh.deinit();
+    const h = &hh.h;
+    const text = "héllo wörld";
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"héllo wörld\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    const calls = h.fake.native_calls.items;
+    try std.testing.expectEqual(try std.unicode.utf8CountCodepoints(text), calls.len);
+    var typed: [32]u8 = undefined;
+    try std.testing.expectEqualStrings(text, h.fake.nativeTyped(&typed));
+    for (calls[1..], 1..) |c, i| {
+        const gap = c.at_ms - calls[i - 1].at_ms;
+        if (std.mem.eql(u8, c.data, " ")) {
+            try std.testing.expect(gap >= 300 and gap <= 600);
+        } else {
+            try std.testing.expect(gap >= 80 and gap <= 200);
+        }
+    }
+}
+
+test "humanized press: one profile dwell, then the key" {
+    var hh: HumanHarness = undefined;
+    hh.init(17);
+    defer hh.deinit();
+    var outcome = try hh.h.run("dom.press", "{\"key\":\"Enter\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    try std.testing.expectEqual(@as(usize, 1), hh.h.fake.native_calls.items.len);
+    const at = hh.h.fake.native_calls.items[0].at_ms;
+    try std.testing.expect(at >= 80 and at <= 200);
+}
+
+test "an injected seed makes the humanized schedule deterministic" {
+    var runs: [2][64]NativeCall = undefined;
+    var lens: [2]usize = undefined;
+    for (0..2) |r| {
+        var hh: HumanHarness = undefined;
+        hh.init(42);
+        defer hh.deinit();
+        var outcome = try hh.h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+        defer outcome.deinit(gpa);
+        lens[r] = hh.h.fake.native_calls.items.len;
+        for (hh.h.fake.native_calls.items, 0..) |c, i| runs[r][i] = .{ .kind = c.kind, .x = c.x, .y = c.y, .timeout_ms = 0, .at_ms = c.at_ms };
+    }
+    try std.testing.expectEqual(lens[0], lens[1]);
+    for (runs[0][0..lens[0]], runs[1][0..lens[1]]) |a, b| {
+        try std.testing.expectEqual(a.x, b.x);
+        try std.testing.expectEqual(a.at_ms, b.at_ms);
+    }
+}
+
+test "humanized click without a known pointer needs the viewport: missing viewport is malformed, nothing sent" {
+    var hh: HumanHarness = undefined;
+    hh.init(1);
+    defer hh.deinit();
+    hh.h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var outcome = try hh.h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32603, "Malformed script result");
+    try std.testing.expectEqual(@as(usize, 0), hh.h.fake.native_calls.items.len);
+}
+
+test "production humanize (no injected RNG) seeds from OS entropy and runs" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_replies = &.{.{ .json = human_located }};
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+}

@@ -49,6 +49,9 @@ pub const PortError = error{
     DocumentChanged,
 };
 
+/// A viewport point in CSS px (native input, pointer cache).
+pub const Point = struct { x: f64, y: f64 };
+
 /// Native key modifier bits (PagePort.nativeKey).
 pub const modifier_shift: u8 = 1 << 0;
 pub const modifier_control: u8 = 1 << 1;
@@ -107,6 +110,17 @@ pub const PagePort = struct {
         /// acknowledgement shows a new document, it stops and returns
         /// DocumentChanged (even when every requested code point was sent).
         nativeText: *const fn (ptr: *anyopaque, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) PortError!void = unsupportedText,
+
+        // --- v3.2 (N8 humanize) ---
+
+        /// One real pointer-motion event to viewport CSS px, guarded by
+        /// `document` like nativeClick (DocumentChanged: nothing sent). No
+        /// click, no ack. Updates the window's pointer cache once dispatched.
+        nativeMove: *const fn (ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void = unsupportedMove,
+        /// Last pointer position actually dispatched to this window (a move
+        /// or a click), or null if none yet. Reads a cache only: no page
+        /// call, no deadline.
+        pointer: *const fn (ptr: *anyopaque) ?Point = unknownPointer,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -147,6 +161,14 @@ pub const PagePort = struct {
         sent_chars.* = 0;
         return self.vtable.nativeText(self.ptr, text, document, timeout_ms, sent_chars);
     }
+
+    pub fn nativeMove(self: PagePort, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+        return self.vtable.nativeMove(self.ptr, x, y, document, timeout_ms);
+    }
+
+    pub fn pointer(self: PagePort) ?Point {
+        return self.vtable.pointer(self.ptr);
+    }
 };
 
 fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
@@ -158,6 +180,12 @@ fn unsupportedKey(_: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) P
 fn unsupportedText(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64, sent_chars: *usize) PortError!void {
     sent_chars.* = 0;
     return error.Unsupported;
+}
+fn unsupportedMove(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
+    return error.Unsupported;
+}
+fn unknownPointer(_: *anyopaque) ?Point {
+    return null;
 }
 
 /// Port for a server with no page attached (a backend without a PagePort,
@@ -178,6 +206,8 @@ const no_page_vtable = PagePort.VTable{
     .nativeClick = noPageClick,
     .nativeKey = noPageKey,
     .nativeText = noPageText,
+    .nativeMove = unsupportedMove,
+    .pointer = unknownPointer,
 };
 
 fn noPageEval(_: *anyopaque, _: std.mem.Allocator, _: World, _: []const u8, _: []const u8, _: u64) PortError![]u8 {

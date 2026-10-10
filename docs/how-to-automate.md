@@ -285,6 +285,17 @@ build only, elsewhere -32011 with `data.reason = "unsupported"`):
   newline submitted a form) reports `data.reason = "partial_input"` and
   `data.sent_chars`: that many characters were typed and the rest were not.
   Do not retype the whole text.
+- `options: {input: "native", humanize: true}` adds human-like timing:
+  `dom.click` moves the pointer along a curved path (from where the last
+  native move or click left it, or from a random point 80-240 px away)
+  and pauses before clicking; `dom.type` waits 80-200 ms between
+  characters and 300-600 ms before a space; `dom.press` waits once before
+  the key. The whole schedule is planned first: if it does not fit the
+  deadline the command fails with -32009 and `data.reason =
+  "humanize_budget"` before any input (raise `timeout_ms`). `humanize`
+  needs native input and cannot be combined with `delay_ms` (-32602). If
+  the page navigates after the pointer started moving, the command stops
+  with -32001 `document_changed` and does not click the new page.
 
 ## Import cookies from another browser
 

@@ -9,6 +9,8 @@ const router = @import("router.zig");
 const page_port = @import("page_port.zig");
 const script_command = @import("script_command.zig");
 const telemetry = @import("telemetry.zig");
+const bezier = @import("bezier.zig");
+const gaussian = @import("gaussian.zig");
 
 pub const default_timeout_ms: u64 = 30000;
 
@@ -233,6 +235,10 @@ pub const Engine = struct {
     port: page_port.PagePort,
     clock: Clock,
     next_command_id: std.atomic.Value(u64) = .init(1),
+    /// N8 humanize randomness. Null in production: each humanized command
+    /// gets a ChaCha CSPRNG seeded from OS entropy. Tests inject a seeded
+    /// generator here for deterministic schedules.
+    random: ?std.Random = null,
 
     pub fn init(port: page_port.PagePort, clock: Clock) Engine {
         return .{ .port = port, .clock = clock };
@@ -506,6 +512,9 @@ pub const Engine = struct {
         };
         // A backend without native input says so before any page work.
         if (!self.port.supportsNativeInput()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
+        var csprng: std.Random.DefaultCsprng = undefined;
+        const random: ?std.Random = if (command.humanize) (self.humanizeRandom(&csprng) orelse
+            return .{ .failure = .{ .code = internal_error_code, .message = "No entropy for humanize" } }) else null;
         var relocated = false;
         while (true) {
             var target: Target = .{};
@@ -539,10 +548,15 @@ pub const Engine = struct {
             if (run.cancelled()) return automationFailure(gpa, .cancelled, null, run.ids);
             if (relocated and self.clock.nowMs() >= deadline) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
 
-            const step: NativeStep = switch (command.verb) {
+            const step: NativeStep = if (random) |r| switch (command.verb) {
+                .dom_click => try self.humanClick(gpa, r, &target, deadline, run),
+                .dom_press => try self.humanPress(gpa, r, command, &target, deadline, run),
+                .dom_type => try self.humanType(gpa, r, command, &target, deadline, run),
+                else => unreachable,
+            } else switch (command.verb) {
                 .dom_click => try self.nativeSingle(gpa, .click, command, &target, deadline, run),
                 .dom_press => try self.nativeSingle(gpa, .key, command, &target, deadline, run),
-                .dom_type => try self.nativeType(gpa, command, &target, deadline, run),
+                .dom_type => try self.nativeType(gpa, command, &target, deadline, run, null),
                 else => unreachable,
             };
             switch (step) {
@@ -594,19 +608,22 @@ pub const Engine = struct {
     /// bound to the located document. Progress is counted in code points; a
     /// failure after any was sent is terminal `partial_input` with
     /// `sent_chars`, and nothing is retyped.
-    fn nativeType(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+    /// `delays`: per-code-point pause before each character (humanize);
+    /// null uses `delay_ms` between characters.
+    fn nativeType(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, target: *const Target, deadline: u64, run: *Run, delays: ?[]const u64) error{OutOfMemory}!NativeStep {
         const text = command.text.?;
         if (text.len == 0) return .{ .done = try okResult(gpa) };
-        const delay_ms = command.delay_ms orelse 0;
         var sent_total: usize = 0;
-        if (delay_ms == 0) {
+        if (delays == null and (command.delay_ms orelse 0) == 0) {
             const step = try self.nativeTextCall(gpa, text, target, deadline, run, &sent_total);
             return step orelse .{ .done = try okResult(gpa) };
         }
         var characters = (std.unicode.Utf8View.init(text) catch return .{ .done = malformedResult() }).iterator();
         var first = true;
-        while (characters.nextCodepointSlice()) |character| {
+        var index: usize = 0;
+        while (characters.nextCodepointSlice()) |character| : (index += 1) {
             if (!first) {
+                const delay_ms = if (delays) |d| d[index] else command.delay_ms.?;
                 if (self.clock.nowMs() +| delay_ms >= deadline) {
                     return .{ .done = try partialInput(gpa, .action_timeout, "type_delay_exceeds_timeout", sent_total, run) };
                 }
@@ -616,6 +633,91 @@ pub const Engine = struct {
             if (try self.nativeTextCall(gpa, character, target, deadline, run, &sent_total)) |step| return step;
         }
         return .{ .done = try okResult(gpa) };
+    }
+
+    // ---- N8 humanize ----
+    //
+    // The whole schedule (path steps, dwell, key delays) is computed before
+    // anything is dispatched; if it does not fit the remaining deadline the
+    // command fails with action_timeout reason "humanize_budget" and sends
+    // nothing. Delays are never compressed.
+
+    fn humanizeRandom(self: *Engine, csprng: *std.Random.DefaultCsprng) ?std.Random {
+        if (self.random) |r| return r;
+        var seed: [std.Random.DefaultCsprng.secret_seed_length]u8 = undefined;
+        std.Io.Threaded.global_single_threaded.io().randomSecure(&seed) catch return null;
+        csprng.* = .init(seed);
+        return csprng.random();
+    }
+
+    /// Pointer path from the window's last dispatched pointer position (or
+    /// an off-target in-viewport start), dwell, then the click. A document
+    /// change before the first move re-locates; after any move it is
+    /// terminal (no re-locate, no click in the new document).
+    fn humanClick(self: *Engine, gpa: std.mem.Allocator, random: std.Random, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+        const goal = page_port.Point{ .x = target.x, .y = target.y };
+        const start = self.port.pointer() orelse (offTargetStart(random, target) orelse return .{ .done = malformedResult() });
+        const path = bezier.generateMousePath(gpa, random, .{ .x = start.x, .y = start.y }, .{ .x = goal.x, .y = goal.y }, .default()) catch return error.OutOfMemory;
+        defer gpa.free(path.points);
+        const gaps = path.points.len - 1;
+        const step_ms: u64 = if (gaps == 0) 0 else ceilMs(path.duration_ms / @as(f64, @floatFromInt(gaps)));
+        const dwell_ms = ceilMs(path.dwell_ms);
+        if (self.clock.nowMs() +| (step_ms *| gaps) +| dwell_ms >= deadline) {
+            return .{ .done = try timeoutWithReason(gpa, .action_timeout, "humanize_budget", run.ids, run.attempts) };
+        }
+        for (path.points, 0..) |point, i| {
+            if (i > 0 and !self.sleepUnlessCancelled(step_ms, run)) return .{ .done = try automationFailure(gpa, .cancelled, null, run.ids) };
+            const remaining = deadline -| self.clock.nowMs();
+            if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };
+            run.native_timeout_ms = remaining;
+            const started = self.clock.nowMs();
+            self.port.nativeMove(point.x, point.y, target.document(), remaining) catch |err| {
+                self.platformSpan(run, "nativeMove", null, 0, 0, started, @errorName(err));
+                if (err == error.DocumentChanged) {
+                    if (i == 0) return .relocate;
+                    return .{ .done = try automationFailure(gpa, .element_not_found, "document_changed", run.ids) };
+                }
+                return .{ .done = try portFailure(gpa, err, .action, run.ids) };
+            };
+            self.platformSpan(run, "nativeMove", null, 0, 0, started, "ok");
+        }
+        if (!self.sleepUnlessCancelled(dwell_ms, run)) return .{ .done = try automationFailure(gpa, .cancelled, null, run.ids) };
+        const remaining = deadline -| self.clock.nowMs();
+        if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };
+        run.native_timeout_ms = remaining;
+        const started = self.clock.nowMs();
+        self.port.nativeClick(goal.x, goal.y, target.document(), remaining) catch |err| {
+            self.platformSpan(run, "nativeClick", null, 0, 0, started, @errorName(err));
+            if (err == error.DocumentChanged) return .{ .done = try automationFailure(gpa, .element_not_found, "document_changed", run.ids) };
+            return .{ .done = try portFailure(gpa, err, .action, run.ids) };
+        };
+        self.platformSpan(run, "nativeClick", null, 0, 0, started, "ok");
+        return .{ .done = try okResult(gpa) };
+    }
+
+    /// Per-code-point key delays from the typing profile (80-200 ms, word
+    /// pauses 300-600 ms before a space), all scheduled up front.
+    fn humanType(self: *Engine, gpa: std.mem.Allocator, random: std.Random, command: *const router.ParsedCommand, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+        const text = command.text.?;
+        const delays = (try humanTypingDelays(gpa, random, text)) orelse return .{ .done = malformedResult() };
+        defer gpa.free(delays);
+        var planned: u64 = 0;
+        for (delays[@min(1, delays.len)..]) |ms| planned +|= ms;
+        if (self.clock.nowMs() +| planned >= deadline) {
+            return .{ .done = try timeoutWithReason(gpa, .action_timeout, "humanize_budget", run.ids, run.attempts) };
+        }
+        return self.nativeType(gpa, command, target, deadline, run, delays);
+    }
+
+    /// One key-delay dwell, then the key.
+    fn humanPress(self: *Engine, gpa: std.mem.Allocator, random: std.Random, command: *const router.ParsedCommand, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+        const profile = gaussian.TypingProfile.default();
+        const dwell_ms = ceilMs(gaussian.sampleClamped(random, profile.mu_ms, profile.sigma_ms, profile.min_ms, profile.max_ms));
+        if (self.clock.nowMs() +| dwell_ms >= deadline) {
+            return .{ .done = try timeoutWithReason(gpa, .action_timeout, "humanize_budget", run.ids, run.attempts) };
+        }
+        if (!self.sleepUnlessCancelled(dwell_ms, run)) return .{ .done = try automationFailure(gpa, .cancelled, null, run.ids) };
+        return self.nativeSingle(gpa, .key, command, target, deadline, run);
     }
 
     /// One PagePort.nativeText call with the remaining deadline. Returns
@@ -748,6 +850,7 @@ const RootFacts = struct {
     action_force: bool = false,
     action_trial: bool = false,
     input_mode: router.InputMode = .synthetic,
+    input_humanize: bool = false,
     timeout_ms: u64,
 };
 
@@ -763,6 +866,7 @@ fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions,
         .action_force = command.force,
         .action_trial = command.trial,
         .input_mode = command.input,
+        .input_humanize = command.humanize,
         .timeout_ms = commandTimeout(command),
     }, options, run, outcome, duration_ms);
 }
@@ -788,6 +892,7 @@ fn recordRoot(facts: RootFacts, options: ExecuteOptions, run: *const Run, outcom
         .action_force = facts.action_force,
         .action_trial = facts.action_trial,
         .input_mode = @tagName(facts.input_mode),
+        .input_humanize = facts.input_humanize,
         .selector_match_count = run.matchCount(),
         .build = options.build,
         .timeout_ms = facts.timeout_ms,
@@ -1001,10 +1106,13 @@ fn deadlineFailure(gpa: std.mem.Allocator, last: *const LastFailure, ids: script
 }
 
 /// Where native input goes: the located centre and the token of the
-/// document it was located in (none for dom.press without a selector).
+/// document it was located in (none for dom.press without a selector),
+/// plus the viewport size when the locate op reported it (0 = unknown).
 const Target = struct {
     x: f64 = 0,
     y: f64 = 0,
+    viewport_width: f64 = 0,
+    viewport_height: f64 = 0,
     document_buf: [max_document_token_len]u8 = undefined,
     document_len: usize = 0,
 
@@ -1037,7 +1145,71 @@ fn parseTarget(gpa: std.mem.Allocator, json: []const u8, target: *Target) bool {
     for (token) |c| if (!std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
     @memcpy(target.document_buf[0..token.len], token);
     target.document_len = token.len;
+    if (object.get("viewport")) |viewport_value| {
+        const viewport = switch (viewport_value) {
+            .object => |o| o,
+            else => return false,
+        };
+        target.viewport_width = jsonNumber(viewport.get("width") orelse return false) orelse return false;
+        target.viewport_height = jsonNumber(viewport.get("height") orelse return false) orelse return false;
+        if (!std.math.isFinite(target.viewport_width) or !std.math.isFinite(target.viewport_height)) return false;
+        if (target.viewport_width < 0 or target.viewport_height < 0) return false;
+    }
     return true;
+}
+
+/// N8: the humanized pointer path starts 80-240 px from the target in a
+/// random direction, clamped into the viewport, never on the target
+/// itself. Null when the viewport is unknown or too small for that.
+pub const humanize_start_min_px: f64 = 80;
+pub const humanize_start_max_px: f64 = 240;
+
+fn offTargetStart(random: std.Random, target: *const Target) ?page_port.Point {
+    const max_x = target.viewport_width - 1;
+    const max_y = target.viewport_height - 1;
+    if (max_x < 1 or max_y < 1) return null;
+    var attempt: usize = 0;
+    while (attempt < 16) : (attempt += 1) {
+        const radius = humanize_start_min_px + random.float(f64) * (humanize_start_max_px - humanize_start_min_px);
+        const angle = random.float(f64) * 2.0 * std.math.pi;
+        const point = page_port.Point{
+            .x = std.math.clamp(target.x + radius * @cos(angle), 0, max_x),
+            .y = std.math.clamp(target.y + radius * @sin(angle), 0, max_y),
+        };
+        if (distance(point, .{ .x = target.x, .y = target.y }) >= 1) return point;
+    }
+    // Pathological clamping: the farthest viewport corner.
+    const corner = page_port.Point{ .x = if (target.x * 2 < max_x) max_x else 0, .y = if (target.y * 2 < max_y) max_y else 0 };
+    return if (distance(corner, .{ .x = target.x, .y = target.y }) >= 1) corner else null;
+}
+
+fn distance(a: page_port.Point, b: page_port.Point) f64 {
+    return @sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+}
+
+fn ceilMs(ms: f64) u64 {
+    if (!(ms > 0)) return 0;
+    return @intFromFloat(@min(@ceil(ms), @as(f64, @floatFromInt(max_timeout_ms))));
+}
+
+/// Typing-profile delay before each code point (the profile samples per
+/// byte; a code point takes its first byte's sample, so a space keeps its
+/// word pause). Null if `text` is not UTF-8.
+fn humanTypingDelays(gpa: std.mem.Allocator, random: std.Random, text: []const u8) error{OutOfMemory}!?[]u64 {
+    const per_byte = gaussian.computeTypingDelays(gpa, random, text, .default()) catch return error.OutOfMemory;
+    defer gpa.free(per_byte);
+    const count = std.unicode.utf8CountCodepoints(text) catch return null;
+    const delays = try gpa.alloc(u64, count);
+    var view = (std.unicode.Utf8View.init(text) catch {
+        gpa.free(delays);
+        return null;
+    }).iterator();
+    var i: usize = 0;
+    while (view.nextCodepointSlice()) |slice| : (i += 1) {
+        const byte_index = @intFromPtr(slice.ptr) - @intFromPtr(text.ptr);
+        delays[i] = ceilMs(per_byte[byte_index]);
+    }
+    return delays;
 }
 
 /// A JSON number (never a string that looks like one).
