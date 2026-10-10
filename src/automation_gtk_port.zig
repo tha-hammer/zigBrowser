@@ -382,6 +382,34 @@ pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_
     try mapNativeCode(rc);
 }
 
+/// A PNG of the page (PagePort v3.4 `screenshot`; page_port gets the shared
+/// type with the engine half). `png` is owned by the caller's gpa.
+pub const Screenshot = struct { png: []u8, width: u32, height: u32 };
+pub const max_screenshot_bytes: usize = 16 * 1024 * 1024;
+pub const ScreenshotError = PortError || error{TooLarge};
+
+/// PNG of the visible viewport, or of the whole document. Bounded by the
+/// deadline; an encoded PNG over max_screenshot_bytes is TooLarge.
+pub fn screenshot(_: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) ScreenshotError!Screenshot {
+    return screenshotWithLimit(gpa, full_page, max_screenshot_bytes, timeout_ms);
+}
+
+/// screenshot with an explicit encoded-size limit (tests use a tiny one).
+pub fn screenshotWithLimit(gpa: std.mem.Allocator, full_page: bool, max_bytes: usize, timeout_ms: u64) ScreenshotError!Screenshot {
+    var png: [*c]u8 = null;
+    var len: usize = 0;
+    var width: c_int = 0;
+    var height: c_int = 0;
+    var err: [*c]u8 = null;
+    const rc = c.zb_screenshot_png(null, @intFromBool(full_page), max_bytes, clampMs(timeout_ms), &png, &len, &width, &height, &err);
+    c.zb_automation_free(err);
+    defer c.zb_automation_free(png);
+    if (rc == c.ZB_AUTO_ERR_TOO_LARGE) return error.TooLarge;
+    try mapCode(rc);
+    if (png == null or width <= 0 or height <= 0) return error.EvalFailed;
+    return .{ .png = try gpa.dupe(u8, png[0..len]), .width = @intCast(width), .height = @intCast(height) };
+}
+
 /// Scrolling that a wheel started is over once no scroll event came for
 /// this long (WebKit animates smooth scrolls over several frames).
 const scroll_quiet_ms: f64 = 100;

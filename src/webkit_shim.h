@@ -51,6 +51,7 @@ enum {
   ZB_AUTO_ERR_DOC_CHANGED = 8, /* native input: the page is no longer the expected document */
   ZB_AUTO_ERR_BAD_FILE = 9,    /* set files: a path is not a readable regular file, or too many */
   ZB_AUTO_ERR_FILES_UNCONFIRMED = 10, /* set files: chosen, but the page did not confirm in time */
+  ZB_AUTO_ERR_TOO_LARGE = 11,  /* screenshot: the encoded PNG exceeds the limit */
 };
 
 typedef void (*ZbMainJobFn)(void *ctx);
@@ -198,6 +199,13 @@ enum {
 int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg_json,
                        const char *const *paths, int n_paths, unsigned int timeout_ms,
                        char **out_result, char **out_err);
+/* PNG of `win`'s viewport (full_page: the whole document), at most
+ * `max_bytes` encoded (ZB_AUTO_ERR_TOO_LARGE otherwise, nothing returned).
+ * On OK *out_png (free with zb_automation_free) holds *out_len bytes. */
+int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned int timeout_ms,
+                      unsigned char **out_png, size_t *out_len, int *out_width,
+                      int *out_height, char **out_err);
+
 /* One real smooth-scroll (wheel) event at viewport CSS px (x, y), scrolling
  * by (delta_x, delta_y) CSS px (positive = right/down; exact at page zoom
  * 1). Guarded like zb_native_move; returns once dispatched (the caller

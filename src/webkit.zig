@@ -2265,3 +2265,138 @@ test "native scroll sends a trusted wheel event that scrolls the scroller under 
     try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
     c.zb_automation_loop_mark(1);
 }
+
+// N19: page screenshots as PNG.
+const shot_fixture =
+    \\<!doctype html><html><head><title>Shot</title></head>
+    \\<body style="margin:0;background:#ffffff">
+    \\<div style="position:absolute;left:10px;top:10px;width:100px;height:100px;background:#ff0000"></div>
+    \\<div style="height:3000px"></div>
+    \\<div style="position:absolute;left:0;top:2900px;width:50px;height:50px;background:#0000ff"></div>
+    \\</body></html>
+;
+
+const cairo = struct {
+    extern "c" fn cairo_image_surface_create_from_png(filename: [*:0]const u8) ?*anyopaque;
+    extern "c" fn cairo_surface_status(surface: *anyopaque) c_int;
+    extern "c" fn cairo_image_surface_get_width(surface: *anyopaque) c_int;
+    extern "c" fn cairo_image_surface_get_height(surface: *anyopaque) c_int;
+    extern "c" fn cairo_image_surface_get_stride(surface: *anyopaque) c_int;
+    extern "c" fn cairo_image_surface_get_data(surface: *anyopaque) ?[*]u8;
+    extern "c" fn cairo_surface_flush(surface: *anyopaque) void;
+    extern "c" fn cairo_surface_destroy(surface: *anyopaque) void;
+};
+
+const Decoded = struct {
+    /// 0xRRGGBB at (x, y) (opaque pixels; cairo ARGB32 is native-endian);
+    /// a sentinel outside the image.
+    fn pixel(surface: *anyopaque, x: usize, y: usize) u32 {
+        if (x >= @as(usize, @intCast(cairo.cairo_image_surface_get_width(surface))) or
+            y >= @as(usize, @intCast(cairo.cairo_image_surface_get_height(surface)))) return 0xdeadbeef;
+        const data = cairo.cairo_image_surface_get_data(surface) orelse return 0xdeadbeef;
+        const stride: usize = @intCast(cairo.cairo_image_surface_get_stride(surface));
+        const word = std.mem.readInt(u32, data[y * stride + x * 4 ..][0..4], .little);
+        return word & 0xffffff;
+    }
+};
+
+const ShotDriver = struct {
+    nav: NavEndDriver = .{},
+    dir: [:0]const u8,
+
+    fn check(self: *ShotDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("screenshot check failed: {s}\n", .{what});
+            self.nav.failures += 1;
+        }
+    }
+
+    /// Decodes `png` through a file (cairo's PNG reader); null if it is not a PNG.
+    fn decode(self: *ShotDriver, png: []const u8, name: [:0]const u8) ?*anyopaque {
+        var buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ self.dir, name }) catch return null;
+        if (gfile.g_file_set_contents(path, png.ptr, @intCast(png.len), null) == 0) return null;
+        const surface = cairo.cairo_image_surface_create_from_png(path) orelse return null;
+        if (cairo.cairo_surface_status(surface) != 0) {
+            cairo.cairo_surface_destroy(surface);
+            return null;
+        }
+        cairo.cairo_surface_flush(surface);
+        return surface;
+    }
+
+    fn run(self: *ShotDriver) void {
+        const d = &self.nav;
+        const port = gtk_port.pagePort().?;
+        const gpa = std.heap.c_allocator;
+        _ = d.eval("return 1;", null);
+        const vw = std.fmt.parseInt(u32, d.eval("return String(innerWidth);", null), 10) catch 0;
+        const vh = std.fmt.parseInt(u32, d.eval("return String(innerHeight);", null), 10) catch 0;
+
+        const visible = gtk_port.screenshot(port.ptr, gpa, false, 10_000) catch return self.check(false, "viewport screenshot succeeds");
+        defer gpa.free(visible.png);
+        self.check(std.mem.startsWith(u8, visible.png, "\x89PNG\r\n\x1a\n"), "the viewport shot is a PNG");
+        self.check(visible.width == vw and visible.height == vh, "the viewport shot has the viewport's size");
+        if (self.decode(visible.png, "visible.png")) |surface| {
+            defer cairo.cairo_surface_destroy(surface);
+            self.check(cairo.cairo_image_surface_get_width(surface) == @as(c_int, @intCast(visible.width)) and
+                cairo.cairo_image_surface_get_height(surface) == @as(c_int, @intCast(visible.height)), "the decoded PNG has the reported size");
+            self.check(Decoded.pixel(surface, 60, 60) == 0xff0000, "the red block is red");
+            self.check(Decoded.pixel(surface, 300, 300) == 0xffffff, "the background is white");
+        } else self.check(false, "the viewport PNG decodes");
+
+        const full = gtk_port.screenshot(port.ptr, gpa, true, 10_000) catch return self.check(false, "full-page screenshot succeeds");
+        defer gpa.free(full.png);
+        self.check(full.width == vw and full.height >= 3000, "the full-page shot covers the whole document");
+        if (self.decode(full.png, "full.png")) |surface| {
+            defer cairo.cairo_surface_destroy(surface);
+            self.check(Decoded.pixel(surface, 25, 2925) == 0x0000ff, "the block below the fold is blue");
+        } else self.check(false, "the full-page PNG decodes");
+
+        // Over the size limit: refused, nothing returned.
+        const tiny = gtk_port.screenshotWithLimit(gpa, false, 64, 10_000);
+        self.check(if (tiny) |shot| blk: {
+            gpa.free(shot.png);
+            break :blk false;
+        } else |e| e == error.TooLarge, "a PNG over the limit is TooLarge");
+
+        // Bounded by the deadline.
+        const started = monotonicMs();
+        const late = gtk_port.screenshot(port.ptr, gpa, true, 1);
+        if (late) |shot| gpa.free(shot.png) else |_| {}
+        self.check(monotonicMs() - started < 1000, "a 1 ms deadline returns promptly");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "screenshot returns a PNG of the viewport or the whole document" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir_raw = gfile.g_dir_make_tmp("zb-shot-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir_raw);
+    const dir = try arena.dupeZ(u8, std.mem.span(dir_raw));
+    const path = try std.fmt.allocPrintSentinel(arena, "{s}/shot.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path, shot_fixture.ptr, shot_fixture.len, null) != 0);
+    const raw = gfile.g_filename_to_uri(path, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw);
+    const uri = try arena.dupeZ(u8, std.mem.span(raw));
+    var driver: ShotDriver = .{ .dir = dir };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, ShotDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
+    c.zb_automation_loop_mark(1);
+}

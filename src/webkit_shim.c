@@ -1245,6 +1245,10 @@ struct ZbAutoJob {
   unsigned int files_arm_seq; /* set files: order of arming */
   char files_token[17]; /* set files: binds the op's click to this job */
   char *files_result;   /* set files: the op's JSON answer, until both are in */
+  int full_page;        /* screenshot: whole document, else the viewport */
+  gsize max_png;        /* screenshot: largest encoded PNG accepted */
+  GByteArray *png;      /* screenshot: encoded result */
+  int png_w, png_h;     /* screenshot: its size in pixels */
 };
 
 static GMutex zb_auto_mutex;
@@ -1289,6 +1293,9 @@ static void auto_job_unref(gpointer data) {
   g_free(job->expected_doc);
   g_strfreev(job->paths);
   g_free(job->files_result);
+  if (job->png != NULL) {
+    g_byte_array_unref(job->png);
+  }
   if (job->cancellable != NULL) {
     g_object_unref(job->cancellable);
   }
@@ -1516,6 +1523,7 @@ enum {
   ZB_OP_NATIVE_MOVE,
   ZB_OP_SET_FILES,
   ZB_OP_NATIVE_SCROLL,
+  ZB_OP_SCREENSHOT,
 };
 
 #define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
@@ -2235,6 +2243,75 @@ static gboolean on_window_file_chooser(WebKitWebView *view, WebKitFileChooserReq
   return TRUE;
 }
 
+/* ---- Screenshot ----
+ * webkit_web_view_get_snapshot (the viewport, or the whole document),
+ * encoded to PNG on the GTK thread into memory. The encoder stops as soon
+ * as the PNG would exceed the job's limit (TOO_LARGE, nothing returned). */
+
+typedef struct {
+  GByteArray *bytes;
+  gsize max;
+} ZbPngSink;
+
+static cairo_status_t auto_png_write(void *closure, const unsigned char *data, unsigned int length) {
+  ZbPngSink *sink = (ZbPngSink *)closure;
+  if (sink->bytes->len + (gsize)length > sink->max) {
+    return CAIRO_STATUS_WRITE_ERROR;
+  }
+  g_byte_array_append(sink->bytes, data, length);
+  return CAIRO_STATUS_SUCCESS;
+}
+
+static void on_auto_snapshot_ready(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  GError *error = NULL;
+  cairo_surface_t *surface =
+      webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(object), result, &error);
+  auto_untrack(job);
+  if (surface == NULL) {
+    int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
+                                                                         : ZB_AUTO_ERR_INTERNAL;
+    auto_job_complete(job, code, NULL, g_strdup(error != NULL ? error->message : "snapshot failed"));
+    g_clear_error(&error);
+    auto_async_release(job);
+    return;
+  }
+  ZbPngSink sink = {g_byte_array_new(), job->max_png};
+  cairo_status_t status = cairo_surface_write_to_png_stream(surface, auto_png_write, &sink);
+  int width = cairo_image_surface_get_width(surface);
+  int height = cairo_image_surface_get_height(surface);
+  cairo_surface_destroy(surface);
+  if (status == CAIRO_STATUS_WRITE_ERROR && sink.bytes->len > 0) {
+    g_byte_array_unref(sink.bytes);
+    auto_job_complete(job, ZB_AUTO_ERR_TOO_LARGE, NULL,
+                      g_strdup_printf("the PNG is larger than %" G_GSIZE_FORMAT " bytes", job->max_png));
+  } else if (status != CAIRO_STATUS_SUCCESS) {
+    g_byte_array_unref(sink.bytes);
+    auto_job_complete(job, ZB_AUTO_ERR_INTERNAL, NULL, g_strdup(cairo_status_to_string(status)));
+  } else {
+    /* Published by auto_job_complete under the mutex. */
+    job->png = sink.bytes;
+    job->png_w = width;
+    job->png_h = height;
+    auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+  }
+  auto_async_release(job);
+}
+
+static void auto_start_screenshot(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+  auto_track(job, win);
+  webkit_web_view_get_snapshot(win->view,
+                               job->full_page ? WEBKIT_SNAPSHOT_REGION_FULL_DOCUMENT
+                                              : WEBKIT_SNAPSHOT_REGION_VISIBLE,
+                               WEBKIT_SNAPSHOT_OPTIONS_NONE, job->cancellable,
+                               on_auto_snapshot_ready, auto_async_ref(job));
+}
+
 /* Mirrors zb_reload: mark the in-flight load superseded so its cancellation
  * and FINISHED are ignored, then start the new load. */
 static void auto_start_load(ZbAutoJob *job) {
@@ -2398,9 +2475,10 @@ static ZbAutoJob *auto_op_new(int op) {
   int is_cookie = op == ZB_OP_COOKIES_GET || op == ZB_OP_COOKIES_ADD ||
                   op == ZB_OP_COOKIES_DELETE;
   int is_async = op == ZB_OP_EVAL || op == ZB_OP_NAVIGATE || op == ZB_OP_RELOAD ||
-                 op == ZB_OP_SET_FILES || is_cookie;
+                 op == ZB_OP_SET_FILES || op == ZB_OP_SCREENSHOT || is_cookie;
   ZbAutoStartFn start = op == ZB_OP_EVAL         ? auto_start_eval
                         : op == ZB_OP_SET_FILES ? auto_start_files
+                        : op == ZB_OP_SCREENSHOT ? auto_start_screenshot
                         : is_cookie     ? auto_start_cookies
                         : is_async      ? auto_start_load
                                         : auto_start_get;
@@ -3350,6 +3428,42 @@ int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg
      * confirmation is missing: timeout, cancel, a failed op, a lost page.
      * Never repeat this call. */
     code = ZB_AUTO_ERR_FILES_UNCONFIRMED;
+  }
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned int timeout_ms,
+                      unsigned char **out_png, size_t *out_len, int *out_width,
+                      int *out_height, char **out_err) {
+  if (out_png == NULL || out_len == NULL || max_bytes == 0) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  *out_png = NULL;
+  *out_len = 0;
+  ZbAutoJob *job = auto_op_new(ZB_OP_SCREENSHOT);
+  job->full_page = full_page != 0;
+  job->max_png = max_bytes;
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  if (code == ZB_AUTO_OK) {
+    g_mutex_lock(&zb_auto_mutex);
+    GByteArray *png = job->png;
+    job->png = NULL;
+    int width = job->png_w;
+    int height = job->png_h;
+    g_mutex_unlock(&zb_auto_mutex);
+    if (png == NULL) {
+      code = ZB_AUTO_ERR_INTERNAL;
+    } else {
+      *out_len = png->len;
+      *out_png = g_byte_array_free(png, FALSE);
+      if (out_width != NULL) {
+        *out_width = width;
+      }
+      if (out_height != NULL) {
+        *out_height = height;
+      }
+    }
   }
   auto_job_unref(job);
   return code;
