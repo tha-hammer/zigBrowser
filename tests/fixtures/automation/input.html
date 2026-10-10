@@ -21,6 +21,65 @@
       <input id="cb" type="checkbox" />
     </form>
 
+    <!-- dom.selectOption: native select, ARIA combobox, ARIA listbox. -->
+    <select id="sel">
+      <option value="a">Alpha</option>
+      <option value="b">Beta</option>
+      <option value="c">Gamma</option>
+      <option value="d" disabled>Delta</option>
+    </select>
+
+    <button id="combo" role="combobox" aria-controls="combo-list" aria-expanded="false">Pick a fruit</button>
+    <ul id="combo-list" role="listbox" hidden></ul>
+
+    <ul id="lb" role="listbox">
+      <li role="option" data-value="one" aria-selected="true">One</li>
+      <li role="option" data-value="two" aria-selected="false">Two</li>
+    </ul>
+
+    <script>
+      window.selInputs = 0;
+      window.selChanges = 0;
+      var sel = document.getElementById('sel');
+      sel.addEventListener('input', function () { window.selInputs += 1; });
+      sel.addEventListener('change', function () { window.selChanges += 1; });
+
+      // Combobox whose options render asynchronously after opening.
+      window.comboValue = null;
+      var combo = document.getElementById('combo');
+      var comboList = document.getElementById('combo-list');
+      combo.addEventListener('click', function () {
+        var open = combo.getAttribute('aria-expanded') === 'true';
+        combo.setAttribute('aria-expanded', open ? 'false' : 'true');
+        if (open) { comboList.hidden = true; comboList.innerHTML = ''; return; }
+        setTimeout(function () {
+          ['apple', 'banana', 'cherry'].forEach(function (fruit) {
+            var li = document.createElement('li');
+            li.setAttribute('role', 'option');
+            li.setAttribute('data-value', fruit);
+            li.textContent = fruit.charAt(0).toUpperCase() + fruit.slice(1);
+            li.addEventListener('click', function () {
+              window.comboValue = fruit;
+              combo.textContent = li.textContent;
+              combo.setAttribute('aria-expanded', 'false');
+              comboList.hidden = true;
+              comboList.innerHTML = '';
+            });
+            comboList.appendChild(li);
+          });
+          comboList.hidden = false;
+        }, 80);
+      });
+
+      document.querySelectorAll('#lb [role=option]').forEach(function (option) {
+        option.addEventListener('click', function () {
+          document.querySelectorAll('#lb [role=option]').forEach(function (o) {
+            o.setAttribute('aria-selected', o === option ? 'true' : 'false');
+          });
+        });
+      });
+    </script>
+
     <script>
       window.submits = 0;
       document.getElementById('form').addEventListener('submit', function (event) {

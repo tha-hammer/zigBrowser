@@ -8,6 +8,7 @@ model (the shape of X's post box)."""
 from __future__ import annotations
 
 import argparse
+import ast
 import subprocess
 import tempfile
 import threading
@@ -142,6 +143,53 @@ def run_press(socket_path: Path, t: float) -> None:
     expect_equal("checkbox not toggled", js("document.getElementById('cb').checked"), False)
 
 
+def rpc_error(socket_path: Path, method: str, params: dict, req_id: int, timeout: float) -> dict:
+    """Send one request that must fail; return its JSON-RPC error object."""
+    try:
+        result = call_rpc(socket_path, method, params, req_id, timeout)
+    except AssertionError as exc:
+        text = str(exc)
+        start = text.index("{")
+        return ast.literal_eval(text[start:])["error"]
+    raise AssertionError(f"{method} unexpectedly succeeded: {result}")
+
+
+def run_select(socket_path: Path, t: float) -> None:
+    ids = iter(range(400, 500))
+
+    def rpc(method: str, params: dict):
+        return call_rpc(socket_path, method, params, next(ids), t)
+
+    def js(expression: str):
+        return evaluate(socket_path, expression, next(ids), t)
+
+    # Native <select>: by value, label and index; input + change each time.
+    expect_equal("select by value", rpc("dom.selectOption", {"selector": "css=#sel", "value": "b"}), {"value": "b"})
+    expect_equal("select value after value", js("document.getElementById('sel').value"), "b")
+    expect_equal("input/change after value", js("[window.selInputs, window.selChanges]"), [1, 1])
+    expect_equal("select by label", rpc("dom.selectOption", {"selector": "css=#sel", "label": "Gamma"}), {"value": "c"})
+    expect_equal("select by index", rpc("dom.selectOption", {"selector": "css=#sel", "index": 0}), {"value": "a"})
+    expect_equal("input/change after three selections", js("[window.selInputs, window.selChanges]"), [3, 3])
+
+    # Missing or disabled options fail as element_not_found / no_option.
+    for params in ({"value": "zzz"}, {"value": "d"}, {"index": 9}):
+        error = rpc_error(socket_path, "dom.selectOption", dict({"selector": "css=#sel", "timeout_ms": 300}, **params), next(ids), t)
+        expect_equal(f"missing option {params} code", error["code"], -32001)
+        expect_equal(f"missing option {params} reason", error["data"]["reason"], "no_option")
+    expect_equal("failed selections left the value alone", js("document.getElementById('sel').value"), "a")
+
+    # ARIA combobox: opens on click, options render later, the option is clicked.
+    expect_equal("combobox by label", rpc("dom.selectOption", {"selector": "css=#combo", "label": "Banana"}), {"value": "banana"})
+    expect_equal("combobox handler saw the choice", js("window.comboValue"), "banana")
+    expect_equal("combobox closed", js("document.getElementById('combo').getAttribute('aria-expanded')"), "false")
+    expect_equal("combobox by value", rpc("dom.selectOption", {"selector": "css=#combo", "value": "cherry"}), {"value": "cherry"})
+    expect_equal("combobox second choice", js("window.comboValue"), "cherry")
+
+    # ARIA listbox: the matching option is clicked directly.
+    expect_equal("listbox by value", rpc("dom.selectOption", {"selector": "css=#lb", "value": "two"}), {"value": "two"})
+    expect_equal("listbox selection", js("Array.from(document.querySelectorAll('#lb [role=option]')).map(o => o.getAttribute('aria-selected'))"), ["false", "true"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -185,6 +233,9 @@ def main() -> int:
             scenario = "press"
             run_press(socket_path, args.timeout_sec)
             print("PASS\tdom.press")
+            scenario = "selectOption"
+            run_select(socket_path, args.timeout_sec)
+            print("PASS\tdom.selectOption")
         except Exception as exc:
             print(f"FAIL\t{scenario}")
             eprint(f"error={exc}")

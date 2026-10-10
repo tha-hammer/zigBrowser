@@ -43,6 +43,8 @@
         return runAction(command, 'type');
       case 'press':
         return press(command);
+      case 'selectOption':
+        return selectOption(command);
       case 'waitFor':
         return waitFor(command);
       case 'rateLimitScan':
@@ -123,6 +125,116 @@
     const target = doc.activeElement || doc.body || doc.documentElement;
     synthesizePress(target, command.key, command.modifiers || []);
     return success({ ok: true }, []);
+  }
+
+  // How long a combobox may take to render its options after opening.
+  const OPTION_POPUP_WAIT_MS = 1000;
+
+  // dom.selectOption: a native <select> gets the option set plus input and
+  // change; an ARIA combobox is clicked open and its matching role=option
+  // clicked; an ARIA listbox has its matching option clicked. Exactly one of
+  // value / label / index identifies the option. No match (or a disabled
+  // option) fails retryably as element_not_found / no_option.
+  function selectOption(command) {
+    const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+    if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
+
+    const element = resolved.elements[0];
+    const telemetry = resolved.telemetry.slice();
+    const check = runActionabilityChecks(element, 'select');
+    telemetry.push(actionabilitySpan(command, 'select', check));
+    if (!check.passed) return actionFailure(check.error, check.check, telemetry);
+
+    if (element.tagName.toLowerCase() === 'select') return selectNative(element, command, telemetry);
+
+    const role = elementRole(element);
+    if (role === 'listbox') return clickAriaOption(element, command, telemetry);
+    if (role === 'combobox' || element.getAttribute('aria-haspopup') === 'listbox') {
+      if (element.getAttribute('aria-expanded') !== 'true') synthesizeClick(element);
+      return waitForAriaOption(element, command, telemetry);
+    }
+    return failure('not_selectable', command, telemetry, false);
+  }
+
+  function selectNative(select, command, telemetry) {
+    const options = Array.from(select.options);
+    const option = options.find((candidate, index) => optionMatches(command, index,
+      candidate.value, normalizeText(candidate.label || candidate.textContent || '')));
+    if (!option || option.disabled) return failure('no_option', command, telemetry, true);
+
+    select.focus();
+    if (select.multiple) {
+      for (const candidate of options) candidate.selected = candidate === option;
+    } else {
+      select.value = option.value;
+    }
+    select.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return success({ value: option.value }, telemetry);
+  }
+
+  function optionMatches(command, index, value, label) {
+    if (typeof command.value === 'string') return value === command.value;
+    if (typeof command.label === 'string') return label === normalizeText(command.label);
+    if (typeof command.index === 'number') return index === command.index;
+    return false;
+  }
+
+  function ariaOptionValue(option) {
+    return option.getAttribute('data-value') || option.getAttribute('value') || accessibleName(option);
+  }
+
+  function ariaOptions(container) {
+    return Array.from(container.querySelectorAll('[role="option"]'));
+  }
+
+  // The listbox a combobox controls: aria-controls / aria-owns, else the
+  // first visible listbox in the document.
+  function popupListbox(combobox) {
+    const doc = combobox.ownerDocument;
+    for (const attr of ['aria-controls', 'aria-owns']) {
+      const ids = (combobox.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
+      for (const id of ids) {
+        const target = doc.getElementById(id);
+        if (target) return target;
+      }
+    }
+    return Array.from(doc.querySelectorAll('[role="listbox"]')).find(isElementVisibleEnough) || null;
+  }
+
+  function findAriaOption(container, command) {
+    const options = ariaOptions(container);
+    return options.find((option, index) => optionMatches(command, index, ariaOptionValue(option),
+      accessibleName(option))) || null;
+  }
+
+  function clickAriaOption(container, command, telemetry) {
+    const option = findAriaOption(container, command);
+    if (!option || option.getAttribute('aria-disabled') === 'true') {
+      return failure('no_option', command, telemetry, true);
+    }
+    const value = ariaOptionValue(option);
+    synthesizeClick(option);
+    return success({ value }, telemetry);
+  }
+
+  function waitForAriaOption(combobox, command, telemetry) {
+    const deadline = nowMs() + OPTION_POPUP_WAIT_MS;
+    return new Promise((resolve) => {
+      function attempt() {
+        const listbox = popupListbox(combobox);
+        const option = listbox ? findAriaOption(listbox, command) : null;
+        if (option && isElementVisibleEnough(option)) {
+          resolve(clickAriaOption(listbox, command, telemetry));
+        } else if (nowMs() >= deadline) {
+          resolve(failure('no_option', command, telemetry, true));
+        } else {
+          setTimeout(attempt, WAIT_POLL_INTERVAL_MS);
+        }
+      }
+      attempt();
+    });
   }
 
   const MODIFIER_KEYS = {
