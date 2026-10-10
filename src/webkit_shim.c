@@ -1258,6 +1258,21 @@ static void auto_job_unref(gpointer data) {
   g_atomic_int_add(&zb_auto_live_jobs, -1);
 }
 
+/* WebKit async calls hold a job ref until their callback runs. The count lets
+ * zb_app_run drain cancelled callbacks after the loop ends, so every job is
+ * released. GTK thread only. */
+static gint zb_auto_async_pending;
+
+static ZbAutoJob *auto_async_ref(ZbAutoJob *job) {
+  zb_auto_async_pending++;
+  return auto_job_ref(job);
+}
+
+static void auto_async_release(ZbAutoJob *job) {
+  zb_auto_async_pending--;
+  auto_job_unref(job);
+}
+
 /* GTK thread. Records the outcome once and wakes waiters; takes ownership of
  * result/err and frees them if the waiter already gave up. */
 static void auto_job_complete(ZbAutoJob *job, int code, char *result, char *err) {
@@ -1788,7 +1803,7 @@ static void on_auto_eval_done(GObject *object, GAsyncResult *result,
     auto_job_complete(job, ZB_AUTO_OK, out != NULL ? out : g_strdup("null"),
                       NULL);
   }
-  auto_job_unref(job);
+  auto_async_release(job);
 }
 
 static void auto_start_eval(ZbAutoJob *job) {
@@ -1806,7 +1821,7 @@ static void auto_start_eval(ZbAutoJob *job) {
   auto_track(job, win);
   webkit_web_view_call_async_javascript_function(
       win->view, job->body, -1, args, job->world, NULL, job->cancellable,
-      on_auto_eval_done, auto_job_ref(job));
+      on_auto_eval_done, auto_async_ref(job));
   g_variant_unref(args); /* arguments are transfer-none */
 }
 
@@ -2023,13 +2038,20 @@ static WebKitCookieManager *auto_cookie_manager(ZbAutoJob *job) {
   return webkit_web_context_get_cookie_manager(webkit_web_view_get_context(win->view));
 }
 
+/* Completes a cookie job and drops its in-flight tracking. */
+static void auto_cookie_finish(ZbAutoJob *job, int code, char *result, char *err) {
+  job->target = NULL;
+  auto_untrack(job);
+  auto_job_complete(job, code, result, err);
+}
+
 static int auto_cookie_cancelled(GError *error) {
   return g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
 }
 
 static void auto_cookie_fail(ZbAutoJob *job, GError *error, const char *what) {
   int code = auto_cookie_cancelled(error) ? ZB_AUTO_ERR_CANCELLED : ZB_AUTO_ERR_INTERNAL;
-  auto_job_complete(job, code, NULL, g_strdup(what));
+  auto_cookie_finish(job, code, NULL, g_strdup(what));
 }
 
 /* JSON string literal; invalid UTF-8 is repaired, control characters and
@@ -2101,22 +2123,22 @@ static void on_auto_cookies_got(GObject *object, GAsyncResult *result, gpointer 
     auto_cookie_fail(job, error, "cookie store read failed");
     g_error_free(error);
   } else {
-    auto_job_complete(job, ZB_AUTO_OK, auto_cookies_json(cookies), NULL);
+    auto_cookie_finish(job, ZB_AUTO_OK, auto_cookies_json(cookies), NULL);
   }
   g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
-  auto_job_unref(job);
+  auto_async_release(job);
 }
 
 static void on_auto_cookie_added(GObject *object, GAsyncResult *result, gpointer user_data) {
   ZbAutoJob *job = (ZbAutoJob *)user_data;
   GError *error = NULL;
   if (webkit_cookie_manager_add_cookie_finish(WEBKIT_COOKIE_MANAGER(object), result, &error)) {
-    auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+    auto_cookie_finish(job, ZB_AUTO_OK, NULL, NULL);
   } else {
     auto_cookie_fail(job, error, "cookie store write failed");
     g_clear_error(&error);
   }
-  auto_job_unref(job);
+  auto_async_release(job);
 }
 
 static void auto_cookie_delete_next(ZbAutoJob *job, WebKitCookieManager *manager);
@@ -2131,17 +2153,17 @@ static void on_auto_cookie_deleted(GObject *object, GAsyncResult *result, gpoint
   } else {
     auto_cookie_delete_next(job, manager);
   }
-  auto_job_unref(job);
+  auto_async_release(job);
 }
 
 /* Deletes the queued cookies one at a time; completes when none are left. */
 static void auto_cookie_delete_next(ZbAutoJob *job, WebKitCookieManager *manager) {
   if (job->cookie_queue == NULL) {
-    auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+    auto_cookie_finish(job, ZB_AUTO_OK, NULL, NULL);
     return;
   }
   if (g_cancellable_is_cancelled(job->cancellable)) {
-    auto_job_complete(job, ZB_AUTO_ERR_CANCELLED, NULL, g_strdup("cancelled"));
+    auto_cookie_finish(job, ZB_AUTO_ERR_CANCELLED, NULL, g_strdup("cancelled"));
     return;
   }
   GList *head = job->cookie_queue;
@@ -2149,7 +2171,7 @@ static void auto_cookie_delete_next(ZbAutoJob *job, WebKitCookieManager *manager
   SoupCookie *cookie = (SoupCookie *)head->data;
   g_list_free(head);
   webkit_cookie_manager_delete_cookie(manager, cookie, job->cancellable,
-                                      on_auto_cookie_deleted, auto_job_ref(job));
+                                      on_auto_cookie_deleted, auto_async_ref(job));
   soup_cookie_free(cookie);
 }
 
@@ -2171,7 +2193,7 @@ static void on_auto_cookies_listed_for_delete(GObject *object, GAsyncResult *res
   if (error != NULL) {
     auto_cookie_fail(job, error, "cookie store read failed");
     g_error_free(error);
-    auto_job_unref(job);
+    auto_async_release(job);
     return;
   }
 
@@ -2184,7 +2206,7 @@ static void on_auto_cookies_listed_for_delete(GObject *object, GAsyncResult *res
   }
   g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
   auto_cookie_delete_next(job, manager);
-  auto_job_unref(job);
+  auto_async_release(job);
 }
 
 static void auto_start_cookies(ZbAutoJob *job) {
@@ -2193,25 +2215,27 @@ static void auto_start_cookies(ZbAutoJob *job) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
   }
+  /* Tracked like eval/load jobs: closing the window cancels and completes it. */
+  auto_track(job, auto_resolve_window(job->requested));
 
   switch (job->op) {
     case ZB_OP_COOKIES_GET:
       if (job->url != NULL) {
         webkit_cookie_manager_get_cookies(manager, job->url, job->cancellable,
-                                          on_auto_cookies_got, auto_job_ref(job));
+                                          on_auto_cookies_got, auto_async_ref(job));
       } else {
         webkit_cookie_manager_get_all_cookies(manager, job->cancellable,
-                                              on_auto_cookies_got, auto_job_ref(job));
+                                              on_auto_cookies_got, auto_async_ref(job));
       }
       break;
     case ZB_OP_COOKIES_ADD:
       webkit_cookie_manager_add_cookie(manager, job->cookie, job->cancellable,
-                                       on_auto_cookie_added, auto_job_ref(job));
+                                       on_auto_cookie_added, auto_async_ref(job));
       break;
     default:
       webkit_cookie_manager_get_all_cookies(manager, job->cancellable,
                                             on_auto_cookies_listed_for_delete,
-                                            auto_job_ref(job));
+                                            auto_async_ref(job));
       break;
   }
 }
@@ -2551,12 +2575,30 @@ int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_m
     return ZB_AUTO_ERR_INTERNAL;
   }
 
+  /* GDateTime ends at 9999-12-31T23:59:59Z; never weaken an unrepresentable
+   * expiry into a session cookie. */
+  if (cookie->expires < -1 || cookie->expires > ZB_COOKIE_MAX_EXPIRES) {
+    if (out_err != NULL) {
+      *out_err = g_strdup("cookie expiry out of range");
+    }
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  GDateTime *expires = NULL;
+  if (cookie->expires >= 0) {
+    expires = g_date_time_new_from_unix_utc(cookie->expires);
+    if (expires == NULL) {
+      if (out_err != NULL) {
+        *out_err = g_strdup("cookie expiry out of range");
+      }
+      return ZB_AUTO_ERR_INTERNAL;
+    }
+  }
+
   ZbAutoJob *job = auto_op_new(ZB_OP_COOKIES_ADD);
   job->cookie = soup_cookie_new(cookie->name, cookie->value, cookie->domain,
                                 cookie->path != NULL && cookie->path[0] != '\0' ? cookie->path : "/",
                                 -1);
-  if (cookie->expires >= 0) {
-    GDateTime *expires = g_date_time_new_from_unix_utc(cookie->expires);
+  if (expires != NULL) {
     soup_cookie_set_expires(job->cookie, expires);
     g_date_time_unref(expires);
   }
@@ -2638,6 +2680,18 @@ static WebKitWebContext *app_create_web_context(void) {
 }
 
 static int app_run(const char *uri, int print_title, int e2e_protocol);
+
+/* After the loop ends and the windows are destroyed (which cancels their
+ * in-flight jobs), let WebKit deliver the cancelled callbacks so their job
+ * refs are released. Bounded: at most one second. */
+static void auto_drain_async(void) {
+  gint64 deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
+  while (zb_auto_async_pending > 0 && g_get_monotonic_time() < deadline) {
+    if (!g_main_context_iteration(NULL, FALSE)) {
+      g_usleep(1000);
+    }
+  }
+}
 
 /* Every exit, including early init failures, ends the automation loop so a
  * server thread waiting on a job is released before server shutdown. */
@@ -2731,6 +2785,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
     }
   }
 
+  auto_drain_async();
   zb_auto_app = NULL;
   auto_publish_primary(NULL);
   g_free(app.app_base);

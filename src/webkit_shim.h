@@ -129,6 +129,9 @@ enum {
   ZB_COOKIE_SAME_SITE_STRICT = 3,
 };
 
+/* Latest representable expiry (9999-12-31T23:59:59Z). */
+#define ZB_COOKIE_MAX_EXPIRES 253402300799LL
+
 typedef struct {
   const char *name;
   const char *value;
@@ -145,7 +148,8 @@ typedef struct {
  * that would be sent to `url`. */
 int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,
                        char **out_json, char **out_err);
-/* Adds or replaces the cookie (all fields are copied before queuing). */
+/* Adds or replaces the cookie (all fields are copied before queuing).
+ * expires outside [-1, ZB_COOKIE_MAX_EXPIRES] is ZB_AUTO_ERR_INTERNAL. */
 int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_ms,
                    char **out_err);
 /* Deletes every cookie called `name` on `domain` (leading dot ignored);

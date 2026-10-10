@@ -316,6 +316,8 @@ const LiveDriver = struct {
     uri_b: [:0]const u8,
     uri_missing: [:0]const u8,
     uri_slow: [:0]const u8,
+    pending_eval: ?std.Thread = null,
+    pending_eval_rc: std.atomic.Value(c_int) = .{ .raw = -1 },
     failures: std.ArrayList([]const u8) = .empty,
 
     fn diag(_: *LiveDriver, what: []const u8, rc: c_int, err: [*c]u8) void {
@@ -357,6 +359,15 @@ const LiveDriver = struct {
     }
 
     const handle_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
+
+    fn pendingEval(self: *LiveDriver) void {
+        var out: [*c]u8 = null;
+        var err: [*c]u8 = null;
+        const rc = c.zb_automation_eval_json(null, "await new Promise(function () {});", null, null, 30_000, &out, &err);
+        c.zb_automation_free(out);
+        c.zb_automation_free(err);
+        self.pending_eval_rc.store(rc, .release);
+    }
 
     fn quit(_: ?*anyopaque) callconv(.c) void {
         gfile.gtk_main_quit();
@@ -502,6 +513,12 @@ const LiveDriver = struct {
 
         self.runCookies();
         self.runNative();
+
+        // Loop end with work in flight: an eval that never settles is still
+        // pending when the loop quits; its waiter gets NO_LOOP and the job is
+        // released by teardown (checked after zb_app_run returns).
+        self.pending_eval = std.Thread.spawn(.{}, pendingEval, .{self}) catch null;
+        sleepMs(200);
         _ = c.zb_main_invoke_sync(quit, null, 5000);
     }
 
@@ -676,6 +693,32 @@ const LiveDriver = struct {
         self.check(self.deleteCookie("zbsession", "other.test") == c.ZB_AUTO_OK and find(self.cookies(null), "zbsession") == null, "delete on the matching domain removes it");
         _ = self.deleteCookie("zbstrict", null);
         _ = self.deleteCookie("zbnone", null);
+
+        // Expiry range: the year-9999 maximum is accepted, one second later
+        // is refused (never silently turned into a session cookie).
+        self.addCookie(.{ .name = "zbmax", .value = "m", .domain = "example.test", .path = "/", .expires = c.ZB_COOKIE_MAX_EXPIRES, .http_only = 0, .secure = 0, .same_site = 0 }, "maximum expiry accepted");
+        self.check(if (find(self.cookies(null), "zbmax")) |cookie| cookie.expires == c.ZB_COOKIE_MAX_EXPIRES else false, "maximum expiry round-trips");
+        _ = self.deleteCookie("zbmax", null);
+        var range_err: [*c]u8 = null;
+        const too_late: c.ZbCookie = .{ .name = "zblate", .value = "l", .domain = "example.test", .path = "/", .expires = c.ZB_COOKIE_MAX_EXPIRES + 1, .http_only = 0, .secure = 0, .same_site = 0 };
+        const late_rc = c.zb_cookies_add(null, &too_late, 5000, &range_err);
+        self.check(late_rc == c.ZB_AUTO_ERR_INTERNAL and range_err != null and std.mem.indexOf(u8, std.mem.span(range_err), "out of range") != null, "expiry past year 9999 is refused");
+        c.zb_automation_free(range_err);
+        self.check(find(self.cookies(null), "zblate") == null, "refused cookie was not stored");
+
+        // Timeout path: cookie reads abandoned after 1 ms are cancelled on the
+        // GTK thread and released once WebKit calls back.
+        var i: u32 = 0;
+        while (i < 30) : (i += 1) {
+            var burst_out: [*c]u8 = null;
+            var burst_err: [*c]u8 = null;
+            _ = c.zb_cookies_get_all(null, null, 1, &burst_out, &burst_err);
+            c.zb_automation_free(burst_out);
+            c.zb_automation_free(burst_err);
+        }
+        var waited: u32 = 0;
+        while (c.zb_automation_debug_live_jobs() != 0 and waited < 3000) : (waited += 10) sleepMs(10);
+        self.check(c.zb_automation_debug_live_jobs() == 0, "abandoned cookie jobs are all released");
     }
 };
 
@@ -757,6 +800,8 @@ test "automation bridge drives a live WebKitGTK page" {
     w.join();
     watchdog_joined = true;
 
+    if (driver.pending_eval) |pending| pending.join();
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), driver.pending_eval_rc.load(.acquire));
     for (driver.failures.items) |f| std.debug.print("live bridge check failed: {s}\n", .{f});
     try std.testing.expectEqual(@as(usize, 0), driver.failures.items.len);
 
