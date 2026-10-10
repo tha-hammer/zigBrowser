@@ -94,6 +94,19 @@ pub const wait_for_native_grace_ms: u64 = 1000;
 /// (leaving room for the waitFor grace).
 pub const max_timeout_ms: u64 = std.math.maxInt(i32) - wait_for_native_grace_ms;
 
+pub const ExecuteOptions = struct {
+    /// Checked before the command starts and before every retry attempt
+    /// (the per-page queue sets it on shutdown).
+    cancel: ?*const std.atomic.Value(bool) = null,
+    /// Time the command spent queued behind same-page commands.
+    queue_wait_ms: u64 = 0,
+};
+
+fn isCancelled(cancel: ?*const std.atomic.Value(bool)) bool {
+    const flag = cancel orelse return false;
+    return flag.load(.acquire);
+}
+
 pub const Engine = struct {
     port: page_port.PagePort,
     clock: Clock,
@@ -104,8 +117,13 @@ pub const Engine = struct {
     }
 
     pub fn execute(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand) error{OutOfMemory}!Outcome {
+        return self.executeWith(gpa, command, .{});
+    }
+
+    pub fn executeWith(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, options: ExecuteOptions) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
         const ids = self.nextIds(&ids_buf);
+        if (isCancelled(options.cancel)) return automationFailure(gpa, .cancelled, null, ids);
         const timeout_ms = @min(command.timeout_ms orelse default_timeout_ms, max_timeout_ms);
         return switch (command.verb) {
             .page_url => {
@@ -135,7 +153,7 @@ pub const Engine = struct {
             .dom_get_text,
             .dom_get_attribute,
             .dom_wait_for,
-            => self.runDom(gpa, command, timeout_ms, ids),
+            => self.runDom(gpa, command, timeout_ms, ids, options.cancel),
         };
     }
 
@@ -157,24 +175,24 @@ pub const Engine = struct {
         return .{ .result = try std.fmt.allocPrint(gpa, "{{\"result\":{s}}}", .{value_json}) };
     }
 
-    fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+    fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, ids: script_command.Ids, cancel: ?*const std.atomic.Value(bool)) error{OutOfMemory}!Outcome {
         const deadline = self.clock.nowMs() +| timeout_ms;
         // One monotonic attempt counter for the whole command, including the
         // per-character ops of a delayed dom.type.
         var attempts: u32 = 0;
         if (command.verb == .dom_type and command.text.?.len > 0) {
             if (command.delay_ms) |delay_ms| {
-                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, ids, &attempts);
+                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, ids, &attempts, cancel);
             }
         }
-        return self.runDomUntil(gpa, command, deadline, ids, &attempts);
+        return self.runDomUntil(gpa, command, deadline, ids, &attempts, cancel);
     }
 
     /// dom.type with delay_ms: one `type` op per character (UTF-8 code
     /// point), sleeping delay_ms between characters. Stops at the first
     /// failing character; never sleeps past the command deadline.
-    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, ids: script_command.Ids, attempts: *u32) error{OutOfMemory}!Outcome {
-        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, ids, attempts);
+    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, ids: script_command.Ids, attempts: *u32, cancel: ?*const std.atomic.Value(bool)) error{OutOfMemory}!Outcome {
+        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, ids, attempts, cancel);
         var characters = view.iterator();
         var first = true;
         while (characters.nextCodepointSlice()) |character| {
@@ -187,7 +205,7 @@ pub const Engine = struct {
 
             var single = command.*;
             single.text = character;
-            var outcome = try self.runDomUntil(gpa, &single, deadline, ids, attempts);
+            var outcome = try self.runDomUntil(gpa, &single, deadline, ids, attempts, cancel);
             switch (outcome) {
                 .failure => return outcome,
                 .result => outcome.deinit(gpa),
@@ -201,11 +219,12 @@ pub const Engine = struct {
     /// `deadline`; no attempt starts at or after the deadline and no native
     /// call is given more than the remaining time. waitFor owns its own wait
     /// in JS, so only a missing script is retried for it.
-    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, base_ids: script_command.Ids, attempts: *u32) error{OutOfMemory}!Outcome {
+    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, base_ids: script_command.Ids, attempts: *u32, cancel: ?*const std.atomic.Value(bool)) error{OutOfMemory}!Outcome {
         const is_wait = command.verb == .dom_wait_for;
         var ids = base_ids;
         var last: LastFailure = .{};
         while (true) {
+            if (isCancelled(cancel)) return automationFailure(gpa, .cancelled, null, ids);
             ids.attempt_index = attempts.*;
             attempts.* += 1;
             const remaining = deadline -| self.clock.nowMs();

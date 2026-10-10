@@ -5,6 +5,10 @@ const automation_websocket = @import("automation_websocket.zig");
 const net = std.Io.net;
 const page_port = automation.page_port;
 const engine_mod = automation.engine;
+const queue_mod = automation.queue;
+
+/// The automation API drives the primary window's page.
+const primary_page_id = "page-1";
 
 const max_frame_bytes = 64 * 1024;
 
@@ -37,6 +41,8 @@ pub const AutomationApiServer = struct {
     engine: ?engine_mod.Engine = null,
     connections_mutex: std.Io.Mutex = .init,
     connections: std.ArrayListUnmanaged(*Connection) = .empty,
+    /// Serializes commands per page (M8) and cancels them on stop().
+    queue: queue_mod.PageCommandQueue,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -47,6 +53,7 @@ pub const AutomationApiServer = struct {
             .allocator = allocator,
             .io = io,
             .clock = .{ .io = io },
+            .queue = queue_mod.PageCommandQueue.init(allocator, io),
             .config = .{
                 .enabled = config.enabled,
                 .socket_path = try allocator.dupe(u8, config.socket_path),
@@ -59,6 +66,7 @@ pub const AutomationApiServer = struct {
     pub fn deinit(self: *AutomationApiServer) void {
         self.stop();
         self.connections.deinit(self.allocator);
+        self.queue.deinit();
         self.allocator.free(self.config.socket_path);
         self.allocator.free(self.config.token);
         self.* = undefined;
@@ -83,6 +91,9 @@ pub const AutomationApiServer = struct {
     pub fn stop(self: *AutomationApiServer) void {
         const had_listener = self.listener != null;
         self.stopping.store(true, .release);
+        // Queued commands fail with `cancelled`; running ones stop at their
+        // next retry poll.
+        self.queue.shutdown();
 
         if (self.thread) |thread| {
             wakeAccept(self.io, self.config.socket_path);
@@ -100,7 +111,7 @@ pub const AutomationApiServer = struct {
         if (had_listener) cleanupSocketPath(self.io, self.config.socket_path) catch {};
     }
 
-    /// Unblocks every connection thread (shutdown wakes a pending read) and
+    /// Unblocks every connection thread (read shutdown wakes a pending read) and
     /// joins it. A thread busy in the engine finishes its current command
     /// first; PagePort calls are bounded by their deadline or by the GTK loop
     /// ending.
@@ -110,7 +121,9 @@ pub const AutomationApiServer = struct {
         self.connections_mutex.unlock(self.io);
         defer self.allocator.free(list);
 
-        for (list) |connection| connection.stream.shutdown(self.io, .both) catch {};
+        // Read side only: wakes handlers blocked waiting for the next frame,
+        // while a command that is finishing can still write its response.
+        for (list) |connection| connection.stream.shutdown(self.io, .recv) catch {};
         for (list) |connection| self.destroyConnection(connection);
     }
 
@@ -203,8 +216,7 @@ pub const AutomationApiServer = struct {
             defer std.heap.smp_allocator.free(payload);
             reader.interface.readSliceAll(payload) catch return;
 
-            const engine: ?*engine_mod.Engine = if (self.engine) |*e| e else null;
-            const response = handleRequest(std.heap.smp_allocator, payload, self.config.token, engine) catch |err| switch (err) {
+            const response = self.handleRequest(std.heap.smp_allocator, payload) catch |err| switch (err) {
                 error.OutOfMemory => return err,
             };
             defer std.heap.smp_allocator.free(response);
@@ -213,9 +225,20 @@ pub const AutomationApiServer = struct {
             reader.interface.readSliceAll(&header) catch return;
         }
     }
+
+    fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
+        const engine: ?*engine_mod.Engine = if (self.engine) |*e| e else null;
+        return handleRequestWith(allocator, payload, self.config.token, engine, &self.queue);
+    }
 };
 
-fn handleRequest(allocator: std.mem.Allocator, payload: []const u8, token: []const u8, engine: ?*engine_mod.Engine) error{OutOfMemory}![]u8 {
+fn handleRequestWith(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    token: []const u8,
+    engine: ?*engine_mod.Engine,
+    queue: *queue_mod.PageCommandQueue,
+) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return jsonRpcError(allocator, "null", -32700, "Parse error", null),
@@ -265,7 +288,19 @@ fn handleRequest(allocator: std.mem.Allocator, payload: []const u8, token: []con
         return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(session_invalid), automation.errors.name(session_invalid), null);
     };
 
-    var outcome = try active_engine.execute(allocator, &command);
+    const ticket = queue.acquire(primary_page_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Cancelled => {
+            const cancelled = automation.errors.AutomationError.cancelled;
+            return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(cancelled), automation.errors.name(cancelled), null);
+        },
+    };
+    defer queue.release(ticket);
+
+    var outcome = try active_engine.executeWith(allocator, &command, .{
+        .cancel = &ticket.cancelled,
+        .queue_wait_ms = ticket.wait_ms,
+    });
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

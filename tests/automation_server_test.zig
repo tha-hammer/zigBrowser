@@ -141,9 +141,63 @@ test "a second client is served while the first stays connected, and stop() clos
     fixture.server.stop();
 }
 
+test "concurrent clients on the same page are serialized by the queue" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("fifo", .{ .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true}}", .eval_delay_ms = 20 });
+    defer fixture.deinit();
+
+    const Client = struct {
+        fn run(f: *Fixture, ok: *bool) void {
+            var stream = f.connect() catch return;
+            defer stream.close(testing.io);
+            for (0..3) |_| {
+                const response = roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\"},\"id\":1}") catch return;
+                defer testing.allocator.free(response);
+                if (std.mem.indexOf(u8, response, "\"result\":{\"ok\":true}") == null) return;
+            }
+            ok.* = true;
+        }
+    };
+    var oks = [_]bool{false} ** 3;
+    var threads: [3]std.Thread = undefined;
+    for (&threads, 0..) |*t, i| t.* = try std.Thread.spawn(.{}, Client.run, .{ fixture, &oks[i] });
+    for (threads) |t| t.join();
+    for (oks) |ok| try testing.expect(ok);
+    try testing.expectEqual(@as(u32, 9), fixture.fake.evals.load(.acquire));
+    try testing.expectEqual(@as(u32, 1), fixture.fake.max_in_flight.load(.acquire));
+}
+
+test "stop() cancels a command stuck in its retry loop" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("cancel", .{ .eval_reply = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":true,\"data\":{\"reason\":\"strict_zero\"}}" });
+    defer fixture.deinit();
+
+    const Client = struct {
+        fn run(f: *Fixture, out: *?[]u8) void {
+            var stream = f.connect() catch return;
+            defer stream.close(testing.io);
+            out.* = roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#never\"},\"id\":9}") catch null;
+        }
+    };
+    var response: ?[]u8 = null;
+    const t = try std.Thread.spawn(.{}, Client.run, .{ fixture, &response });
+    while (fixture.fake.evals.load(.acquire) < 3) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+
+    const started = std.Io.Clock.now(.awake, testing.io).toMilliseconds();
+    fixture.server.stop();
+    const elapsed = std.Io.Clock.now(.awake, testing.io).toMilliseconds() - started;
+    t.join();
+    defer if (response) |r| testing.allocator.free(r);
+
+    try testing.expect(elapsed < 2000); // the command's own deadline is 30 s
+    try testing.expect(response != null);
+    try testing.expect(std.mem.indexOf(u8, response.?, "\"code\":-32012") != null);
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
+    eval_delay_ms: u64 = 0,
 };
 
 const Fixture = struct {
@@ -160,7 +214,7 @@ const Fixture = struct {
             .{testing.random_seed},
         );
         cleanupSocketPath(self.socket_path);
-        self.fake = .{ .eval_reply = options.eval_reply };
+        self.fake = .{ .eval_reply = options.eval_reply, .eval_delay_ms = options.eval_delay_ms };
         self.server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
             .enabled = true,
             .socket_path = self.socket_path,
@@ -188,6 +242,10 @@ const Fixture = struct {
 /// tests/automation_engine_test.zig.
 const FakePort = struct {
     eval_reply: []const u8,
+    eval_delay_ms: u64 = 0,
+    evals: std.atomic.Value(u32) = .init(0),
+    in_flight: std.atomic.Value(u32) = .init(0),
+    max_in_flight: std.atomic.Value(u32) = .init(0),
 
     fn port(self: *FakePort) page_port.PagePort {
         return .{ .ptr = self, .vtable = &vtable };
@@ -204,6 +262,11 @@ const FakePort = struct {
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         _ = .{ world, body, arg, timeout_ms };
         const self: *FakePort = @ptrCast(@alignCast(ptr));
+        const now_in_flight = self.in_flight.fetchAdd(1, .acq_rel) + 1;
+        defer _ = self.in_flight.fetchSub(1, .acq_rel);
+        _ = self.max_in_flight.fetchMax(now_in_flight, .acq_rel);
+        if (self.eval_delay_ms > 0) testing.io.sleep(.fromMilliseconds(@intCast(self.eval_delay_ms)), .awake) catch {};
+        _ = self.evals.fetchAdd(1, .acq_rel);
         return gpa.dupe(u8, self.eval_reply);
     }
     fn navigate(_: *anyopaque, _: []const u8, _: u64) page_port.PortError!void {}
