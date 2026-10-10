@@ -15,6 +15,7 @@
   const FNV_OFFSET_BASIS_32 = 2166136261;
   const FNV_PRIME_32 = 16777619;
   const BBOX_DECIMAL_SCALE = 100;
+  const MAX_ATTEMPT_INDEX = 1000000;
 
   let nextElementId = 1;
   let nextSpanId = 1;
@@ -58,6 +59,7 @@
   function getText(command) {
     const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
     if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
     return success({ text: elementText(resolved.elements[0]) }, resolved.telemetry);
   }
 
@@ -67,12 +69,14 @@
     }
     const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
     if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
     return success({ value: resolved.elements[0].getAttribute(command.name) }, resolved.telemetry);
   }
 
   function runAction(command, action) {
     const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
     if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
 
     const element = resolved.elements[0];
     const options = command.options || {};
@@ -143,6 +147,12 @@
         } catch (_) {
           const telemetry = [selectorSpan(command, parsed.kind, strict, 0, started, 'error')];
           finish(failure('malformed_selector', command, telemetry, true));
+          return;
+        }
+
+        if (strict && elements.length > 1) {
+          const telemetry = [selectorSpan(command, parsed.kind, strict, elements.length, started, 'error')];
+          finish(failure('strict_multiple', command, telemetry, true));
           return;
         }
 
@@ -442,7 +452,7 @@
         'selector.strict': strict ? 'true' : 'false',
         'selector.match_count': String(matchCount),
         'dom.frame_depth': '0',
-        'attempt.index': '0',
+        'attempt.index': attemptIndex(command),
         'script.world': 'automation',
         'result.status': status,
         duration_ms: Math.max(0, nowMs() - started)
@@ -463,6 +473,7 @@
         'action.force': String((command.options && command.options.force === true) || command.force === true),
         'action.trial': String((command.options && command.options.trial === true) || command.trial === true),
         'actionability.check': check.check,
+        'attempt.index': attemptIndex(command),
         'actionability.required_checks': requiredChecks(action).join(','),
         'actionability.passed': check.passed ? 'true' : 'false',
         'actionability.failed_check': check.passed ? '' : check.check,
@@ -472,6 +483,11 @@
         'automation.error': check.error || ''
       }
     };
+  }
+
+  function attemptIndex(command) {
+    const index = command.attempt_index;
+    return Number.isInteger(index) && index >= 0 ? String(Math.min(index, MAX_ATTEMPT_INDEX)) : '0';
   }
 
   function requiredChecks(action) {

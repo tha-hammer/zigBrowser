@@ -88,6 +88,54 @@ test.describe('selector engine', () => {
     expect(attr).toEqual({ ok: true, value: { value: 'Comment' }, telemetry: expect.any(Array) });
   });
 
+  test('non-strict getText/getAttribute with zero matches fail as element_not_found, not an exception', async ({ page }) => {
+    for (const command of [
+      { op: 'getText', selector: 'text=Missing', strict: false },
+      { op: 'getAttribute', selector: 'text=Missing', name: 'id', strict: false },
+      { op: 'click', selector: 'text=Missing', strict: false, options: { force: true } },
+      { op: 'fill', selector: 'text=Missing', value: 'x', strict: false },
+    ]) {
+      const result = await handle(page, command);
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('element_not_found');
+      expect(result.data.reason).toBe('no_match');
+      expect(result.retryable).toBe(true);
+    }
+  });
+
+  test('strict waitFor fails on multiple matches and succeeds on exactly one', async ({ page }) => {
+    const multiple = await handle(page, { op: 'waitFor', selector: 'text=Follow', strict: true, state: 'visible', timeout_ms: 200 });
+    expect(multiple.ok).toBe(false);
+    expect(multiple.error).toBe('element_not_found');
+    expect(multiple.data.reason).toBe('strict_multiple');
+
+    const one = await handle(page, { op: 'waitFor', selector: 'testid=send-message-btn', strict: true, state: 'visible', timeout_ms: 200 });
+    expect(one.ok).toBe(true);
+
+    const zero = await handle(page, { op: 'waitFor', selector: 'text=Missing', strict: true, state: 'attached', timeout_ms: 50 });
+    expect(zero.ok).toBe(false);
+    expect(zero.data.reason).toBe('timeout');
+
+    const nonStrict = await handle(page, { op: 'waitFor', selector: 'text=Follow', strict: false, state: 'visible', timeout_ms: 200 });
+    expect(nonStrict.ok).toBe(true);
+    expect(await page.evaluate(() => globalThis.__zbAutomation.debugOutstandingWaits())).toBe(0);
+  });
+
+  test('selector spans carry the engine attempt_index', async ({ page }) => {
+    const result = await handle(page, { op: 'query', selector: 'testid=send-message-btn', attempt_index: 3 });
+    expect(result.telemetry[0].attributes['attempt.index']).toBe('3');
+
+    const missing = await handle(page, { op: 'query', selector: 'testid=send-message-btn' });
+    expect(missing.telemetry[0].attributes['attempt.index']).toBe('0');
+
+    const bogus = await handle(page, { op: 'query', selector: 'testid=send-message-btn', attempt_index: 'x<y' });
+    expect(bogus.telemetry[0].attributes['attempt.index']).toBe('0');
+
+    const click = await handle(page, { op: 'click', selector: 'testid=send-message-btn', attempt_index: 2, options: { trial: true } });
+    expect(click.ok).toBe(true);
+    for (const span of click.telemetry) expect(span.attributes['attempt.index']).toBe('2');
+  });
+
   test('emits redacted selector telemetry drafts', async ({ page }) => {
     const result = await handle(page, {
       op: 'query',
