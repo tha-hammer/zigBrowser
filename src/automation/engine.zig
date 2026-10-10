@@ -1157,6 +1157,8 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
         error.Unsupported => return automationFailure(gpa, .session_invalid, "unsupported", ids),
         // Native input bound to a document that is gone; nothing was sent.
         error.DocumentChanged => return automationFailure(gpa, .element_not_found, "document_changed", ids),
+        // Input was sent, then the page was replaced: terminal, same reason.
+        error.DocumentReplaced => return automationFailure(gpa, .element_not_found, "document_changed", ids),
         // setInputFiles: the client's paths are unusable; nothing ran.
         error.BadFile => return failureWithReason(gpa, invalid_params_code, "Invalid params", "bad_file", ids),
         // setInputFiles: applied once, unconfirmed; never retried.
@@ -1444,7 +1446,7 @@ fn partialPortFailure(gpa: std.mem.Allocator, err: page_port.PortError, sent_cha
         error.OutOfMemory => return error.OutOfMemory,
         error.EvalFailed => return partialInternal(gpa, "Evaluation failed", sent_chars, run),
         // The target's document is gone: the rest was not typed anywhere.
-        error.DocumentChanged => return partialFailure(gpa, errors.downstreamCode(.element_not_found), errors.name(.element_not_found), null, "document_changed", sent_chars, run),
+        error.DocumentChanged, error.DocumentReplaced => return partialFailure(gpa, errors.downstreamCode(.element_not_found), errors.name(.element_not_found), null, "document_changed", sent_chars, run),
         error.Timeout, error.FilesUnconfirmed => .action_timeout,
         error.Cancelled => .cancelled,
         error.NoPage, error.Unsupported => .session_invalid,

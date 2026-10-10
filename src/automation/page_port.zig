@@ -47,6 +47,11 @@ pub const PortError = error{
     /// `document` names. Before any dispatch nothing was sent; for
     /// nativeText `sent_chars` says how many code points were.
     DocumentChanged,
+    /// Native input WAS dispatched to the expected document, and then the
+    /// document was replaced (or was leaving) before the operation could
+    /// finish (e.g. before nativeScroll's settled offsets were read). Never
+    /// retried; no result from the replacement document is ever returned.
+    DocumentReplaced,
     /// v3.3 setInputFiles: a path is not an absolute, readable regular
     /// file (or there are too many). Checked before anything runs.
     BadFile,
@@ -157,7 +162,9 @@ pub const PagePort = struct {
         /// `document` like nativeMove (DocumentChanged: nothing sent).
         /// Returns once the page acknowledged the trusted wheel and the
         /// scrolling it started went quiet, with the page's offsets at that
-        /// moment. Once dispatched it is never retried.
+        /// moment. Once dispatched it is never retried: a document change
+        /// after dispatch is error.DocumentReplaced (never the new
+        /// document's offsets).
         nativeScroll: *const fn (ptr: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!ScrollOffsets = unsupportedScroll,
 
         // --- v3.4 (N19) ---

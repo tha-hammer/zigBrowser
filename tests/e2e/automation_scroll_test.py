@@ -5,6 +5,8 @@ Python SDK, on tests/fixtures/automation/scroll.html served locally.
 The scroll oracle reads the page's offsets in the very next command after
 dom.scroll returns: the answer and the page must already agree. Native
 (real wheel) scrolling is covered by automation_native_ports_test.py.
+Hover: synthetic events do not create CSS :hover; a native hover (plain and
+humanized) does, as the menu's computed :hover style shows.
 Exit 77 (skip) without a binary/display."""
 
 from __future__ import annotations
@@ -109,8 +111,27 @@ def synthetic(zb: ZigBrowser) -> list[str]:
     for event in ("pointerover:false", "mouseover:false", "mousemove:false"):
         if event not in hovers:
             raise AssertionError(f"synthetic hover: {event} missing from {hovers}")
+    expect_equal("synthetic hover does not create :hover", page(zb, "document.getElementById('menu').matches(':hover')"), False)
     passed.append("synthetic-hover")
     return passed
+
+
+def native_hover(zb: ZigBrowser) -> list[str]:
+    """A native hover moves the real pointer: CSS :hover applies."""
+    menu_style = "getComputedStyle(document.getElementById('menu')).backgroundColor"
+    reset(zb)
+    expect_equal("menu before hover", page(zb, menu_style), "rgb(204, 204, 204)")
+    expect_equal("native hover", zb.dom.hover("css=#menu", input="native"), {"ok": True})
+    expect_equal("native hover: :hover", page(zb, "document.getElementById('menu').matches(':hover')"), True)
+    expect_equal("native hover: :hover style", page(zb, menu_style), "rgb(0, 128, 0)")
+    if "mousemove:true" not in page(zb, "window.__scroll.hovers"):
+        raise AssertionError("native hover: no trusted mousemove on the menu")
+    # Move off with a native hover elsewhere, then back with a humanized path.
+    zb.dom.hover("css=#top", input="native")
+    expect_equal("hover moved away", page(zb, "document.getElementById('menu').matches(':hover')"), False)
+    expect_equal("humanized hover", zb.dom.hover("css=#menu", input="native", humanize=True), {"ok": True})
+    expect_equal("humanized hover: :hover style", page(zb, menu_style), "rgb(0, 128, 0)")
+    return ["native-hover"]
 
 
 def main() -> int:
@@ -145,7 +166,7 @@ def main() -> int:
             wait_for_socket(socket_path, args.timeout_sec)
             with ZigBrowser(socket_path=str(socket_path)) as zb:
                 zb.dom.wait_for("css=#far", state="attached", timeout_ms=15000)
-                passed = synthetic(zb)
+                passed = synthetic(zb) + native_hover(zb)
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             print("FAIL\tautomation-scroll")
             eprint(f"error={exc!r}")

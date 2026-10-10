@@ -1637,3 +1637,17 @@ test "page.screenshot that returns at or past the command deadline is a timeout,
     defer outcome.deinit(gpa);
     try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"screenshot_deadline\"");
 }
+
+test "native dom.scroll by offset: the page replaced after the wheel (DocumentReplaced) is terminal document_changed, no offsets, no second wheel (RoseCat 4756)" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = measured("400", "300", "0123456789abcdef", "0") }};
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.DocumentReplaced;
+    var outcome = try h.run("dom.scroll", "{\"y\":300,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+}
