@@ -8,6 +8,7 @@ const x = @import("../x.zig");
 const pacing = @import("pacing.zig");
 const engine_mod = @import("engine.zig");
 const flow_runner = @import("flow_runner.zig");
+const flow = @import("../flow_steps.zig");
 
 pub const Verb = x.Verb;
 
@@ -19,7 +20,10 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
 /// timeout to what is left (waitFor also leaves room for its 1 s native
 /// grace), and no step starts once it is spent, so a flow holds the page
 /// queue for at most this long (plus the last native call's own rounding).
-pub const flow_budget_ms: u64 = 120_000;
+/// This is the default; x.post / x.schedule_post may set `timeout_ms` (at
+/// most 600 s), and a humanized flow is sized from its typing schedule
+/// (flow_steps.flowBudgetMs).
+pub const flow_budget_ms: u64 = flow.default_flow_budget_ms;
 
 /// X actions (posts and scheduled posts) allowed per UTC day.
 pub const default_daily_cap: u32 = 50;
@@ -86,8 +90,8 @@ pub fn handleWithBudget(
         else => return invalidParams(),
     };
     const allowed: []const []const u8 = switch (verb) {
-        .post => &.{ "text", "compose_url", "options" },
-        .schedule_post => &.{ "text", "date", "time", "compose_url", "options" },
+        .post => &.{ "text", "compose_url", "options", "timeout_ms" },
+        .schedule_post => &.{ "text", "date", "time", "compose_url", "options", "timeout_ms" },
         .login_check, .selfcheck => &.{},
     };
     var keys = params.iterator();
@@ -95,7 +99,18 @@ pub fn handleWithBudget(
         if (!inList(allowed, entry.key_ptr.*)) return invalidParams();
     }
 
-    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| budget_ms, .deadline_reason = "x_flow_deadline" };
+    // The flow budget: the request's timeout_ms (at most 600 s); else, for
+    // a humanized flow, the default plus its typing's worst case; else the
+    // default.
+    const explicit_ms = flow.flowTimeoutParam(params.get("timeout_ms")) catch return invalidParams();
+    var humanized_text: ?[]const u8 = null;
+    if (verb == .post or verb == .schedule_post) {
+        if (inputOptions(params)) |input| {
+            if (input.humanize) humanized_text = stringField(params, "text");
+        }
+    }
+    const flow_ms = flow.flowBudgetMs(budget_ms, explicit_ms, humanized_text);
+    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| flow_ms, .deadline_reason = "x_flow_deadline" };
     defer runner.deinit();
 
     const flow_result: x.Error!?[]u8 = switch (verb) {

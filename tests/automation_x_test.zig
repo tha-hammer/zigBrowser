@@ -366,3 +366,72 @@ test "x.post options: input/humanize accepted and validated (humanize needs nati
     defer ok.deinit(gpa);
     try std.testing.expect(ok == .result);
 }
+
+test "flow budgets: timeout_ms (1..600000), humanized sizing from the typing schedule, 120 s default" {
+    const flow = automation.flow_steps;
+    try std.testing.expectEqual(@as(u64, 120_000), flow.flowBudgetMs(120_000, null, null));
+    try std.testing.expectEqual(@as(u64, 300_000), flow.flowBudgetMs(120_000, 300_000, null));
+    // An explicit timeout wins over humanized sizing.
+    try std.testing.expectEqual(@as(u64, 90_000), flow.flowBudgetMs(120_000, 90_000, "word " ** 56));
+    // A humanized 280-character post (56 spaces): the default + the typing
+    // worst case (224 x 250 + 56 x 650 + 5 000) + 10 s of clicks.
+    const long = "word " ** 56;
+    try std.testing.expectEqual(@as(u64, 120_000 + 97_400 + 10_000), flow.flowBudgetMs(120_000, null, long));
+    try std.testing.expect(flow.flowBudgetMs(120_000, null, long) > 120_000);
+    // Capped at 600 s however long the text.
+    try std.testing.expectEqual(@as(u64, 600_000), flow.flowBudgetMs(120_000, null, " " ** 2000));
+    // timeout_ms values.
+    try std.testing.expectEqual(@as(?u64, null), try flow.flowTimeoutParam(null));
+    try std.testing.expectEqual(@as(?u64, 600_000), try flow.flowTimeoutParam(.{ .integer = 600_000 }));
+    for ([_]std.json.Value{ .{ .integer = 0 }, .{ .integer = -5 }, .{ .integer = 600_001 }, .{ .float = 1.5 }, .{ .string = "5000" }, .{ .bool = true } }) |bad| {
+        try std.testing.expectError(error.InvalidParams, flow.flowTimeoutParam(bad));
+    }
+    // Typing steps scale with the text (not a fixed 30 s).
+    try std.testing.expectEqual(@as(u64, 30_000), flow.typingTimeoutMs("hi", false));
+    try std.testing.expectEqual(@as(u64, 100 * 1000 + 5_000), flow.typingTimeoutMs("x" ** 1000, false));
+}
+
+test "x.post timeout_ms: invalid values are -32602; a slow flow fits a larger budget and hits the default one" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    for ([_][]const u8{
+        "{\"text\":\"hi\",\"timeout_ms\":0}",
+        "{\"text\":\"hi\",\"timeout_ms\":600001}",
+        "{\"text\":\"hi\",\"timeout_ms\":\"5000\"}",
+        "{\"text\":\"hi\",\"timeout_ms\":2.5}",
+    }) |params| {
+        var outcome = try h.call("x.post", params);
+        defer outcome.deinit(gpa);
+        if (outcome != .failure or outcome.failure.code != -32602) {
+            std.debug.print("accepted {s}\n", .{params});
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), h.fake.navigate_calls.items.len);
+
+    // Each page step takes 1 s: a 3 s default budget runs out ...
+    var slow: Harness = undefined;
+    slow.init(&.{ok_reply});
+    defer slow.deinit();
+    slow.fake.clock = &slow.clock;
+    slow.fake.eval_cost_ms = 1_000;
+    slow.budget_ms = 3_000;
+    var default_budget = try slow.call("x.post", "{\"text\":\"hi\"}");
+    defer default_budget.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), default_budget.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, default_budget.failure.data_json.?, "x_flow_deadline") != null);
+
+    // ... while timeout_ms 20000 (larger than that default) lets the same
+    // flow finish.
+    var roomy: Harness = undefined;
+    roomy.init(&.{ok_reply});
+    defer roomy.deinit();
+    roomy.fake.clock = &roomy.clock;
+    roomy.fake.eval_cost_ms = 1_000;
+    roomy.budget_ms = 3_000;
+    var bigger = try roomy.call("x.post", "{\"text\":\"hi\",\"timeout_ms\":20000}");
+    defer bigger.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", bigger.result);
+    try std.testing.expect(roomy.clock.now_ms > 3_000 and roomy.clock.now_ms <= 20_000);
+}

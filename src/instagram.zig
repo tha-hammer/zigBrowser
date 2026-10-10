@@ -56,7 +56,6 @@ pub const max_dm_chars = 1000;
 const navigate_timeout_ms = 30_000;
 const page_ready_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
-const type_timeout_ms = 30_000;
 const confirm_timeout_ms = 15_000;
 
 pub const Verb = enum { follow, like, comment, dm, story_view, selfcheck };
@@ -102,7 +101,7 @@ pub fn comment(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, post_url: 
     if (!(try openPage(gpa, runner, post_url))) return null;
     if (!(try click(gpa, runner, selectors.comment_input, true))) return null;
     if (!(try flow.step(gpa, runner, "dom.fill", .{ .selector = selectors.comment_input, .value = "", .options = .{ .timeout_ms = flow.budget(runner, click_timeout_ms) } }))) return null;
-    if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.comment_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, type_timeout_ms) } }))) return null;
+    if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.comment_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, flow.typingTimeoutMs(text, false)) } }))) return null;
     if (!(try click(gpa, runner, selectors.comment_submit, true))) return null;
     return try gpa.dupe(u8, ok_json);
 }
@@ -115,7 +114,7 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
     if (!(try openPage(gpa, runner, url))) return null;
     if (!(try click(gpa, runner, selectors.message_button, true))) return null;
     if (!(try click(gpa, runner, selectors.dm_input, true))) return null;
-    if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.dm_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, type_timeout_ms) } }))) return null;
+    if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.dm_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, flow.typingTimeoutMs(text, false)) } }))) return null;
     if (!(try click(gpa, runner, selectors.dm_send, true))) return null;
     return try gpa.dupe(u8, ok_json);
 }

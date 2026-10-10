@@ -103,8 +103,10 @@ pub const Env = struct {
     fixture_origin: ?[]const u8 = null,
 };
 
-/// One hard deadline for a whole flow, like x.*.
-pub const flow_budget_ms: u64 = 120_000;
+/// The default hard deadline for a whole flow, like x.*. The flows that
+/// type text (linkedin.connect/message/comment, instagram.comment/dm) take
+/// `timeout_ms` (at most 600 s).
+pub const flow_budget_ms: u64 = flow.default_flow_budget_ms;
 
 const cookie_timeout_ms: u64 = 10_000;
 
@@ -130,11 +132,8 @@ pub fn handleWithBudget(
     budget_ms: u64,
 ) error{OutOfMemory}!engine_mod.Outcome {
     const started = ext.nowMs();
-    // One absolute deadline for everything below: cookie gate, pacing
-    // pause and every flow step.
-    const deadline_ms = started +| budget_ms;
     var trace = Trace.init(ext, call);
-    const outcome = try execute(gpa, state, env, ext, call, params_json, deadline_ms, &trace);
+    const outcome = try execute(gpa, state, env, ext, call, params_json, started, budget_ms, &trace);
     trace.finish(&outcome, ext.nowMs() -| started);
     return outcome;
 }
@@ -146,7 +145,8 @@ fn execute(
     ext: *engine_mod.External,
     call: Call,
     params_json: []const u8,
-    deadline_ms: u64,
+    started: u64,
+    default_budget_ms: u64,
     trace: *Trace,
 ) error{OutOfMemory}!engine_mod.Outcome {
     const ids = ext.ids();
@@ -162,11 +162,17 @@ fn execute(
     var keys = params.iterator();
     while (keys.next()) |entry| {
         if (!inList(allowedParams(call), entry.key_ptr.*)) return invalidParams();
-        // Every allowed param is a string.
+        // Every allowed param is a string, except the flow's timeout_ms.
+        if (std.mem.eql(u8, entry.key_ptr.*, "timeout_ms")) continue;
         if (entry.value_ptr.* != .string) return invalidParams();
     }
     const p = Params{ .object = params };
     const s = call.site(env);
+    // One absolute deadline from the request start for everything below
+    // (cookie gate, pacing pause, every flow step): timeout_ms (at most
+    // 600 s), else the default.
+    const explicit_ms = flow.flowTimeoutParam(params.get("timeout_ms")) catch return invalidParams();
+    const deadline_ms = started +| flow.flowBudgetMs(default_budget_ms, explicit_ms, null);
 
     // 1. Everything that needs no page, before the gate and pacing.
     validate(gpa, call, s, p) catch |err| switch (err) {
@@ -252,18 +258,18 @@ fn allowedParams(call: Call) []const []const u8 {
     return switch (call) {
         .linkedin => |verb| switch (verb) {
             .visit, .follow, .extract => &.{"profileUrl"},
-            .connect => &.{ "profileUrl", "note" },
-            .message => &.{ "text", "conversationUrl", "profileUrl" },
+            .connect => &.{ "profileUrl", "note", "timeout_ms" },
+            .message => &.{ "text", "conversationUrl", "profileUrl", "timeout_ms" },
             .like => &.{"postUrl"},
-            .comment => &.{ "postUrl", "text" },
+            .comment => &.{ "postUrl", "text", "timeout_ms" },
             .search => &.{ "query", "searchType" },
             .selfcheck => &.{},
         },
         .instagram => |verb| switch (verb) {
             .follow => &.{"profileUrl"},
             .like => &.{"postUrl"},
-            .comment => &.{ "postUrl", "text" },
-            .dm => &.{ "username", "text" },
+            .comment => &.{ "postUrl", "text", "timeout_ms" },
+            .dm => &.{ "username", "text", "timeout_ms" },
             .story_view => &.{"username"},
             .selfcheck => &.{},
         },

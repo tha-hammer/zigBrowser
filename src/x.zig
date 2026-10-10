@@ -47,8 +47,6 @@ const navigate_timeout_ms = 30_000;
 const composer_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;
-/// Typing up to 280 characters, one event sequence per character.
-const type_timeout_ms = 30_000;
 /// One trial-click probe of a Post button copy.
 const probe_timeout_ms = 1_000;
 /// How long to look for an actionable Post button: rounds over every copy
@@ -92,13 +90,6 @@ fn act(input: Input, timeout_ms: u64) ActionOptions {
         .input = if (input.native) "native" else null,
         .humanize = if (input.humanize) true else null,
     };
-}
-
-/// Worst case of a humanized type (600 ms per character, the word-pause
-/// maximum) plus room for the page calls; the flow budget still caps it.
-fn humanizedTypeTimeout(text: []const u8) u64 {
-    const chars = std.unicode.utf8CountCodepoints(text) catch text.len;
-    return @as(u64, chars) * 600 + 5_000;
 }
 
 pub const PostParams = struct {
@@ -228,7 +219,7 @@ fn openComposer(gpa: std.mem.Allocator, runner: anytype, url: []const u8) Error!
 fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8, input: Input) Error!bool {
     if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.composer, .options = act(input, budget(runner, click_timeout_ms)) }))) return false;
     if (!(try step(gpa, runner, "dom.fill", .{ .selector = selectors.composer, .value = "", .options = .{ .timeout_ms = budget(runner, click_timeout_ms) } }))) return false;
-    const type_ms: u64 = if (input.humanize) @max(type_timeout_ms, humanizedTypeTimeout(text)) else type_timeout_ms;
+    const type_ms = flow.typingTimeoutMs(text, input.humanize);
     return step(gpa, runner, "dom.type", .{ .selector = selectors.composer, .text = text, .options = act(input, budget(runner, type_ms)) });
 }
 

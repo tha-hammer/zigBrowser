@@ -65,7 +65,6 @@ pub const search_types = [_][]const u8{ "people", "companies", "jobs", "content"
 const navigate_timeout_ms = 30_000;
 const page_ready_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
-const type_timeout_ms = 30_000;
 const confirm_timeout_ms = 15_000;
 const read_timeout_ms = 10_000;
 
@@ -265,5 +264,5 @@ fn waitAttached(gpa: std.mem.Allocator, runner: anytype, selector: []const u8) E
 fn typeInto(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, text: []const u8) Error!bool {
     if (!(try click(gpa, runner, selector, true))) return false;
     if (!(try flow.step(gpa, runner, "dom.fill", .{ .selector = selector, .value = "", .options = .{ .timeout_ms = flow.budget(runner, click_timeout_ms) } }))) return false;
-    return flow.step(gpa, runner, "dom.type", .{ .selector = selector, .text = text, .options = .{ .timeout_ms = flow.budget(runner, type_timeout_ms) } });
+    return flow.step(gpa, runner, "dom.type", .{ .selector = selector, .text = text, .options = .{ .timeout_ms = flow.budget(runner, flow.typingTimeoutMs(text, false)) } });
 }

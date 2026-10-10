@@ -178,3 +178,55 @@ pub const Site = struct {
         return path.len > 0 and path[0] == '/';
     }
 };
+
+// ---- Flow budgets (x.*, linkedin.*, instagram.* `timeout_ms`) ----
+
+/// A flow's whole budget when the request gives no `timeout_ms`.
+pub const default_flow_budget_ms: u64 = 120_000;
+/// The most a request (or humanized sizing) may give a flow.
+pub const max_flow_budget_ms: u64 = 600_000;
+/// Room for a flow's humanized clicks (paths + dwell) on top of its typing.
+const humanized_clicks_ms: u64 = 10_000;
+
+/// `timeout_ms` of a flow request: absent -> null; an integer in
+/// 1..max_flow_budget_ms -> it; anything else is InvalidParams.
+pub fn flowTimeoutParam(value: ?std.json.Value) error{InvalidParams}!?u64 {
+    const v = value orelse return null;
+    const ms: u64 = switch (v) {
+        .integer => |n| if (n >= 1) @intCast(n) else return error.InvalidParams,
+        else => return error.InvalidParams,
+    };
+    if (ms > max_flow_budget_ms) return error.InvalidParams;
+    return ms;
+}
+
+/// Worst case of the N8 humanized typing schedule for `text` (200 ms per
+/// character, 600 ms before a space) plus 50 ms of page-call time per
+/// character and a 5 s margin.
+pub fn humanizedTypingMs(text: []const u8) u64 {
+    var total: u64 = 5_000;
+    var view = (std.unicode.Utf8View.init(text) catch return 5_000 + 650 * @as(u64, text.len)).iterator();
+    while (view.nextCodepointSlice()) |cp| {
+        total += if (std.mem.eql(u8, cp, " ")) 650 else 250;
+    }
+    return total;
+}
+
+/// Timeout for one typing step: the humanized worst case, or (plain
+/// typing) 100 ms per character plus 5 s, at least 30 s. The flow budget
+/// still caps it.
+pub fn typingTimeoutMs(text: []const u8, humanize: bool) u64 {
+    if (humanize) return humanizedTypingMs(text);
+    const chars = std.unicode.utf8CountCodepoints(text) catch text.len;
+    return @max(30_000, 100 * @as(u64, chars) + 5_000);
+}
+
+/// A flow's budget: the request's `timeout_ms`; else, when it types
+/// `humanized_text` with humanize, `default_ms` plus that typing's worst
+/// case plus room for humanized clicks; else `default_ms`. Never above
+/// max_flow_budget_ms.
+pub fn flowBudgetMs(default_ms: u64, explicit_ms: ?u64, humanized_text: ?[]const u8) u64 {
+    if (explicit_ms) |ms| return @min(ms, max_flow_budget_ms);
+    if (humanized_text) |t| return @min(default_ms +| humanizedTypingMs(t) +| humanized_clicks_ms, max_flow_budget_ms);
+    return @min(default_ms, max_flow_budget_ms);
+}

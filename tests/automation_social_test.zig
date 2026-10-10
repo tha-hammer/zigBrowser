@@ -752,3 +752,50 @@ test "one absolute flow deadline covers the cookie gate and every later step" {
     try std.testing.expectEqual(@as(u64, 5_000), g.h.clock.now_ms);
     try std.testing.expectEqual(@as(usize, 0), g.h.fake.navigate_calls.items.len);
 }
+
+test "timeout_ms on the text-typing social flows: accepted and used as the flow deadline; refused elsewhere or out of range" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    for ([_][2][]const u8{
+        .{ "linkedin.like", "{\"postUrl\":\"https://www.linkedin.com/feed/1/\",\"timeout_ms\":5000}" },
+        .{ "linkedin.visit", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"timeout_ms\":5000}" },
+        .{ "instagram.story_view", "{\"username\":\"ada\",\"timeout_ms\":5000}" },
+        .{ "linkedin.comment", "{\"postUrl\":\"https://www.linkedin.com/feed/1/\",\"text\":\"x\",\"timeout_ms\":600001}" },
+        .{ "instagram.dm", "{\"username\":\"ada\",\"text\":\"x\",\"timeout_ms\":\"9\"}" },
+        .{ "linkedin.message", "{\"text\":\"x\",\"conversationUrl\":\"https://www.linkedin.com/messaging/1/\",\"timeout_ms\":0}" },
+    }) |case| {
+        var outcome = try f.call(case[0], case[1]);
+        defer outcome.deinit(gpa);
+        if (outcome != .failure or outcome.failure.code != -32602) {
+            std.debug.print("accepted {s} {s}\n", .{ case[0], case[1] });
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // A 2000-character comment needs a 205 s typing step: the default
+    // 120 s budget caps it, timeout_ms 300000 gives it the full time.
+    const long_text = "c" ** 2000;
+    for ([_]struct { extra: []const u8, check: enum { capped, full } }{
+        .{ .extra = "", .check = .capped },
+        .{ .extra = ",\"timeout_ms\":300000", .check = .full },
+    }) |case| {
+        var g: FlowHarness = undefined;
+        g.init();
+        defer g.deinit();
+        g.h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+        const params = try std.fmt.allocPrint(gpa, "{{\"postUrl\":\"https://www.instagram.com/p/1/\",\"text\":\"{s}\"{s}}}", .{ long_text, case.extra });
+        defer gpa.free(params);
+        var outcome = try g.call("instagram.comment", params);
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
+        var type_timeout: ?u64 = null;
+        for (g.h.fake.eval_calls.items) |call| {
+            if (std.mem.indexOf(u8, call.arg, "\"op\":\"type\"") != null) type_timeout = call.timeout_ms;
+        }
+        switch (case.check) {
+            .capped => try std.testing.expect(type_timeout.? <= 120_000),
+            .full => try std.testing.expectEqual(@as(u64, 205_000), type_timeout.?),
+        }
+    }
+}

@@ -200,24 +200,25 @@ restart. Cookie values are never logged or written to telemetry.
 | Method | Params | Result |
 |---|---|---|
 | `linkedin.visit` | `profileUrl` | `{ok:true}` |
-| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters) | `{ok:true}` once the profile shows the invitation as pending |
+| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?` | `{ok:true}` once the profile shows the invitation as pending |
 | `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following |
-| `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl` | `{ok:true}` |
+| `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl`, `timeout_ms?` | `{ok:true}` |
 | `linkedin.like` | `postUrl` | `{ok:true}` once the Like is pressed |
-| `linkedin.comment` | `postUrl`, `text` | `{ok:true}` |
+| `linkedin.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
 | `linkedin.search` | `query`, `searchType?` (`people`, `companies`, `jobs`, `content`, `all`) | `{ok:true, url, resultCount}` |
 | `linkedin.extract` | `profileUrl` | `{name, headline, location}` (read-only; null when absent) |
 | `linkedin.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
 | `instagram.follow` | `profileUrl` | `{ok:true}` once it shows Following or Requested |
 | `instagram.like` | `postUrl` | `{ok:true}` once it shows Unlike |
-| `instagram.comment` | `postUrl`, `text` | `{ok:true}` |
-| `instagram.dm` | `username`, `text` | `{ok:true}` (profile, Message, send) |
+| `instagram.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
+| `instagram.dm` | `username`, `text`, `timeout_ms?` | `{ok:true}` (profile, Message, send) |
 | `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes) |
 | `instagram.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
 
 - Each call is one command, like `x.*`: other page commands wait until it
   has finished, and the whole flow has 120 s
-  (`linkedin_flow_deadline` / `instagram_flow_deadline`).
+  (`linkedin_flow_deadline` / `instagram_flow_deadline`). The flows that
+  type text take `timeout_ms` (1 to 600000) for long texts.
 - Logged in means the site's session cookie is in the profile (`li_at` for
   LinkedIn, `sessionid` for Instagram). Without it the call fails with
   -32011 `logged_out` before anything is opened. After opening the page the
@@ -244,8 +245,8 @@ restart. Cookie values are never logged or written to telemetry.
 
 | Method | Params | Result |
 |---|---|---|
-| `x.post` | `text` (1-280 characters), `compose_url?`, `options?: {input?, humanize?}` | `{ok:true}` once X shows its confirmation |
-| `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?`, `options?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
+| `x.post` | `text` (1-280 characters), `compose_url?`, `options?: {input?, humanize?}`, `timeout_ms?` | `{ok:true}` once X shows its confirmation |
+| `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?`, `options?`, `timeout_ms?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
 | `x.login_check` | — | `{loggedIn, platform:"x"}` (composer on the current page; does not navigate) |
 | `x.selfcheck` | — | `{<selector name>: count, ...}` for every entry of the X selector table on the current page (read-only, not paced) |
 
@@ -263,8 +264,12 @@ restart. Cookie values are never logged or written to telemetry.
 - At most 50 posts and scheduled posts per UTC day; the next one fails with
   -32010 and `data.reason = "x_daily_cap"` without touching the page. Only
   successful posts count.
-- The whole flow has 120 s; when that runs out it stops with -32009 and
-  `data.reason = "x_flow_deadline"`. With no Post button at all after 10 s:
+- The whole flow has 120 s unless `timeout_ms` says otherwise (1 to
+  600000). With `humanize` and no `timeout_ms`, the budget is sized from
+  the typing schedule (120 s plus the slowest possible human typing of the
+  text plus 10 s for the clicks, at most 600 s), so a full 280-character
+  humanized post fits. When the budget runs out the flow stops with -32009
+  and `data.reason = "x_flow_deadline"`. With no Post button at all after 10 s:
   -32001 and `data.reason = "x_post_button_missing"`.
 - Selectors live in one table at the top of `src/x.zig`; update it when X
   changes its markup. `x.selfcheck` on a logged-in x.com page shows which

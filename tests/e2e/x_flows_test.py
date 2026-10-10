@@ -206,6 +206,22 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("selfcheck did not navigate", rpc.call("page.url")["url"], f"{base}?mode=compose&all=1")
     passed.append("x.selfcheck")
 
+    # A humanized native post of the full 280 characters: with no timeout_ms
+    # the flow budget is sized from the typing schedule, so the post is not
+    # cut by the 120 s default (which ~190+ characters used to exceed).
+    long_text = "Zig " * 70
+    slow = RpcClient(socket_path, 650)
+    started = time.monotonic()
+    humanized = slow.call("x.post", {"text": long_text, "compose_url": f"{base}?mode=compose", "options": {"input": "native", "humanize": True}})
+    elapsed = time.monotonic() - started
+    slow.close()
+    expect_equal("humanized 280-character post", humanized, {"ok": True})
+    expect_equal("humanized 280-character text", recorded()["text"], long_text)
+    if elapsed < 280 * 0.08:
+        raise AssertionError(f"280 humanized characters took only {elapsed:.1f} s")
+    eprint(f"humanized 280-character post: {elapsed:.1f} s")
+    passed.append("humanized-280")
+
     # Logged-out page: login link, no composer -> -32011 logged_out, nothing posted.
     response = rpc.raw("x.post", {"text": "should not post", "compose_url": f"{base}?mode=loggedout"})
     error = response.get("error") or {}
