@@ -179,7 +179,10 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | Clean export of `878d789` | `git archive 878d789` into one trapped `/tmp/gate-cod1-*`; `timeout 900 xvfb-run -a zig build test --summary all` | **GREEN: 83/83 steps, 631/631 tests**. | Independently covers `4497fbd` and the original N22 handoff commit. The later two commits are documentation-only. The export and its cache were deleted by `find -delete` immediately after the gate; no cod_1 gate tree remains. |
 | `2a31ffd` — atomic final native-scroll provenance | Exact adapter/unit diff review | **CODE APPROVED; TEST BLOCKED**. | The final offsets eval atomically returns document token, navigation count and leaving state, and production rejects drift in any one. BLOCKER-for-tests: the only new case sets both count drift and leaving, so deleting either predicate survives. Requested independent navigation-only and leaving-only cases in a follow-up commit; mailed cc_1 as 4802. |
 | `baf151f` — screenshot absolute deadline and post-capture cap | Exact C/Zig async/deadline/ownership diff plus clean-export gate | **GREEN 83/83 steps, 631/631 tests; CODE BLOCKED**. | The sink independently enforces the absolute deadline; async refs and the awaited growth hook are balanced; the post-capture cap honestly narrows the raw-allocation contract. BLOCKER: the snapshot callback classifies NULL-surface and oversized-surface results before testing expiry, and the final caller comparison is `>` rather than contract-correct `>=`. The slow-encoder oracle cannot see either branch. NIT: remove committed growth debug output. Mailed cc_1 as 4802. The trapped clean export was deleted immediately; `/tmp` returned to 21% used. |
+| `b5fab82` — screenshot deadline-first and split scroll-provenance regressions | Exact C/Zig async/ownership and test-sensitivity diff plus a clean-export full gate | **APPROVED; GREEN 84/84 steps, 632/632 tests**. | The snapshot callback makes `>= deadline` its first post-finish classification and balances both surface/error ownership paths; the final caller boundary is also `>=`. The late-waiter/grown-document oracle distinguishes Timeout from TooLarge. Navigation-count and leaving drift now have independent regressions. This closes both 4802 blockers and removes the debug-output NIT. Mailed as 4821/4822. The trapped export and cache were deleted immediately; `/tmp` returned to 19% used. |
 | `bf0d76b` — N21 effective-profile app wiring | Exact `src/app.zig` diff; author gate 83/83, 632/632; cc_2 separately ran the pending real-binary E2E 5/5 | **CODE APPROVED; E2E COMMIT PENDING**. | `applyProfileDir` returns only the profile accepted by the GTK setter; fallback/no-profile stays null. The server config uses `<effective profile>/automation-pacing.json`, with arena lifetime and correct trailing-slash joining. This closes the production-code half of 4773. The restart, second-profile isolation, 0600 and corrupt/value-free-log E2E already passes but is still uncommitted/unwired. Mailed approval as 4805. |
+| `1ca9ac5` + `07bf6b5` — N21 real-binary pacing restart E2E and cleanup follow-up | Exact test/build/docs diffs plus a clean-export build and direct bounded Xvfb execution | **APPROVED; direct E2E GREEN 5/5; N21 CLOSED**. | The real CLI/server, Python SDK/socket, routed LinkedIn actions and effective profile are exercised without bypassing production. Same-profile restart restores 98 remaining, a second profile starts 100/100, the file is 0600, and corrupt content falls back without entering stderr. The clean export and cache were deleted immediately (`/tmp` 22% used). `07bf6b5` closes 4808 by stopping the launched process and closing stderr if the socket wait fails. Mailed approval as 4810/4816. |
+| Shared N23 WIP after the stable-id C/adapter seam was connected | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **GREEN 84/84 steps, 636/636 tests**. | All existing production-chain E2Es and the expanded server/engine/queue/adapter unit suites passed. This is an in-progress shared-tree gate, not commit evidence: the dedicated live popup/target-matrix E2E and its build wiring were not yet present, and cc_1's tracker-lifetime SHOULD 4824 remains open. |
 | Shared N23/native-fix WIP before this review checkpoint | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **RED: 81/83 steps, 634/635 tests**. | The sole failure is the deliberately fail-closed adapter completeness test: `PagePort.listWindows is not implemented by the GTK adapter`. All reached production E2Es passed, including core, SDK, profile, social, X, readiness, lifecycle, scroll, native ports and cookies. This is expected while cc_1's N23 registry/adapter half is absent, not a committed-HEAD regression. |
 | Shared worktree after `4dafb3a`, pre-log-commit gate | `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 628/629 tests; committed N21 tests passed**. | The only failed test was uncommitted cc_1 screenshot WIP: `webkit.test.screenshot returns a PNG...` failed its late-encoder counter and both dynamic-growth assertions. The after-measure test hook starts an asynchronous JS evaluation and immediately starts the snapshot, so the capture can beat the growth. All reached socket E2Es passed. Mailed cc_1 as 4783. This is not an N21 or committed-HEAD regression. |
 | Shared N17–N20 WIP before mutation checkpoint | Bounded `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 612/613 tests**. | Every real-binary E2E passed, including the new native screenshot/file/scroll and platform-signal cases. The sole failure is `automation_server_test.zig:1056`: the routed x.post oracle expects 8 evals, while the new N20 scans make 14. Mailed cc_2 as 4752; this is owner WIP, not a committed-HEAD regression. |
@@ -863,17 +866,13 @@ current (replacement) document. Offset-form `dom.scroll` immediately returns
 those offsets as success, and selector-form performs an unnecessary read of
 the replacement before the engine's later token check.
 
-Status: **OPEN (cc_1 / BlackRobin, test evidence)**. `e6cb03e` defines and tests the terminal
-engine-side `DocumentReplaced` seam. `569e47a` returns it when the first ACK,
-the settle wait, or the final offsets read sees a changed document token, and
-adds direct adapter plus live navigation regressions. However, its final
-offsets result omits the old document's `navigations`/`leaving` fields. A
-navigation starting in the settle-to-offset gap can therefore retain doc A's
-token and return doc A's offsets as success. The shared WIP now carries and
-compares both fields in the atomic offsets result, but its one regression sets
-both `navigations != base.navigations` and `leaving = true`; deleting either
-production predicate therefore survives. Split this into navigation-only and
-leaving-only cases before committing. Mailed as 4756, 4776 and 4786.
+Status: **CLOSED by `2a31ffd` + `b5fab82`**. `e6cb03e` defines and tests the
+terminal engine-side `DocumentReplaced` seam. `569e47a` returns it when the
+first ACK, the settle wait, or the final offsets read sees a changed document
+token. `2a31ffd` adds navigation-count and leaving provenance to the atomic
+final offsets read and rejects either drift. `b5fab82` makes those two
+predicates independently mutation-sensitive with navigation-only and
+leaving-only cases. Mailed as 4756, 4776, 4786, 4802 and 4821.
 
 ### BLOCKER — screenshot encoding observes abandonment, not its absolute deadline
 
@@ -885,14 +884,14 @@ encoder finishes before the awakened waiter reacquires the mutex. The slow
 writer oracle exercises only the favorable schedule where the waiter runs
 between chunks.
 
-Status: **OPEN (cc_1 / BlackRobin)**. `baf151f` stores the deadline and the PNG
-sink rejects at/after it independent of waiter scheduling, but its snapshot
-callback still classifies a late `surface == NULL` error or post-capture pixel
-overflow before checking that deadline, and the caller's final comparison is
-`>` rather than `>=`. A callback that wins the waiter mutex after expiry can
-therefore publish a late non-timeout result. Check expiry immediately after
-snapshot finish, use `>=` at the final boundary, and add evidence for these
-non-encoder branches. Mailed as 4768, 4780 and 4802.
+Status: **CLOSED by `baf151f` + `b5fab82`**. `baf151f` makes the PNG sink reject
+at/after the absolute deadline independent of waiter scheduling. `b5fab82`
+checks expiry immediately after snapshot finish, before NULL-surface,
+post-capture-size or encoder classification, and uses `>=` again at the final
+caller boundary. Its late-waiter/grown-document oracle proves Timeout wins
+over TooLarge; removing the deadline-first check makes the test fail. Mailed
+as 4768, 4780, 4802 and 4821; independent clean-export gate at `b5fab82` was
+green 84/84 steps and 632/632 tests.
 
 ### SHOULD — full-page screenshot pixel cap has a measure/snapshot race
 
@@ -919,13 +918,13 @@ the real `--automation-api` binary never initializes the persister even when
 `--profile-dir` or the default profile is active; unit tests inject the path
 directly and bypass this missing edge.
 
-Status: **OPEN for evidence only (cc_2 / BlueBeaver E2E wiring)**. `bf0d76b`
-retains the directory actually accepted by `applyProfileDir` and passes
+Status: **CLOSED by `bf0d76b` + `1ca9ac5`**. `bf0d76b` retains the directory
+actually accepted by `applyProfileDir` and passes
 `<effective profile>/automation-pacing.json` into the server, leaving memory-
-only state when no profile resolves. The pending real-binary E2E passes 5/5 in
-the shared worktree (same-profile restart, 0600, second-profile isolation and
-corrupt/value-free fallback) but is not yet committed or wired into the gate.
-Mailed as 4773 and approval 4805.
+only state when no profile resolves. `1ca9ac5` wires a real-binary E2E covering
+same-profile restart, 0600, second-profile isolation and corrupt/value-free
+fallback. Independent direct clean-export execution passed all five reported
+steps. Mailed as 4773, 4805 and 4810.
 
 ### BLOCKER — N20 signal text hashing does not meet the SHA-256 contract
 
@@ -1584,42 +1583,56 @@ that window's FIFO, and never target a replacement window after close. N23
 deliberately targets only `page.*`/`dom.*`; site flows stay on the primary
 queue, so their `window_id` support and the two-window X route oracle are
 deferred until that scope exists (the proactive global admission fix is
-`4497fbd`). Because the previously deferred close bug terminates related
-WebKit processes, the live close oracle must prove the primary remains usable.
-Retire empty queue lines, or explicitly bound their retention, so popup churn
-does not leak one entry per id. Seam review mailed as 4791, clarified in 4795.
+`4497fbd`). The pre-existing behavior where closing one related WebKit view
+terminates the shared process is **DEFERRED by orchestrator** to a follow-up;
+it is documented rather than an N23 acceptance blocker. Retire empty queue
+lines, or explicitly bound their retention, so popup churn does not leak one
+entry per id. Seam review mailed as 4791, clarified in 4795.
 
-The shared server/queue WIP remains blocked on four concrete points:
+The four server/queue points mailed as 4798 are **closed in the current WIP,
+pending commit**: the out-of-deadline `listWindows` probe is gone; targeted
+`NoPage` is classified by the first ordinary bounded call; every idle queue
+line is removed under its mutex (500 arbitrary ids return to zero); and
+primary refusal is a real `-32602 primary_window` outcome before root-span
+recording. Re-review mailed as 4806.
 
-- `src/automation_server.zig:512-518,579-584` performs a fixed 10-second
-  `listWindows` liveness probe after queue acquisition and before the engine.
-  A 1 ms command can therefore spend 10 seconds outside its deadline, root
-  duration, queue-wait accounting and platform spans. Let the targeted port's
-  first ordinary bounded operation return `NoPage`, and add a tight-deadline
-  regression.
-- `src/automation/queue.zig:86-113` drops only explicitly retired lines.
-  Unknown ids, failed closes and later commands against a closed id create
-  non-retired lines indefinitely. Drop every line when its final waiter
-  releases (or prove an equivalent bound), and test many unknown ids return
-  the line count to baseline.
-- `src/automation_server.zig:665-725` records primary-close refusal inside the
-  engine as `-32011 session_invalid`, then rewrites only the JSON-RPC wire code
-  to `-32602`. The root span and client disagree. Produce the real `-32602`
-  outcome before telemetry or validate the stable primary id before entering
-  the engine, with a sink assertion.
-- `windowFailure` collapses timeout, cancellation and evaluation errors into
-  `no_window`. Removing the out-of-budget liveness probe should also remove
-  this lossy helper path; otherwise preserve the actual error class.
+The server-fake half of 4812 is **closed in the current WIP, pending commit**:
+every bounded fake-handle operation now returns `NoPage` when gone, and routed
+closed/unknown-window cases cover reload, screenshot, navigate, title,
+setInputFiles, native scroll, synthetic eval and native click with zero page,
+eval or input work. The GTK adapter half remains a BLOCKER-for-tests: every
+adapter method currently ignores its `ptr` and targets the primary. Prove
+target-id propagation through all distinct direct paths, including
+navigate/reload/read, screenshot, setInputFiles, native input/scroll and the
+per-window pointer cache. Mailed as 4812/4818. The native
+stable-id registry, atomic primary-first snapshot, safe in-flight close,
+u32-exhaustion refusal and popup-close live E2E are not yet present. The
+existing `ReplaceDriver` test also asserts the forbidden index-0 promotion
+after the original primary closes and must be inverted; mailed as 4813.
+The 4817 ACK/debt drift is **structurally closed in the current WIP, pending
+the two-window adapter oracle**: ACK trackers are keyed per stable id, their
+reader retains the targeted handle, and final scroll offsets use that same
+handle. The native WIP carries only a numeric id across threads, resolves it
+on GTK, and keeps the default fixed at id 1. Early WIP review found and cc_1
+immediately corrected a `finishScroll` parameter/local shadow that would have
+lost the port handle.
+**OPEN SHOULD (4824):** tracker cleanup is best-effort only after
+`closeWindow`; an expired post-close lock, a user/UI close, and normal app-run
+teardown retain entries, while ids restart from 1 on a later app run. Prove a
+hard lifetime bound or clear state at the window/run boundary so popup churn
+and same-id later runs cannot retain stale debt indefinitely.
 
-Mailed cc_2 as 4798. The engine's per-run port and single session-wide engine,
-strict canonical ids, page/dom-only targeting scope, same-window FIFO, and SDK
-surface are otherwise structurally sound. The native stable-id registry,
-atomic primary-first snapshot, safe in-flight close and popup-close live E2E
-are not yet present in the shared WIP.
+The targeted-command `forWindow` telemetry finding 4819 is **closed in the
+current WIP, pending commit**. A refused handle is replaced by a complete
+NoPage/Unsupported stand-in and the already-parsed command still runs through
+`executeWith`; the normal root therefore retains its real namespace and
+redacted command facts. The sink regression pins `dom`, `window-2` and
+`selector.kind` while the wire remains `-32011 unsupported`. Re-reviewed and
+mailed approval as 4826.
 
 ## Deferred scope note
 
-M6 includes `page.screenshot`, while the task's priority method list does not.
-The current PagePort proposal deliberately defers screenshot. This is acceptable
-only as an explicit task-scope divergence; it does not satisfy the complete M6
-milestone as originally written.
+Historical note: M6 included `page.screenshot` outside the task's original ten-
+method priority list. That deferral is now closed by the N19 PagePort/GTK/socket
+implementation and production-chain PNG oracle; the remaining screenshot
+finding above concerns exact deadline classification, not feature absence.
