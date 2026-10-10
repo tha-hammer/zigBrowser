@@ -35,6 +35,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     const valid_uri = uri.validate(arena, spec.url) catch |err| {
         return mapUriErr(err);
     };
+    try applyProfileDir(arena, spec);
 
     if (spec.automation_api) {
         // automation.js must be registered before zb_app_run builds the window.
@@ -53,6 +54,25 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0,
         if (spec.e2e_protocol) 1 else 0);
     return @intCast(code);
+}
+
+/// Persistent profile for cookies and site data: --profile-dir, else the
+/// default under $XDG_DATA_HOME or ~/.local/share. An explicit directory that
+/// cannot be created is an error; when the default cannot be resolved or
+/// created, the browser runs on WebKit's default context.
+fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError!void {
+    if (comptime builtin.os.tag != .linux) return;
+    const explicit = spec.profile_dir != null;
+    const dir = spec.profile_dir orelse
+        (cli.defaultProfileDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse
+        return;
+    const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
+
+    var err: [*c]u8 = null;
+    if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return;
+    defer c.zb_automation_free(err);
+    std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
+    if (explicit) return error.WriteFailed;
 }
 
 fn runScreenshot(arena: std.mem.Allocator, spec: ScreenshotSpec) errors.BrowserError!u8 {

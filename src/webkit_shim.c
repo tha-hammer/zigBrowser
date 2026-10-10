@@ -1993,15 +1993,19 @@ int zb_app_set_profile_dir(const char *dir, char **out_err) {
     return ZB_AUTO_OK;
   }
 
-  if (g_mkdir_with_parents(dir, 0700) != 0 || g_chmod(dir, 0700) != 0) {
+  /* WebKit needs absolute data directories; relative paths resolve
+   * against the current directory. */
+  char *absolute = g_canonicalize_filename(dir, NULL);
+  if (g_mkdir_with_parents(absolute, 0700) != 0 || g_chmod(absolute, 0700) != 0) {
     int saved = errno;
     if (out_err != NULL) {
-      *out_err = g_strdup_printf("cannot create profile directory %s: %s", dir,
-                                 g_strerror(saved));
+      *out_err = g_strdup_printf("cannot create profile directory %s: %s",
+                                 absolute, g_strerror(saved));
     }
+    g_free(absolute);
     return ZB_AUTO_ERR_INTERNAL;
   }
-  zb_profile_dir = g_strdup(dir);
+  zb_profile_dir = absolute;
   return ZB_AUTO_OK;
 }
 

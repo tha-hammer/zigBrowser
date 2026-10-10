@@ -347,6 +347,17 @@ pub fn build(b: *std.Build) void {
     const run_automation_telemetry_tests = b.addRunArtifact(automation_telemetry_tests);
     run_automation_telemetry_tests.skip_foreign_checks = true;
 
+    const automation_social_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_social_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    automation_social_tests_module.addImport("automation", automation_module);
+    const automation_social_tests = b.addTest(.{ .root_module = automation_social_tests_module });
+    const run_automation_social_tests = b.addRunArtifact(automation_social_tests);
+    run_automation_social_tests.skip_foreign_checks = true;
+
     const automation_server_module = b.createModule(.{
         .root_source_file = b.path("src/automation_server.zig"),
         .target = target,
@@ -398,6 +409,15 @@ pub fn build(b: *std.Build) void {
         "automation-input-e2e",
     });
     automation_input_e2e.addArtifactArg(exe);
+
+    // --profile-dir keeps cookies across restarts (real binary, local HTTP).
+    const automation_profile_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/automation_profile_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "automation-profile-e2e",
+    });
+    automation_profile_e2e.addArtifactArg(exe);
 
     // --- Phase 4: Gaussian tests ---
     const gaussian_module = b.createModule(.{
@@ -534,11 +554,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_retry_tests.step);
     test_step.dependOn(&run_automation_queue_tests.step);
     test_step.dependOn(&run_automation_telemetry_tests.step);
+    test_step.dependOn(&run_automation_social_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&automation_api_e2e.step);
     test_step.dependOn(&automation_core_e2e.step);
     test_step.dependOn(&automation_readiness_e2e.step);
     test_step.dependOn(&automation_input_e2e.step);
+    test_step.dependOn(&automation_profile_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);
