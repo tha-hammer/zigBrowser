@@ -457,18 +457,18 @@ fn acksForRun(table: *Trackers, ptr: *anyopaque, generation: u32, alive: *const 
     table.lock.lock();
     defer table.lock.unlock();
     table.syncGeneration(generation);
-    // Drop trackers of windows that are gone (closed by anyone).
-    var it = table.map.iterator();
-    var gone: [8]c_uint = undefined;
-    var n_gone: usize = 0;
-    while (it.next()) |entry| {
-        if (entry.key_ptr.* != windowOf(ptr) and !alive(entry.key_ptr.*) and n_gone < gone.len) {
-            gone[n_gone] = entry.key_ptr.*;
-            n_gone += 1;
+    // Drop the trackers of every window that is gone (closed by anyone).
+    sweep: while (true) {
+        var it = table.map.iterator();
+        while (it.next()) |entry| {
+            const id = entry.key_ptr.*;
+            if (id != windowOf(ptr) and !alive(id)) {
+                gpa.destroy(entry.value_ptr.*);
+                _ = table.map.remove(id);
+                continue :sweep; // the iterator is invalid after a removal
+            }
         }
-    }
-    for (gone[0..n_gone]) |id| {
-        if (table.map.fetchRemove(id)) |entry| gpa.destroy(entry.value);
+        break;
     }
     const entry = try table.map.getOrPut(gpa, windowOf(ptr));
     if (!entry.found_existing) {

@@ -37,8 +37,21 @@ def run(socket_path: Path, t: float) -> None:
     def js(expression: str, **target):
         return rpc("page.evaluate", dict({"expression": expression}, **target))["result"]
 
+    def wait_received():
+        deadline = time.monotonic() + t
+        received = None
+        while time.monotonic() < deadline:
+            received = js("window.received")
+            if received is not None:
+                break
+            time.sleep(0.05)
+        return received
+
     primary = rpc("page.list", {})["pages"]
     expect_equal("one window at start", len(primary), 1)
+    opener_url = rpc("page.url", {})["url"]
+    if not opener_url.endswith("/opener.html"):
+        raise AssertionError(f"unexpected opener url {opener_url!r}")
     primary_id = primary[0]["window_id"]
     expect_equal("the primary", primary[0]["primary"], True)
 
@@ -65,15 +78,8 @@ def run(socket_path: Path, t: float) -> None:
     expect_equal("submit", rpc("dom.click", dict({"selector": "css=#submit"}, **target)), {"ok": True})
     expect_equal("popup state", rpc("dom.getText", dict({"selector": "css=#state"}, **target))["text"], "sent")
 
-    deadline = time.monotonic() + t
-    received = None
-    while time.monotonic() < deadline:
-        received = js("window.received")
-        if received is not None:
-            break
-        time.sleep(0.05)
-    expect_equal("the opener got the popup's postMessage", received, {"user": "alice", "ok": True})
-    expect_equal("opener status", rpc("dom.getText", {"selector": "css=#status"})["text"], "logged in as alice")
+    expect_equal("the opener got the popup's postMessage", wait_received(), {"user": "alice", "ok": True})
+    expect_equal("opener status", rpc("dom.getText", {"selector": "css=#status"})["text"], "got:user=alice")
     # The opener has no login form: targeted calls never fell through to it.
     error = rpc_error(socket_path, "dom.getText", {"selector": "css=#user", "strict": True, "options": {"timeout_ms": 500}}, next(ids), t)
     if error.get("code") not in (-32001, -32009):
@@ -89,14 +95,14 @@ def run(socket_path: Path, t: float) -> None:
     expect_equal("targeted call after close", error["code"], -32011)
     expect_equal("targeted call after close reason", error.get("data", {}).get("reason"), "no_window")
 
-    # (a) The opener survived page.close of its popup, state and URL intact.
-    opener_url = rpc("page.url", {})["url"]
-    if not opener_url.endswith("/opener.html"):
-        raise AssertionError(f"opener url after the popup close: {opener_url!r}")
-    expect_equal("opener state after page.close", rpc("dom.getText", {"selector": "css=#status"})["text"], "logged in as alice")
+    # (a) The opener survived page.close of its popup: same URL, same state.
+    expect_equal("opener url after page.close", rpc("page.url", {})["url"], opener_url)
+    expect_equal("opener state after page.close", rpc("dom.getText", {"selector": "css=#status"})["text"], "got:user=alice")
     expect_equal("opener still answers", js("window.received"), {"user": "alice", "ok": True})
 
-    # (b) A popup that closes itself after posting its result.
+    # (b) A popup that closes itself after posting its result. The opener is
+    # reset to a sentinel first, so only this popup's message can satisfy it.
+    js("(window.received = null, document.getElementById('status').textContent = 'waiting', 0)")
     js("openLogin(true)")
     deadline = time.monotonic() + t
     while time.monotonic() < deadline and len(rpc("page.list", {})["pages"]) != 2:
@@ -104,14 +110,17 @@ def run(socket_path: Path, t: float) -> None:
     pages = rpc("page.list", {})["pages"]
     expect_equal("second popup listed", len(pages), 2)
     second = {"window_id": pages[1]["window_id"]}
-    rpc("dom.fill", dict({"selector": "css=#user", "value": "bob"}, **second))
+    rpc("dom.fill", dict({"selector": "css=#user", "value": "alice"}, **second))
     rpc("dom.fill", dict({"selector": "css=#pass", "value": "secret"}, **second))
     rpc("dom.click", dict({"selector": "css=#submit"}, **second))
+    expect_equal("the opener got the self-closing popup's message", wait_received(), {"user": "alice", "ok": True})
     deadline = time.monotonic() + t
     while time.monotonic() < deadline and len(rpc("page.list", {})["pages"]) != 1:
         time.sleep(0.05)
     expect_equal("the popup closed itself", [p["window_id"] for p in rpc("page.list", {})["pages"]], [primary_id])
-    expect_equal("opener state after the popup closed itself", rpc("dom.getText", {"selector": "css=#status"})["text"], "logged in as bob")
+    error = rpc_error(socket_path, "page.title", second, next(ids), t)
+    expect_equal("targeted call after the popup closed itself", (error["code"], error.get("data", {}).get("reason")), (-32011, "no_window"))
+    expect_equal("opener state after the popup closed itself", rpc("dom.getText", {"selector": "css=#status"})["text"], "got:user=alice")
     expect_equal("opener url after the popup closed itself", rpc("page.url", {})["url"], opener_url)
 
 

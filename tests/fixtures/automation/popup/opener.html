@@ -14,7 +14,7 @@
       };
       window.addEventListener('message', function (event) {
         window.received = event.data;
-        document.getElementById('status').textContent = 'logged in as ' + event.data.user;
+        document.getElementById('status').textContent = 'got:user=' + event.data.user;
       });
     </script>
   </body>
