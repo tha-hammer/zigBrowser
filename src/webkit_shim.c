@@ -96,6 +96,9 @@ struct ZbWindow {
   /* Automation bridge (GTK thread only). */
   unsigned int auto_load_gen;  /* bumped per automation navigate/reload */
   int auto_first_load_done;    /* first load reached FINISHED or failed */
+  /* Last dispatched native pointer position; guarded by zb_auto_mutex. */
+  int auto_pointer_valid;
+  double auto_pointer_x, auto_pointer_y;
   gulong sig_uri_notify;
 };
 
@@ -136,6 +139,7 @@ static void auto_window_destroyed(ZbWindow *win);
 static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri);
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
 static void auto_nav_blocked(ZbWindow *win, const char *candidate);
+static void auto_remember_pointer(ZbWindow *win, double x, double y);
 static int auto_window_owns_load_deadline(ZbWindow *win);
 static void auto_uri_changed(ZbWindow *win, const char *uri);
 static void auto_first_load_done(ZbWindow *win);
@@ -2420,6 +2424,7 @@ static void auto_native_click(ZbAutoJob *job, ZbWindow *win) {
   auto_native_pointer(window, GDK_BUTTON_PRESS, job->x, job->y, job->button, 0);
   auto_native_pointer(window, GDK_BUTTON_RELEASE, job->x, job->y, job->button,
                       auto_button_mask(job->button));
+  auto_remember_pointer(win, job->x, job->y);
   auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
 }
 
@@ -2665,6 +2670,15 @@ static void auto_start_native(ZbAutoJob *job) {
 }
 
 /* GTK thread: deliver the job's events now (synchronous). */
+/* GTK thread, right after the GDK motion/button events went out. */
+static void auto_remember_pointer(ZbWindow *win, double x, double y) {
+  g_mutex_lock(&zb_auto_mutex);
+  win->auto_pointer_valid = 1;
+  win->auto_pointer_x = x;
+  win->auto_pointer_y = y;
+  g_mutex_unlock(&zb_auto_mutex);
+}
+
 static void auto_native_move(ZbAutoJob *job, ZbWindow *win) {
   GdkWindow *window = gtk_widget_get_window(GTK_WIDGET(win->view));
   if (window == NULL) {
@@ -2672,6 +2686,7 @@ static void auto_native_move(ZbAutoJob *job, ZbWindow *win) {
     return;
   }
   auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
+  auto_remember_pointer(win, job->x, job->y);
   auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
 }
 
@@ -2723,6 +2738,38 @@ static void auto_native_guard(ZbAutoJob *job, const char *expected_doc) {
   job->expected_doc = g_strdup(expected_doc);
   job->is_async = 1;
   job->cancellable = g_cancellable_new();
+}
+
+int zb_native_pointer(ZbWindow *win, double *out_x, double *out_y) {
+  int valid = 0;
+  g_mutex_lock(&zb_auto_mutex);
+  int index = auto_pub_index_locked(win);
+  if (index >= 0) {
+    ZbWindow *target = zb_auto_pub_windows[index];
+    valid = target->auto_pointer_valid;
+    if (valid && out_x != NULL) {
+      *out_x = target->auto_pointer_x;
+    }
+    if (valid && out_y != NULL) {
+      *out_y = target->auto_pointer_y;
+    }
+  }
+  g_mutex_unlock(&zb_auto_mutex);
+  return valid;
+}
+
+static void auto_debug_destroy(void *ctx) {
+  ZbWindow *win = auto_resolve_window((ZbWindow *)ctx);
+  if (win != NULL && win->gtk_window != NULL) {
+    gtk_widget_destroy(win->gtk_window);
+  }
+}
+
+int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms) {
+  if (win == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  return zb_main_invoke_sync(auto_debug_destroy, win, timeout_ms);
 }
 
 int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,

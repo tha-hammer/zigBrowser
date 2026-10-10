@@ -187,6 +187,11 @@ enum {
 int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
                    unsigned int timeout_ms, char **out_err);
 
+/* Last pointer position actually dispatched to `win` (NULL = primary) by a
+ * native move or click; returns 0 if none. Kept per window, cleared with it.
+ * Thread-safe. */
+int zb_native_pointer(ZbWindow *win, double *out_x, double *out_y);
+
 /* Pointer motion to (x, y), then press and release of `button` (1 = left). */
 int zb_native_click(ZbWindow *win, double x, double y, int button,
                     const char *expected_doc, unsigned int timeout_ms, char **out_err);
@@ -220,6 +225,9 @@ int zb_automation_debug_cookie_delay_hits(void);
  * commit-to-dispatch decision (0 = off), and count how often that happened. */
 void zb_automation_debug_native_guard_hold(unsigned int ms);
 int zb_automation_debug_native_guard_hold_hits(void);
+/* Test hook: destroy `win`'s toplevel on the GTK thread (as a user closing
+ * it would), so a test can make another window the primary. */
+int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);

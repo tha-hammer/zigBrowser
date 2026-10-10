@@ -25,7 +25,7 @@
   // `doc` identifies this document: input that navigates lands in a new
   // document whose counters start again at zero, which callers must treat as
   // delivered rather than wait for counts that will never come.
-  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0 };
+  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, leaving: false };
   function randomDocumentId() {
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
@@ -39,6 +39,16 @@
   globalScope.addEventListener('click', (event) => {
     if (event.isTrusted) inputAck.click += 1;
   }, true);
+  // A cross-document navigation (form submission, link, location change)
+  // fires 'navigate' in this document synchronously when it starts, before
+  // later input is handled; native text stops there instead of typing into
+  // the document that replaces this one. Conservative: a page that cancels
+  // the navigation still stops the typing.
+  if (globalScope.navigation && typeof globalScope.navigation.addEventListener === 'function') {
+    globalScope.navigation.addEventListener('navigate', (event) => {
+      if (!(event.destination && event.destination.sameDocument)) inputAck.leaving = true;
+    });
+  }
 
   let nextElementId = 1;
   let nextSpanId = 1;
@@ -1001,7 +1011,7 @@
       version: 'phase1-m4-actionability',
       handle,
       inputAck() {
-        return { doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click };
+        return { doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click, leaving: inputAck.leaving };
       },
       documentToken: inputAck.doc,
       debugOutstandingWaits() {

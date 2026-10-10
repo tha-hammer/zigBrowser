@@ -1085,14 +1085,10 @@ const LiveDriver = struct {
         const token_delay = self.documentToken() orelse return self.check(false, "document token on A");
         var one: usize = 0;
         gtk_port.nativeText(port.ptr, "a", token_delay, 5000, &one) catch return self.check(false, "first code point typed");
-        // Enter's keyup can be acknowledged in A before the navigation it
-        // triggers commits, so this call may return OK or DocumentChanged;
-        // either way the next code point is refused before dispatch.
         var enter_sent: usize = 0;
         const enter_one = gtk_port.nativeText(port.ptr, "\n", token_delay, 10_000, &enter_sent);
-        self.check(if (enter_one) |_| true else |e| e == error.DocumentChanged, "the navigating code point returns OK or DocumentChanged");
+        self.check(if (enter_one) |_| false else |e| e == error.DocumentChanged, "a single navigating code point reports DocumentChanged");
         self.check(enter_sent == 1, "that code point was sent");
-        self.waitUrlContains("b.html");
         var b_sent: usize = 9;
         const b_one = gtk_port.nativeText(port.ptr, "b", token_delay, 10_000, &b_sent);
         self.check(if (b_one) |_| false else |e| e == error.DocumentChanged, "the next code point with the old token is refused");
@@ -1435,4 +1431,83 @@ test "zb_app_set_profile_dir creates the directory 0700 and reports failures" {
 
     // NULL / "" go back to the default (non-profile) context.
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_OK), c.zb_app_set_profile_dir(null, null));
+}
+
+// The pointer cache belongs to a window: when the primary window goes away,
+// the window that becomes primary does not inherit its position. Its own
+// zb_app_run, because closing a window also ends the web process its
+// window.open() children share.
+const ReplaceDriver = struct {
+    uri_b: [:0]const u8,
+    failures: u32 = 0,
+
+    fn check(self: *ReplaceDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("primary replacement check failed: {s}\n", .{what});
+            self.failures += 1;
+        }
+    }
+
+    fn run(self: *ReplaceDriver) void {
+        const port = gtk_port.pagePort().?;
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(null, "return 1;", null, null, 15_000, null, &err);
+        c.zb_automation_free(err);
+        gtk_port.nativeMove(port.ptr, 50, 60, null, 5000) catch return self.check(false, "move on the primary window");
+        var px: f64 = 0;
+        var py: f64 = 0;
+        self.check(c.zb_native_pointer(null, &px, &py) != 0 and px == 50 and py == 60, "the primary window caches its pointer");
+
+        var buf: [1024]u8 = undefined;
+        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return;
+        _ = c.zb_automation_eval_json(null, open_body.ptr, null, null, 5000, null, &err);
+        c.zb_automation_free(err);
+        err = null;
+        var waited: u32 = 0;
+        while (c.zb_automation_window_at(1) == null and waited < 5000) : (waited += 5) sleepMs(5);
+        const child = c.zb_automation_window_at(1) orelse return self.check(false, "a child window opened");
+        self.check(c.zb_native_pointer(child, &px, &py) == 0, "the child window has no pointer of its own");
+
+        const main = c.zb_automation_window_at(0) orelse return self.check(false, "the primary window exists");
+        self.check(c.zb_automation_debug_destroy_window(main, 5000) == c.ZB_AUTO_OK, "the primary window was closed");
+        self.check(c.zb_automation_main_window() == child, "the child is now the primary window");
+        self.check(c.zb_native_pointer(null, &px, &py) == 0, "the new primary does not inherit the old pointer");
+        self.check(gtk_port.pointer(port.ptr) == null, "the port's pointer follows the new primary");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "the native pointer cache belongs to its window" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-pointer-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_b, fixture_b.ptr, fixture_b.len, null) != 0);
+    const raw_a = gfile.g_filename_to_uri(path_a, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_a);
+    const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_b);
+    const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
+    var driver: ReplaceDriver = .{ .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, ReplaceDriver.run, .{&driver});
+    _ = c.zb_app_run(uri_a.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.failures);
+    c.zb_automation_loop_mark(1);
 }

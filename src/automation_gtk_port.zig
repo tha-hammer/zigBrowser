@@ -164,6 +164,8 @@ const Ack = struct {
     doc: [doc_len]u8 = undefined,
     keyup: i64 = 0,
     click: i64 = 0,
+    /// A cross-document navigation has started from this document.
+    leaving: bool = false,
 
     fn isDocument(self: Ack, token: []const u8) bool {
         return std.mem.eql(u8, &self.doc, token);
@@ -233,16 +235,16 @@ fn readAckFromPage(_: *anyopaque, deadline: i64) PortError!?Ack {
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     if (std.mem.eql(u8, out, "null")) return null;
-    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64 };
+    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, leaving: bool = false };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
     defer parsed.deinit();
     if (!isDocumentToken(parsed.value.doc)) return error.EvalFailed;
-    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click };
+    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .leaving = parsed.value.leaving };
     @memcpy(&ack.doc, parsed.value.doc);
     return ack;
 }
 
-const AckOutcome = enum { acknowledged, document_changed };
+const AckOutcome = enum { acknowledged, document_changed, leaving };
 
 /// Acknowledgement reading plus the debt the page still owes for earlier
 /// calls that gave up. Production uses one tracker bound to the live page
@@ -271,7 +273,7 @@ const AckTracker = struct {
         while (true) {
             if (try self.read(deadline)) |now| {
                 if (!now.isDocument(&target.doc)) return .document_changed;
-                if (now.click >= target.click and now.keyup >= target.keyup) return .acknowledged;
+                if (now.click >= target.click and now.keyup >= target.keyup) return if (now.leaving) .leaving else .acknowledged;
             }
             sleepMs(@min(5, try remainingMs(deadline)));
         }
@@ -342,23 +344,15 @@ fn mapNativeCode(rc: c_int) PortError!void {
 /// A pointer position in viewport CSS px.
 pub const Point = struct { x: f64, y: f64 };
 
-/// Last pointer position actually dispatched to the window (primary only for
-/// now). Updated only after the shim delivered a move or click; refusals and
-/// timeouts leave it unchanged. It persists across documents of the window.
-var pointer_cache: ?Point = null;
-var pointer_mutex: SpinLock = .{};
-
-fn rememberPointer(x: f64, y: f64) void {
-    pointer_mutex.lock();
-    defer pointer_mutex.unlock();
-    pointer_cache = .{ .x = x, .y = y };
-}
-
-/// PagePort v3.2 `pointer`: the cached last dispatched position, or null.
+/// PagePort v3.2 `pointer`: the last position actually dispatched to the
+/// primary window, or null. The shim keeps it per ZbWindow (written by the
+/// GTK-thread dispatch itself, cleared with the window), so a window that
+/// becomes primary never inherits another window's position.
 pub fn pointer(_: *anyopaque) ?Point {
-    pointer_mutex.lock();
-    defer pointer_mutex.unlock();
-    return pointer_cache;
+    var x: f64 = 0;
+    var y: f64 = 0;
+    if (c.zb_native_pointer(null, &x, &y) == 0) return null;
+    return .{ .x = x, .y = y };
 }
 
 /// One real pointer-motion event to viewport CSS px (x, y), no click (N8
@@ -376,7 +370,6 @@ pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_
     const rc = c.zb_native_move(null, x, y, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    rememberPointer(x, y);
 }
 
 /// Real pointer motion + left click at viewport CSS px (x, y). Returns once
@@ -392,7 +385,6 @@ pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout
     const rc = c.zb_native_click(null, x, y, 1, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    rememberPointer(x, y);
     _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup }, deadline);
 }
 
@@ -432,6 +424,8 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
     var acked = try page_acks.begin(document, deadline);
+    // The previous input already started a navigation: type nothing here.
+    if (acked.leaving) return error.DocumentChanged;
     var doc_z: [doc_len + 1]u8 = undefined;
     // Without an explicit token the baseline document is the one to stay in.
     const expected = docZ(&doc_z, document orelse &acked.doc);
@@ -449,7 +443,10 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
         sent_chars.* += @intCast(chars);
         try mapNativeCode(rc);
         acked.keyup += releases;
-        if (try page_acks.settle(acked, deadline) == .document_changed) return error.DocumentChanged;
+        switch (try page_acks.settle(acked, deadline)) {
+            .acknowledged => {},
+            .document_changed, .leaving => return error.DocumentChanged,
+        }
     }
 }
 
