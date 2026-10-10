@@ -1322,3 +1322,13 @@ test "humanized click on a backend without nativeMove: -32011 unsupported at onc
     defer pressed.deinit(gpa);
     try expectResult(pressed, "{\"ok\":true}");
 }
+
+test "a one-character humanized type below the 80 ms key minimum fails humanize_budget before dispatch" {
+    var hh: HumanHarness = undefined;
+    hh.init(31);
+    defer hh.deinit();
+    var outcome = try hh.h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"x\",\"options\":{\"input\":\"native\",\"humanize\":true,\"timeout_ms\":79}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"humanize_budget\"");
+    try std.testing.expectEqual(@as(usize, 0), hh.h.fake.native_calls.items.len);
+}

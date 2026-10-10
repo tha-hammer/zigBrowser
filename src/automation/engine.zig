@@ -1181,7 +1181,8 @@ fn parseTarget(gpa: std.mem.Allocator, json: []const u8, target: *Target) bool {
 
 /// N8: the humanized pointer path starts 80-240 px from the target in a
 /// random direction, clamped into the viewport, never on the target
-/// itself. Null when the viewport is unknown or too small for that.
+/// itself. Only that construction is used (retried a bounded number of
+/// times); null when the viewport is unknown or no try leaves the target.
 pub const humanize_start_min_px: f64 = 80;
 pub const humanize_start_max_px: f64 = 240;
 
@@ -1190,20 +1191,13 @@ fn offTargetStart(random: std.Random, target: *const Target) ?page_port.Point {
     const max_y = target.viewport_height - 1;
     if (max_x < 1 or max_y < 1) return null;
     var attempt: usize = 0;
-    while (attempt < 16) : (attempt += 1) {
+    while (attempt < 64) : (attempt += 1) {
         const radius = humanize_start_min_px + random.float(f64) * (humanize_start_max_px - humanize_start_min_px);
         const angle = random.float(f64) * 2.0 * std.math.pi;
         const point = page_port.Point{
             .x = std.math.clamp(target.x + radius * @cos(angle), 0, max_x),
             .y = std.math.clamp(target.y + radius * @sin(angle), 0, max_y),
         };
-        if (distance(point, .{ .x = target.x, .y = target.y }) >= 1) return point;
-    }
-    // Clamping kept landing on the target (it sits in a corner of a tiny
-    // viewport): a random in-view point that is not the target.
-    attempt = 0;
-    while (attempt < 64) : (attempt += 1) {
-        const point = page_port.Point{ .x = random.float(f64) * max_x, .y = random.float(f64) * max_y };
         if (distance(point, .{ .x = target.x, .y = target.y }) >= 1) return point;
     }
     return null;

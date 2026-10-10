@@ -547,3 +547,16 @@ test "native input is visible on the root span as input.mode=native" {
     }
     try std.testing.expect(saw_native_span);
 }
+
+test "a humanized command records input.humanize=true, also when rejected before dispatch" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"x\":500,\"y\":400,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":1000,\"height\":800}}}" }});
+    defer h.deinit();
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"hello\",\"options\":{\"input\":\"native\",\"humanize\":true,\"timeout_ms\":100}}", 0);
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "humanize_budget") != null);
+    const root = try h.root();
+    try std.testing.expectEqualStrings("true", root.attr("input.humanize").?);
+    try std.testing.expectEqualStrings("native", root.attr("input.mode").?);
+    try std.testing.expectEqualStrings("error", root.attr("result.status").?);
+}
