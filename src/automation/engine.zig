@@ -123,6 +123,11 @@ pub const External = struct {
         return self.engine.clock.nowMs();
     }
 
+    /// True once the command was cancelled (server stop / queue shutdown).
+    pub fn cancelled(self: *const External) bool {
+        return self.run.cancelled();
+    }
+
     pub fn route(self: *const External) router.RouteContext {
         return self.run.route;
     }

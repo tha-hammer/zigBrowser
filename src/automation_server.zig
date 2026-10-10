@@ -260,7 +260,7 @@ pub const AutomationApiServer = struct {
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
         route.telemetry_sink = self.config.telemetry_sink;
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port });
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping });
     }
 };
 
@@ -357,6 +357,8 @@ fn handleRequestWith(
 const CookieContext = struct {
     io: std.Io,
     port: ?automation.cookie_port.CookiePort,
+    /// cookies.* skip the page queue, so they observe server stop directly.
+    stopping: *const std.atomic.Value(bool),
 };
 
 /// cookies.* do not touch the page DOM, so they skip the page queue; they
@@ -381,7 +383,7 @@ fn handleCookies(
             return cookie_routes.handle(gpa, self.cookies.io, self.cookies.port, ext, self.verb, self.params_json);
         }
     };
-    var outcome = try engine.executeExternal(allocator, method, "cookies", .{ .route = route, .build = build_info }, CookieCall{
+    var outcome = try engine.executeExternal(allocator, method, "cookies", .{ .cancel = cookies.stopping, .route = route, .build = build_info }, CookieCall{
         .cookies = cookies,
         .verb = verb,
         .params_json = params_json,

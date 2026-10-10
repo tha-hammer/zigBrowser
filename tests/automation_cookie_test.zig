@@ -647,7 +647,72 @@ test "partial import reports the applied count in the cookie span" {
     var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
     var outcome = try eng.executeExternal(gpa, "cookies.import", "cookies", .{ .route = .{ .telemetry_sink = collector.sink() } }, Call{ .port = fake.port(), .params = params }, Call.run);
     defer outcome.deinit(gpa);
+    var saw_count = false;
     for (collector.children.items[0].value.object.get("attributes").?.array.items) |entry| {
-        if (std.mem.eql(u8, entry.object.get("key").?.string, "cookie.count")) try std.testing.expectEqualStrings("2", entry.object.get("value").?.string);
+        if (std.mem.eql(u8, entry.object.get("key").?.string, "cookie.count")) {
+            saw_count = true;
+            try std.testing.expectEqualStrings("2", entry.object.get("value").?.string);
+        }
     }
+    try std.testing.expect(saw_count);
+}
+
+/// CookiePort that sets `flag` after `cancel_after` successful sets.
+const CancellingStore = struct {
+    flag: *std.atomic.Value(bool),
+    cancel_after: usize,
+    sets: usize = 0,
+
+    fn port(self: *CancellingStore) cookie_port.CookiePort {
+        return .{ .ptr = self, .vtable = &.{ .getAll = FailAfter.getAll, .set = set, .delete = FailAfter.delete } };
+    }
+    fn set(ptr: *anyopaque, _: []const u8, _: u64) cookie_port.PortError!void {
+        const self: *CancellingStore = @ptrCast(@alignCast(ptr));
+        self.sets += 1;
+        if (self.sets == self.cancel_after) self.flag.store(true, .release);
+    }
+};
+
+test "an import cancelled between entries stops with cancelled and the applied count" {
+    var lines: std.ArrayListUnmanaged(u8) = .empty;
+    defer lines.deinit(gpa);
+    for (0..5) |i| try lines.print(gpa, "x.test\tFALSE\t/\tFALSE\t0\tc{d}\tv\n", .{i});
+    const path = try writeTemp("cancel.txt", lines.items);
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "netscape");
+    defer gpa.free(params);
+
+    var flag = std.atomic.Value(bool).init(false);
+    var store = CancellingStore{ .flag = &flag, .cancel_after = 2 };
+    const Call = struct {
+        port: cookie_port.CookiePort,
+        params: []const u8,
+        fn run(c: @This(), a: std.mem.Allocator, ext: *automation.engine.External) error{OutOfMemory}!automation.engine.Outcome {
+            return cookie_routes.handle(a, io, c.port, ext, .import, c.params);
+        }
+    };
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
+    var outcome = try eng.executeExternal(gpa, "cookies.import", "cookies", .{ .cancel = &flag }, Call{ .port = store.port(), .params = params }, Call.run);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 2), store.sets);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqual(@as(i64, 2), data.value.object.get("imported").?.integer);
+}
+
+test "session:false without an expiry is contradictory and skipped" {
+    const path = try writeTemp("contradiction.json", "[{\"name\":\"a\",\"value\":\"1\",\"domain\":\"x.test\",\"session\":false},{\"name\":\"b\",\"value\":\"1\",\"domain\":\"x.test\",\"session\":true}]");
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "json");
+    defer gpa.free(params);
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var outcome = try call(&fake, "cookies.import", params);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":1}", outcome.result);
 }

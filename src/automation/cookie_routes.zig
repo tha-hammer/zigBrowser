@@ -295,7 +295,10 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
     const deadline = ext.nowMs() +| import_budget_ms;
     for (cookies.items, 0..) |cookie, index| {
         const remaining = deadline -| ext.nowMs();
-        const failure: ?engine_mod.Outcome = if (remaining == 0) blk: {
+        const failure: ?engine_mod.Outcome = if (ext.cancelled()) blk: {
+            span.error_class = "Cancelled";
+            break :blk try engine_mod.automationFailure(gpa, .cancelled, null, ids);
+        } else if (remaining == 0) blk: {
             span.error_class = "Timeout";
             break :blk try engine_mod.automationFailure(gpa, .action_timeout, null, ids);
         } else try setOne(gpa, store, cookie, remaining, ids, span);
@@ -410,7 +413,10 @@ fn cookieFromJsonExport(object: std.json.ObjectMap) ?Cookie {
     if (object.get("path")) |_| cookie.path = stringField(object, "path") orelse return null;
     if (object.get("httpOnly")) |value| cookie.httpOnly = boolValue(value) orelse return null;
     if (object.get("secure")) |value| cookie.secure = boolValue(value) orelse return null;
-    const session = if (object.get("session")) |value| boolValue(value) orelse return null else false;
+    const session_value = object.get("session");
+    const session = if (session_value) |value| boolValue(value) orelse return null else false;
+    // An explicit non-session cookie must say when it expires.
+    if (session_value != null and !session and object.get("expirationDate") == null and object.get("expires") == null) return null;
 
     if (object.get("expirationDate")) |value| {
         const seconds = exportSeconds(value) orelse return null;
