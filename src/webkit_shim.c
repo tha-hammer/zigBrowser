@@ -2567,14 +2567,49 @@ int zb_native_key(ZbWindow *win, const char *key, int modifiers,
   return auto_run_native_keys(job, win, timeout_ms, out_releases, out_err);
 }
 
+/* One small GTK-thread job per character, with the deadline checked between
+ * characters: long text can neither overrun the deadline nor hold the GTK
+ * thread. On TIMEOUT the text is partially typed; *out_releases counts the
+ * releases actually sent. */
 int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
                    int *out_releases, char **out_err) {
+  if (out_releases != NULL) {
+    *out_releases = 0;
+  }
+  if (out_err != NULL) {
+    *out_err = NULL;
+  }
   if (text == NULL || !g_utf8_validate(text, -1, NULL)) {
     return ZB_AUTO_ERR_INTERNAL;
   }
-  ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_TEXT);
-  job->body = g_strdup(text);
-  return auto_run_native_keys(job, win, timeout_ms, out_releases, out_err);
+
+  gint64 deadline = auto_deadline(timeout_ms);
+  int total = 0;
+  for (const char *p = text; *p != '\0'; p = g_utf8_next_char(p)) {
+    gint64 remaining_us = deadline - g_get_monotonic_time();
+    if (remaining_us <= 0) {
+      if (out_releases != NULL) {
+        *out_releases = total;
+      }
+      return ZB_AUTO_ERR_TIMEOUT;
+    }
+    ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_TEXT);
+    job->body = g_strndup(p, (gsize)(g_utf8_next_char(p) - p));
+    int releases = 0;
+    int code = auto_run_native_keys(job, win, (unsigned int)((remaining_us + 999) / 1000),
+                                    &releases, out_err);
+    total += releases;
+    if (code != ZB_AUTO_OK) {
+      if (out_releases != NULL) {
+        *out_releases = total;
+      }
+      return code;
+    }
+  }
+  if (out_releases != NULL) {
+    *out_releases = total;
+  }
+  return ZB_AUTO_OK;
 }
 
 int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,

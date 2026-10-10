@@ -183,7 +183,9 @@ int zb_native_click(ZbWindow *win, double x, double y, int button,
 int zb_native_key(ZbWindow *win, const char *key, int modifiers,
                   unsigned int timeout_ms, int *out_releases, char **out_err);
 /* Press and release a key for each character of UTF-8 `text` (Shift added
- * where the keymap needs it; '\n' is Return). */
+ * where the keymap needs it; '\n' is Return). Each character is its own
+ * GTK-thread step and the deadline is checked between them: on TIMEOUT the
+ * text is partially typed and *out_releases counts what was sent. */
 int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
                    int *out_releases, char **out_err);
 

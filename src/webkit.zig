@@ -695,6 +695,19 @@ const LiveDriver = struct {
         const after = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(after.out, "hiA"), "Shift+a typed an upper-case A");
         self.check(eq(self.nativeLog(), "keydown:h:true:false,keydown:i:true:false,keydown:Shift:true:true,keydown:A:true:true,keydown:Enter:true:false"), "native keys are trusted with key names and shift state");
+
+        // Long text is bounded by the deadline: one GTK-thread step per
+        // character, so it stops early instead of holding the GTK thread.
+        const long_text = "x" ** 2000;
+        var long_releases: c_int = 0;
+        const long_start = monotonicMs();
+        rc = c.zb_native_text(null, long_text, 50, &long_releases, &err);
+        const long_ms = monotonicMs() - long_start;
+        c.zb_automation_free(err);
+        err = null;
+        self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "long native text times out at its deadline");
+        self.check(long_ms < 500, "long native text returned promptly after the deadline");
+        self.check(long_releases > 0 and long_releases < 2000, "long native text was only partially sent");
     }
 
     // N5: the cookie store of the primary window's (profile) context. Each
