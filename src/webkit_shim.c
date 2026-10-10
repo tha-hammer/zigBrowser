@@ -2630,9 +2630,12 @@ int zb_native_key(ZbWindow *win, const char *key, int modifiers,
  * thread. On TIMEOUT the text is partially typed; *out_releases counts the
  * releases actually sent. */
 int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
-                   int *out_releases, char **out_err) {
+                   int *out_releases, int *out_chars, char **out_err) {
   if (out_releases != NULL) {
     *out_releases = 0;
+  }
+  if (out_chars != NULL) {
+    *out_chars = 0;
   }
   if (out_err != NULL) {
     *out_err = NULL;
@@ -2662,6 +2665,9 @@ int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
         *out_releases = total;
       }
       return code;
+    }
+    if (out_chars != NULL) {
+      (*out_chars)++;
     }
   }
   if (out_releases != NULL) {

@@ -741,10 +741,11 @@ const LiveDriver = struct {
         self.check(self.waitInputAck(base, 1, 0), "page acknowledged the focusing click");
         var releases: c_int = 0;
         base = self.inputAck() orelse return self.check(false, "inputAck available");
-        rc = c.zb_native_text(null, "hi", 5000, &releases, &err);
+        var chars: c_int = 0;
+        rc = c.zb_native_text(null, "hi", 5000, &releases, &chars, &err);
         c.zb_automation_free(err);
         err = null;
-        self.check(rc == c.ZB_AUTO_OK and releases == 2, "native text returns OK with 2 releases");
+        self.check(rc == c.ZB_AUTO_OK and releases == 2 and chars == 2, "native text returns OK with 2 releases and 2 chars");
         self.check(self.waitInputAck(base, 0, releases), "page acknowledged the typed keys");
         const typed = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(typed.out, "hi"), "native text typed into the focused input");
@@ -785,14 +786,16 @@ const LiveDriver = struct {
         // character, so it stops early instead of holding the GTK thread.
         const long_text = "x" ** 2000;
         var long_releases: c_int = 0;
+        var long_chars: c_int = 0;
         const long_start = monotonicMs();
-        rc = c.zb_native_text(null, long_text, 50, &long_releases, &err);
+        rc = c.zb_native_text(null, long_text, 50, &long_releases, &long_chars, &err);
         const long_ms = monotonicMs() - long_start;
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "long native text times out at its deadline");
         self.check(long_ms < 500, "long native text returned promptly after the deadline");
         self.check(long_releases > 0 and long_releases < 2000, "long native text was only partially sent");
+        self.check(long_chars == long_releases, "chars sent are reported exactly (one release per plain char)");
     }
 
     // Explicit child windows wait for their own first load, not the primary's.
@@ -953,8 +956,8 @@ test "automation bridge drives a live WebKitGTK page" {
     const path_slow = try std.fmt.allocPrintSentinel(arena, "{s}/slow.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path_slow, slow_html.ptr, @intCast(slow_html.len), null) != 0);
     var delay_server = try DelayServer.open(800);
-    try delay_server.start();
     defer delay_server.close();
+    try delay_server.start();
     var delay_buf: [512]u8 = undefined;
     const delay_html = fixtureDelay(&delay_buf, delay_server.port);
     const path_delay = try std.fmt.allocPrintSentinel(arena, "{s}/delay.html", .{dir}, 0);

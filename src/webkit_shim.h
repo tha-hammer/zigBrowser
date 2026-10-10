@@ -190,9 +190,11 @@ int zb_native_key(ZbWindow *win, const char *key, int modifiers,
 /* Press and release a key for each character of UTF-8 `text` (Shift added
  * where the keymap needs it; '\n' is Return). Each character is its own
  * GTK-thread step and the deadline is checked between them: on TIMEOUT the
- * text is partially typed and *out_releases counts what was sent. */
+ * text is partially typed; *out_chars (optional) counts the code points fully
+ * sent, *out_releases the key releases, so a caller can resume or report the
+ * partial effect instead of retrying the whole text. */
 int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
-                   int *out_releases, char **out_err);
+                   int *out_releases, int *out_chars, char **out_err);
 
 /* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
 int zb_automation_debug_live_jobs(void);
