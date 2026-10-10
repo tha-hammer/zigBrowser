@@ -589,7 +589,7 @@ test "dom.selectOption no_option is retried until the deadline" {
 
 // ---- N7: native (trusted) input ----
 
-const located_reply = "{\"ok\":true,\"value\":{\"x\":10.5,\"y\":20}}";
+const located_reply = "{\"ok\":true,\"value\":{\"x\":10.5,\"y\":20,\"document\":\"doc-A\"}}";
 
 fn expectFailureData(outcome: engine.Outcome, code: i64, message: []const u8, data_fragment: []const u8) !void {
     try expectFailure(outcome, code, message);
@@ -801,8 +801,11 @@ test "a malformed locate answer is an internal error, and nothing is clicked" {
     h.init();
     defer h.deinit();
     for ([_][]const u8{
-        "{\"ok\":true,\"value\":{\"x\":\"1\",\"y\":2}}",
-        "{\"ok\":true,\"value\":{\"x\":1}}",
+        "{\"ok\":true,\"value\":{\"x\":\"1\",\"y\":2,\"document\":\"d\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"document\":\"d\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":7}}",
         "{\"ok\":true,\"value\":[1,2]}",
     }) |reply| {
         h.fake.eval_replies = &.{.{ .json = reply }};
@@ -845,5 +848,109 @@ test "a native type that reports fewer code points than requested is a partial f
     var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"a\\nb\",\"options\":{\"input\":\"native\"}}");
     defer outcome.deinit(gpa);
     try expectFailureData(outcome, -32603, "Incomplete native input", "\"sent_chars\":1");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+}
+
+// ---- N7 v3.1: native input is bound to the located document ----
+
+test "native calls carry the located document token; press without a selector carries none" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var click = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}");
+    defer click.deinit(gpa);
+    var typed = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"x\",\"options\":{\"input\":\"native\"}}");
+    defer typed.deinit(gpa);
+    var bare = try h.run("dom.press", "{\"key\":\"Enter\",\"options\":{\"input\":\"native\"}}");
+    defer bare.deinit(gpa);
+    const calls = h.fake.native_calls.items;
+    try std.testing.expectEqual(@as(usize, 3), calls.len);
+    try std.testing.expectEqualStrings("doc-A", calls[0].document.?);
+    try std.testing.expectEqualStrings("doc-A", calls[1].document.?);
+    try std.testing.expect(calls[2].document == null);
+}
+
+test "document changed before any input: the target is located again and the input goes to the new document" {
+    for ([_][]const u8{
+        "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}}",
+    }) |params| {
+        var h: Harness = undefined;
+        h.init();
+        defer h.deinit();
+        h.fake.eval_replies = &.{
+            .{ .json = located_reply },
+            .{ .json = "{\"ok\":true,\"value\":{\"x\":3,\"y\":4,\"document\":\"doc-B\"}}" },
+        };
+        h.fake.native_fail_at = 0;
+        h.fake.native_error = error.DocumentChanged;
+        var outcome = try h.run("dom.click", params);
+        defer outcome.deinit(gpa);
+        try expectResult(outcome, "{\"ok\":true}");
+        try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
+        try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
+        try std.testing.expectEqualStrings("doc-B", h.fake.native_calls.items[1].document.?);
+        try std.testing.expectEqual(@as(f64, 3), h.fake.native_calls.items[1].x);
+    }
+    // Same for type when nothing was typed yet.
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{
+        .{ .json = located_reply },
+        .{ .json = "{\"ok\":true,\"value\":{\"x\":3,\"y\":4,\"document\":\"doc-B\"}}" },
+    };
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.DocumentChanged;
+    var typed = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"native\"}}");
+    defer typed.deinit(gpa);
+    try expectResult(typed, "{\"ok\":true}");
+    try std.testing.expectEqualStrings("hi", h.fake.native_calls.items[1].data);
+}
+
+test "document changed after typing (even sent == requested on a one-code-point call) is terminal; the suffix is never sent" {
+    // delay_ms: "a" ok, "\n" is dispatched and navigates (sent 1 of 1 +
+    // DocumentChanged), "b" must never be sent.
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_fail_at = 1;
+    h.fake.native_error = error.DocumentChanged;
+    h.fake.native_failed_sent = 1;
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"a\\nb\",\"delay_ms\":10,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"partial_input\"");
+    try expectFailureData(outcome, -32001, "element_not_found", "\"last_error\":\"document_changed\"");
+    try expectFailureData(outcome, -32001, "element_not_found", "\"sent_chars\":2");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("a\n", h.fake.nativeTyped(&buf));
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+
+    // Whole string: the backend stops after "a\n" (2 of 3) on the change.
+    var w: Harness = undefined;
+    w.init();
+    defer w.deinit();
+    w.fake.eval_replies = &.{.{ .json = located_reply }};
+    w.fake.native_fail_at = 0;
+    w.fake.native_error = error.DocumentChanged;
+    w.fake.native_failed_sent = 2;
+    var whole = try w.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"a\\nb\",\"options\":{\"input\":\"native\"}}");
+    defer whole.deinit(gpa);
+    try expectFailureData(whole, -32001, "element_not_found", "\"sent_chars\":2");
+    try std.testing.expectEqual(@as(usize, 1), w.fake.native_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 1), w.fake.eval_calls.items.len);
+}
+
+test "a document change on a selector-less press (no binding) is reported, not retried" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.DocumentChanged;
+    var outcome = try h.run("dom.press", "{\"key\":\"Enter\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
     try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
 }

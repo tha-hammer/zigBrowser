@@ -533,7 +533,7 @@ test "RecentTraceStore keeps a late root even after the child cap is reached" {
 
 test "native input is visible on the root span as input.mode=native" {
     var h: Harness = undefined;
-    h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"x\":1,\"y\":2}}" }});
+    h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"doc-A\"}}" }});
     defer h.deinit();
     var outcome = try h.run("dom.click", "{\"selector\":\"css=#go\",\"options\":{\"input\":\"native\"}}", 0);
     defer outcome.deinit(gpa);

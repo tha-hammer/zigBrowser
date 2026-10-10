@@ -43,6 +43,10 @@ pub const PortError = error{
     /// The backend cannot do this at all (e.g. native input on a platform
     /// without a GDK shim). Never retried.
     Unsupported,
+    /// Native input: the page's document is not (or no longer) the one
+    /// `document` names. Before any dispatch nothing was sent; for
+    /// nativeText `sent_chars` says how many code points were.
+    DocumentChanged,
 };
 
 /// Native key modifier bits (PagePort.nativeKey).
@@ -77,20 +81,31 @@ pub const PagePort = struct {
         /// Current document title ("" if none).
         title: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
 
-        // --- v3: native (trusted) input. Backends without it keep the
+        // --- v3.1: native (trusted) input. Backends without it keep the
         // defaults, which return error.Unsupported. ---
+        //
+        // `document` is the token the automation.js `locate` op returned
+        // for the target's document. When non-null, the backend checks it
+        // inside the native operation right before delivering input and
+        // returns DocumentChanged (nothing sent) if the page moved on. It is
+        // null only for dom.press without a selector (a key to whatever has
+        // focus). A document change caused by the input itself (link click,
+        // Enter that submits) is success for click and key.
 
         /// Real pointer motion + left click at viewport CSS px. Returns once
-        /// the page acknowledged the trusted mouseup, or Timeout. Once this
-        /// is called the input may have reached the page: never retried.
-        nativeClick: *const fn (ptr: *anyopaque, x: f64, y: f64, timeout_ms: u64) PortError!void = unsupportedClick,
+        /// the page acknowledged the trusted click, or Timeout. Once input
+        /// was dispatched it is never retried.
+        nativeClick: *const fn (ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void = unsupportedClick,
         /// One key (DOM key name, or one code point) with `modifier_*` bits.
         /// Returns after the trusted keyups are acknowledged.
-        nativeKey: *const fn (ptr: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64) PortError!void = unsupportedKey,
-        /// Types `text` with real key events. `sent_chars` is ALWAYS set,
-        /// also on error: code points fully dispatched. An error with
-        /// sent_chars > 0 is a partial side effect; never retype the prefix.
-        nativeText: *const fn (ptr: *anyopaque, text: []const u8, timeout_ms: u64, sent_chars: *usize) PortError!void = unsupportedText,
+        nativeKey: *const fn (ptr: *anyopaque, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) PortError!void = unsupportedKey,
+        /// Types `text` with real key events, one code point at a time.
+        /// `sent_chars` is ALWAYS set, also on error: code points
+        /// dispatched. An error with sent_chars > 0 is a partial side
+        /// effect; never retype the prefix. As soon as a character's
+        /// acknowledgement shows a new document, it stops and returns
+        /// DocumentChanged (even when every requested code point was sent).
+        nativeText: *const fn (ptr: *anyopaque, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) PortError!void = unsupportedText,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -113,27 +128,27 @@ pub const PagePort = struct {
         return self.vtable.title(self.ptr, gpa, timeout_ms);
     }
 
-    pub fn nativeClick(self: PagePort, x: f64, y: f64, timeout_ms: u64) PortError!void {
-        return self.vtable.nativeClick(self.ptr, x, y, timeout_ms);
+    pub fn nativeClick(self: PagePort, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+        return self.vtable.nativeClick(self.ptr, x, y, document, timeout_ms);
     }
 
-    pub fn nativeKey(self: PagePort, key: []const u8, modifiers: u8, timeout_ms: u64) PortError!void {
-        return self.vtable.nativeKey(self.ptr, key, modifiers, timeout_ms);
+    pub fn nativeKey(self: PagePort, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) PortError!void {
+        return self.vtable.nativeKey(self.ptr, key, modifiers, document, timeout_ms);
     }
 
-    pub fn nativeText(self: PagePort, text: []const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
+    pub fn nativeText(self: PagePort, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
         sent_chars.* = 0;
-        return self.vtable.nativeText(self.ptr, text, timeout_ms, sent_chars);
+        return self.vtable.nativeText(self.ptr, text, document, timeout_ms, sent_chars);
     }
 };
 
-fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: u64) PortError!void {
+fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
     return error.Unsupported;
 }
-fn unsupportedKey(_: *anyopaque, _: []const u8, _: u8, _: u64) PortError!void {
+fn unsupportedKey(_: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) PortError!void {
     return error.Unsupported;
 }
-fn unsupportedText(_: *anyopaque, _: []const u8, _: u64, sent_chars: *usize) PortError!void {
+fn unsupportedText(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64, sent_chars: *usize) PortError!void {
     sent_chars.* = 0;
     return error.Unsupported;
 }
@@ -168,13 +183,13 @@ fn noPageReload(_: *anyopaque, _: u64) PortError!void {
 fn noPageRead(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]u8 {
     return error.NoPage;
 }
-fn noPageClick(_: *anyopaque, _: f64, _: f64, _: u64) PortError!void {
+fn noPageClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
     return error.NoPage;
 }
-fn noPageKey(_: *anyopaque, _: []const u8, _: u8, _: u64) PortError!void {
+fn noPageKey(_: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) PortError!void {
     return error.NoPage;
 }
-fn noPageText(_: *anyopaque, _: []const u8, _: u64, sent_chars: *usize) PortError!void {
+fn noPageText(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64, sent_chars: *usize) PortError!void {
     sent_chars.* = 0;
     return error.NoPage;
 }

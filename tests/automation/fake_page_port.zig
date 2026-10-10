@@ -24,6 +24,8 @@ pub const NativeCall = struct {
     /// Key name or typed text.
     data: []u8 = &.{},
     modifiers: u8 = 0,
+    /// The document token the call was bound to (null: none).
+    document: ?[]u8 = null,
     timeout_ms: u64,
 };
 
@@ -71,7 +73,10 @@ pub const FakePagePort = struct {
         for (self.navigate_calls.items) |u| self.gpa.free(u);
         self.navigate_calls.deinit(self.gpa);
         self.navigate_timeouts.deinit(self.gpa);
-        for (self.native_calls.items) |call| self.gpa.free(call.data);
+        for (self.native_calls.items) |call| {
+            self.gpa.free(call.data);
+            if (call.document) |d| self.gpa.free(d);
+        }
         self.native_calls.deinit(self.gpa);
     }
 
@@ -117,9 +122,10 @@ pub const FakePagePort = struct {
 
     fn recordNative(self: *FakePagePort, call: NativeCall) page_port.PortError!?page_port.PortError {
         const index = self.native_calls.items.len;
-        // Takes ownership of call.data, also when the append fails.
+        // Takes ownership of call.data/document, also when the append fails.
         self.native_calls.append(self.gpa, call) catch {
             self.gpa.free(call.data);
+            if (call.document) |d| self.gpa.free(d);
             return error.OutOfMemory;
         };
         if (self.clock) |clock| clock.now_ms += self.native_cost_ms;
@@ -128,21 +134,35 @@ pub const FakePagePort = struct {
         return null;
     }
 
-    fn nativeClick(ptr: *anyopaque, x: f64, y: f64, timeout_ms: u64) page_port.PortError!void {
-        const self = from(ptr);
-        if (try self.recordNative(.{ .kind = .click, .x = x, .y = y, .timeout_ms = timeout_ms })) |err| return err;
+    fn dupeDocument(self: *FakePagePort, document: ?[]const u8) page_port.PortError!?[]u8 {
+        const d = document orelse return null;
+        return self.gpa.dupe(u8, d) catch error.OutOfMemory;
     }
 
-    fn nativeKey(ptr: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64) page_port.PortError!void {
+    fn nativeClick(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) page_port.PortError!void {
         const self = from(ptr);
-        const data = self.gpa.dupe(u8, key) catch return error.OutOfMemory;
-        if (try self.recordNative(.{ .kind = .key, .data = data, .modifiers = modifiers, .timeout_ms = timeout_ms })) |err| return err;
+        const doc = try self.dupeDocument(document);
+        if (try self.recordNative(.{ .kind = .click, .x = x, .y = y, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
     }
 
-    fn nativeText(ptr: *anyopaque, text: []const u8, timeout_ms: u64, sent_chars: *usize) page_port.PortError!void {
+    fn nativeKey(ptr: *anyopaque, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) page_port.PortError!void {
         const self = from(ptr);
-        const data = self.gpa.dupe(u8, text) catch return error.OutOfMemory;
-        if (try self.recordNative(.{ .kind = .text, .data = data, .timeout_ms = timeout_ms })) |err| {
+        const doc = try self.dupeDocument(document);
+        const data = self.gpa.dupe(u8, key) catch {
+            if (doc) |d| self.gpa.free(d);
+            return error.OutOfMemory;
+        };
+        if (try self.recordNative(.{ .kind = .key, .data = data, .modifiers = modifiers, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
+    }
+
+    fn nativeText(ptr: *anyopaque, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) page_port.PortError!void {
+        const self = from(ptr);
+        const doc = try self.dupeDocument(document);
+        const data = self.gpa.dupe(u8, text) catch {
+            if (doc) |d| self.gpa.free(d);
+            return error.OutOfMemory;
+        };
+        if (try self.recordNative(.{ .kind = .text, .data = data, .document = doc, .timeout_ms = timeout_ms })) |err| {
             sent_chars.* = self.native_failed_sent;
             return err;
         }
