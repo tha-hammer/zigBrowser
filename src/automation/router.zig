@@ -13,6 +13,9 @@ pub const Verb = enum {
     dom_wait_for,
     dom_press,
     dom_select_option,
+    dom_set_input_files,
+    dom_hover,
+    dom_scroll,
     page_navigate,
     page_reload,
     page_url,
@@ -25,14 +28,17 @@ pub const WaitState = enum { attached, visible, hidden, detached };
 
 /// `options.input`: synthetic DOM events from automation.js (default), or
 /// real platform input (PagePort.native*, `event.isTrusted === true`).
-/// Native is accepted for dom.click, dom.type and dom.press only (without
-/// `force`); any other method with `input: "native"` is BadArgs.
+/// Accepted for dom.click, dom.type, dom.press, dom.hover and dom.scroll
+/// (native never with `force`); on any other method even its presence is
+/// BadArgs.
 pub const InputMode = enum { synthetic, native };
 
 /// Internal (never parsed from JSON): turns a dom.* command into the
-/// automation.js `locate` op that native input uses to find, scroll, check
-/// and optionally focus its target.
+/// automation.js op that native input uses to find its target: `locate`
+/// (find, scroll into view, check, optionally focus) or `measure` (find
+/// only: native scroll must not scroll the page itself).
 pub const Locate = struct {
+    op: []const u8 = "locate",
     action: []const u8,
     focus: bool,
 };
@@ -72,6 +78,12 @@ pub const ParsedCommand = struct {
     label: ?[]const u8 = null,
     /// dom.selectOption: 0-based option index.
     option_index: ?u64 = null,
+    /// dom.setInputFiles: the files to choose (non-empty strings, no NUL).
+    paths: []const []const u8 = &.{},
+    /// dom.scroll without a selector: CSS px to scroll by (a missing one
+    /// of the two is 0). Null with a selector.
+    scroll_x: ?f64 = null,
+    scroll_y: ?f64 = null,
     input: InputMode = .synthetic,
     /// `options.humanize` (N8): human-like timing and pointer paths for
     /// native click/type/press; the engine owns the schedule.
@@ -170,6 +182,31 @@ pub fn parse(
             command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
             command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
         },
+        .dom_set_input_files => {
+            command.selector = try requiredString(arena_allocator, obj, "selector");
+            command.paths = try parsePaths(arena_allocator, obj);
+            command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+        },
+        .dom_hover => {
+            command.selector = try requiredString(arena_allocator, obj, "selector");
+            command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+        },
+        .dom_scroll => {
+            command.selector = try optionalString(arena_allocator, obj, "selector");
+            const x = optionalFiniteNumber(obj, "x") catch return error.BadArgs;
+            const y = optionalFiniteNumber(obj, "y") catch return error.BadArgs;
+            // Exactly one of: a target to bring into view, or an offset.
+            const by_offset = x != null or y != null;
+            if (by_offset == (command.selector != null)) return error.BadArgs;
+            if (by_offset) {
+                command.scroll_x = x orelse 0;
+                command.scroll_y = y orelse 0;
+            }
+            command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
+        },
         .page_navigate => {
             command.url = try requiredCString(arena_allocator, obj, "url");
             command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
@@ -194,19 +231,23 @@ pub fn parse(
         },
         .page_screenshot => {
             command.full_page = optionalBool(obj, "fullPage", false) catch return error.BadArgs;
+            command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
         },
     }
 
-    // `options.input` exists only on click/type/press: anywhere else even
-    // its presence is BadArgs. Native input never takes force (a trusted
-    // event at a covered element's centre would land on the cover), and
-    // dom.press has no force/trial at all.
+    // `options.input` exists only on click/type/press/hover/scroll:
+    // anywhere else even its presence is BadArgs. Native input never takes
+    // force (a trusted event at a covered element's centre would land on
+    // the cover); press, hover and scroll have no force/trial at all, and
+    // scroll no humanize.
     const input = parseInputMode(obj) catch return error.BadArgs;
     switch (verb) {
         .dom_click, .dom_type => if (input == .native and command.force) return error.BadArgs,
-        .dom_press => if (hasOption(obj, "force") or hasOption(obj, "trial")) return error.BadArgs,
+        .dom_press, .dom_hover => if (hasOption(obj, "force") or hasOption(obj, "trial")) return error.BadArgs,
+        .dom_scroll => if (hasOption(obj, "force") or hasOption(obj, "trial") or hasOption(obj, "humanize")) return error.BadArgs,
         else => if (hasOption(obj, "input") or hasOption(obj, "humanize")) return error.BadArgs,
     }
+    if (verb == .dom_hover or verb == .dom_scroll) command.input = input;
     // humanize: native input only (synthetic events have no pointer path)
     // and never with delay_ms (humanize owns the timing).
     command.humanize = humanizeOption(obj) catch return error.BadArgs;
@@ -235,6 +276,9 @@ fn verbFromMethod(method: []const u8) ?Verb {
         .{ .method = "dom.waitFor", .verb = .dom_wait_for },
         .{ .method = "dom.press", .verb = .dom_press },
         .{ .method = "dom.selectOption", .verb = .dom_select_option },
+        .{ .method = "dom.setInputFiles", .verb = .dom_set_input_files },
+        .{ .method = "dom.hover", .verb = .dom_hover },
+        .{ .method = "dom.scroll", .verb = .dom_scroll },
         .{ .method = "page.navigate", .verb = .page_navigate },
         .{ .method = "page.reload", .verb = .page_reload },
         .{ .method = "page.url", .verb = .page_url },
@@ -259,6 +303,9 @@ fn namespaceFromVerb(verb: Verb) Namespace {
         .dom_wait_for,
         .dom_press,
         .dom_select_option,
+        .dom_set_input_files,
+        .dom_hover,
+        .dom_scroll,
         => .dom,
         .page_navigate,
         .page_reload,
@@ -333,6 +380,41 @@ fn optionalU64(obj: std.json.ObjectMap, key: []const u8) !?u64 {
         .number_string => |text| std.fmt.parseInt(u64, text, 10) catch error.BadArgs,
         else => error.BadArgs,
     };
+}
+
+/// A finite JSON number, or null when absent (strings, bools, and numbers
+/// that overflow to infinity are BadArgs).
+fn optionalFiniteNumber(obj: std.json.ObjectMap, key: []const u8) !?f64 {
+    const value = obj.get(key) orelse return null;
+    const number: f64 = switch (value) {
+        .integer => |int| @floatFromInt(int),
+        .float => |f| f,
+        .number_string => |text| std.fmt.parseFloat(f64, text) catch return error.BadArgs,
+        else => return error.BadArgs,
+    };
+    if (!std.math.isFinite(number)) return error.BadArgs;
+    return number;
+}
+
+/// dom.setInputFiles `paths`: a non-empty array of non-empty strings
+/// without NUL (they reach the C ABI). Whether each is an absolute,
+/// readable regular file is the backend's check (PortError.BadFile).
+fn parsePaths(allocator: std.mem.Allocator, obj: std.json.ObjectMap) error{BadArgs}![]const []const u8 {
+    const items = switch (obj.get("paths") orelse return error.BadArgs) {
+        .array => |array| array.items,
+        else => return error.BadArgs,
+    };
+    if (items.len == 0) return error.BadArgs;
+    const paths = allocator.alloc([]const u8, items.len) catch return error.BadArgs;
+    for (items, paths) |item, *path| {
+        const text = switch (item) {
+            .string => |t| t,
+            else => return error.BadArgs,
+        };
+        if (text.len == 0 or std.mem.indexOfScalar(u8, text, 0) != null) return error.BadArgs;
+        path.* = allocator.dupe(u8, text) catch return error.BadArgs;
+    }
+    return paths;
 }
 
 fn optionalBool(obj: std.json.ObjectMap, key: []const u8, default: bool) !bool {

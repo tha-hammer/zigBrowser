@@ -758,6 +758,9 @@ test "N12: a build without platform ports (WebView2/WKWebView today) answers eve
         "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\"}},\"id\":997}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"dom.type\",\"params\":{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"native\"}},\"id\":998}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"dom.press\",\"params\":{\"key\":\"Enter\",\"options\":{\"input\":\"native\"}},\"id\":999}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.hover\",\"params\":{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\"}},\"id\":1000}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.scroll\",\"params\":{\"y\":10,\"options\":{\"input\":\"native\"}},\"id\":1001}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.setInputFiles\",\"params\":{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a\"]},\"id\":1002}",
     }) |request| {
         const native = try roundTrip(stream, request);
         defer testing.allocator.free(native);

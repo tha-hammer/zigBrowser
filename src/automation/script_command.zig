@@ -33,6 +33,9 @@ pub fn opName(verb: router.Verb) ?[]const u8 {
         .dom_wait_for => "waitFor",
         .dom_press => "press",
         .dom_select_option => "selectOption",
+        .dom_set_input_files => "chooseFiles",
+        .dom_hover => "hover",
+        .dom_scroll => "scroll",
         .page_navigate,
         .page_reload,
         .page_url,
@@ -61,6 +64,11 @@ const ScriptCommand = struct {
     modifiers: ?[]const []const u8 = null,
     label: ?[]const u8 = null,
     index: ?u64 = null,
+    /// chooseFiles: how many files the chooser will get (never the paths).
+    count: ?usize = null,
+    /// scroll by offset: CSS px.
+    x: ?f64 = null,
+    y: ?f64 = null,
     timeout_ms: ?u64 = null,
     /// `locate` op only: the action whose checks apply, and whether to focus.
     action: ?[]const u8 = null,
@@ -84,7 +92,7 @@ pub fn buildCommandJson(
     // itself: the typed text and key never go to the script.
     const locate = command.locate;
     const script_command = ScriptCommand{
-        .op = if (locate != null) "locate" else op,
+        .op = if (locate) |l| l.op else op,
         .selector = command.selector,
         .value = if (locate != null) null else command.value,
         .text = if (locate != null) null else command.text,
@@ -96,6 +104,9 @@ pub fn buildCommandJson(
         .modifiers = if (command.verb == .dom_press and locate == null) command.modifiers else null,
         .label = command.label,
         .index = command.option_index,
+        .count = if (command.verb == .dom_set_input_files and locate == null) command.paths.len else null,
+        .x = if (locate == null) command.scroll_x else null,
+        .y = if (locate == null) command.scroll_y else null,
         .timeout_ms = timeout_ms orelse command.timeout_ms,
         .action = if (locate) |l| l.action else null,
         .focus = if (locate) |l| l.focus else null,

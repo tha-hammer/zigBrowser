@@ -18,9 +18,12 @@ pub const EvalReply = union(enum) {
 };
 
 pub const NativeCall = struct {
-    kind: enum { click, key, text, move },
+    kind: enum { click, key, text, move, scroll },
     x: f64 = 0,
     y: f64 = 0,
+    /// Scroll calls: the wheel's CSS px deltas.
+    delta_x: f64 = 0,
+    delta_y: f64 = 0,
     /// Key name or typed text.
     data: []u8 = &.{},
     modifiers: u8 = 0,
@@ -30,6 +33,13 @@ pub const NativeCall = struct {
     /// Fake clock time when the call started.
     at_ms: u64 = 0,
 };
+
+/// rateLimitScan answers (automation.js shapes).
+pub const clean_scan = "{\"ok\":true,\"value\":{\"signals\":[]},\"telemetry\":[]}";
+pub fn detectedScan(comptime signal: []const u8, comptime platform: []const u8) []const u8 {
+    return "{\"ok\":false,\"error\":\"platform_rate_limited\",\"retryable\":false,\"data\":{\"signal\":\"" ++ signal ++
+        "\",\"platform\":\"" ++ platform ++ "\",\"signals\":[{\"kind\":\"" ++ signal ++ "\",\"text_hash\":\"\",\"confidence\":0.95}]}}";
+}
 
 pub const FakePagePort = struct {
     gpa: std.mem.Allocator,
@@ -71,6 +81,29 @@ pub const FakePagePort = struct {
     /// Simulated per-window pointer cache: set after a move or click was
     /// dispatched (not on a failed call).
     pointer_pos: ?page_port.Point = null,
+    /// Simulated page scroll offsets: each successful nativeScroll adds its
+    /// deltas (clamped at 0) and returns the result.
+    scroll_pos: page_port.ScrollOffsets = .{ .x = 0, .y = 0 },
+    /// setInputFiles: the paths of each call, joined with '\n'.
+    files_calls: std.ArrayListUnmanaged([]u8) = .empty,
+    /// setInputFiles failure: BadFile fails before the op runs (no eval
+    /// recorded); any other error after the op ran.
+    files_error: ?page_port.PortError = null,
+    screenshot_calls: usize = 0,
+    screenshot_full_page: ?bool = null,
+    screenshot_error: ?page_port.PortError = null,
+    screenshot_png: []const u8 = "\x89PNG\r\n\x1a\nfake",
+    /// N20: automation.js rateLimitScan evals are answered from here (in
+    /// order; the last repeats), cost no time, and are counted in
+    /// `scan_calls` instead of `eval_calls`, so flow tests keep their step
+    /// sequences. Default: a clean page.
+    scan_replies: []const EvalReply = &.{.{ .json = clean_scan }},
+    scan_calls: usize = 0,
+    /// The platform each scan asked about (last one).
+    scan_platform: [16]u8 = undefined,
+    scan_platform_len: usize = 0,
+    /// eval_calls.len when each scan ran (where it sat between steps).
+    scan_positions: [64]usize = undefined,
 
     pub fn init(gpa: std.mem.Allocator) FakePagePort {
         return .{ .gpa = gpa };
@@ -90,6 +123,8 @@ pub const FakePagePort = struct {
             if (call.document) |d| self.gpa.free(d);
         }
         self.native_calls.deinit(self.gpa);
+        for (self.files_calls.items) |f| self.gpa.free(f);
+        self.files_calls.deinit(self.gpa);
     }
 
     /// The typed texts of the native text calls, concatenated.
@@ -118,9 +153,13 @@ pub const FakePagePort = struct {
         .nativeText = nativeText,
         .nativeMove = nativeMove,
         .pointer = pointer,
+        .setInputFiles = setInputFiles,
+        .nativeScroll = nativeScroll,
+        .screenshot = screenshot,
     };
 
     /// A port with native click/key/text but no pointer motion (v3.1).
+    /// v3.3/v3.4 keep their Unsupported defaults.
     pub fn portWithoutMove(self: *FakePagePort) page_port.PagePort {
         return .{ .ptr = self, .vtable = &v31_vtable };
     }
@@ -189,6 +228,39 @@ pub const FakePagePort = struct {
         return from(ptr).pointer_pos;
     }
 
+    fn nativeScroll(ptr: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) page_port.PortError!page_port.ScrollOffsets {
+        const self = from(ptr);
+        const doc = try self.dupeDocument(document);
+        if (try self.recordNative(.{ .kind = .scroll, .x = x, .y = y, .delta_x = delta_x, .delta_y = delta_y, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
+        self.scroll_pos = .{ .x = @max(0, self.scroll_pos.x + delta_x), .y = @max(0, self.scroll_pos.y + delta_y) };
+        return self.scroll_pos;
+    }
+
+    fn setInputFiles(ptr: *anyopaque, gpa: std.mem.Allocator, body: []const u8, arg_json: []const u8, paths: []const []const u8, timeout_ms: u64) page_port.PortError![]u8 {
+        const self = from(ptr);
+        const joined = std.mem.join(self.gpa, "\n", paths) catch return error.OutOfMemory;
+        self.files_calls.append(self.gpa, joined) catch {
+            self.gpa.free(joined);
+            return error.OutOfMemory;
+        };
+        if (self.files_error) |err| if (err == error.BadFile) return err;
+        const answer = try evalJson(ptr, gpa, .automation, body, arg_json, timeout_ms);
+        if (self.files_error) |err| {
+            gpa.free(answer);
+            return err;
+        }
+        return answer;
+    }
+
+    fn screenshot(ptr: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) page_port.PortError!page_port.Screenshot {
+        const self = from(ptr);
+        self.last_read_timeout_ms = timeout_ms;
+        self.screenshot_calls += 1;
+        self.screenshot_full_page = full_page;
+        if (self.screenshot_error) |err| return err;
+        return .{ .png = try gpa.dupe(u8, self.screenshot_png), .width = 800, .height = 600 };
+    }
+
     /// Native calls of one kind.
     pub fn nativeOf(self: *const FakePagePort, kind: @FieldType(NativeCall, "kind"), buf: []NativeCall) []NativeCall {
         var n: usize = 0;
@@ -230,6 +302,7 @@ pub const FakePagePort = struct {
 
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg_json: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         const self = from(ptr);
+        if (std.mem.indexOf(u8, arg_json, "\"op\":\"rateLimitScan\"") != null) return self.scan(gpa, arg_json);
         const index = self.eval_calls.items.len;
         self.eval_calls.append(self.gpa, .{
             .world = world,
@@ -256,6 +329,29 @@ pub const FakePagePort = struct {
             .json => |text| gpa.dupe(u8, text),
             .err => |err| err,
         };
+    }
+
+    fn scan(self: *FakePagePort, gpa: std.mem.Allocator, arg_json: []const u8) page_port.PortError![]u8 {
+        const index = self.scan_calls;
+        if (index < self.scan_positions.len) self.scan_positions[index] = self.eval_calls.items.len;
+        self.scan_calls += 1;
+        const parsed = std.json.parseFromSlice(std.json.Value, self.gpa, arg_json, .{}) catch return error.EvalFailed;
+        defer parsed.deinit();
+        if (parsed.value.object.get("options")) |options| if (options.object.get("platform")) |platform| {
+            const name = platform.string;
+            const n = @min(name.len, self.scan_platform.len);
+            @memcpy(self.scan_platform[0..n], name[0..n]);
+            self.scan_platform_len = n;
+        };
+        if (self.scan_replies.len == 0) return error.EvalFailed;
+        return switch (self.scan_replies[@min(index, self.scan_replies.len - 1)]) {
+            .json => |text| gpa.dupe(u8, text),
+            .err => |err| err,
+        };
+    }
+
+    pub fn scannedPlatform(self: *const FakePagePort) []const u8 {
+        return self.scan_platform[0..self.scan_platform_len];
     }
 
     fn navigate(ptr: *anyopaque, url_text: []const u8, timeout_ms: u64) page_port.PortError!void {

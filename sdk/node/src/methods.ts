@@ -61,6 +61,24 @@ export interface RateStatusResult {
   daily_cap: number;
 }
 
+export type InputMode = "synthetic" | "native";
+export interface FilesResult {
+  /** The input accepts several files. */
+  multiple: boolean;
+  /** The input fired `change` (choosing the same files again may not). */
+  changed: boolean;
+}
+export interface ScrollResult {
+  scrollX: number;
+  scrollY: number;
+}
+export interface ScreenshotResult {
+  /** Base64 PNG. */
+  data: string;
+  width: number;
+  height: number;
+}
+
 export interface ActionOptions {
   force?: boolean;
   trial?: boolean;
@@ -77,6 +95,12 @@ function wire(params: Record<string, unknown>): Record<string, unknown> {
     if (value !== undefined) out[key] = value;
   }
   return out;
+}
+
+/** An `options` object, or undefined when every value is absent. */
+function options(values: Record<string, unknown>): Record<string, unknown> | undefined {
+  const out = wire(values);
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function actionOptions(opts?: ActionOptions): Record<string, unknown> | undefined {
@@ -113,6 +137,36 @@ export class DomNamespace {
   press(key: string, opts: { selector?: string; modifiers?: Modifier[]; timeoutMs?: number } = {}): Promise<OkResult> {
     return this.call("dom.press", wire({ key, selector: opts.selector, modifiers: opts.modifiers, timeout_ms: opts.timeoutMs })) as Promise<OkResult>;
   }
+  /**
+   * Choose files for an <input type=file> through the browser's own file
+   * chooser (GTK backend; others answer -32011 "unsupported"). Absolute
+   * paths of readable regular files (else -32602 "bad_file"). Never repeat
+   * after -32009 "files_unconfirmed" (they were applied once).
+   */
+  setInputFiles(selector: string, paths: string[], opts: { timeoutMs?: number; strict?: boolean } = {}): Promise<FilesResult> {
+    return this.call("dom.setInputFiles", wire({ selector, paths, options: options({ timeout_ms: opts.timeoutMs, strict: opts.strict }) })) as Promise<FilesResult>;
+  }
+  /**
+   * input "synthetic" (default: pointer/mouse events only, no CSS :hover) or
+   * "native" (a real pointer move; humanize = a curved, paced path).
+   */
+  hover(selector: string, opts: { input?: InputMode; humanize?: boolean; timeoutMs?: number; strict?: boolean } = {}): Promise<OkResult> {
+    return this.call("dom.hover", wire({ selector, options: options({ input: opts.input, humanize: opts.humanize, timeout_ms: opts.timeoutMs, strict: opts.strict }) })) as Promise<OkResult>;
+  }
+  /**
+   * Scroll an element into view, or the page by x/y CSS px. Native input uses
+   * real wheel events and returns once scrolling has finished.
+   */
+  async scroll(
+    target: { selector: string } | { x?: number; y?: number },
+    opts: { input?: InputMode; timeoutMs?: number; strict?: boolean } = {},
+  ): Promise<ScrollResult> {
+    const t = target as { selector?: string; x?: number; y?: number };
+    if ((t.selector === undefined) === (t.x === undefined && t.y === undefined)) {
+      throw new Error("scroll needs exactly one of selector or x/y");
+    }
+    return this.call("dom.scroll", wire({ selector: t.selector, x: t.x, y: t.y, options: options({ input: opts.input, timeout_ms: opts.timeoutMs, strict: opts.strict }) })) as Promise<ScrollResult>;
+  }
   /** Select by exactly one of value, label or index. */
   async selectOption(
     selector: string,
@@ -143,9 +197,9 @@ export class PageNamespace {
   evaluate<T = unknown>(expression: string): Promise<EvaluateResult<T>> {
     return this.call("page.evaluate", { expression }) as Promise<EvaluateResult<T>>;
   }
-  /** Not supported by the GTK backend yet (answers -32603). */
-  screenshot(opts: { fullPage?: boolean } = {}): Promise<{ data: string }> {
-    return this.call("page.screenshot", wire({ fullPage: opts.fullPage })) as Promise<{ data: string }>;
+  /** A backend without screenshots answers -32603. */
+  screenshot(opts: { fullPage?: boolean; timeoutMs?: number } = {}): Promise<ScreenshotResult> {
+    return this.call("page.screenshot", wire({ fullPage: opts.fullPage, timeout_ms: opts.timeoutMs })) as Promise<ScreenshotResult>;
   }
 }
 

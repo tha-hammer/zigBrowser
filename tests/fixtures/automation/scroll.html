@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Scroll Fixture</title>
+    <!-- dom.scroll / dom.hover e2e (tests/e2e/automation_scroll_test.py): a
+         page much taller than the viewport with a target far below the
+         fold, and a hover target whose :hover rule is observable.
+         window.__scroll records wheel events (isTrusted) and hover events. -->
+    <style>
+      body { margin: 0; font-family: sans-serif; }
+      #top { height: 40px; }
+      #menu { width: 160px; height: 40px; background: #ccc; }
+      #menu:hover { background: rgb(0, 128, 0); }
+      #spacer { height: 2400px; }
+      #far { width: 200px; height: 60px; background: #69c; }
+      #tail { height: 2400px; }
+    </style>
+  </head>
+  <body>
+    <div id="top">top</div>
+    <div id="menu">hover me</div>
+    <div id="spacer"></div>
+    <div id="far">far target</div>
+    <div id="tail"></div>
+    <script>
+      (function () {
+        var log = window.__scroll = { wheels: [], hovers: [] };
+        window.addEventListener('wheel', function (e) { log.wheels.push(e.isTrusted); }, { capture: true, passive: true });
+        var menu = document.getElementById('menu');
+        ['pointerover', 'mouseover', 'mousemove'].forEach(function (type) {
+          menu.addEventListener(type, function (e) { log.hovers.push(type + ':' + e.isTrusted); });
+        });
+      })();
+    </script>
+  </body>
+</html>

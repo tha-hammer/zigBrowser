@@ -150,7 +150,7 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | `page.url` | — | `{url}` |
 | `page.title` | — | `{title}` |
 | `page.evaluate` | `expression` (JavaScript expression, may be a Promise) | `{result}`; a thrown error gives -32603 with `data.name` |
-| `page.screenshot` | `fullPage?` | not supported yet (-32603) |
+| `page.screenshot` | `fullPage?`, `timeout_ms?` | `{data, width, height}`: `data` is a base64 PNG; a backend without screenshots answers -32603, a PNG over 16 MiB -32603 with `data.reason = "screenshot_too_large"` |
 
 ### DOM
 
@@ -165,6 +165,9 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | `dom.getText` | `selector`, `timeout_ms?`, `strict?` | `{text}` |
 | `dom.getAttribute` | `selector`, `name`, `timeout_ms?`, `strict?` | `{value}` (null if absent) |
 | `dom.waitFor` | `selector`, `state?` (`attached`, `visible`, `hidden`, `detached`), `timeout_ms?`, `strict?` | `{ok:true}` |
+| `dom.setInputFiles` | `selector` (an `<input type=file>`), `paths` (absolute file paths), `options?: {timeout_ms?, strict?}` | `{multiple, changed}` |
+| `dom.hover` | `selector`, `options?: {input?, humanize?, timeout_ms?, strict?}` | `{}` (synthetic) or `{ok:true}` (native) |
+| `dom.scroll` | exactly one of `selector` or `x`/`y` (CSS px; a missing one is 0), `options?: {input?, timeout_ms?, strict?}` | `{scrollX, scrollY}` |
 
 - `force: true` skips the actionability checks; `trial: true` runs the
   checks without acting.
@@ -173,6 +176,26 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 - `dom.selectOption` works on native `<select>` elements and on ARIA
   comboboxes and listboxes. A missing option is retried, then fails with
   `element_not_found` and `data.reason = "no_option"`.
+- `dom.setInputFiles` clicks the file input and answers the browser's own
+  file chooser with `paths` (GTK backend only; others answer -32011
+  `unsupported`). Hidden file inputs are fine. Each path must be an
+  absolute, readable regular file, otherwise -32602 with
+  `data.reason = "bad_file"` and nothing is clicked. More than one path
+  needs an input with `multiple`. If the files were chosen but the page did
+  not confirm in time, the answer is -32009 `files_unconfirmed`: they were
+  applied once, so do not send the command again. `changed` is false when
+  the input fired no `change` event (choosing the same files again).
+- `dom.hover` with synthetic input (the default) only dispatches pointer
+  and mouse events: CSS `:hover` rules do not apply. With
+  `input: "native"` the real pointer moves onto the element (`humanize`:
+  along a curved, paced path), so `:hover` menus and tooltips open.
+- `dom.scroll` with a selector brings the element's centre into the view;
+  with `x`/`y` it scrolls the page by that much. With `input: "native"` it
+  uses real wheel events at the centre of the view and answers only once
+  scrolling has finished, so the next command sees the final offsets. A
+  native scroll to a selector tries three wheels, then fails with -32009
+  `scroll_not_reached` (for example when an inner scroller under the
+  centre takes the wheel).
 
 ### Cookies
 
@@ -314,8 +337,8 @@ events inside the page. They behave like real input for nearly all sites,
 but `event.isTrusted` is `false`. A site that ignores untrusted events will
 not react.
 
-`options: {input: "native"}` on `dom.click`, `dom.type` and `dom.press`
-sends real pointer and key events instead (`isTrusted: true`; Linux/GTK
+`options: {input: "native"}` on `dom.click`, `dom.type`, `dom.press`,
+`dom.hover` and `dom.scroll` sends real pointer, key and wheel events instead (`isTrusted: true`; Linux/GTK
 build only, elsewhere -32011 with `data.reason = "unsupported"`):
 
 - The target is found and checked like a synthetic action (retried until the
@@ -336,9 +359,9 @@ build only, elsewhere -32011 with `data.reason = "unsupported"`):
   `data.sent_chars`: that many characters were typed and the rest were not.
   Do not retype the whole text.
 - `options: {input: "native", humanize: true}` adds human-like timing:
-  `dom.click` moves the pointer along a curved path (from where the last
-  native move or click left it, or from a random point 80-240 px away)
-  and pauses before clicking; `dom.type` waits 80-200 ms between
+  `dom.click` and `dom.hover` move the pointer along a curved path (from
+  where the last native move or click left it, or from a random point
+  80-240 px away), and a click pauses before clicking; `dom.type` waits 80-200 ms between
   characters and 300-600 ms before a space; `dom.press` waits once before
   the key. The whole schedule is planned first: if it does not fit the
   deadline the command fails with -32009 and `data.reason =

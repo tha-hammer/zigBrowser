@@ -47,10 +47,29 @@ pub const PortError = error{
     /// `document` names. Before any dispatch nothing was sent; for
     /// nativeText `sent_chars` says how many code points were.
     DocumentChanged,
+    /// v3.3 setInputFiles: a path is not an absolute, readable regular
+    /// file (or there are too many). Checked before anything runs.
+    BadFile,
+    /// v3.3 setInputFiles: the files were chosen but the page did not
+    /// confirm before the deadline. They were applied once: never retried.
+    FilesUnconfirmed,
+    /// v3.4 screenshot: the encoded PNG is over max_screenshot_bytes;
+    /// nothing is returned.
+    TooLarge,
 };
 
 /// A viewport point in CSS px (native input, pointer cache).
 pub const Point = struct { x: f64, y: f64 };
+
+/// The page's scrollX/scrollY in CSS px (v3.3 nativeScroll).
+pub const ScrollOffsets = struct { x: f64, y: f64 };
+
+/// v3.4 screenshot: PNG bytes (owned by the `gpa` passed in) and size in
+/// device pixels.
+pub const Screenshot = struct { png: []u8, width: u32, height: u32 };
+
+/// Largest encoded PNG a screenshot may return (else error.TooLarge).
+pub const max_screenshot_bytes: usize = 16 * 1024 * 1024;
 
 /// Native key modifier bits (PagePort.nativeKey).
 pub const modifier_shift: u8 = 1 << 0;
@@ -121,6 +140,32 @@ pub const PagePort = struct {
         /// or a click), or null if none yet. Reads a cache only: no page
         /// call, no deadline.
         pointer: *const fn (ptr: *anyopaque) ?Point = unknownPointer,
+
+        // --- v3.3 (N17 files, N18 scroll) ---
+
+        /// Run `function_body` with `arg_json` in the automation world (like
+        /// evalJson); the automation.js `chooseFiles` op it runs clicks the
+        /// file input, and the backend answers the file chooser that click
+        /// opens with `paths`. Returns the op's JSON answer verbatim: when
+        /// the op refuses, nothing was clicked. Paths that are not
+        /// absolute, readable regular files: error.BadFile, nothing run.
+        /// Chosen but unconfirmed by the deadline: error.FilesUnconfirmed
+        /// (applied once; never call again for the same command).
+        setInputFiles: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, function_body: []const u8, arg_json: []const u8, paths: []const []const u8, timeout_ms: u64) PortError![]u8 = unsupportedFiles,
+        /// One real smooth-scroll (wheel) event at viewport CSS px (x, y),
+        /// by (delta_x, delta_y) CSS px (positive = right/down), guarded by
+        /// `document` like nativeMove (DocumentChanged: nothing sent).
+        /// Returns once the page acknowledged the trusted wheel and the
+        /// scrolling it started went quiet, with the page's offsets at that
+        /// moment. Once dispatched it is never retried.
+        nativeScroll: *const fn (ptr: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!ScrollOffsets = unsupportedScroll,
+
+        // --- v3.4 (N19) ---
+
+        /// PNG of the visible viewport (`full_page`: the whole document),
+        /// bounded by the deadline. Over max_screenshot_bytes:
+        /// error.TooLarge, nothing returned.
+        screenshot: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!Screenshot = unsupportedScreenshot,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -175,6 +220,23 @@ pub const PagePort = struct {
     pub fn pointer(self: PagePort) ?Point {
         return self.vtable.pointer(self.ptr);
     }
+
+    /// False when the backend cannot scroll with real wheel events.
+    pub fn supportsNativeScroll(self: PagePort) bool {
+        return self.supportsNativeInput() and self.vtable.nativeScroll != &unsupportedScroll;
+    }
+
+    pub fn setInputFiles(self: PagePort, gpa: std.mem.Allocator, function_body: []const u8, arg_json: []const u8, paths: []const []const u8, timeout_ms: u64) PortError![]u8 {
+        return self.vtable.setInputFiles(self.ptr, gpa, function_body, arg_json, paths, timeout_ms);
+    }
+
+    pub fn nativeScroll(self: PagePort, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!ScrollOffsets {
+        return self.vtable.nativeScroll(self.ptr, x, y, delta_x, delta_y, document, timeout_ms);
+    }
+
+    pub fn screenshot(self: PagePort, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!Screenshot {
+        return self.vtable.screenshot(self.ptr, gpa, full_page, timeout_ms);
+    }
 };
 
 fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
@@ -192,6 +254,15 @@ fn unsupportedMove(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortEr
 }
 fn unknownPointer(_: *anyopaque) ?Point {
     return null;
+}
+fn unsupportedFiles(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8, _: []const []const u8, _: u64) PortError![]u8 {
+    return error.Unsupported;
+}
+fn unsupportedScroll(_: *anyopaque, _: f64, _: f64, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!ScrollOffsets {
+    return error.Unsupported;
+}
+fn unsupportedScreenshot(_: *anyopaque, _: std.mem.Allocator, _: bool, _: u64) PortError!Screenshot {
+    return error.Unsupported;
 }
 
 /// Port for a server with no page attached (a backend without a PagePort,
@@ -214,6 +285,9 @@ const no_page_vtable = PagePort.VTable{
     .nativeText = noPageText,
     .nativeMove = unsupportedMove,
     .pointer = unknownPointer,
+    .setInputFiles = unsupportedFiles,
+    .nativeScroll = unsupportedScroll,
+    .screenshot = unsupportedScreenshot,
 };
 
 fn noPageEval(_: *anyopaque, _: std.mem.Allocator, _: World, _: []const u8, _: []const u8, _: u64) PortError![]u8 {

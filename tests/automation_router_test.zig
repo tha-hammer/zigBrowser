@@ -323,3 +323,91 @@ test "options.humanize: native click/type/press only, never with delay_ms or syn
         return error.TestUnexpectedResult;
     }
 }
+
+fn expectRejected(allocator: std.mem.Allocator, method: []const u8, params: []const u8) !void {
+    var accepted = router.parse(allocator, method, params, .{}) catch |err| {
+        try std.testing.expectEqual(error.BadArgs, err);
+        return;
+    };
+    accepted.deinit();
+    std.debug.print("accepted {s} {s}\n", .{ method, params });
+    return error.TestUnexpectedResult;
+}
+
+test "dom.setInputFiles: selector plus a non-empty array of non-empty paths; no input option" {
+    const allocator = std.testing.allocator;
+    var command = try router.parse(allocator, "dom.setInputFiles", "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a.txt\",\"/tmp/b.png\"],\"options\":{\"timeout_ms\":5000}}", .{});
+    defer command.deinit();
+    try std.testing.expectEqual(router.Verb.dom_set_input_files, command.verb);
+    try std.testing.expectEqual(router.Namespace.dom, command.namespace);
+    try std.testing.expectEqual(@as(usize, 2), command.paths.len);
+    try std.testing.expectEqualStrings("/tmp/b.png", command.paths[1]);
+    try std.testing.expectEqual(@as(?u64, 5000), command.timeout_ms);
+    try std.testing.expect(command.strict);
+
+    for ([_][]const u8{
+        "{\"selector\":\"css=#f\"}",
+        "{\"selector\":\"css=#f\",\"paths\":[]}",
+        "{\"selector\":\"css=#f\",\"paths\":\"/tmp/a\"}",
+        "{\"selector\":\"css=#f\",\"paths\":[\"\"]}",
+        "{\"selector\":\"css=#f\",\"paths\":[1]}",
+        "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a\\u0000b\"]}",
+        "{\"paths\":[\"/tmp/a\"]}",
+        "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a\"],\"options\":{\"input\":\"native\"}}",
+        "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a\"],\"options\":{\"humanize\":true}}",
+    }) |params| try expectRejected(allocator, "dom.setInputFiles", params);
+}
+
+test "dom.hover: synthetic or native (humanize native only); no force or trial" {
+    const allocator = std.testing.allocator;
+    var plain = try router.parse(allocator, "dom.hover", "{\"selector\":\"css=#m\"}", .{});
+    defer plain.deinit();
+    try std.testing.expectEqual(router.Verb.dom_hover, plain.verb);
+    try std.testing.expectEqual(router.InputMode.synthetic, plain.input);
+    try std.testing.expect(plain.strict);
+    var native = try router.parse(allocator, "dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\",\"humanize\":true,\"timeout_ms\":4000}}", .{});
+    defer native.deinit();
+    try std.testing.expectEqual(router.InputMode.native, native.input);
+    try std.testing.expect(native.humanize);
+    try std.testing.expectEqual(@as(?u64, 4000), native.timeout_ms);
+
+    for ([_][]const u8{
+        "{}",
+        "{\"selector\":\"css=#m\",\"options\":{\"force\":true}}",
+        "{\"selector\":\"css=#m\",\"options\":{\"trial\":true}}",
+        "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\",\"force\":false}}",
+        "{\"selector\":\"css=#m\",\"options\":{\"humanize\":true}}",
+        "{\"selector\":\"css=#m\",\"options\":{\"input\":\"bogus\"}}",
+    }) |params| try expectRejected(allocator, "dom.hover", params);
+}
+
+test "dom.scroll: exactly one of selector or x/y (finite numbers); input yes, humanize no" {
+    const allocator = std.testing.allocator;
+    var by = try router.parse(allocator, "dom.scroll", "{\"x\":0,\"y\":300.5}", .{});
+    defer by.deinit();
+    try std.testing.expectEqual(router.Verb.dom_scroll, by.verb);
+    try std.testing.expect(by.selector == null);
+    try std.testing.expectEqual(@as(?f64, 0), by.scroll_x);
+    try std.testing.expectEqual(@as(?f64, 300.5), by.scroll_y);
+    var only_y = try router.parse(allocator, "dom.scroll", "{\"y\":-120,\"options\":{\"input\":\"native\"}}", .{});
+    defer only_y.deinit();
+    try std.testing.expectEqual(@as(?f64, 0), only_y.scroll_x);
+    try std.testing.expectEqual(@as(?f64, -120), only_y.scroll_y);
+    try std.testing.expectEqual(router.InputMode.native, only_y.input);
+    var to = try router.parse(allocator, "dom.scroll", "{\"selector\":\"css=#far\",\"options\":{\"input\":\"native\",\"timeout_ms\":9000}}", .{});
+    defer to.deinit();
+    try std.testing.expectEqualStrings("css=#far", to.selector.?);
+    try std.testing.expect(to.scroll_x == null and to.scroll_y == null);
+    try std.testing.expectEqual(@as(?u64, 9000), to.timeout_ms);
+
+    for ([_][]const u8{
+        "{}",
+        "{\"selector\":\"css=#far\",\"y\":10}",
+        "{\"x\":\"10\"}",
+        "{\"y\":true}",
+        "{\"y\":1e400}",
+        "{\"selector\":\"css=#far\",\"options\":{\"input\":\"native\",\"humanize\":true}}",
+        "{\"y\":10,\"options\":{\"force\":true}}",
+        "{\"y\":10,\"options\":{\"trial\":true}}",
+    }) |params| try expectRejected(allocator, "dom.scroll", params);
+}

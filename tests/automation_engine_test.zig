@@ -209,14 +209,15 @@ test "page.evaluate passes a null arg" {
     try std.testing.expectEqualStrings("null", h.fake.eval_calls.items[0].arg);
 }
 
-test "page.screenshot is not supported by PagePort yet" {
+test "page.screenshot on a backend without it is -32603 not supported" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
+    h.engine = engine.Engine.init(h.fake.portWithoutNative(), h.clock.clock());
 
     var outcome = try h.run("page.screenshot", "{}");
     defer outcome.deinit(gpa);
-    try std.testing.expectEqual(@as(i64, -32603), outcome.failure.code);
+    try expectFailure(outcome, -32603, "page.screenshot is not supported");
 }
 
 // ---- dom.* command mapping (slice B) ----
@@ -1331,4 +1332,282 @@ test "a one-character humanized type below the 80 ms key minimum fails humanize_
     defer outcome.deinit(gpa);
     try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"humanize_budget\"");
     try std.testing.expectEqual(@as(usize, 0), hh.h.fake.native_calls.items.len);
+}
+
+// ---- v3.3 / v3.4: dom.setInputFiles, dom.hover, dom.scroll, page.screenshot ----
+
+test "dom.setInputFiles: chooseFiles op with count and strict, the paths go to the port, the op's value is the result" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"multiple\":true,\"changed\":true}}" }};
+    var outcome = try h.run("dom.setInputFiles", "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a.txt\",\"/tmp/b.png\"]}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"multiple\":true,\"changed\":true}");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.files_calls.items.len);
+    try std.testing.expectEqualStrings("/tmp/a.txt\n/tmp/b.png", h.fake.files_calls.items[0]);
+    const call = h.fake.eval_calls.items[0];
+    try std.testing.expectEqual(automation.page_port.World.automation, call.world);
+    try std.testing.expectEqualStrings(script_command.handle_body, call.body);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"op\":\"chooseFiles\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"strict\":true") != null);
+    // The paths never go to the script (the chooser gets them natively).
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "/tmp/a.txt") == null);
+}
+
+test "dom.setInputFiles retries the op's retryable refusal (nothing was clicked), then succeeds once" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{
+        .{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":true,\"data\":{\"reason\":\"no_match\"}}" },
+        .{ .json = "{\"ok\":true,\"value\":{\"multiple\":false,\"changed\":true}}" },
+    };
+    var outcome = try h.run("dom.setInputFiles", "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a.txt\"]}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"multiple\":false,\"changed\":true}");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.files_calls.items.len);
+}
+
+test "dom.setInputFiles port errors end the command: BadFile -32602 bad_file (nothing ran), FilesUnconfirmed -32009 once, Unsupported -32011" {
+    var bad: Harness = undefined;
+    bad.init();
+    defer bad.deinit();
+    bad.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{}}" }};
+    bad.fake.files_error = error.BadFile;
+    var bad_outcome = try bad.run("dom.setInputFiles", "{\"selector\":\"css=#f\",\"paths\":[\"relative.txt\"]}");
+    defer bad_outcome.deinit(gpa);
+    try expectFailureData(bad_outcome, -32602, "Invalid params", "\"reason\":\"bad_file\"");
+    try std.testing.expectEqual(@as(usize, 0), bad.fake.eval_calls.items.len);
+
+    var late: Harness = undefined;
+    late.init();
+    defer late.deinit();
+    late.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{}}" }};
+    late.fake.files_error = error.FilesUnconfirmed;
+    var late_outcome = try late.run("dom.setInputFiles", "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a.txt\"]}");
+    defer late_outcome.deinit(gpa);
+    try expectFailureData(late_outcome, -32009, "action_timeout", "\"reason\":\"files_unconfirmed\"");
+    try std.testing.expectEqual(@as(usize, 1), late.fake.files_calls.items.len);
+
+    var none: Harness = undefined;
+    none.init();
+    defer none.deinit();
+    none.engine = engine.Engine.init(none.fake.portWithoutMove(), none.clock.clock());
+    var none_outcome = try none.run("dom.setInputFiles", "{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a.txt\"]}");
+    defer none_outcome.deinit(gpa);
+    try expectFailureData(none_outcome, -32011, "session_invalid", "\"reason\":\"unsupported\"");
+}
+
+test "synthetic dom.hover runs the hover op; native hover locates (no focus) and moves the real pointer, no click" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{}}" }};
+    var synthetic = try h.run("dom.hover", "{\"selector\":\"css=#m\"}");
+    defer synthetic.deinit(gpa);
+    try expectResult(synthetic, "{}");
+    try std.testing.expect(std.mem.indexOf(u8, h.fake.eval_calls.items[0].arg, "\"op\":\"hover\"") != null);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+
+    var n: Harness = undefined;
+    n.init();
+    defer n.deinit();
+    n.fake.eval_replies = &.{.{ .json = located_reply }};
+    var native = try n.run("dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\"}}");
+    defer native.deinit(gpa);
+    try expectResult(native, "{\"ok\":true}");
+    const arg = n.fake.eval_calls.items[0].arg;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"op\":\"locate\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"action\":\"hover\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"focus\":false") != null);
+    try std.testing.expectEqual(@as(usize, 1), n.fake.native_calls.items.len);
+    const move = n.fake.native_calls.items[0];
+    try std.testing.expect(move.kind == .move);
+    try std.testing.expectEqual(@as(f64, 10.5), move.x);
+    try std.testing.expectEqual(@as(f64, 20), move.y);
+    try std.testing.expectEqualStrings("0123456789abcdef", move.document.?);
+}
+
+test "humanized native hover: a curved path that ends on the target, and no click" {
+    var hh: HumanHarness = undefined;
+    hh.init(11);
+    defer hh.deinit();
+    const h = &hh.h;
+    var outcome = try h.run("dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    var buf: [256]NativeCall = undefined;
+    const moves = h.fake.nativeOf(.move, &buf);
+    try std.testing.expect(moves.len >= 10);
+    try std.testing.expect(dist(moves[moves.len - 1], 500, 400) < 1e-6);
+    try std.testing.expectEqual(moves.len, h.fake.native_calls.items.len);
+}
+
+test "native hover on a backend without nativeMove: -32011 unsupported, no page work" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.engine = engine.Engine.init(h.fake.portWithoutMove(), h.clock.clock());
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    var outcome = try h.run("dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32011, "session_invalid", "\"reason\":\"unsupported\"");
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+}
+
+test "synthetic dom.scroll sends the scroll op with x/y and returns its offsets" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"scrollX\":0,\"scrollY\":300}}" }};
+    var outcome = try h.run("dom.scroll", "{\"y\":300}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"scrollX\":0,\"scrollY\":300}");
+    const arg = h.fake.eval_calls.items[0].arg;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"op\":\"scroll\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"x\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"y\":300") != null);
+}
+
+/// measure op answer: centre, document, viewport, current offsets.
+fn measured(comptime x: []const u8, comptime y: []const u8, comptime doc: []const u8, comptime scroll_y: []const u8) []const u8 {
+    return "{\"ok\":true,\"value\":{\"x\":" ++ x ++ ",\"y\":" ++ y ++ ",\"document\":\"" ++ doc ++ "\",\"viewport\":{\"width\":800,\"height\":600},\"scroll\":{\"x\":0,\"y\":" ++ scroll_y ++ "}}}";
+}
+
+test "native dom.scroll by offset: measure (no selector, no scrolling), one real wheel at the viewport centre bound to the document, offsets from the port" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = measured("400", "300", "0123456789abcdef", "0") }};
+    var outcome = try h.run("dom.scroll", "{\"y\":300.5,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"scrollX\":0,\"scrollY\":300.5}");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+    const arg = h.fake.eval_calls.items[0].arg;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"op\":\"measure\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"selector\"") == null);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    const wheel = h.fake.native_calls.items[0];
+    try std.testing.expect(wheel.kind == .scroll);
+    try std.testing.expectEqual(@as(f64, 400), wheel.x);
+    try std.testing.expectEqual(@as(f64, 300), wheel.y);
+    try std.testing.expectEqual(@as(f64, 0), wheel.delta_x);
+    try std.testing.expectEqual(@as(f64, 300.5), wheel.delta_y);
+    try std.testing.expectEqualStrings("0123456789abcdef", wheel.document.?);
+}
+
+test "native dom.scroll to a selector: wheel by (element centre - viewport centre), then a fresh measure confirms it is in view" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{
+        .{ .json = measured("400", "1500", "0123456789abcdef", "0") },
+        .{ .json = measured("400", "300", "0123456789abcdef", "1200") },
+    };
+    var outcome = try h.run("dom.scroll", "{\"selector\":\"css=#far\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"scrollX\":0,\"scrollY\":1200}");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
+    for (h.fake.eval_calls.items) |call| {
+        try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"op\":\"measure\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"selector\":\"css=#far\"") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    const wheel = h.fake.native_calls.items[0];
+    try std.testing.expectEqual(@as(f64, 400), wheel.x);
+    try std.testing.expectEqual(@as(f64, 300), wheel.y);
+    try std.testing.expectEqual(@as(f64, 1200), wheel.delta_y);
+}
+
+test "native dom.scroll to a selector already centred sends no wheel" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = measured("400.4", "300", "0123456789abcdef", "50") }};
+    var outcome = try h.run("dom.scroll", "{\"selector\":\"css=#here\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"scrollX\":0,\"scrollY\":50}");
+    try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+}
+
+test "native dom.scroll to a selector that never comes into view: three wheels, then -32009 scroll_not_reached" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = measured("400", "5000", "0123456789abcdef", "0") }};
+    var outcome = try h.run("dom.scroll", "{\"selector\":\"css=#stuck\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"scroll_not_reached\"");
+    try std.testing.expectEqual(@as(usize, 3), h.fake.native_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 4), h.fake.eval_calls.items.len);
+}
+
+test "native dom.scroll: a document change before the first wheel re-measures; after a wheel it is terminal" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{
+        .{ .json = measured("400", "300", "0123456789abcdef", "0") },
+        .{ .json = measured("400", "300", "fedcba9876543210", "0") },
+    };
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.DocumentChanged;
+    var outcome = try h.run("dom.scroll", "{\"y\":100,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"scrollX\":0,\"scrollY\":100}");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
+    try std.testing.expectEqualStrings("fedcba9876543210", h.fake.native_calls.items[1].document.?);
+
+    var t: Harness = undefined;
+    t.init();
+    defer t.deinit();
+    t.fake.eval_replies = &.{.{ .json = measured("400", "5000", "0123456789abcdef", "0") }};
+    t.fake.native_fail_at = 1;
+    t.fake.native_error = error.DocumentChanged;
+    var terminal = try t.run("dom.scroll", "{\"selector\":\"css=#far\",\"options\":{\"input\":\"native\"}}");
+    defer terminal.deinit(gpa);
+    try expectFailureData(terminal, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    try std.testing.expectEqual(@as(usize, 2), t.fake.native_calls.items.len);
+}
+
+test "native dom.scroll on a backend without nativeScroll: -32011 unsupported, no page work" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.engine = engine.Engine.init(h.fake.portWithoutMove(), h.clock.clock());
+    var outcome = try h.run("dom.scroll", "{\"y\":10,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32011, "session_invalid", "\"reason\":\"unsupported\"");
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+}
+
+test "a malformed measure answer is an internal error and nothing is scrolled" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"x\":1,\"y\":1,\"document\":\"0123456789abcdef\"}}" }};
+    var outcome = try h.run("dom.scroll", "{\"y\":10,\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32603, "Malformed script result");
+    try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+}
+
+test "page.screenshot returns base64 PNG with its size; fullPage reaches the port; TooLarge is -32603 screenshot_too_large" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.screenshot_png = "PNGDATA";
+    var outcome = try h.run("page.screenshot", "{\"fullPage\":true}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"data\":\"UE5HREFUQQ==\",\"width\":800,\"height\":600}");
+    try std.testing.expectEqual(@as(?bool, true), h.fake.screenshot_full_page);
+    try std.testing.expectEqual(engine.default_timeout_ms, h.fake.last_read_timeout_ms);
+
+    h.fake.screenshot_error = error.TooLarge;
+    var big = try h.run("page.screenshot", "{}");
+    defer big.deinit(gpa);
+    try expectFailureData(big, -32603, "Internal error", "\"reason\":\"screenshot_too_large\"");
 }

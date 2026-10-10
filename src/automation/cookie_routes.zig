@@ -597,7 +597,7 @@ fn portFailure(gpa: std.mem.Allocator, err: cookie_port_mod.PortError, ids: scri
         error.NoPage => .session_invalid,
         error.Cancelled => .cancelled,
         error.Timeout => .action_timeout,
-        error.NavigationFailed, error.EvalFailed, error.DocumentChanged => return internal("Cookie store failed"),
+        error.NavigationFailed, error.EvalFailed, error.DocumentChanged, error.BadFile, error.FilesUnconfirmed, error.TooLarge => return internal("Cookie store failed"),
         error.Unsupported => return engine_mod.automationFailure(gpa, .session_invalid, "unsupported", ids),
     }, null, ids);
 }

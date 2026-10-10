@@ -364,7 +364,7 @@ pub const Engine = struct {
                 return okResult(gpa);
             },
             .page_evaluate => self.evaluate(gpa, command.expression.?, timeout_ms, run),
-            .page_screenshot => .{ .failure = .{ .code = internal_error_code, .message = "page.screenshot is not supported" } },
+            .page_screenshot => self.screenshot(gpa, command.full_page, timeout_ms, run),
             .dom_query,
             .dom_click,
             .dom_fill,
@@ -374,8 +374,29 @@ pub const Engine = struct {
             .dom_wait_for,
             .dom_press,
             .dom_select_option,
+            .dom_set_input_files,
+            .dom_hover,
+            .dom_scroll,
             => self.runDom(gpa, command, timeout_ms, run),
         };
+    }
+
+    /// page.screenshot (v3.4): `{data: base64 PNG, width, height}`. A
+    /// backend without screenshots keeps the -32603 "not supported" answer.
+    fn screenshot(self: *Engine, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
+        const started = self.clock.nowMs();
+        const shot = self.port.screenshot(gpa, full_page, timeout_ms) catch |err| {
+            self.platformSpan(run, "screenshot", null, 0, 0, started, @errorName(err));
+            if (err == error.Unsupported) return .{ .failure = .{ .code = internal_error_code, .message = "page.screenshot is not supported" } };
+            return portFailure(gpa, err, .action, run.ids);
+        };
+        defer gpa.free(shot.png);
+        self.platformSpan(run, "screenshot", null, 0, shot.png.len, started, "ok");
+        const encoder = std.base64.standard.Encoder;
+        const data = try gpa.alloc(u8, encoder.calcSize(shot.png.len));
+        defer gpa.free(data);
+        _ = encoder.encode(data, shot.png);
+        return .{ .result = try std.fmt.allocPrint(gpa, "{{\"data\":\"{s}\",\"width\":{d},\"height\":{d}}}", .{ data, shot.width, shot.height }) };
     }
 
     fn evaluate(self: *Engine, gpa: std.mem.Allocator, expression: []const u8, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
@@ -404,7 +425,10 @@ pub const Engine = struct {
 
     fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
         const deadline = self.clock.nowMs() +| timeout_ms;
-        if (command.input == .native) return self.runNative(gpa, command, deadline, run);
+        if (command.input == .native) {
+            if (command.verb == .dom_scroll) return self.runNativeScroll(gpa, command, deadline, run);
+            return self.runNative(gpa, command, deadline, run);
+        }
         if (command.verb == .dom_type and command.text.?.len > 0) {
             if (command.delay_ms) |delay_ms| {
                 if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, run);
@@ -476,7 +500,14 @@ pub const Engine = struct {
             defer gpa.free(command_json);
 
             const started = self.clock.nowMs();
-            const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| {
+            // dom.setInputFiles: the op runs inside the port's file-chooser
+            // call, which answers the chooser with the paths. A refusal by
+            // the op clicked nothing, so it is retried like any other.
+            const answer = if (command.verb == .dom_set_input_files and command.locate == null)
+                self.port.setInputFiles(gpa, script_command.handle_body, command_json, command.paths, native_timeout)
+            else
+                self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout);
+            const text = answer catch |err| {
                 self.platformSpanAttempt(run, ids.attempt_index, command_json.len, 0, started, @errorName(err));
                 if (err == error.Timeout) {
                     // A page call cut short by the command deadline after
@@ -524,12 +555,15 @@ pub const Engine = struct {
             .dom_click => "click",
             .dom_type => "type",
             .dom_press => "press",
-            else => unreachable, // the router accepts native for these only
+            .dom_hover => "hover",
+            else => unreachable, // the router accepts native for these only (scroll has its own path)
         };
         // A backend without native input says so before any page work.
         if (!self.port.supportsNativeInput()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
-        // A humanized click moves the pointer: without nativeMove, say so now.
-        if (command.humanize and command.verb == .dom_click and !self.port.supportsNativeMove()) {
+        // A hover, and a humanized click, move the pointer: without
+        // nativeMove, say so now.
+        const moves = command.verb == .dom_hover or (command.humanize and command.verb == .dom_click);
+        if (moves and !self.port.supportsNativeMove()) {
             return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
         }
         var csprng: std.Random.DefaultCsprng = undefined;
@@ -540,7 +574,8 @@ pub const Engine = struct {
             var target: Target = .{};
             if (command.selector != null) {
                 var locate_command = command.*;
-                locate_command.locate = .{ .action = action, .focus = command.verb != .dom_click and !command.trial };
+                const pointer_only = command.verb == .dom_click or command.verb == .dom_hover;
+                locate_command.locate = .{ .action = action, .focus = !pointer_only and !command.trial };
                 run.ended_on_bare_port_timeout = false;
                 var located = try self.runDomUntil(gpa, &locate_command, deadline, run);
                 switch (located) {
@@ -569,12 +604,14 @@ pub const Engine = struct {
             if (relocated and self.clock.nowMs() >= deadline) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
 
             const step: NativeStep = if (random) |r| switch (command.verb) {
-                .dom_click => try self.humanClick(gpa, r, &target, deadline, run),
+                .dom_click => try self.humanPointer(gpa, r, &target, deadline, run, .click),
+                .dom_hover => try self.humanPointer(gpa, r, &target, deadline, run, .hover),
                 .dom_press => try self.humanPress(gpa, r, command, &target, deadline, run),
                 .dom_type => try self.humanType(gpa, r, command, &target, deadline, run),
                 else => unreachable,
             } else switch (command.verb) {
                 .dom_click => try self.nativeSingle(gpa, .click, command, &target, deadline, run),
+                .dom_hover => try self.nativeSingle(gpa, .move, command, &target, deadline, run),
                 .dom_press => try self.nativeSingle(gpa, .key, command, &target, deadline, run),
                 .dom_type => try self.nativeType(gpa, command, &target, deadline, run, null),
                 else => unreachable,
@@ -596,22 +633,84 @@ pub const Engine = struct {
         }
     }
 
+    /// N18 native dom.scroll: real wheel events at the viewport centre,
+    /// each bound to the measured document. The `measure` op finds the
+    /// target without scrolling (locate would scroll it into view itself).
+    /// By offset: one wheel by (x, y), answered with the port's settled
+    /// offsets. To a selector: wheels by (element centre - viewport centre)
+    /// until a fresh measure shows the centre in the viewport (at most
+    /// `max_scroll_wheels`, else action_timeout "scroll_not_reached"),
+    /// answered with that measure's offsets; already centred: no wheel. A
+    /// document change before the first wheel measures again; after one it
+    /// is terminal. Answer: `{scrollX, scrollY}`, like the synthetic op.
+    fn runNativeScroll(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
+        if (!self.port.supportsNativeScroll()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
+        var wheels: u32 = 0;
+        while (true) {
+            var measure_command = command.*;
+            measure_command.locate = .{ .op = "measure", .action = "scroll", .focus = false };
+            var target: Target = .{};
+            var offsets: ?page_port.ScrollOffsets = null;
+            var measured = try self.runDomUntil(gpa, &measure_command, deadline, run);
+            switch (measured) {
+                .failure => return measured,
+                .result => |json| {
+                    defer measured.deinit(gpa);
+                    if (!parseTarget(gpa, json, &target) or target.viewport_width <= 0 or target.viewport_height <= 0) return malformedResult();
+                    offsets = parseScrollOffsets(gpa, json);
+                },
+            }
+            const centre = page_port.Point{ .x = target.viewport_width / 2, .y = target.viewport_height / 2 };
+            var delta = page_port.Point{ .x = command.scroll_x orelse 0, .y = command.scroll_y orelse 0 };
+            if (command.selector != null) {
+                const current = offsets orelse return malformedResult();
+                delta = .{ .x = target.x - centre.x, .y = target.y - centre.y };
+                const in_view = target.x >= 0 and target.x < target.viewport_width and target.y >= 0 and target.y < target.viewport_height;
+                if ((wheels > 0 and in_view) or (@abs(delta.x) < 1 and @abs(delta.y) < 1)) return scrollResult(gpa, current);
+                if (wheels == max_scroll_wheels) return automationFailure(gpa, .action_timeout, "scroll_not_reached", run.ids);
+            }
+            if (run.cancelled()) return automationFailure(gpa, .cancelled, null, run.ids);
+            const remaining = deadline -| self.clock.nowMs();
+            if (remaining == 0) return timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts);
+            run.native_timeout_ms = remaining;
+            const started = self.clock.nowMs();
+            const settled = self.port.nativeScroll(centre.x, centre.y, delta.x, delta.y, target.document(), remaining) catch |err| {
+                self.platformSpan(run, "nativeScroll", null, 0, 0, started, @errorName(err));
+                if (err != error.DocumentChanged) return portFailure(gpa, err, .action, run.ids);
+                if (wheels > 0) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
+                // Nothing was sent: measure the new document.
+                if (self.clock.nowMs() +| poll_interval_ms >= deadline) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
+                if (!self.sleepUnlessCancelled(poll_interval_ms, run)) return automationFailure(gpa, .cancelled, null, run.ids);
+                continue;
+            };
+            self.platformSpan(run, "nativeScroll", null, 0, 0, started, "ok");
+            wheels += 1;
+            if (command.selector == null) return scrollResult(gpa, settled);
+        }
+    }
+
     const NativeStep = union(enum) {
         done: Outcome,
         /// DocumentChanged before any input was sent.
         relocate,
     };
 
-    /// One native click or key press with the remaining deadline.
-    fn nativeSingle(self: *Engine, gpa: std.mem.Allocator, comptime kind: enum { click, key }, command: *const router.ParsedCommand, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
-        const op = if (kind == .click) "nativeClick" else "nativeKey";
-        const payload_bytes = if (kind == .click) 0 else command.key.?.len;
+    /// One native click, pointer move (hover) or key press with the
+    /// remaining deadline.
+    fn nativeSingle(self: *Engine, gpa: std.mem.Allocator, comptime kind: enum { click, move, key }, command: *const router.ParsedCommand, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+        const op = switch (kind) {
+            .click => "nativeClick",
+            .move => "nativeMove",
+            .key => "nativeKey",
+        };
+        const payload_bytes = if (kind == .key) command.key.?.len else 0;
         const remaining = deadline -| self.clock.nowMs();
         if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };
         run.native_timeout_ms = remaining;
         const started = self.clock.nowMs();
         const dispatched = switch (kind) {
             .click => self.port.nativeClick(target.x, target.y, target.document(), remaining),
+            .move => self.port.nativeMove(target.x, target.y, target.document(), remaining),
             .key => self.port.nativeKey(command.key.?, modifierBits(command.modifiers), target.document(), remaining),
         };
         dispatched catch |err| {
@@ -681,10 +780,11 @@ pub const Engine = struct {
     }
 
     /// Pointer path from the window's last dispatched pointer position (or
-    /// an off-target in-viewport start), dwell, then the click. A document
-    /// change before the first move re-locates; after any move it is
-    /// terminal (no re-locate, no click in the new document).
-    fn humanClick(self: *Engine, gpa: std.mem.Allocator, random: std.Random, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+    /// an off-target in-viewport start); for a click, then the dwell and
+    /// the click (a hover ends on the target). A document change before the
+    /// first move re-locates; after any move it is terminal (no re-locate,
+    /// no click in the new document).
+    fn humanPointer(self: *Engine, gpa: std.mem.Allocator, random: std.Random, target: *const Target, deadline: u64, run: *Run, comptime gesture: enum { click, hover }) error{OutOfMemory}!NativeStep {
         const goal = page_port.Point{ .x = target.x, .y = target.y };
         // Never start on the target: a cached pointer already there (e.g.
         // a repeated click) gets an off-target start like an unknown one.
@@ -694,7 +794,7 @@ pub const Engine = struct {
         defer gpa.free(path.points);
         const gaps = path.points.len - 1;
         const step_ms: u64 = if (gaps == 0) 0 else ceilMs(path.duration_ms / @as(f64, @floatFromInt(gaps)));
-        const dwell_ms = ceilMs(path.dwell_ms);
+        const dwell_ms = if (gesture == .click) ceilMs(path.dwell_ms) else 0;
         if (self.clock.nowMs() +| (step_ms *| gaps) +| dwell_ms >= deadline) {
             return .{ .done = try timeoutWithReason(gpa, .action_timeout, "humanize_budget", run.ids, run.attempts) };
         }
@@ -714,6 +814,7 @@ pub const Engine = struct {
             };
             self.platformSpan(run, "nativeMove", null, 0, 0, started, "ok");
         }
+        if (gesture == .hover) return .{ .done = try okResult(gpa) };
         if (!self.sleepUnlessCancelled(dwell_ms, run)) return .{ .done = try automationFailure(gpa, .cancelled, null, run.ids) };
         const remaining = deadline -| self.clock.nowMs();
         if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };
@@ -867,7 +968,7 @@ fn timeoutErrorFor(verb: router.Verb) errors.AutomationError {
 
 fn actionName(verb: router.Verb) ?[]const u8 {
     return switch (verb) {
-        .dom_click, .dom_fill, .dom_type, .dom_press, .dom_select_option => script_command.opName(verb),
+        .dom_click, .dom_fill, .dom_type, .dom_press, .dom_select_option, .dom_set_input_files, .dom_hover, .dom_scroll => script_command.opName(verb),
         else => null,
     };
 }
@@ -1039,6 +1140,11 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
         error.Unsupported => return automationFailure(gpa, .session_invalid, "unsupported", ids),
         // Native input bound to a document that is gone; nothing was sent.
         error.DocumentChanged => return automationFailure(gpa, .element_not_found, "document_changed", ids),
+        // setInputFiles: the client's paths are unusable; nothing ran.
+        error.BadFile => return failureWithReason(gpa, invalid_params_code, "Invalid params", "bad_file", ids),
+        // setInputFiles: applied once, unconfirmed; never retried.
+        error.FilesUnconfirmed => return automationFailure(gpa, .action_timeout, "files_unconfirmed", ids),
+        error.TooLarge => return failureWithReason(gpa, internal_error_code, "Internal error", "screenshot_too_large", ids),
         error.NoPage => .session_invalid,
         error.Cancelled => .cancelled,
         error.NavigationFailed => .navigation_failed,
@@ -1048,6 +1154,20 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
         },
     };
     return automationFailure(gpa, automation_error, null, ids);
+}
+
+/// JSON-RPC invalid params (a parameter the router could not check, e.g. a
+/// file path the backend refused).
+pub const invalid_params_code: i64 = -32602;
+
+/// A non-automation error code with `data.{reason,trace_id,command_id}`.
+fn failureWithReason(gpa: std.mem.Allocator, code: i64, message: []const u8, reason: []const u8, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+    const data = AutomationErrorData{ .reason = reason, .trace_id = ids.trace_id, .command_id = ids.command_id };
+    return .{ .failure = .{
+        .code = code,
+        .message = message,
+        .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
+    } };
 }
 
 /// Automation errors carry `data.{reason?,trace_id,command_id}`; the SDKs read
@@ -1246,6 +1366,31 @@ fn humanTypingDelays(gpa: std.mem.Allocator, random: std.Random, text: []const u
     return delays;
 }
 
+/// Native dom.scroll to a selector: wheels before giving up.
+pub const max_scroll_wheels: u32 = 3;
+
+/// `scroll: {x, y}` (current page offsets) from a measure answer.
+fn parseScrollOffsets(gpa: std.mem.Allocator, json: []const u8) ?page_port.ScrollOffsets {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return null;
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |o| o,
+        else => return null,
+    };
+    const scroll = switch (object.get("scroll") orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    const x = jsonNumber(scroll.get("x") orelse return null) orelse return null;
+    const y = jsonNumber(scroll.get("y") orelse return null) orelse return null;
+    if (!std.math.isFinite(x) or !std.math.isFinite(y)) return null;
+    return .{ .x = x, .y = y };
+}
+
+fn scrollResult(gpa: std.mem.Allocator, offsets: page_port.ScrollOffsets) error{OutOfMemory}!Outcome {
+    return .{ .result = try std.json.Stringify.valueAlloc(gpa, .{ .scrollX = offsets.x, .scrollY = offsets.y }, .{}) };
+}
+
 /// A JSON number (never a string that looks like one).
 fn jsonNumber(value: std.json.Value) ?f64 {
     return switch (value) {
@@ -1283,10 +1428,12 @@ fn partialPortFailure(gpa: std.mem.Allocator, err: page_port.PortError, sent_cha
         error.EvalFailed => return partialInternal(gpa, "Evaluation failed", sent_chars, run),
         // The target's document is gone: the rest was not typed anywhere.
         error.DocumentChanged => return partialFailure(gpa, errors.downstreamCode(.element_not_found), errors.name(.element_not_found), null, "document_changed", sent_chars, run),
-        error.Timeout => .action_timeout,
+        error.Timeout, error.FilesUnconfirmed => .action_timeout,
         error.Cancelled => .cancelled,
         error.NoPage, error.Unsupported => .session_invalid,
         error.NavigationFailed => .navigation_failed,
+        // Not text-input errors; still never lose the sent prefix.
+        error.BadFile, error.TooLarge => return partialInternal(gpa, "Internal error", sent_chars, run),
     };
     return partialInput(gpa, automation_error, null, sent_chars, run);
 }

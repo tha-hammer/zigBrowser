@@ -69,6 +69,61 @@ class DomNamespace:
             _drop_none(selector=selector, value=value, label=label, index=index, timeout_ms=timeout_ms),
         )
 
+    def set_input_files(
+        self,
+        selector: str,
+        paths: list[str],
+        timeout_ms: int | None = None,
+        strict: bool | None = None,
+    ) -> dict:
+        """Choose files for an <input type=file> through the browser's own
+        file chooser (GTK backend; others answer -32011 "unsupported").
+        paths: absolute paths of readable regular files (else -32602
+        "bad_file"); one path for an input without `multiple`. Never
+        repeated after -32009 "files_unconfirmed" (applied once)."""
+        params: dict = {"selector": selector, "paths": list(paths)}
+        options = _drop_none(timeout_ms=timeout_ms, strict=strict)
+        if options:
+            params["options"] = options
+        return self._client.call("dom.setInputFiles", params)
+
+    def hover(
+        self,
+        selector: str,
+        input: str | None = None,
+        humanize: bool | None = None,
+        timeout_ms: int | None = None,
+        strict: bool | None = None,
+    ) -> dict:
+        """input "synthetic" (default: pointer/mouse events only, no CSS
+        :hover) or "native" (a real pointer move; humanize = a curved,
+        paced path)."""
+        params: dict = {"selector": selector}
+        options = _drop_none(input=input, humanize=humanize, timeout_ms=timeout_ms, strict=strict)
+        if options:
+            params["options"] = options
+        return self._client.call("dom.hover", params)
+
+    def scroll(
+        self,
+        selector: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        input: str | None = None,
+        timeout_ms: int | None = None,
+        strict: bool | None = None,
+    ) -> dict:
+        """Scroll an element into view (selector) or the page by x/y CSS px,
+        exactly one of the two. input "native" uses real wheel events and
+        returns once scrolling has finished. Returns {scrollX, scrollY}."""
+        if (selector is None) == (x is None and y is None):
+            raise ValueError("scroll needs exactly one of selector or x/y")
+        params = _drop_none(selector=selector, x=x, y=y)
+        options = _drop_none(input=input, timeout_ms=timeout_ms, strict=strict)
+        if options:
+            params["options"] = options
+        return self._client.call("dom.scroll", params)
+
     def query(self, selector: str, timeout_ms: int | None = None) -> dict:
         return self._client.call("dom.query", _drop_none(selector=selector, timeout_ms=timeout_ms))
 
@@ -115,6 +170,8 @@ class PageNamespace:
         return self._client.call("page.title")
 
     def screenshot(self, **options) -> dict:
+        """options: fullPage, timeout_ms. Returns {data: base64 PNG, width,
+        height}; a backend without screenshots answers -32603."""
         return self._client.call("page.screenshot", options or {})
 
     def evaluate(self, expression: str) -> dict:
