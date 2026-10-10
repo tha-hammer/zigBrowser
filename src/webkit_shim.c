@@ -1201,6 +1201,7 @@ struct ZbAutoJob {
   int button;
   int modifiers;        /* native key */
   int releases;         /* native key/text: key releases sent */
+  guint delay_source;   /* cookie test hook: pending hold timer */
   GList *cookie_queue;  /* delete: matching cookies still to delete */
   int load_armed;    /* saw LOAD_STARTED for `url` */
   int load_displaced; /* another URI committed over this load */
@@ -2255,9 +2256,14 @@ static void on_auto_cookies_listed_for_delete(GObject *object, GAsyncResult *res
 }
 
 static gint zb_auto_debug_cookie_delay_ms;
+static gint zb_auto_debug_cookie_delay_hits;
 
 void zb_automation_debug_cookie_delay(unsigned int ms) {
   g_atomic_int_set(&zb_auto_debug_cookie_delay_ms, (gint)ms);
+}
+
+int zb_automation_debug_cookie_delay_hits(void) {
+  return g_atomic_int_get(&zb_auto_debug_cookie_delay_hits);
 }
 
 static void auto_issue_cookie_op(ZbAutoJob *job, WebKitCookieManager *manager);
@@ -2267,6 +2273,7 @@ static void auto_issue_cookie_op(ZbAutoJob *job, WebKitCookieManager *manager);
  * WebKit. */
 static gboolean auto_cookie_delay_fired(gpointer data) {
   ZbAutoJob *job = (ZbAutoJob *)data;
+  job->delay_source = 0;
   WebKitCookieManager *manager = auto_cookie_manager(job);
   if (g_cancellable_is_cancelled(job->cancellable) || manager == NULL) {
     auto_cookie_finish(job, ZB_AUTO_ERR_CANCELLED, NULL, g_strdup("cancelled"));
@@ -2288,7 +2295,8 @@ static void auto_start_cookies(ZbAutoJob *job) {
 
   guint delay = (guint)g_atomic_int_get(&zb_auto_debug_cookie_delay_ms);
   if (delay > 0) {
-    g_timeout_add(delay, auto_cookie_delay_fired, auto_async_ref(job));
+    job->delay_source = g_timeout_add(delay, auto_cookie_delay_fired, auto_async_ref(job));
+    g_atomic_int_inc(&zb_auto_debug_cookie_delay_hits);
     return;
   }
   auto_issue_cookie_op(job, manager);
@@ -2808,6 +2816,12 @@ static void auto_fail_inflight_on_loop_end(void) {
     zb_auto_inflight = g_list_delete_link(zb_auto_inflight, zb_auto_inflight);
     job->target = NULL;
     auto_job_complete(job, ZB_AUTO_ERR_NO_LOOP, NULL, g_strdup("main loop ended"));
+    if (job->delay_source != 0) {
+      /* A held cookie op (test hook) would otherwise fire after the drain. */
+      g_source_remove(job->delay_source);
+      job->delay_source = 0;
+      auto_async_release(job);
+    }
     auto_job_unref(job);
   }
 }

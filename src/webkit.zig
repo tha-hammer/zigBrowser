@@ -365,6 +365,8 @@ const LiveDriver = struct {
     uri_slow: [:0]const u8,
     pending_eval: ?std.Thread = null,
     pending_eval_rc: std.atomic.Value(c_int) = .{ .raw = -1 },
+    pending_cookie: ?std.Thread = null,
+    pending_cookie_rc: std.atomic.Value(c_int) = .{ .raw = -1 },
     failures: std.ArrayList([]const u8) = .empty,
 
     fn diag(_: *LiveDriver, what: []const u8, rc: c_int, err: [*c]u8) void {
@@ -414,6 +416,15 @@ const LiveDriver = struct {
         c.zb_automation_free(out);
         c.zb_automation_free(err);
         self.pending_eval_rc.store(rc, .release);
+    }
+
+    fn pendingCookie(self: *LiveDriver) void {
+        var out: [*c]u8 = null;
+        var err: [*c]u8 = null;
+        const rc = c.zb_cookies_get_all(null, null, 30_000, &out, &err);
+        c.zb_automation_free(out);
+        c.zb_automation_free(err);
+        self.pending_cookie_rc.store(rc, .release);
     }
 
     fn quit(_: ?*anyopaque) callconv(.c) void {
@@ -568,6 +579,14 @@ const LiveDriver = struct {
         // pending when the loop quits; its waiter gets NO_LOOP and the job is
         // released by teardown (checked after zb_app_run returns).
         self.pending_eval = std.Thread.spawn(.{}, pendingEval, .{self}) catch null;
+        // ...and a cookie op held in flight (RUNNING) by the test hook.
+        c.zb_automation_debug_cookie_delay(60_000);
+        const cookie_hits = c.zb_automation_debug_cookie_delay_hits();
+        self.pending_cookie = std.Thread.spawn(.{}, pendingCookie, .{self}) catch null;
+        var held_wait: u32 = 0;
+        while (c.zb_automation_debug_cookie_delay_hits() == cookie_hits and held_wait < 3000) : (held_wait += 5) sleepMs(5);
+        self.check(c.zb_automation_debug_cookie_delay_hits() == cookie_hits + 1, "a cookie op is held in flight at loop end");
+        c.zb_automation_debug_cookie_delay(0);
         sleepMs(200);
         _ = c.zb_main_invoke_sync(quit, null, 5000);
     }
@@ -800,6 +819,7 @@ const LiveDriver = struct {
         // RUNNING; the waiter abandons it, the GTK thread cancels it, and the
         // job is released when the hold ends - without reaching WebKit.
         c.zb_automation_debug_cookie_delay(300);
+        const hits_before = c.zb_automation_debug_cookie_delay_hits();
         var held_out: [*c]u8 = null;
         var held_err: [*c]u8 = null;
         const held_start = monotonicMs();
@@ -808,6 +828,7 @@ const LiveDriver = struct {
         c.zb_automation_free(held_out);
         c.zb_automation_free(held_err);
         c.zb_automation_debug_cookie_delay(0);
+        self.check(c.zb_automation_debug_cookie_delay_hits() == hits_before + 1, "the timed-out cookie op had started (entered the held RUNNING state)");
         self.check(held_rc == c.ZB_AUTO_ERR_TIMEOUT, "in-flight cookie op returns TIMEOUT at its deadline");
         self.check(held_ms < 250, "TIMEOUT came at the deadline, not after the hold");
         self.check(held_out == null, "a timed-out cookie op returns no result");
@@ -898,6 +919,8 @@ test "automation bridge drives a live WebKitGTK page" {
 
     if (driver.pending_eval) |pending| pending.join();
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), driver.pending_eval_rc.load(.acquire));
+    if (driver.pending_cookie) |pending| pending.join();
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), driver.pending_cookie_rc.load(.acquire));
     for (driver.failures.items) |f| std.debug.print("live bridge check failed: {s}\n", .{f});
     try std.testing.expectEqual(@as(usize, 0), driver.failures.items.len);
 
