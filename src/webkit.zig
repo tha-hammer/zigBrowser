@@ -327,6 +327,10 @@ const fixture_a =
     \\function nowUs() { return Math.round((performance.timeOrigin + performance.now()) * 1000); }
     \\document.addEventListener('click', function (e) { if (e.isTrusted) window.lastTrustedClick = nowUs(); });
     \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = nowUs(); });</script>
+    \\<button id="hold" style="position:fixed;left:300px;top:120px;width:120px;height:40px">Hold</button>
+    \\<script>window.holdDone = 0; document.getElementById('hold').addEventListener('click', function (e) {
+    \\  var until = performance.now() + 40; while (performance.now() < until) {}
+    \\  window.holdDone = Math.round((performance.timeOrigin + performance.now()) * 1000); });</script>
     \\<a id="navlink" href="b.html" style="position:fixed;left:20px;top:240px;width:120px;height:30px;display:block">to B</a>
     \\<form action="b.html"><input id="navq" name="q" style="position:fixed;left:20px;top:290px;width:200px;height:30px"></form>
     \\<script>window.pageMarker = 7; setTimeout(function () {
@@ -409,7 +413,10 @@ fn fixtureDelay(buf: []u8, port: u16) []const u8 {
 }
 
 const fixture_b =
-    \\<!doctype html><html><head><title>Fixture B</title></head><body><p id="msg">Page B</p></body></html>
+    \\<!doctype html><html><head><title>Fixture B</title></head><body><p id="msg">Page B</p>
+    \\<button id="danger" style="position:fixed;left:20px;top:120px;width:120px;height:40px" onclick="window.dangerClicked = (window.dangerClicked || 0) + 1">Danger</button>
+    \\<script>window.bKeys = []; document.addEventListener('keydown', function (e) { window.bKeys.push(e.key); }, true);</script>
+    \\</body></html>
 ;
 
 const LiveDriver = struct {
@@ -741,7 +748,7 @@ const LiveDriver = struct {
         _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
         const button = self.center("nb") orelse return self.check(false, "button center");
         var base = self.inputAck() orelse return self.check(false, "inputAck available");
-        var rc = c.zb_native_click(null, button[0], button[1], 1, 5000, &err);
+        var rc = c.zb_native_click(null, button[0], button[1], 1, null, 5000, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "native click returns OK");
@@ -751,14 +758,14 @@ const LiveDriver = struct {
         const input = self.center("ni") orelse return self.check(false, "input center");
         _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
         base = self.inputAck() orelse return self.check(false, "inputAck available");
-        rc = c.zb_native_click(null, input[0], input[1], 1, 5000, &err);
+        rc = c.zb_native_click(null, input[0], input[1], 1, null, 5000, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(self.waitInputAck(base, 1, 0), "page acknowledged the focusing click");
         var releases: c_int = 0;
         base = self.inputAck() orelse return self.check(false, "inputAck available");
         var chars: c_int = 0;
-        rc = c.zb_native_text(null, "hi", 5000, &releases, &chars, &err);
+        rc = c.zb_native_text(null, "hi", null, 5000, &releases, &chars, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK and releases == 2 and chars == 2, "native text returns OK with 2 releases and 2 chars");
@@ -767,12 +774,12 @@ const LiveDriver = struct {
         self.check(eq(typed.out, "hi"), "native text typed into the focused input");
 
         base = self.inputAck() orelse return self.check(false, "inputAck available");
-        rc = c.zb_native_key(null, "a", c.ZB_NATIVE_MOD_SHIFT, 5000, &releases, &err);
+        rc = c.zb_native_key(null, "a", c.ZB_NATIVE_MOD_SHIFT, null, 5000, &releases, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK and releases == 2, "native Shift+a returns OK with 2 releases");
         var more: c_int = 0;
-        rc = c.zb_native_key(null, "Enter", 0, 5000, &more, &err);
+        rc = c.zb_native_key(null, "Enter", 0, null, 5000, &more, &err);
         c.zb_automation_free(err);
         self.check(rc == c.ZB_AUTO_OK and more == 1, "native Enter returns OK with 1 release");
         self.check(self.waitInputAck(base, 0, releases + more), "page acknowledged Shift+a and Enter");
@@ -789,13 +796,13 @@ const LiveDriver = struct {
 
         // Key names are parsed exactly.
         var bad_err: [*c]u8 = null;
-        self.check(c.zb_native_key(null, "F1x", 0, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F1x is not a key");
+        self.check(c.zb_native_key(null, "F1x", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F1x is not a key");
         c.zb_automation_free(bad_err);
         bad_err = null;
-        self.check(c.zb_native_key(null, "F13", 0, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F13 is not a key");
+        self.check(c.zb_native_key(null, "F13", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F13 is not a key");
         c.zb_automation_free(bad_err);
         bad_err = null;
-        self.check(c.zb_native_key(null, "F12", 0, 5000, null, &bad_err) == c.ZB_AUTO_OK, "F12 is a key");
+        self.check(c.zb_native_key(null, "F12", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_OK, "F12 is a key");
         c.zb_automation_free(bad_err);
 
         // Long text is bounded by the deadline: one GTK-thread step per
@@ -805,7 +812,7 @@ const LiveDriver = struct {
         var long_chars: c_int = 0;
         const long_base = self.inputAck() orelse return self.check(false, "inputAck available");
         const long_start = monotonicMs();
-        rc = c.zb_native_text(null, long_text, 50, &long_releases, &long_chars, &err);
+        rc = c.zb_native_text(null, long_text, null, 50, &long_releases, &long_chars, &err);
         const long_ms = monotonicMs() - long_start;
         c.zb_automation_free(err);
         err = null;
@@ -843,23 +850,23 @@ const LiveDriver = struct {
         // returned before the page handled the input would have a later (or
         // zero) page stamp. Follow-up evals cannot mask an early return.
         _ = self.eval(null, "window.lastTrustedClick = 0; window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
-        gtk_port.nativeClick(port.ptr, want[0], want[1], 5000) catch return self.check(false, "port nativeClick on the button succeeds");
+        gtk_port.nativeClick(port.ptr, want[0], want[1], null, 5000) catch return self.check(false, "port nativeClick on the button succeeds");
         const click_returned = wallUs();
         self.check(self.pageStampBefore("lastTrustedClick", click_returned), "port nativeClick returned only after the page's click handlers ran");
         self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "port nativeClick delivered a trusted click");
 
         const input = self.center("ni") orelse return self.check(false, "input center");
-        gtk_port.nativeClick(port.ptr, input[0], input[1], 5000) catch return self.check(false, "port nativeClick on the input succeeds");
+        gtk_port.nativeClick(port.ptr, input[0], input[1], null, 5000) catch return self.check(false, "port nativeClick on the input succeeds");
         _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         var sent: usize = 0;
-        gtk_port.nativeText(port.ptr, "ok", 5000, &sent) catch return self.check(false, "port nativeText succeeds");
+        gtk_port.nativeText(port.ptr, "ok", null, 5000, &sent) catch return self.check(false, "port nativeText succeeds");
         const text_returned = wallUs();
         self.check(sent == 2, "port nativeText reports 2 chars sent");
         self.check(self.pageStampBefore("lastTrustedKeyUp", text_returned), "port nativeText returned only after the page handled its keyups");
         const value = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(value.out, "ok"), "port nativeText typed the text");
         _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
-        gtk_port.nativeKey(port.ptr, "a", 1, 5000) catch return self.check(false, "port nativeKey succeeds");
+        gtk_port.nativeKey(port.ptr, "a", 1, null, 5000) catch return self.check(false, "port nativeKey succeeds");
         const key_returned = wallUs();
         self.check(self.pageStampBefore("lastTrustedKeyUp", key_returned), "port nativeKey returned only after the page handled its keyups");
         const shifted = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
@@ -867,9 +874,9 @@ const LiveDriver = struct {
 
         // Embedded NUL is refused instead of silently truncated at the C ABI.
         var nul_sent: usize = 99;
-        self.check(if (gtk_port.nativeText(port.ptr, "a\x00b", 5000, &nul_sent)) |_| false else |e| e == error.EvalFailed, "port nativeText refuses embedded NUL");
+        self.check(if (gtk_port.nativeText(port.ptr, "a\x00b", null, 5000, &nul_sent)) |_| false else |e| e == error.EvalFailed, "port nativeText refuses embedded NUL");
         self.check(nul_sent == 0, "nothing was sent for NUL text");
-        self.check(if (gtk_port.nativeKey(port.ptr, "a\x00", 0, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey refuses embedded NUL");
+        self.check(if (gtk_port.nativeKey(port.ptr, "a\x00", 0, null, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey refuses embedded NUL");
         const after_nul = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(after_nul.out, "okA"), "NUL input typed nothing");
 
@@ -881,27 +888,94 @@ const LiveDriver = struct {
         _ = self.eval(null, "document.getElementById('nbcover').remove(); var i = document.getElementById('ni'); i.focus(); i.setSelectionRange(0, 0); return 0;", null, null, 5000);
         _ = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#ni\",\"action\":\"type\",\"focus\":true}", c.ZB_AUTOMATION_WORLD, 5000);
         var tail_sent: usize = 0;
-        gtk_port.nativeText(port.ptr, "Z", 5000, &tail_sent) catch return self.check(false, "port nativeText after locate succeeds");
+        gtk_port.nativeText(port.ptr, "Z", null, 5000, &tail_sent) catch return self.check(false, "port nativeText after locate succeeds");
         const appended = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(appended.out, "okAZ"), "locate focus:true for type appends at the end");
 
         var partial: usize = 0;
         const long_text = "y" ** 2000;
-        const partial_base = self.inputAck() orelse return self.check(false, "inputAck available");
-        const partial_result = gtk_port.nativeText(port.ptr, long_text, 50, &partial);
+        const partial_result = gtk_port.nativeText(port.ptr, long_text, null, 50, &partial);
         self.check(if (partial_result) |_| false else |e| e == error.Timeout, "port nativeText times out on long text");
         self.check(partial > 0 and partial < 2000, "port nativeText reports partial progress on timeout");
-        // The sent prefix keeps arriving after the timeout (acks are counts,
-        // not tied to a request); let it drain before the next step.
-        self.check(self.waitInputAckFor(partial_base, 0, @intCast(partial), 20_000), "the partial prefix reaches the page");
-        self.check(if (gtk_port.nativeKey(port.ptr, "F1x", 0, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey rejects unknown keys");
+        // Ack debt: the timed-out prefix keeps arriving, and its keyups must
+        // not satisfy the next call. The very next key may only return after
+        // its own keyup was handled.
+        _ = self.eval(null, "window.lastTrustedKeyUp = 0; window.lastKeyUpKey = ''; document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastKeyUpKey = e.key; }); return 0;", null, null, 5000);
+        gtk_port.nativeKey(port.ptr, "q", 0, null, 20_000) catch return self.check(false, "key after a partial type succeeds");
+        const q_returned = wallUs();
+        const last_key = self.eval(null, "return window.lastKeyUpKey;", null, null, 5000);
+        self.check(eq(last_key.out, "q"), "the key after a partial type is the last keyup when it returns");
+        self.check(self.pageStampBefore("lastTrustedKeyUp", q_returned), "the key after a partial type returned only after its own keyup");
+        self.check(if (gtk_port.nativeKey(port.ptr, "F1x", 0, null, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey rejects unknown keys");
+
+        // Click completion: a synchronous page click handler that runs for
+        // 40 ms has finished (and stamped) before nativeClick returns.
+        const hold = self.center("hold") orelse return self.check(false, "hold center");
+        gtk_port.nativeClick(port.ptr, hold[0], hold[1], null, 5000) catch return self.check(false, "click on the slow handler succeeds");
+        const hold_returned = wallUs();
+        self.check(self.pageStampBefore("holdDone", hold_returned), "nativeClick returned only after the page's slow click handler finished");
+
+        // Document binding (A -> B between locate and dispatch): A's token on
+        // page B is refused before anything is sent; B's button at the same
+        // coordinates is never clicked.
+        const token_a = self.documentToken() orelse return self.check(false, "document token on A");
+        var bind_err: [*c]u8 = null;
+        _ = c.zb_automation_navigate(null, self.uri_b.ptr, 15000, &bind_err);
+        c.zb_automation_free(bind_err);
+        bind_err = null;
+        const stale = gtk_port.nativeClick(port.ptr, want[0], want[1], token_a, 5000);
+        self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "native click with a stale document token is DocumentChanged");
+        const danger = self.eval(null, "return String(window.dangerClicked || 0);", null, null, 5000);
+        self.check(eq(danger.out, "0"), "nothing on the new document was clicked");
+        var stale_sent: usize = 9;
+        self.check(if (gtk_port.nativeText(port.ptr, "zz", token_a, 5000, &stale_sent)) |_| false else |e| e == error.DocumentChanged, "native text with a stale token is DocumentChanged");
+        self.check(stale_sent == 0, "nothing was typed into the new document");
+        const b_keys = self.eval(null, "return window.bKeys.join(',');", null, null, 5000);
+        self.check(eq(b_keys.out, ""), "page B received no keys");
+        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &bind_err);
+        c.zb_automation_free(bind_err);
+        bind_err = null;
+
+        // "a\nb" into a form whose Enter navigates: the text stops at the
+        // document change, so 'b' never reaches page B (whole string, and one
+        // code point per call as delay_ms does).
+        const navq_box = self.center("navq") orelse return self.check(false, "form input center");
+        gtk_port.nativeClick(port.ptr, navq_box[0], navq_box[1], null, 5000) catch return self.check(false, "focus the form input");
+        const token_form = self.documentToken() orelse return self.check(false, "document token on A");
+        var nl_sent: usize = 0;
+        const nl = gtk_port.nativeText(port.ptr, "a\nb", token_form, 10_000, &nl_sent);
+        self.check(if (nl) |_| false else |e| e == error.DocumentChanged, "text whose Enter navigates stops with DocumentChanged");
+        self.check(nl_sent == 2, "exactly 'a' and Enter were sent");
+        self.waitUrlContains("b.html");
+        const b_after = self.eval(null, "return window.bKeys.join(',');", null, null, 5000);
+        self.check(eq(b_after.out, ""), "'b' never reached page B (whole string)");
+        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &bind_err);
+        c.zb_automation_free(bind_err);
+        bind_err = null;
+        gtk_port.nativeClick(port.ptr, navq_box[0], navq_box[1], null, 5000) catch return self.check(false, "focus the form input again");
+        const token_delay = self.documentToken() orelse return self.check(false, "document token on A");
+        var one: usize = 0;
+        gtk_port.nativeText(port.ptr, "a", token_delay, 5000, &one) catch return self.check(false, "first code point typed");
+        var enter_sent: usize = 0;
+        const enter_one = gtk_port.nativeText(port.ptr, "\n", token_delay, 10_000, &enter_sent);
+        self.check(if (enter_one) |_| false else |e| e == error.DocumentChanged, "a single navigating code point reports DocumentChanged");
+        self.check(enter_sent == 1, "that code point was sent");
+        var b_sent: usize = 9;
+        const b_one = gtk_port.nativeText(port.ptr, "b", token_delay, 10_000, &b_sent);
+        self.check(if (b_one) |_| false else |e| e == error.DocumentChanged, "the next code point with the old token is refused");
+        self.check(b_sent == 0, "'b' was not sent");
+        self.waitUrlContains("b.html");
+        const b_delay = self.eval(null, "return window.bKeys.join(',');", null, null, 5000);
+        self.check(eq(b_delay.out, ""), "'b' never reached page B (per code point)");
+        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &bind_err);
+        c.zb_automation_free(bind_err);
 
         // Input that navigates resets the per-document ack counters; the port
         // must treat the new document as delivery, not wait to its deadline.
         var nav_err: [*c]u8 = null;
         const nav_start = monotonicMs();
         const link = self.center("navlink") orelse return self.check(false, "link center");
-        const link_result = gtk_port.nativeClick(port.ptr, link[0], link[1], 5000);
+        const link_result = gtk_port.nativeClick(port.ptr, link[0], link[1], null, 5000);
         self.check(if (link_result) |_| true else |_| false, "native click on a navigating link succeeds");
         self.check(monotonicMs() - nav_start < 3000, "navigating click returned without waiting for its deadline");
         var nav_waited: u32 = 0;
@@ -914,9 +988,9 @@ const LiveDriver = struct {
         c.zb_automation_free(nav_err);
         nav_err = null;
         const navq = self.center("navq") orelse return self.check(false, "form input center");
-        gtk_port.nativeClick(port.ptr, navq[0], navq[1], 5000) catch return self.check(false, "focus the form input");
+        gtk_port.nativeClick(port.ptr, navq[0], navq[1], null, 5000) catch return self.check(false, "focus the form input");
         const enter_start = monotonicMs();
-        const enter_result = gtk_port.nativeKey(port.ptr, "Enter", 0, 5000);
+        const enter_result = gtk_port.nativeKey(port.ptr, "Enter", 0, null, 5000);
         self.check(if (enter_result) |_| true else |_| false, "native Enter that submits a form succeeds");
         self.check(monotonicMs() - enter_start < 3000, "navigating Enter returned without waiting for its deadline");
         nav_waited = 0;
@@ -930,6 +1004,19 @@ const LiveDriver = struct {
     }
 
     var nav_rc_dummy: c_int = 0;
+
+    fn documentToken(self: *LiveDriver) ?[]const u8 {
+        const r = self.eval(null, "return globalThis.__zbAutomation.documentToken;", null, c.ZB_AUTOMATION_WORLD, 5000);
+        return r.out;
+    }
+
+    fn waitUrlContains(self: *LiveDriver, comptime needle: []const u8) void {
+        var waited: u32 = 0;
+        while (waited < 5000) : (waited += 10) {
+            if (std.mem.indexOf(u8, self.str(&nav_rc_dummy, .url), needle) != null) return;
+            sleepMs(10);
+        }
+    }
 
     /// Page stamps are microseconds (performance.timeOrigin + now()); the
     /// host stamp is taken right after the port call returned. Strictly

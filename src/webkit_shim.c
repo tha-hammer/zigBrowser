@@ -1202,6 +1202,7 @@ struct ZbAutoJob {
   int modifiers;        /* native key */
   int releases;         /* native key/text: key releases sent */
   guint delay_source;   /* cookie test hook: pending hold timer */
+  char *expected_doc;   /* native input: required documentToken (or NULL) */
   GList *cookie_queue;  /* delete: matching cookies still to delete */
   int load_armed;    /* saw LOAD_STARTED for `url` */
   int load_displaced; /* another URI committed over this load */
@@ -1248,6 +1249,7 @@ static void auto_job_unref(gpointer data) {
   g_free(job->arg);
   g_free(job->world);
   g_free(job->url);
+  g_free(job->expected_doc);
   if (job->cancellable != NULL) {
     g_object_unref(job->cancellable);
   }
@@ -2547,12 +2549,64 @@ static int auto_keyval_needs_shift(GdkWindow *window, guint keyval) {
   return shift;
 }
 
+static void auto_native_dispatch(ZbAutoJob *job, ZbWindow *win);
+
+/* GTK thread: the document guard's token read came back. The comparison and
+ * the GDK delivery happen in this one callback, so no main-loop work (load
+ * commits, page navigation notifications) can run between them. */
+static void on_auto_native_guard(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  GError *error = NULL;
+  JSCValue *value = webkit_web_view_call_async_javascript_function_finish(
+      WEBKIT_WEB_VIEW(object), result, &error);
+  auto_untrack(job);
+
+  if (value == NULL) {
+    int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
+                                                                       : ZB_AUTO_ERR_DOC_CHANGED;
+    auto_job_complete(job, code, NULL, g_strdup("document guard failed"));
+    g_clear_error(&error);
+  } else {
+    char *token = jsc_value_is_string(value) ? jsc_value_to_string(value) : NULL;
+    g_object_unref(value);
+    ZbWindow *win = auto_resolve_window(job->requested);
+    if (win == NULL) {
+      auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    } else if (token == NULL || strcmp(token, job->expected_doc) != 0) {
+      auto_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, g_strdup("document changed"));
+    } else {
+      auto_native_dispatch(job, win);
+    }
+    g_free(token);
+  }
+  auto_async_release(job);
+}
+
 static void auto_start_native(ZbAutoJob *job) {
   ZbWindow *win = auto_resolve_window(job->requested);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
   }
+  if (job->expected_doc == NULL) {
+    auto_native_dispatch(job, win);
+    return;
+  }
+
+  static const char guard_body[] =
+      "return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;";
+  GVariantDict dict;
+  g_variant_dict_init(&dict, NULL);
+  GVariant *args = g_variant_ref_sink(g_variant_dict_end(&dict));
+  auto_track(job, win);
+  webkit_web_view_call_async_javascript_function(
+      win->view, guard_body, -1, args, ZB_AUTOMATION_WORLD, NULL, job->cancellable,
+      on_auto_native_guard, auto_async_ref(job));
+  g_variant_unref(args);
+}
+
+/* GTK thread: deliver the job's events now (synchronous). */
+static void auto_native_dispatch(ZbAutoJob *job, ZbWindow *win) {
   if (job->op == ZB_OP_NATIVE_CLICK) {
     auto_native_click(job, win);
     return;
@@ -2587,9 +2641,21 @@ static void auto_start_native(ZbAutoJob *job) {
   auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
 }
 
+/* A guarded native job reads the page asynchronously first, so it is an
+ * async job (cancellable, abandoned on timeout) instead of a sync one. */
+static void auto_native_guard(ZbAutoJob *job, const char *expected_doc) {
+  if (expected_doc == NULL) {
+    return;
+  }
+  job->expected_doc = g_strdup(expected_doc);
+  job->is_async = 1;
+  job->cancellable = g_cancellable_new();
+}
+
 int zb_native_click(ZbWindow *win, double x, double y, int button,
-                    unsigned int timeout_ms, char **out_err) {
+                    const char *expected_doc, unsigned int timeout_ms, char **out_err) {
   ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_CLICK);
+  auto_native_guard(job, expected_doc);
   job->x = x;
   job->y = y;
   job->button = button > 0 ? button : 1;
@@ -2615,11 +2681,13 @@ static int auto_run_native_keys(ZbAutoJob *job, ZbWindow *win, unsigned int time
 }
 
 int zb_native_key(ZbWindow *win, const char *key, int modifiers,
-                  unsigned int timeout_ms, int *out_releases, char **out_err) {
+                  const char *expected_doc, unsigned int timeout_ms, int *out_releases,
+                  char **out_err) {
   if (key == NULL || key[0] == '\0') {
     return ZB_AUTO_ERR_INTERNAL;
   }
   ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_KEY);
+  auto_native_guard(job, expected_doc);
   job->body = g_strdup(key);
   job->modifiers = modifiers;
   return auto_run_native_keys(job, win, timeout_ms, out_releases, out_err);
@@ -2629,8 +2697,9 @@ int zb_native_key(ZbWindow *win, const char *key, int modifiers,
  * characters: long text can neither overrun the deadline nor hold the GTK
  * thread. On TIMEOUT the text is partially typed; *out_releases counts the
  * releases actually sent. */
-int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
-                   int *out_releases, int *out_chars, char **out_err) {
+int zb_native_text(ZbWindow *win, const char *text, const char *expected_doc,
+                   unsigned int timeout_ms, int *out_releases, int *out_chars,
+                   char **out_err) {
   if (out_releases != NULL) {
     *out_releases = 0;
   }
@@ -2655,6 +2724,7 @@ int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
       return ZB_AUTO_ERR_TIMEOUT;
     }
     ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_TEXT);
+    auto_native_guard(job, expected_doc);
     job->body = g_strndup(p, (gsize)(g_utf8_next_char(p) - p));
     int releases = 0;
     int code = auto_run_native_keys(job, win, (unsigned int)((remaining_us + 999) / 1000),

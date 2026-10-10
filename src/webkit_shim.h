@@ -48,6 +48,7 @@ enum {
   ZB_AUTO_ERR_NO_LOOP = 5,    /* GTK main loop has ended */
   ZB_AUTO_ERR_INTERNAL = 6,   /* bad args, or async op called on the GTK thread */
   ZB_AUTO_ERR_CANCELLED = 7,  /* window destroyed while the job was in flight */
+  ZB_AUTO_ERR_DOC_CHANGED = 8, /* native input: the page is no longer the expected document */
 };
 
 typedef void (*ZbMainJobFn)(void *ctx);
@@ -177,24 +178,32 @@ enum {
   ZB_NATIVE_MOD_META = 8,
 };
 
+/* expected_doc (optional): __zbAutomation.documentToken of the document the
+ * input is meant for. When given, the GTK-thread job reads the current token
+ * and, in the same callback with no return to the main loop, either refuses
+ * with ZB_AUTO_ERR_DOC_CHANGED (nothing sent) or delivers the events. */
+
 /* Pointer motion to (x, y), then press and release of `button` (1 = left). */
 int zb_native_click(ZbWindow *win, double x, double y, int button,
-                    unsigned int timeout_ms, char **out_err);
+                    const char *expected_doc, unsigned int timeout_ms, char **out_err);
 /* Press and release one key: `key` is a DOM key name ("Enter", "Tab",
  * "ArrowLeft", "a", ...); `modifiers` (ZB_NATIVE_MOD_*) are pressed before
  * the key and released after it. ZB_AUTO_ERR_INTERNAL for unknown keys.
  * *out_releases (optional) receives the number of key releases sent, so a
  * caller can wait for that many keyup events to reach the page. */
 int zb_native_key(ZbWindow *win, const char *key, int modifiers,
-                  unsigned int timeout_ms, int *out_releases, char **out_err);
+                  const char *expected_doc, unsigned int timeout_ms, int *out_releases,
+                  char **out_err);
 /* Press and release a key for each character of UTF-8 `text` (Shift added
  * where the keymap needs it; '\n' is Return). Each character is its own
  * GTK-thread step and the deadline is checked between them: on TIMEOUT the
  * text is partially typed; *out_chars (optional) counts the code points fully
  * sent, *out_releases the key releases, so a caller can resume or report the
- * partial effect instead of retrying the whole text. */
-int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
-                   int *out_releases, int *out_chars, char **out_err);
+ * partial effect instead of retrying the whole text. With expected_doc,
+ * every character is guarded: DOC_CHANGED stops before the next one. */
+int zb_native_text(ZbWindow *win, const char *text, const char *expected_doc,
+                   unsigned int timeout_ms, int *out_releases, int *out_chars,
+                   char **out_err);
 
 /* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
 int zb_automation_debug_live_jobs(void);

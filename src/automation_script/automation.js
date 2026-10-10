@@ -33,11 +33,11 @@
   }
   globalScope.addEventListener('mouseup', (event) => { if (event.isTrusted) inputAck.mouseup += 1; }, true);
   globalScope.addEventListener('keyup', (event) => { if (event.isTrusted) inputAck.keyup += 1; }, true);
-  // A click is complete once its whole dispatch (every listener and the
-  // default action) has run: count it in a task queued from the capture
-  // phase, which runs after the dispatch returns.
+  // Counted when the click starts dispatching: a reader's eval cannot run in
+  // the middle of that synchronous dispatch, so once it observes the count
+  // every listener (and the default action) of that click has run.
   globalScope.addEventListener('click', (event) => {
-    if (event.isTrusted) globalScope.setTimeout(() => { inputAck.click += 1; }, 0);
+    if (event.isTrusted) inputAck.click += 1;
   }, true);
 
   let nextElementId = 1;
