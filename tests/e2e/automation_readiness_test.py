@@ -23,7 +23,7 @@ from automation_fixture_server import AutomationFixtureServer
 from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file
 
 LOAD_DELAY_S = 2.0
-WAIT_TIMEOUT_MS = 3000
+WAIT_TIMEOUT_MS = 5000  # > LOAD_DELAY_S + startup under a loaded gate
 NATIVE_GRACE_S = 1.0
 
 
