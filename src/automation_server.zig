@@ -108,6 +108,13 @@ pub const AutomationApiServer = struct {
         try cleanupSocketPath(self.io, self.config.socket_path);
         const address = try net.UnixAddress.init(self.config.socket_path);
         self.listener = try address.listen(self.io, .{});
+        // Only the owning user may connect, whatever the umask or directory.
+        restrictSocketMode(self.allocator, self.config.socket_path) catch |err| {
+            self.listener.?.deinit(self.io);
+            self.listener = null;
+            cleanupSocketPath(self.io, self.config.socket_path) catch {};
+            return err;
+        };
         self.stopping.store(false, .release);
         self.thread = try std.Thread.spawn(.{}, serveLoop, .{self});
     }
@@ -223,7 +230,7 @@ pub const AutomationApiServer = struct {
         var header: [4]u8 = undefined;
         reader.interface.readSliceAll(&header) catch return;
         if (std.mem.eql(u8, &header, "GET ")) {
-            try handleWebSocketUpgrade(&reader, &writer, &header);
+            try handleWebSocketUpgrade(&reader, &writer, &header, self.config.token);
             return;
         }
 
@@ -460,9 +467,27 @@ fn wallClockMs() i64 {
 fn requestHasToken(obj: std.json.ObjectMap, token: []const u8) bool {
     const auth = obj.get("auth") orelse return false;
     return switch (auth) {
-        .string => |value| std.mem.eql(u8, value, token),
+        .string => |value| tokensEqual(value, token),
         else => false,
     };
+}
+
+/// Constant-time token comparison: both sides are hashed to fixed-size
+/// digests first, so neither the length nor the first differing byte of the
+/// configured token leaks through timing.
+pub fn tokensEqual(given: []const u8, expected: []const u8) bool {
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    var given_digest: [Sha256.digest_length]u8 = undefined;
+    var expected_digest: [Sha256.digest_length]u8 = undefined;
+    Sha256.hash(given, &given_digest, .{});
+    Sha256.hash(expected, &expected_digest, .{});
+    return std.crypto.timing_safe.eql([Sha256.digest_length]u8, given_digest, expected_digest);
+}
+
+fn restrictSocketMode(allocator: std.mem.Allocator, socket_path: []const u8) !void {
+    const path_z = try allocator.dupeZ(u8, socket_path);
+    defer allocator.free(path_z);
+    if (std.c.chmod(path_z, 0o600) != 0) return error.SocketPermissions;
 }
 
 fn paramsJson(allocator: std.mem.Allocator, maybe_params: ?std.json.Value) error{ OutOfMemory, InvalidParams }![]u8 {
@@ -518,7 +543,7 @@ fn writeFrame(writer: anytype, payload: []const u8) !void {
     try writer.interface.flush();
 }
 
-fn handleWebSocketUpgrade(reader: anytype, writer: anytype, initial: *const [4]u8) !void {
+fn handleWebSocketUpgrade(reader: anytype, writer: anytype, initial: *const [4]u8, token: []const u8) !void {
     var request: [4096]u8 = undefined;
     @memcpy(request[0..4], initial);
     var len: usize = 4;
@@ -531,6 +556,19 @@ fn handleWebSocketUpgrade(reader: anytype, writer: anytype, initial: *const [4]u
     }
     const request_text = request[0..len];
     const key = webSocketHeader(request_text, "Sec-WebSocket-Key") orelse return;
+
+    // The event channel is authenticated like JSON-RPC requests:
+    // "Authorization: Bearer <token>" when a token is configured.
+    if (token.len > 0) {
+        const bearer_prefix = "Bearer ";
+        const authorization = webSocketHeader(request_text, "Authorization") orelse "";
+        const given = if (std.mem.startsWith(u8, authorization, bearer_prefix)) authorization[bearer_prefix.len..] else "";
+        if (!tokensEqual(given, token)) {
+            try writer.interface.writeAll("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            try writer.interface.flush();
+            return;
+        }
+    }
 
     const accept = try automation_websocket.secWebSocketAccept(std.heap.smp_allocator, key);
     defer std.heap.smp_allocator.free(accept);

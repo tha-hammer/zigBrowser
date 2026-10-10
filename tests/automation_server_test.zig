@@ -567,12 +567,76 @@ const MemoryCookieStore = struct {
     }
 };
 
+test "the socket file is created with mode 0600" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("mode", .{});
+    defer fixture.deinit();
+    const stat = try std.Io.Dir.cwd().statFile(testing.io, fixture.socket_path, .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+}
+
+test "tokensEqual is exact for equal, different and different-length tokens" {
+    try testing.expect(automation_server.tokensEqual("s3cret", "s3cret"));
+    try testing.expect(!automation_server.tokensEqual("s3cret", "s3creT"));
+    try testing.expect(!automation_server.tokensEqual("s3cret", "s3cre"));
+    try testing.expect(!automation_server.tokensEqual("s3cret", "s3cret!"));
+    try testing.expect(!automation_server.tokensEqual("s3cret", ""));
+    try testing.expect(automation_server.tokensEqual("", ""));
+}
+
+test "requests need the exact token when one is configured" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("token", .{ .token = "s3cret" });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    for ([_][]const u8{ "", ",\"auth\":\"s3creT\"", ",\"auth\":\"s3cre\"", ",\"auth\":\"s3cret-\"", ",\"auth\":1" }) |auth| {
+        const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":1{s}}}", .{auth});
+        defer testing.allocator.free(request);
+        const response = try roundTrip(stream, request);
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "\"code\":-32000") != null);
+    }
+    const ok = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":2,\"auth\":\"s3cret\"}");
+    defer testing.allocator.free(ok);
+    try testing.expect(std.mem.indexOf(u8, ok, "\"result\"") != null);
+}
+
+test "websocket upgrade requires the token (Authorization: Bearer) when one is configured" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("ws-token", .{ .token = "s3cret" });
+    defer fixture.deinit();
+
+    for ([_]struct { header: []const u8, expect: []const u8 }{
+        .{ .header = "", .expect = "HTTP/1.1 401" },
+        .{ .header = "Authorization: Bearer wrong\r\n", .expect = "HTTP/1.1 401" },
+        .{ .header = "Authorization: Bearer s3cret\r\n", .expect = "HTTP/1.1 101" },
+    }) |case| {
+        var stream = try fixture.connect();
+        defer stream.close(testing.io);
+        var writer_buf: [1024]u8 = undefined;
+        var writer = stream.writer(testing.io, &writer_buf);
+        try writer.interface.print(
+            "GET /events HTTP/1.1\r\nHost: zigbrowser.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" ++
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{s}\r\n",
+            .{case.header},
+        );
+        try writer.interface.flush();
+        var reader_buf: [1024]u8 = undefined;
+        var reader = stream.reader(testing.io, &reader_buf);
+        var response: [64]u8 = undefined;
+        const n = try reader.interface.readSliceShort(&response);
+        try testing.expect(std.mem.startsWith(u8, response[0..n], case.expect));
+    }
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
     eval_delay_ms: u64 = 0,
     sink: ?*automation_server.automation.telemetry.InMemoryTelemetrySink = null,
     cookies: ?*MemoryCookieStore = null,
+    token: []const u8 = "",
 };
 
 const Fixture = struct {
@@ -593,7 +657,7 @@ const Fixture = struct {
         self.server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
             .enabled = true,
             .socket_path = self.socket_path,
-            .token = "",
+            .token = options.token,
             .page_port = if (options.with_port) self.fake.port() else null,
             .telemetry_sink = if (options.sink) |sink| sink.sink() else null,
             .cookie_port = if (options.cookies) |store| store.port() else null,
