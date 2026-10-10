@@ -121,6 +121,7 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `85424b9` — native PagePort v3.1 adapter and GTK document guard | Exact C/Zig state-machine and production-vtable review; clean export with `timeout 900 xvfb-run -a`, followed by automatic tree deletion | **GREEN gate: 71/71 steps, 514/514 tests; CODE BLOCKED**. | Correctly wires the production vtable, owns the C token copy, checks the token and dispatches without yielding to the GTK loop, waits per code point, preserves a single deadline, and gives completed click dispatch a mutation-sensitive slow-handler proof. BLOCKERS: a guard callback can still dispatch after its waiter returned timeout; baseline/dispatch/settle transactions are not serialized, so one ACK can satisfy two callers; and post-dispatch errors other than Timeout retain no debt. The tests direct-call the adapter rather than traversing the real socket/router/engine/vtable chain. Mailed both owners as message 4575. |
 | `74d7baf` — real-socket trusted-input E2E and implicit submission | Exact production-chain/test-oracle review; clean export with bounded Xvfb gate and automatic deletion | **APPROVED evidence slice: 71/71 steps, 514/514 tests; N7 remains blocked**. | Real socket calls reach native click/type/press through router, engine, and the installed PagePort and prove trusted events, Draft-owned editing, invalid-key mapping, partial-prefix reporting, and debt draining. BLOCKER evidence gap: all typed strings are ASCII, leaving the locale/keymap-sensitive Unicode seam unproved. SHOULD: assert trusted Draft `beforeinput` plus zero `input`; use HTML-reflected button type for implicit-submit default-button detection. The synchronization blockers in `85424b9` remain. Mailed cc_1 as message 4580. |
 | `a4d1dc5` — X totality/budget/queue follow-up | Exact source/test diff review; clean export with bounded Xvfb gate and automatic deletion | **GREEN gate: 71/71 steps, 520/520 tests; CODE BLOCKED**. | Closes zero-copy pacing, the four-candidate cap, malformed-result stale errors/missing IDs, and the old queue false-pass. BLOCKERS: clearing every failure on any successful substep makes missing-composer and mixed-candidate exhaustion return fabricated `-32603`; waitFor starts with timeout zero when less than native grace remains and can exceed the flow deadline; the queue test still uses a 1.5 s scheduling grace to establish enqueue and can false-fail. SHOULD: the advertised 10 s Post search is checked only between whole rounds and may run to the 120 s flow limit. Mailed cc_2 as message 4581. |
+| `b8344ce` — X sticky-failure, sub-grace deadline, and deterministic queue proof | Exact source/test diff review; clean export with `timeout 900 xvfb-run -a`, followed by automatic tree deletion | **APPROVED: 71/71 steps, 523/523 tests**. | Closes the three remaining X blockers: successful fallback probes preserve the failure that stopped the flow; waitFor is refused at or below its native-grace requirement and the expired latch prevents fallback work; a real socket/server/queue/engine integration waits for `pendingCount(page_id) == 1` while a blocking PagePort holds the flow. SHOULD: clear the fake hold with `defer`, otherwise an assertion failure before release can hang fixture teardown; the nominal 10 s Post search remains checked only between whole rounds. NIT: update the stale runner-contract comment in `src/x.zig`. Mailed cc_2 as message 4585. |
 
 ## Open findings
 
@@ -295,17 +296,15 @@ Post button and later clicks a non-strict selector. `visibility:hidden`, zero
 opacity, an overlay, or the first of multiple same-testid elements can make it
 choose a target that the click can never act on while a later target is valid.
 
-Status: **OPEN (cc_2 / BlueBeaver)** after `a4d1dc5`. Exact nth-element trial
-clicks and strict final targeting close the original bbox/non-strict defect,
-including hidden and duplicate fixtures. `a4d1dc5` also closes zero-copy
-pacing, the four-copy cap, and malformed-result stale/missing-ID handling.
-However, clearing the recorded failure on every successful substep makes a
-failed composer wait followed by a successful zero-login-link query return a
-fabricated `-32603`; the same happens when an earlier testid's trial fails and
-a later testid query succeeds with zero copies. Preserve the failure until an
-explicit malformed/not-found replacement. The 10-second Post search is also
-checked only between whole query/probe rounds. Mailed as Agent Mail 4542 and
-4581.
+Status: **CLOSED by `b8344ce`**. Exact nth-element trial clicks and strict final
+targeting close the original bbox/non-strict defect, including hidden and
+duplicate fixtures. `a4d1dc5` closes zero-copy pacing, the four-copy cap, and
+malformed-result stale/missing-ID handling. `b8344ce` preserves the failure
+that stopped the flow across later successful fallback probes and refuses a
+waitFor that lacks room for native completion grace. Missing-composer and
+mixed-candidate regressions cover both paths. The separate SHOULD remains:
+the nominal 10-second Post search is checked only between whole query/probe
+rounds. Mailed as Agent Mail 4542, 4581, and 4585.
 
 ### BLOCKER — X queue E2E does not prove one-turn execution
 
@@ -317,16 +316,14 @@ still passes. Conversely, `handleX` releases the queue ticket before
 can reach its client before the first client records its response and make the
 test fail.
 
-Status: **OPEN (cc_2 / BlueBeaver)** after `a4d1dc5`, but materially improved.
-The local HTTP fixture holds confirmation between two flow steps, and the
-racer now must receive the server's own `queued_past_deadline` reason; this
-prevents the old delayed-unqueued false-pass. The test still has no enqueue
-handshake: it sends the racer and immediately releases the hold, then relies
-on a 1.5-second sleep for the server to parse/enqueue it. A correct build can
-therefore false-fail under scheduler delay. Pair the real-binary scenario with
-a deterministic AutomationApiServer/blocking-PagePort integration that waits
-for the pending queue entry before release. Mailed as Agent Mail 4542,
-4576, and 4581.
+Status: **CLOSED by `b8344ce`**. The real-binary HTTP scenario retains its
+server-answer oracle, and the new production `AutomationApiServer` integration
+blocks the flow inside its PagePort, sends the racing socket command, waits
+until `pendingCount(page_id) == 1`, and only then releases the flow. It proves
+all X page operations precede the racer's navigation without scheduling
+grace or response-order timing. SHOULD: install a `defer` that clears the fake
+hold so a regression before the explicit release fails promptly instead of
+hanging teardown. Mailed as Agent Mail 4542, 4576, 4581, and 4585.
 
 ### BLOCKER — native select by label/index mishandles duplicate values
 
