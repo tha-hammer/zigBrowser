@@ -56,6 +56,8 @@ pub const FakePagePort = struct {
     /// typing `native_failed_sent` code points (text calls).
     native_fail_at: ?usize = null,
     native_error: page_port.PortError = error.Timeout,
+    /// Every native call from `native_fail_at` on fails (not just that one).
+    native_fail_onwards: bool = false,
     native_failed_sent: usize = 0,
     native_cost_ms: u64 = 0,
     /// When set, a successful text call reports this many code points
@@ -132,7 +134,7 @@ pub const FakePagePort = struct {
         };
         if (self.clock) |clock| clock.now_ms += self.native_cost_ms;
         // As an optional payload: a bare error value would take the error branch.
-        if (self.native_fail_at) |at| if (at == index) return @as(?page_port.PortError, self.native_error);
+        if (self.native_fail_at) |at| if (at == index or (self.native_fail_onwards and index > at)) return @as(?page_port.PortError, self.native_error);
         return null;
     }
 

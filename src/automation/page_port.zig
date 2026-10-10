@@ -85,9 +85,10 @@ pub const PagePort = struct {
         // defaults, which return error.Unsupported. ---
         //
         // `document` is the token the automation.js `locate` op returned
-        // for the target's document. When non-null, the backend checks it
-        // inside the native operation right before delivering input and
-        // returns DocumentChanged (nothing sent) if the page moved on. It is
+        // for the target's document (16 lowercase hex). When non-null, the
+        // backend compares it and delivers the input as ONE non-yielding
+        // operation on the UI thread, atomic against timeout/abandonment:
+        // on a mismatch it returns DocumentChanged and sends nothing. It is
         // null only for dom.press without a selector (a key to whatever has
         // focus). A document change caused by the input itself (link click,
         // Enter that submits) is success for click and key.

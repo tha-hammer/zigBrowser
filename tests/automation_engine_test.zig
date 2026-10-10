@@ -589,7 +589,7 @@ test "dom.selectOption no_option is retried until the deadline" {
 
 // ---- N7: native (trusted) input ----
 
-const located_reply = "{\"ok\":true,\"value\":{\"x\":10.5,\"y\":20,\"document\":\"doc-A\"}}";
+const located_reply = "{\"ok\":true,\"value\":{\"x\":10.5,\"y\":20,\"document\":\"0123456789abcdef\"}}";
 
 fn expectFailureData(outcome: engine.Outcome, code: i64, message: []const u8, data_fragment: []const u8) !void {
     try expectFailure(outcome, code, message);
@@ -801,8 +801,13 @@ test "a malformed locate answer is an internal error, and nothing is clicked" {
     h.init();
     defer h.deinit();
     for ([_][]const u8{
-        "{\"ok\":true,\"value\":{\"x\":\"1\",\"y\":2,\"document\":\"d\"}}",
-        "{\"ok\":true,\"value\":{\"x\":1,\"document\":\"d\"}}",
+        "{\"ok\":true,\"value\":{\"x\":\"1\",\"y\":2,\"document\":\"0123456789abcdef\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"document\":\"0123456789abcdef\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"doc-A\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"0123456789ABCDEF\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"0123456789abcde\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"0123456789abcdef0\"}}",
+        "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"0123456789abcd\\u0000f\"}}",
         "{\"ok\":true,\"value\":{\"x\":1,\"y\":2}}",
         "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"\"}}",
         "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":7}}",
@@ -866,8 +871,8 @@ test "native calls carry the located document token; press without a selector ca
     defer bare.deinit(gpa);
     const calls = h.fake.native_calls.items;
     try std.testing.expectEqual(@as(usize, 3), calls.len);
-    try std.testing.expectEqualStrings("doc-A", calls[0].document.?);
-    try std.testing.expectEqualStrings("doc-A", calls[1].document.?);
+    try std.testing.expectEqualStrings("0123456789abcdef", calls[0].document.?);
+    try std.testing.expectEqualStrings("0123456789abcdef", calls[1].document.?);
     try std.testing.expect(calls[2].document == null);
 }
 
@@ -880,7 +885,7 @@ test "document changed before any input: the target is located again and the inp
         defer h.deinit();
         h.fake.eval_replies = &.{
             .{ .json = located_reply },
-            .{ .json = "{\"ok\":true,\"value\":{\"x\":3,\"y\":4,\"document\":\"doc-B\"}}" },
+            .{ .json = "{\"ok\":true,\"value\":{\"x\":3,\"y\":4,\"document\":\"fedcba9876543210\"}}" },
         };
         h.fake.native_fail_at = 0;
         h.fake.native_error = error.DocumentChanged;
@@ -889,7 +894,7 @@ test "document changed before any input: the target is located again and the inp
         try expectResult(outcome, "{\"ok\":true}");
         try std.testing.expectEqual(@as(usize, 2), h.fake.eval_calls.items.len);
         try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
-        try std.testing.expectEqualStrings("doc-B", h.fake.native_calls.items[1].document.?);
+        try std.testing.expectEqualStrings("fedcba9876543210", h.fake.native_calls.items[1].document.?);
         try std.testing.expectEqual(@as(f64, 3), h.fake.native_calls.items[1].x);
     }
     // Same for type when nothing was typed yet.
@@ -898,7 +903,7 @@ test "document changed before any input: the target is located again and the inp
     defer h.deinit();
     h.fake.eval_replies = &.{
         .{ .json = located_reply },
-        .{ .json = "{\"ok\":true,\"value\":{\"x\":3,\"y\":4,\"document\":\"doc-B\"}}" },
+        .{ .json = "{\"ok\":true,\"value\":{\"x\":3,\"y\":4,\"document\":\"fedcba9876543210\"}}" },
     };
     h.fake.native_fail_at = 0;
     h.fake.native_error = error.DocumentChanged;
@@ -953,4 +958,24 @@ test "a document change on a selector-less press (no binding) is reported, not r
     defer outcome.deinit(gpa);
     try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
     try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+}
+
+test "a page that keeps replacing its document: re-locate until the deadline, then element_not_found document_changed, nothing sent" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 50;
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_fail_at = 0;
+    h.fake.native_fail_onwards = true;
+    h.fake.native_error = error.DocumentChanged;
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"abc\",\"options\":{\"input\":\"native\",\"timeout_ms\":1000}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    try expectFailureData(outcome, -32001, "element_not_found", "\"trace_id\"");
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "sent_chars") == null);
+    try std.testing.expect(h.fake.native_calls.items.len > 1);
+    // The last locate may start just before the deadline (+50 ms eval).
+    try std.testing.expect(h.clock.now_ms <= 1000 + 50);
 }

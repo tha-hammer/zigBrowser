@@ -493,6 +493,7 @@ pub const Engine = struct {
             .dom_press => "press",
             else => unreachable, // the router accepts native for these only
         };
+        var relocated = false;
         while (true) {
             var target: Target = .{};
             if (command.selector != null) {
@@ -509,6 +510,7 @@ pub const Engine = struct {
             }
             if (command.trial) return okResult(gpa);
             if (run.cancelled()) return automationFailure(gpa, .cancelled, null, run.ids);
+            if (relocated and self.clock.nowMs() >= deadline) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
 
             const step: NativeStep = switch (command.verb) {
                 .dom_click => try self.nativeSingle(gpa, .click, command, &target, deadline, run),
@@ -520,9 +522,14 @@ pub const Engine = struct {
                 .done => |outcome| return outcome,
                 .relocate => {
                     // Nothing was sent: find the target in the new document,
-                    // within the same deadline.
+                    // within the same deadline. A page that keeps replacing
+                    // its document until the deadline ends as -32001
+                    // element_not_found reason "document_changed" (the
+                    // target never stayed put long enough), not as a
+                    // retry-exhausted action_timeout.
                     if (self.clock.nowMs() +| poll_interval_ms >= deadline) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
                     if (!self.sleepUnlessCancelled(poll_interval_ms, run)) return automationFailure(gpa, .cancelled, null, run.ids);
+                    relocated = true;
                 },
             }
         }
@@ -976,11 +983,12 @@ const Target = struct {
     }
 };
 
-/// automation.js document tokens are short random ids.
-const max_document_token_len = 128;
+/// automation.js document tokens: exactly 16 lowercase hex digits (the
+/// shape the GTK adapter and shim accept; never contains NUL).
+const max_document_token_len = 16;
 
 /// `{x, y, document}` from the locate op: finite viewport CSS px and a
-/// non-empty token string. Anything else is a malformed answer.
+/// well-formed document token. Anything else is a malformed answer.
 fn parseTarget(gpa: std.mem.Allocator, json: []const u8, target: *Target) bool {
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, json, .{}) catch return false;
     defer parsed.deinit();
@@ -995,7 +1003,8 @@ fn parseTarget(gpa: std.mem.Allocator, json: []const u8, target: *Target) bool {
         .string => |text| text,
         else => return false,
     };
-    if (token.len == 0 or token.len > max_document_token_len) return false;
+    if (token.len != max_document_token_len) return false;
+    for (token) |c| if (!std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
     @memcpy(target.document_buf[0..token.len], token);
     target.document_len = token.len;
     return true;
