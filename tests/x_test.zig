@@ -557,3 +557,54 @@ test "x.selfcheck: an unusable query answer is malformed, not a partial report" 
     try std.testing.expect((try x.selfCheck(gpa, &runner)) == null);
     try std.testing.expectEqual(@as(usize, 1), runner.malformed_calls);
 }
+
+test "options.input/humanize reach the composer click, the typing, the Post click and the schedule clicks only" {
+    var runner = ProbeRunner{};
+    defer runner.inner.deinit();
+    const result = (try x.schedulePost(gpa, &runner, .{ .text = "hi there", .date = "2026-11-05", .time = "14:07", .input = .{ .native = true, .humanize = true } })).?;
+    defer gpa.free(result);
+    var forwarded: usize = 0;
+    for (runner.inner.steps.items) |s| {
+        const native = std.mem.indexOf(u8, s.params, "\"input\":\"native\"") != null;
+        const human = std.mem.indexOf(u8, s.params, "\"humanize\":true") != null;
+        try std.testing.expectEqual(native, human);
+        const trial = std.mem.indexOf(u8, s.params, "\"trial\":true") != null;
+        const expected = (std.mem.eql(u8, s.method, "dom.click") and !trial) or std.mem.eql(u8, s.method, "dom.type");
+        if (native != expected) {
+            std.debug.print("{s} {s}\n", .{ s.method, s.params });
+            return error.TestUnexpectedResult;
+        }
+        if (native) forwarded += 1;
+    }
+    // composer click, type, schedule option, confirm, Post click
+    try std.testing.expectEqual(@as(usize, 5), forwarded);
+
+    // Default: synthetic, nothing added to any step.
+    var plain = ProbeRunner{};
+    defer plain.inner.deinit();
+    gpa.free((try x.post(gpa, &plain, .{ .text = "hi" })).?);
+    for (plain.inner.steps.items) |s| {
+        try std.testing.expect(std.mem.indexOf(u8, s.params, "\"input\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, s.params, "humanize") == null);
+    }
+
+    // humanize without native input is rejected before any step.
+    var bad = ProbeRunner{};
+    defer bad.inner.deinit();
+    try std.testing.expectError(error.InvalidParams, x.post(gpa, &bad, .{ .text = "hi", .input = .{ .humanize = true } }));
+    try std.testing.expectEqual(@as(usize, 0), bad.inner.steps.items.len);
+}
+
+test "a humanized type gets a timeout that covers its worst-case schedule (within the flow budget)" {
+    var runner = ProbeRunner{};
+    defer runner.inner.deinit();
+    const text = "word " ** 56; // 280 characters
+    gpa.free((try x.post(gpa, &runner, .{ .text = text, .input = .{ .native = true, .humanize = true } })).?);
+    for (runner.inner.steps.items) |s| {
+        if (!std.mem.eql(u8, s.method, "dom.type")) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});
+        defer parsed.deinit();
+        const ms = parsed.value.object.get("options").?.object.get("timeout_ms").?.integer;
+        try std.testing.expect(ms > 30_000 and ms <= 120_000);
+    }
+}

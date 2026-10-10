@@ -339,3 +339,30 @@ test "a later successful lookup does not erase the failure that stopped the flow
     defer post.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32005), post.failure.code);
 }
+
+test "x.post options: input/humanize accepted and validated (humanize needs native; unknown keys and types rejected)" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    for ([_][]const u8{
+        "{\"text\":\"hi\",\"options\":{\"humanize\":true}}",
+        "{\"text\":\"hi\",\"options\":{\"input\":\"synthetic\",\"humanize\":true}}",
+        "{\"text\":\"hi\",\"options\":{\"input\":\"trusted\"}}",
+        "{\"text\":\"hi\",\"options\":{\"input\":\"native\",\"delay_ms\":40}}",
+        "{\"text\":\"hi\",\"options\":{\"humanize\":\"yes\",\"input\":\"native\"}}",
+        "{\"text\":\"hi\",\"options\":\"native\"}",
+    }) |params| {
+        var outcome = try h.call("x.post", params);
+        defer outcome.deinit(gpa);
+        if (outcome != .failure or outcome.failure.code != -32602) {
+            std.debug.print("accepted {s}\n", .{params});
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), h.fake.navigate_calls.items.len);
+    // Valid options reach the flow (engine side: native click needs the
+    // native-capable fake port, which this harness has).
+    var ok = try h.call("x.post", "{\"text\":\"hi\",\"options\":{\"input\":\"synthetic\"}}");
+    defer ok.deinit(gpa);
+    try std.testing.expect(ok == .result);
+}

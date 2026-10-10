@@ -86,8 +86,8 @@ pub fn handleWithBudget(
         else => return invalidParams(),
     };
     const allowed: []const []const u8 = switch (verb) {
-        .post => &.{ "text", "compose_url" },
-        .schedule_post => &.{ "text", "date", "time", "compose_url" },
+        .post => &.{ "text", "compose_url", "options" },
+        .schedule_post => &.{ "text", "date", "time", "compose_url", "options" },
         .login_check, .selfcheck => &.{},
     };
     var keys = params.iterator();
@@ -107,15 +107,17 @@ pub fn handleWithBudget(
             // flow opens (fixtures, x.com mirrors). It grants nothing new: the
             // same client may already page.navigate anywhere. Default: x.com.
             const compose_url = if (params.get("compose_url")) |_| (stringField(params, "compose_url") orelse return invalidParams()) else x.compose_url;
+            const input = inputOptions(params) orelse return invalidParams();
             if (state.remaining() == 0) return engine_mod.automationFailure(gpa, .platform_rate_limited, "x_daily_cap", ids);
             break :blk if (verb == .post)
-                x.post(gpa, &runner, .{ .text = text, .compose_url = compose_url })
+                x.post(gpa, &runner, .{ .text = text, .compose_url = compose_url, .input = input })
             else
                 x.schedulePost(gpa, &runner, .{
                     .text = text,
                     .date = stringField(params, "date") orelse return invalidParams(),
                     .time = stringField(params, "time") orelse return invalidParams(),
                     .compose_url = compose_url,
+                    .input = input,
                 });
         },
     };
@@ -128,6 +130,33 @@ pub fn handleWithBudget(
     // Only posts and scheduled posts are paced; checks are read-only.
     if (verb == .post or verb == .schedule_post) state.consume();
     return .{ .result = json };
+}
+
+/// `options: {input?: "synthetic"|"native", humanize?: bool}` (the N7/N8
+/// rules: humanize needs native input); null when malformed.
+fn inputOptions(params: std.json.ObjectMap) ?x.Input {
+    const options = switch (params.get("options") orelse return .{}) {
+        .object => |o| o,
+        else => return null,
+    };
+    var input = x.Input{};
+    var keys = options.iterator();
+    while (keys.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "input")) {
+            const mode = switch (entry.value_ptr.*) {
+                .string => |s| s,
+                else => return null,
+            };
+            if (std.mem.eql(u8, mode, "native")) input.native = true else if (!std.mem.eql(u8, mode, "synthetic")) return null;
+        } else if (std.mem.eql(u8, entry.key_ptr.*, "humanize")) {
+            input.humanize = switch (entry.value_ptr.*) {
+                .bool => |b| b,
+                else => return null,
+            };
+        } else return null;
+    }
+    if (input.humanize and !input.native) return null;
+    return input;
 }
 
 fn invalidParams() engine_mod.Outcome {
