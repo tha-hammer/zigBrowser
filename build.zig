@@ -486,6 +486,15 @@ pub fn build(b: *std.Build) void {
     });
     x_flows_e2e.addArtifactArg(exe);
 
+    // N14: x.post / x.schedule_post with native, humanized input (isTrusted).
+    const x_native_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/x_native_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "x-native-e2e",
+    });
+    x_native_e2e.addArtifactArg(exe);
+
     // N16: linkedin.* / instagram.* through the Python SDK on site-modelled fixtures.
     const social_flows_e2e = b.addSystemCommand(&.{
         "sh",
@@ -682,6 +691,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_readiness_e2e.step);
     test_step.dependOn(&sdk_python_live_e2e.step);
     test_step.dependOn(&x_flows_e2e.step);
+    test_step.dependOn(&x_native_e2e.step);
     test_step.dependOn(&social_flows_e2e.step);
     test_step.dependOn(&automation_input_e2e.step);
     test_step.dependOn(&automation_profile_e2e.step);

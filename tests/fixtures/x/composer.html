@@ -35,6 +35,19 @@
         window.__xResult = null;
         window.__xPosts = 0;
         window.__xEvents = [];
+        // N14: which input was real. Each entry is type:target:isTrusted
+        // (target = data-testid, else id, else tag); __xKeyTimes holds the
+        // editor's keydown times (ms) for pacing checks.
+        window.__xTrust = [];
+        window.__xKeyTimes = [];
+        ['keydown', 'beforeinput', 'mousemove', 'click'].forEach(function (type) {
+          document.addEventListener(type, function (event) {
+            var t = event.target && event.target.closest ? event.target.closest('[data-testid]') : null;
+            var name = t ? t.getAttribute('data-testid') : (event.target.id || event.target.tagName || 'document');
+            window.__xTrust.push(type + ':' + name + ':' + event.isTrusted);
+            if (type === 'keydown' && name === 'tweetTextarea_0') window.__xKeyTimes.push(event.timeStamp);
+          }, true);
+        });
 
         if (mode === 'loggedout') {
           app.innerHTML = '<h1>Happening now</h1><a href="/login">Log in</a> <a href="/i/flow/signup">Sign up</a>';
