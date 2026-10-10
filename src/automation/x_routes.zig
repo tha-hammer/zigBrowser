@@ -53,25 +53,33 @@ pub const XState = struct {
 
 /// Runner for src/x.zig (see the runner contract there): one command per
 /// call, keeping the last result (borrowed by the flow until the next call)
-/// and the failure of the latest step. Every failure it hands out carries
-/// the x.* command's trace_id/command_id.
+/// and the latest failure. A failure stays until a newer one replaces it
+/// (a later successful lookup, like the login-link probe after a failed
+/// composer wait, must not erase the failure that stopped the flow). Every
+/// failure it hands out carries the x.* command's trace_id/command_id.
 pub const Runner = struct {
     gpa: std.mem.Allocator,
     ext: *engine_mod.External,
     deadline_ms: u64,
     last_result: ?engine_mod.Outcome = null,
     failure: ?engine_mod.Outcome = null,
+    /// Set once the flow budget stopped a step: every later step fails too
+    /// (no fallback probe may run, or reinterpret the stop).
+    expired: bool = false,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
-        if (self.remainingMs() == 0) {
+        // No step starts without budget; a waitFor also needs room for the
+        // engine's native grace on top of its (clamped) JS timeout.
+        if (self.expired) return null;
+        const needed: u64 = if (std.mem.eql(u8, method, "dom.waitFor")) engine_mod.wait_for_native_grace_ms else 0;
+        if (self.remainingMs() <= needed) {
             self.setFailure(try engine_mod.automationFailure(self.gpa, .action_timeout, "x_flow_deadline", self.ext.ids()));
+            self.expired = true;
             return null;
         }
         const outcome = try self.ext.runCommand(self.gpa, method, params_json);
         switch (outcome) {
             .result => |json| {
-                // A step that succeeded supersedes any earlier failure.
-                self.clearFailure();
                 self.dropResult();
                 self.last_result = outcome;
                 return json;

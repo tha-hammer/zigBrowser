@@ -271,3 +271,49 @@ test "no Post button ever: element_not_found x_post_button_missing with the x.* 
     for (h.clock.sleeps.items) |ms| slept += ms;
     try std.testing.expect(slept >= 9_000 and slept <= 10_000);
 }
+
+test "a waitFor is not started without room for its native grace (hard flow budget)" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    // The navigation leaves 999 ms: less than the 1 s waitFor grace.
+    h.fake.navigate_cost_ms = x_routes.flow_budget_ms - 999;
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "x_flow_deadline") != null);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.url_calls);
+}
+
+test "a later successful lookup does not erase the failure that stopped the flow" {
+    // Composer waitFor fails; the login-link probe succeeds with no match:
+    // the waitFor failure is what the caller gets (not a fabricated -32603).
+    var h: Harness = undefined;
+    h.init(&.{
+        .{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" },
+        .{ .json = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    });
+    defer h.deinit();
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"reason\":\"timeout\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"trace_id\"") != null);
+
+    // Post search: the tweetButton copy fails its trial, then the
+    // tweetButtonInline query succeeds with zero copies, every round. The
+    // trial failure is the evidence (not -32603, not x_post_button_missing).
+    var p: Harness = undefined;
+    p.init(&.{
+        ok_reply, ok_reply, ok_reply, ok_reply, // waitFor, click, fill, type
+        .{ .json = "{\"ok\":true,\"value\":{\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}]}}" }, // tweetButton: 1 copy
+        .{ .json = "{\"ok\":false,\"error\":\"element_disabled\",\"retryable\":false,\"data\":{\"reason\":\"disabled\"}}" }, // its trial
+        .{ .json = "{\"ok\":true,\"value\":{\"elements\":[]}}" }, // inline: 0 copies, from here on
+    });
+    defer p.deinit();
+    var post = try p.call("x.post", "{\"text\":\"hi\"}");
+    defer post.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32005), post.failure.code);
+}

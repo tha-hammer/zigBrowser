@@ -37,6 +37,8 @@ pub const FakePagePort = struct {
     navigate_calls: std.ArrayListUnmanaged([]u8) = .empty,
     navigate_timeouts: std.ArrayListUnmanaged(u64) = .empty,
     navigate_result: page_port.PortError!void = {},
+    /// Simulated load time (advances `clock`).
+    navigate_cost_ms: u64 = 0,
     reload_calls: usize = 0,
     reload_result: page_port.PortError!void = {},
     current_url: []const u8 = "about:blank",
@@ -193,6 +195,7 @@ pub const FakePagePort = struct {
 
     fn navigate(ptr: *anyopaque, url_text: []const u8, timeout_ms: u64) page_port.PortError!void {
         const self = from(ptr);
+        if (self.clock) |clock| clock.now_ms += self.navigate_cost_ms;
         self.navigate_calls.append(self.gpa, self.gpa.dupe(u8, url_text) catch return error.OutOfMemory) catch return error.OutOfMemory;
         self.navigate_timeouts.append(self.gpa, timeout_ms) catch return error.OutOfMemory;
         return self.navigate_result;

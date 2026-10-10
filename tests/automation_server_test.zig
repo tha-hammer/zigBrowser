@@ -926,6 +926,57 @@ test "x.* is routed: x.post runs its steps on the page and returns the flow resu
     try testing.expect(!sink.containsRaw("hi from the socket"));
 }
 
+test "x.* holds the page queue for the whole flow: a racing page command is queued, then runs after it (deterministic)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("x-queue", .{ .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true,\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}]}}" });
+    defer fixture.deinit();
+    const page_id = automation_server.primary_route.page_id;
+
+    // The flow navigates to /a, then blocks in its first page step.
+    fixture.fake.hold.store(true, .release);
+    var flow = try fixture.connect();
+    defer flow.close(testing.io);
+    try writeFrame(flow, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"compose_url\":\"http://127.0.0.1:9/a\"},\"id\":1}");
+    try waitUntil(&fixture.fake.held, 5000);
+
+    // A second client asks to navigate while the flow is mid-step.
+    var racer = try fixture.connect();
+    defer racer.close(testing.io);
+    try writeFrame(racer, "{\"jsonrpc\":\"2.0\",\"method\":\"page.navigate\",\"params\":{\"url\":\"http://127.0.0.1:9/b\"},\"id\":2}");
+
+    // Handshake: the racer is enqueued behind the flow (explicit queue
+    // state, not timing), and it has not touched the page.
+    var waited: u32 = 0;
+    while (fixture.server.queue.pendingCount(page_id) != 1) : (waited += 1) {
+        if (waited > 5000) return error.RacerNeverQueued;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expectEqualStrings("Ae", fixture.fake.events());
+
+    fixture.fake.hold.store(false, .release);
+    const posted = try readFrame(flow);
+    defer testing.allocator.free(posted);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", posted);
+    const navigated = try readFrame(racer);
+    defer testing.allocator.free(navigated);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":2}", navigated);
+
+    // Every flow step ran before the racer's navigation: A e...e B.
+    const events = fixture.fake.events();
+    try testing.expectEqual(@as(u8, 'A'), events[0]);
+    try testing.expectEqual(@as(u8, 'B'), events[events.len - 1]);
+    for (events[1 .. events.len - 1]) |event| try testing.expectEqual(@as(u8, 'e'), event);
+    try testing.expectEqual(@as(usize, 2 + fixture.fake.evals.load(.acquire)), events.len);
+}
+
+fn waitUntil(flag: *std.atomic.Value(bool), max_ms: u32) !void {
+    var waited: u32 = 0;
+    while (!flag.load(.acquire)) : (waited += 1) {
+        if (waited > max_ms) return error.TimedOut;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
@@ -983,6 +1034,22 @@ const FakePort = struct {
     evals: std.atomic.Value(u32) = .init(0),
     in_flight: std.atomic.Value(u32) = .init(0),
     max_in_flight: std.atomic.Value(u32) = .init(0),
+    /// While set, the first eval blocks (and sets `held`) until cleared.
+    hold: std.atomic.Value(bool) = .init(false),
+    held: std.atomic.Value(bool) = .init(false),
+    /// Order of page calls: 'e' per eval, 'A'/'B' per navigate to a URL
+    /// containing "/a" / "/b" (else 'n').
+    log: [64]u8 = undefined,
+    log_len: std.atomic.Value(usize) = .init(0),
+
+    fn record(self: *FakePort, event: u8) void {
+        const i = self.log_len.fetchAdd(1, .acq_rel);
+        if (i < self.log.len) self.log[i] = event;
+    }
+
+    fn events(self: *FakePort) []const u8 {
+        return self.log[0..@min(self.log_len.load(.acquire), self.log.len)];
+    }
 
     fn port(self: *FakePort) page_port.PagePort {
         return .{ .ptr = self, .vtable = &vtable };
@@ -1002,11 +1069,19 @@ const FakePort = struct {
         const now_in_flight = self.in_flight.fetchAdd(1, .acq_rel) + 1;
         defer _ = self.in_flight.fetchSub(1, .acq_rel);
         _ = self.max_in_flight.fetchMax(now_in_flight, .acq_rel);
+        self.record('e');
+        while (self.hold.load(.acquire)) {
+            self.held.store(true, .release);
+            testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+        }
         if (self.eval_delay_ms > 0) testing.io.sleep(.fromMilliseconds(@intCast(self.eval_delay_ms)), .awake) catch {};
         _ = self.evals.fetchAdd(1, .acq_rel);
         return gpa.dupe(u8, self.eval_reply);
     }
-    fn navigate(_: *anyopaque, _: []const u8, _: u64) page_port.PortError!void {}
+    fn navigate(ptr: *anyopaque, target: []const u8, _: u64) page_port.PortError!void {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        self.record(if (std.mem.indexOf(u8, target, "/a") != null) 'A' else if (std.mem.indexOf(u8, target, "/b") != null) 'B' else 'n');
+    }
     fn reload(_: *anyopaque, _: u64) page_port.PortError!void {}
     fn url(_: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
         return gpa.dupe(u8, "file:///fixture/index.html");
