@@ -35,20 +35,70 @@
     <ul id="lb" role="listbox">
       <li role="option" data-value="one" aria-selected="true">One</li>
       <li role="option" data-value="two" aria-selected="false">Two</li>
+      <li role="option" data-value="three" aria-selected="false" aria-disabled="true">Three</li>
+    </ul>
+
+    <select id="sel-disabled" disabled>
+      <option value="x">X</option>
+      <option value="y">Y</option>
+    </select>
+
+    <!-- Combobox whose options take longer than one script attempt to render. -->
+    <button id="slowcombo" role="combobox" aria-controls="slow-list" aria-expanded="false">Pick slowly</button>
+    <ul id="slow-list" role="listbox" hidden></ul>
+
+    <!-- Decoy: an unrelated visible listbox with the same option names. -->
+    <ul id="decoy" role="listbox">
+      <li role="option" data-value="banana">Banana</li>
+      <li role="option" data-value="late">Late</li>
     </ul>
 
     <script>
       window.selInputs = 0;
       window.selChanges = 0;
+      window.disabledSelChanges = 0;
+      document.getElementById('sel-disabled').addEventListener('change', function () {
+        window.disabledSelChanges += 1;
+      });
+      window.decoyClicks = 0;
+      document.querySelectorAll('#decoy [role=option]').forEach(function (option) {
+        option.addEventListener('click', function () { window.decoyClicks += 1; });
+      });
+
+      window.slowOpenClicks = 0;
+      window.slowValue = null;
+      var slow = document.getElementById('slowcombo');
+      var slowList = document.getElementById('slow-list');
+      slow.addEventListener('click', function () {
+        window.slowOpenClicks += 1;
+        var open = slow.getAttribute('aria-expanded') === 'true';
+        slow.setAttribute('aria-expanded', open ? 'false' : 'true');
+        if (open) { slowList.hidden = true; slowList.innerHTML = ''; return; }
+        setTimeout(function () {
+          var li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.setAttribute('data-value', 'late');
+          li.textContent = 'Late';
+          li.addEventListener('click', function () {
+            window.slowValue = 'late';
+            slow.setAttribute('aria-expanded', 'false');
+            slowList.hidden = true;
+          });
+          slowList.appendChild(li);
+          slowList.hidden = false;
+        }, 1500);
+      });
       var sel = document.getElementById('sel');
       sel.addEventListener('input', function () { window.selInputs += 1; });
       sel.addEventListener('change', function () { window.selChanges += 1; });
 
       // Combobox whose options render asynchronously after opening.
       window.comboValue = null;
+      window.comboClicks = 0;
       var combo = document.getElementById('combo');
       var comboList = document.getElementById('combo-list');
       combo.addEventListener('click', function () {
+        window.comboClicks += 1;
         var open = combo.getAttribute('aria-expanded') === 'true';
         combo.setAttribute('aria-expanded', open ? 'false' : 'true');
         if (open) { comboList.hidden = true; comboList.innerHTML = ''; return; }

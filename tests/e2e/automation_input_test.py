@@ -8,13 +8,15 @@ model (the shape of X's post box)."""
 from __future__ import annotations
 
 import argparse
-import ast
+import json
+import socket
+import struct
 import subprocess
 import tempfile
 import threading
 from pathlib import Path
 
-from automation_api_lifecycle_test import _read_lines, call_rpc, expect_equal, terminate
+from automation_api_lifecycle_test import _read_lines, call_rpc, expect_equal, recv_exact, terminate
 from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file
 
 
@@ -143,15 +145,25 @@ def run_press(socket_path: Path, t: float) -> None:
     expect_equal("checkbox not toggled", js("document.getElementById('cb').checked"), False)
 
 
+def raw_rpc(socket_path: Path, method: str, params: dict, req_id: int, timeout: float) -> dict:
+    """One framed JSON-RPC request; returns the whole response object."""
+    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": req_id}).encode("utf-8")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect(str(socket_path))
+        sock.sendall(struct.pack(">I", len(payload)) + payload)
+        length = struct.unpack(">I", recv_exact(sock, 4))[0]
+        response = json.loads(recv_exact(sock, length).decode("utf-8"))
+    if response.get("id") != req_id:
+        raise AssertionError(f"bad JSON-RPC envelope for {method}: {response}")
+    return response
+
+
 def rpc_error(socket_path: Path, method: str, params: dict, req_id: int, timeout: float) -> dict:
-    """Send one request that must fail; return its JSON-RPC error object."""
-    try:
-        result = call_rpc(socket_path, method, params, req_id, timeout)
-    except AssertionError as exc:
-        text = str(exc)
-        start = text.index("{")
-        return ast.literal_eval(text[start:])["error"]
-    raise AssertionError(f"{method} unexpectedly succeeded: {result}")
+    response = raw_rpc(socket_path, method, params, req_id, timeout)
+    if "error" not in response:
+        raise AssertionError(f"{method} unexpectedly succeeded: {response}")
+    return response["error"]
 
 
 def run_select(socket_path: Path, t: float) -> None:
@@ -163,6 +175,11 @@ def run_select(socket_path: Path, t: float) -> None:
     def js(expression: str):
         return evaluate(socket_path, expression, next(ids), t)
 
+    def expect_no_option(label: str, params: dict) -> None:
+        error = rpc_error(socket_path, "dom.selectOption", dict(params, timeout_ms=300), next(ids), t)
+        expect_equal(f"{label} code", error["code"], -32001)
+        expect_equal(f"{label} reason", error["data"]["reason"], "no_option")
+
     # Native <select>: by value, label and index; input + change each time.
     expect_equal("select by value", rpc("dom.selectOption", {"selector": "css=#sel", "value": "b"}), {"value": "b"})
     expect_equal("select value after value", js("document.getElementById('sel').value"), "b")
@@ -172,22 +189,42 @@ def run_select(socket_path: Path, t: float) -> None:
     expect_equal("input/change after three selections", js("[window.selInputs, window.selChanges]"), [3, 3])
 
     # Missing or disabled options fail as element_not_found / no_option.
-    for params in ({"value": "zzz"}, {"value": "d"}, {"index": 9}):
-        error = rpc_error(socket_path, "dom.selectOption", dict({"selector": "css=#sel", "timeout_ms": 300}, **params), next(ids), t)
-        expect_equal(f"missing option {params} code", error["code"], -32001)
-        expect_equal(f"missing option {params} reason", error["data"]["reason"], "no_option")
+    expect_no_option("missing value", {"selector": "css=#sel", "value": "zzz"})
+    expect_no_option("disabled option", {"selector": "css=#sel", "value": "d"})
+    expect_no_option("index out of range", {"selector": "css=#sel", "index": 9})
     expect_equal("failed selections left the value alone", js("document.getElementById('sel').value"), "a")
+    expect_equal("failed selections fired nothing", js("[window.selInputs, window.selChanges]"), [3, 3])
 
-    # ARIA combobox: opens on click, options render later, the option is clicked.
+    # A disabled <select> fails actionability and never changes.
+    error = rpc_error(socket_path, "dom.selectOption", {"selector": "css=#sel-disabled", "value": "y", "timeout_ms": 300}, next(ids), t)
+    if error["code"] not in (-32005, -32009):
+        raise AssertionError(f"disabled select: expected element_disabled/action_timeout, got {error}")
+    expect_equal("disabled select unchanged", js("[document.getElementById('sel-disabled').value, window.disabledSelChanges]"), ["x", 0])
+
+    # ARIA combobox: opened with exactly one click, searched only in its own
+    # popup (a decoy listbox with the same names is never clicked).
     expect_equal("combobox by label", rpc("dom.selectOption", {"selector": "css=#combo", "label": "Banana"}), {"value": "banana"})
     expect_equal("combobox handler saw the choice", js("window.comboValue"), "banana")
     expect_equal("combobox closed", js("document.getElementById('combo').getAttribute('aria-expanded')"), "false")
+    expect_equal("combobox opened with one click", js("window.comboClicks"), 1)
     expect_equal("combobox by value", rpc("dom.selectOption", {"selector": "css=#combo", "value": "cherry"}), {"value": "cherry"})
-    expect_equal("combobox second choice", js("window.comboValue"), "cherry")
+    expect_equal("combobox by index", rpc("dom.selectOption", {"selector": "css=#combo", "index": 0}), {"value": "apple"})
+    expect_equal("combobox third choice", js("window.comboValue"), "apple")
+    expect_equal("decoy never clicked", js("window.decoyClicks"), 0)
 
-    # ARIA listbox: the matching option is clicked directly.
+    # Options slower than one script attempt: the engine retries and the
+    # already-open combobox is not clicked shut.
+    expect_equal("slow combobox", rpc("dom.selectOption", {"selector": "css=#slowcombo", "value": "late", "timeout_ms": 4000}), {"value": "late"})
+    expect_equal("slow combobox choice", js("window.slowValue"), "late")
+    expect_equal("slow combobox opened once", js("window.slowOpenClicks"), 1)
+    expect_equal("decoy still never clicked", js("window.decoyClicks"), 0)
+
+    # ARIA listbox: by value and by index; aria-disabled options are refused.
     expect_equal("listbox by value", rpc("dom.selectOption", {"selector": "css=#lb", "value": "two"}), {"value": "two"})
-    expect_equal("listbox selection", js("Array.from(document.querySelectorAll('#lb [role=option]')).map(o => o.getAttribute('aria-selected'))"), ["false", "true"])
+    expect_equal("listbox selection", js("Array.from(document.querySelectorAll('#lb [role=option]')).map(o => o.getAttribute('aria-selected'))"), ["false", "true", "false"])
+    expect_equal("listbox by index", rpc("dom.selectOption", {"selector": "css=#lb", "index": 0}), {"value": "one"})
+    expect_no_option("aria-disabled option", {"selector": "css=#lb", "value": "three"})
+    expect_equal("aria-disabled option not selected", js("document.querySelector('#lb [data-value=three]').getAttribute('aria-selected')"), "false")
 
 
 def main() -> int:

@@ -189,8 +189,9 @@
     return Array.from(container.querySelectorAll('[role="option"]'));
   }
 
-  // The listbox a combobox controls: aria-controls / aria-owns, else the
-  // first visible listbox in the document.
+  // The popup a combobox controls: aria-controls / aria-owns, else a listbox
+  // inside the combobox. Never a document-wide search: an unrelated listbox
+  // with the same option names must not be clicked.
   function popupListbox(combobox) {
     const doc = combobox.ownerDocument;
     for (const attr of ['aria-controls', 'aria-owns']) {
@@ -200,7 +201,7 @@
         if (target) return target;
       }
     }
-    return Array.from(doc.querySelectorAll('[role="listbox"]')).find(isElementVisibleEnough) || null;
+    return combobox.querySelector('[role="listbox"]');
   }
 
   function findAriaOption(container, command) {
