@@ -206,9 +206,9 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("selfcheck did not navigate", rpc.call("page.url")["url"], f"{base}?mode=compose&all=1")
     passed.append("x.selfcheck")
 
-    # A humanized native post of the full 280 characters: with no timeout_ms
-    # the flow budget is sized from the typing schedule, so the post is not
-    # cut by the 120 s default (which ~190+ characters used to exceed).
+    # A humanized native post of the full 280 characters, trusted end to end
+    # (about 60-90 s; it also fits the 120 s default, so the route's budget
+    # sizing is proven by the route-level test in automation_x_test.zig).
     long_text = "Zig " * 70
     slow = RpcClient(socket_path, 650)
     started = time.monotonic()

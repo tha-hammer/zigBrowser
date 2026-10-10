@@ -435,3 +435,44 @@ test "x.post timeout_ms: invalid values are -32602; a slow flow fits a larger bu
     try std.testing.expectEqualStrings("{\"ok\":true}", bigger.result);
     try std.testing.expect(roomy.clock.now_ms > 3_000 and roomy.clock.now_ms <= 20_000);
 }
+
+// Answers every flow step: an action, a one-element query and a native
+// locate target (centre, document token, viewport).
+const native_reply = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true,\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}],\"x\":100,\"y\":100,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":800,\"height\":600}}}" };
+
+test "x.post humanized without timeout_ms: the route sizes its budget from the text (3 s default, 40 characters)" {
+    // 40 non-space characters take 3.2-8 s of humanized key delays: more
+    // than the 3 s default, well inside the sized budget.
+    const text = "a" ** 40;
+    const humanized = "{\"text\":\"" ++ text ++ "\",\"options\":{\"input\":\"native\",\"humanize\":true}";
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+
+    var sized: Harness = undefined;
+    sized.init(&.{native_reply});
+    defer sized.deinit();
+    sized.fake.clock = &sized.clock;
+    sized.budget_ms = 3_000;
+    sized.engine.random = prng.random();
+    var ok = try sized.call("x.post", humanized ++ "}");
+    defer ok.deinit(gpa);
+    if (ok != .result) {
+        std.debug.print("sized budget failed: {s}\n", .{ok.failure.data_json orelse ok.failure.message});
+        return error.TestUnexpectedResult;
+    }
+    var typed_buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(text, sized.fake.nativeTyped(&typed_buf));
+    try std.testing.expect(sized.clock.now_ms > 3_000);
+
+    // The same request held to the 3 s default (what a fixed route budget
+    // did) cannot fit the schedule: it fails before typing anything.
+    var fixed: Harness = undefined;
+    fixed.init(&.{native_reply});
+    defer fixed.deinit();
+    fixed.fake.clock = &fixed.clock;
+    fixed.budget_ms = 3_000;
+    fixed.engine.random = prng.random();
+    var cut = try fixed.call("x.post", humanized ++ ",\"timeout_ms\":3000}");
+    defer cut.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), cut.failure.code);
+    try std.testing.expectEqualStrings("", fixed.fake.nativeTyped(&typed_buf));
+}

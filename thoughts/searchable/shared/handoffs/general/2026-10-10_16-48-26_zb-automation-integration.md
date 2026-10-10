@@ -212,9 +212,9 @@ Known, not fixed in this branch, and deliberately left for later:
   raised it as a SHOULD and the orchestrator deferred it.
 - **`session.id_hash` is not implemented.** The compound social span has
   no session id hash because there is no session concept yet.
-- **Social pacing state is in memory only.** The per-platform daily caps
-  and reservations in the social pacing state reset when the browser
-  restarts; nothing is written to disk.
+- **Pacing state is in memory only.** The social daily cap (one cap
+  shared by LinkedIn and Instagram), its reservations, and the separate X
+  daily cap reset when the browser restarts; nothing is written to disk.
 - **SDK `x` wrappers lack `options` and `timeout_ms`.** The Python and
   Node `x.post` / `x.schedule_post` wrappers send only the default call
   shape; native input, humanize and `timeout_ms` need a raw socket call
