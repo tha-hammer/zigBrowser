@@ -78,7 +78,7 @@ Python SDK.
 | `options.humanize` (native only) | Curved pointer path from the last pointer position, 80-200 ms key gaps, 300-600 ms word pauses, whole schedule pre-checked (`humanize_budget`) | U (seeded RNG, budget, corners, document change), E (cc_1 humanized click/type e2e) |
 | `cookies.getAll`, `cookies.set`, `cookies.delete`, `cookies.import` (Netscape/JSON) | Cookie store; values never logged or traced | U, S, E (`automation_cookies` e2e), SDK |
 | `social.login_check`, `social.rate_status`, `social.set_pacing`, `social.pause` | Login heuristic, shared social pacing (default 100/day, 3-8 s pause), queue pause | U, S, SDK, L |
-| `x.post`, `x.schedule_post`, `x.login_check`, `x.selfcheck` | X composer flows (stale-draft clear, Post button picked by trial probes, toast confirmation, schedule dialog), 50/day cap, 120 s budget, `options.input/humanize` | U (`x_test.zig`, `automation_x_test.zig`), S (deterministic one-queue-turn proof), E (`x_flows_test.py` on `tests/fixtures/x/composer.html`), SDK |
+| `x.post`, `x.schedule_post`, `x.login_check`, `x.selfcheck` | X composer flows (stale-draft clear, Post button picked by trial probes, toast confirmation, schedule dialog), 50/day cap, 120 s budget (`timeout_ms` up to 600 s), `options.input/humanize` | U (`x_test.zig`, `automation_x_test.zig`), S (deterministic one-queue-turn proof), E (`x_flows_test.py` on `tests/fixtures/x/composer.html`, including a humanized 280-character post; cc_1's `x_native_test.py` proves native, humanized input is trusted), SDK for the default X call shapes only: the Python/Node `x` wrappers cannot pass `options` or `timeout_ms` yet, so those are covered over the raw socket |
 | `linkedin.visit/connect/follow/message/like/comment/search/extract/selfcheck` | LinkedIn flows; session-cookie gate before navigation; https://www.linkedin.com URLs only; typed text; note cut to 300 | U (`linkedin_test.zig`, `automation_social_test.zig`), S (socket chain), L (`social_flows_test.py` on `tests/fixtures/linkedin/`), SDK |
 | `instagram.follow/like/comment/dm/story_view/selfcheck` | Instagram flows; same rules; stories viewed frame by frame | U (`instagram_test.zig`, `automation_social_test.zig`), S, L (`social_flows_test.py` on `tests/fixtures/instagram/`), SDK |
 | `telemetry.query` | The last 128 traces (64 spans each; the root and a social flow's compound span are always kept) | U, S, L |
@@ -174,24 +174,51 @@ Never start with a personal or production account.
 
 The running review log is
 `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
-(RoseCat). At the time of writing:
+(RoseCat). Updated after RoseCat's review (mail 4731):
 
-- **N16 (linkedin.*/instagram.*):** step 2 (`e58635c`: fixtures, real-binary
-  SDK e2e, and fixes for the reservation, deadline, story completion,
-  telemetry retention and lock findings) and step 3 (`3b4dd8f`: wire
-  cases, Node SDK namespaces, docs) await review. `session.id_hash` on the
-  compound span is not implemented (there is no session concept yet).
-- **N14 (cc_1):** real-binary e2e of `x.post` with native, humanized input;
-  the x.* `options` plumbing it needed is in `8243dcf`.
+- **N16 (linkedin.*/instagram.*): APPROVED.** Step 2 (`e58635c`: fixtures,
+  real-binary SDK e2e, and fixes for the reservation, deadline, story
+  completion, telemetry retention and lock findings) and step 3
+  (`3b4dd8f`: wire cases, Node SDK namespaces, docs). `session.id_hash` is
+  listed under "Deferred follow-ups" below.
+- **x.* `options` (`8243dcf`): APPROVED.** RoseCat's one SHOULD on this
+  handoff's SDK evidence wording is fixed in the table above.
+- **N14 (cc_1, `6507b96`):** real-binary e2e of `x.post` and
+  `x.schedule_post` with native, humanized input; landed.
+- **`timeout_ms` for long flows (`9b32f84`):** sent to RoseCat for
+  review; details in the "Long humanized posts" bullet below.
 - **N17 `dom.setInputFiles` and N18 `dom.hover` / `dom.scroll`:** native
-  sides by cc_1 are landed or ready; the PagePort/router/engine seams are
-  agreed (scroll returns only once scrolling has settled) but not written.
+  sides by cc_1 are landed (`57a56fd`, `30472b3`, `9ab165f`); the
+  PagePort/router/engine seams are agreed (scroll returns only once
+  scrolling has settled) but not written.
 - RoseCat's live-readiness audit (mail 4686) lists every selector
   assumption (English labels, legacy LinkedIn classes, first-match
   semantics, "any toast means success" on X). Read it before step 4 above.
-- Known limitation: with `humanize`, an X post of more than about 190
-  characters may exceed the 120 s flow budget and fail with
-  `humanize_budget` before anything is typed.
+- Long humanized posts (follow-up to this handoff): `x.post`,
+  `x.schedule_post` and the linkedin/instagram flows that type text now
+  take `timeout_ms` (default 120000, at most 600000). With `humanize` and
+  no `timeout_ms`, the X budget is sized from the slowest possible typing
+  schedule plus a margin (at most 600 s). A real 280-character humanized
+  post on the fixture took about 63 s, so the earlier "about 190
+  characters" limit here was too pessimistic: it counted a word pause for
+  every character, not only for spaces.
+
+## Deferred follow-ups
+
+Known, not fixed in this branch, and deliberately left for later:
+
+- **Closing one window ends related windows' web process.** Windows that
+  share a WebKit web process lose it when one of them is closed. This predates the automation work; RoseCat
+  raised it as a SHOULD and the orchestrator deferred it.
+- **`session.id_hash` is not implemented.** The compound social span has
+  no session id hash because there is no session concept yet.
+- **Social pacing state is in memory only.** The per-platform daily caps
+  and reservations in the social pacing state reset when the browser
+  restarts; nothing is written to disk.
+- **SDK `x` wrappers lack `options` and `timeout_ms`.** The Python and
+  Node `x.post` / `x.schedule_post` wrappers send only the default call
+  shape; native input, humanize and `timeout_ms` need a raw socket call
+  until the wrappers grow those parameters (RoseCat SHOULD, mail 4731).
 
 ## Where things are
 
