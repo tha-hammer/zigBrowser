@@ -46,7 +46,10 @@ Use one directory per account you automate.
     it next to the socket as `<socket>.token` (mode 0600, removed when the
     browser stops). The SDKs and the CLI read it automatically.
   - To choose the token yourself, pass `--automation-token-file <file>`. The
-    file must not be empty. No `.token` file is written in that case.
+    file must not be empty. No `.token` file is written in that case, so
+    clients must pass the token explicitly: `ZigBrowser(socket_path, token=...)`
+    in Python, `new ZigBrowser({ socketPath, token })` in Node. The CLI has
+    no token option yet; it only works with the generated sidecar token.
   - Trust boundary: other users cannot connect or read the token. Programs
     running as **your** user can, so treat any local process under your
     account as trusted, or keep the token in a file only your client reads.
@@ -116,11 +119,15 @@ is non-strict by default.
 - If the element is missing or not yet actionable (not visible, moving,
   covered, disabled, read-only), the command is retried every 16 ms until
   the deadline. You rarely need an explicit wait before a click.
+  Exception: `dom.query` is non-strict and answers immediately with whatever
+  matches, possibly `{elements: []}`; use `dom.waitFor` to wait for an
+  element.
 - When the deadline passes: never found gives `element_not_found`; found but
   never actionable gives `action_timeout` with `data.last_error`.
 - Commands for the page run one at a time, in arrival order. Time spent
   waiting behind earlier commands counts against the deadline.
-- Right after start-up, commands wait for the first page load to finish.
+- Right after start-up, page commands wait for the first page load to
+  finish. `page.navigate` and `cookies.*` do not wait for it.
 
 ## Methods
 
@@ -200,14 +207,15 @@ or cookie values; those are hashed or reduced to lengths.
 `contenteditable` editors such as the X or LinkedIn composers:
 
 - The element is focused and the caret moves to the end.
-- For each character the page receives `keydown`, a cancelable `beforeinput`
-  (`insertText`), the inserted text, then `keyup`.
+- `dom.type`: for each character the page receives `keydown`, a cancelable
+  `beforeinput` (`insertText`), the inserted text, then `keyup`.
+- `dom.fill`: the existing content is selected and replaced in one edit: a
+  single cancelable `beforeinput` for the whole value and no key events. An
+  empty value clears the editor.
 - Text is inserted with the browser's own editing command, so frameworks like
   Draft.js and Lexical see a normal edit. If the page cancels `beforeinput`,
   zigBrowser inserts nothing itself and leaves the edit to the page's
   handler. This is what those editors expect.
-- `dom.fill` selects the existing content first and replaces it; an empty
-  value clears the editor.
 
 Check the result with `dom.getText` on the editor, or on the counter or
 preview the site shows.
