@@ -224,15 +224,22 @@ test "a waiter queued before zb_app_run is released when GTK init fails" {
     const saved = std.c.getenv("DISPLAY");
     var saved_buf: [256]u8 = undefined;
     const saved_copy: [:0]const u8 = if (saved) |d| try std.fmt.bufPrintZ(&saved_buf, "{s}", .{std.mem.span(d)}) else "";
-    _ = setenv("DISPLAY", "", 1);
-    const start = monotonicMs();
     // Capture the shim's stderr so the expected message neither leaks into the
-    // gate log (where it reads like a failure) nor goes unchecked.
+    // gate log (where it reads like a failure) nor goes unchecked. Capture
+    // starts before DISPLAY is touched, and both are restored on every path.
     var captured = try StderrCapture.begin();
-    const rc = c.zb_app_run("about:blank", 0, 0);
     var message_buf: [512]u8 = undefined;
-    const message = captured.end(&message_buf);
-    _ = setenv("DISPLAY", saved_copy.ptr, 1);
+    var message: []const u8 = "";
+    var capture_open = true;
+    defer if (capture_open) {
+        _ = captured.end(&message_buf);
+    };
+    try std.testing.expectEqual(@as(c_int, 0), setenv("DISPLAY", "", 1));
+    defer std.debug.assert(setenv("DISPLAY", saved_copy.ptr, 1) == 0);
+    const start = monotonicMs();
+    const rc = c.zb_app_run("about:blank", 0, 0);
+    message = captured.end(&message_buf);
+    capture_open = false;
     try std.testing.expect(std.mem.indexOf(u8, message, "DISPLAY is required") != null);
 
     t.join();
@@ -257,9 +264,12 @@ const StderrCapture = struct {
     fn begin() !StderrCapture {
         var fds: [2]c_int = undefined;
         if (std.c.pipe(&fds) != 0) return error.PipeFailed;
+        errdefer _ = std.c.close(fds[0]);
+        defer _ = std.c.close(fds[1]);
         const saved = dup(2);
-        if (saved < 0 or dup2(fds[1], 2) < 0) return error.DupFailed;
-        _ = std.c.close(fds[1]);
+        if (saved < 0) return error.DupFailed;
+        errdefer _ = std.c.close(saved);
+        if (dup2(fds[1], 2) < 0) return error.DupFailed;
         return .{ .saved = saved, .read_fd = fds[0] };
     }
 
@@ -745,19 +755,26 @@ const LiveDriver = struct {
         c.zb_automation_free(range_err);
         self.check(find(self.cookies(null), "zblate") == null, "refused cookie was not stored");
 
-        // Timeout path: cookie reads abandoned after 1 ms are cancelled on the
-        // GTK thread and released once WebKit calls back.
-        var i: u32 = 0;
-        while (i < 30) : (i += 1) {
-            var burst_out: [*c]u8 = null;
-            var burst_err: [*c]u8 = null;
-            _ = c.zb_cookies_get_all(null, null, 1, &burst_out, &burst_err);
-            c.zb_automation_free(burst_out);
-            c.zb_automation_free(burst_err);
-        }
+        // Timeout while in flight (deterministic): the hook holds each started
+        // cookie op for 300 ms, so a 50 ms deadline expires with the job
+        // RUNNING; the waiter abandons it, the GTK thread cancels it, and the
+        // job is released when the hold ends - without reaching WebKit.
+        c.zb_automation_debug_cookie_delay(300);
+        var held_out: [*c]u8 = null;
+        var held_err: [*c]u8 = null;
+        const held_start = monotonicMs();
+        const held_rc = c.zb_cookies_get_all(null, null, 50, &held_out, &held_err);
+        const held_ms = monotonicMs() - held_start;
+        c.zb_automation_free(held_out);
+        c.zb_automation_free(held_err);
+        c.zb_automation_debug_cookie_delay(0);
+        self.check(held_rc == c.ZB_AUTO_ERR_TIMEOUT, "in-flight cookie op returns TIMEOUT at its deadline");
+        self.check(held_ms < 250, "TIMEOUT came at the deadline, not after the hold");
+        self.check(held_out == null, "a timed-out cookie op returns no result");
         var waited: u32 = 0;
         while (c.zb_automation_debug_live_jobs() != 0 and waited < 3000) : (waited += 10) sleepMs(10);
-        self.check(c.zb_automation_debug_live_jobs() == 0, "abandoned cookie jobs are all released");
+        self.check(c.zb_automation_debug_live_jobs() == 0, "the abandoned cookie job is released");
+        self.check(self.cookies(null) != null, "cookie store still answers after an abandoned op");
     }
 };
 

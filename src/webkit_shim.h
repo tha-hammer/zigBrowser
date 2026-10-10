@@ -189,6 +189,9 @@ int zb_native_text(ZbWindow *win, const char *text, unsigned int timeout_ms,
 
 /* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
 int zb_automation_debug_live_jobs(void);
+/* Test hook: hold every started cookie operation for `ms` before it reaches
+ * WebKit, so a test can make a job time out while in flight (0 = off). */
+void zb_automation_debug_cookie_delay(unsigned int ms);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);

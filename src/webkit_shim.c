@@ -2209,6 +2209,29 @@ static void on_auto_cookies_listed_for_delete(GObject *object, GAsyncResult *res
   auto_async_release(job);
 }
 
+static gint zb_auto_debug_cookie_delay_ms;
+
+void zb_automation_debug_cookie_delay(unsigned int ms) {
+  g_atomic_int_set(&zb_auto_debug_cookie_delay_ms, (gint)ms);
+}
+
+static void auto_issue_cookie_op(ZbAutoJob *job, WebKitCookieManager *manager);
+
+/* Test hook path: the job is RUNNING and tracked while held; if its waiter
+ * gave up meanwhile (cancellable cancelled) it finishes without touching
+ * WebKit. */
+static gboolean auto_cookie_delay_fired(gpointer data) {
+  ZbAutoJob *job = (ZbAutoJob *)data;
+  WebKitCookieManager *manager = auto_cookie_manager(job);
+  if (g_cancellable_is_cancelled(job->cancellable) || manager == NULL) {
+    auto_cookie_finish(job, ZB_AUTO_ERR_CANCELLED, NULL, g_strdup("cancelled"));
+  } else {
+    auto_issue_cookie_op(job, manager);
+  }
+  auto_async_release(job);
+  return G_SOURCE_REMOVE;
+}
+
 static void auto_start_cookies(ZbAutoJob *job) {
   WebKitCookieManager *manager = auto_cookie_manager(job);
   if (manager == NULL) {
@@ -2218,6 +2241,15 @@ static void auto_start_cookies(ZbAutoJob *job) {
   /* Tracked like eval/load jobs: closing the window cancels and completes it. */
   auto_track(job, auto_resolve_window(job->requested));
 
+  guint delay = (guint)g_atomic_int_get(&zb_auto_debug_cookie_delay_ms);
+  if (delay > 0) {
+    g_timeout_add(delay, auto_cookie_delay_fired, auto_async_ref(job));
+    return;
+  }
+  auto_issue_cookie_op(job, manager);
+}
+
+static void auto_issue_cookie_op(ZbAutoJob *job, WebKitCookieManager *manager) {
   switch (job->op) {
     case ZB_OP_COOKIES_GET:
       if (job->url != NULL) {
