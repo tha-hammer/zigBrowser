@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 
 from automation_api_lifecycle_test import _read_lines, call_rpc, expect_equal, recv_exact, terminate
-from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file
+from slice2_common import SKIP_EXIT, automation_auth, detect_runner, eprint, require_file
 
 
 def evaluate(socket_path: Path, expression: str, req_id: int, timeout: float):
@@ -148,7 +148,11 @@ def run_press(socket_path: Path, t: float) -> None:
 
 def raw_rpc(socket_path: Path, method: str, params: dict, req_id: int, timeout: float) -> dict:
     """One framed JSON-RPC request; returns the whole response object."""
-    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": req_id}).encode("utf-8")
+    request = {"jsonrpc": "2.0", "method": method, "params": params, "id": req_id}
+    token = automation_auth(socket_path)
+    if token is not None:
+        request["auth"] = token
+    payload = json.dumps(request).encode("utf-8")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(str(socket_path))

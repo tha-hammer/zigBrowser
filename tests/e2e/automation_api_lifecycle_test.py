@@ -19,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file
+from slice2_common import SKIP_EXIT, automation_auth, detect_runner, eprint, require_file
 
 
 def _read_lines(stream, sink: list[str]) -> None:
@@ -38,6 +38,17 @@ def recv_exact(sock: socket.socket, n: int) -> bytes:
             raise ConnectionError("socket closed before full frame")
         chunks += chunk
     return chunks
+
+
+def raw_call(socket_path: Path, request: dict, timeout_sec: float) -> dict:
+    """Send one framed request exactly as given; return the whole response."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout_sec)
+        sock.connect(str(socket_path))
+        payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
+        sock.sendall(struct.pack(">I", len(payload)) + payload)
+        length = struct.unpack(">I", recv_exact(sock, 4))[0]
+        return json.loads(recv_exact(sock, length).decode("utf-8"))
 
 
 def call_rpc(socket_path: Path, method: str, params: dict, req_id: int, timeout_sec: float) -> dict:
@@ -62,6 +73,9 @@ def call_rpc(socket_path: Path, method: str, params: dict, req_id: int, timeout_
             "params": params,
             "id": req_id,
         }
+        token = automation_auth(socket_path)
+        if token is not None:
+            request["auth"] = token
         payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
         sock.sendall(struct.pack(">I", len(payload)) + payload)
 
@@ -186,6 +200,23 @@ def main() -> int:
                 call_rpc(socket_path, "dom.getText", {"selector": "css=#status"}, 6, t),
                 {"text": "clicked"},
             )
+
+            # Default auth: a per-session token in a 0600 sidecar; requests
+            # without it or with a wrong one never dispatch.
+            sidecar = Path(str(socket_path) + ".token")
+            if not sidecar.exists():
+                raise AssertionError("no per-session token sidecar next to the socket")
+            expect_equal("sidecar mode", oct(sidecar.stat().st_mode & 0o777), oct(0o600))
+            token = automation_auth(socket_path) or ""
+            if len(token) != 64 or any(ch not in "0123456789abcdef" for ch in token):
+                raise AssertionError("generated token is not 32 random bytes in hex")
+            probe = {"jsonrpc": "2.0", "method": "page.evaluate", "params": {"expression": "window.__authProbe = 1"}, "id": 7}
+            for label, request in (("missing token", probe), ("wrong token", dict(probe, auth="0" * 64))):
+                response = raw_call(socket_path, request, t)
+                if response.get("error", {}).get("code") != -32000:
+                    raise AssertionError(f"{label} was not rejected: {response}")
+            expect_equal("rejected requests never ran", call_rpc(socket_path, "page.evaluate",
+                         {"expression": "typeof window.__authProbe"}, 8, t), {"result": "undefined"})
         except Exception as exc:
             print("FAIL\tautomation-api-roundtrip")
             eprint(f"error={exc}")
@@ -213,12 +244,36 @@ def main() -> int:
             eprint(f"expected the default profile under the temp root: {isolated}")
             return 1
 
+        sidecar = Path(str(socket_path) + ".token")
+        if sidecar.exists():
+            print("FAIL\tautomation-api-token-cleanup")
+            eprint(f"token sidecar still exists after shutdown: {sidecar}")
+            return 1
+
         deadline = time.monotonic() + 3.0
         while socket_path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         if socket_path.exists():
             print("FAIL\tautomation-api-socket-cleanup")
             eprint(f"socket still exists: {socket_path}")
+            return 1
+
+    # An explicit token file that is empty must stop startup, never fall back
+    # to an unauthenticated server.
+    with tempfile.TemporaryDirectory(prefix="zb-automation-e2e-") as tmp:
+        empty = Path(tmp) / "empty.token"
+        empty.write_text("  \n", encoding="utf-8")
+        socket_path = Path(tmp) / "automation.sock"
+        env2 = dict(env)
+        env2["ZIGBROWSER_SOCKET"] = str(socket_path)
+        proc = subprocess.run(
+            prefix + [str(browser), index.resolve().as_uri(), "--automation-api",
+                      "--automation-token-file", str(empty)],
+            capture_output=True, text=True, env=env2, timeout=args.timeout_sec,
+        )
+        if proc.returncode == 0 or socket_path.exists():
+            print("FAIL\tautomation-api-empty-token-file")
+            eprint(f"return={proc.returncode} socket_exists={socket_path.exists()}")
             return 1
 
     print("PASS\tautomation-api-lifecycle-roundtrip")

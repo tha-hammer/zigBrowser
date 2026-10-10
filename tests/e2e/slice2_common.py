@@ -85,6 +85,15 @@ def isolate_profile_env(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def automation_auth(socket_path: Path) -> str | None:
+    """The per-session token zigBrowser writes next to its socket
+    (<socket>.token, mode 0600) when no --automation-token-file is given."""
+    try:
+        return (Path(str(socket_path) + ".token")).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def detect_runner(prefer_xvfb: bool) -> tuple[list[str], dict[str, str], str] | None:
     env = isolate_profile_env(dict(os.environ))
     xvfb = shutil.which("xvfb-run")

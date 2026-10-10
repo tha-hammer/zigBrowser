@@ -41,7 +41,10 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     if (spec.automation_api) {
         // automation.js must be registered before zb_app_run builds the window.
         automation_gtk_port.installScript();
-        const config = buildAutomationConfig(arena, io, spec) catch return error.WriteFailed;
+        const config = buildAutomationConfig(arena, io, spec) catch |err| {
+            if (err == error.EmptyTokenFile) std.debug.print("--automation-token-file is empty\n", .{});
+            return error.WriteFailed;
+        };
         var server = automation_server.AutomationApiServer.init(std.heap.smp_allocator, io, config) catch return error.WriteFailed;
         defer server.deinit();
         server.start() catch return error.WriteFailed;
@@ -103,10 +106,13 @@ fn buildAutomationConfig(
     io: std.Io,
     spec: OpenSpec,
 ) !automation_server.Config {
+    const socket_path = try automationSocketPath(allocator, io);
+    const credentials = try automationCredentials(allocator, io, spec.automation_token_file, socket_path);
     return .{
         .enabled = true,
-        .socket_path = try automationSocketPath(allocator, io),
-        .token = try automationToken(allocator, io, spec.automation_token_file),
+        .socket_path = socket_path,
+        .token = credentials.token,
+        .token_file_path = credentials.token_file_path,
         .page_port = automation_gtk_port.pagePort(),
         .cookie_port = automation_gtk_cookie_port.cookiePort(),
     };
@@ -149,14 +155,55 @@ fn getenvOwned(allocator: std.mem.Allocator, comptime name: [*:0]const u8) ?[]co
     return allocator.dupe(u8, std.mem.span(raw)) catch null;
 }
 
-fn automationToken(
+const Credentials = struct {
+    token: []const u8,
+    /// Where the server publishes a generated token ("" for a user-supplied one).
+    token_file_path: []const u8,
+};
+
+/// The automation API always requires a token. With --automation-token-file
+/// the user supplies it (an empty or blank file is an error, never "no auth").
+/// Otherwise a per-session token is generated from OS entropy and the server
+/// writes it to <socket>.token (mode 0600) for local clients to read: any
+/// process able to read that file, i.e. the same user, is trusted.
+fn automationCredentials(
     allocator: std.mem.Allocator,
     io: std.Io,
     token_file: ?[]const u8,
-) ![]const u8 {
-    const path = token_file orelse return "";
-    const raw = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4096));
-    return std.mem.trim(u8, raw, &std.ascii.whitespace);
+    socket_path: []const u8,
+) !Credentials {
+    if (token_file) |path| {
+        const raw = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4096));
+        const token = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (token.len == 0) return error.EmptyTokenFile;
+        return .{ .token = token, .token_file_path = "" };
+    }
+    return .{
+        .token = try generateToken(allocator, io),
+        .token_file_path = try std.fmt.allocPrint(allocator, "{s}.token", .{socket_path}),
+    };
+}
+
+/// 32 bytes of OS entropy as 64 lower-case hex characters.
+fn generateToken(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    var bytes: [32]u8 = undefined;
+    try io.randomSecure(&bytes);
+    const hex = std.fmt.bytesToHex(bytes, .lower);
+    return allocator.dupe(u8, &hex);
+}
+
+test "generated automation tokens are 64 hex chars from OS entropy" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = try generateToken(arena.allocator(), std.testing.io);
+    const b = try generateToken(arena.allocator(), std.testing.io);
+    try std.testing.expectEqual(@as(usize, 64), a.len);
+    for (a) |ch| try std.testing.expect(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'));
+    try std.testing.expect(!std.mem.eql(u8, a, b));
+
+    const creds = try automationCredentials(arena.allocator(), std.testing.io, null, "/run/zb.sock");
+    try std.testing.expectEqual(@as(usize, 64), creds.token.len);
+    try std.testing.expectEqualStrings("/run/zb.sock.token", creds.token_file_path);
 }
 
 fn platform() automation_transport.Platform {
