@@ -9,7 +9,8 @@ const engine = automation.engine;
 
 const gpa = std.testing.allocator;
 
-const ok_reply = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" };
+/// Valid both as an action result and as a dom.query answer (one element).
+const ok_reply = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true,\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}]}}" };
 
 const Harness = struct {
     fake: fakes.FakePagePort,
@@ -81,7 +82,7 @@ test "x.post runs each flow step through the engine and records one x root span"
     try std.testing.expectEqualStrings("http://127.0.0.1:9/compose", h.fake.navigate_calls.items[0]);
     var buf: [32][]const u8 = undefined;
     const ops = try h.ops(&buf);
-    const expected_ops = [_][]const u8{ "waitFor", "click", "fill", "type", "query", "query", "click", "waitFor" };
+    const expected_ops = [_][]const u8{ "waitFor", "click", "fill", "type", "query", "click", "click", "waitFor" };
     try std.testing.expectEqual(expected_ops.len, ops.len);
     for (expected_ops, ops) |e, a| try std.testing.expectEqualStrings(e, a);
 
@@ -208,4 +209,39 @@ test "x.login_check reports the composer on the current page" {
     defer outcome.deinit(gpa);
     try std.testing.expectEqualStrings("{\"loggedIn\":true,\"platform\":\"x\"}", outcome.result);
     try std.testing.expectEqual(@as(usize, 0), h.fake.navigate_calls.items.len);
+}
+
+test "a successful but malformed query answer is an internal error, not a crash" {
+    var h: Harness = undefined;
+    // composer waitFor fails -> login-link probe answers without "elements".
+    h.init(&.{
+        .{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" },
+        .{ .json = "{\"ok\":true,\"value\":{}}" },
+    });
+    defer h.deinit();
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    // The recorded waitFor failure is reported.
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+
+    var h2: Harness = undefined;
+    h2.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"elements\":\"nope\"}}" }});
+    defer h2.deinit();
+    var login = try h2.call("x.login_check", "{}");
+    defer login.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32603), login.failure.code);
+}
+
+test "an x.* flow has one overall deadline across its steps" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = x_routes.flow_budget_ms / 3;
+
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "x_flow_deadline") != null);
+    try std.testing.expect(h.fake.eval_calls.items.len <= 4);
 }

@@ -13,6 +13,11 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
     return x.verbFromMethod(method);
 }
 
+/// One deadline for a whole x.* flow; each step is also bounded by its own
+/// timeout. Checked before every step, so a flow holds the page queue for at
+/// most this plus one step.
+pub const flow_budget_ms: u64 = 120_000;
+
 /// X actions (posts and scheduled posts) allowed per UTC day.
 pub const default_daily_cap: u32 = 50;
 
@@ -49,10 +54,17 @@ pub const XState = struct {
 const Runner = struct {
     gpa: std.mem.Allocator,
     ext: *engine_mod.External,
+    deadline_ms: u64,
     last_result: ?engine_mod.Outcome = null,
     failure: ?engine_mod.Outcome = null,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
+        if (self.ext.nowMs() >= self.deadline_ms) {
+            const timed_out = try engine_mod.automationFailure(self.gpa, .action_timeout, "x_flow_deadline", self.ext.ids());
+            if (self.failure) |*old| old.deinit(self.gpa);
+            self.failure = timed_out;
+            return null;
+        }
         const outcome = try self.ext.runCommand(self.gpa, method, params_json);
         switch (outcome) {
             .result => |json| {
@@ -78,9 +90,11 @@ const Runner = struct {
         if (self.failure) |*f| f.deinit(self.gpa);
     }
 
-    /// Hands the recorded failure to the caller.
+    /// Hands the recorded failure to the caller. A flow can also stop on a
+    /// successful step whose answer it could not use (e.g. a query result
+    /// without "elements"); that is an internal error.
     fn takeFailure(self: *Runner) engine_mod.Outcome {
-        const f = self.failure.?;
+        const f = self.failure orelse return .{ .failure = .{ .code = engine_mod.internal_error_code, .message = "Unexpected page answer" } };
         self.failure = null;
         return f;
     }
@@ -113,13 +127,16 @@ pub fn handle(
         if (!inList(allowed, entry.key_ptr.*)) return invalidParams();
     }
 
-    var runner = Runner{ .gpa = gpa, .ext = ext };
+    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| flow_budget_ms };
     defer runner.deinit();
 
     const flow_result: x.Error!?[]u8 = switch (verb) {
         .login_check => x.loginCheck(gpa, &runner),
         .post, .schedule_post => blk: {
             const text = stringField(params, "text") orelse return invalidParams();
+            // `compose_url` is a deliberate public override of the page the
+            // flow opens (fixtures, x.com mirrors). It grants nothing new: the
+            // same client may already page.navigate anywhere. Default: x.com.
             const compose_url = if (params.get("compose_url")) |_| (stringField(params, "compose_url") orelse return invalidParams()) else x.compose_url;
             if (state.remaining() == 0) return engine_mod.automationFailure(gpa, .platform_rate_limited, "x_daily_cap", ids);
             break :blk if (verb == .post)

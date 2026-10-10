@@ -12,10 +12,14 @@ const std = @import("std");
 pub const selectors = struct {
     /// Post composer (a Draft.js contenteditable).
     pub const composer = "testid=tweetTextarea_0";
-    /// "Post" button candidates, tried in order: tweetButton (compose dialog
-    /// and page), tweetButtonInline (home timeline). The first one with a
-    /// visible box is clicked, so a hidden copy is never chosen.
-    pub const post_buttons = [_][]const u8{ "testid=tweetButton", "testid=tweetButtonInline" };
+    /// "Post" button data-testids, tried in order: tweetButton (compose
+    /// dialog/page), tweetButtonInline (home timeline). Every copy of each
+    /// is addressed as `xpath=(//*[@data-testid="<id>"])[n]` and probed with
+    /// a trial click (full actionability checks, no click); the first copy
+    /// that passes is clicked. Hidden, covered or disabled copies are skipped.
+    pub const post_button_testids = [_][]const u8{ "tweetButton", "tweetButtonInline" };
+    /// Template for one copy of a Post button (testid, 1-based index).
+    pub const post_button_copy = "xpath=(//*[@data-testid=\"{s}\"])[{d}]";
     /// Confirmation toast shown after a post is sent or scheduled.
     pub const post_success = "testid=toast";
     /// Calendar icon that opens the schedule dialog.
@@ -47,6 +51,13 @@ const confirm_timeout_ms = 15_000;
 /// retried); its timeout only bounds the native page call, so it must be a
 /// real duration, not 0.
 const query_timeout_ms = 5_000;
+/// One trial-click probe of a Post button copy.
+const probe_timeout_ms = 1_000;
+/// Probe rounds over all candidates before giving up (each round waits up
+/// to probe_timeout_ms per copy, so a button that appears late is found).
+pub const max_post_probe_rounds = 5;
+/// Copies of one testid probed per round.
+const max_copies_per_testid = 4;
 
 pub const Verb = enum { post, schedule_post, login_check };
 
@@ -61,7 +72,8 @@ pub const Error = error{ OutOfMemory, InvalidParams, LoggedOut };
 
 pub const PostParams = struct {
     text: []const u8,
-    /// Override only for tests/fixtures; production uses `compose_url`.
+    /// Public override of the page the flow opens (the x.* `compose_url`
+    /// param: fixtures, mirrors). Defaults to the real `compose_url`.
     compose_url: []const u8 = compose_url,
 };
 
@@ -149,60 +161,33 @@ fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8) Error!boo
     return step(gpa, runner, "dom.type", .{ .selector = selectors.composer, .text = text });
 }
 
-/// Click Post (it stays disabled until there is text; the engine retries
-/// until it is enabled) and wait for X's confirmation toast.
+/// Click Post (it stays disabled until there is text) and wait for X's
+/// confirmation toast.
 fn submit(gpa: std.mem.Allocator, runner: anytype) Error!bool {
-    const button = (try pickPostButton(gpa, runner)) orelse return false;
-    if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = .{ .strict = false, .timeout_ms = click_timeout_ms } }))) return false;
+    var selector_buf: [128]u8 = undefined;
+    const button = (try findPostButton(gpa, runner, &selector_buf)) orelse return false;
+    if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = .{ .timeout_ms = click_timeout_ms } }))) return false;
     return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "attached", .timeout_ms = confirm_timeout_ms });
 }
 
-/// First Post candidate with a visible (non-empty) box; the first candidate
-/// when none is visible yet (the click then retries until it is). Null if a
-/// query step failed.
-fn pickPostButton(gpa: std.mem.Allocator, runner: anytype) Error!?[]const u8 {
-    for (selectors.post_buttons) |candidate| {
-        const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = candidate, .timeout_ms = query_timeout_ms }, .{});
-        defer gpa.free(params);
-        const result = (try runner.run("dom.query", params)) orelse return null;
-        if (try hasVisibleElement(gpa, result)) return candidate;
+/// The first Post button copy that passes a trial click, as an exact
+/// single-element selector written into `buf`; null if none became
+/// actionable within the probe rounds (the last probe's failure is kept by
+/// the runner) or a query failed.
+fn findPostButton(gpa: std.mem.Allocator, runner: anytype, buf: []u8) Error!?[]const u8 {
+    var round: usize = 0;
+    while (round < max_post_probe_rounds) : (round += 1) {
+        for (selectors.post_button_testids) |testid| {
+            var testid_buf: [64]u8 = undefined;
+            const all = std.fmt.bufPrint(&testid_buf, "testid={s}", .{testid}) catch unreachable;
+            const copies = (try countMatches(gpa, runner, all)) orelse return null;
+            for (1..@min(copies, max_copies_per_testid) + 1) |n| {
+                const copy = std.fmt.bufPrint(buf, selectors.post_button_copy, .{ testid, n }) catch unreachable;
+                if (try step(gpa, runner, "dom.click", .{ .selector = copy, .options = .{ .trial = true, .timeout_ms = probe_timeout_ms } })) return copy;
+            }
+        }
     }
-    return selectors.post_buttons[0];
-}
-
-fn hasVisibleElement(gpa: std.mem.Allocator, query_result: []const u8) Error!bool {
-    const parsed = std.json.parseFromSlice(std.json.Value, gpa, query_result, .{}) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return false,
-    };
-    defer parsed.deinit();
-    const root = switch (parsed.value) {
-        .object => |o| o,
-        else => return false,
-    };
-    const elements = switch (root.get("elements") orelse return false) {
-        .array => |a| a.items,
-        else => return false,
-    };
-    for (elements) |element| {
-        const bbox = switch (element) {
-            .object => |o| switch (o.get("bbox") orelse continue) {
-                .object => |b| b,
-                else => continue,
-            },
-            else => continue,
-        };
-        if (positive(bbox.get("width")) and positive(bbox.get("height"))) return true;
-    }
-    return false;
-}
-
-fn positive(value: ?std.json.Value) bool {
-    return switch (value orelse return false) {
-        .integer => |n| n > 0,
-        .float => |f| f > 0,
-        else => false,
-    };
+    return null;
 }
 
 /// Runs one command; true if it succeeded.

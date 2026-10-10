@@ -900,7 +900,7 @@ test "x.* is routed: x.post runs its steps on the page and returns the flow resu
     if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
     var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
     defer sink.deinit();
-    var fixture = try Fixture.start("x-post", .{ .sink = &sink, .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true}}" });
+    var fixture = try Fixture.start("x-post", .{ .sink = &sink, .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true,\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}]}}" });
     defer fixture.deinit();
     var stream = try fixture.connect();
     defer stream.close(testing.io);

@@ -5,7 +5,11 @@
     <title>X Composer Fixture</title>
     <!-- Imitates the structure of x.com's composer for src/x.zig flows.
          ?mode=compose (default): compose page, Post = tweetButton
-         ?mode=home: timeline composer, hidden tweetButton decoy + visible tweetButtonInline
+         ?mode=home: timeline composer; two hidden tweetButton decoys (display:none, and
+                     visibility:hidden with a non-empty box) and a tweetButtonInline that only
+                     appears 600 ms after load
+         &hold=url: after a Post click the confirmation toast appears only once a
+                    fetch of url settles (the test's server holds the flow there)
          ?mode=loggedout: login link, no composer
          The page records what was posted in window.__xResult. -->
     <style>
@@ -13,6 +17,7 @@
       [data-testid="tweetTextarea_0"] { min-height: 40px; border: 1px solid #999; padding: 4px; }
       button, [role="button"] { margin: 8px 4px; padding: 6px 12px; }
       #schedule-dialog[hidden], .gone { display: none; }
+      .invisible { visibility: hidden; }
       [data-testid="toast"] { margin-top: 12px; }
     </style>
   </head>
@@ -20,7 +25,9 @@
     <main id="app"></main>
     <script>
       (function () {
-        var mode = new URLSearchParams(location.search).get('mode') || 'compose';
+        var params = new URLSearchParams(location.search);
+        var mode = params.get('mode') || 'compose';
+        var hold = params.get('hold');
         var app = document.getElementById('app');
         window.__xResult = null;
         window.__xPosts = 0;
@@ -37,7 +44,8 @@
           '  <div data-testid="scheduleOption" role="button" tabindex="0" aria-label="Schedule post">Schedule</div>' +
           (mode === 'home'
             ? '  <button data-testid="tweetButton" class="gone" disabled>Post</button>' +
-              '  <button data-testid="tweetButtonInline" disabled>Post</button>'
+              '  <button data-testid="tweetButton" class="invisible" disabled>Post</button>' +
+              '  <span id="inline-slot"></span>'
             : '  <button data-testid="tweetButton" disabled>Post</button>') +
           '</div>' +
           '<div id="schedule-dialog" role="dialog" aria-label="Schedule" hidden>' +
@@ -71,7 +79,7 @@
         // edit to its own model. It starts with a restored, unsent draft.
         var editor = document.querySelector('[data-testid="tweetTextarea_0"]');
         var model = 'STALE DRAFT';
-        var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]'));
+        var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-testid="tweetButton"]'));
         function render() {
           editor.textContent = model;
           var r = document.createRange();
@@ -84,6 +92,7 @@
           }
           buttons.forEach(function (b) { b.disabled = model.length === 0; });
         }
+        editor.addEventListener('input', function () { window.__xEvents.push('input'); });
         editor.addEventListener('beforeinput', function (event) {
           event.preventDefault();
           window.__xEvents.push('beforeinput:' + event.inputType);
@@ -112,21 +121,38 @@
           document.getElementById('schedule-dialog').hidden = true;
           buttons.forEach(function (b) { b.textContent = 'Schedule'; });
         });
-        buttons.forEach(function (button) {
+        function wire(button) {
           button.addEventListener('click', function () {
             if (button.disabled) return;
             window.__xPosts += 1;
             window.__xResult = { text: model, scheduled: schedule, button: button.getAttribute('data-testid') };
-            var toast = document.createElement('div');
-            toast.setAttribute('data-testid', 'toast');
-            toast.setAttribute('role', 'alert');
-            toast.textContent = schedule ? 'Your post will be sent' : 'Your post was sent.';
-            document.getElementById('toasts').appendChild(toast);
+            var message = schedule ? 'Your post will be sent' : 'Your post was sent.';
+            function showToast() {
+              var toast = document.createElement('div');
+              toast.setAttribute('data-testid', 'toast');
+              toast.setAttribute('role', 'alert');
+              toast.textContent = message;
+              document.getElementById('toasts').appendChild(toast);
+            }
+            if (hold) fetch(hold).then(showToast);
+            else showToast();
             model = '';
             schedule = null;
             render();
           });
-        });
+        }
+        buttons.forEach(wire);
+        if (mode === 'home') {
+          setTimeout(function () {
+            var inline = document.createElement('button');
+            inline.setAttribute('data-testid', 'tweetButtonInline');
+            inline.textContent = 'Post';
+            document.getElementById('inline-slot').appendChild(inline);
+            buttons.push(inline);
+            wire(inline);
+            render();
+          }, 600);
+        }
       })();
     </script>
   </body>

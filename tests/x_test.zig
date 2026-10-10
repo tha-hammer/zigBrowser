@@ -55,77 +55,138 @@ test "every selector lives in the one table at the top of x.zig" {
     try std.testing.expectEqualStrings("testid=tweetTextarea_0", x.selectors.composer);
     try std.testing.expectEqualStrings("testid=scheduleOption", x.selectors.schedule_option);
     try std.testing.expectEqualStrings("testid=scheduledConfirmationPrimaryAction", x.selectors.schedule_confirm);
-    try std.testing.expectEqualStrings("testid=tweetButton", x.selectors.post_buttons[0]);
-    try std.testing.expectEqualStrings("testid=tweetButtonInline", x.selectors.post_buttons[1]);
+    try std.testing.expectEqualStrings("tweetButton", x.selectors.post_button_testids[0]);
+    try std.testing.expectEqualStrings("tweetButtonInline", x.selectors.post_button_testids[1]);
 }
 
-const visible_button = "{\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{\"x\":1,\"y\":1,\"width\":60,\"height\":30}}]}";
-const hidden_button = "{\"elements\":[{\"id\":\"zb-2\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{\"x\":0,\"y\":0,\"width\":0,\"height\":0}}]}";
+/// Scripted page for the Post-button probe: how many copies of each testid
+/// exist, and which nth copy passes a trial click (null = none, ever).
+const ProbeRunner = struct {
+    inner: FakeRunner = .{},
+    dialog_copies: usize = 1,
+    inline_copies: usize = 0,
+    actionable: ?[]const u8 = "xpath=(//*[@data-testid=\"tweetButton\"])[1]",
+    /// Trial probes that fail before `actionable` starts passing.
+    fail_probes_before: usize = 0,
+    probes: usize = 0,
+    buf: [256]u8 = undefined,
 
-test "x.post: navigate, gate, clear any stale draft, type, pick the visible Post button, confirm" {
-    var runner = FakeRunner{};
-    runner.answers = &.{.{ .method = "dom.query", .result = visible_button }};
-    defer runner.deinit();
+    pub fn run(self: *ProbeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
+        _ = try self.inner.run(method, params_json);
+        if (std.mem.eql(u8, method, "dom.query")) {
+            const n = if (std.mem.indexOf(u8, params_json, "tweetButtonInline") != null) self.inline_copies else self.dialog_copies;
+            var out: std.Io.Writer = .fixed(&self.buf);
+            out.writeAll("{\"elements\":[") catch unreachable;
+            for (0..n) |i| {
+                if (i > 0) out.writeAll(",") catch unreachable;
+                out.writeAll("{\"id\":\"e\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}") catch unreachable;
+            }
+            out.writeAll("]}") catch unreachable;
+            return out.buffered();
+        }
+        if (std.mem.eql(u8, method, "dom.click") and std.mem.indexOf(u8, params_json, "\"trial\":true") != null) {
+            self.probes += 1;
+            if (self.probes <= self.fail_probes_before) return null;
+            const wanted = self.actionable orelse return null;
+            const quoted = try std.json.Stringify.valueAlloc(gpa, wanted, .{});
+            defer gpa.free(quoted);
+            return if (std.mem.indexOf(u8, params_json, quoted) != null) "{\"ok\":true}" else null;
+        }
+        return "{\"ok\":true}";
+    }
+};
+
+fn lastClickSelector(runner: *const FakeRunner) ![]u8 {
+    var i = runner.steps.items.len;
+    while (i > 0) {
+        i -= 1;
+        const s = runner.steps.items[i];
+        if (!std.mem.eql(u8, s.method, "dom.click")) continue;
+        if (std.mem.indexOf(u8, s.params, "\"trial\":true") != null) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});
+        defer parsed.deinit();
+        return gpa.dupe(u8, parsed.value.object.get("selector").?.string);
+    }
+    return error.TestNoClick;
+}
+
+test "x.post: navigate, gate, clear any stale draft, type, probe Post, click it, confirm" {
+    var runner = ProbeRunner{};
+    defer runner.inner.deinit();
     const result = (try x.post(gpa, &runner, .{ .text = "hello from zigBrowser", .compose_url = "http://127.0.0.1:9/compose" })).?;
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"ok\":true}", result);
-    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.query", "dom.click", "dom.waitFor" });
+    try expectMethods(&runner.inner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.query", "dom.click", "dom.click", "dom.waitFor" });
 
-    const nav = try stepParams(&runner, 0);
+    const nav = try stepParams(&runner.inner, 0);
     defer nav.deinit();
     try std.testing.expectEqualStrings("http://127.0.0.1:9/compose", nav.value.object.get("url").?.string);
-    const cleared = try stepParams(&runner, 3);
+    const cleared = try stepParams(&runner.inner, 3);
     defer cleared.deinit();
     try std.testing.expectEqualStrings(x.selectors.composer, cleared.value.object.get("selector").?.string);
     try std.testing.expectEqualStrings("", cleared.value.object.get("value").?.string);
-    const typed = try stepParams(&runner, 4);
+    const typed = try stepParams(&runner.inner, 4);
     defer typed.deinit();
-    try std.testing.expectEqualStrings(x.selectors.composer, typed.value.object.get("selector").?.string);
     try std.testing.expectEqualStrings("hello from zigBrowser", typed.value.object.get("text").?.string);
-    const post_click = try stepParams(&runner, 6);
-    defer post_click.deinit();
-    try std.testing.expectEqualStrings(x.selectors.post_buttons[0], post_click.value.object.get("selector").?.string);
-    const confirm = try stepParams(&runner, 7);
+    const probe = try stepParams(&runner.inner, 6);
+    defer probe.deinit();
+    try std.testing.expectEqual(true, probe.value.object.get("options").?.object.get("trial").?.bool);
+    const clicked = try lastClickSelector(&runner.inner);
+    defer gpa.free(clicked);
+    try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButton\"])[1]", clicked);
+    const confirm = try stepParams(&runner.inner, 8);
     defer confirm.deinit();
     try std.testing.expectEqualStrings(x.selectors.post_success, confirm.value.object.get("selector").?.string);
 }
 
-/// Answers dom.query by selector: hidden dialog button, visible inline one.
-const DecoyRunner = struct {
-    inner: FakeRunner = .{},
-
-    pub fn run(self: *DecoyRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
-        _ = try self.inner.run(method, params_json);
-        if (!std.mem.eql(u8, method, "dom.query")) return "{\"ok\":true}";
-        if (std.mem.indexOf(u8, params_json, "tweetButtonInline") != null) return visible_button;
-        return hidden_button;
-    }
-};
-
-test "x.post skips a hidden Post button candidate and clicks the visible one" {
-    var runner = DecoyRunner{};
+test "x.post skips a non-actionable dialog button and clicks the actionable inline one" {
+    var runner = ProbeRunner{ .inline_copies = 1, .actionable = "xpath=(//*[@data-testid=\"tweetButtonInline\"])[1]" };
     defer runner.inner.deinit();
     const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
     defer gpa.free(result);
-    try expectMethods(&runner.inner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.query", "dom.query", "dom.click", "dom.waitFor" });
-    const post_click = try stepParams(&runner.inner, 7);
-    defer post_click.deinit();
-    try std.testing.expectEqualStrings(x.selectors.post_buttons[1], post_click.value.object.get("selector").?.string);
+    const clicked = try lastClickSelector(&runner.inner);
+    defer gpa.free(clicked);
+    try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButtonInline\"])[1]", clicked);
+}
+
+test "x.post probes every duplicate copy and clicks exactly the actionable one" {
+    var runner = ProbeRunner{ .dialog_copies = 3, .actionable = "xpath=(//*[@data-testid=\"tweetButton\"])[3]" };
+    defer runner.inner.deinit();
+    const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
+    defer gpa.free(result);
+    const clicked = try lastClickSelector(&runner.inner);
+    defer gpa.free(clicked);
+    try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButton\"])[3]", clicked);
+}
+
+test "x.post keeps probing until a late Post button becomes actionable" {
+    var runner = ProbeRunner{ .inline_copies = 1, .actionable = "xpath=(//*[@data-testid=\"tweetButtonInline\"])[1]", .fail_probes_before = 6 };
+    defer runner.inner.deinit();
+    const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
+    defer gpa.free(result);
+    try std.testing.expect(runner.probes > 6);
+}
+
+test "x.post fails (null) when no Post button ever becomes actionable" {
+    var runner = ProbeRunner{ .inline_copies = 1, .actionable = null };
+    defer runner.inner.deinit();
+    try std.testing.expect((try x.post(gpa, &runner, .{ .text = "hi" })) == null);
+    try std.testing.expect(runner.probes <= x.max_post_probe_rounds * 2);
 }
 
 test "x.post defaults to the real compose URL" {
-    var runner = FakeRunner{};
-    defer runner.deinit();
+    var runner = ProbeRunner{};
+    defer runner.inner.deinit();
     const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
     defer gpa.free(result);
-    const nav = try stepParams(&runner, 0);
+    const nav = try stepParams(&runner.inner, 0);
     defer nav.deinit();
     try std.testing.expectEqualStrings(x.compose_url, nav.value.object.get("url").?.string);
 }
 
 test "x.post validates text: empty, over 280 characters" {
-    var runner = FakeRunner{};
-    defer runner.deinit();
+    var runner = ProbeRunner{};
+    defer runner.inner.deinit();
     try std.testing.expectError(error.InvalidParams, x.post(gpa, &runner, .{ .text = "" }));
     const long = "é" ** 281;
     try std.testing.expectError(error.InvalidParams, x.post(gpa, &runner, .{ .text = long }));
@@ -153,16 +214,17 @@ test "a missing composer without a login link surfaces the step failure (null)" 
 }
 
 test "x.schedule_post converts 24h time and selects month/day/year/hour/minute/AM-PM" {
-    var runner = FakeRunner{};
-    defer runner.deinit();
-    const result = (try x.schedulePost(gpa, &runner, .{ .text = "later", .date = "2026-11-05", .time = "14:07", .compose_url = "http://f/compose" })).?;
+    var wrapper = ProbeRunner{};
+    defer wrapper.inner.deinit();
+    const result = (try x.schedulePost(gpa, &wrapper, .{ .text = "later", .date = "2026-11-05", .time = "14:07", .compose_url = "http://f/compose" })).?;
     defer gpa.free(result);
+    const runner = &wrapper.inner;
     try std.testing.expectEqualStrings("{\"ok\":true,\"scheduledFor\":\"2026-11-05T14:07\"}", result);
-    try expectMethods(&runner, &.{
+    try expectMethods(runner, &.{
         "page.navigate",     "dom.waitFor",       "dom.click",         "dom.fill",
         "dom.type",          "dom.click",         "dom.waitFor",       "dom.selectOption",
         "dom.selectOption",  "dom.selectOption",  "dom.selectOption",  "dom.selectOption",
-        "dom.selectOption",  "dom.click",         "dom.query",         "dom.query",
+        "dom.selectOption",  "dom.click",         "dom.query",         "dom.click",
         "dom.click",         "dom.waitFor",
     });
     const expected = [_]struct { selector: []const u8, value: []const u8 }{
@@ -174,23 +236,23 @@ test "x.schedule_post converts 24h time and selects month/day/year/hour/minute/A
         .{ .selector = x.selectors.schedule_ampm, .value = "PM" },
     };
     for (expected, 7..) |e, i| {
-        const p = try stepParams(&runner, i);
+        const p = try stepParams(runner, i);
         defer p.deinit();
         try std.testing.expectEqualStrings(e.selector, p.value.object.get("selector").?.string);
         try std.testing.expectEqualStrings(e.value, p.value.object.get("value").?.string);
     }
-    const opened = try stepParams(&runner, 5);
+    const opened = try stepParams(runner, 5);
     defer opened.deinit();
     try std.testing.expectEqualStrings(x.selectors.schedule_option, opened.value.object.get("selector").?.string);
-    const confirm = try stepParams(&runner, 13);
+    const confirm = try stepParams(runner, 13);
     defer confirm.deinit();
     try std.testing.expectEqualStrings(x.selectors.schedule_confirm, confirm.value.object.get("selector").?.string);
-    // No candidate reported a visible box: fall back to the first one.
-    const submit = try stepParams(&runner, 16);
+    // The probed copy is clicked by its exact (strict) selector.
+    const submit = try stepParams(runner, 16);
     defer submit.deinit();
-    try std.testing.expectEqualStrings(x.selectors.post_buttons[0], submit.value.object.get("selector").?.string);
-    try std.testing.expectEqual(false, submit.value.object.get("options").?.object.get("strict").?.bool);
-    const success = try stepParams(&runner, 17);
+    try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButton\"])[1]", submit.value.object.get("selector").?.string);
+    try std.testing.expect(submit.value.object.get("options").?.object.get("trial") == null);
+    const success = try stepParams(runner, 17);
     defer success.deinit();
     try std.testing.expectEqualStrings(x.selectors.post_success, success.value.object.get("selector").?.string);
 }
@@ -202,36 +264,38 @@ test "12-hour conversion edges: midnight, noon, 23:59" {
         .{ .time = "23:59", .hour = "11", .minute = "59", .ampm = "PM" },
         .{ .time = "09:05", .hour = "9", .minute = "5", .ampm = "AM" },
     }) |case| {
-        var runner = FakeRunner{};
-        defer runner.deinit();
-        const result = (try x.schedulePost(gpa, &runner, .{ .text = "t", .date = "2027-01-31", .time = case.time })).?;
+        var wrapper = ProbeRunner{};
+        defer wrapper.inner.deinit();
+        const result = (try x.schedulePost(gpa, &wrapper, .{ .text = "t", .date = "2027-01-31", .time = case.time })).?;
         gpa.free(result);
-        const hour = try stepParams(&runner, 10);
+        const runner = &wrapper.inner;
+        const hour = try stepParams(runner, 10);
         defer hour.deinit();
         try std.testing.expectEqualStrings(case.hour, hour.value.object.get("value").?.string);
-        const minute = try stepParams(&runner, 11);
+        const minute = try stepParams(runner, 11);
         defer minute.deinit();
         try std.testing.expectEqualStrings(case.minute, minute.value.object.get("value").?.string);
-        const ampm = try stepParams(&runner, 12);
+        const ampm = try stepParams(runner, 12);
         defer ampm.deinit();
         try std.testing.expectEqualStrings(case.ampm, ampm.value.object.get("value").?.string);
     }
 }
 
 test "schedule_post rejects malformed or impossible date/time before any step" {
-    var runner = FakeRunner{};
-    defer runner.deinit();
+    var wrapper = ProbeRunner{};
+    defer wrapper.inner.deinit();
+    const runner = &wrapper;
     for ([_][2][]const u8{
         .{ "2026-13-01", "10:00" }, .{ "2026-02-30", "10:00" }, .{ "2026-1-01", "10:00" },
         .{ "26-01-01", "10:00" },   .{ "2026-01-01", "24:00" }, .{ "2026-01-01", "10:60" },
         .{ "2026-01-01", "9:00" },  .{ "2026/01/01", "10:00" }, .{ "2026-01-01", "10:00:00" },
         .{ "0000-01-01", "10:00" }, .{ "1999-12-31", "10:00" }, .{ "2101-01-01", "10:00" },
     }) |c| {
-        try std.testing.expectError(error.InvalidParams, x.schedulePost(gpa, &runner, .{ .text = "t", .date = c[0], .time = c[1] }));
+        try std.testing.expectError(error.InvalidParams, x.schedulePost(gpa, runner, .{ .text = "t", .date = c[0], .time = c[1] }));
     }
-    try std.testing.expectEqual(@as(usize, 0), runner.steps.items.len);
+    try std.testing.expectEqual(@as(usize, 0), wrapper.inner.steps.items.len);
     // Leap day is a real date.
-    const ok = (try x.schedulePost(gpa, &runner, .{ .text = "t", .date = "2028-02-29", .time = "10:00" })).?;
+    const ok = (try x.schedulePost(gpa, runner, .{ .text = "t", .date = "2028-02-29", .time = "10:00" })).?;
     gpa.free(ok);
 }
 
@@ -267,7 +331,7 @@ test "x method table" {
 }
 
 test "x.zig never sends a 0 ms deadline (the native page call needs real time)" {
-    var runner = DecoyRunner{};
+    var runner = ProbeRunner{ .inline_copies = 1, .actionable = "xpath=(//*[@data-testid=\"tweetButtonInline\"])[1]" };
     defer runner.inner.deinit();
     const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
     defer gpa.free(result);
