@@ -165,6 +165,36 @@ pub const Engine = struct {
         return outcome;
     }
 
+    /// Runs a command that is not a router verb (e.g. social.*) with the same
+    /// lifecycle as `executeWith`: fresh ids, a cancel check, and exactly one
+    /// root span. `body(context, gpa, ids)` produces the outcome; failures it
+    /// returns should carry the ids in their data.
+    pub fn executeExternal(
+        self: *Engine,
+        gpa: std.mem.Allocator,
+        method: []const u8,
+        namespace: []const u8,
+        options: ExecuteOptions,
+        context: anytype,
+        comptime body: fn (@TypeOf(context), std.mem.Allocator, script_command.Ids) error{OutOfMemory}!Outcome,
+    ) error{OutOfMemory}!Outcome {
+        var ids_buf: IdsBuf = undefined;
+        var run = Run{
+            .ids = self.nextIds(&ids_buf),
+            .cancel = options.cancel,
+            .sink = options.route.telemetry_sink,
+            .route = options.route,
+            .build = options.build,
+        };
+        const started = self.clock.nowMs();
+        const outcome = if (run.cancelled())
+            try automationFailure(gpa, .cancelled, null, run.ids)
+        else
+            try body(context, gpa, run.ids);
+        recordRoot(.{ .method = method, .namespace = namespace, .timeout_ms = 0 }, options, &run, &outcome, options.queue_wait_ms +| (self.clock.nowMs() -| started));
+        return outcome;
+    }
+
     fn executeRun(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, options: ExecuteOptions, run: *Run) error{OutOfMemory}!Outcome {
         const ids = run.ids;
         if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
@@ -442,7 +472,37 @@ fn actionName(verb: router.Verb) ?[]const u8 {
     };
 }
 
+/// Facts about a command for its root span (raw values are redacted in
+/// recordRoot before the sink).
+const RootFacts = struct {
+    method: []const u8,
+    namespace: []const u8,
+    selector: ?[]const u8 = null,
+    strict: bool = false,
+    typed_value: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+    action_name: ?[]const u8 = null,
+    action_force: bool = false,
+    action_trial: bool = false,
+    timeout_ms: u64,
+};
+
 fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions, run: *const Run, outcome: *const Outcome, duration_ms: u64) void {
+    recordRoot(.{
+        .method = command.method,
+        .namespace = @tagName(command.namespace),
+        .selector = command.selector,
+        .strict = command.strict,
+        .typed_value = command.value orelse command.text,
+        .url = command.url,
+        .action_name = actionName(command.verb),
+        .action_force = command.force,
+        .action_trial = command.trial,
+        .timeout_ms = commandTimeout(command),
+    }, options, run, outcome, duration_ms);
+}
+
+fn recordRoot(facts: RootFacts, options: ExecuteOptions, run: *const Run, outcome: *const Outcome, duration_ms: u64) void {
     const sink = run.sink orelse return;
     var redaction_bufs: telemetry.RedactionBuffers = .{};
     const automation_error: ?[]const u8 = switch (outcome.*) {
@@ -453,18 +513,18 @@ fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions,
         .trace_id = run.ids.trace_id,
         .span_id = run.ids.parent_span_id,
         .command_id = run.ids.command_id,
-        .method = command.method,
-        .namespace = @tagName(command.namespace),
+        .method = facts.method,
+        .namespace = facts.namespace,
         .page_id = options.route.page_id,
         .window_id = options.route.window_id,
         // Redaction happens here, before the sink boundary.
-        .redacted = telemetry.redactCommand(&redaction_bufs, command.selector, command.strict, command.value orelse command.text, command.url),
-        .action_name = actionName(command.verb),
-        .action_force = command.force,
-        .action_trial = command.trial,
+        .redacted = telemetry.redactCommand(&redaction_bufs, facts.selector, facts.strict, facts.typed_value, facts.url),
+        .action_name = facts.action_name,
+        .action_force = facts.action_force,
+        .action_trial = facts.action_trial,
         .selector_match_count = run.matchCount(),
         .build = options.build,
-        .timeout_ms = commandTimeout(command),
+        .timeout_ms = facts.timeout_ms,
         .queue_wait_ms = options.queue_wait_ms,
         .duration_ms = duration_ms,
         .retry_count = run.attempts -| 1,
@@ -582,7 +642,7 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
 
 /// Automation errors carry `data.{reason?,trace_id,command_id}`; the SDKs read
 /// trace_id/command_id from there.
-fn automationFailure(gpa: std.mem.Allocator, automation_error: errors.AutomationError, reason: ?[]const u8, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+pub fn automationFailure(gpa: std.mem.Allocator, automation_error: errors.AutomationError, reason: ?[]const u8, ids: script_command.Ids) error{OutOfMemory}!Outcome {
     const data = AutomationErrorData{ .reason = reason, .trace_id = ids.trace_id, .command_id = ids.command_id };
     return .{ .failure = .{
         .code = errors.downstreamCode(automation_error),

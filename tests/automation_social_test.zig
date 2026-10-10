@@ -39,7 +39,11 @@ const Harness = struct {
 
     fn callWithCancel(self: *Harness, method: []const u8, params: []const u8, cancelled: bool) !engine.Outcome {
         const flag = std.atomic.Value(bool).init(cancelled);
-        return social_routes.handle(gpa, &self.state, &self.engine, social_routes.verbFromMethod(method).?, params, &flag);
+        return social_routes.handle(gpa, &self.state, &self.engine, social_routes.verbFromMethod(method).?, params, &flag, .{
+            .trace_id = "t-social",
+            .parent_span_id = "p-social",
+            .command_id = "c-social",
+        });
     }
 };
 
@@ -197,4 +201,31 @@ test "pause requires a non-negative u32 duration_ms" {
         defer outcome.deinit(gpa);
         try std.testing.expectEqual(@as(i64, -32602), outcome.failure.code);
     }
+}
+
+test "pause and set_pacing reject unknown params" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    for ([_][2][]const u8{
+        .{ "social.pause", "{\"duration_ms\":1,\"durationMs\":5}" },
+        .{ "social.set_pacing", "{\"daily_cap\":5,\"dailyCap\":5}" },
+    }) |c| {
+        var outcome = try h.call(c[0], c[1]);
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32602), outcome.failure.code);
+    }
+    try std.testing.expectEqual(@as(u32, 100), h.state.pacingConfig().daily_cap);
+}
+
+test "social failures carry the trace and command ids passed in" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.url_result = error.NoPage;
+
+    var outcome = try h.call("social.login_check", "{}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"trace_id\":\"t-social\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"command_id\":\"c-social\"") != null);
 }

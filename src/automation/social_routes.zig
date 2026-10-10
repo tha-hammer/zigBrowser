@@ -137,6 +137,8 @@ pub fn handle(
     params_json: []const u8,
     /// Set when the server stops; ends a running pause with `cancelled`.
     cancel: *const std.atomic.Value(bool),
+    /// Command ids (from Engine.executeExternal) attached to failures.
+    ids: script_command.Ids,
 ) error{OutOfMemory}!engine_mod.Outcome {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -148,10 +150,18 @@ pub fn handle(
         else => return invalidParams(),
     };
 
-    if ((verb == .login_check or verb == .rate_status) and params.count() != 0) return invalidParams();
+    const allowed: []const []const u8 = switch (verb) {
+        .login_check, .rate_status => &.{},
+        .pause => &.{"duration_ms"},
+        .set_pacing => &.{ "min_delay_ms", "max_delay_ms", "daily_cap" },
+    };
+    var keys = params.iterator();
+    while (keys.next()) |entry| {
+        if (!inList(allowed, entry.key_ptr.*)) return invalidParams();
+    }
 
     return switch (verb) {
-        .login_check => loginCheck(gpa, engine),
+        .login_check => loginCheck(gpa, engine, ids),
         .rate_status => {
             state.acquire();
             defer state.lock.unlock();
@@ -175,16 +185,16 @@ pub fn handle(
             const duration_ms = (optionalU32(params, "duration_ms") catch return invalidParams()) orelse return invalidParams();
             var port = QueuePort{ .clock = state.clock, .cancel = cancel };
             const ok = social.pause(&port, .{ .duration_ms = duration_ms });
-            if (port.cancelled) return portError(error.Cancelled);
+            if (port.cancelled) return portError(gpa, error.Cancelled, ids);
             return jsonResult(gpa, ok);
         },
     };
 }
 
-fn loginCheck(gpa: std.mem.Allocator, engine: *engine_mod.Engine) error{OutOfMemory}!engine_mod.Outcome {
-    const url = engine.port.url(gpa, read_timeout_ms) catch |err| return portError(err);
+fn loginCheck(gpa: std.mem.Allocator, engine: *engine_mod.Engine, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+    const url = engine.port.url(gpa, read_timeout_ms) catch |err| return portError(gpa, err, ids);
     defer gpa.free(url);
-    const text = engine.port.evalJson(gpa, .automation, login_check_body, "null", read_timeout_ms) catch |err| return portError(err);
+    const text = engine.port.evalJson(gpa, .automation, login_check_body, "null", read_timeout_ms) catch |err| return portError(gpa, err, ids);
     defer gpa.free(text);
 
     var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {
@@ -222,16 +232,21 @@ fn internal(message: []const u8) engine_mod.Outcome {
     return .{ .failure = .{ .code = engine_mod.internal_error_code, .message = message } };
 }
 
-fn portError(err: anyerror) error{OutOfMemory}!engine_mod.Outcome {
-    const errors = @import("error.zig");
-    const automation_error: errors.AutomationError = switch (err) {
+fn portError(gpa: std.mem.Allocator, err: anyerror, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+    return engine_mod.automationFailure(gpa, switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NoPage => .session_invalid,
         error.Cancelled => .cancelled,
         error.Timeout => .action_timeout,
         else => return internal("Evaluation failed"),
-    };
-    return .{ .failure = .{ .code = errors.downstreamCode(automation_error), .message = errors.name(automation_error) } };
+    }, null, ids);
+}
+
+fn inList(list: []const []const u8, item: []const u8) bool {
+    for (list) |entry| {
+        if (std.mem.eql(u8, entry, item)) return true;
+    }
+    return false;
 }
 
 fn optionalU32(obj: std.json.ObjectMap, key: []const u8) error{BadArgs}!?u32 {

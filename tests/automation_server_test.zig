@@ -395,6 +395,43 @@ test "stop() cancels a running social.pause" {
     try testing.expect(std.mem.indexOf(u8, paused.?, "\"code\":-32012") != null);
 }
 
+test "social.* failures carry ids and every social call records one root span" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("social-ids", .{ .with_port = false, .sink = &sink });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const login = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.login_check\",\"id\":1}");
+    defer testing.allocator.free(login);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, login, .{});
+    defer parsed.deinit();
+    const err = parsed.value.object.get("error").?.object;
+    try testing.expectEqual(@as(i64, -32011), err.get("code").?.integer);
+    const trace_id = err.get("data").?.object.get("trace_id").?.string;
+    try testing.expect(err.get("data").?.object.get("command_id") != null);
+
+    const status = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"id\":2}");
+    testing.allocator.free(status);
+    fixture.server.stop();
+
+    var roots: usize = 0;
+    var saw_login_trace = false;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        roots += 1;
+        try testing.expectEqualStrings("social", span.attr("rpc.namespace").?);
+        if (std.mem.eql(u8, span.attr("rpc.method").?, "social.login_check")) {
+            saw_login_trace = std.mem.eql(u8, span.trace_id, trace_id);
+            try testing.expectEqualStrings("session_invalid", span.attr("automation.error").?);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), roots);
+    try testing.expect(saw_login_trace);
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

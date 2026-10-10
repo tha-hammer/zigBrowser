@@ -301,7 +301,7 @@ fn handleRequestWith(
     defer allocator.free(params_json);
 
     if (social_routes.verbFromMethod(method)) |verb| {
-        return handleSocial(allocator, id_json, verb, params_json, engine, queue, social, route);
+        return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
     }
 
     // The engine records the root span after execution; the router gets the
@@ -341,29 +341,53 @@ fn handleRequestWith(
 fn handleSocial(
     allocator: std.mem.Allocator,
     id_json: []const u8,
+    method: []const u8,
     verb: social_routes.Verb,
     params_json: []const u8,
     engine: *engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
     social: *social_routes.SocialState,
     route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
     // login_check reads the page and pause holds the page, so both take
     // their turn in the page queue.
+    // Cancelled while queued: still runs through executeExternal (pre-set
+    // flag) so the reply has ids and a root span.
+    const needs_page = verb == .login_check or verb == .pause;
+    var queued_cancelled = false;
     var ticket: ?queue_mod.Ticket = null;
-    if (verb == .login_check or verb == .pause) {
+    if (needs_page) {
         ticket = queue.acquire(route.page_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.Cancelled => {
-                const cancelled = automation.errors.AutomationError.cancelled;
-                return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(cancelled), automation.errors.name(cancelled), null);
+            error.Cancelled => blk: {
+                queued_cancelled = true;
+                break :blk null;
             },
         };
     }
     defer if (ticket) |t| queue.release(t);
 
     const not_cancelled = std.atomic.Value(bool).init(false);
-    var outcome = try social_routes.handle(allocator, social, engine, verb, params_json, if (ticket) |t| &t.cancelled else &not_cancelled);
+    const already_cancelled = std.atomic.Value(bool).init(true);
+    const SocialCall = struct {
+        social: *social_routes.SocialState,
+        engine: *engine_mod.Engine,
+        verb: social_routes.Verb,
+        params_json: []const u8,
+        cancel: *const std.atomic.Value(bool),
+
+        fn run(self: @This(), gpa: std.mem.Allocator, ids: automation.script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+            return social_routes.handle(gpa, self.social, self.engine, self.verb, self.params_json, self.cancel, ids);
+        }
+    };
+    const cancel = if (ticket) |t| &t.cancelled else if (queued_cancelled) &already_cancelled else &not_cancelled;
+    var outcome = try engine.executeExternal(allocator, method, "social", .{
+        .cancel = cancel,
+        .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
+        .route = route,
+        .build = build_info,
+    }, SocialCall{ .social = social, .engine = engine, .verb = verb, .params_json = params_json, .cancel = cancel }, SocialCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(
