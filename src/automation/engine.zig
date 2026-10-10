@@ -190,6 +190,20 @@ pub const External = struct {
 
     /// Records a child span under this command's root. Attributes must
     /// already be redacted.
+    /// A child span with an explicit span id and parent (e.g. a compound
+    /// span under the root, and step events under the compound).
+    pub fn childSpanUnder(self: *External, name: []const u8, span_id: ?[]const u8, parent_span_id: []const u8, attributes: []const telemetry.AttrMap.Entry) void {
+        const sink = self.run.sink orelse return;
+        sink.recordChildSpan(.{
+            .name = name,
+            .trace_id = self.run.ids.trace_id,
+            .span_id = span_id,
+            .parent_span_id = parent_span_id,
+            .command_id = self.run.ids.command_id,
+            .attributes = attributes,
+        }) catch {};
+    }
+
     pub fn childSpan(self: *External, name: []const u8, attributes: []const telemetry.AttrMap.Entry) void {
         const sink = self.run.sink orelse return;
         sink.recordChildSpan(.{

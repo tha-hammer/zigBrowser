@@ -55,6 +55,10 @@ pub const SocialState = struct {
     lock: std.atomic.Mutex = .unlocked,
     limiter: pacing.RateLimiter,
     clock: engine_mod.Clock,
+    /// Actions admitted by `reserve` and not yet committed or released.
+    in_flight: u32 = 0,
+    /// Tests: seeds the pacing-delay randomness (production: OS entropy).
+    random: ?std.Random = null,
 
     pub fn init(wall_ms: *const fn () i64, clock: engine_mod.Clock) SocialState {
         return .{ .limiter = pacing.RateLimiter.init(.{}, wall_ms), .clock = clock };
@@ -66,20 +70,40 @@ pub const SocialState = struct {
         return self.limiter.config;
     }
 
-    /// Actions left today (linkedin.*/instagram.* flows share this cap
-    /// with social.rate_status / social.set_pacing).
+    /// Actions left today, not counting actions in flight (linkedin.* and
+    /// instagram.* flows share this cap with social.rate_status /
+    /// social.set_pacing).
     pub fn remaining(self: *SocialState) u32 {
         self.acquire();
         defer self.lock.unlock();
-        return self.limiter.remaining();
+        return self.limiter.remaining() -| self.in_flight;
     }
 
-    /// Records one successful action.
-    pub fn consume(self: *SocialState) void {
+    /// Atomically admits one action: false at the cap, counting actions in
+    /// flight on other pages. Every true must be followed by exactly one
+    /// commit (success: counts) or release (failure: does not).
+    pub fn reserve(self: *SocialState) bool {
         self.acquire();
         defer self.lock.unlock();
+        if (self.limiter.remaining() <= self.in_flight) return false;
+        self.in_flight += 1;
+        return true;
+    }
+
+    /// A reserved action succeeded: it counts against the cap.
+    pub fn commit(self: *SocialState) void {
+        self.acquire();
+        defer self.lock.unlock();
+        self.in_flight -|= 1;
         var prng = std.Random.DefaultPrng.init(0);
         _ = self.limiter.recordAction(prng.random()) catch {};
+    }
+
+    /// A reserved action failed: it does not count.
+    pub fn release(self: *SocialState) void {
+        self.acquire();
+        defer self.lock.unlock();
+        self.in_flight -|= 1;
     }
 
     /// The pause before an action: uniform in [min_delay_ms, max_delay_ms]
@@ -91,6 +115,21 @@ pub const SocialState = struct {
         const low: u64 = @min(config.min_delay_ms, config.max_delay_ms);
         const high: u64 = @max(config.min_delay_ms, config.max_delay_ms);
         return low + random.uintAtMost(u64, high - low);
+    }
+
+    /// Randomness for pacing delays: a CSPRNG seeded from OS entropy, or
+    /// (tests) seeded from the injected `random` under the state lock.
+    pub fn delayRandom(self: *SocialState, csprng: *std.Random.DefaultCsprng) ?std.Random {
+        var seed: [std.Random.DefaultCsprng.secret_seed_length]u8 = undefined;
+        if (self.random) |injected| {
+            self.acquire();
+            defer self.lock.unlock();
+            injected.bytes(&seed);
+        } else {
+            std.Io.Threaded.global_single_threaded.io().randomSecure(&seed) catch return null;
+        }
+        csprng.* = .init(seed);
+        return csprng.random();
     }
 
     fn acquire(self: *SocialState) void {

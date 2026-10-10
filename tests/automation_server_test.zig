@@ -750,6 +750,62 @@ test "N12: a build without platform ports (WebView2/WKWebView today) answers eve
     }
 }
 
+test "N16: linkedin.* and instagram.* are routed through the real socket, queue and engine (session cookie gate, pacing, telemetry ids)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var store = MemoryCookieStore{};
+    defer store.deinit();
+    var fixture = try Fixture.start("social-flows", .{
+        .cookies = &store,
+        .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true,\"text\":\"Ada\",\"elements\":[{\"id\":\"zb-1\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}}",
+    });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    // No session cookie yet: logged out before any page step.
+    const logged_out = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.follow\",\"params\":{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"},\"id\":1}");
+    defer testing.allocator.free(logged_out);
+    try testing.expect(std.mem.indexOf(u8, logged_out, "\"code\":-32011") != null);
+    try testing.expect(std.mem.indexOf(u8, logged_out, "logged_out") != null);
+    try testing.expect(std.mem.indexOf(u8, logged_out, "\"trace_id\"") != null);
+    try testing.expectEqual(@as(usize, 0), fixture.fake.events().len);
+
+    // Sign in (cookie store), no pacing pause for the test, then act.
+    try store.port().set("{\"name\":\"li_at\",\"value\":\"v\",\"domain\":\".www.linkedin.com\",\"path\":\"/\",\"expires\":-1,\"httpOnly\":true,\"secure\":true}", 1000);
+    const paced = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"min_delay_ms\":0,\"max_delay_ms\":0,\"daily_cap\":2},\"id\":2}");
+    defer testing.allocator.free(paced);
+    const followed = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.follow\",\"params\":{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"},\"id\":3}");
+    defer testing.allocator.free(followed);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":3}", followed);
+    try testing.expectEqual(@as(u8, 'n'), fixture.fake.events()[0]);
+    const status = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"params\":{},\"id\":4}");
+    defer testing.allocator.free(status);
+    try testing.expect(std.mem.indexOf(u8, status, "\"remaining_actions\":1") != null);
+
+    // Off-platform URL and a request-supplied base are refused.
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.visit\",\"params\":{\"profileUrl\":\"https://evil.example/in/zed/\"},\"id\":5}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.search\",\"params\":{\"query\":\"zig\",\"baseUrl\":\"http://127.0.0.1:9\"},\"id\":6}",
+    }) |request| {
+        const refused = try roundTrip(stream, request);
+        defer testing.allocator.free(refused);
+        try testing.expect(std.mem.indexOf(u8, refused, "\"code\":-32602") != null);
+    }
+
+    // instagram.* is routed too (selfcheck needs no session).
+    const report = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"instagram.selfcheck\",\"params\":{},\"id\":7}");
+    defer testing.allocator.free(report);
+    try testing.expect(std.mem.startsWith(u8, report, "{\"jsonrpc\":\"2.0\",\"result\":{\"signed_in\":1,"));
+}
+
+test "N16: the fixture origin comes only from server configuration and must be a bare http(s) origin" {
+    try testing.expectEqualStrings("http://127.0.0.1:41234", automation_server.validFixtureOrigin("http://127.0.0.1:41234/").?);
+    try testing.expectEqualStrings("https://fixture.test", automation_server.validFixtureOrigin("https://fixture.test").?);
+    for ([_][]const u8{ "", "127.0.0.1:9", "ftp://x", "http://", "http://a/b", "http://a?b", "http://u@a", "http://a b" }) |bad| {
+        try testing.expect(automation_server.validFixtureOrigin(bad) == null);
+    }
+}
+
 fn tmpPath(comptime tag: []const u8) ![]u8 {
     return std.fmt.allocPrint(testing.allocator, "/tmp/zigbrowser-sidecar-" ++ tag ++ "-{x}", .{testing.random_seed});
 }

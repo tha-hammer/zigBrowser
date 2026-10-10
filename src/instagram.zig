@@ -29,11 +29,22 @@ pub const selectors = struct {
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
     pub const dm_send = "xpath=//*[self::button or @role=\"button\"][normalize-space(.)=\"Send\"]";
-    /// Story viewer media.
+    /// Story viewer media, and its Next control.
     pub const story_media = "css=section video, section img";
+    pub const story_next = "css=button[aria-label=\"Next\"]";
 };
 
-pub const base_url = "https://www.instagram.com";
+/// The real site. The automation server may swap in a fixture origin for
+/// tests (flow_steps.Site); requests cannot.
+pub const site = flow.Site{ .host = "www.instagram.com", .origin = "https://www.instagram.com" };
+
+/// Instagram's session cookie: without it the account is logged out, and
+/// an action fails before navigating (checked by the automation server).
+pub const session_cookie = "sessionid";
+
+/// Story viewing: time on each frame, and a bound on frames.
+pub const story_frame_ms = 1_500;
+pub const max_story_frames = 100;
 
 /// Instagram's limits for a comment and a direct message.
 pub const max_comment_chars = 2200;
@@ -64,8 +75,8 @@ const ok_json = "{\"ok\":true}";
 
 /// Follows a profile and waits for Following (or Requested, for a private
 /// account).
-pub fn follow(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(profile_url)) return error.InvalidParams;
+pub fn follow(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url: []const u8) Error!?[]u8 {
+    if (!s.allows(profile_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, profile_url))) return null;
     if (!(try click(gpa, runner, selectors.follow_button, true))) return null;
     if (!(try waitAttached(gpa, runner, selectors.following_button))) return null;
@@ -73,29 +84,30 @@ pub fn follow(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8) 
 }
 
 /// Likes a post and waits for the Unlike state.
-pub fn like(gpa: std.mem.Allocator, runner: anytype, post_url: []const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(post_url)) return error.InvalidParams;
+pub fn like(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, post_url: []const u8) Error!?[]u8 {
+    if (!s.allows(post_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, post_url))) return null;
     if (!(try click(gpa, runner, selectors.like_button, true))) return null;
     if (!(try waitAttached(gpa, runner, selectors.unlike_marker))) return null;
     return try gpa.dupe(u8, ok_json);
 }
 
-/// Comments on a post.
-pub fn comment(gpa: std.mem.Allocator, runner: anytype, post_url: []const u8, text: []const u8) Error!?[]u8 {
+/// Comments on a post (the text is typed).
+pub fn comment(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, post_url: []const u8, text: []const u8) Error!?[]u8 {
     try validateText(text, max_comment_chars);
-    if (!flow.isPageUrl(post_url)) return error.InvalidParams;
+    if (!s.allows(post_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, post_url))) return null;
     if (!(try click(gpa, runner, selectors.comment_input, true))) return null;
-    if (!(try flow.step(gpa, runner, "dom.fill", .{ .selector = selectors.comment_input, .value = text, .options = .{ .timeout_ms = flow.budget(runner, type_timeout_ms) } }))) return null;
+    if (!(try flow.step(gpa, runner, "dom.fill", .{ .selector = selectors.comment_input, .value = "", .options = .{ .timeout_ms = flow.budget(runner, click_timeout_ms) } }))) return null;
+    if (!(try flow.step(gpa, runner, "dom.type", .{ .selector = selectors.comment_input, .text = text, .options = .{ .timeout_ms = flow.budget(runner, type_timeout_ms) } }))) return null;
     if (!(try click(gpa, runner, selectors.comment_submit, true))) return null;
     return try gpa.dupe(u8, ok_json);
 }
 
 /// Opens `username`'s profile, presses Message and sends `text`.
-pub fn dm(gpa: std.mem.Allocator, runner: anytype, username: []const u8, text: []const u8, base: []const u8) Error!?[]u8 {
+pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8, text: []const u8) Error!?[]u8 {
     try validateText(text, max_dm_chars);
-    const url = try userUrl(gpa, base, "", username);
+    const url = try userUrl(gpa, s.base(), "", username);
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
     if (!(try click(gpa, runner, selectors.message_button, true))) return null;
@@ -105,13 +117,42 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, username: []const u8, text: [
     return try gpa.dupe(u8, ok_json);
 }
 
-/// Opens `username`'s stories and waits for the viewer's media.
-pub fn storyView(gpa: std.mem.Allocator, runner: anytype, username: []const u8, base: []const u8) Error!?[]u8 {
-    const url = try userUrl(gpa, base, "stories/", username);
+/// Opens `username`'s stories and views them in order: each frame for
+/// story_frame_ms, then Next, until there is no Next, the viewer leaves
+/// /stories/, max_story_frames, or the flow budget would not cover another
+/// frame. Returns `{"ok":true,"framesViewed":n}`.
+pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
+    const url = try userUrl(gpa, s.base(), "stories/", username);
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
     if (!(try waitAttached(gpa, runner, selectors.story_media))) return null;
-    return try gpa.dupe(u8, ok_json);
+    var frames: usize = 1;
+    while (frames < max_story_frames) {
+        if (runner.remainingMs() <= story_frame_ms + click_timeout_ms + flow.query_timeout_ms) break;
+        if (!runner.pause(story_frame_ms)) return null;
+        const next = (try flow.countMatches(gpa, runner, selectors.story_next)) orelse return null;
+        if (next == 0) break;
+        if (!(try click(gpa, runner, selectors.story_next, false))) return null;
+        const still_on_stories = (try onStories(gpa, runner)) orelse return null;
+        if (!still_on_stories) break;
+        frames += 1;
+    }
+    return try std.json.Stringify.valueAlloc(gpa, .{ .ok = true, .framesViewed = frames }, .{});
+}
+
+/// Still in the story viewer (the last Next leaves it); null when the
+/// step failed or answered something unusable.
+fn onStories(gpa: std.mem.Allocator, runner: anytype) Error!?bool {
+    const result = (try runner.run("page.url", "{}")) orelse return null;
+    const parsed = std.json.parseFromSlice(struct { url: []const u8 }, gpa, result, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try runner.malformed();
+            return null;
+        },
+    };
+    defer parsed.deinit();
+    return std.mem.indexOf(u8, parsed.value.url, "/stories/") != null;
 }
 
 /// `{"<selector name>":count,...}` for the whole table on the current page.

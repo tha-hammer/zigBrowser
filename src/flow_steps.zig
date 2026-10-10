@@ -141,3 +141,40 @@ pub fn appendQueryValue(gpa: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8)
         }
     }
 }
+
+/// Where a platform's flows may navigate: its real https site, or - for
+/// tests only, set by the automation server's configuration, never by a
+/// request - a fixture origin standing in for it.
+pub const Site = struct {
+    /// e.g. "www.linkedin.com"
+    host: []const u8,
+    /// e.g. "https://www.linkedin.com"
+    origin: []const u8,
+    /// e.g. "http://127.0.0.1:41234" (no trailing slash).
+    fixture_origin: ?[]const u8 = null,
+
+    /// The origin URLs are built from (search, profile and story URLs).
+    pub fn base(self: Site) []const u8 {
+        return self.fixture_origin orelse self.origin;
+    }
+
+    /// `url` is on this site: https, exactly `host` (no user info, no port,
+    /// no lookalike or longer host), with a path; or on the fixture origin.
+    pub fn allows(self: Site, url: []const u8) bool {
+        if (!isPageUrl(url)) return false;
+        if (self.fixture_origin) |origin| {
+            if (url.len > origin.len and std.mem.startsWith(u8, url, origin) and url[origin.len] == '/') return true;
+        }
+        const uri = std.Uri.parse(url) catch return false;
+        if (!std.mem.eql(u8, uri.scheme, "https")) return false;
+        if (uri.user != null or uri.password != null or uri.port != null) return false;
+        const host = switch (uri.host orelse return false) {
+            .raw, .percent_encoded => |h| h,
+        };
+        if (!std.ascii.eqlIgnoreCase(host, self.host)) return false;
+        const path = switch (uri.path) {
+            .raw, .percent_encoded => |p| p,
+        };
+        return path.len > 0 and path[0] == '/';
+    }
+};

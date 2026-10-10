@@ -95,7 +95,7 @@ test "method table: every linkedin.* the SDKs send, nothing else" {
 test "visit: navigate, login gate, ok" {
     var runner = FakeRunner{};
     defer runner.deinit();
-    const result = (try linkedin.visit(gpa, &runner, profile)).?;
+    const result = (try linkedin.visit(gpa, &runner, linkedin.site, profile)).?;
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"ok\":true}", result);
     try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor" });
@@ -106,7 +106,7 @@ test "visit: navigate, login gate, ok" {
 test "logged out (no signed-in marker, a sign-in link): LoggedOut, nothing clicked" {
     var runner = FakeRunner{ .rules = &.{.{ .method = "dom.waitFor", .result = null }} };
     defer runner.deinit();
-    try std.testing.expectError(error.LoggedOut, linkedin.connect(gpa, &runner, profile, null));
+    try std.testing.expectError(error.LoggedOut, linkedin.connect(gpa, &runner, linkedin.site, profile, null));
     try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.query" });
     try expectSelector(&runner, 2, linkedin.selectors.login_link);
 }
@@ -117,13 +117,13 @@ test "no signed-in marker and no sign-in link: the wait failure stands (null)" {
         .{ .method = "dom.query", .result = "{\"elements\":[]}" },
     } };
     defer runner.deinit();
-    try std.testing.expect((try linkedin.follow(gpa, &runner, profile)) == null);
+    try std.testing.expect((try linkedin.follow(gpa, &runner, linkedin.site, profile)) == null);
 }
 
 test "connect without a note: Connect, Send without a note, wait for Pending" {
     var runner = FakeRunner{};
     defer runner.deinit();
-    const result = (try linkedin.connect(gpa, &runner, profile, null)).?;
+    const result = (try linkedin.connect(gpa, &runner, linkedin.site, profile, null)).?;
     gpa.free(result);
     try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.waitFor" });
     try expectSelector(&runner, 2, linkedin.selectors.connect_button);
@@ -131,28 +131,41 @@ test "connect without a note: Connect, Send without a note, wait for Pending" {
     try expectSelector(&runner, 4, linkedin.selectors.pending_button);
 }
 
-test "connect with a note: Add a note, fill it, Send; notes over 300 characters are rejected first" {
+test "connect with a note: Add a note, type it (never fill it), Send; notes over 300 characters are truncated (C42)" {
     var runner = FakeRunner{};
     defer runner.deinit();
-    const result = (try linkedin.connect(gpa, &runner, profile, "Hi Ada, loved your notes on the Engine.")).?;
+    const result = (try linkedin.connect(gpa, &runner, linkedin.site, profile, "Hi Ada, loved your notes on the Engine.")).?;
     gpa.free(result);
-    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.fill", "dom.click", "dom.waitFor" });
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.click", "dom.fill", "dom.type", "dom.click", "dom.waitFor" });
     try expectSelector(&runner, 3, linkedin.selectors.add_note_button);
     try expectSelector(&runner, 4, linkedin.selectors.note_input);
-    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[4].params, "loved your notes") != null);
-    try expectSelector(&runner, 5, linkedin.selectors.send_invite_button);
+    // fill only clears; the note text goes through dom.type.
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[5].params, "\"value\":\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[6].params, "loved your notes") != null);
+    for (runner.steps.items) |st| {
+        if (std.mem.eql(u8, st.method, "dom.fill")) try std.testing.expect(std.mem.indexOf(u8, st.params, "loved") == null);
+    }
+    try expectSelector(&runner, 7, linkedin.selectors.send_invite_button);
+
+    var long = FakeRunner{};
+    defer long.deinit();
+    gpa.free((try linkedin.connect(gpa, &long, linkedin.site, profile, "é" ** 301)).?);
+    const typed = try std.json.parseFromSlice(std.json.Value, gpa, long.steps.items[6].params, .{});
+    defer typed.deinit();
+    try std.testing.expectEqual(@as(usize, 300), try std.unicode.utf8CountCodepoints(typed.value.object.get("text").?.string));
+    try std.testing.expectEqualStrings("é" ** 300, linkedin.truncateNote("é" ** 301));
+    try std.testing.expectEqualStrings("short", linkedin.truncateNote("short"));
 
     var strict = FakeRunner{};
     defer strict.deinit();
-    try std.testing.expectError(error.InvalidParams, linkedin.connect(gpa, &strict, profile, "é" ** 301));
-    try std.testing.expectError(error.InvalidParams, linkedin.connect(gpa, &strict, profile, "   "));
+    try std.testing.expectError(error.InvalidParams, linkedin.connect(gpa, &strict, linkedin.site, profile, "   "));
     try std.testing.expectEqual(@as(usize, 0), strict.steps.items.len);
 }
 
 test "message: in a conversation, or from a profile's Message button" {
     var conv = FakeRunner{};
     defer conv.deinit();
-    const a = (try linkedin.message(gpa, &conv, .{ .conversation_url = "https://www.linkedin.com/messaging/thread/2-abc/" }, "Hello there")).?;
+    const a = (try linkedin.message(gpa, &conv, linkedin.site, .{ .conversation_url = "https://www.linkedin.com/messaging/thread/2-abc/" }, "Hello there")).?;
     gpa.free(a);
     try expectMethods(&conv, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.click" });
     try expectSelector(&conv, 2, linkedin.selectors.message_input);
@@ -160,7 +173,7 @@ test "message: in a conversation, or from a profile's Message button" {
 
     var prof = FakeRunner{};
     defer prof.deinit();
-    const b = (try linkedin.message(gpa, &prof, .{ .profile_url = profile }, "Hello there")).?;
+    const b = (try linkedin.message(gpa, &prof, linkedin.site, .{ .profile_url = profile }, "Hello there")).?;
     gpa.free(b);
     try expectSelector(&prof, 2, linkedin.selectors.message_button);
 }
@@ -168,38 +181,41 @@ test "message: in a conversation, or from a profile's Message button" {
 test "like waits for the pressed state; comment types into the comment box; follow waits for Following" {
     var l = FakeRunner{};
     defer l.deinit();
-    gpa.free((try linkedin.like(gpa, &l, "https://www.linkedin.com/feed/update/urn:li:activity:1/")).?);
+    gpa.free((try linkedin.like(gpa, &l, linkedin.site, "https://www.linkedin.com/feed/update/urn:li:activity:1/")).?);
     try expectMethods(&l, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.waitFor" });
     try expectSelector(&l, 3, linkedin.selectors.liked_button);
 
     var c = FakeRunner{};
     defer c.deinit();
-    gpa.free((try linkedin.comment(gpa, &c, "https://www.linkedin.com/feed/update/urn:li:activity:1/", "Great post")).?);
+    gpa.free((try linkedin.comment(gpa, &c, linkedin.site, "https://www.linkedin.com/feed/update/urn:li:activity:1/", "Great post")).?);
     try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.click", "dom.fill", "dom.type", "dom.click" });
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[4].params, "Great post") == null);
     try expectSelector(&c, 3, linkedin.selectors.comment_input);
     try expectSelector(&c, 6, linkedin.selectors.comment_submit);
 
     var f = FakeRunner{};
     defer f.deinit();
-    gpa.free((try linkedin.follow(gpa, &f, profile)).?);
+    gpa.free((try linkedin.follow(gpa, &f, linkedin.site, profile)).?);
     try expectSelector(&f, 2, linkedin.selectors.follow_button);
     try expectSelector(&f, 3, linkedin.selectors.following_button);
 }
 
 test "search builds the real URL from query and searchType (percent-encoded) and counts results" {
-    const url = try linkedin.searchUrl(gpa, " Zig dev & café ", "people", linkedin.base_url);
+    const url = try linkedin.searchUrl(gpa, " Zig dev & café ", "people", linkedin.site.origin);
     defer gpa.free(url);
     try std.testing.expectEqualStrings("https://www.linkedin.com/search/results/people/?keywords=Zig%20dev%20%26%20caf%C3%A9", url);
     const companies = try linkedin.searchUrl(gpa, "anthropic", "companies", "http://127.0.0.1:9/");
     defer gpa.free(companies);
     try std.testing.expectEqualStrings("http://127.0.0.1:9/search/results/companies/?keywords=anthropic", companies);
-    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "x", "groups", linkedin.base_url));
-    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "  ", "people", linkedin.base_url));
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "x", "groups", linkedin.site.origin));
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "  ", "people", linkedin.site.origin));
     try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "x", "people", "ftp://example.com"));
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "x" ** 201, "people", linkedin.site.origin));
+    try std.testing.expectError(error.InvalidParams, linkedin.searchUrl(gpa, "\xff\xfe", "people", linkedin.site.origin));
 
     var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "reusable-search", .result = "{\"elements\":[{\"id\":\"a\",\"tag\":\"li\",\"text\":\"\",\"bbox\":{}},{\"id\":\"b\",\"tag\":\"li\",\"text\":\"\",\"bbox\":{}}]}" }} };
     defer runner.deinit();
-    const result = (try linkedin.search(gpa, &runner, "zig", "people", linkedin.base_url)).?;
+    const result = (try linkedin.search(gpa, &runner, linkedin.site, "zig", "people")).?;
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"ok\":true,\"url\":\"https://www.linkedin.com/search/results/people/?keywords=zig\",\"resultCount\":2}", result);
 }
@@ -211,7 +227,7 @@ test "extract: name, headline, location; absent optional fields are null" {
         .{ .method = "dom.query", .contains = "t-black--light", .result = "{\"elements\":[]}" },
     } };
     defer runner.deinit();
-    const result = (try linkedin.extract(gpa, &runner, profile)).?;
+    const result = (try linkedin.extract(gpa, &runner, linkedin.site, profile)).?;
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"name\":\"Ada Lovelace\",\"headline\":\"Analyst at the Analytical Engine\",\"location\":null}", result);
     for (runner.steps.items) |s| try std.testing.expect(!std.mem.eql(u8, s.method, "dom.click"));
@@ -220,7 +236,7 @@ test "extract: name, headline, location; absent optional fields are null" {
 test "extract: an unusable getText answer is malformed" {
     var runner = FakeRunner{ .rules = &.{.{ .method = "dom.getText", .result = "{\"value\":1}" }} };
     defer runner.deinit();
-    try std.testing.expect((try linkedin.extract(gpa, &runner, profile)) == null);
+    try std.testing.expect((try linkedin.extract(gpa, &runner, linkedin.site, profile)) == null);
     try std.testing.expectEqual(@as(usize, 1), runner.malformed_calls);
 }
 
@@ -236,19 +252,38 @@ test "selfcheck reports every selector-table entry, read-only" {
     for (runner.steps.items) |s| try std.testing.expectEqualStrings("dom.query", s.method);
 }
 
-test "URLs must be absolute http(s) without spaces" {
+test "URLs must be on https://www.linkedin.com (C43): no other host, scheme, port, user info or lookalike" {
     var runner = FakeRunner{};
     defer runner.deinit();
-    for ([_][]const u8{ "linkedin.com/in/x", "ftp://www.linkedin.com/in/x", "https:///in/x", "https://www.linkedin.com/in/a b/", "" }) |bad| {
-        try std.testing.expectError(error.InvalidParams, linkedin.visit(gpa, &runner, bad));
+    for ([_][]const u8{
+        "linkedin.com/in/x",                         "ftp://www.linkedin.com/in/x",
+        "http://www.linkedin.com/in/x",              "https:///in/x",
+        "https://www.linkedin.com/in/a b/",          "",
+        "https://evil.example/in/x",                 "https://www.linkedin.com.evil.example/in/x",
+        "https://www.linkedin.com@evil.example/in/", "https://user@www.linkedin.com/in/x",
+        "https://www.linkedin.com:8443/in/x",        "https://linkedin.com/in/x",
+        "https://www.instagram.com/x/",              "https://www.linkedin.com",
+        "https://wwwXlinkedin.com/in/x",             "https://www.linkedin.co/in/x",
+    }) |bad| {
+        try std.testing.expectError(error.InvalidParams, linkedin.visit(gpa, &runner, linkedin.site, bad));
     }
     try std.testing.expectEqual(@as(usize, 0), runner.steps.items.len);
+    gpa.free((try linkedin.visit(gpa, &runner, linkedin.site, "https://WWW.LinkedIn.com/in/ada/")).?);
+
+    // A fixture origin (server configuration, tests only) is accepted
+    // exactly, nothing else is.
+    var fixture_site = linkedin.site;
+    fixture_site.fixture_origin = "http://127.0.0.1:41234";
+    try std.testing.expect(fixture_site.allows("http://127.0.0.1:41234/in/ada/"));
+    try std.testing.expect(!fixture_site.allows("http://127.0.0.1:41234.evil/in/ada/"));
+    try std.testing.expect(!fixture_site.allows("http://127.0.0.1:4123/in/ada/"));
+    try std.testing.expect(!linkedin.site.allows("http://127.0.0.1:41234/in/ada/"));
 }
 
 test "every step's timeout is clamped to the flow budget" {
     var runner = FakeRunner{ .budget_ms = 4_000 };
     defer runner.deinit();
-    gpa.free((try linkedin.connect(gpa, &runner, profile, "note")).?);
+    gpa.free((try linkedin.connect(gpa, &runner, linkedin.site, profile, "note")).?);
     for (runner.steps.items) |s| {
         const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});
         defer parsed.deinit();

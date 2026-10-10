@@ -13,12 +13,19 @@ const script_command = @import("script_command.zig");
 /// (a later successful lookup, like the login-link probe after a failed
 /// composer wait, must not erase the failure that stopped the flow). Every
 /// failure it hands out carries the x.* command's trace_id/command_id.
+pub const StepObserver = struct {
+    ctx: *anyopaque,
+    on_step: *const fn (ctx: *anyopaque, method: []const u8, params_json: []const u8, ok: bool, duration_ms: u64) void,
+};
+
 pub const Runner = struct {
     gpa: std.mem.Allocator,
     ext: *engine_mod.External,
     deadline_ms: u64,
     /// data.reason when the flow budget runs out (e.g. "x_flow_deadline").
     deadline_reason: []const u8,
+    /// Called after every step that ran (telemetry).
+    observer: ?StepObserver = null,
     last_result: ?engine_mod.Outcome = null,
     failure: ?engine_mod.Outcome = null,
     /// Set once the flow budget stopped a step: every later step fails too
@@ -35,7 +42,9 @@ pub const Runner = struct {
             self.expired = true;
             return null;
         }
+        const started = self.ext.nowMs();
         const outcome = try self.ext.runCommand(self.gpa, method, params_json);
+        if (self.observer) |o| o.on_step(o.ctx, method, params_json, outcome == .result, self.ext.nowMs() -| started);
         switch (outcome) {
             .result => |json| {
                 self.dropResult();

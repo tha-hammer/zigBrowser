@@ -44,9 +44,16 @@ pub const selectors = struct {
     pub const search_result = "css=.reusable-search__result-container";
 };
 
-pub const base_url = "https://www.linkedin.com";
+/// The real site. The automation server may swap in a fixture origin for
+/// tests (flow_steps.Site); requests cannot.
+pub const site = flow.Site{ .host = "www.linkedin.com", .origin = "https://www.linkedin.com" };
 
-/// LinkedIn's limits for an invitation note, a message and a comment.
+/// LinkedIn's session cookie: without it the account is logged out, and an
+/// action fails before navigating (checked by the automation server).
+pub const session_cookie = "li_at";
+
+/// LinkedIn's limits for an invitation note (longer notes are truncated to
+/// this, C42), a message and a comment.
 pub const max_note_chars = 300;
 pub const max_message_chars = 8000;
 pub const max_comment_chars = 1250;
@@ -82,23 +89,35 @@ pub const Error = flow.Error;
 
 const ok_json = "{\"ok\":true}";
 
+/// The first `max_note_chars` code points of `note` (C42: truncated, not
+/// rejected).
+pub fn truncateNote(note: []const u8) []const u8 {
+    var view = (std.unicode.Utf8View.init(note) catch return note).iterator();
+    var count: usize = 0;
+    while (view.nextCodepointSlice()) |_| {
+        count += 1;
+        if (count == max_note_chars) return note[0..view.i];
+    }
+    return note;
+}
+
 /// Opens a profile. Returns `{"ok":true}`.
-pub fn visit(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(profile_url)) return error.InvalidParams;
+pub fn visit(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url: []const u8) Error!?[]u8 {
+    if (!s.allows(profile_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, profile_url))) return null;
     return try gpa.dupe(u8, ok_json);
 }
 
-/// Sends a connection invitation, with an optional note (at most 300
-/// characters), and waits until the profile shows it as pending.
-pub fn connect(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8, note: ?[]const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(profile_url)) return error.InvalidParams;
-    if (note) |text| try validateText(text, max_note_chars);
+/// Sends a connection invitation, with an optional note (typed; truncated
+/// to 300 characters), and waits until the profile shows it as pending.
+pub fn connect(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url: []const u8, note: ?[]const u8) Error!?[]u8 {
+    if (!s.allows(profile_url)) return error.InvalidParams;
+    if (note) |text| try validateText(text, std.math.maxInt(usize));
     if (!(try openPage(gpa, runner, profile_url))) return null;
     if (!(try click(gpa, runner, selectors.connect_button, true))) return null;
     if (note) |text| {
         if (!(try click(gpa, runner, selectors.add_note_button, true))) return null;
-        if (!(try flow.step(gpa, runner, "dom.fill", .{ .selector = selectors.note_input, .value = text, .options = .{ .timeout_ms = flow.budget(runner, click_timeout_ms) } }))) return null;
+        if (!(try typeInto(gpa, runner, selectors.note_input, truncateNote(text)))) return null;
         if (!(try click(gpa, runner, selectors.send_invite_button, false))) return null;
     } else {
         if (!(try click(gpa, runner, selectors.send_without_note_button, true))) return null;
@@ -108,8 +127,8 @@ pub fn connect(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8,
 }
 
 /// Follows a profile and waits for the Following state.
-pub fn follow(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(profile_url)) return error.InvalidParams;
+pub fn follow(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url: []const u8) Error!?[]u8 {
+    if (!s.allows(profile_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, profile_url))) return null;
     if (!(try click(gpa, runner, selectors.follow_button, true))) return null;
     if (!(try waitAttached(gpa, runner, selectors.following_button))) return null;
@@ -120,12 +139,12 @@ pub const MessageTarget = union(enum) { conversation_url: []const u8, profile_ur
 
 /// Sends `text` in an existing conversation, or from a profile's Message
 /// button.
-pub fn message(gpa: std.mem.Allocator, runner: anytype, target: MessageTarget, text: []const u8) Error!?[]u8 {
+pub fn message(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, target: MessageTarget, text: []const u8) Error!?[]u8 {
     try validateText(text, max_message_chars);
     const url = switch (target) {
         inline else => |u| u,
     };
-    if (!flow.isPageUrl(url)) return error.InvalidParams;
+    if (!s.allows(url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, url))) return null;
     if (target == .profile_url) {
         if (!(try click(gpa, runner, selectors.message_button, false))) return null;
@@ -136,8 +155,8 @@ pub fn message(gpa: std.mem.Allocator, runner: anytype, target: MessageTarget, t
 }
 
 /// Likes a post (its first reaction button) and waits for the pressed state.
-pub fn like(gpa: std.mem.Allocator, runner: anytype, post_url: []const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(post_url)) return error.InvalidParams;
+pub fn like(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, post_url: []const u8) Error!?[]u8 {
+    if (!s.allows(post_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, post_url))) return null;
     if (!(try click(gpa, runner, selectors.like_button, false))) return null;
     if (!(try waitAttached(gpa, runner, selectors.liked_button))) return null;
@@ -145,9 +164,9 @@ pub fn like(gpa: std.mem.Allocator, runner: anytype, post_url: []const u8) Error
 }
 
 /// Comments on a post.
-pub fn comment(gpa: std.mem.Allocator, runner: anytype, post_url: []const u8, text: []const u8) Error!?[]u8 {
+pub fn comment(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, post_url: []const u8, text: []const u8) Error!?[]u8 {
     try validateText(text, max_comment_chars);
-    if (!flow.isPageUrl(post_url)) return error.InvalidParams;
+    if (!s.allows(post_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, post_url))) return null;
     if (!(try click(gpa, runner, selectors.comment_button, false))) return null;
     if (!(try typeInto(gpa, runner, selectors.comment_input, text))) return null;
@@ -156,10 +175,10 @@ pub fn comment(gpa: std.mem.Allocator, runner: anytype, post_url: []const u8, te
 }
 
 /// Opens LinkedIn's search for `query` (`search_type`: people, companies,
-/// jobs, content or all; `base`: the site root). Returns
-/// `{"ok":true,"url":...,"resultCount":n}` (result cards on the first page).
-pub fn search(gpa: std.mem.Allocator, runner: anytype, query: []const u8, search_type: []const u8, base: []const u8) Error!?[]u8 {
-    const url = try searchUrl(gpa, query, search_type, base);
+/// jobs, content or all). Returns `{"ok":true,"url":...,"resultCount":n}`
+/// (result cards on the first page).
+pub fn search(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, query: []const u8, search_type: []const u8) Error!?[]u8 {
+    const url = try searchUrl(gpa, query, search_type, s.base());
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
     const count = (try flow.countMatches(gpa, runner, selectors.search_result)) orelse return null;
@@ -187,8 +206,8 @@ pub fn searchUrl(gpa: std.mem.Allocator, query: []const u8, search_type: []const
 /// Read-only profile summary: `{"name":...,"headline":...|null,"location":...|null}`.
 /// The name is required; headline and location are null when the profile
 /// shows none.
-pub fn extract(gpa: std.mem.Allocator, runner: anytype, profile_url: []const u8) Error!?[]u8 {
-    if (!flow.isPageUrl(profile_url)) return error.InvalidParams;
+pub fn extract(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url: []const u8) Error!?[]u8 {
+    if (!s.allows(profile_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, profile_url))) return null;
     const name = (try flow.getText(gpa, runner, selectors.profile_name, read_timeout_ms)) orelse return null;
     defer gpa.free(name);

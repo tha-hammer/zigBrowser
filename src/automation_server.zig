@@ -36,7 +36,28 @@ pub const Config = struct {
     cookie_port: ?automation.cookie_port.CookiePort = null,
     /// Backend/version dimensions stamped on every span.
     build_info: automation.telemetry.BuildInfo = .{},
+    /// TESTS ONLY: an origin (e.g. "http://127.0.0.1:41234") that stands in
+    /// for www.linkedin.com and www.instagram.com in linkedin.*/instagram.*
+    /// flows, so they can run against local fixtures. Null: the environment
+    /// variable ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN, else none (production).
+    /// Requests can never change it.
+    social_fixture_origin: ?[]const u8 = null,
 };
+
+/// ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN, if it is an http(s) origin (scheme and
+/// host[:port], no path); trailing slashes are dropped.
+fn fixtureOriginFromEnv() ?[]const u8 {
+    const raw = std.c.getenv("ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN") orelse return null;
+    return validFixtureOrigin(std.mem.span(raw));
+}
+
+pub fn validFixtureOrigin(text: []const u8) ?[]const u8 {
+    const origin = std.mem.trimEnd(u8, text, "/");
+    const rest = if (std.mem.startsWith(u8, origin, "http://")) origin[7..] else if (std.mem.startsWith(u8, origin, "https://")) origin[8..] else return null;
+    if (rest.len == 0) return null;
+    for (rest) |c| if (c <= ' ' or c == '/' or c == '?' or c == '#' or c == '@' or c == 0x7f) return null;
+    return origin;
+}
 
 /// One accepted client. Each connection has its own thread and may carry any
 /// number of length-prefixed requests until the client closes it.
@@ -79,6 +100,8 @@ pub const AutomationApiServer = struct {
         const token = try allocator.dupe(u8, config.token);
         errdefer allocator.free(token);
         const token_file_path = try allocator.dupe(u8, config.token_file_path);
+        errdefer allocator.free(token_file_path);
+        const fixture_origin: ?[]const u8 = if (if (config.social_fixture_origin) |o| validFixtureOrigin(o) else fixtureOriginFromEnv()) |o| try allocator.dupe(u8, o) else null;
         return .{
             .allocator = allocator,
             .io = io,
@@ -94,6 +117,7 @@ pub const AutomationApiServer = struct {
                 .telemetry_sink = config.telemetry_sink,
                 .build_info = config.build_info,
                 .cookie_port = config.cookie_port,
+                .social_fixture_origin = fixture_origin,
             },
         };
     }
@@ -106,6 +130,7 @@ pub const AutomationApiServer = struct {
         self.allocator.free(self.config.socket_path);
         self.allocator.free(self.config.token);
         self.allocator.free(self.config.token_file_path);
+        if (self.config.social_fixture_origin) |o| self.allocator.free(o);
         self.* = undefined;
     }
 
@@ -298,7 +323,7 @@ pub const AutomationApiServer = struct {
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
         route.telemetry_sink = self.tee.sink();
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping }, &self.recent_traces, &self.x_state);
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping, .fixture_origin = self.config.social_fixture_origin }, &self.recent_traces, &self.x_state);
     }
 };
 
@@ -416,7 +441,7 @@ fn handleRequestWith(
         return handleX(allocator, id_json, method, verb, params_json, engine, queue, x_state, route, build_info);
     }
     if (social_flow_routes.callFromMethod(method)) |call| {
-        return handleSocialFlow(allocator, id_json, method, call, params_json, engine, queue, social, route, build_info);
+        return handleSocialFlow(allocator, id_json, method, call, params_json, engine, queue, social, .{ .cookies = cookies.port, .fixture_origin = cookies.fixture_origin }, route, build_info);
     }
     if (social_routes.verbFromMethod(method)) |verb| {
         return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
@@ -461,6 +486,8 @@ const CookieContext = struct {
     port: ?automation.cookie_port.CookiePort,
     /// cookies.* skip the page queue, so they observe server stop directly.
     stopping: *const std.atomic.Value(bool),
+    /// linkedin.*/instagram.* test-only fixture origin (Config).
+    fixture_origin: ?[]const u8 = null,
 };
 
 /// cookies.* do not touch the page DOM, so they skip the page queue; they
@@ -560,6 +587,7 @@ fn handleSocialFlow(
     engine: *engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
     social: *social_routes.SocialState,
+    env: social_flow_routes.Env,
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
@@ -574,11 +602,12 @@ fn handleSocialFlow(
 
     const FlowCall = struct {
         state: *social_routes.SocialState,
+        env: social_flow_routes.Env,
         call: social_flow_routes.Call,
         params_json: []const u8,
 
         fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
-            return social_flow_routes.handle(gpa, self.state, ext, self.call, self.params_json);
+            return social_flow_routes.handle(gpa, self.state, self.env, ext, self.call, self.params_json);
         }
     };
     var outcome = try engine.executeExternal(allocator, method, call.namespace(), .{
@@ -586,7 +615,7 @@ fn handleSocialFlow(
         .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
         .route = route,
         .build = build_info,
-    }, FlowCall{ .state = social, .call = call, .params_json = params_json }, FlowCall.run);
+    }, FlowCall{ .state = social, .env = env, .call = call, .params_json = params_json }, FlowCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(
