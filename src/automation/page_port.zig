@@ -76,6 +76,29 @@ pub const Screenshot = struct { png: []u8, width: u32, height: u32 };
 /// Largest encoded PNG a screenshot may return (else error.TooLarge).
 pub const max_screenshot_bytes: usize = 16 * 1024 * 1024;
 
+/// v3.5 (N23): a browser window's id, stable for the window's life and
+/// never reused within a run. The first window is 1.
+pub const WindowId = u32;
+
+/// v3.5 listWindows entry; `url` and `title` are owned by the `gpa` passed
+/// to listWindows (see freeWindows).
+pub const WindowInfo = struct {
+    id: WindowId,
+    url: []u8,
+    title: []u8,
+    primary: bool,
+    /// The window whose page opened this one (a popup), if any.
+    opener: ?WindowId = null,
+};
+
+pub fn freeWindows(gpa: std.mem.Allocator, windows: []WindowInfo) void {
+    for (windows) |w| {
+        gpa.free(w.url);
+        gpa.free(w.title);
+    }
+    gpa.free(windows);
+}
+
 /// Native key modifier bits (PagePort.nativeKey).
 pub const modifier_shift: u8 = 1 << 0;
 pub const modifier_control: u8 = 1 << 1;
@@ -173,6 +196,21 @@ pub const PagePort = struct {
         /// bounded by the deadline. Over max_screenshot_bytes:
         /// error.TooLarge, nothing returned.
         screenshot: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!Screenshot = unsupportedScreenshot,
+
+        // --- v3.5 (N23 window targeting) ---
+
+        /// Every open window, primary first (see WindowInfo, freeWindows).
+        listWindows: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]WindowInfo = unsupportedList,
+        /// A PagePort whose every call goes to window `id`. A pure,
+        /// non-blocking handle constructor (no page work, no deadline): it
+        /// may accept an id with no window; the handle's first bounded call
+        /// then fails with NoPage, as do all its calls once that window
+        /// closes. Calls never fall through to another window. Unsupported
+        /// without window support.
+        forWindow: *const fn (ptr: *anyopaque, id: WindowId) PortError!PagePort = unsupportedFor,
+        /// Closes window `id`; returns once it is destroyed. NoPage if
+        /// there is no such window.
+        closeWindow: *const fn (ptr: *anyopaque, id: WindowId, timeout_ms: u64) PortError!void = unsupportedClose,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -244,6 +282,18 @@ pub const PagePort = struct {
     pub fn screenshot(self: PagePort, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!Screenshot {
         return self.vtable.screenshot(self.ptr, gpa, full_page, timeout_ms);
     }
+
+    pub fn listWindows(self: PagePort, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]WindowInfo {
+        return self.vtable.listWindows(self.ptr, gpa, timeout_ms);
+    }
+
+    pub fn forWindow(self: PagePort, id: WindowId) PortError!PagePort {
+        return self.vtable.forWindow(self.ptr, id);
+    }
+
+    pub fn closeWindow(self: PagePort, id: WindowId, timeout_ms: u64) PortError!void {
+        return self.vtable.closeWindow(self.ptr, id, timeout_ms);
+    }
 };
 
 fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
@@ -271,6 +321,15 @@ fn unsupportedScroll(_: *anyopaque, _: f64, _: f64, _: f64, _: f64, _: ?[]const 
 fn unsupportedScreenshot(_: *anyopaque, _: std.mem.Allocator, _: bool, _: u64) PortError!Screenshot {
     return error.Unsupported;
 }
+fn unsupportedList(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]WindowInfo {
+    return error.Unsupported;
+}
+fn unsupportedFor(_: *anyopaque, _: WindowId) PortError!PagePort {
+    return error.Unsupported;
+}
+fn unsupportedClose(_: *anyopaque, _: WindowId, _: u64) PortError!void {
+    return error.Unsupported;
+}
 
 /// Port for a server with no page attached (a backend without a PagePort,
 /// e.g. WebView2/WKWebView today): page operations fail with
@@ -295,6 +354,9 @@ const no_page_vtable = PagePort.VTable{
     .setInputFiles = unsupportedFiles,
     .nativeScroll = unsupportedScroll,
     .screenshot = unsupportedScreenshot,
+    .listWindows = unsupportedList,
+    .forWindow = unsupportedFor,
+    .closeWindow = unsupportedClose,
 };
 
 fn noPageEval(_: *anyopaque, _: std.mem.Allocator, _: World, _: []const u8, _: []const u8, _: u64) PortError![]u8 {

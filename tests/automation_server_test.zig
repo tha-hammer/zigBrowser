@@ -1196,6 +1196,14 @@ const FakePort = struct {
     /// containing "/a" / "/b" (else 'n').
     log: [64]u8 = undefined,
     log_len: std.atomic.Value(usize) = .init(0),
+    /// N23: window 1 is this port; `popups` are windows 2.. (opened by 1).
+    popups: ?*Popups = null,
+    /// N23: this window is closed (or never existed): every call is NoPage,
+    /// like a real window handle whose id is gone.
+    gone: bool = false,
+    native_calls: std.atomic.Value(u32) = .init(0),
+    /// Reloads, screenshots and file choices that reached the page.
+    page_work: std.atomic.Value(u32) = .init(0),
 
     fn record(self: *FakePort, event: u8) void {
         const i = self.log_len.fetchAdd(1, .acq_rel);
@@ -1216,11 +1224,84 @@ const FakePort = struct {
         .reload = reload,
         .url = url,
         .title = title,
+        .listWindows = listWindows,
+        .forWindow = forWindow,
+        .closeWindow = closeWindow,
+        .nativeClick = nativeClick,
+        .nativeKey = nativeKey,
+        .nativeText = nativeText,
+        .nativeMove = nativeMove,
+        .nativeScroll = nativeScroll,
+        .setInputFiles = setInputFiles,
+        .screenshot = screenshot,
     };
+
+    fn nativeClick(ptr: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!void {
+        return nativeCall(ptr);
+    }
+    fn nativeMove(ptr: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!void {
+        return nativeCall(ptr);
+    }
+    fn nativeKey(ptr: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) page_port.PortError!void {
+        return nativeCall(ptr);
+    }
+    fn nativeText(ptr: *anyopaque, text: []const u8, _: ?[]const u8, _: u64, sent: *usize) page_port.PortError!void {
+        sent.* = 0;
+        try nativeCall(ptr);
+        sent.* = text.len;
+    }
+    fn nativeCall(ptr: *anyopaque) page_port.PortError!void {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
+        _ = self.native_calls.fetchAdd(1, .acq_rel);
+    }
+
+
+    const Popups = struct {
+        ports: [2]FakePort,
+        open: [2]bool = .{ true, true },
+        list_calls: std.atomic.Value(u32) = .init(0),
+        /// listWindows fails with this (error-mapping tests).
+        list_error: ?page_port.PortError = null,
+        /// The handle for ids that never existed.
+        ghost: FakePort = .{ .eval_reply = "{}", .gone = true },
+    };
+
+    fn listWindows(ptr: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]page_port.WindowInfo {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        const popups = self.popups orelse return error.Unsupported;
+        _ = popups.list_calls.fetchAdd(1, .acq_rel);
+        if (popups.list_error) |err| return err;
+        var list: std.ArrayListUnmanaged(page_port.WindowInfo) = .empty;
+        errdefer list.deinit(gpa);
+        try list.append(gpa, .{ .id = 1, .url = try gpa.dupe(u8, "file:///fixture/index.html"), .title = try gpa.dupe(u8, "Fixture"), .primary = true });
+        for (popups.open, 0..) |open, i| {
+            if (!open) continue;
+            try list.append(gpa, .{ .id = @intCast(i + 2), .url = try std.fmt.allocPrint(gpa, "https://login.example/popup-{d}", .{i + 2}), .title = try gpa.dupe(u8, "Sign in"), .primary = false, .opener = 1 });
+        }
+        return list.toOwnedSlice(gpa);
+    }
+    fn forWindow(ptr: *anyopaque, id: page_port.WindowId) page_port.PortError!page_port.PagePort {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        const popups = self.popups orelse return error.Unsupported;
+        if (id == 1) return self.port();
+        // A pure handle: unknown ids are accepted; existence is checked by
+        // the bounded calls (listWindows).
+        if (id < 2 or id - 2 >= popups.ports.len) return popups.ghost.port();
+        return popups.ports[id - 2].port();
+    }
+    fn closeWindow(ptr: *anyopaque, id: page_port.WindowId, _: u64) page_port.PortError!void {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        const popups = self.popups orelse return error.Unsupported;
+        if (id < 2 or id - 2 >= popups.ports.len or !popups.open[id - 2]) return error.NoPage;
+        popups.open[id - 2] = false;
+        popups.ports[id - 2].gone = true;
+    }
 
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         _ = .{ world, body, timeout_ms };
         const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
         if (std.mem.indexOf(u8, arg, "\"op\":\"rateLimitScan\"") != null) _ = self.scans.fetchAdd(1, .acq_rel);
         const now_in_flight = self.in_flight.fetchAdd(1, .acq_rel) + 1;
         defer _ = self.in_flight.fetchSub(1, .acq_rel);
@@ -1236,13 +1317,38 @@ const FakePort = struct {
     }
     fn navigate(ptr: *anyopaque, target: []const u8, _: u64) page_port.PortError!void {
         const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
         self.record(if (std.mem.indexOf(u8, target, "/a") != null) 'A' else if (std.mem.indexOf(u8, target, "/b") != null) 'B' else 'n');
     }
-    fn reload(_: *anyopaque, _: u64) page_port.PortError!void {}
-    fn url(_: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+    fn reload(ptr: *anyopaque, _: u64) page_port.PortError!void {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
+        _ = self.page_work.fetchAdd(1, .acq_rel);
+    }
+    fn screenshot(ptr: *anyopaque, gpa: std.mem.Allocator, _: bool, _: u64) page_port.PortError!page_port.Screenshot {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
+        _ = self.page_work.fetchAdd(1, .acq_rel);
+        return .{ .png = try gpa.dupe(u8, "PNG"), .width = 1, .height = 1 };
+    }
+    fn setInputFiles(ptr: *anyopaque, gpa: std.mem.Allocator, body: []const u8, arg: []const u8, _: []const []const u8, timeout_ms: u64) page_port.PortError![]u8 {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
+        _ = self.page_work.fetchAdd(1, .acq_rel);
+        return evalJson(ptr, gpa, .automation, body, arg, timeout_ms);
+    }
+    fn nativeScroll(ptr: *anyopaque, _: f64, _: f64, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!page_port.ScrollOffsets {
+        try nativeCall(ptr);
+        return .{ .x = 0, .y = 0 };
+    }
+    fn url(ptr: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
         return gpa.dupe(u8, "file:///fixture/index.html");
     }
-    fn title(_: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+    fn title(ptr: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        if (self.gone) return error.NoPage;
         return gpa.dupe(u8, "Fixture");
     }
 };
@@ -1384,4 +1490,351 @@ test "N21: the server loads <profile>/automation-pacing.json at start and saves 
         defer testing.allocator.free(set);
     }
     try testing.expectEqual(@as(u32, 9), automation_server.automation.pacing_store.load(testing.io, testing.allocator, path).ok.social.daily_cap);
+}
+
+fn rpc(stream: net.Stream, request: []const u8) !std.json.Parsed(std.json.Value) {
+    const response = try roundTrip(stream, request);
+    defer testing.allocator.free(response);
+    return std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+}
+
+fn errorOf(parsed: std.json.Parsed(std.json.Value)) ?struct { code: i64, reason: ?[]const u8 } {
+    const err = parsed.value.object.get("error") orelse return null;
+    const data = err.object.get("data");
+    const reason: ?[]const u8 = if (data) |d| if (d.object.get("reason")) |r| r.string else null else null;
+    return .{ .code = err.object.get("code").?.integer, .reason = reason };
+}
+
+test "N23: page.list, window_id targeting with one queue per window, and page.close" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("windows", .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    // page.list: the primary first, then the popups with their opener.
+    {
+        var listed = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"params\":{},\"id\":1}");
+        defer listed.deinit();
+        const pages = listed.value.object.get("result").?.object.get("pages").?.array.items;
+        try testing.expectEqual(@as(usize, 3), pages.len);
+        try testing.expectEqualStrings("window-1", pages[0].object.get("window_id").?.string);
+        try testing.expect(pages[0].object.get("primary").?.bool);
+        try testing.expectEqualStrings("window-2", pages[1].object.get("window_id").?.string);
+        try testing.expectEqualStrings("https://login.example/popup-2", pages[1].object.get("url").?.string);
+        try testing.expectEqualStrings("window-1", pages[1].object.get("opener_window_id").?.string);
+        try testing.expect(pages[0].object.get("opener_window_id") == null);
+    }
+
+    // window_id sends page.* and dom.* to that window only.
+    {
+        var queried = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-2\"},\"id\":2}");
+        defer queried.deinit();
+        try testing.expect(errorOf(queried) == null);
+        try testing.expectEqual(@as(u32, 1), popups.ports[0].evals.load(.acquire));
+        try testing.expectEqual(@as(u32, 0), fixture.fake.evals.load(.acquire));
+        var titled = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.title\",\"params\":{\"window_id\":\"window-3\"},\"id\":3}");
+        defer titled.deinit();
+        try testing.expectEqualStrings("Fixture", titled.value.object.get("result").?.object.get("title").?.string);
+    }
+
+    // Malformed ids are -32602; an unknown window is -32011 no_window.
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":2},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-0\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-01\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-4294967296\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window- 2\"},\"id\":4}",
+        // window_id means nothing to the site flows, social, cookies or telemetry.
+        "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"window_id\":\"window-2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.follow\",\"params\":{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"window_id\":\"window-2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"params\":{\"window_id\":\"window-2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.getAll\",\"params\":{\"window_id\":\"window-2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"telemetry.query\",\"params\":{\"trace_id\":\"t\",\"window_id\":\"window-2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"params\":{\"x\":1},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-1\"},\"id\":4}",
+    }) |request| {
+        var bad = try rpc(stream, request);
+        defer bad.deinit();
+        const e = errorOf(bad) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i64, -32602), e.code);
+    }
+    {
+        var primary = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-1\"},\"id\":5}");
+        defer primary.deinit();
+        try testing.expectEqualStrings("primary_window", errorOf(primary).?.reason.?);
+    }
+
+    // page.close: the window is gone; commands to it are -32011 no_window.
+    {
+        var closed = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-2\"},\"id\":6}");
+        defer closed.deinit();
+        try testing.expect(closed.value.object.get("result").?.object.get("ok").?.bool);
+        try testing.expect(!popups.open[0]);
+        var gone = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-2\"},\"id\":7}");
+        defer gone.deinit();
+        const e = errorOf(gone).?;
+        try testing.expectEqual(@as(i64, -32011), e.code);
+        try testing.expectEqualStrings("no_window", e.reason.?);
+        var again = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-2\"},\"id\":8}");
+        defer again.deinit();
+        try testing.expectEqualStrings("no_window", errorOf(again).?.reason.?);
+    }
+
+    // One queue per window: a command held in window 3 does not block the
+    // primary window.
+    popups.ports[1].hold.store(true, .release);
+    var held_stream = try fixture.connect();
+    defer held_stream.close(testing.io);
+    try writeFrame(held_stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-3\"},\"id\":9}");
+    var waited: u32 = 0;
+    while (!popups.ports[1].held.load(.acquire)) : (waited += 1) {
+        if (waited > 5000) return error.NeverHeld;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    {
+        var primary = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\"},\"id\":10}");
+        defer primary.deinit();
+        try testing.expect(errorOf(primary) == null);
+    }
+    popups.ports[1].hold.store(false, .release);
+    const released = try readFrame(held_stream);
+    defer testing.allocator.free(released);
+    try testing.expect(std.mem.indexOf(u8, released, "\"result\"") != null);
+}
+
+test "N23: without window support, page.list and window_id are -32011 unsupported (with the command's normal root span)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("no-windows", .{ .sink = &sink });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"id\":1}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-2\"},\"id\":2}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-2\"},\"id\":3}",
+    }) |request| {
+        var answer = try rpc(stream, request);
+        defer answer.deinit();
+        const e = errorOf(answer).?;
+        try testing.expectEqual(@as(i64, -32011), e.code);
+        try testing.expectEqualStrings("unsupported", e.reason.?);
+    }
+    // RoseCat 4819: the targeted dom.query's root is a dom command with its
+    // usual redacted facts, not a page-namespace stand-in.
+    var dom_root: ?*const automation_server.automation.telemetry.Span = null;
+    for (sink.spans.items) |*span| {
+        if (std.mem.eql(u8, span.name, "automation.command") and std.mem.eql(u8, span.attr("rpc.method").?, "dom.query")) dom_root = span;
+    }
+    try testing.expectEqualStrings("dom", dom_root.?.attr("rpc.namespace").?);
+    try testing.expectEqualStrings("window-2", dom_root.?.attr("window.id").?);
+    try testing.expect(dom_root.?.attr("selector.kind") != null);
+}
+
+test "N23: explicit window-1 is the primary; command ids stay unique across windows; page.close waits for the window's running command and later work sees no_window" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("windows-order", .{ .sink = &sink, .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    // Primary, window-2, explicit window-1, untargeted: window-1 and the
+    // default both reach the primary page; every command id is new.
+    for ([_][]const u8{ "", ",\"window_id\":\"window-2\"", ",\"window_id\":\"window-1\"", "" }, 0..) |target, i| {
+        const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{{\"selector\":\"css=a\"{s}}},\"id\":{d}}}", .{ target, i });
+        defer testing.allocator.free(request);
+        var answer = try rpc(stream, request);
+        defer answer.deinit();
+        try testing.expect(errorOf(answer) == null);
+    }
+    try testing.expectEqual(@as(u32, 3), fixture.fake.evals.load(.acquire));
+    try testing.expectEqual(@as(u32, 1), popups.ports[0].evals.load(.acquire));
+    var ids: [8][]const u8 = undefined;
+    var n: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        ids[n] = span.command_id;
+        n += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), n);
+    for (0..n) |a| for (a + 1..n) |b| try testing.expect(!std.mem.eql(u8, ids[a], ids[b]));
+
+    // A command running in window 2 holds its turn: page.close waits behind
+    // it, then a later command for window 2 is no_window.
+    popups.ports[0].hold.store(true, .release);
+    popups.ports[0].held.store(false, .release);
+    var running = try fixture.connect();
+    defer running.close(testing.io);
+    try writeFrame(running, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-2\"},\"id\":20}");
+    var waited: u32 = 0;
+    while (!popups.ports[0].held.load(.acquire)) : (waited += 1) {
+        if (waited > 5000) return error.NeverHeld;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    var closer = try fixture.connect();
+    defer closer.close(testing.io);
+    try writeFrame(closer, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-2\"},\"id\":21}");
+    waited = 0;
+    while (fixture.server.queue.pendingCount("page-2") != 1) : (waited += 1) {
+        if (waited > 5000) return error.CloseNeverQueued;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try testing.expect(popups.open[0]); // not closed while its command runs
+    popups.ports[0].hold.store(false, .release);
+    const first = try readFrame(running);
+    defer testing.allocator.free(first);
+    try testing.expect(std.mem.indexOf(u8, first, "\"result\"") != null);
+    const closed = try readFrame(closer);
+    defer testing.allocator.free(closed);
+    try testing.expect(std.mem.indexOf(u8, closed, "\"ok\":true") != null);
+    try testing.expect(!popups.open[0]);
+    var later = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-2\"},\"id\":22}");
+    defer later.deinit();
+    try testing.expectEqualStrings("no_window", errorOf(later).?.reason.?);
+    // Two evals in window 2 (the first query and the held one); none after
+    // it closed.
+    try testing.expectEqual(@as(u32, 2), popups.ports[0].evals.load(.acquire));
+
+    // RoseCat 4806: a native command to a closed or unknown window is
+    // -32011 no_window (the handle keeps native capability; its first
+    // bounded call finds the window gone), with no input dispatched.
+    for ([_][]const u8{ "window-2", "window-77" }) |gone_window| {
+        const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{{\"selector\":\"css=a\",\"window_id\":\"{s}\",\"options\":{{\"input\":\"native\"}}}},\"id\":30}}", .{gone_window});
+        defer testing.allocator.free(request);
+        var native = try rpc(stream, request);
+        defer native.deinit();
+        const e = errorOf(native).?;
+        try testing.expectEqual(@as(i64, -32011), e.code);
+        try testing.expectEqualStrings("no_window", e.reason.?);
+    }
+    try testing.expectEqual(@as(u32, 0), popups.ports[0].native_calls.load(.acquire));
+    try testing.expectEqual(@as(u32, 0), popups.ghost.native_calls.load(.acquire));
+
+    // RoseCat 4812: every direct PagePort path, to a closed and to an unknown
+    // window: -32011 no_window, and no page, input, file or capture work.
+    const evals_before = popups.ports[0].evals.load(.acquire);
+    for ([_][]const u8{ "window-2", "window-77" }) |gone_window| {
+        inline for ([_][]const u8{
+            "\"method\":\"page.reload\",\"params\":{{\"window_id\":\"{s}\"}}",
+            "\"method\":\"page.screenshot\",\"params\":{{\"window_id\":\"{s}\"}}",
+            "\"method\":\"page.navigate\",\"params\":{{\"url\":\"about:blank\",\"window_id\":\"{s}\"}}",
+            "\"method\":\"page.title\",\"params\":{{\"window_id\":\"{s}\"}}",
+            "\"method\":\"dom.setInputFiles\",\"params\":{{\"selector\":\"css=#f\",\"paths\":[\"/tmp/a\"],\"window_id\":\"{s}\"}}",
+            "\"method\":\"dom.scroll\",\"params\":{{\"y\":10,\"options\":{{\"input\":\"native\"}},\"window_id\":\"{s}\"}}",
+            "\"method\":\"dom.query\",\"params\":{{\"selector\":\"css=a\",\"window_id\":\"{s}\"}}",
+        }) |shape| {
+            const body = try std.fmt.allocPrint(testing.allocator, shape, .{gone_window});
+            defer testing.allocator.free(body);
+            const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",{s},\"id\":31}}", .{body});
+            defer testing.allocator.free(request);
+            var answer = try rpc(stream, request);
+            defer answer.deinit();
+            const e = errorOf(answer) orelse {
+                std.debug.print("succeeded on a gone window: {s}\n", .{request});
+                return error.TestUnexpectedResult;
+            };
+            try testing.expectEqual(@as(i64, -32011), e.code);
+            try testing.expectEqualStrings("no_window", e.reason.?);
+        }
+    }
+    for ([_]*FakePort{ &popups.ports[0], &popups.ghost }) |p| {
+        try testing.expectEqual(@as(u32, 0), p.page_work.load(.acquire));
+        try testing.expectEqual(@as(u32, 0), p.native_calls.load(.acquire));
+    }
+    try testing.expectEqual(evals_before, popups.ports[0].evals.load(.acquire));
+    try testing.expectEqual(@as(u32, 0), popups.ghost.evals.load(.acquire));
+
+    // RoseCat 4798: a targeted command makes no separate liveness probe
+    // (no listWindows outside its deadline); page.close of the primary is
+    // -32602 on the wire and on its root span alike.
+    const lists_before = popups.list_calls.load(.acquire);
+    var quick = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"timeout_ms\":1,\"window_id\":\"window-3\"},\"id\":23}");
+    defer quick.deinit();
+    try testing.expect(errorOf(quick) == null);
+    try testing.expectEqual(lists_before, popups.list_calls.load(.acquire));
+    var refused = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-1\"},\"id\":24}");
+    defer refused.deinit();
+    try testing.expectEqual(@as(i64, -32602), errorOf(refused).?.code);
+    var last_root: ?*const automation_server.automation.telemetry.Span = null;
+    for (sink.spans.items) |*span| {
+        if (std.mem.eql(u8, span.name, "automation.command")) last_root = span;
+    }
+    try testing.expectEqualStrings("page.close", last_root.?.attr("rpc.method").?);
+    // Before: the root said session_invalid while the wire said -32602.
+    try testing.expectEqualStrings("error", last_root.?.attr("result.status").?);
+    try testing.expectEqualStrings("", last_root.?.attr("automation.error").?);
+}
+
+test "N23: page.list and page.close reach the page through the engine (parented platform spans, no URL or title in telemetry) and map port errors like any page call" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("windows-telemetry", .{ .sink = &sink });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":null}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":null}" },
+    } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    var listed = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"id\":1}");
+    defer listed.deinit();
+    var closed = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-2\"},\"id\":2}");
+    defer closed.deinit();
+    try testing.expect(errorOf(closed) == null);
+
+    // Each root has its platform children, parented to it.
+    var ops: [8][]const u8 = undefined;
+    var n: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.platform.eval")) continue;
+        var parented = false;
+        for (sink.spans.items) |root| {
+            if (std.mem.eql(u8, root.name, "automation.command") and std.mem.eql(u8, root.span_id, span.parent_span_id.?)) parented = true;
+        }
+        try testing.expect(parented);
+        ops[n] = span.attr("page_port.op").?;
+        n += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), n); // list; close = list + close
+    try testing.expectEqualStrings("listWindows", ops[0]);
+    try testing.expectEqualStrings("listWindows", ops[1]);
+    try testing.expectEqualStrings("closeWindow", ops[2]);
+    for ([_][]const u8{ "login.example", "Sign in", "file:///fixture" }) |raw| {
+        if (sink.containsRaw(raw)) {
+            std.debug.print("leaked into telemetry: {s}\n", .{raw});
+            return error.TestLeak;
+        }
+    }
+
+    // An internal failure while listing is -32603, not "no session".
+    popups.list_error = error.EvalFailed;
+    var broken = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"id\":3}");
+    defer broken.deinit();
+    try testing.expectEqual(@as(i64, -32603), errorOf(broken).?.code);
+    var broken_close = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-3\"},\"id\":4}");
+    defer broken_close.deinit();
+    try testing.expectEqual(@as(i64, -32603), errorOf(broken_close).?.code);
+    popups.list_error = error.Timeout;
+    var slow = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"id\":5}");
+    defer slow.deinit();
+    try testing.expectEqual(@as(i64, -32009), errorOf(slow).?.code);
 }

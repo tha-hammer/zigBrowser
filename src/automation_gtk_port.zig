@@ -32,15 +32,26 @@ pub fn installScript() void {
     c.zb_automation_set_script(js_embed.source.ptr, js_embed.source.len);
 }
 
-/// Port targeting the primary window. Safe to create before zb_app_run: ops
-/// wait for the window up to their deadline. Null on backends without the
-/// GTK bridge.
+/// Port targeting the primary window: the original first window, id 1.
+/// Safe to create before zb_app_run (ops wait for that window up to their
+/// deadline); once it closed its calls fail with NoPage and never move to
+/// another window. Null on backends without the GTK bridge.
 pub fn pagePort() ?PagePort {
     if (!supported) return null;
-    return .{ .ptr = &port_tag, .vtable = &vtable };
+    return portFor(1);
 }
 
-var port_tag: u8 = 0;
+/// A port handle carries only its window's stable id (N23): the id is the
+/// handle's address, so constructing one allocates nothing and never holds
+/// a window pointer. Ids start at 1.
+fn portFor(id: page_port.WindowId) PagePort {
+    return .{ .ptr = @ptrFromInt(id), .vtable = &vtable };
+}
+
+/// The window id a port handle targets.
+fn windowOf(ptr: *anyopaque) c_uint {
+    return @intCast(@intFromPtr(ptr));
+}
 
 const vtable: PagePort.VTable = .{
     .evalJson = evalJson,
@@ -56,7 +67,67 @@ const vtable: PagePort.VTable = .{
     .setInputFiles = setInputFiles,
     .nativeScroll = nativeScroll,
     .screenshot = screenshot,
+    .listWindows = listWindows,
+    .forWindow = forWindow,
+    .closeWindow = closeWindow,
 };
+
+// --- Windows: PagePort v3.5 (N23) ---
+
+/// Every open window, the original primary first: one snapshot taken on
+/// the GTK thread. Strings are owned by `gpa` (page_port.freeWindows).
+fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]page_port.WindowInfo {
+    var out: [*c]u8 = null;
+    const rc = c.zb_automation_list_windows(clampMs(timeout_ms), &out);
+    defer c.zb_automation_free(out);
+    try mapCode(rc);
+    if (out == null) return error.EvalFailed;
+    const Wire = struct { id: u32, url: []const u8, title: []const u8, primary: bool, opener: u32 };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, std.mem.span(out), .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EvalFailed, // malformed shim JSON
+    };
+    defer parsed.deinit();
+    const windows = try gpa.alloc(page_port.WindowInfo, parsed.value.len);
+    var filled: usize = 0;
+    errdefer {
+        for (windows[0..filled]) |w| {
+            gpa.free(w.url);
+            gpa.free(w.title);
+        }
+        gpa.free(windows);
+    }
+    for (parsed.value, windows) |wire, *info| {
+        const url_copy = try gpa.dupe(u8, wire.url);
+        const title_copy = gpa.dupe(u8, wire.title) catch |e| {
+            gpa.free(url_copy);
+            return e;
+        };
+        info.* = .{ .id = wire.id, .url = url_copy, .title = title_copy, .primary = wire.primary, .opener = if (wire.opener == 0) null else wire.opener };
+        filled += 1;
+    }
+    return windows;
+}
+
+/// A pure handle for window `id`: no page work, no allocation. A handle
+/// for an id with no window answers NoPage from its first bounded call, as
+/// does every call once the window closed; it never reaches another window.
+fn forWindow(_: *anyopaque, id: page_port.WindowId) PortError!PagePort {
+    if (id == 0) return error.NoPage;
+    return portFor(id);
+}
+
+/// Closes window `id` and returns once it is destroyed; NoPage if there is
+/// no such window. Its acknowledgement state goes with it (under txn_lock,
+/// after any native transaction on it finished).
+fn closeWindow(_: *anyopaque, id: page_port.WindowId, timeout_ms: u64) PortError!void {
+    if (id == 0) return error.NoPage;
+    const deadline = deadlineAfter(timeout_ms);
+    try mapCode(c.zb_automation_close_window(id, clampMs(timeout_ms)));
+    txn_lock.lockUntil(deadline) catch return; // closed; the stale tracker is harmless
+    defer txn_lock.unlock();
+    dropAcks(id);
+}
 
 fn mapCode(rc: c_int) PortError!void {
     return switch (rc) {
@@ -82,7 +153,7 @@ fn takeString(gpa: std.mem.Allocator, raw: [*c]u8) PortError![]u8 {
     return gpa.dupe(u8, std.mem.span(raw));
 }
 
-fn evalJson(_: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
+fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
     const body_z = try gpa.dupeZ(u8, function_body);
     defer gpa.free(body_z);
     const arg_z = try gpa.dupeZ(u8, arg_json);
@@ -94,7 +165,7 @@ fn evalJson(_: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, funct
 
     var out: [*c]u8 = null;
     var err: [*c]u8 = null;
-    const rc = c.zb_automation_eval_json(null, body_z.ptr, arg_z.ptr, world_z, clampMs(timeout_ms), &out, &err);
+    const rc = c.zb_automation_eval_json(windowOf(ptr), body_z.ptr, arg_z.ptr, world_z, clampMs(timeout_ms), &out, &err);
     c.zb_automation_free(err);
     mapCode(rc) catch |e| {
         c.zb_automation_free(out);
@@ -103,26 +174,26 @@ fn evalJson(_: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, funct
     return takeString(gpa, out);
 }
 
-fn navigate(_: *anyopaque, url_text: []const u8, timeout_ms: u64) PortError!void {
+fn navigate(ptr: *anyopaque, url_text: []const u8, timeout_ms: u64) PortError!void {
     const url_z = try std.heap.c_allocator.dupeZ(u8, url_text);
     defer std.heap.c_allocator.free(url_z);
 
     var err: [*c]u8 = null;
-    const rc = c.zb_automation_navigate(null, url_z.ptr, clampMs(timeout_ms), &err);
+    const rc = c.zb_automation_navigate(windowOf(ptr), url_z.ptr, clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
     return mapCode(rc);
 }
 
-fn reload(_: *anyopaque, timeout_ms: u64) PortError!void {
+fn reload(ptr: *anyopaque, timeout_ms: u64) PortError!void {
     var err: [*c]u8 = null;
-    const rc = c.zb_automation_reload(null, clampMs(timeout_ms), &err);
+    const rc = c.zb_automation_reload(windowOf(ptr), clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
     return mapCode(rc);
 }
 
-fn url(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
+fn url(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
     var out: [*c]u8 = null;
-    const rc = c.zb_automation_get_url(null, clampMs(timeout_ms), &out);
+    const rc = c.zb_automation_get_url(windowOf(ptr), clampMs(timeout_ms), &out);
     mapCode(rc) catch |e| {
         c.zb_automation_free(out);
         return e;
@@ -130,9 +201,9 @@ fn url(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
     return takeString(gpa, out);
 }
 
-fn title(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
+fn title(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 {
     var out: [*c]u8 = null;
-    const rc = c.zb_automation_get_title(null, clampMs(timeout_ms), &out);
+    const rc = c.zb_automation_get_title(windowOf(ptr), clampMs(timeout_ms), &out);
     mapCode(rc) catch |e| {
         c.zb_automation_free(out);
         return e;
@@ -242,9 +313,9 @@ fn isDocumentToken(token: []const u8) bool {
 
 /// The page's acknowledgement counters, or null while no automation script
 /// answers (the document is being replaced). A malformed answer is EvalFailed.
-fn readAckFromPage(_: *anyopaque, deadline: i64) PortError!?Ack {
+fn readAckFromPage(ctx: *anyopaque, deadline: i64) PortError!?Ack {
     const gpa = std.heap.c_allocator;
-    const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
+    const out = try evalJson(ctx, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     if (std.mem.eql(u8, out, "null")) return null;
     const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, wheel: i64 = 0, scrolls: i64 = 0, scrollQuietMs: f64 = -1, navigations: i64 = 0, leaving: bool = false };
@@ -260,7 +331,7 @@ const AckOutcome = enum { acknowledged, document_changed, leaving };
 
 /// Acknowledgement reading plus the debt the page still owes for earlier
 /// calls that gave up. Production uses one tracker bound to the live page
-/// (`page_acks`); tests build their own with a fake reader, so nothing global
+/// (`acksFor`, one per window); tests build their own with a fake reader, so nothing global
 /// is ever swapped.
 const AckTracker = struct {
     reader: *const fn (ctx: *anyopaque, deadline: i64) PortError!?Ack,
@@ -348,7 +419,74 @@ const AckTracker = struct {
     }
 };
 
-var page_acks: AckTracker = .{ .reader = readAckFromPage, .ctx = &port_tag };
+/// Acknowledgement state (baseline reads, debt) per window (N23): input to
+/// one window can neither take its baseline from another nor settle another
+/// window's debt. Created on first use. Every lookup happens under txn_lock
+/// (no transaction is using any tracker then) and first drops the trackers
+/// of windows that are gone, however they closed; all of them go when
+/// window ids restart (a new app run), so a later run's window 1 never
+/// inherits an earlier run's debt. So there is at most one tracker per open
+/// window, plus the one being looked up.
+const Trackers = struct {
+    lock: SpinLock = .{},
+    generation: u32 = 0,
+    map: std.AutoHashMapUnmanaged(c_uint, *AckTracker) = .{},
+
+    /// Under `lock`: forget every tracker when the run changed.
+    fn syncGeneration(self: *Trackers, generation: u32) void {
+        if (generation == self.generation) return;
+        var it = self.map.valueIterator();
+        while (it.next()) |tracker| std.heap.c_allocator.destroy(tracker.*);
+        self.map.clearRetainingCapacity();
+        self.generation = generation;
+    }
+};
+var trackers: Trackers = .{};
+
+/// Production lookup; callers hold txn_lock.
+fn acksFor(ptr: *anyopaque) PortError!*AckTracker {
+    return acksForRun(&trackers, ptr, c.zb_automation_run_generation(), windowAlive);
+}
+
+fn windowAlive(id: c_uint) bool {
+    return c.zb_automation_window_alive(id) != 0;
+}
+
+fn acksForRun(table: *Trackers, ptr: *anyopaque, generation: u32, alive: *const fn (id: c_uint) bool) PortError!*AckTracker {
+    const gpa = std.heap.c_allocator;
+    table.lock.lock();
+    defer table.lock.unlock();
+    table.syncGeneration(generation);
+    // Drop trackers of windows that are gone (closed by anyone).
+    var it = table.map.iterator();
+    var gone: [8]c_uint = undefined;
+    var n_gone: usize = 0;
+    while (it.next()) |entry| {
+        if (entry.key_ptr.* != windowOf(ptr) and !alive(entry.key_ptr.*) and n_gone < gone.len) {
+            gone[n_gone] = entry.key_ptr.*;
+            n_gone += 1;
+        }
+    }
+    for (gone[0..n_gone]) |id| {
+        if (table.map.fetchRemove(id)) |entry| gpa.destroy(entry.value);
+    }
+    const entry = try table.map.getOrPut(gpa, windowOf(ptr));
+    if (!entry.found_existing) {
+        const tracker = gpa.create(AckTracker) catch |e| {
+            _ = table.map.remove(windowOf(ptr));
+            return e;
+        };
+        tracker.* = .{ .reader = readAckFromPage, .ctx = ptr };
+        entry.value_ptr.* = tracker;
+    }
+    return entry.value_ptr.*;
+}
+
+fn dropAcks(id: c_uint) void {
+    trackers.lock.lock();
+    defer trackers.lock.unlock();
+    if (trackers.map.fetchRemove(id)) |entry| std.heap.c_allocator.destroy(entry.value);
+}
 
 fn mapNativeCode(rc: c_int) PortError!void {
     if (rc == c.ZB_AUTO_ERR_DOC_CHANGED) return error.DocumentChanged;
@@ -361,10 +499,10 @@ const Point = page_port.Point;
 /// primary window, or null. The shim keeps it per ZbWindow (written by the
 /// GTK-thread dispatch itself, cleared with the window), so a window that
 /// becomes primary never inherits another window's position.
-pub fn pointer(_: *anyopaque) ?Point {
+pub fn pointer(ptr: *anyopaque) ?Point {
     var x: f64 = 0;
     var y: f64 = 0;
-    if (c.zb_native_pointer(null, &x, &y) == 0) return null;
+    if (c.zb_native_pointer(windowOf(ptr), &x, &y) == 0) return null;
     return .{ .x = x, .y = y };
 }
 
@@ -372,15 +510,15 @@ pub fn pointer(_: *anyopaque) ?Point {
 /// humanized paths). Guarded by `document` like nativeClick. Returns once
 /// dispatched: motion shares WebKit's FIFO mouse queue with the click that
 /// follows it, so it needs no acknowledgement (WebKit may coalesce moves).
-pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+pub fn nativeMove(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    _ = try page_acks.begin(document, deadline);
+    _ = try (try acksFor(ptr)).begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var err: [*c]u8 = null;
-    const rc = c.zb_native_move(null, x, y, expected, clampMs(try remainingMs(deadline)), &err);
+    const rc = c.zb_native_move(windowOf(ptr), x, y, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
 }
@@ -388,18 +526,18 @@ pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_
 /// PagePort v3.4: PNG of the visible viewport, or of the whole document.
 /// Bounded by the deadline; an encoded PNG over max_screenshot_bytes is
 /// TooLarge. `png` is owned by `gpa`.
-pub fn screenshot(_: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!page_port.Screenshot {
-    return screenshotWithLimit(gpa, full_page, page_port.max_screenshot_bytes, timeout_ms);
+pub fn screenshot(ptr: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!page_port.Screenshot {
+    return screenshotWithLimit(ptr, gpa, full_page, page_port.max_screenshot_bytes, timeout_ms);
 }
 
 /// screenshot with an explicit encoded-size limit (tests use a tiny one).
-pub fn screenshotWithLimit(gpa: std.mem.Allocator, full_page: bool, max_bytes: usize, timeout_ms: u64) PortError!page_port.Screenshot {
+pub fn screenshotWithLimit(ptr: *anyopaque, gpa: std.mem.Allocator, full_page: bool, max_bytes: usize, timeout_ms: u64) PortError!page_port.Screenshot {
     var png: [*c]u8 = null;
     var len: usize = 0;
     var width: c_int = 0;
     var height: c_int = 0;
     var err: [*c]u8 = null;
-    const rc = c.zb_screenshot_png(null, @intFromBool(full_page), max_bytes, clampMs(timeout_ms), &png, &len, &width, &height, &err);
+    const rc = c.zb_screenshot_png(windowOf(ptr), @intFromBool(full_page), max_bytes, clampMs(timeout_ms), &png, &len, &width, &height, &err);
     c.zb_automation_free(err);
     defer c.zb_automation_free(png);
     if (rc == c.ZB_AUTO_ERR_TOO_LARGE) return error.TooLarge;
@@ -421,19 +559,20 @@ const scroll_start_ms: i64 = 250;
 /// started has finished, so the next command sees the final offsets (or
 /// a navigation replaced the page). Timeout after dispatch is never
 /// retried.
-pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!page_port.ScrollOffsets {
+pub fn nativeScroll(ptr: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!page_port.ScrollOffsets {
     for ([_]f64{ x, y, delta_x, delta_y }) |v| if (!std.math.isFinite(v)) return error.EvalFailed;
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    const base = try page_acks.begin(document, deadline);
+    const acks = try acksFor(ptr);
+    const base = try acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var err: [*c]u8 = null;
-    const rc = c.zb_native_scroll(null, x, y, delta_x, delta_y, expected, clampMs(try remainingMs(deadline)), &err);
+    const rc = c.zb_native_scroll(windowOf(ptr), x, y, delta_x, delta_y, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    return finishScroll(&page_acks, base, readScrollOffsets, deadline);
+    return finishScroll(acks, base, ptr, readScrollOffsets, deadline);
 }
 
 /// Offsets as read from the page, with the provenance read in the same
@@ -445,18 +584,18 @@ const OffsetsRead = struct { x: f64, y: f64, doc: [doc_len]u8, navigations: i64 
 /// replaced (or leaving) document at any of those points is
 /// DocumentReplaced: the wheel happened, and nothing from the replacement
 /// page is ever returned (RoseCat 4756).
-fn finishScroll(acks: *AckTracker, base: Ack, offsets: *const fn (deadline: i64) PortError!OffsetsRead, deadline: i64) PortError!page_port.ScrollOffsets {
+fn finishScroll(acks: *AckTracker, base: Ack, window: *anyopaque, offsets: *const fn (window: *anyopaque, deadline: i64) PortError!OffsetsRead, deadline: i64) PortError!page_port.ScrollOffsets {
     var target = base;
     target.wheel += 1;
     if (try acks.settle(target, deadline) != .acknowledged) return error.DocumentReplaced;
     try waitScrollSettled(acks, base, deadline);
-    const read = try offsets(deadline);
+    const read = try offsets(window, deadline);
     if (!base.isDocument(&read.doc) or read.navigations != base.navigations or read.leaving) return error.DocumentReplaced;
     return .{ .x = read.x, .y = read.y };
 }
 
 /// The page's scrollX/scrollY and document token (same deadline).
-fn readScrollOffsets(deadline: i64) PortError!OffsetsRead {
+fn readScrollOffsets(target: *anyopaque, deadline: i64) PortError!OffsetsRead {
     const gpa = std.heap.c_allocator;
     const body =
         \\const a = globalThis.__zbAutomation;
@@ -464,7 +603,7 @@ fn readScrollOffsets(deadline: i64) PortError!OffsetsRead {
         \\const ack = a.inputAck();
         \\return JSON.stringify([globalThis.scrollX, globalThis.scrollY, ack.doc, ack.navigations, ack.leaving]);
     ;
-    const out = try evalJson(&port_tag, gpa, .automation, body, "null", try remainingMs(deadline));
+    const out = try evalJson(target, gpa, .automation, body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     const Wire = struct { f64, f64, []const u8, i64, bool };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
@@ -481,7 +620,7 @@ fn readScrollOffsets(deadline: i64) PortError!OffsetsRead {
 /// Returns the op's JSON answer. Paths that are not absolute, readable
 /// regular files: BadFile, nothing run. Chosen but unconfirmed (deadline,
 /// a failed op, a lost page): FilesUnconfirmed, never to be repeated.
-pub fn setInputFiles(_: *anyopaque, gpa: std.mem.Allocator, function_body: []const u8, arg_json: []const u8, paths: []const []const u8, timeout_ms: u64) PortError![]u8 {
+pub fn setInputFiles(ptr: *anyopaque, gpa: std.mem.Allocator, function_body: []const u8, arg_json: []const u8, paths: []const []const u8, timeout_ms: u64) PortError![]u8 {
     if (paths.len == 0 or paths.len > std.math.maxInt(c_int)) return error.BadFile;
     var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena_state.deinit();
@@ -496,7 +635,7 @@ pub fn setInputFiles(_: *anyopaque, gpa: std.mem.Allocator, function_body: []con
     }
     var out: [*c]u8 = null;
     var err: [*c]u8 = null;
-    const rc = c.zb_set_input_files(null, body_z.ptr, arg_z.ptr, paths_z.ptr, @intCast(paths.len), clampMs(timeout_ms), &out, &err);
+    const rc = c.zb_set_input_files(windowOf(ptr), body_z.ptr, arg_z.ptr, paths_z.ptr, @intCast(paths.len), clampMs(timeout_ms), &out, &err);
     c.zb_automation_free(err);
     defer c.zb_automation_free(out);
     switch (rc) {
@@ -525,24 +664,25 @@ fn waitScrollSettled(acks: *AckTracker, base: Ack, deadline: i64) PortError!void
 
 /// Real pointer motion + left click at viewport CSS px (x, y). Returns once
 /// the page's click dispatch has finished, or the click navigated.
-pub fn nativeClick(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+pub fn nativeClick(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    const base = try page_acks.begin(document, deadline);
+    const acks = try acksFor(ptr);
+    const base = try acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var err: [*c]u8 = null;
-    const rc = c.zb_native_click(null, x, y, 1, expected, clampMs(try remainingMs(deadline)), &err);
+    const rc = c.zb_native_click(windowOf(ptr), x, y, 1, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup, .navigations = base.navigations }, deadline);
+    _ = try acks.settle(.{ .doc = base.doc, .click = base.click + 1, .keyup = base.keyup, .navigations = base.navigations }, deadline);
 }
 
 /// One real key press (DOM key name) with modifiers: bit0 Shift, bit1
 /// Control, bit2 Alt, bit3 Meta. Unknown keys are EvalFailed. A navigation
 /// caused by the key (Enter submitting a form) is success.
-pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) PortError!void {
+pub fn nativeKey(ptr: *anyopaque, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) PortError!void {
     if (std.mem.indexOfScalar(u8, key, 0) != null) return error.EvalFailed;
     const deadline = deadlineAfter(timeout_ms);
     const gpa = std.heap.c_allocator;
@@ -550,15 +690,16 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]con
     defer gpa.free(key_z);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    const base = try page_acks.begin(document, deadline);
+    const acks = try acksFor(ptr);
+    const base = try acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var releases: c_int = 0;
     var err: [*c]u8 = null;
-    const rc = c.zb_native_key(null, key_z.ptr, @intCast(modifiers & 0x0f), expected, clampMs(try remainingMs(deadline)), &releases, &err);
+    const rc = c.zb_native_key(windowOf(ptr), key_z.ptr, @intCast(modifiers & 0x0f), expected, clampMs(try remainingMs(deadline)), &releases, &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
-    _ = try page_acks.settle(.{ .doc = base.doc, .click = base.click, .keyup = base.keyup + releases, .navigations = base.navigations }, deadline);
+    _ = try acks.settle(.{ .doc = base.doc, .click = base.click, .keyup = base.keyup + releases, .navigations = base.navigations }, deadline);
 }
 
 /// Types `text` one code point at a time with real key events. `sent_chars`
@@ -566,7 +707,7 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, document: ?[]con
 /// guarded against `document` on the GTK thread and acknowledged before the
 /// next; as soon as an acknowledgement shows a new document it stops with
 /// DocumentChanged, even if every code point was sent.
-pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
+pub fn nativeText(ptr: *anyopaque, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
     sent_chars.* = 0;
     // The C ABI is NUL-terminated: refuse rather than silently truncate.
     if (std.mem.indexOfScalar(u8, text, 0) != null) return error.EvalFailed;
@@ -574,7 +715,8 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    var acked = try page_acks.begin(document, deadline);
+    const acks = try acksFor(ptr);
+    var acked = try acks.begin(document, deadline);
     // A navigation that earlier input started is still in flight: type
     // nothing into a document that may be going away. It clears once that
     // navigation is cancelled or ends without a new document.
@@ -591,12 +733,12 @@ pub fn nativeText(_: *anyopaque, text: []const u8, document: ?[]const u8, timeou
         var releases: c_int = 0;
         var chars: c_int = 0;
         var err: [*c]u8 = null;
-        const rc = c.zb_native_text(null, @ptrCast(&one), expected, clampMs(try remainingMs(deadline)), &releases, &chars, &err);
+        const rc = c.zb_native_text(windowOf(ptr), @ptrCast(&one), expected, clampMs(try remainingMs(deadline)), &releases, &chars, &err);
         c.zb_automation_free(err);
         sent_chars.* += @intCast(chars);
         try mapNativeCode(rc);
         acked.keyup += releases;
-        switch (try page_acks.settle(acked, deadline)) {
+        switch (try acks.settle(acked, deadline)) {
             .acknowledged => {},
             .document_changed, .leaving => return error.DocumentChanged,
         }
@@ -725,7 +867,7 @@ const FakeOffsets = struct {
     var navigations: i64 = 0;
     var leaving: bool = false;
 
-    fn read(_: i64) PortError!OffsetsRead {
+    fn read(_: *anyopaque, _: i64) PortError!OffsetsRead {
         calls += 1;
         return .{ .x = 0, .y = 300, .doc = doc, .navigations = navigations, .leaving = leaving };
     }
@@ -749,13 +891,13 @@ test "a scroll whose document is replaced after the wheel is DocumentReplaced, n
     FakeOffsets.calls = 0;
     var replaced: FakeAcks = .{ .steps = &.{.{ .ack = other }} };
     var acks = replaced.tracker();
-    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks, base, @ptrFromInt(1), FakeOffsets.read, deadlineAfter(1000)));
     try std.testing.expectEqual(@as(usize, 0), FakeOffsets.calls);
 
     // The page started navigating away during the wheel: the same.
     var going: FakeAcks = .{ .steps = &.{.{ .ack = leaving }} };
     var acks2 = going.tracker();
-    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks2, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks2, base, @ptrFromInt(1), FakeOffsets.read, deadlineAfter(1000)));
     try std.testing.expectEqual(@as(usize, 0), FakeOffsets.calls);
 
     // Replaced between the settle and the read: the read's own token says so.
@@ -763,7 +905,7 @@ test "a scroll whose document is replaced after the wheel is DocumentReplaced, n
     defer FakeOffsets.doc = "0123456789abcdef".*;
     var late: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
     var acks3 = late.tracker();
-    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks3, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks3, base, @ptrFromInt(1), FakeOffsets.read, deadlineAfter(1000)));
 
     // Settled in document A, but A started a navigation before the offsets
     // eval: same token, each provenance field on its own -> replaced.
@@ -772,19 +914,65 @@ test "a scroll whose document is replaced after the wheel is DocumentReplaced, n
     FakeOffsets.leaving = false;
     var navigated: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
     var acks_nav = navigated.tracker();
-    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_nav, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_nav, base, @ptrFromInt(1), FakeOffsets.read, deadlineAfter(1000)));
     FakeOffsets.navigations = 0;
     FakeOffsets.leaving = true;
     var going_away: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
     var acks_leave = going_away.tracker();
-    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_leave, base, FakeOffsets.read, deadlineAfter(1000)));
+    try std.testing.expectError(error.DocumentReplaced, finishScroll(&acks_leave, base, @ptrFromInt(1), FakeOffsets.read, deadlineAfter(1000)));
     FakeOffsets.leaving = false;
 
     // Same document throughout: the settled offsets.
     var same: FakeAcks = .{ .steps = &.{ .{ .ack = settled }, .{ .ack = settled } } };
     var acks4 = same.tracker();
-    const offsets = try finishScroll(&acks4, base, FakeOffsets.read, deadlineAfter(1000));
+    const offsets = try finishScroll(&acks4, base, @ptrFromInt(1), FakeOffsets.read, deadlineAfter(1000));
     try std.testing.expectEqual(@as(f64, 300), offsets.y);
+}
+
+test "a new app run starts every window's acknowledgement state afresh" {
+    var table: Trackers = .{};
+    defer {
+        table.syncGeneration(table.generation +% 1);
+        table.map.deinit(std.heap.c_allocator);
+    }
+    const run1 = try acksForRun(&table, @ptrFromInt(1), 7, FakeAlive.all);
+    run1.addDebt(testAck(9));
+    try std.testing.expect((try acksForRun(&table, @ptrFromInt(1), 7, FakeAlive.all)).owed() != null);
+    // Same window id in the next run: no debt carried over.
+    const run2 = try acksForRun(&table, @ptrFromInt(1), 8, FakeAlive.all);
+    try std.testing.expect(run2.owed() == null);
+}
+
+const FakeAlive = struct {
+    var gone: c_uint = 0;
+    fn all(_: c_uint) bool {
+        return true;
+    }
+    fn except(id: c_uint) bool {
+        return id != gone;
+    }
+};
+
+test "each window has its own acknowledgement state; a gone window's is dropped" {
+    var table: Trackers = .{};
+    defer {
+        table.syncGeneration(table.generation +% 1);
+        table.map.deinit(std.heap.c_allocator);
+    }
+    const one = try acksForRun(&table, @ptrFromInt(1), 3, FakeAlive.all);
+    const two = try acksForRun(&table, @ptrFromInt(2), 3, FakeAlive.all);
+    try std.testing.expect(one != two);
+    try std.testing.expect(one.ctx == @as(*anyopaque, @ptrFromInt(1)) and two.ctx == @as(*anyopaque, @ptrFromInt(2)));
+    // Debt owed by window 2 is not window 1's, and settling 1 leaves 2's.
+    two.addDebt(testAck(9));
+    try std.testing.expect(one.owed() == null);
+    one.clearDebt();
+    try std.testing.expect(two.owed() != null);
+    // Window 2 closed (by anyone): the next lookup drops its tracker.
+    FakeAlive.gone = 2;
+    _ = try acksForRun(&table, @ptrFromInt(1), 3, FakeAlive.except);
+    try std.testing.expect(table.map.get(2) == null);
+    try std.testing.expect(table.map.count() == 1);
 }
 
 test "C error codes map onto PortError" {

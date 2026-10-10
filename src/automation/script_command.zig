@@ -14,6 +14,10 @@ pub const Ids = struct {
     command_id: []const u8,
     /// 0-based retry attempt index for child-span telemetry.
     attempt_index: u32 = 0,
+    /// N23: `data.reason` for a page that is gone (NoPage), e.g. "no_window"
+    /// for a command sent to a window; null = no reason. Never sent to the
+    /// script.
+    no_page_reason: ?[]const u8 = null,
 };
 
 /// Script error used when `__zbAutomation` is not installed in the page yet.

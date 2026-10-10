@@ -473,7 +473,7 @@ const LiveDriver = struct {
 
     const Eval = struct { rc: c_int, out: ?[]const u8, err: ?[]const u8 };
 
-    fn eval(self: *LiveDriver, win: ?*c.ZbWindow, body: [:0]const u8, arg: ?[:0]const u8, world: ?[:0]const u8, timeout_ms: c_uint) Eval {
+    fn eval(self: *LiveDriver, win: u32, body: [:0]const u8, arg: ?[:0]const u8, world: ?[:0]const u8, timeout_ms: c_uint) Eval {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
         const rc = c.zb_automation_eval_json(win, body.ptr, if (arg) |a| a.ptr else null, if (world) |w| w.ptr else null, timeout_ms, &out, &err);
@@ -489,8 +489,8 @@ const LiveDriver = struct {
     fn str(self: *LiveDriver, rc_out: *c_int, comptime which: enum { url, title }) []const u8 {
         var out: [*c]u8 = null;
         rc_out.* = switch (which) {
-            .url => c.zb_automation_get_url(null, 5000, &out),
-            .title => c.zb_automation_get_title(null, 5000, &out),
+            .url => c.zb_automation_get_url(0, 5000, &out),
+            .title => c.zb_automation_get_title(0, 5000, &out),
         };
         defer c.zb_automation_free(out);
         if (out == null) return "";
@@ -506,7 +506,7 @@ const LiveDriver = struct {
     fn pendingEval(self: *LiveDriver) void {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_automation_eval_json(null, "await new Promise(function (resolve) { globalThis.__zbHold2 = resolve; });", null, null, 30_000, &out, &err);
+        const rc = c.zb_automation_eval_json(0, "await new Promise(function (resolve) { globalThis.__zbHold2 = resolve; });", null, null, 30_000, &out, &err);
         c.zb_automation_free(out);
         c.zb_automation_free(err);
         self.pending_eval_rc.store(rc, .release);
@@ -515,7 +515,7 @@ const LiveDriver = struct {
     fn pendingCookie(self: *LiveDriver) void {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_cookies_get_all(null, null, 30_000, &out, &err);
+        const rc = c.zb_cookies_get_all(0, null, 30_000, &out, &err);
         c.zb_automation_free(out);
         c.zb_automation_free(err);
         self.pending_cookie_rc.store(rc, .release);
@@ -536,71 +536,70 @@ const LiveDriver = struct {
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture A"), "page.title during startup waits for the first load");
 
         // NULL window waits for the primary window (driver starts before zb_app_run).
-        rc = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &err);
+        rc = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "navigate to fixture A returns OK");
-        self.check(c.zb_automation_main_window() != null, "primary window is registered");
+        self.check(c.zb_automation_window_id_at(0) == 1, "primary window is registered as id 1");
 
         self.check(std.mem.eql(u8, self.str(&rc, .url), self.uri_a), "page.url is fixture A");
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture A"), "page.title is Fixture A");
 
         // B: script lives in the isolated world only.
-        var r = self.eval(null, "return typeof globalThis.__zbAutomation;", null, automation_world, 5000);
+        var r = self.eval(0, "return typeof globalThis.__zbAutomation;", null, automation_world, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "object"), "__zbAutomation installed in automation world");
-        r = self.eval(null, "return typeof window.__zbAutomation + ':' + window.pageMarker;", null, null, 5000);
+        r = self.eval(0, "return typeof window.__zbAutomation + ':' + window.pageMarker;", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "undefined:7"), "page world sees page globals but not __zbAutomation");
 
         // C: real command through handle(), argument passed as data.
-        r = self.eval(null, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
+        r = self.eval(0, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "\"text\":\"Hello fixture\"") != null, "getText returns live fixture text");
 
-        r = self.eval(null, handle_body, "{\"op\":\"waitFor\",\"selector\":\"css=#late\",\"state\":\"attached\",\"timeout_ms\":5000}", automation_world, 8000);
+        r = self.eval(0, handle_body, "{\"op\":\"waitFor\",\"selector\":\"css=#late\",\"state\":\"attached\",\"timeout_ms\":5000}", automation_world, 8000);
         self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "\"ok\":true") != null, "waitFor promise resolves before return");
 
         const tricky = "q\"uote \\ back\nline \u{2028} sep";
-        r = self.eval(null, "return arg;", tricky, automation_world, 5000);
+        r = self.eval(0, "return arg;", tricky, automation_world, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, tricky), "arg reaches JS verbatim as data");
 
-        r = self.eval(null, "return 6 * 7;", null, null, 5000);
+        r = self.eval(0, "return 6 * 7;", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "42"), "non-string result is JSON encoded");
-        r = self.eval(null, "return undefined;", null, null, 5000);
+        r = self.eval(0, "return undefined;", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "null"), "undefined result is null");
-        r = self.eval(null, "return arg;", null, null, 5000);
+        r = self.eval(0, "return arg;", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "null"), "NULL arg_json binds the string null");
 
-        r = self.eval(null, "throw new Error('boom');", null, null, 5000);
+        r = self.eval(0, "throw new Error('boom');", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_ERR_JS and r.err != null and std.mem.indexOf(u8, r.err.?, "boom") != null, "JS exception maps to ZB_AUTO_ERR_JS");
 
         // The resolver is kept reachable: an unreferenced pending promise can be
         // garbage-collected, and WebKit then fails the call early.
-        r = self.eval(null, "await new Promise(function (resolve) { globalThis.__zbHold1 = resolve; });", null, null, 150);
+        r = self.eval(0, "await new Promise(function (resolve) { globalThis.__zbHold1 = resolve; });", null, null, 150);
         self.check(r.rc == c.ZB_AUTO_ERR_TIMEOUT, "never-settling promise times out");
-        r = self.eval(null, "return 'alive';", null, null, 5000);
+        r = self.eval(0, "return 'alive';", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "alive"), "eval still works after a timeout");
 
-        // D: explicit window pointer, and a bogus one.
-        r = self.eval(c.zb_automation_main_window(), "return 'explicit';", null, null, 5000);
-        self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "explicit"), "explicit primary window pointer works");
-        var bogus: u8 = 0;
-        r = self.eval(@ptrCast(&bogus), "return 1;", null, null, 2000);
-        self.check(r.rc == c.ZB_AUTO_ERR_NO_WINDOW, "unknown window pointer is NO_WINDOW");
+        // D: explicit window id, and an unknown one.
+        r = self.eval(1, "return 'explicit';", null, null, 5000);
+        self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "explicit"), "explicit primary window id works");
+        r = self.eval(4242, "return 1;", null, null, 2000);
+        self.check(r.rc == c.ZB_AUTO_ERR_NO_WINDOW, "unknown window id is NO_WINDOW at once");
 
         // Navigation, failures, reload.
-        rc = c.zb_automation_navigate(null, self.uri_b.ptr, 15000, &err);
+        rc = c.zb_automation_navigate(0, self.uri_b.ptr, 15000, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "navigate to fixture B returns OK");
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture B"), "title follows navigation");
-        r = self.eval(null, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
+        r = self.eval(0, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "Page B") != null, "script re-injected after navigation");
 
-        rc = c.zb_automation_navigate(null, self.uri_missing.ptr, 15000, &err);
+        rc = c.zb_automation_navigate(0, self.uri_missing.ptr, 15000, &err);
         self.check(rc == c.ZB_AUTO_ERR_NAV_FAILED and err != null, "missing file is NAV_FAILED with message");
         c.zb_automation_free(err);
         err = null;
 
-        rc = c.zb_automation_navigate(null, "file:///etc/hostname", 5000, &err);
+        rc = c.zb_automation_navigate(0, "file:///etc/hostname", 5000, &err);
         self.check(rc == c.ZB_AUTO_ERR_NAV_FAILED, "policy-blocked navigation is NAV_FAILED");
         c.zb_automation_free(err);
         err = null;
@@ -621,12 +620,12 @@ const LiveDriver = struct {
         const port_title = port.title(gpa, 5000) catch null;
         self.check(port_title != null, "PagePort.title answers");
 
-        rc = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &err);
+        rc = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &err);
         self.diag("navigate back to A", rc, err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "navigate back to fixture A returns OK");
-        rc = c.zb_automation_reload(null, 15000, &err);
+        rc = c.zb_automation_reload(0, 15000, &err);
         self.diag("reload", rc, err);
         c.zb_automation_free(err);
         err = null;
@@ -635,7 +634,7 @@ const LiveDriver = struct {
 
         // Fragment-only navigation fires no load events; the URI change completes it.
         const uri_frag = std.fmt.allocPrintSentinel(self.allocator, "{s}#frag", .{self.uri_a}, 0) catch return;
-        rc = c.zb_automation_navigate(null, uri_frag.ptr, 5000, &err);
+        rc = c.zb_automation_navigate(0, uri_frag.ptr, 5000, &err);
         self.diag("hash navigate", rc, err);
         c.zb_automation_free(err);
         err = null;
@@ -644,7 +643,7 @@ const LiveDriver = struct {
 
         // WebKit canonicalizes the scheme; the job must still match its load.
         const uri_upper = std.fmt.allocPrintSentinel(self.allocator, "FILE{s}", .{self.uri_b["file".len..]}, 0) catch return;
-        rc = c.zb_automation_navigate(null, uri_upper.ptr, 15000, &err);
+        rc = c.zb_automation_navigate(0, uri_upper.ptr, 15000, &err);
         self.diag("upper-case scheme navigate", rc, err);
         c.zb_automation_free(err);
         err = null;
@@ -652,14 +651,14 @@ const LiveDriver = struct {
 
         // A load that cannot finish: the navigate times out, the shim stops
         // that load, and the next navigate still works.
-        rc = c.zb_automation_navigate(null, self.uri_slow.ptr, 500, &err);
+        rc = c.zb_automation_navigate(0, self.uri_slow.ptr, 500, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "stalled load times out");
         sleepMs(200);
-        r = self.eval(null, "return String(document.readyState);", null, null, 5000);
+        r = self.eval(0, "return String(document.readyState);", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and r.out != null and !std.mem.eql(u8, r.out.?, "loading"), "timed-out load was stopped");
-        rc = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &err);
+        rc = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &err);
         self.diag("navigate after stalled load", rc, err);
         c.zb_automation_free(err);
         err = null;
@@ -689,7 +688,7 @@ const LiveDriver = struct {
     fn cookiesJson(self: *LiveDriver, url: ?[*:0]const u8) ?[]const u8 {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_cookies_get_all(null, url, 5000, &out, &err);
+        const rc = c.zb_cookies_get_all(0, url, 5000, &out, &err);
         defer c.zb_automation_free(out);
         defer c.zb_automation_free(err);
         if (rc != c.ZB_AUTO_OK or out == null) return null;
@@ -723,14 +722,14 @@ const LiveDriver = struct {
 
     fn addCookie(self: *LiveDriver, cookie: c.ZbCookie, comptime what: []const u8) void {
         var err: [*c]u8 = null;
-        const rc = c.zb_cookies_add(null, &cookie, 5000, &err);
+        const rc = c.zb_cookies_add(0, &cookie, 5000, &err);
         c.zb_automation_free(err);
         self.check(rc == c.ZB_AUTO_OK, what);
     }
 
     fn deleteCookie(_: *LiveDriver, name: [*:0]const u8, domain: ?[*:0]const u8) c_int {
         var err: [*c]u8 = null;
-        const rc = c.zb_cookies_delete(null, name, domain, 5000, &err);
+        const rc = c.zb_cookies_delete(0, name, domain, 5000, &err);
         c.zb_automation_free(err);
         return rc;
     }
@@ -738,14 +737,14 @@ const LiveDriver = struct {
     fn center(self: *LiveDriver, id: []const u8) ?[2]f64 {
         var buf: [256]u8 = undefined;
         const body = std.fmt.bufPrintZ(&buf, "const r = document.getElementById('{s}').getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2];", .{id}) catch return null;
-        const r = self.eval(null, body, null, null, 5000);
+        const r = self.eval(0, body, null, null, 5000);
         const out = r.out orelse return null;
         const xy = std.json.parseFromSliceLeaky([2]f64, self.allocator, out, .{}) catch return null;
         return xy;
     }
 
     fn nativeLog(self: *LiveDriver) []const u8 {
-        const r = self.eval(null, "return nativeLog.join(',');", null, null, 5000);
+        const r = self.eval(0, "return nativeLog.join(',');", null, null, 5000);
         return r.out orelse "";
     }
 
@@ -767,7 +766,7 @@ const LiveDriver = struct {
     }
 
     fn inputAck(self: *LiveDriver) ?[2]i64 {
-        const r = self.eval(null, "const a = globalThis.__zbAutomation.inputAck(); return [a.mouseup, a.keyup];", null, c.ZB_AUTOMATION_WORLD, 5000);
+        const r = self.eval(0, "const a = globalThis.__zbAutomation.inputAck(); return [a.mouseup, a.keyup];", null, c.ZB_AUTOMATION_WORLD, 5000);
         const out = r.out orelse return null;
         return std.json.parseFromSliceLeaky([2]i64, self.allocator, out, .{}) catch null;
     }
@@ -775,10 +774,10 @@ const LiveDriver = struct {
     // N7: real GDK input delivered to the view; the page must see isTrusted.
     fn runNative(self: *LiveDriver) void {
         var err: [*c]u8 = null;
-        _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
+        _ = self.eval(0, "nativeLog.length = 0; return 0;", null, null, 5000);
         const button = self.center("nb") orelse return self.check(false, "button center");
         var base = self.inputAck() orelse return self.check(false, "inputAck available");
-        var rc = c.zb_native_click(null, button[0], button[1], 1, null, 5000, &err);
+        var rc = c.zb_native_click(0, button[0], button[1], 1, null, 5000, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "native click returns OK");
@@ -786,53 +785,53 @@ const LiveDriver = struct {
         self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "native click is trusted and ordered");
 
         const input = self.center("ni") orelse return self.check(false, "input center");
-        _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
+        _ = self.eval(0, "nativeLog.length = 0; return 0;", null, null, 5000);
         base = self.inputAck() orelse return self.check(false, "inputAck available");
-        rc = c.zb_native_click(null, input[0], input[1], 1, null, 5000, &err);
+        rc = c.zb_native_click(0, input[0], input[1], 1, null, 5000, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(self.waitInputAck(base, 1, 0), "page acknowledged the focusing click");
         var releases: c_int = 0;
         base = self.inputAck() orelse return self.check(false, "inputAck available");
         var chars: c_int = 0;
-        rc = c.zb_native_text(null, "hi", null, 5000, &releases, &chars, &err);
+        rc = c.zb_native_text(0, "hi", null, 5000, &releases, &chars, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK and releases == 2 and chars == 2, "native text returns OK with 2 releases and 2 chars");
         self.check(self.waitInputAck(base, 0, releases), "page acknowledged the typed keys");
-        const typed = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        const typed = self.eval(0, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(typed.out, "hi"), "native text typed into the focused input");
 
         base = self.inputAck() orelse return self.check(false, "inputAck available");
-        rc = c.zb_native_key(null, "a", c.ZB_NATIVE_MOD_SHIFT, null, 5000, &releases, &err);
+        rc = c.zb_native_key(0, "a", c.ZB_NATIVE_MOD_SHIFT, null, 5000, &releases, &err);
         c.zb_automation_free(err);
         err = null;
         self.check(rc == c.ZB_AUTO_OK and releases == 2, "native Shift+a returns OK with 2 releases");
         var more: c_int = 0;
-        rc = c.zb_native_key(null, "Enter", 0, null, 5000, &more, &err);
+        rc = c.zb_native_key(0, "Enter", 0, null, 5000, &more, &err);
         c.zb_automation_free(err);
         self.check(rc == c.ZB_AUTO_OK and more == 1, "native Enter returns OK with 1 release");
         self.check(self.waitInputAck(base, 0, releases + more), "page acknowledged Shift+a and Enter");
-        const after = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        const after = self.eval(0, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(after.out, "hiA"), "Shift+a typed an upper-case A");
         self.check(eq(self.nativeLog(), "keydown:h:true:false,keydown:i:true:false,keydown:Shift:true:true,keydown:A:true:true,keydown:Enter:true:false"), "native keys are trusted with key names and shift state");
 
         // The ack counts trusted events only: page-dispatched fakes cannot
         // satisfy a wait early.
         const ack_before = self.inputAck() orelse return self.check(false, "inputAck available");
-        _ = self.eval(null, "document.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true})); document.dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); return 0;", null, null, 5000);
+        _ = self.eval(0, "document.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true})); document.dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); return 0;", null, null, 5000);
         const ack_after = self.inputAck() orelse return self.check(false, "inputAck available");
         self.check(ack_after[0] == ack_before[0] and ack_after[1] == ack_before[1], "synthetic page events do not count as input acks");
 
         // Key names are parsed exactly.
         var bad_err: [*c]u8 = null;
-        self.check(c.zb_native_key(null, "F1x", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F1x is not a key");
+        self.check(c.zb_native_key(0, "F1x", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F1x is not a key");
         c.zb_automation_free(bad_err);
         bad_err = null;
-        self.check(c.zb_native_key(null, "F13", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F13 is not a key");
+        self.check(c.zb_native_key(0, "F13", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F13 is not a key");
         c.zb_automation_free(bad_err);
         bad_err = null;
-        self.check(c.zb_native_key(null, "F12", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_OK, "F12 is a key");
+        self.check(c.zb_native_key(0, "F12", 0, null, 5000, null, &bad_err) == c.ZB_AUTO_OK, "F12 is a key");
         c.zb_automation_free(bad_err);
 
         // Long text is bounded by the deadline: one GTK-thread step per
@@ -842,7 +841,7 @@ const LiveDriver = struct {
         var long_chars: c_int = 0;
         const long_base = self.inputAck() orelse return self.check(false, "inputAck available");
         const long_start = monotonicMs();
-        rc = c.zb_native_text(null, long_text, null, 50, &long_releases, &long_chars, &err);
+        rc = c.zb_native_text(0, long_text, null, 50, &long_releases, &long_chars, &err);
         const long_ms = monotonicMs() - long_start;
         c.zb_automation_free(err);
         err = null;
@@ -860,31 +859,31 @@ const LiveDriver = struct {
     fn runNativePort(self: *LiveDriver) void {
         const gpa = self.allocator;
         const port = gtk_port.pagePort().?;
-        _ = self.eval(null, "nativeLog.length = 0; document.getElementById('ni').value = ''; return 0;", null, null, 5000);
+        _ = self.eval(0, "nativeLog.length = 0; document.getElementById('ni').value = ''; return 0;", null, null, 5000);
 
         const locate_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
-        const located = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
+        const located = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
         const want = self.center("nb") orelse return self.check(false, "button center");
         const Located = struct { ok: bool, value: struct { x: f64, y: f64, document: []const u8, viewport: struct { width: f64, height: f64 } } };
         const loc = if (located.out) |out| std.json.parseFromSliceLeaky(Located, gpa, out, .{ .ignore_unknown_fields = true }) catch null else null;
         self.check(loc != null and loc.?.ok and @abs(loc.?.value.x - want[0]) < 0.5 and @abs(loc.?.value.y - want[1]) < 0.5, "locate returns the element centre in viewport px");
         const page_token = self.documentToken();
         self.check(loc != null and page_token != null and loc.?.value.document.len == 16 and std.mem.eql(u8, loc.?.value.document, page_token.?), "locate returns this document's 16-hex token");
-        const inner = self.eval(null, "return JSON.stringify([innerWidth, innerHeight]);", null, null, 5000);
+        const inner = self.eval(0, "return JSON.stringify([innerWidth, innerHeight]);", null, null, 5000);
         const wh = if (inner.out) |out| std.json.parseFromSliceLeaky([2]f64, gpa, out, .{}) catch null else null;
         self.check(loc != null and wh != null and wh.?[0] > 0 and loc.?.value.viewport.width == wh.?[0] and loc.?.value.viewport.height == wh.?[1], "locate returns the viewport size");
 
         // Obscured target: locate refuses it like an action would.
-        _ = self.eval(null, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
-        const blocked = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
+        _ = self.eval(0, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
+        const blocked = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
         self.check(blocked.out != null and std.mem.indexOf(u8, blocked.out.?, "element_obscured") != null, "locate refuses an obscured element");
-        _ = self.eval(null, "document.getElementById('nbcover').remove(); return 0;", null, null, 5000);
+        _ = self.eval(0, "document.getElementById('nbcover').remove(); return 0;", null, null, 5000);
 
         // Oracle: the page stamps Date.now() on trusted mouseup/keyup; the host
         // stamps the wall clock the instant the port call returns. A port that
         // returned before the page handled the input would have a later (or
         // zero) page stamp. Follow-up evals cannot mask an early return.
-        _ = self.eval(null, "window.lastTrustedClick = 0; window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
+        _ = self.eval(0, "window.lastTrustedClick = 0; window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         gtk_port.nativeClick(port.ptr, want[0], want[1], null, 5000) catch return self.check(false, "port nativeClick on the button succeeds");
         const click_returned = wallUs();
         self.check(self.pageStampBefore("lastTrustedClick", click_returned), "port nativeClick returned only after the page's click handlers ran");
@@ -892,19 +891,19 @@ const LiveDriver = struct {
 
         const input = self.center("ni") orelse return self.check(false, "input center");
         gtk_port.nativeClick(port.ptr, input[0], input[1], null, 5000) catch return self.check(false, "port nativeClick on the input succeeds");
-        _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
+        _ = self.eval(0, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         var sent: usize = 0;
         gtk_port.nativeText(port.ptr, "ok", null, 5000, &sent) catch return self.check(false, "port nativeText succeeds");
         const text_returned = wallUs();
         self.check(sent == 2, "port nativeText reports 2 chars sent");
         self.check(self.pageStampBefore("lastTrustedKeyUp", text_returned), "port nativeText returned only after the page handled its keyups");
-        const value = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        const value = self.eval(0, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(value.out, "ok"), "port nativeText typed the text");
-        _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
+        _ = self.eval(0, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         gtk_port.nativeKey(port.ptr, "a", 1, null, 5000) catch return self.check(false, "port nativeKey succeeds");
         const key_returned = wallUs();
         self.check(self.pageStampBefore("lastTrustedKeyUp", key_returned), "port nativeKey returned only after the page handled its keyups");
-        const shifted = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        const shifted = self.eval(0, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(shifted.out, "okA"), "port nativeKey(Shift+a) typed A");
 
         // Embedded NUL is refused instead of silently truncated at the C ABI.
@@ -912,19 +911,19 @@ const LiveDriver = struct {
         self.check(if (gtk_port.nativeText(port.ptr, "a\x00b", null, 5000, &nul_sent)) |_| false else |e| e == error.EvalFailed, "port nativeText refuses embedded NUL");
         self.check(nul_sent == 0, "nothing was sent for NUL text");
         self.check(if (gtk_port.nativeKey(port.ptr, "a\x00", 0, null, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey refuses embedded NUL");
-        const after_nul = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        const after_nul = self.eval(0, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(after_nul.out, "okA"), "NUL input typed nothing");
 
         // locate honours force (skips actionability) and focus-for-type puts
         // the caret at the end of existing text.
-        _ = self.eval(null, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
-        const forced = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\",\"options\":{\"force\":true}}", c.ZB_AUTOMATION_WORLD, 5000);
+        _ = self.eval(0, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
+        const forced = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\",\"options\":{\"force\":true}}", c.ZB_AUTOMATION_WORLD, 5000);
         self.check(forced.out != null and std.mem.indexOf(u8, forced.out.?, "\"ok\":true") != null, "locate with force skips actionability");
-        _ = self.eval(null, "document.getElementById('nbcover').remove(); var i = document.getElementById('ni'); i.focus(); i.setSelectionRange(0, 0); return 0;", null, null, 5000);
-        _ = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#ni\",\"action\":\"type\",\"focus\":true}", c.ZB_AUTOMATION_WORLD, 5000);
+        _ = self.eval(0, "document.getElementById('nbcover').remove(); var i = document.getElementById('ni'); i.focus(); i.setSelectionRange(0, 0); return 0;", null, null, 5000);
+        _ = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#ni\",\"action\":\"type\",\"focus\":true}", c.ZB_AUTOMATION_WORLD, 5000);
         var tail_sent: usize = 0;
         gtk_port.nativeText(port.ptr, "Z", null, 5000, &tail_sent) catch return self.check(false, "port nativeText after locate succeeds");
-        const appended = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        const appended = self.eval(0, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(appended.out, "okAZ"), "locate focus:true for type appends at the end");
 
         var partial: usize = 0;
@@ -935,10 +934,10 @@ const LiveDriver = struct {
         // Ack debt: the timed-out prefix keeps arriving, and its keyups must
         // not satisfy the next call. The very next key may only return after
         // its own keyup was handled.
-        _ = self.eval(null, "window.lastTrustedKeyUp = 0; window.lastKeyUpKey = ''; document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastKeyUpKey = e.key; }); return 0;", null, null, 5000);
+        _ = self.eval(0, "window.lastTrustedKeyUp = 0; window.lastKeyUpKey = ''; document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastKeyUpKey = e.key; }); return 0;", null, null, 5000);
         gtk_port.nativeKey(port.ptr, "q", 0, null, 20_000) catch return self.check(false, "key after a partial type succeeds");
         const q_returned = wallUs();
-        const last_key = self.eval(null, "return window.lastKeyUpKey;", null, null, 5000);
+        const last_key = self.eval(0, "return window.lastKeyUpKey;", null, null, 5000);
         self.check(eq(last_key.out, "q"), "the key after a partial type is the last keyup when it returns");
         self.check(self.pageStampBefore("lastTrustedKeyUp", q_returned), "the key after a partial type returned only after its own keyup");
         self.check(if (gtk_port.nativeKey(port.ptr, "F1x", 0, null, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey rejects unknown keys");
@@ -948,11 +947,11 @@ const LiveDriver = struct {
         {
             const token_now = self.documentToken() orelse return self.check(false, "token for the held guard");
             const token_z = std.fmt.allocPrintSentinel(gpa, "{s}", .{token_now}, 0) catch return;
-            _ = self.eval(null, "nativeLog.length = 0; return 0;", null, null, 5000);
+            _ = self.eval(0, "nativeLog.length = 0; return 0;", null, null, 5000);
             const hits = c.zb_automation_debug_native_guard_hold_hits();
             c.zb_automation_debug_native_guard_hold(300);
             var held_err: [*c]u8 = null;
-            const held_rc = c.zb_native_click(null, want[0], want[1], 1, token_z.ptr, 50, &held_err);
+            const held_rc = c.zb_native_click(0, want[0], want[1], 1, token_z.ptr, 50, &held_err);
             c.zb_automation_free(held_err);
             sleepMs(600);
             c.zb_automation_debug_native_guard_hold(0);
@@ -967,7 +966,7 @@ const LiveDriver = struct {
         {
             const field = self.center("ni") orelse return self.check(false, "input center");
             gtk_port.nativeClick(port.ptr, field[0], field[1], null, 5000) catch return self.check(false, "focus for the serialization check");
-            _ = self.eval(null, "window.keyupAt = {}; nativeLog.length = 0; return 0;", null, null, 5000);
+            _ = self.eval(0, "window.keyupAt = {}; nativeLog.length = 0; return 0;", null, null, 5000);
             const token_now = self.documentToken() orelse return self.check(false, "token for the serialization check");
             const token_copy = gpa.dupe(u8, token_now) catch return;
             c.zb_automation_debug_native_guard_hold(300);
@@ -983,7 +982,7 @@ const LiveDriver = struct {
             self.check(if (second) |_| false else |e| e == error.Timeout, "a second native call during a transaction times out");
             self.check(blocked_ms < 250, "it gave up at its own deadline, not after the other transaction");
             sleepMs(200);
-            const w_up = self.eval(null, "return String(window.keyupAt['w'] || 0);", null, null, 5000);
+            const w_up = self.eval(0, "return String(window.keyupAt['w'] || 0);", null, null, 5000);
             self.check(eq(w_up.out, "0"), "the blocked call sent no key");
         }
 
@@ -998,7 +997,7 @@ const LiveDriver = struct {
         // The page sees trusted mousemoves along the path (WebKit may
         // coalesce some), ending at the target the click then lands on.
         {
-            _ = self.eval(null, "window.moves = []; nativeLog.length = 0; return 0;", null, null, 5000);
+            _ = self.eval(0, "window.moves = []; nativeLog.length = 0; return 0;", null, null, 5000);
             const token_move = self.documentToken() orelse return self.check(false, "token for moves");
             const start_x: f64 = 400;
             const start_y: f64 = 400;
@@ -1015,7 +1014,7 @@ const LiveDriver = struct {
             }
             gtk_port.nativeClick(port.ptr, want[0], want[1], token_move, 5000) catch return self.check(false, "click after the moves");
             const Move = struct { f64, f64, bool };
-            const moves_out = self.eval(null, "return JSON.stringify(window.moves);", null, null, 5000);
+            const moves_out = self.eval(0, "return JSON.stringify(window.moves);", null, null, 5000);
             const moves = if (moves_out.out) |out| std.json.parseFromSliceLeaky([]const Move, gpa, out, .{}) catch null else null;
             self.check(moves != null and moves.?.len >= 3, "the page saw several pointer moves");
             if (moves) |list| {
@@ -1040,12 +1039,12 @@ const LiveDriver = struct {
 
             // A move whose guard verdict is held past its deadline sends no
             // motion, ever, and leaves the cache alone.
-            _ = self.eval(null, "window.moves = []; return 0;", null, null, 5000);
+            _ = self.eval(0, "window.moves = []; return 0;", null, null, 5000);
             const token_hold = self.documentToken() orelse return self.check(false, "token for the held move");
             const token_hold_z = std.fmt.allocPrintSentinel(gpa, "{s}", .{token_hold}, 0) catch return;
             c.zb_automation_debug_native_guard_hold(300);
             var move_err: [*c]u8 = null;
-            const held_move = c.zb_native_move(null, 30, 30, token_hold_z.ptr, 50, &move_err);
+            const held_move = c.zb_native_move(0, 30, 30, token_hold_z.ptr, 50, &move_err);
             c.zb_automation_free(move_err);
             sleepMs(600);
             c.zb_automation_debug_native_guard_hold(0);
@@ -1053,9 +1052,9 @@ const LiveDriver = struct {
             // Only motion to the held move's own point counts: WebKit may
             // replay the last real pointer position (a trusted mousemove at
             // the previous target) after layout or hover changes.
-            const late = self.eval(null, "return String(window.moves.filter(function (m) { return m[0] === 30 && m[1] === 30; }).length);", null, null, 5000);
+            const late = self.eval(0, "return String(window.moves.filter(function (m) { return m[0] === 30 && m[1] === 30; }).length);", null, null, 5000);
             if (!eq(late.out, "0")) {
-                const seen = self.eval(null, "return JSON.stringify(window.moves);", null, null, 5000);
+                const seen = self.eval(0, "return JSON.stringify(window.moves);", null, null, 5000);
                 std.debug.print("late moves: {s}\n", .{seen.out orelse "?"});
             }
             self.check(eq(late.out, "0"), "no motion reached the page after the timeout");
@@ -1075,7 +1074,7 @@ const LiveDriver = struct {
         // coordinates is never clicked.
         const token_a = self.documentToken() orelse return self.check(false, "document token on A");
         var bind_err: [*c]u8 = null;
-        _ = c.zb_automation_navigate(null, self.uri_b.ptr, 15000, &bind_err);
+        _ = c.zb_automation_navigate(0, self.uri_b.ptr, 15000, &bind_err);
         c.zb_automation_free(bind_err);
         bind_err = null;
         const cache_before = gtk_port.pointer(port.ptr);
@@ -1085,24 +1084,24 @@ const LiveDriver = struct {
         self.check(cache_before != null and cache_after != null and cache_after.?.x == cache_before.?.x and cache_after.?.y == cache_before.?.y, "a refused move leaves the pointer cache unchanged");
         const stale = gtk_port.nativeClick(port.ptr, want[0], want[1], token_a, 5000);
         self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "native click with a stale document token is DocumentChanged");
-        const danger = self.eval(null, "return String(window.dangerClicked || 0);", null, null, 5000);
+        const danger = self.eval(0, "return String(window.dangerClicked || 0);", null, null, 5000);
         self.check(eq(danger.out, "0"), "nothing on the new document was clicked");
         // The refused move's own point: WebKit may replay the last real
         // pointer position (the previous click) into the new document.
         var moves_buf: [256]u8 = undefined;
         const moves_body = std.fmt.bufPrintZ(&moves_buf, "return String(window.bMoves.filter(function (m) {{ return Math.abs(m[0] - {d}) <= 1 && Math.abs(m[1] - {d}) <= 1; }}).length);", .{ want[0] + 5, want[1] + 5 }) catch return;
-        const b_moves = self.eval(null, moves_body, null, null, 5000);
+        const b_moves = self.eval(0, moves_body, null, null, 5000);
         if (!eq(b_moves.out, "0")) {
-            const seen = self.eval(null, "return JSON.stringify(window.bMoves);", null, null, 5000);
+            const seen = self.eval(0, "return JSON.stringify(window.bMoves);", null, null, 5000);
             std.debug.print("page B moves: {s}\n", .{seen.out orelse "?"});
         }
         self.check(eq(b_moves.out, "0"), "no motion reached the new document");
         var stale_sent: usize = 9;
         self.check(if (gtk_port.nativeText(port.ptr, "zz", token_a, 5000, &stale_sent)) |_| false else |e| e == error.DocumentChanged, "native text with a stale token is DocumentChanged");
         self.check(stale_sent == 0, "nothing was typed into the new document");
-        const b_keys = self.eval(null, "return window.bKeys.join(',');", null, null, 5000);
+        const b_keys = self.eval(0, "return window.bKeys.join(',');", null, null, 5000);
         self.check(eq(b_keys.out, ""), "page B received no keys");
-        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &bind_err);
+        _ = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &bind_err);
         c.zb_automation_free(bind_err);
         bind_err = null;
 
@@ -1117,9 +1116,9 @@ const LiveDriver = struct {
         self.check(if (nl) |_| false else |e| e == error.DocumentChanged, "text whose Enter navigates stops with DocumentChanged");
         self.check(nl_sent == 2, "exactly 'a' and Enter were sent");
         self.waitUrlContains("b.html");
-        const b_after = self.eval(null, "return window.bKeys.join(',');", null, null, 5000);
+        const b_after = self.eval(0, "return window.bKeys.join(',');", null, null, 5000);
         self.check(eq(b_after.out, ""), "'b' never reached page B (whole string)");
-        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &bind_err);
+        _ = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &bind_err);
         c.zb_automation_free(bind_err);
         bind_err = null;
         gtk_port.nativeClick(port.ptr, navq_box[0], navq_box[1], null, 5000) catch return self.check(false, "focus the form input again");
@@ -1135,9 +1134,9 @@ const LiveDriver = struct {
         self.check(if (b_one) |_| false else |e| e == error.DocumentChanged, "the next code point with the old token is refused");
         self.check(b_sent == 0, "'b' was not sent");
         self.waitUrlContains("b.html");
-        const b_delay = self.eval(null, "return window.bKeys.join(',');", null, null, 5000);
+        const b_delay = self.eval(0, "return window.bKeys.join(',');", null, null, 5000);
         self.check(eq(b_delay.out, ""), "'b' never reached page B (per code point)");
-        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &bind_err);
+        _ = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &bind_err);
         c.zb_automation_free(bind_err);
 
         // Input that navigates resets the per-document ack counters; the port
@@ -1154,7 +1153,7 @@ const LiveDriver = struct {
             sleepMs(10);
         }
         self.check(std.mem.endsWith(u8, self.str(&nav_rc_dummy, .url), "b.html"), "the link navigated to B");
-        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &nav_err);
+        _ = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &nav_err);
         c.zb_automation_free(nav_err);
         nav_err = null;
         const navq = self.center("navq") orelse return self.check(false, "form input center");
@@ -1169,7 +1168,7 @@ const LiveDriver = struct {
             sleepMs(10);
         }
         self.check(std.mem.indexOf(u8, self.str(&nav_rc_dummy, .url), "b.html") != null, "Enter submitted the form to B");
-        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &nav_err);
+        _ = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &nav_err);
         c.zb_automation_free(nav_err);
     }
 
@@ -1188,7 +1187,7 @@ const LiveDriver = struct {
     };
 
     fn documentToken(self: *LiveDriver) ?[]const u8 {
-        const r = self.eval(null, "return globalThis.__zbAutomation.documentToken;", null, c.ZB_AUTOMATION_WORLD, 5000);
+        const r = self.eval(0, "return globalThis.__zbAutomation.documentToken;", null, c.ZB_AUTOMATION_WORLD, 5000);
         return r.out;
     }
 
@@ -1204,7 +1203,7 @@ const LiveDriver = struct {
     /// host stamp is taken right after the port call returned. Strictly
     /// earlier: an equal coarse stamp could hide an early return.
     fn pageStampBefore(self: *LiveDriver, comptime name: []const u8, returned_us: i64) bool {
-        const r = self.eval(null, "return String(window." ++ name ++ ");", null, null, 5000);
+        const r = self.eval(0, "return String(window." ++ name ++ ");", null, null, 5000);
         const out = r.out orelse return false;
         const stamp = std.fmt.parseInt(i64, out, 10) catch return false;
         return stamp > 0 and stamp < returned_us;
@@ -1218,17 +1217,17 @@ const LiveDriver = struct {
         const server = self.delay_server orelse return self.check(false, "delay server available");
         var buf: [1024]u8 = undefined;
         const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_delay}) catch return;
-        _ = self.eval(null, open_body, null, null, 5000);
-        var child: ?*c.ZbWindow = null;
+        _ = self.eval(0, open_body, null, null, 5000);
+        var child: u32 = 0;
         var waited: u32 = 0;
         while (waited < 3000) : (waited += 5) {
-            child = c.zb_automation_window_at(1);
-            if (child != null) break;
+            child = c.zb_automation_window_id_at(1);
+            if (child != 0) break;
             sleepMs(5);
         }
-        self.check(child != null, "child window is published");
-        if (child == null) return;
-        self.check(c.zb_automation_main_window() != child, "primary window stays the first window");
+        self.check(child != 0, "child window is published");
+        if (child == 0) return;
+        self.check(c.zb_automation_window_id_at(0) == 1 and child == 2, "the primary keeps id 1, the child gets id 2");
 
         const responded_at_issue = server.responded_ms.load(.acquire);
         const title = self.eval(child, "return document.title;", null, c.ZB_AUTOMATION_WORLD, 5000);
@@ -1278,7 +1277,7 @@ const LiveDriver = struct {
         // A failing add with a sentinel value never echoes the value.
         var err: [*c]u8 = null;
         const bad: c.ZbCookie = .{ .name = "zbbad", .value = "SENTINEL-zb-value", .domain = "", .path = "/", .expires = -1, .http_only = 0, .secure = 0, .same_site = 0 };
-        const bad_rc = c.zb_cookies_add(null, &bad, 5000, &err);
+        const bad_rc = c.zb_cookies_add(0, &bad, 5000, &err);
         self.check(bad_rc != c.ZB_AUTO_OK and (err == null or std.mem.indexOf(u8, std.mem.span(err), "SENTINEL") == null), "failed add reports no cookie value");
         c.zb_automation_free(err);
 
@@ -1297,7 +1296,7 @@ const LiveDriver = struct {
         _ = self.deleteCookie("zbmax", null);
         var range_err: [*c]u8 = null;
         const too_late: c.ZbCookie = .{ .name = "zblate", .value = "l", .domain = "example.test", .path = "/", .expires = c.ZB_COOKIE_MAX_EXPIRES + 1, .http_only = 0, .secure = 0, .same_site = 0 };
-        const late_rc = c.zb_cookies_add(null, &too_late, 5000, &range_err);
+        const late_rc = c.zb_cookies_add(0, &too_late, 5000, &range_err);
         self.check(late_rc == c.ZB_AUTO_ERR_INTERNAL and range_err != null and std.mem.indexOf(u8, std.mem.span(range_err), "out of range") != null, "expiry past year 9999 is refused");
         c.zb_automation_free(range_err);
         self.check(find(self.cookies(null), "zblate") == null, "refused cookie was not stored");
@@ -1311,7 +1310,7 @@ const LiveDriver = struct {
         var held_out: [*c]u8 = null;
         var held_err: [*c]u8 = null;
         const held_start = monotonicMs();
-        const held_rc = c.zb_cookies_get_all(null, null, 50, &held_out, &held_err);
+        const held_rc = c.zb_cookies_get_all(0, null, 50, &held_out, &held_err);
         const held_ms = monotonicMs() - held_start;
         c.zb_automation_free(held_out);
         c.zb_automation_free(held_err);
@@ -1423,9 +1422,9 @@ test "automation bridge drives a live WebKitGTK page" {
     try std.testing.expectEqual(@as(usize, 0), driver.failures.items.len);
 
     // After the loop has ended there is no primary window and ops fail fast.
-    try std.testing.expect(c.zb_automation_main_window() == null);
+    try std.testing.expect(c.zb_automation_window_id_at(0) == 0);
     var out: [*c]u8 = null;
-    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), c.zb_automation_get_url(null, 5000, &out));
+    try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), c.zb_automation_get_url(0, 5000, &out));
     // Every bridge job (including the abandoned eval and load) was released.
     try std.testing.expectEqual(@as(c_int, 0), c.zb_automation_debug_live_jobs());
     // The profile-backed context stored its data under the profile directory.
@@ -1494,28 +1493,38 @@ const ReplaceDriver = struct {
     fn run(self: *ReplaceDriver) void {
         const port = gtk_port.pagePort().?;
         var err: [*c]u8 = null;
-        _ = c.zb_automation_eval_json(null, "return 1;", null, null, 15_000, null, &err);
+        _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
         c.zb_automation_free(err);
         gtk_port.nativeMove(port.ptr, 50, 60, null, 5000) catch return self.check(false, "move on the primary window");
         var px: f64 = 0;
         var py: f64 = 0;
-        self.check(c.zb_native_pointer(null, &px, &py) != 0 and px == 50 and py == 60, "the primary window caches its pointer");
+        self.check(c.zb_native_pointer(0, &px, &py) != 0 and px == 50 and py == 60, "the primary window caches its pointer");
 
         var buf: [1024]u8 = undefined;
         const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return;
-        _ = c.zb_automation_eval_json(null, open_body.ptr, null, null, 5000, null, &err);
+        _ = c.zb_automation_eval_json(0, open_body.ptr, null, null, 5000, null, &err);
         c.zb_automation_free(err);
         err = null;
         var waited: u32 = 0;
-        while (c.zb_automation_window_at(1) == null and waited < 5000) : (waited += 5) sleepMs(5);
-        const child = c.zb_automation_window_at(1) orelse return self.check(false, "a child window opened");
+        while (c.zb_automation_window_id_at(1) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        const child = c.zb_automation_window_id_at(1);
+        if (child == 0) return self.check(false, "a child window opened");
         self.check(c.zb_native_pointer(child, &px, &py) == 0, "the child window has no pointer of its own");
 
-        const main = c.zb_automation_window_at(0) orelse return self.check(false, "the primary window exists");
-        self.check(c.zb_automation_debug_destroy_window(main, 5000) == c.ZB_AUTO_OK, "the primary window was closed");
-        self.check(c.zb_automation_main_window() == child, "the child is now the primary window");
-        self.check(c.zb_native_pointer(null, &px, &py) == 0, "the new primary does not inherit the old pointer");
-        self.check(gtk_port.pointer(port.ptr) == null, "the port's pointer follows the new primary");
+        // Closing the original primary never promotes the child (N23): the
+        // default handle stays bound to id 1, which is now gone.
+        self.check(c.zb_automation_debug_destroy_window(1, 5000) == c.ZB_AUTO_OK, "the primary window was closed");
+        self.check(c.zb_automation_window_id_at(0) == child, "the child is the only window left");
+        self.check(c.zb_native_pointer(0, &px, &py) == 0, "the default handle has no pointer: id 1 is gone");
+        self.check(gtk_port.pointer(port.ptr) == null, "the port's pointer did not move to the child");
+        var gone_err: [*c]u8 = null;
+        const gone = c.zb_automation_eval_json(0, "return 1;", null, null, 2000, null, &gone_err);
+        c.zb_automation_free(gone_err);
+        self.check(gone == c.ZB_AUTO_ERR_NO_WINDOW, "the default handle answers NO_WINDOW, never the child");
+        self.check(if (port.url(std.heap.c_allocator, 2000)) |u| blk: {
+            std.heap.c_allocator.free(u);
+            break :blk false;
+        } else |e| e == error.NoPage, "the primary port answers NoPage after id 1 closed");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -1572,15 +1581,16 @@ const SelfCloseDriver = struct {
         }
     }
 
-    fn openChild(self: *SelfCloseDriver, index: c_int) ?*c.ZbWindow {
+    fn openChild(self: *SelfCloseDriver, index: c_int) ?u32 {
         var buf: [1024]u8 = undefined;
         const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return null;
         var err: [*c]u8 = null;
-        _ = c.zb_automation_eval_json(null, open_body.ptr, null, null, 5000, null, &err);
+        _ = c.zb_automation_eval_json(0, open_body.ptr, null, null, 5000, null, &err);
         c.zb_automation_free(err);
         var waited: u32 = 0;
-        while (c.zb_automation_window_at(index) == null and waited < 5000) : (waited += 5) sleepMs(5);
-        const child = c.zb_automation_window_at(index) orelse return null;
+        while (c.zb_automation_window_id_at(index) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        const child = c.zb_automation_window_id_at(index);
+        if (child == 0) return null;
         err = null;
         // Waits for the child's first load, so its view is realized.
         _ = c.zb_automation_eval_json(child, "return 1;", null, null, 10_000, null, &err);
@@ -1590,7 +1600,7 @@ const SelfCloseDriver = struct {
 
     fn run(self: *SelfCloseDriver) void {
         var err: [*c]u8 = null;
-        _ = c.zb_automation_eval_json(null, "return 1;", null, null, 15_000, null, &err);
+        _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
         c.zb_automation_free(err);
         err = null;
         const moved = self.openChild(1) orelse return self.check(false, "first child opened");
@@ -1622,7 +1632,7 @@ const SelfCloseDriver = struct {
         c.zb_automation_free(err);
         self.check(key_rc == c.ZB_AUTO_ERR_NO_WINDOW, "a key whose press closed its window reports NO_WINDOW");
         self.check(c.zb_automation_debug_native_skipped() > skipped_before, "the key release was not sent to the destroyed window");
-        self.check(c.zb_automation_window_at(1) == null, "every child is gone, the primary remains");
+        self.check(c.zb_automation_window_id_at(1) == 0, "every child is gone, the primary remains");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -1740,7 +1750,7 @@ const NavEndDriver = struct {
     fn eval(self: *NavEndDriver, body: [:0]const u8, world: ?[*:0]const u8) []const u8 {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_automation_eval_json(null, body.ptr, null, world, 5000, &out, &err);
+        const rc = c.zb_automation_eval_json(0, body.ptr, null, world, 5000, &out, &err);
         defer c.zb_automation_free(out);
         c.zb_automation_free(err);
         if (rc != c.ZB_AUTO_OK or out == null) return "";
@@ -1995,7 +2005,7 @@ const FilesDriver = struct {
         _ = self;
         var result: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_set_input_files(null, body.ptr, arg.ptr, @ptrCast(paths.ptr), @intCast(paths.len), timeout_ms, &result, &err);
+        const rc = c.zb_set_input_files(0, body.ptr, arg.ptr, @ptrCast(paths.ptr), @intCast(paths.len), timeout_ms, &result, &err);
         c.zb_automation_free(err);
         defer c.zb_automation_free(result);
         @memset(out, 0);
@@ -2266,7 +2276,7 @@ const ScrollDriver = struct {
         // The shim's own guard (not only the adapter's baseline check).
         _ = d.eval("window.wheels = []; return 0;", null);
         var guard_err: [*c]u8 = null;
-        const guard_rc = c.zb_native_scroll(null, 200, 300, 0, 100, "0000000000000000", 5000, &guard_err);
+        const guard_rc = c.zb_native_scroll(0, 200, 300, 0, 100, "0000000000000000", 5000, &guard_err);
         c.zb_automation_free(guard_err);
         self.check(guard_rc == c.ZB_AUTO_ERR_DOC_CHANGED, "the shim refuses a stale document token");
         sleepMs(200);
@@ -2410,14 +2420,14 @@ const ShotDriver = struct {
         } else self.check(false, "the full-page PNG decodes");
 
         // Over the size limit: refused, nothing returned.
-        const tiny = gtk_port.screenshotWithLimit(gpa, false, 64, 10_000);
+        const tiny = gtk_port.screenshotWithLimit(port.ptr, gpa, false, 64, 10_000);
         self.check(if (tiny) |shot| blk: {
             gpa.free(shot.png);
             break :blk false;
         } else |e| e == error.TooLarge, "a PNG over the limit is TooLarge");
 
         // A limit below the first encoder chunk is still TooLarge.
-        const one_byte = gtk_port.screenshotWithLimit(gpa, false, 1, 10_000);
+        const one_byte = gtk_port.screenshotWithLimit(port.ptr, gpa, false, 1, 10_000);
         self.check(if (one_byte) |shot| blk: {
             gpa.free(shot.png);
             break :blk false;
@@ -2613,7 +2623,7 @@ const ScanDriver = struct {
         var url_buf: [256]u8 = undefined;
         const url = std.fmt.bufPrintZ(&url_buf, "http://127.0.0.1:{d}{s}", .{ self.port, path }) catch return "";
         var err: [*c]u8 = null;
-        _ = c.zb_automation_navigate(null, url.ptr, 10_000, &err);
+        _ = c.zb_automation_navigate(0, url.ptr, 10_000, &err);
         c.zb_automation_free(err);
         var body_buf: [256]u8 = undefined;
         const body = std.fmt.bufPrintZ(&body_buf, "return JSON.stringify(globalThis.__zbAutomation.handle({{ op: 'rateLimitScan', options: {{ platform: '{s}' }} }}));", .{platform}) catch return "";
@@ -2686,6 +2696,261 @@ test "rateLimitScan reports X, LinkedIn and Instagram block signals" {
         w.join();
     }
     const t = try std.Thread.spawn(.{}, ScanDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
+    c.zb_automation_loop_mark(1);
+}
+
+// N23: window targeting. Two windows (a page and the popup it opened):
+// every PagePort method on window 2's handle reaches window 2 and never
+// window 1; list, close, gone and unknown handles, id exhaustion, a close
+// during an in-flight call, and the primary after the popup closed.
+fn windowPage(comptime mark: []const u8, comptime colour: []const u8) []const u8 {
+    return "<!doctype html><html><head><title>" ++ mark ++ "</title></head><body style=\"margin:0;background:" ++ colour ++ "\">" ++
+        "<input id=\"i\" style=\"position:fixed;left:20px;top:40px;width:200px;height:30px\">" ++
+        "<button id=\"b\" style=\"position:fixed;left:20px;top:100px;width:120px;height:40px\">" ++ mark ++ "</button>" ++
+        "<input type=\"file\" id=\"f\" style=\"position:fixed;left:20px;top:160px\">" ++
+        "<div style=\"height:4000px\"></div>" ++
+        "<script>window.mark = '" ++ mark ++ "'; window.log = [];" ++
+        "['click', 'keydown', 'change', 'wheel'].forEach(function (t) { document.addEventListener(t, function (e) { window.log.push(t + ':' + e.isTrusted); }, { capture: true, passive: true }); });</script>" ++
+        "</body></html>";
+}
+
+const WindowsDriver = struct {
+    nav: NavEndDriver = .{},
+    dir: [:0]const u8,
+    upload: [:0]const u8,
+
+    fn check(self: *WindowsDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            std.debug.print("window targeting check failed: {s}\n", .{what});
+            self.nav.failures += 1;
+        }
+    }
+
+    fn evalOn(port: page_port_mod.PagePort, comptime body: []const u8, world: page_port_mod.World) ?[]u8 {
+        return port.evalJson(std.heap.c_allocator, world, body, "null", 5000) catch null;
+    }
+
+    fn says(port: page_port_mod.PagePort, comptime body: []const u8, want: []const u8) bool {
+        const out = evalOn(port, body, .page) orelse return false;
+        defer std.heap.c_allocator.free(out);
+        return std.mem.eql(u8, out, want);
+    }
+
+    fn isNoPage(result: anytype) bool {
+        return if (result) |_| false else |e| e == error.NoPage;
+    }
+
+    fn run(self: *WindowsDriver) void {
+        const gpa = std.heap.c_allocator;
+        const p1 = gtk_port.pagePort().?;
+        self.check(says(p1, "return window.mark;", "A"), "the primary is page A");
+        _ = evalOn(p1, "window.open('b.html'); return 0;", .page);
+        var waited: u32 = 0;
+        while (c.zb_automation_window_id_at(1) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        self.check(c.zb_automation_window_id_at(1) == 2, "the popup is window 2");
+        const p2 = p1.forWindow(2) catch return self.check(false, "a handle for window 2");
+        self.check(says(p2, "return window.mark;", "B"), "window 2's handle reaches page B");
+
+        // page.list: one snapshot, primary first, the popup's opener.
+        if (p1.listWindows(gpa, 5000)) |windows| {
+            defer page_port_mod.freeWindows(gpa, windows);
+            self.check(windows.len == 2 and windows[0].id == 1 and windows[0].primary and windows[0].opener == null and
+                std.mem.eql(u8, windows[0].title, "A") and windows[1].id == 2 and !windows[1].primary and
+                windows[1].opener != null and windows[1].opener.? == 1 and std.mem.endsWith(u8, windows[1].url, "/b.html"), "listWindows: A (primary) then B opened by 1");
+        } else |_| self.check(false, "listWindows succeeds");
+
+        // The target matrix: every method on window 2, no page work on 1.
+        const work1 = c.zb_automation_debug_window_work(1);
+        const work2 = c.zb_automation_debug_window_work(2);
+        if (p2.url(gpa, 5000)) |u| {
+            self.check(std.mem.endsWith(u8, u, "/b.html"), "url on window 2");
+            gpa.free(u);
+        } else |_| self.check(false, "url on window 2");
+        if (p2.title(gpa, 5000)) |t| {
+            self.check(std.mem.eql(u8, t, "B"), "title on window 2");
+            gpa.free(t);
+        } else |_| self.check(false, "title on window 2");
+        self.check(p2.pointer() == null, "window 2 has no pointer yet");
+        p2.nativeMove(30, 30, null, 5000) catch self.check(false, "nativeMove on window 2");
+        self.check(if (p2.pointer()) |pt| pt.x == 30 and pt.y == 30 else false, "window 2 cached its own pointer");
+        self.check(p1.pointer() == null, "window 1's pointer did not change");
+        p2.nativeClick(80, 120, null, 5000) catch self.check(false, "nativeClick on window 2");
+        p2.nativeKey("a", 0, null, 5000) catch self.check(false, "nativeKey on window 2");
+        var sent: usize = 0;
+        p2.nativeText("xy", null, 5000, &sent) catch self.check(false, "nativeText on window 2");
+        const offsets = p2.nativeScroll(200, 300, 0, 200, null, 5000) catch blk: {
+            self.check(false, "nativeScroll on window 2");
+            break :blk page_port_mod.ScrollOffsets{ .x = -1, .y = -1 };
+        };
+        self.check(offsets.y == 200, "nativeScroll answered window 2's offsets");
+        if (p2.screenshot(gpa, false, 10_000)) |shot| {
+            defer gpa.free(shot.png);
+            self.check(self.pixelIs(shot.png, 300, 300, 0x0000ff), "the screenshot is window 2 (blue)");
+        } else |_| self.check(false, "screenshot of window 2");
+        const paths = [_][]const u8{self.upload};
+        if (p2.setInputFiles(gpa, "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));", "{\"op\":\"chooseFiles\",\"selector\":\"css=#f\",\"count\":1}", &paths, 5000)) |answer| {
+            self.check(std.mem.startsWith(u8, answer, "{\"ok\":true"), "setInputFiles on window 2");
+            gpa.free(answer);
+        } else |_| self.check(false, "setInputFiles on window 2");
+        const b_log = evalOn(p2, "return window.log.join(',');", .page) orelse "";
+        defer if (b_log.len > 0) gpa.free(b_log);
+        self.check(std.mem.indexOf(u8, b_log, "click:true") != null and std.mem.indexOf(u8, b_log, "keydown:true") != null and
+            std.mem.indexOf(u8, b_log, "wheel:true") != null and std.mem.indexOf(u8, b_log, "change:true") != null, "page B saw the trusted click, keys, wheel and file change");
+        p2.reload(10_000) catch self.check(false, "reload of window 2");
+        var nav_buf: [512]u8 = undefined;
+        const c_uri = std.fmt.bufPrint(&nav_buf, "file://{s}/c.html", .{self.dir}) catch return;
+        p2.navigate(c_uri, 10_000) catch self.check(false, "navigate window 2");
+        const work1_after = c.zb_automation_debug_window_work(1);
+        self.check(work1_after == work1, "no page work reached window 1 during the window-2 matrix");
+        self.check(c.zb_automation_debug_window_work(2) > work2, "the work went to window 2");
+        // Only now look at window 1 (this is page work on it).
+        self.check(says(p1, "return window.log.length + ':' + window.scrollY + ':' + location.pathname.split('/').pop();", "0:0:a.html"), "page A saw no input, did not scroll and did not navigate");
+        // Now native input on window 1 after window 2's: it lands in A, is
+        // acknowledged by A, and B sees nothing more.
+        const b_events = evalOn(p2, "return String(window.log.length);", .page) orelse "";
+        defer if (b_events.len > 0) gpa.free(b_events);
+        p1.nativeClick(80, 120, null, 5000) catch self.check(false, "nativeClick on window 1 after window 2");
+        self.check(says(p1, "return window.log.join(',');", "click:true"), "page A got exactly its own trusted click");
+        self.check(says(p2, "return String(window.log.length);", b_events), "page B saw nothing from window 1's click");
+        if (p2.title(gpa, 5000)) |t| {
+            self.check(std.mem.eql(u8, t, "C"), "window 2 navigated to C");
+            gpa.free(t);
+        } else |_| self.check(false, "title of window 2 after navigate");
+
+        // An id with no window: the handle exists, its calls are NoPage.
+        const p77 = p1.forWindow(77) catch return self.check(false, "a handle for an unknown id");
+        self.check(isNoPage(p77.evalJson(gpa, .page, "return 1;", "null", 2000)), "unknown window: eval NoPage");
+        self.check(isNoPage(p77.nativeClick(10, 10, null, 2000)), "unknown window: native click NoPage");
+        self.check(isNoPage(p77.screenshot(gpa, false, 2000)), "unknown window: screenshot NoPage");
+
+        // Ids are never wrapped: with the last u32 handed out, one more
+        // popup gets it, the next one is refused.
+        self.check(c.zb_automation_debug_next_window_id(0xffffffff, 5000) == c.ZB_AUTO_OK, "set the next id to the last u32");
+        _ = evalOn(p1, "window.open('b.html'); return 0;", .page);
+        waited = 0;
+        while (c.zb_automation_window_id_at(2) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        self.check(c.zb_automation_window_id_at(2) == 0xffffffff, "the last u32 id was handed out");
+        _ = evalOn(p1, "window.__refused = window.open('b.html') === null; return 0;", .page);
+        sleepMs(300);
+        self.check(c.zb_automation_window_id_at(3) == 0, "no window after the ids ran out");
+        self.check(says(p1, "return String(window.__refused);", "true"), "the page's window.open was refused");
+
+        // A close while a call on that window is in flight: the call ends
+        // once (Cancelled or NoPage), nothing crashes, the window is gone.
+        var held: Held = .{ .port = p2 };
+        const work_before_held = c.zb_automation_debug_window_work(2);
+        const holder = std.Thread.spawn(.{}, Held.run, .{&held}) catch return self.check(false, "spawn the held call");
+        // Close only once the held call is running in window 2.
+        waited = 0;
+        while (c.zb_automation_debug_window_work(2) == work_before_held and waited < 3000) : (waited += 5) sleepMs(5);
+        self.check(c.zb_automation_debug_window_work(2) > work_before_held, "the held call reached window 2 before the close");
+        p1.closeWindow(2, 5000) catch self.check(false, "closeWindow(2)");
+        holder.join();
+        if (held.outcome != .cancelled and held.outcome != .no_page) std.debug.print("held outcome: {s} {s}\n", .{ @tagName(held.outcome), held.err_name });
+        self.check(held.outcome == .cancelled, "the in-flight call ended Cancelled (window destroyed)");
+        if (p1.listWindows(gpa, 5000)) |windows| {
+            defer page_port_mod.freeWindows(gpa, windows);
+            var has2 = false;
+            for (windows) |w| has2 = has2 or w.id == 2;
+            self.check(!has2 and windows[0].id == 1, "window 2 is gone from the list, the primary still first");
+        } else |_| self.check(false, "listWindows after the close");
+        self.check(isNoPage(p1.closeWindow(2, 2000)), "closing window 2 again is NoPage");
+        // The closed window's handle: every method NoPage, nothing falls
+        // through to another window.
+        const before_gone = c.zb_automation_debug_window_work(1);
+        self.check(isNoPage(p2.evalJson(gpa, .page, "return 1;", "null", 2000)), "gone window: eval NoPage");
+        self.check(isNoPage(p2.navigate("about:blank", 2000)), "gone window: navigate NoPage");
+        self.check(isNoPage(p2.reload(2000)), "gone window: reload NoPage");
+        self.check(isNoPage(p2.nativeClick(10, 10, null, 2000)), "gone window: native click NoPage");
+        self.check(isNoPage(p2.nativeScroll(10, 10, 0, 10, null, 2000)), "gone window: native scroll NoPage");
+        self.check(isNoPage(p2.screenshot(gpa, false, 2000)), "gone window: screenshot NoPage");
+        self.check(isNoPage(p2.setInputFiles(gpa, "return '{}';", "{}", &paths, 2000)), "gone window: setInputFiles NoPage");
+        self.check(p2.pointer() == null, "gone window: no pointer");
+        self.check(c.zb_automation_debug_window_work(1) == before_gone, "nothing from the gone handle reached window 1");
+
+        // The primary after the popup closed. Closing a window still ends
+        // its web process (deferred: on_window_destroy), which the popup
+        // shares with its opener; report what the primary does now.
+        const after = p1.evalJson(gpa, .page, "return window.mark;", "null", 3000);
+        if (after) |out| {
+            std.debug.print("primary after popup close: answers {s}\n", .{out});
+            gpa.free(out);
+        } else |e| std.debug.print("primary after popup close: {s}\n", .{@errorName(e)});
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+
+    const Held = struct {
+        port: page_port_mod.PagePort,
+        outcome: enum { pending, ok, cancelled, no_page, other } = .pending,
+        err_name: []const u8 = "",
+
+        fn run(self: *Held) void {
+            // The resolver is kept reachable: an unreferenced pending promise
+            // can be collected, and WebKit then fails the call early.
+            const r = self.port.evalJson(std.heap.c_allocator, .page, "await new Promise(function (resolve) { globalThis.__zbWindowHold = resolve; }); return 1;", "null", 8000);
+            if (r) |out| {
+                std.heap.c_allocator.free(out);
+                self.outcome = .ok;
+            } else |e| {
+                self.err_name = @errorName(e);
+                self.outcome = switch (e) {
+                    error.Cancelled => .cancelled,
+                    error.NoPage => .no_page,
+                    else => .other,
+                };
+            }
+        }
+    };
+
+    fn pixelIs(self: *WindowsDriver, png: []const u8, x: usize, y: usize, want: u32) bool {
+        var buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&buf, "{s}/shot.png", .{self.dir}) catch return false;
+        if (gfile.g_file_set_contents(path, png.ptr, @intCast(png.len), null) == 0) return false;
+        const surface = cairo.cairo_image_surface_create_from_png(path) orelse return false;
+        defer cairo.cairo_surface_destroy(surface);
+        if (cairo.cairo_surface_status(surface) != 0) return false;
+        cairo.cairo_surface_flush(surface);
+        return Decoded.pixel(surface, x, y) == want;
+    }
+};
+
+test "window targeting: every method reaches its own window, list/close/gone/unknown, ids never wrap" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir_raw = gfile.g_dir_make_tmp("zb-windows-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir_raw);
+    defer removeTree(dir_raw);
+    const dir = try arena.dupeZ(u8, std.mem.span(dir_raw));
+    inline for (.{ .{ "a.html", windowPage("A", "#ff0000") }, .{ "b.html", windowPage("B", "#0000ff") }, .{ "c.html", windowPage("C", "#00ff00") } }) |page| {
+        const path = try std.fmt.allocPrintSentinel(arena, "{s}/" ++ page[0], .{dir}, 0);
+        try std.testing.expect(gfile.g_file_set_contents(path, page[1].ptr, @intCast(page[1].len), null) != 0);
+    }
+    const upload = try std.fmt.allocPrintSentinel(arena, "{s}/up.txt", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(upload, "hello", 5, null) != 0);
+    const a_path = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const raw = gfile.g_filename_to_uri(a_path, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw);
+    const uri = try arena.dupeZ(u8, std.mem.span(raw));
+    var driver: WindowsDriver = .{ .dir = dir, .upload = upload };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_debug_files_unmatched(1);
+    defer c.zb_automation_debug_files_unmatched(0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 120_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, WindowsDriver.run, .{&driver});
     _ = c.zb_app_run(uri.ptr, 0, 0);
     t.join();
     try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);

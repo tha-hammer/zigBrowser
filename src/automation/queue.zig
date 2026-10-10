@@ -21,6 +21,8 @@ pub const Waiter = struct {
 const PageLine = struct {
     /// Head is the running command; the rest wait in arrival order.
     waiters: std.ArrayListUnmanaged(*Waiter) = .empty,
+    /// The map key (owned by the line's map entry).
+    key: []const u8 = "",
 };
 
 pub const PageCommandQueue = struct {
@@ -57,6 +59,9 @@ pub const PageCommandQueue = struct {
         if (self.shutting_down) return error.Cancelled;
 
         const line = try self.pageLine(page_id);
+        // Out of memory below: a line this call just created (still empty)
+        // must not stay behind (under the mutex, nobody else can fill it).
+        errdefer if (line.waiters.items.len == 0) self.dropLine(line);
         const waiter = try self.allocator.create(Waiter);
         errdefer self.allocator.destroy(waiter);
         waiter.* = .{ .page = line };
@@ -81,9 +86,29 @@ pub const PageCommandQueue = struct {
     pub fn release(self: *PageCommandQueue, ticket: Ticket) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        removeWaiter(ticket.page, ticket);
+        const line = ticket.page;
+        removeWaiter(line, ticket);
         self.allocator.destroy(ticket);
+        // N23: an idle line goes at once (window ids are never reused, and
+        // any page id may be asked for), so lines never accumulate.
+        if (line.waiters.items.len == 0) self.dropLine(line);
         self.cond.broadcast(self.io);
+    }
+
+    /// Lines currently kept (test hook).
+    pub fn lineCount(self: *PageCommandQueue) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.pages.count();
+    }
+
+    /// Caller holds the mutex; `line` has no waiters.
+    fn dropLine(self: *PageCommandQueue, line: *PageLine) void {
+        const key = line.key;
+        _ = self.pages.remove(key);
+        self.allocator.free(key);
+        line.waiters.deinit(self.allocator);
+        self.allocator.destroy(line);
     }
 
     /// Cancels every queued command and flags running ones; later acquires
@@ -113,7 +138,7 @@ pub const PageCommandQueue = struct {
         errdefer self.allocator.free(key);
         const line = try self.allocator.create(PageLine);
         errdefer self.allocator.destroy(line);
-        line.* = .{};
+        line.* = .{ .key = key };
         try self.pages.put(self.allocator, key, line);
         return line;
     }

@@ -79,6 +79,16 @@ export interface ScreenshotResult {
   height: number;
 }
 
+export interface PageInfo {
+  /** "window-<n>" */
+  window_id: string;
+  url: string;
+  title: string;
+  primary: boolean;
+  /** The window whose page opened this one (a popup). */
+  opener_window_id?: string;
+}
+
 export interface ActionOptions {
   force?: boolean;
   trial?: boolean;
@@ -196,6 +206,17 @@ export class PageNamespace {
   }
   evaluate<T = unknown>(expression: string): Promise<EvaluateResult<T>> {
     return this.call("page.evaluate", { expression }) as Promise<EvaluateResult<T>>;
+  }
+  /**
+   * Every open window, primary first. Send `window_id` with a page.* or dom.*
+   * call (`zb.call`) to act on another window, e.g. a login popup.
+   */
+  list(): Promise<{ pages: PageInfo[] }> {
+    return this.call("page.list", {}) as Promise<{ pages: PageInfo[] }>;
+  }
+  /** Close a window from page.list (not the primary one). */
+  close(windowId: string): Promise<OkResult> {
+    return this.call("page.close", { window_id: windowId }) as Promise<OkResult>;
   }
   /** A backend without screenshots answers -32603. */
   screenshot(opts: { fullPage?: boolean; timeoutMs?: number } = {}): Promise<ScreenshotResult> {

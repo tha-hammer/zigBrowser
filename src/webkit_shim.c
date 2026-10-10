@@ -100,6 +100,10 @@ struct ZbWindow {
   /* Last dispatched native pointer position; guarded by zb_auto_mutex. */
   int auto_pointer_valid;
   double auto_pointer_x, auto_pointer_y;
+  /* Automation identity (N23): stable for the window's life, never reused
+   * within a run, the first window is 1; the opener's id for a popup. */
+  guint32 auto_id;
+  guint32 auto_opener_id;
   gulong sig_uri_notify;
   gulong sig_file_chooser;
 };
@@ -133,6 +137,9 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
 static gboolean on_signal_force_quit(gpointer user_data);
 static void request_app_shutdown(ZbApp *app, int with_deadline);
 static void terminate_window_web_process(ZbWindow *win);
+
+static guint64 zb_auto_next_id;
+static int auto_pub_index_locked(guint32 requested);
 
 /* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
 static void auto_install_script(ZbWindow *win);
@@ -656,8 +663,13 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
 
   ZbWindow *child_win = zb_window_new(app, child);
   if (child_win == NULL) {
+    /* Refused (cap or ids exhausted): release the view we just made. */
+    g_object_ref_sink(child);
+    g_object_unref(child);
     return NULL;
   }
+  ZbWindow *opener = app_find_window_by_view(app, parent_view);
+  child_win->auto_opener_id = opener != NULL ? opener->auto_id : 0;
 
   if (app->pending_subwindow_seed_uri != NULL) {
     g_free(child_win->seed_uri);
@@ -742,6 +754,11 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     return;
   }
 
+  /* Automation calls in flight on this window end now, as Cancelled
+   * ("window destroyed"), before the web process is terminated below
+   * (which would otherwise fail them as script errors first). */
+  auto_window_destroyed(win);
+
   if (win->view != NULL) {
     if (!win->finished && !win->failed && !win->timed_out && win->app != NULL) {
       win->cancelled = 1;
@@ -788,7 +805,7 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   }
 
   win->gtk_window = NULL;
-  auto_window_destroyed(win);
+  auto_window_destroyed(win); /* anything tracked while tearing down */
   app_remove_window(win->app, win);
   window_free(win);
 }
@@ -970,10 +987,18 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
     return NULL;
   }
 
+  if (zb_auto_next_id == 0 || zb_auto_next_id > G_MAXUINT32) {
+    /* Every u32 id was handed out: refuse rather than reuse or wrap. */
+    zb_auto_next_id = 0;
+    g_warning("window ids exhausted; refusing new window");
+    return NULL;
+  }
+
   ZbWindow *win = g_new0(ZbWindow, 1);
   win->app = app;
   win->view = view;
   win->is_child = app->n_windows > 0;
+  win->auto_id = (guint32)zb_auto_next_id++;
 
   win->context = webkit_web_view_get_context(view);
   if (win->context != NULL) {
@@ -1199,7 +1224,7 @@ enum {
 };
 
 typedef struct ZbAutoJob ZbAutoJob;
-static void auto_native_finish_pointer(ZbAutoJob *job, ZbWindow *win);
+static void auto_native_finish_pointer(ZbAutoJob *job, guint32 window_id);
 typedef void (*ZbAutoStartFn)(ZbAutoJob *job);
 
 struct ZbAutoJob {
@@ -1215,7 +1240,7 @@ struct ZbAutoJob {
 
   /* Async page ops. Inputs are owned copies; `target` is touched only on the
    * GTK thread and is cleared when the window is destroyed. */
-  ZbWindow *requested;
+  guint32 requested_id; /* target window id (0 = the original primary, id 1) */
   ZbWindow *target;
   char *body;
   char *arg;
@@ -1551,6 +1576,12 @@ static ZbApp *zb_auto_app;          /* GTK thread only */
  * each one's first load has ended; guarded by zb_auto_mutex, published by the
  * GTK thread whenever a window is added, removed or finishes its first load. */
 static ZbWindow *zb_auto_pub_windows[ZB_MAX_WINDOWS];
+static guint32 zb_auto_pub_ids[ZB_MAX_WINDOWS];
+/* Highest window id handed out in this run (0 before the first window):
+ * an id at or below it that is not published is gone for good. */
+static guint32 zb_auto_pub_max_id;
+/* Next window id to hand out (GTK thread); 0 once all u32 ids are used. */
+static guint64 zb_auto_next_id = 1;
 static int zb_auto_pub_ready[ZB_MAX_WINDOWS];
 static int zb_auto_pub_count;
 static GList *zb_auto_inflight;     /* GTK thread only; holds one ref per job */
@@ -1672,6 +1703,10 @@ static void auto_publish_windows(ZbApp *app) {
       continue;
     }
     zb_auto_pub_windows[zb_auto_pub_count] = win;
+    zb_auto_pub_ids[zb_auto_pub_count] = win->auto_id;
+    if (win->auto_id > zb_auto_pub_max_id) {
+      zb_auto_pub_max_id = win->auto_id;
+    }
     zb_auto_pub_ready[zb_auto_pub_count] = win->auto_first_load_done;
     zb_auto_pub_count++;
   }
@@ -1687,37 +1722,76 @@ static void auto_first_load_done(ZbWindow *win) {
   auto_publish_windows(win->app);
 }
 
-ZbWindow *zb_automation_window_at(int index) {
+/* Window ids start at 1 again for each app run (a run's ids are never
+ * reused within it). Also cleared after a run, so a caller waiting for the
+ * next run's primary waits instead of seeing the last run's as gone. */
+static guint zb_auto_run_generation;
+
+static void auto_reset_window_ids(void) {
   g_mutex_lock(&zb_auto_mutex);
-  ZbWindow *win = index >= 0 && index < zb_auto_pub_count ? zb_auto_pub_windows[index] : NULL;
+  zb_auto_next_id = 1;
+  zb_auto_pub_max_id = 0;
+  zb_auto_run_generation++;
   g_mutex_unlock(&zb_auto_mutex);
-  return win;
 }
 
-ZbWindow *zb_automation_main_window(void) {
+int zb_automation_window_alive(uint32_t id) {
   g_mutex_lock(&zb_auto_mutex);
-  ZbWindow *win = zb_auto_pub_count > 0 ? zb_auto_pub_windows[0] : NULL;
+  int alive = id != 0 && auto_pub_index_locked(id) >= 0;
   g_mutex_unlock(&zb_auto_mutex);
-  return win;
+  return alive;
 }
 
-/* GTK thread: map a requested window (NULL = primary) to a live window. */
-static ZbWindow *auto_resolve_window(ZbWindow *requested) {
+uint32_t zb_automation_run_generation(void) {
+  g_mutex_lock(&zb_auto_mutex);
+  guint generation = zb_auto_run_generation;
+  g_mutex_unlock(&zb_auto_mutex);
+  return generation;
+}
+
+uint32_t zb_automation_window_id_at(int index) {
+  g_mutex_lock(&zb_auto_mutex);
+  guint32 id = index >= 0 && index < zb_auto_pub_count ? zb_auto_pub_ids[index] : 0;
+  g_mutex_unlock(&zb_auto_mutex);
+  return id;
+}
+
+/* The window id a request names: 0 is the original primary, id 1 (never
+ * whatever window happens to be first now). */
+static guint32 auto_target_id(guint32 requested) {
+  return requested == 0 ? 1 : requested;
+}
+
+/* GTK thread: the live window with the requested id, or NULL. Only ids
+ * cross threads; window pointers are resolved here, on the thread that
+ * frees them. */
+static ZbWindow *auto_resolve_window(guint32 requested) {
   ZbApp *app = zb_auto_app;
   if (app == NULL) {
     return NULL;
   }
+  guint32 id = auto_target_id(requested);
   for (int i = 0; i < app->n_windows; i++) {
     ZbWindow *win = app->windows[i];
-    if (win != NULL && win->view != NULL &&
-        (requested == NULL ? i == 0 : win == requested)) {
+    if (win != NULL && win->view != NULL && win->auto_id == id) {
       return win;
     }
   }
   return NULL;
 }
 
+/* Test hook: GTK-side page work (evals, loads, captures, file choosers,
+ * native guards) started per window id, for ids up to 64. */
+static gint zb_auto_debug_work[65];
+
+int zb_automation_debug_window_work(uint32_t id) {
+  return id <= 64 ? g_atomic_int_get(&zb_auto_debug_work[id]) : 0;
+}
+
 static void auto_track(ZbAutoJob *job, ZbWindow *win) {
+  if (win != NULL && win->auto_id <= 64) {
+    g_atomic_int_inc(&zb_auto_debug_work[win->auto_id]);
+  }
   job->target = win;
   zb_auto_inflight = g_list_prepend(zb_auto_inflight, auto_job_ref(job));
 }
@@ -1979,7 +2053,7 @@ static void on_auto_eval_done(GObject *object, GAsyncResult *result,
 }
 
 static void auto_start_eval(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -2169,7 +2243,7 @@ static void on_auto_files_eval_done(GObject *object, GAsyncResult *result, gpoin
 }
 
 static void auto_start_files(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -2426,7 +2500,7 @@ static void on_auto_shot_hook_done(GObject *object, GAsyncResult *result, gpoint
     g_object_unref(value);
   }
   auto_untrack(job);
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win != NULL && auto_job_running(job)) {
     auto_screenshot_snapshot(job, win);
   } else {
@@ -2448,7 +2522,7 @@ static void on_auto_shot_measured(GObject *object, GAsyncResult *result, gpointe
   if (value != NULL) {
     g_object_unref(value);
   }
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   int live = auto_job_running(job);
   if (!parsed) {
     int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
@@ -2482,7 +2556,7 @@ static void on_auto_shot_measured(GObject *object, GAsyncResult *result, gpointe
 }
 
 static void auto_start_screenshot(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -2503,7 +2577,7 @@ static void auto_start_screenshot(ZbAutoJob *job) {
 /* Mirrors zb_reload: mark the in-flight load superseded so its cancellation
  * and FINISHED are ignored, then start the new load. */
 static void auto_start_load(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -2538,7 +2612,7 @@ static void auto_start_load(ZbAutoJob *job) {
 }
 
 static void auto_start_get(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -2552,12 +2626,10 @@ static void auto_start_get(ZbAutoJob *job) {
  * load has ended, so commands sent while the start page is still loading do
  * not run against the empty initial document. */
 /* Index of `win` in the published snapshot (NULL = primary), or -1. */
-static int auto_pub_index_locked(ZbWindow *win) {
-  if (win == NULL) {
-    return zb_auto_pub_count > 0 ? 0 : -1;
-  }
+static int auto_pub_index_locked(guint32 requested) {
+  guint32 id = auto_target_id(requested);
   for (int i = 0; i < zb_auto_pub_count; i++) {
-    if (zb_auto_pub_windows[i] == win) {
+    if (zb_auto_pub_ids[i] == id) {
       return i;
     }
   }
@@ -2568,16 +2640,19 @@ static int auto_pub_index_locked(ZbWindow *win) {
  * load has ended, so commands sent while a page is still loading do not run
  * against its empty initial document. NULL waits for the primary window to
  * appear; an explicit window that is not alive is NO_WINDOW at once. */
-static int auto_wait_for_window(ZbWindow *target, gint64 deadline_us, int need_ready) {
+static int auto_wait_for_window(guint32 target, gint64 deadline_us, int need_ready) {
   int code = ZB_AUTO_OK;
+  guint32 id = auto_target_id(target);
   g_mutex_lock(&zb_auto_mutex);
   for (;;) {
-    int index = auto_pub_index_locked(target);
+    int index = auto_pub_index_locked(id);
     if (auto_loop_ended_locked()) {
       code = ZB_AUTO_ERR_NO_LOOP;
       break;
     }
-    if (index < 0 && target != NULL) {
+    /* Only the primary (id 1) is worth waiting for before it exists; any
+     * other missing id, and the primary once it existed, is gone. */
+    if (index < 0 && (id != 1 || zb_auto_pub_max_id >= 1)) {
       code = ZB_AUTO_ERR_NO_WINDOW;
       break;
     }
@@ -2585,7 +2660,7 @@ static int auto_wait_for_window(ZbWindow *target, gint64 deadline_us, int need_r
       break;
     }
     if (!g_cond_wait_until(&zb_auto_cond, &zb_auto_mutex, deadline_us)) {
-      index = auto_pub_index_locked(target);
+      index = auto_pub_index_locked(id);
       if (index < 0) {
         code = ZB_AUTO_ERR_NO_WINDOW;
         break;
@@ -2606,7 +2681,7 @@ static int auto_wait_for_window(ZbWindow *target, gint64 deadline_us, int need_r
 
 /* Waiter side shared by every page op. Moves the job's outputs to the
  * caller when the job finished, whatever its code. */
-static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
+static int auto_run_op(ZbAutoJob *job, uint32_t win, unsigned int timeout_ms,
                        char **out_result, char **out_err) {
   if (out_result != NULL) {
     *out_result = NULL;
@@ -2626,7 +2701,7 @@ static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
     return code;
   }
 
-  job->requested = win;
+  job->requested_id = win;
   code = auto_job_submit(job);
   if (code == ZB_AUTO_OK) {
     code = auto_job_wait(job, deadline);
@@ -2678,7 +2753,7 @@ static ZbAutoJob *auto_op_new(int op) {
   return job;
 }
 
-int zb_automation_eval_json(ZbWindow *win, const char *function_body,
+int zb_automation_eval_json(uint32_t win, const char *function_body,
                             const char *arg_json, const char *world,
                             unsigned int timeout_ms, char **out_result,
                             char **out_err) {
@@ -2694,7 +2769,7 @@ int zb_automation_eval_json(ZbWindow *win, const char *function_body,
   return code;
 }
 
-int zb_automation_navigate(ZbWindow *win, const char *url, unsigned int timeout_ms,
+int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms,
                            char **out_err) {
   if (url == NULL) {
     return ZB_AUTO_ERR_INTERNAL;
@@ -2706,14 +2781,14 @@ int zb_automation_navigate(ZbWindow *win, const char *url, unsigned int timeout_
   return code;
 }
 
-int zb_automation_reload(ZbWindow *win, unsigned int timeout_ms, char **out_err) {
+int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err) {
   ZbAutoJob *job = auto_op_new(ZB_OP_RELOAD);
   int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
   auto_job_unref(job);
   return code;
 }
 
-int zb_automation_get_url(ZbWindow *win, unsigned int timeout_ms, char **out_url) {
+int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url) {
   ZbAutoJob *job = auto_op_new(ZB_OP_URL);
   int code = auto_run_op(job, win, timeout_ms, out_url, NULL);
   auto_job_unref(job);
@@ -2722,7 +2797,7 @@ int zb_automation_get_url(ZbWindow *win, unsigned int timeout_ms, char **out_url
 
 /* Reads document.title in the isolated world: webkit_web_view_get_title lags
  * the DOM and is often still empty when the load finishes. */
-int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_title) {
+int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title) {
   return zb_automation_eval_json(win, "return document.title || '';", NULL,
                                  ZB_AUTOMATION_WORLD, timeout_ms, out_title, NULL);
 }
@@ -2736,7 +2811,7 @@ void zb_automation_free(char *p) {
  * profile context when one is set). Messages never include cookie values. */
 
 static WebKitCookieManager *auto_cookie_manager(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL || win->view == NULL) {
     return NULL;
   }
@@ -2950,7 +3025,7 @@ static void auto_start_cookies(ZbAutoJob *job) {
     return;
   }
   /* Tracked like eval/load jobs: closing the window cancels and completes it. */
-  auto_track(job, auto_resolve_window(job->requested));
+  auto_track(job, auto_resolve_window(job->requested_id));
 
   guint delay = (guint)g_atomic_int_get(&zb_auto_debug_cookie_delay_ms);
   if (delay > 0) {
@@ -3089,6 +3164,7 @@ static void auto_native_click(ZbAutoJob *job, ZbWindow *win) {
   }
   /* A handler of focus or of one event may destroy the window: keep the
    * GdkWindow alive and send nothing more once it is gone. */
+  guint32 window_id = win->auto_id;
   g_object_ref(window);
   if (auto_native_focus(win)) {
     auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
@@ -3101,7 +3177,7 @@ static void auto_native_click(ZbAutoJob *job, ZbWindow *win) {
                         auto_button_mask(job->button));
   }
   g_object_unref(window);
-  auto_native_finish_pointer(job, win);
+  auto_native_finish_pointer(job, window_id);
 }
 
 typedef struct {
@@ -3277,7 +3353,7 @@ static void auto_native_guard_decide(ZbAutoJob *job) {
     return;
   }
 
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -3328,7 +3404,7 @@ static void on_auto_native_guard(GObject *object, GAsyncResult *result, gpointer
 }
 
 static void auto_start_native(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
+  ZbWindow *win = auto_resolve_window(job->requested_id);
   if (win == NULL) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
@@ -3357,13 +3433,13 @@ int zb_automation_debug_pointer_lost(void) {
 }
 
 /* GTK thread, right after the GDK motion/button events went out. A handler
- * of those events may have destroyed `win` (and freed it), so `win` is only
- * compared against the published windows, never dereferenced unless it is
- * still one of them (removal from that list precedes the free). Returns
- * whether the window is still alive. */
-static int auto_remember_pointer(ZbWindow *win, double x, double y) {
+ * of those events may have destroyed the window (and freed it), so it is
+ * named by the id read before dispatch and looked up among the published
+ * windows (removal from that list precedes the free). Returns whether the
+ * window is still alive. */
+static int auto_remember_pointer(guint32 window_id, double x, double y) {
   g_mutex_lock(&zb_auto_mutex);
-  int index = auto_pub_index_locked(win);
+  int index = auto_pub_index_locked(window_id);
   if (index >= 0) {
     ZbWindow *live = zb_auto_pub_windows[index];
     live->auto_pointer_valid = 1;
@@ -3376,8 +3452,8 @@ static int auto_remember_pointer(ZbWindow *win, double x, double y) {
   return index >= 0;
 }
 
-static void auto_native_finish_pointer(ZbAutoJob *job, ZbWindow *win) {
-  if (auto_remember_pointer(win, job->x, job->y)) {
+static void auto_native_finish_pointer(ZbAutoJob *job, guint32 window_id) {
+  if (auto_remember_pointer(window_id, job->x, job->y)) {
     auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
   } else {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("window closed during input"));
@@ -3390,10 +3466,11 @@ static void auto_native_move(ZbAutoJob *job, ZbWindow *win) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("view not realized"));
     return;
   }
+  guint32 window_id = win->auto_id; /* `win` may be freed by the dispatch */
   g_object_ref(window);
   auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
   g_object_unref(window);
-  auto_native_finish_pointer(job, win);
+  auto_native_finish_pointer(job, window_id);
 }
 
 /* One smooth-scroll event at (x, y). WebKitGTK scales a smooth delta of 1
@@ -3508,7 +3585,7 @@ static void auto_native_guard(ZbAutoJob *job, const char *expected_doc) {
   job->cancellable = g_cancellable_new();
 }
 
-int zb_native_pointer(ZbWindow *win, double *out_x, double *out_y) {
+int zb_native_pointer(uint32_t win, double *out_x, double *out_y) {
   int valid = 0;
   g_mutex_lock(&zb_auto_mutex);
   int index = auto_pub_index_locked(win);
@@ -3527,17 +3604,17 @@ int zb_native_pointer(ZbWindow *win, double *out_x, double *out_y) {
 }
 
 static void auto_debug_destroy(void *ctx) {
-  ZbWindow *win = auto_resolve_window((ZbWindow *)ctx);
+  ZbWindow *win = auto_resolve_window(GPOINTER_TO_UINT(ctx));
   if (win != NULL && win->gtk_window != NULL) {
     gtk_widget_destroy(win->gtk_window);
   }
 }
 
-int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms) {
-  if (win == NULL) {
+int zb_automation_debug_destroy_window(uint32_t win, unsigned int timeout_ms) {
+  if (win == 0) {
     return ZB_AUTO_ERR_INTERNAL;
   }
-  return zb_main_invoke_sync(auto_debug_destroy, win, timeout_ms);
+  return zb_main_invoke_sync(auto_debug_destroy, GUINT_TO_POINTER(win), timeout_ms);
 }
 
 /* Destroys the widget's toplevel from inside its own event handler. */
@@ -3549,34 +3626,122 @@ static gboolean auto_debug_close_on_motion_cb(GtkWidget *widget, GdkEvent *event
 }
 
 static void auto_debug_close_on_motion(void *ctx) {
-  ZbWindow *win = auto_resolve_window((ZbWindow *)ctx);
+  ZbWindow *win = auto_resolve_window(GPOINTER_TO_UINT(ctx));
   if (win != NULL) {
     g_signal_connect(win->view, "motion-notify-event", G_CALLBACK(auto_debug_close_on_motion_cb), NULL);
   }
 }
 
 static void auto_debug_close_on_key(void *ctx) {
-  ZbWindow *win = auto_resolve_window((ZbWindow *)ctx);
+  ZbWindow *win = auto_resolve_window(GPOINTER_TO_UINT(ctx));
   if (win != NULL) {
     g_signal_connect(win->view, "key-press-event", G_CALLBACK(auto_debug_close_on_motion_cb), NULL);
   }
 }
 
-int zb_automation_debug_close_on_key(ZbWindow *win, unsigned int timeout_ms) {
-  if (win == NULL) {
+int zb_automation_debug_close_on_key(uint32_t win, unsigned int timeout_ms) {
+  if (win == 0) {
     return ZB_AUTO_ERR_INTERNAL;
   }
-  return zb_main_invoke_sync(auto_debug_close_on_key, win, timeout_ms);
+  return zb_main_invoke_sync(auto_debug_close_on_key, GUINT_TO_POINTER(win), timeout_ms);
 }
 
-int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms) {
-  if (win == NULL) {
+int zb_automation_debug_close_on_motion(uint32_t win, unsigned int timeout_ms) {
+  if (win == 0) {
     return ZB_AUTO_ERR_INTERNAL;
   }
-  return zb_main_invoke_sync(auto_debug_close_on_motion, win, timeout_ms);
+  return zb_main_invoke_sync(auto_debug_close_on_motion, GUINT_TO_POINTER(win), timeout_ms);
 }
 
-int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg_json,
+/* ---- Window list and close (N23) ---- */
+
+typedef struct {
+  char *json;
+  guint32 id;
+  int code;
+} ZbWindowsCall;
+
+/* GTK thread: one consistent snapshot of every live window (id, URL,
+ * title, primary, opener), the original primary first while it lives. */
+static void auto_list_windows(void *ctx) {
+  ZbWindowsCall *call = (ZbWindowsCall *)ctx;
+  GString *out = g_string_new("[");
+  ZbApp *app = zb_auto_app;
+  int first = 1;
+  for (int pass = 0; pass < 2 && app != NULL; pass++) {
+    for (int i = 0; i < app->n_windows; i++) {
+      ZbWindow *win = app->windows[i];
+      if (win == NULL || win->view == NULL || (pass == 0) != (win->auto_id == 1)) {
+        continue;
+      }
+      g_string_append_printf(out, "%s{\"id\":%u,\"url\":", first ? "" : ",", win->auto_id);
+      auto_json_string(out, webkit_web_view_get_uri(win->view));
+      g_string_append(out, ",\"title\":");
+      auto_json_string(out, webkit_web_view_get_title(win->view));
+      g_string_append_printf(out, ",\"primary\":%s,\"opener\":%u}", win->auto_id == 1 ? "true" : "false",
+                             win->auto_opener_id);
+      first = 0;
+    }
+  }
+  g_string_append_c(out, ']');
+  call->json = g_string_free(out, FALSE);
+}
+
+int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
+  if (out_json == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  *out_json = NULL;
+  ZbWindowsCall *call = g_new0(ZbWindowsCall, 1);
+  int code = zb_main_invoke_sync(auto_list_windows, call, timeout_ms);
+  /* zb_main_invoke_sync never runs a job after its caller gave up (a
+   * pending job is cancelled, a running one is waited for). */
+  if (code == ZB_AUTO_OK) {
+    *out_json = call->json;
+  } else {
+    g_free(call->json);
+  }
+  g_free(call);
+  return code;
+}
+
+/* GTK thread: destroy window `id` (its toplevel), synchronously. */
+static void auto_close_window(void *ctx) {
+  ZbWindowsCall *call = (ZbWindowsCall *)ctx;
+  ZbWindow *win = call->id != 0 ? auto_resolve_window(call->id) : NULL;
+  if (win == NULL || win->gtk_window == NULL) {
+    call->code = ZB_AUTO_ERR_NO_WINDOW;
+    return;
+  }
+  gtk_widget_destroy(win->gtk_window);
+  call->code = ZB_AUTO_OK;
+}
+
+static void auto_debug_next_id(void *ctx) {
+  zb_auto_next_id = *(guint64 *)ctx;
+}
+
+int zb_automation_debug_next_window_id(uint64_t next, unsigned int timeout_ms) {
+  guint64 value = next;
+  return zb_main_invoke_sync(auto_debug_next_id, &value, timeout_ms);
+}
+
+int zb_automation_close_window(uint32_t id, unsigned int timeout_ms) {
+  if (id == 0) {
+    return ZB_AUTO_ERR_NO_WINDOW;
+  }
+  ZbWindowsCall *call = g_new0(ZbWindowsCall, 1);
+  call->id = id;
+  call->code = ZB_AUTO_ERR_INTERNAL;
+  int code = zb_main_invoke_sync(auto_close_window, call, timeout_ms);
+  if (code == ZB_AUTO_OK) {
+    code = call->code;
+  }
+  g_free(call);
+  return code;
+}
+
+int zb_set_input_files(uint32_t win, const char *function_body, const char *arg_json,
                        const char *const *paths, int n_paths, unsigned int timeout_ms,
                        char **out_result, char **out_err) {
   if (out_result != NULL) {
@@ -3621,7 +3786,7 @@ int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg
   return code;
 }
 
-int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned int timeout_ms,
+int zb_screenshot_png(uint32_t win, int full_page, size_t max_bytes, unsigned int timeout_ms,
                       unsigned char **out_png, size_t *out_len, int *out_width,
                       int *out_height, char **out_err) {
   if (out_png == NULL || out_len == NULL || max_bytes == 0) {
@@ -3662,7 +3827,7 @@ int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned i
   return code;
 }
 
-int zb_native_scroll(ZbWindow *win, double x, double y, double delta_x, double delta_y,
+int zb_native_scroll(uint32_t win, double x, double y, double delta_x, double delta_y,
                      const char *expected_doc, unsigned int timeout_ms, char **out_err) {
   if (!isfinite(x) || !isfinite(y) || !isfinite(delta_x) || !isfinite(delta_y)) {
     return ZB_AUTO_ERR_INTERNAL;
@@ -3678,7 +3843,7 @@ int zb_native_scroll(ZbWindow *win, double x, double y, double delta_x, double d
   return code;
 }
 
-int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
+int zb_native_move(uint32_t win, double x, double y, const char *expected_doc,
                    unsigned int timeout_ms, char **out_err) {
   ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_MOVE);
   auto_native_guard(job, expected_doc);
@@ -3689,7 +3854,7 @@ int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
   return code;
 }
 
-int zb_native_click(ZbWindow *win, double x, double y, int button,
+int zb_native_click(uint32_t win, double x, double y, int button,
                     const char *expected_doc, unsigned int timeout_ms, char **out_err) {
   ZbAutoJob *job = auto_op_new(ZB_OP_NATIVE_CLICK);
   auto_native_guard(job, expected_doc);
@@ -3702,7 +3867,7 @@ int zb_native_click(ZbWindow *win, double x, double y, int button,
 }
 
 /* Runs a native key/text job and reports how many key releases it sent. */
-static int auto_run_native_keys(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
+static int auto_run_native_keys(ZbAutoJob *job, uint32_t win, unsigned int timeout_ms,
                                 int *out_releases, char **out_err) {
   if (out_releases != NULL) {
     *out_releases = 0;
@@ -3717,7 +3882,7 @@ static int auto_run_native_keys(ZbAutoJob *job, ZbWindow *win, unsigned int time
   return code;
 }
 
-int zb_native_key(ZbWindow *win, const char *key, int modifiers,
+int zb_native_key(uint32_t win, const char *key, int modifiers,
                   const char *expected_doc, unsigned int timeout_ms, int *out_releases,
                   char **out_err) {
   if (key == NULL || key[0] == '\0') {
@@ -3734,7 +3899,7 @@ int zb_native_key(ZbWindow *win, const char *key, int modifiers,
  * characters: long text can neither overrun the deadline nor hold the GTK
  * thread. On TIMEOUT the text is partially typed; *out_releases counts the
  * releases actually sent. */
-int zb_native_text(ZbWindow *win, const char *text, const char *expected_doc,
+int zb_native_text(uint32_t win, const char *text, const char *expected_doc,
                    unsigned int timeout_ms, int *out_releases, int *out_chars,
                    char **out_err) {
   if (out_releases != NULL) {
@@ -3783,7 +3948,7 @@ int zb_native_text(ZbWindow *win, const char *text, const char *expected_doc,
   return ZB_AUTO_OK;
 }
 
-int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,
+int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms,
                        char **out_json, char **out_err) {
   ZbAutoJob *job = auto_op_new(ZB_OP_COOKIES_GET);
   job->url = g_strdup(url);
@@ -3803,7 +3968,7 @@ static SoupSameSitePolicy auto_same_site_policy(int same_site) {
   }
 }
 
-int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_ms,
+int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int timeout_ms,
                    char **out_err) {
   if (out_err != NULL) {
     *out_err = NULL;
@@ -3850,7 +4015,7 @@ int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_m
   return code;
 }
 
-int zb_cookies_delete(ZbWindow *win, const char *name, const char *domain,
+int zb_cookies_delete(uint32_t win, const char *name, const char *domain,
                       unsigned int timeout_ms, char **out_err) {
   if (out_err != NULL) {
     *out_err = NULL;
@@ -4009,6 +4174,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
     return ZB_EXIT_GTK_INIT_FAILED;
   }
 
+  auto_reset_window_ids();
   zb_auto_app = &app;
   ZbWindow *main_window = zb_window_new(&app, main_view);
   if (main_window == NULL) {
@@ -4052,6 +4218,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
   auto_drain_async();
   zb_auto_app = NULL;
   auto_publish_windows(NULL);
+  auto_reset_window_ids();
   g_free(app.app_base);
   g_free(app.pending_subwindow_seed_uri);
   app.app_base = NULL;

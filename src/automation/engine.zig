@@ -109,6 +109,11 @@ pub const ExecuteOptions = struct {
     route: router.RouteContext = .{},
     /// Backend/version dimensions for spans.
     build: telemetry.BuildInfo = .{},
+    /// N23: the page this command (and every step of a flow) acts on, e.g.
+    /// a targeted window's port; null = the engine's own port.
+    port: ?page_port.PagePort = null,
+    /// N23: `data.reason` when that page is gone (PortError.NoPage).
+    no_page_reason: ?[]const u8 = null,
 };
 
 /// Handle given to `executeExternal` bodies: the command's ids plus
@@ -168,7 +173,7 @@ pub const External = struct {
     pub fn url(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
         self.run.native_timeout_ms = timeout_ms;
         const started = self.engine.clock.nowMs();
-        const value = self.engine.port.url(gpa, timeout_ms) catch |err| {
+        const value = self.run.port.url(gpa, timeout_ms) catch |err| {
             self.engine.platformSpan(self.run, "url", null, 0, 0, started, @errorName(err));
             return err;
         };
@@ -180,12 +185,36 @@ pub const External = struct {
     pub fn evalJson(self: *External, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg_json: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
         self.run.native_timeout_ms = timeout_ms;
         const started = self.engine.clock.nowMs();
-        const text = self.engine.port.evalJson(gpa, world, body, arg_json, timeout_ms) catch |err| {
+        const text = self.run.port.evalJson(gpa, world, body, arg_json, timeout_ms) catch |err| {
             self.engine.platformSpan(self.run, "evalJson", world, body.len, 0, started, @errorName(err));
             return err;
         };
         self.engine.platformSpan(self.run, "evalJson", world, body.len, text.len, started, "ok");
         return text;
+    }
+
+    /// N23: PagePort.listWindows with an automation.platform.eval child span
+    /// (op "listWindows"; sizes only, never URLs or titles).
+    pub fn listWindows(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]page_port.WindowInfo {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        const windows = self.run.port.listWindows(gpa, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "listWindows", null, 0, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "listWindows", null, 0, windows.len, started, "ok");
+        return windows;
+    }
+
+    /// N23: PagePort.closeWindow with an automation.platform.eval child span.
+    pub fn closeWindow(self: *External, id: page_port.WindowId, timeout_ms: u64) page_port.PortError!void {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        self.run.port.closeWindow(id, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "closeWindow", null, 0, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "closeWindow", null, 0, 0, started, "ok");
     }
 
     /// Records a child span under this command's root. Attributes must
@@ -218,6 +247,9 @@ pub const External = struct {
 
 /// State for one command execution.
 const Run = struct {
+    /// The page this command acts on (ExecuteOptions.port, else the
+    /// engine's port).
+    port: page_port.PagePort,
     ids: script_command.Ids,
     cancel: ?*const std.atomic.Value(bool),
     sink: ?telemetry.TelemetrySink,
@@ -269,7 +301,8 @@ pub const Engine = struct {
     pub fn executeWith(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, options: ExecuteOptions) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
         var run = Run{
-            .ids = self.nextIds(&ids_buf),
+            .port = options.port orelse self.port,
+            .ids = withNoPageReason(self.nextIds(&ids_buf), options.no_page_reason),
             .cancel = options.cancel,
             .sink = options.route.telemetry_sink,
             .route = options.route,
@@ -299,7 +332,8 @@ pub const Engine = struct {
     ) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
         var run = Run{
-            .ids = self.nextIds(&ids_buf),
+            .port = options.port orelse self.port,
+            .ids = withNoPageReason(self.nextIds(&ids_buf), options.no_page_reason),
             .cancel = options.cancel,
             .sink = options.route.telemetry_sink,
             .route = options.route,
@@ -327,7 +361,7 @@ pub const Engine = struct {
         return switch (command.verb) {
             .page_url => {
                 const started = self.clock.nowMs();
-                const value = self.port.url(gpa, timeout_ms) catch |err| {
+                const value = run.port.url(gpa, timeout_ms) catch |err| {
                     self.platformSpan(run, "url", null, 0, 0, started, @errorName(err));
                     return portFailure(gpa, err, .action, ids);
                 };
@@ -337,7 +371,7 @@ pub const Engine = struct {
             },
             .page_title => {
                 const started = self.clock.nowMs();
-                const value = self.port.title(gpa, timeout_ms) catch |err| {
+                const value = run.port.title(gpa, timeout_ms) catch |err| {
                     self.platformSpan(run, "title", null, 0, 0, started, @errorName(err));
                     return portFailure(gpa, err, .action, ids);
                 };
@@ -347,7 +381,7 @@ pub const Engine = struct {
             },
             .page_navigate => {
                 const started = self.clock.nowMs();
-                self.port.navigate(command.url.?, timeout_ms) catch |err| {
+                run.port.navigate(command.url.?, timeout_ms) catch |err| {
                     self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, @errorName(err));
                     return portFailure(gpa, err, .navigation, ids);
                 };
@@ -356,7 +390,7 @@ pub const Engine = struct {
             },
             .page_reload => {
                 const started = self.clock.nowMs();
-                self.port.reload(timeout_ms) catch |err| {
+                run.port.reload(timeout_ms) catch |err| {
                     self.platformSpan(run, "reload", null, 0, 0, started, @errorName(err));
                     return portFailure(gpa, err, .navigation, ids);
                 };
@@ -389,7 +423,7 @@ pub const Engine = struct {
     fn screenshot(self: *Engine, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
         const started = self.clock.nowMs();
         const deadline = started +| timeout_ms;
-        const shot = self.port.screenshot(gpa, full_page, timeout_ms) catch |err| {
+        const shot = run.port.screenshot(gpa, full_page, timeout_ms) catch |err| {
             self.platformSpan(run, "screenshot", null, 0, 0, started, @errorName(err));
             if (err == error.Unsupported) return .{ .failure = .{ .code = internal_error_code, .message = "page.screenshot is not supported" } };
             return portFailure(gpa, err, .action, run.ids);
@@ -409,7 +443,7 @@ pub const Engine = struct {
         const body = try script_command.buildEvaluateBody(gpa, expression);
         defer gpa.free(body);
         const started = self.clock.nowMs();
-        const text = self.port.evalJson(gpa, .page, body, "null", timeout_ms) catch |err| {
+        const text = run.port.evalJson(gpa, .page, body, "null", timeout_ms) catch |err| {
             self.platformSpan(run, "evalJson", .page, body.len, 0, started, @errorName(err));
             return portFailure(gpa, err, .action, ids);
         };
@@ -488,7 +522,7 @@ pub const Engine = struct {
                 // load. Doing that here, before the JS timeout is computed,
                 // makes readiness come out of the same budget for JS and
                 // native, so the script's timeout stays authoritative.
-                const barrier = self.port.url(gpa, @max(deadline -| self.clock.nowMs(), 1)) catch |err| return portFailure(gpa, err, .action, ids);
+                const barrier = run.port.url(gpa, @max(deadline -| self.clock.nowMs(), 1)) catch |err| return portFailure(gpa, err, .action, ids);
                 gpa.free(barrier);
             }
             const remaining = deadline -| self.clock.nowMs();
@@ -509,9 +543,9 @@ pub const Engine = struct {
             // call, which answers the chooser with the paths. A refusal by
             // the op clicked nothing, so it is retried like any other.
             const answer = if (command.verb == .dom_set_input_files and command.locate == null)
-                self.port.setInputFiles(gpa, script_command.handle_body, command_json, command.paths, native_timeout)
+                run.port.setInputFiles(gpa, script_command.handle_body, command_json, command.paths, native_timeout)
             else
-                self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout);
+                run.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout);
             const text = answer catch |err| {
                 self.platformSpanAttempt(run, ids.attempt_index, command_json.len, 0, started, @errorName(err));
                 if (err == error.Timeout) {
@@ -564,11 +598,11 @@ pub const Engine = struct {
             else => unreachable, // the router accepts native for these only (scroll has its own path)
         };
         // A backend without native input says so before any page work.
-        if (!self.port.supportsNativeInput()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
+        if (!run.port.supportsNativeInput()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
         // A hover, and a humanized click, move the pointer: without
         // nativeMove, say so now.
         const moves = command.verb == .dom_hover or (command.humanize and command.verb == .dom_click);
-        if (moves and !self.port.supportsNativeMove()) {
+        if (moves and !run.port.supportsNativeMove()) {
             return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
         }
         var csprng: std.Random.DefaultCsprng = undefined;
@@ -649,7 +683,7 @@ pub const Engine = struct {
     /// document change before the first wheel measures again; after one it
     /// is terminal. Answer: `{scrollX, scrollY}`, like the synthetic op.
     fn runNativeScroll(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
-        if (!self.port.supportsNativeScroll()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
+        if (!run.port.supportsNativeScroll()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
         var wheels: u32 = 0;
         // The document the wheels went to: every later measure must come
         // from it (a replacement document is never scrolled or reported).
@@ -686,7 +720,7 @@ pub const Engine = struct {
             if (remaining == 0) return timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts);
             run.native_timeout_ms = remaining;
             const started = self.clock.nowMs();
-            const settled = self.port.nativeScroll(centre.x, centre.y, delta.x, delta.y, target.document(), remaining) catch |err| {
+            const settled = run.port.nativeScroll(centre.x, centre.y, delta.x, delta.y, target.document(), remaining) catch |err| {
                 self.platformSpan(run, "nativeScroll", null, 0, 0, started, @errorName(err));
                 if (err != error.DocumentChanged) return portFailure(gpa, err, .action, run.ids);
                 if (wheels > 0) return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
@@ -726,9 +760,9 @@ pub const Engine = struct {
         run.native_timeout_ms = remaining;
         const started = self.clock.nowMs();
         const dispatched = switch (kind) {
-            .click => self.port.nativeClick(target.x, target.y, target.document(), remaining),
-            .move => self.port.nativeMove(target.x, target.y, target.document(), remaining),
-            .key => self.port.nativeKey(command.key.?, modifierBits(command.modifiers), target.document(), remaining),
+            .click => run.port.nativeClick(target.x, target.y, target.document(), remaining),
+            .move => run.port.nativeMove(target.x, target.y, target.document(), remaining),
+            .key => run.port.nativeKey(command.key.?, modifierBits(command.modifiers), target.document(), remaining),
         };
         dispatched catch |err| {
             self.platformSpan(run, op, null, payload_bytes, 0, started, @errorName(err));
@@ -805,7 +839,7 @@ pub const Engine = struct {
         const goal = page_port.Point{ .x = target.x, .y = target.y };
         // Never start on the target: a cached pointer already there (e.g.
         // a repeated click) gets an off-target start like an unknown one.
-        const cached = self.port.pointer();
+        const cached = run.port.pointer();
         const start = if (cached != null and distance(cached.?, goal) >= 1) cached.? else (offTargetStart(random, target) orelse return .{ .done = malformedResult() });
         const path = bezier.generateMousePath(gpa, random, .{ .x = start.x, .y = start.y }, .{ .x = goal.x, .y = goal.y }, .default()) catch return error.OutOfMemory;
         defer gpa.free(path.points);
@@ -821,7 +855,7 @@ pub const Engine = struct {
             if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };
             run.native_timeout_ms = remaining;
             const started = self.clock.nowMs();
-            self.port.nativeMove(point.x, point.y, target.document(), remaining) catch |err| {
+            run.port.nativeMove(point.x, point.y, target.document(), remaining) catch |err| {
                 self.platformSpan(run, "nativeMove", null, 0, 0, started, @errorName(err));
                 if (err == error.DocumentChanged) {
                     if (i == 0) return .relocate;
@@ -837,7 +871,7 @@ pub const Engine = struct {
         if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };
         run.native_timeout_ms = remaining;
         const started = self.clock.nowMs();
-        self.port.nativeClick(goal.x, goal.y, target.document(), remaining) catch |err| {
+        run.port.nativeClick(goal.x, goal.y, target.document(), remaining) catch |err| {
             self.platformSpan(run, "nativeClick", null, 0, 0, started, @errorName(err));
             if (err == error.DocumentChanged) return .{ .done = try automationFailure(gpa, .element_not_found, "document_changed", run.ids) };
             return .{ .done = try portFailure(gpa, err, .action, run.ids) };
@@ -884,7 +918,7 @@ pub const Engine = struct {
         run.native_timeout_ms = remaining;
         const started = self.clock.nowMs();
         var sent: usize = 0;
-        self.port.nativeText(text, target.document(), remaining, &sent) catch |err| {
+        run.port.nativeText(text, target.document(), remaining, &sent) catch |err| {
             sent_total.* += sent;
             self.platformSpan(run, "nativeText", null, text.len, 0, started, @errorName(err));
             if (sent_total.* > 0) return .{ .done = try partialPortFailure(gpa, err, sent_total.*, run) };
@@ -971,6 +1005,12 @@ pub const Engine = struct {
         };
     }
 };
+
+fn withNoPageReason(ids: script_command.Ids, reason: ?[]const u8) script_command.Ids {
+    var out = ids;
+    out.no_page_reason = reason;
+    return out;
+}
 
 fn commandTimeout(command: *const router.ParsedCommand) u64 {
     return @min(command.timeout_ms orelse default_timeout_ms, max_timeout_ms);
@@ -1147,9 +1187,11 @@ fn inList(list: []const []const u8, item: []const u8) bool {
     return false;
 }
 
-const PortContext = enum { action, navigation };
+pub const PortContext = enum { action, navigation };
 
-fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortContext, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+/// The standard PagePort error -> JSON-RPC failure mapping (also used by
+/// routes that reach the page through External).
+pub fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortContext, ids: script_command.Ids) error{OutOfMemory}!Outcome {
     const automation_error: errors.AutomationError = switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.EvalFailed => return .{ .failure = .{ .code = internal_error_code, .message = "Evaluation failed" } },
@@ -1164,7 +1206,7 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
         // setInputFiles: applied once, unconfirmed; never retried.
         error.FilesUnconfirmed => return automationFailure(gpa, .action_timeout, "files_unconfirmed", ids),
         error.TooLarge => return failureWithReason(gpa, internal_error_code, "Internal error", "screenshot_too_large", ids),
-        error.NoPage => .session_invalid,
+        error.NoPage => return automationFailure(gpa, .session_invalid, ids.no_page_reason, ids),
         error.Cancelled => .cancelled,
         error.NavigationFailed => .navigation_failed,
         error.Timeout => switch (context) {
@@ -1180,7 +1222,7 @@ fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: PortCo
 pub const invalid_params_code: i64 = -32602;
 
 /// A non-automation error code with `data.{reason,trace_id,command_id}`.
-fn failureWithReason(gpa: std.mem.Allocator, code: i64, message: []const u8, reason: []const u8, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+pub fn failureWithReason(gpa: std.mem.Allocator, code: i64, message: []const u8, reason: []const u8, ids: script_command.Ids) error{OutOfMemory}!Outcome {
     const data = AutomationErrorData{ .reason = reason, .trace_id = ids.trace_id, .command_id = ids.command_id };
     return .{ .failure = .{
         .code = code,

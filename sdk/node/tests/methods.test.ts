@@ -40,6 +40,8 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "page.url": (zb) => zb.page.url(),
   "page.title": (zb) => zb.page.title(),
   "page.evaluate": (zb) => zb.page.evaluate("1+1"),
+  "page.list": (zb) => zb.page.list(),
+  "page.close": (zb) => zb.page.close("window-2"),
   "cookies.getAll": (zb) => zb.cookies.getAll(),
   "cookies.getAll.url": (zb) => zb.cookies.getAll({ url: "https://example.com/" }),
   "cookies.set": (zb) => zb.cookies.set({ name: "sid", value: "v", domain: "example.com", httpOnly: true, sameSite: "Lax" }),

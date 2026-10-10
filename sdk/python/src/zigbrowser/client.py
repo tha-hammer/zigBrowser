@@ -179,6 +179,16 @@ class PageNamespace:
             "page.evaluate", {"expression": expression}
         )
 
+    def list(self) -> dict:
+        """Every open window, primary first: {pages: [{window_id, url, title,
+        primary, opener_window_id?}]}. Send "window_id" with a page.* or
+        dom.* call (zb.call) to act on another window, e.g. a login popup."""
+        return self._client.call("page.list", {})
+
+    def close(self, window_id: str) -> dict:
+        """Close a window from page.list (not the primary one)."""
+        return self._client.call("page.close", {"window_id": window_id})
+
 
 class LinkedInNamespace:
     """linkedin.com flows. Each call is one command run by the browser: it

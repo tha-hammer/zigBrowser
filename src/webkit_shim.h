@@ -2,6 +2,7 @@
 #define ZB_WEBKIT_SHIM_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,17 +85,33 @@ int zb_app_set_profile_dir(const char *dir, char **out_err);
  * zb_app_run. The source is copied; NULL disables injection. */
 void zb_automation_set_script(const char *source, size_t len);
 
-/* Primary window (the first live window), or NULL before zb_app_run creates it
- * and after the last window closes. Thread-safe snapshot; the ops below
- * re-validate the pointer on the GTK thread. */
-ZbWindow *zb_automation_main_window(void);
-/* The index-th live window in creation order (0 = primary), or NULL. Same
- * snapshot semantics as zb_automation_main_window. */
-ZbWindow *zb_automation_window_at(int index);
+/* Window ids (N23): every window gets an id when it is created, stable for
+ * its life and never reused within an app run; the first (primary) window
+ * is 1. The ops below take an id; 0 means the original primary (id 1), which
+ * they wait for before it exists and report gone (NO_WINDOW) once it closed:
+ * they never fall back to another window. */
 
-/* Ops below: win == NULL targets the primary window and waits for it to exist
- * until the deadline (ZB_AUTO_ERR_NO_WINDOW); an explicit window that is not
- * alive is ZB_AUTO_ERR_NO_WINDOW at once. Every op except navigate (and the
+/* The id of the index-th live window in creation order, or 0. Snapshot. */
+uint32_t zb_automation_window_id_at(int index);
+/* Changes whenever window ids restart (each app run's start and end), so
+ * per-id state kept by callers can tell one run's window 1 from the next. */
+uint32_t zb_automation_run_generation(void);
+/* Whether window `id` is open now (snapshot). */
+int zb_automation_window_alive(uint32_t id);
+/* Every live window as a JSON array, the original primary first:
+ * [{"id":n,"url":"...","title":"...","primary":bool,"opener":n|0}, ...]
+ * (opener: the window whose page opened it, 0 for none). One consistent
+ * snapshot taken on the GTK thread. Free with zb_automation_free. */
+int zb_automation_list_windows(unsigned int timeout_ms, char **out_json);
+/* Destroy window `id` and return once it is gone (NO_WINDOW if there is no
+ * such window). Like any window close this goes through on_window_destroy,
+ * which today also terminates the window's web process; related windows
+ * (a popup and its opener) share that process (deferred, documented). */
+int zb_automation_close_window(uint32_t id, unsigned int timeout_ms);
+
+/* Ops below: win is a window id (0 = the original primary, waited for until
+ * the deadline before it exists, ZB_AUTO_ERR_NO_WINDOW once it closed); any
+ * other id that is not alive is ZB_AUTO_ERR_NO_WINDOW at once. Every op except navigate (and the
  * cookie ops) also waits until the target window's own first load has
  * finished or failed
  * (ZB_AUTO_ERR_TIMEOUT), so commands sent during startup see the start page.
@@ -110,20 +127,20 @@ ZbWindow *zb_automation_window_at(int index);
  * data must travel through `arg`, never through the body. On ZB_AUTO_OK
  * *out_result is the returned string verbatim, or the JSON encoding of a
  * non-string value ("null" for undefined). ZB_AUTO_ERR_JS sets *out_err. */
-int zb_automation_eval_json(ZbWindow *win, const char *function_body,
+int zb_automation_eval_json(uint32_t win, const char *function_body,
                             const char *arg_json, const char *world,
                             unsigned int timeout_ms, char **out_result,
                             char **out_err);
 
 /* Load `url` and wait for its load to finish. A load error or a navigation
  * blocked by policy returns ZB_AUTO_ERR_NAV_FAILED and sets *out_err. */
-int zb_automation_navigate(ZbWindow *win, const char *url, unsigned int timeout_ms,
+int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms,
                            char **out_err);
-int zb_automation_reload(ZbWindow *win, unsigned int timeout_ms, char **out_err);
+int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err);
 
 /* Current URI (WebKit's committed URI) / document.title; "" when none. */
-int zb_automation_get_url(ZbWindow *win, unsigned int timeout_ms, char **out_url);
-int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_title);
+int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url);
+int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title);
 
 void zb_automation_free(char *p);
 
@@ -155,15 +172,15 @@ typedef struct {
 /* *out_json: JSON array of {name, value, domain, path, expires, httpOnly,
  * secure, sameSite}. url NULL = every cookie in the store, else the cookies
  * that would be sent to `url`. */
-int zb_cookies_get_all(ZbWindow *win, const char *url, unsigned int timeout_ms,
+int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms,
                        char **out_json, char **out_err);
 /* Adds or replaces the cookie (all fields are copied before queuing).
  * expires outside [-1, ZB_COOKIE_MAX_EXPIRES] is ZB_AUTO_ERR_INTERNAL. */
-int zb_cookies_add(ZbWindow *win, const ZbCookie *cookie, unsigned int timeout_ms,
+int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int timeout_ms,
                    char **out_err);
 /* Deletes every cookie called `name` on `domain` (leading dot ignored);
  * domain NULL = on every domain. Deleting nothing is not an error. */
-int zb_cookies_delete(ZbWindow *win, const char *name, const char *domain,
+int zb_cookies_delete(uint32_t win, const char *name, const char *domain,
                       unsigned int timeout_ms, char **out_err);
 
 /* --- Native (trusted) input ---
@@ -196,13 +213,13 @@ enum {
  * the chooser is cancelled and ZB_AUTO_ERR_BAD_FILE. A deadline that passes
  * after the files were chosen is ZB_AUTO_ERR_FILES_UNCONFIRMED (they were
  * applied once; never repeat the call). */
-int zb_set_input_files(ZbWindow *win, const char *function_body, const char *arg_json,
+int zb_set_input_files(uint32_t win, const char *function_body, const char *arg_json,
                        const char *const *paths, int n_paths, unsigned int timeout_ms,
                        char **out_result, char **out_err);
 /* PNG of `win`'s viewport (full_page: the whole document), at most
  * `max_bytes` encoded (ZB_AUTO_ERR_TOO_LARGE otherwise, nothing returned).
  * On OK *out_png (free with zb_automation_free) holds *out_len bytes. */
-int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned int timeout_ms,
+int zb_screenshot_png(uint32_t win, int full_page, size_t max_bytes, unsigned int timeout_ms,
                       unsigned char **out_png, size_t *out_len, int *out_width,
                       int *out_height, char **out_err);
 
@@ -210,25 +227,25 @@ int zb_screenshot_png(ZbWindow *win, int full_page, size_t max_bytes, unsigned i
  * by (delta_x, delta_y) CSS px (positive = right/down; exact at page zoom
  * 1). Guarded like zb_native_move; returns once dispatched (the caller
  * acknowledges the page's trusted wheel event). */
-int zb_native_scroll(ZbWindow *win, double x, double y, double delta_x, double delta_y,
+int zb_native_scroll(uint32_t win, double x, double y, double delta_x, double delta_y,
                      const char *expected_doc, unsigned int timeout_ms, char **out_err);
-int zb_native_move(ZbWindow *win, double x, double y, const char *expected_doc,
+int zb_native_move(uint32_t win, double x, double y, const char *expected_doc,
                    unsigned int timeout_ms, char **out_err);
 
 /* Last pointer position actually dispatched to `win` (NULL = primary) by a
  * native move or click; returns 0 if none. Kept per window, cleared with it.
  * Thread-safe. */
-int zb_native_pointer(ZbWindow *win, double *out_x, double *out_y);
+int zb_native_pointer(uint32_t win, double *out_x, double *out_y);
 
 /* Pointer motion to (x, y), then press and release of `button` (1 = left). */
-int zb_native_click(ZbWindow *win, double x, double y, int button,
+int zb_native_click(uint32_t win, double x, double y, int button,
                     const char *expected_doc, unsigned int timeout_ms, char **out_err);
 /* Press and release one key: `key` is a DOM key name ("Enter", "Tab",
  * "ArrowLeft", "a", ...); `modifiers` (ZB_NATIVE_MOD_*) are pressed before
  * the key and released after it. ZB_AUTO_ERR_INTERNAL for unknown keys.
  * *out_releases (optional) receives the number of key releases sent, so a
  * caller can wait for that many keyup events to reach the page. */
-int zb_native_key(ZbWindow *win, const char *key, int modifiers,
+int zb_native_key(uint32_t win, const char *key, int modifiers,
                   const char *expected_doc, unsigned int timeout_ms, int *out_releases,
                   char **out_err);
 /* Press and release a key for each character of UTF-8 `text` (Shift added
@@ -238,7 +255,7 @@ int zb_native_key(ZbWindow *win, const char *key, int modifiers,
  * sent, *out_releases the key releases, so a caller can resume or report the
  * partial effect instead of retrying the whole text. With expected_doc,
  * every character is guarded: DOC_CHANGED stops before the next one. */
-int zb_native_text(ZbWindow *win, const char *text, const char *expected_doc,
+int zb_native_text(uint32_t win, const char *text, const char *expected_doc,
                    unsigned int timeout_ms, int *out_releases, int *out_chars,
                    char **out_err);
 
@@ -255,10 +272,10 @@ void zb_automation_debug_native_guard_hold(unsigned int ms);
 int zb_automation_debug_native_guard_hold_hits(void);
 /* Test hook: destroy `win`'s toplevel on the GTK thread (as a user closing
  * it would), so a test can make another window the primary. */
-int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms);
+int zb_automation_debug_destroy_window(uint32_t win, unsigned int timeout_ms);
 /* Test hook: destroy `win`'s toplevel from its own motion-notify handler,
  * i.e. synchronously inside the next pointer event dispatched to it. */
-int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms);
+int zb_automation_debug_close_on_motion(uint32_t win, unsigned int timeout_ms);
 /* Test hook: pointer-cache writes dropped because the window had gone. */
 int zb_automation_debug_pointer_lost(void);
 /* Test hook: cancel (and count) file choosers no set-files job claimed,
@@ -279,6 +296,10 @@ void zb_automation_debug_shot_after_measure(const char *page_js);
 /* Test hook: a waiter whose deadline passed sleeps `ms` once more before
  * giving up, so a late completion is what it reports (0 = off). */
 void zb_automation_debug_waiter_grace(unsigned int ms);
+/* Test hooks (N23): GTK-side page work started per window id (ids <= 64);
+ * set the next window id to hand out (on the GTK thread). */
+int zb_automation_debug_window_work(uint32_t id);
+int zb_automation_debug_next_window_id(uint64_t next, unsigned int timeout_ms);
 int zb_automation_debug_shot_postcapture_refusals(void);
 /* Test hooks: choosers cancelled because their job's caller had given up;
  * block the GTK thread for `ms` at set-files stage 1 (job start, before
@@ -289,7 +310,7 @@ void zb_automation_debug_files_hold(int stage, unsigned int ms);
  * and before its op (NULL = off). */
 void zb_automation_debug_files_preclick(const char *page_js);
 /* Test hook: like close_on_motion, from the view's key-press handler. */
-int zb_automation_debug_close_on_key(ZbWindow *win, unsigned int timeout_ms);
+int zb_automation_debug_close_on_key(uint32_t win, unsigned int timeout_ms);
 /* Test hook: key events not sent because their window was destroyed. */
 int zb_automation_debug_native_skipped(void);
 

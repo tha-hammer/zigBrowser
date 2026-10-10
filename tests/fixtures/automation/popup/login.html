@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Login</title></head>
+  <body>
+    <form id="login">
+      <input id="user" name="user">
+      <input id="pass" name="pass" type="password">
+      <button id="submit" type="submit">Sign in</button>
+    </form>
+    <p id="state">not sent</p>
+    <script>
+      document.getElementById('login').addEventListener('submit', function (event) {
+        event.preventDefault();
+        var user = document.getElementById('user').value;
+        var ok = document.getElementById('pass').value === 'secret';
+        window.opener.postMessage({ user: user, ok: ok }, '*');
+        document.getElementById('state').textContent = 'sent';
+      });
+    </script>
+  </body>
+</html>

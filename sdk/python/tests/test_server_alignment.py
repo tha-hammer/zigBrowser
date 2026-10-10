@@ -43,6 +43,8 @@ INVOCATIONS = {
     "page.url": lambda zb: zb.page.url(),
     "page.title": lambda zb: zb.page.title(),
     "page.evaluate": lambda zb: zb.page.evaluate("1+1"),
+    "page.list": lambda zb: zb.page.list(),
+    "page.close": lambda zb: zb.page.close("window-2"),
     "cookies.getAll": lambda zb: zb.cookies.get_all(),
     "cookies.getAll.url": lambda zb: zb.cookies.get_all(url="https://example.com/"),
     "cookies.set": lambda zb: zb.cookies.set("sid", "v", domain="example.com", http_only=True, same_site="Lax"),

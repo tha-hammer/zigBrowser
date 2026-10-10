@@ -209,3 +209,37 @@ test "cancellation interrupts a long inter-character type delay" {
     try std.testing.expectEqual(@as(usize, 3), clock.inner.sleeps.items.len);
     for (clock.inner.sleeps.items) |ms| try std.testing.expect(ms <= engine.poll_interval_ms);
 }
+
+test "N23: a page's queue line goes when its last command releases, so arbitrary page ids never accumulate" {
+    var queue = queue_mod.PageCommandQueue.init(gpa, io);
+    defer queue.deinit();
+    var name_buf: [32]u8 = undefined;
+    for (0..500) |i| {
+        const page = try std.fmt.bufPrint(&name_buf, "page-{d}", .{4_000_000_000 + i});
+        const ticket = try queue.acquire(page);
+        queue.release(ticket);
+    }
+    try std.testing.expectEqual(@as(usize, 0), queue.lineCount());
+
+    // A line with a queued command survives until that one releases too.
+    const running = try queue.acquire("page-2");
+    try std.testing.expectEqual(@as(usize, 1), queue.lineCount());
+    queue.release(running);
+    try std.testing.expectEqual(@as(usize, 0), queue.lineCount());
+}
+
+test "N23: an acquire that runs out of memory leaves no empty queue line behind (RoseCat 4840)" {
+    var fail_index: usize = 0;
+    while (fail_index < 16) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+        var queue = queue_mod.PageCommandQueue.init(failing.allocator(), io);
+        defer queue.deinit();
+        const ticket = queue.acquire("page-4000000001") catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(@as(usize, 0), queue.lineCount());
+            continue;
+        };
+        queue.release(ticket);
+        try std.testing.expectEqual(@as(usize, 0), queue.lineCount());
+    }
+}

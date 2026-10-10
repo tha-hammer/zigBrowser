@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>Opener</title></head>
+  <body>
+    <p id="status">waiting for login</p>
+    <script>
+      // N23: a site that logs in through a popup (OAuth-style): the popup
+      // posts its result back to this window.
+      window.received = null;
+      window.openLogin = function () { window.open('login.html', 'login', 'width=480,height=600'); return 0; };
+      window.addEventListener('message', function (event) {
+        window.received = event.data;
+        document.getElementById('status').textContent = 'logged in as ' + event.data.user;
+      });
+    </script>
+  </body>
+</html>

@@ -472,28 +472,61 @@ fn handleRequestWith(
         return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
     }
 
+    if (std.mem.eql(u8, method, "page.list") or std.mem.eql(u8, method, "page.close")) {
+        return handleWindows(allocator, id_json, method, params_json, engine, queue, route, build_info);
+    }
+
+    // N23: `window_id` sends a page.* or dom.* command to that window. It is
+    // taken out of the params before the router sees them.
+    const target = splitWindowTarget(allocator, params_json) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidParams => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer if (target.params) |owned| allocator.free(owned);
+    var window_route = route;
+    var route_bufs: [2][24]u8 = undefined;
+    if (target.id) |window| window_route = windowRoute(route, window, &route_bufs);
+
     // The engine records the root span after execution; the router gets the
     // page identity only, so it does not record a second root span.
-    var command = automation.router.parse(allocator, method, params_json, .{ .page_id = route.page_id, .window_id = route.window_id }) catch |err| switch (err) {
+    var command = automation.router.parse(allocator, method, target.params orelse params_json, .{ .page_id = window_route.page_id, .window_id = window_route.window_id }) catch |err| switch (err) {
         error.UnknownCommand => return jsonRpcError(allocator, id_json, -32601, "Method not found", null),
         error.BadArgs => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
     };
     defer command.deinit();
 
+    // forWindow is a pure handle constructor; when it refuses (no window
+    // support, or an id it already knows is gone), the command still runs
+    // through the engine on a stand-in page that answers the same way, so
+    // its root span is the normal one.
+    var window_port: ?page_port.PagePort = null;
+    if (target.id) |window| {
+        window_port = engine.port.forWindow(window) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.NoPage => gone_window,
+            else => unsupported_windows,
+        };
+    }
+
     // A command cancelled while queued still goes through the engine (with
     // the cancel flag already set) so it gets ids and one root span.
     const already_cancelled = std.atomic.Value(bool).init(true);
-    const maybe_ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+    const maybe_ticket: ?queue_mod.Ticket = queue.acquire(window_route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
     };
     defer if (maybe_ticket) |ticket| queue.release(ticket);
 
+
     var outcome = try engine.executeWith(allocator, &command, .{
         .cancel = if (maybe_ticket) |ticket| &ticket.cancelled else &already_cancelled,
         .queue_wait_ms = if (maybe_ticket) |ticket| ticket.wait_ms else 0,
-        .route = route,
+        .route = window_route,
         .build = build_info,
+        .port = window_port,
+        // The handle's first bounded call finds a closed window (in this
+        // window's turn, after any page.close queued before it).
+        .no_page_reason = if (target.id != null) "no_window" else null,
     });
     defer outcome.deinit(allocator);
     return switch (outcome) {
@@ -504,6 +537,207 @@ fn handleRequestWith(
         ),
         .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
     };
+}
+
+// ---- N23: windows ----
+
+const window_prefix = "window-";
+/// listWindows / closeWindow bound.
+const window_op_timeout_ms: u64 = 10_000;
+
+/// "window-<id>" (id >= 1, decimal) -> id.
+fn parseWindowId(text: []const u8) ?page_port.WindowId {
+    if (!std.mem.startsWith(u8, text, window_prefix)) return null;
+    const digits = text[window_prefix.len..];
+    if (digits.len == 0 or digits[0] == '0') return null;
+    for (digits) |c| if (!std.ascii.isDigit(c)) return null;
+    return std.fmt.parseInt(page_port.WindowId, digits, 10) catch null;
+}
+
+const WindowTarget = struct {
+    id: ?page_port.WindowId = null,
+    /// The params without `window_id` (owned), when it was present.
+    params: ?[]u8 = null,
+};
+
+fn splitWindowTarget(allocator: std.mem.Allocator, params_json: []const u8) error{ OutOfMemory, InvalidParams }!WindowTarget {
+    if (std.mem.indexOf(u8, params_json, "\"window_id\"") == null) return .{};
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidParams,
+    };
+    defer parsed.deinit();
+    var object = switch (parsed.value) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    const value = object.fetchOrderedRemove("window_id") orelse return .{};
+    const id = switch (value.value) {
+        .string => |text| parseWindowId(text) orelse return error.InvalidParams,
+        else => return error.InvalidParams,
+    };
+    const rest = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+    return .{ .id = id, .params = rest };
+}
+
+fn windowRoute(base: automation.router.RouteContext, id: page_port.WindowId, bufs: *[2][24]u8) automation.router.RouteContext {
+    var route = base;
+    route.page_id = std.fmt.bufPrint(&bufs[0], "page-{d}", .{id}) catch unreachable;
+    route.window_id = std.fmt.bufPrint(&bufs[1], window_prefix ++ "{d}", .{id}) catch unreachable;
+    return route;
+}
+
+/// Stand-in pages for a targeted command whose window forWindow refused:
+/// every call answers NoPage (gone; the engine reports no_window) or
+/// Unsupported (no window support).
+const gone_window: page_port.PagePort = .{ .ptr = @constCast(&stand_in_tag), .vtable = &stand_in(error.NoPage).vtable };
+const unsupported_windows: page_port.PagePort = .{ .ptr = @constCast(&stand_in_tag), .vtable = &stand_in(error.Unsupported).vtable };
+var stand_in_tag: u8 = 0;
+
+fn stand_in(comptime answer: page_port.PortError) type {
+    return struct {
+        const vtable = page_port.PagePort.VTable{
+            .evalJson = eval,
+            .navigate = navigate,
+            .reload = reload,
+            .url = read,
+            .title = read,
+            .nativeClick = point,
+            .nativeMove = point,
+            .nativeKey = key,
+            .nativeText = text,
+            .setInputFiles = files,
+            .nativeScroll = scroll,
+            .screenshot = shot,
+        };
+        fn eval(_: *anyopaque, _: std.mem.Allocator, _: page_port.World, _: []const u8, _: []const u8, _: u64) page_port.PortError![]u8 {
+            return answer;
+        }
+        fn navigate(_: *anyopaque, _: []const u8, _: u64) page_port.PortError!void {
+            return answer;
+        }
+        fn reload(_: *anyopaque, _: u64) page_port.PortError!void {
+            return answer;
+        }
+        fn read(_: *anyopaque, _: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+            return answer;
+        }
+        fn point(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!void {
+            return answer;
+        }
+        fn key(_: *anyopaque, _: []const u8, _: u8, _: ?[]const u8, _: u64) page_port.PortError!void {
+            return answer;
+        }
+        fn text(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64, sent: *usize) page_port.PortError!void {
+            sent.* = 0;
+            return answer;
+        }
+        fn files(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8, _: []const []const u8, _: u64) page_port.PortError![]u8 {
+            return answer;
+        }
+        fn scroll(_: *anyopaque, _: f64, _: f64, _: f64, _: f64, _: ?[]const u8, _: u64) page_port.PortError!page_port.ScrollOffsets {
+            return answer;
+        }
+        fn shot(_: *anyopaque, _: std.mem.Allocator, _: bool, _: u64) page_port.PortError!page_port.Screenshot {
+            return answer;
+        }
+    };
+}
+
+fn outcomeJson(allocator: std.mem.Allocator, id_json: []const u8, outcome: engine_mod.Outcome) error{OutOfMemory}![]u8 {
+    return switch (outcome) {
+        .result => |result_json| std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}", .{ result_json, id_json }),
+        .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
+    };
+}
+
+/// page.list {} -> {pages:[{window_id, url, title, primary, opener_window_id?}]}.
+/// page.close {window_id} -> {ok:true}; runs in that window's queue turn.
+/// The primary window cannot be closed (-32602 primary_window).
+fn handleWindows(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    queue: *queue_mod.PageCommandQueue,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    const closing = std.mem.eql(u8, method, "page.close");
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer parsed.deinit();
+    const params = switch (parsed.value) {
+        .object => |o| o,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    var target: page_port.WindowId = 0;
+    if (closing) {
+        if (params.count() != 1) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+        target = switch (params.get("window_id") orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null)) {
+            .string => |text| parseWindowId(text) orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+            else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+        };
+    } else if (params.count() != 0) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+
+    const Call = struct {
+        target: page_port.WindowId,
+        closing: bool,
+
+        fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            // Through ext: each PagePort call gets its platform child span,
+            // and errors get the standard mapping (NoPage -> no_window,
+            // Unsupported -> unsupported, EvalFailed -> -32603, ...).
+            const windows = ext.listWindows(gpa, window_op_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+            defer page_port.freeWindows(gpa, windows);
+            if (!self.closing) return listJson(gpa, windows);
+            for (windows) |w| if (w.id == self.target and w.primary) {
+                // Invalid params, recorded as such on the root span too.
+                return engine_mod.failureWithReason(gpa, engine_mod.invalid_params_code, "Invalid params", "primary_window", ext.ids());
+            };
+            ext.closeWindow(self.target, window_op_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+            return .{ .result = try gpa.dupe(u8, "{\"ok\":true}") };
+        }
+
+        fn listJson(gpa: std.mem.Allocator, windows: []const page_port.WindowInfo) error{OutOfMemory}!engine_mod.Outcome {
+            var out: std.Io.Writer.Allocating = .init(gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            w.writeAll("{\"pages\":[") catch return error.OutOfMemory;
+            for (windows, 0..) |window, i| {
+                if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+                w.print("{{\"window_id\":\"" ++ window_prefix ++ "{d}\",\"url\":{f},\"title\":{f},\"primary\":{}", .{
+                    window.id, std.json.fmt(window.url, .{}), std.json.fmt(window.title, .{}), window.primary,
+                }) catch return error.OutOfMemory;
+                if (window.opener) |opener| w.print(",\"opener_window_id\":\"" ++ window_prefix ++ "{d}\"", .{opener}) catch return error.OutOfMemory;
+                w.writeAll("}") catch return error.OutOfMemory;
+            }
+            w.writeAll("]}") catch return error.OutOfMemory;
+            return .{ .result = try out.toOwnedSlice() };
+        }
+    };
+
+    var close_route = route;
+    var route_bufs: [2][24]u8 = undefined;
+    if (closing) close_route = windowRoute(route, target, &route_bufs);
+    const already_cancelled = std.atomic.Value(bool).init(true);
+    const ticket: ?queue_mod.Ticket = if (closing) (queue.acquire(close_route.page_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Cancelled => null,
+    }) else null;
+    defer if (ticket) |t| queue.release(t);
+    var outcome = try engine.executeExternal(allocator, method, "page", .{
+        .cancel = if (!closing) null else if (ticket) |t| &t.cancelled else &already_cancelled,
+        .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
+        .route = close_route,
+        .build = build_info,
+        .no_page_reason = "no_window",
+    }, Call{ .target = target, .closing = closing }, Call.run);
+    defer outcome.deinit(allocator);
+    return outcomeJson(allocator, id_json, outcome);
 }
 
 const CookieContext = struct {

@@ -75,7 +75,7 @@ fn getAll(_: *anyopaque, gpa: std.mem.Allocator, url: ?[]const u8, timeout_ms: u
 
     var out: [*c]u8 = null;
     var err: [*c]u8 = null;
-    const rc = c.zb_cookies_get_all(null, if (url_z) |z| z.ptr else null, clampMs(timeout_ms), &out, &err);
+    const rc = c.zb_cookies_get_all(0, if (url_z) |z| z.ptr else null, clampMs(timeout_ms), &out, &err);
     c.zb_automation_free(err);
     defer c.zb_automation_free(out);
     try mapCode(rc);
@@ -112,7 +112,7 @@ fn set(_: *anyopaque, cookie_json: []const u8, timeout_ms: u64) PortError!void {
         .same_site = sameSiteCode(cookie.sameSite),
     };
     var err: [*c]u8 = null;
-    const rc = c.zb_cookies_add(null, &native, clampMs(timeout_ms), &err);
+    const rc = c.zb_cookies_add(0, &native, clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
     return mapCode(rc);
 }
@@ -125,7 +125,7 @@ fn delete(_: *anyopaque, name: []const u8, domain: ?[]const u8, timeout_ms: u64)
     defer if (domain_z) |z| gpa.free(z);
 
     var err: [*c]u8 = null;
-    const rc = c.zb_cookies_delete(null, name_z.ptr, if (domain_z) |z| z.ptr else null, clampMs(timeout_ms), &err);
+    const rc = c.zb_cookies_delete(0, name_z.ptr, if (domain_z) |z| z.ptr else null, clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
     return mapCode(rc);
 }
