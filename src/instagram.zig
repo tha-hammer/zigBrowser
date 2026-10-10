@@ -45,6 +45,9 @@ pub const session_cookie = "sessionid";
 /// Story viewing: time on each frame, and a bound on frames.
 pub const story_frame_ms = 1_500;
 pub const max_story_frames = 100;
+/// Budget kept for one Next click, the Next query and the URL check of a
+/// frame.
+const reserve_ms = click_timeout_ms + 2 * flow.query_timeout_ms;
 
 /// Instagram's limits for a comment and a direct message.
 pub const max_comment_chars = 2200;
@@ -118,32 +121,45 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
 }
 
 /// Opens `username`'s stories and views them in order: each frame for
-/// story_frame_ms, then Next, until there is no Next, the viewer leaves
-/// /stories/, max_story_frames, or the flow budget would not cover another
-/// frame. Returns `{"ok":true,"framesViewed":n}`.
+/// story_frame_ms, then Next, until there is no Next, the viewer closes (no
+/// story media left), max_story_frames, or the flow budget would not cover
+/// another frame. Every step is clamped to the flow budget. Returns
+/// `{"ok":true,"framesViewed":n}`.
 pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
     const url = try userUrl(gpa, s.base(), "stories/", username);
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
     if (!(try waitAttached(gpa, runner, selectors.story_media))) return null;
+    // View the first frame, then Next + view until the viewer closes.
+    if (!runner.pause(@min(story_frame_ms, runner.remainingMs() -| reserve_ms))) return null;
     var frames: usize = 1;
     while (frames < max_story_frames) {
-        if (runner.remainingMs() <= story_frame_ms + click_timeout_ms + flow.query_timeout_ms) break;
-        if (!runner.pause(story_frame_ms)) return null;
+        if (runner.remainingMs() <= story_frame_ms + reserve_ms) break;
         const next = (try flow.countMatches(gpa, runner, selectors.story_next)) orelse return null;
         if (next == 0) break;
-        if (!(try click(gpa, runner, selectors.story_next, false))) return null;
-        const still_on_stories = (try onStories(gpa, runner)) orelse return null;
-        if (!still_on_stories) break;
+        const clicked = try click(gpa, runner, selectors.story_next, false);
+        // The frame's viewing time also lets a closing viewer leave.
+        if (!runner.pause(story_frame_ms)) return null;
+        // Positive evidence only: the viewer closed when the page left
+        // /stories/ (the last Next does that). A failed click on a viewer
+        // that is still open keeps its own failure.
+        const on_stories = (try onStories(gpa, runner)) orelse return null;
+        if (!on_stories) break;
+        // (The runner still holds the click's failure: a successful URL
+        // check does not replace it.)
+        if (!clicked) return null;
         frames += 1;
     }
     return try std.json.Stringify.valueAlloc(gpa, .{ .ok = true, .framesViewed = frames }, .{});
 }
 
-/// Still in the story viewer (the last Next leaves it); null when the
-/// step failed or answered something unusable.
+/// Still in the story viewer (the URL is on /stories/), with the page call
+/// clamped to the flow budget; null when the step failed or answered
+/// something unusable.
 fn onStories(gpa: std.mem.Allocator, runner: anytype) Error!?bool {
-    const result = (try runner.run("page.url", "{}")) orelse return null;
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .timeout_ms = flow.budget(runner, flow.query_timeout_ms) }, .{});
+    defer gpa.free(params);
+    const result = (try runner.run("page.url", params)) orelse return null;
     const parsed = std.json.parseFromSlice(struct { url: []const u8 }, gpa, result, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {

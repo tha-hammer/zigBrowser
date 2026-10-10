@@ -575,6 +575,25 @@ test "the socket file is created with mode 0600" {
     try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
 }
 
+test "tokensEqual stays constant-time: its body compares digests with std.crypto.timing_safe.eql only" {
+    // Behaviour tests cannot see an early-exit compare; this static contract
+    // fails if the timing-safe primitive is replaced (RoseCat 4706).
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, "src/automation_server.zig", testing.allocator, .limited(1 << 22));
+    defer testing.allocator.free(source);
+    const start = std.mem.indexOf(u8, source, "pub fn tokensEqual(") orelse return error.TestNoTokensEqual;
+    const end = std.mem.indexOfPos(u8, source, start, "\n}\n") orelse return error.TestNoTokensEqual;
+    const body = source[start..end];
+    try testing.expect(std.mem.indexOf(u8, body, "std.crypto.timing_safe.eql(") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "Sha256.hash(given") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "Sha256.hash(expected") != null);
+    for ([_][]const u8{ "std.mem.eql", "mem.eql(", "std.mem.order", "==" }) |early_exit| {
+        if (std.mem.indexOf(u8, body, early_exit) != null) {
+            std.debug.print("tokensEqual uses an early-exit compare: {s}\n", .{early_exit});
+            return error.TestNotConstantTime;
+        }
+    }
+}
+
 test "tokensEqual is exact for equal, different and different-length tokens" {
     try testing.expect(automation_server.tokensEqual("s3cret", "s3cret"));
     try testing.expect(!automation_server.tokensEqual("s3cret", "s3creT"));

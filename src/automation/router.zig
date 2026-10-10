@@ -182,7 +182,12 @@ pub fn parse(
         .page_url,
         .page_title,
         => {
-            if (obj.count() != 0) return error.BadArgs;
+            // Only an optional deadline (site flows clamp it to their budget).
+            var keys = obj.iterator();
+            while (keys.next()) |entry| {
+                if (!std.mem.eql(u8, entry.key_ptr.*, "timeout_ms")) return error.BadArgs;
+            }
+            command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
         },
         .page_evaluate => {
             command.expression = try requiredCString(arena_allocator, obj, "expression");

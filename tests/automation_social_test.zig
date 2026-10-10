@@ -256,15 +256,25 @@ const flow_ok = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true,\"
 const SessionCookies = struct {
     names: []const []const u8 = &.{ "li_at", "sessionid" },
     get_all_calls: usize = 0,
+    /// Simulated store latency on `clock` (never past the given timeout).
+    clock: ?*fakes.FakeClock = null,
+    cost_ms: u64 = 0,
     last_url: [256]u8 = undefined,
     last_url_len: usize = 0,
 
     fn port(self: *SessionCookies) cookie_port.CookiePort {
         return .{ .ptr = self, .vtable = &.{ .getAll = getAll, .set = set, .delete = delete } };
     }
-    fn getAll(ptr: *anyopaque, a: std.mem.Allocator, url: ?[]const u8, _: u64) cookie_port.PortError![]u8 {
+    fn getAll(ptr: *anyopaque, a: std.mem.Allocator, url: ?[]const u8, timeout_ms: u64) cookie_port.PortError![]u8 {
         const self: *SessionCookies = @ptrCast(@alignCast(ptr));
         self.get_all_calls += 1;
+        if (self.clock) |clock| {
+            if (self.cost_ms > timeout_ms) {
+                clock.now_ms += timeout_ms;
+                return error.Timeout;
+            }
+            clock.now_ms += self.cost_ms;
+        }
         const u = url orelse "";
         self.last_url_len = @min(u.len, self.last_url.len);
         @memcpy(self.last_url[0..self.last_url_len], u[0..self.last_url_len]);
@@ -287,12 +297,14 @@ const FlowHarness = struct {
     cookies: SessionCookies,
     sink: telemetry.InMemoryTelemetrySink,
     fixture_origin: ?[]const u8 = null,
+    budget_ms: u64 = social_flow_routes.flow_budget_ms,
 
     fn init(self: *FlowHarness) void {
         self.h.init();
         self.cookies = .{};
         self.sink = telemetry.InMemoryTelemetrySink.init(gpa);
         self.fixture_origin = null;
+        self.budget_ms = social_flow_routes.flow_budget_ms;
         self.h.fake.eval_replies = &.{flow_ok};
     }
 
@@ -307,8 +319,9 @@ const FlowHarness = struct {
             env: social_flow_routes.Env,
             call: social_flow_routes.Call,
             params: []const u8,
+            budget_ms: u64,
             fn run(c: @This(), a: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
-                return social_flow_routes.handle(a, c.state, c.env, ext, c.call, c.params);
+                return social_flow_routes.handleWithBudget(a, c.state, c.env, ext, c.call, c.params, c.budget_ms);
             }
         };
         const flow_call = social_flow_routes.callFromMethod(method).?;
@@ -317,6 +330,7 @@ const FlowHarness = struct {
             .env = .{ .cookies = self.cookies.port(), .fixture_origin = self.fixture_origin },
             .call = flow_call,
             .params = params,
+            .budget_ms = self.budget_ms,
         }, Call.run);
     }
 };
@@ -415,25 +429,27 @@ test "reservation is atomic across threads: at cap=1 exactly one of many concurr
     h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 1 });
     var go = std.atomic.Value(bool).init(false);
     var wins = std.atomic.Value(u32).init(0);
+    var won: [8]?social_routes.SocialState.Reservation = .{null} ** 8;
     const Worker = struct {
-        fn run(state: *social_routes.SocialState, start: *std.atomic.Value(bool), won: *std.atomic.Value(u32)) void {
+        fn run(state: *social_routes.SocialState, start: *std.atomic.Value(bool), count: *std.atomic.Value(u32), slot: *?social_routes.SocialState.Reservation) void {
             while (!start.load(.acquire)) std.atomic.spinLoopHint();
-            if (state.reserve()) _ = won.fetchAdd(1, .acq_rel);
+            slot.* = state.reserve();
+            if (slot.* != null) _ = count.fetchAdd(1, .acq_rel);
         }
     };
     var threads: [8]std.Thread = undefined;
-    for (&threads) |*t| t.* = try std.Thread.spawn(.{}, Worker.run, .{ &h.state, &go, &wins });
+    for (&threads, &won) |*t, *slot| t.* = try std.Thread.spawn(.{}, Worker.run, .{ &h.state, &go, &wins, slot });
     go.store(true, .release);
     for (threads) |t| t.join();
     try std.testing.expectEqual(@as(u32, 1), wins.load(.acquire));
     // In flight counts against the cap until committed or released.
     try std.testing.expectEqual(@as(u32, 0), h.state.remaining());
-    h.state.release();
+    for (&won) |*slot| if (slot.*) |*r| r.release();
     try std.testing.expectEqual(@as(u32, 1), h.state.remaining());
-    try std.testing.expect(h.state.reserve());
-    h.state.commit();
+    var again = h.state.reserve().?;
+    again.commit();
     try std.testing.expectEqual(@as(u32, 0), h.state.remaining());
-    try std.testing.expect(!h.state.reserve());
+    try std.testing.expect(h.state.reserve() == null);
 }
 
 test "strict params: unknown, missing, wrong-typed, off-platform or invalid -> -32602 before the gate, pacing or the page" {
@@ -545,4 +561,194 @@ test "telemetry: one compound span and one action event per step; no URL, userna
     try std.testing.expectEqualStrings("error", last.?.attr("result.status").?);
     try std.testing.expectEqualStrings("element_disabled", last.?.attr("automation.error").?);
     try std.testing.expectEqualStrings("click_follow_button", last.?.attr("error.step").?);
+}
+
+test "a long flow (story_view, hundreds of step spans) keeps its compound span and root in telemetry.query's bounded store" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{flow_ok};
+    // The viewer never closes: frames until the budget runs low.
+    h.fake.current_url = "https://www.instagram.com/stories/ada/1/";
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+    var cookies = SessionCookies{};
+    var store = telemetry.RecentTraceStore.init(gpa, 4);
+    defer store.deinit();
+    const Call = struct {
+        state: *social_routes.SocialState,
+        env: social_flow_routes.Env,
+        fn run(c: @This(), a: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
+            return social_flow_routes.handle(a, c.state, c.env, ext, .{ .instagram = .story_view }, "{\"username\":\"ada\"}");
+        }
+    };
+    var outcome = try h.engine.executeExternal(gpa, "instagram.story_view", "instagram", .{ .route = .{ .telemetry_sink = store.sink() } }, Call{
+        .state = &h.state,
+        .env = .{ .cookies = cookies.port() },
+    }, Call.run);
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.startsWith(u8, outcome.result, "{\"ok\":true,\"framesViewed\":"));
+    const trace_id = store.traces.items[0].trace_id;
+    const json = try store.queryJson(gpa, trace_id);
+    defer gpa.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    const spans = parsed.value.object.get("spans").?.array.items;
+    try std.testing.expectEqual(telemetry.RecentTraceStore.max_spans_per_trace, spans.len);
+    try std.testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings("automation.social.compound", spans[1].object.get("name").?.string);
+    const steps = spans[1].object.get("attributes").?.object.get("social.step_count").?;
+    const step_count = switch (steps) {
+        .integer => |n| n,
+        .string => |t| try std.fmt.parseInt(i64, t, 10),
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expect(step_count > telemetry.RecentTraceStore.max_spans_per_trace);
+}
+
+test "cap=1 across two pages: while page A's admitted flow is in its page step, page B is refused without touching its page" {
+    var a: Harness = undefined;
+    a.init();
+    defer a.deinit();
+    var b: Harness = undefined;
+    b.init();
+    defer b.deinit();
+    // One server-wide social state shared by both pages.
+    const shared = &a.state;
+    shared.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 1 });
+    a.fake.eval_replies = &.{flow_ok};
+    b.fake.eval_replies = &.{flow_ok};
+    var hold = std.atomic.Value(bool).init(true);
+    a.fake.hold = &hold;
+    var cookies_a = SessionCookies{};
+    var cookies_b = SessionCookies{};
+
+    const Run = struct {
+        fn flow(h: *Harness, state: *social_routes.SocialState, cookies: *SessionCookies, out: *?engine.Outcome) void {
+            const Call = struct {
+                state: *social_routes.SocialState,
+                env: social_flow_routes.Env,
+                fn run(c: @This(), alloc: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
+                    return social_flow_routes.handle(alloc, c.state, c.env, ext, .{ .linkedin = .follow }, "{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"}");
+                }
+            };
+            out.* = h.engine.executeExternal(gpa, "linkedin.follow", "linkedin", .{}, Call{ .state = state, .env = .{ .cookies = cookies.port() } }, Call.run) catch null;
+        }
+    };
+    var outcome_a: ?engine.Outcome = null;
+    const thread_a = try std.Thread.spawn(.{}, Run.flow, .{ &a, shared, &cookies_a, &outcome_a });
+    // Whatever happens below, page A is released and joined (a failed check
+    // must not leave it spinning).
+    var joined = false;
+    defer if (!joined) {
+        hold.store(false, .release);
+        thread_a.join();
+        if (outcome_a) |*o| o.deinit(gpa);
+    };
+    // Page A has reserved the only slot and is inside its first page step
+    // (bounded wait: a failure before that reports instead of hanging).
+    var spins: u64 = 0;
+    while (!a.fake.held.load(.acquire)) : (spins += 1) {
+        if (spins > 2_000_000_000) return error.PageANeverHeld;
+        std.atomic.spinLoopHint();
+    }
+
+    var outcome_b: ?engine.Outcome = null;
+    Run.flow(&b, shared, &cookies_b, &outcome_b);
+    defer if (outcome_b) |*o| o.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32010), outcome_b.?.failure.code);
+    try std.testing.expectEqual(@as(usize, 0), b.fake.navigate_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 0), b.fake.eval_calls.items.len);
+
+    hold.store(false, .release);
+    thread_a.join();
+    joined = true;
+    defer if (outcome_a) |*o| o.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", outcome_a.?.result);
+    try std.testing.expectEqual(@as(u32, 0), shared.remaining());
+}
+
+test "reservations complete exactly once, and an admitted success counts even if the cap is lowered meanwhile" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 2 });
+    var r = h.state.reserve().?;
+    try std.testing.expectEqual(@as(u32, 1), h.state.remaining());
+    // social.set_pacing lowers the cap to 0 while the action runs.
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 0 });
+    r.commit();
+    try std.testing.expectEqual(@as(u32, 1), h.state.limiter.actions_today);
+    // A second completion does nothing (no double count, no underflow).
+    r.commit();
+    r.release();
+    try std.testing.expectEqual(@as(u32, 1), h.state.limiter.actions_today);
+    try std.testing.expectEqual(@as(u32, 0), h.state.in_flight);
+
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+    var released = h.state.reserve().?;
+    released.release();
+    released.commit();
+    try std.testing.expectEqual(@as(u32, 1), h.state.limiter.actions_today);
+    try std.testing.expectEqual(@as(u32, 4), h.state.remaining());
+}
+
+test "social.rate_status counts actions in flight" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 3 });
+    var r = h.state.reserve().?;
+    defer r.release();
+    var outcome = try h.call("social.rate_status", "{}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.result, "\"remaining_actions\":2") != null);
+}
+
+test "telemetry: a conversation message hashes the conversation URL as conversation.id_hash, not profile.id_hash" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    var outcome = try f.call("linkedin.message", "{\"conversationUrl\":\"https://www.linkedin.com/messaging/thread/2-secret/\",\"text\":\"hello\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(outcome == .result);
+    for (f.sink.spans.items) |*span| {
+        if (!std.mem.eql(u8, span.name, "automation.social.compound")) continue;
+        try std.testing.expectEqual(@as(usize, 64), span.attr("conversation.id_hash").?.len);
+        try std.testing.expect(span.attr("profile.id_hash") == null);
+    }
+    try std.testing.expect(!f.sink.containsRaw("2-secret"));
+    try std.testing.expect(!f.sink.containsRaw("hello"));
+}
+
+test "one absolute flow deadline covers the cookie gate and every later step" {
+    // The cookie read takes 9 s of a 20 s budget: the flow's page steps get
+    // at most the remaining 11 s.
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.budget_ms = 20_000;
+    f.h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+    f.h.fake.clock = &f.h.clock;
+    f.cookies.clock = &f.h.clock;
+    f.cookies.cost_ms = 9_000;
+    var outcome = try f.call("linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
+    try std.testing.expect(f.h.fake.navigate_timeouts.items[0] <= 11_000);
+    for (f.h.fake.eval_calls.items) |call| try std.testing.expect(call.timeout_ms <= 11_000);
+
+    // A cookie store slower than the whole budget: cut at the flow deadline,
+    // reported as the flow deadline, nothing opened.
+    var g: FlowHarness = undefined;
+    g.init();
+    defer g.deinit();
+    g.budget_ms = 5_000;
+    g.cookies.clock = &g.h.clock;
+    g.cookies.cost_ms = 10_000;
+    var slow = try g.call("linkedin.visit", "{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"}");
+    defer slow.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), slow.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, slow.failure.data_json.?, "linkedin_flow_deadline") != null);
+    try std.testing.expectEqual(@as(u64, 5_000), g.h.clock.now_ms);
+    try std.testing.expectEqual(@as(usize, 0), g.h.fake.navigate_calls.items.len);
 }

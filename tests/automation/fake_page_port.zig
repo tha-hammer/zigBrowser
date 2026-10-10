@@ -65,6 +65,9 @@ pub const FakePagePort = struct {
     /// When set, a successful text call reports this many code points
     /// (simulates a backend that stopped short).
     native_success_sent: ?usize = null,
+    /// While `hold` is set and true, every eval blocks (and sets `held`).
+    hold: ?*std.atomic.Value(bool) = null,
+    held: std.atomic.Value(bool) = .init(false),
     /// Simulated per-window pointer cache: set after a move or click was
     /// dispatched (not on a failed call).
     pointer_pos: ?page_port.Point = null,
@@ -234,6 +237,12 @@ pub const FakePagePort = struct {
             .arg = self.gpa.dupe(u8, arg_json) catch return error.OutOfMemory,
             .timeout_ms = timeout_ms,
         }) catch return error.OutOfMemory;
+        if (self.hold) |hold| {
+            while (hold.load(.acquire)) {
+                self.held.store(true, .release);
+                std.atomic.spinLoopHint();
+            }
+        }
         if (self.clock) |clock| {
             if (self.eval_cost_ms > timeout_ms) {
                 clock.now_ms += timeout_ms;

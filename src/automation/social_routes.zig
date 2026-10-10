@@ -79,32 +79,43 @@ pub const SocialState = struct {
         return self.limiter.remaining() -| self.in_flight;
     }
 
-    /// Atomically admits one action: false at the cap, counting actions in
-    /// flight on other pages. Every true must be followed by exactly one
-    /// commit (success: counts) or release (failure: does not).
-    pub fn reserve(self: *SocialState) bool {
+    /// Atomically admits one action, counting actions in flight on other
+    /// pages; null at the cap. The caller owns the reservation and must end
+    /// it once: commit (success, counts) or release (failure, does not).
+    pub fn reserve(self: *SocialState) ?Reservation {
         self.acquire();
         defer self.lock.unlock();
-        if (self.limiter.remaining() <= self.in_flight) return false;
+        if (self.limiter.remaining() <= self.in_flight) return null;
         self.in_flight += 1;
-        return true;
+        return .{ .state = self };
     }
 
-    /// A reserved action succeeded: it counts against the cap.
-    pub fn commit(self: *SocialState) void {
-        self.acquire();
-        defer self.lock.unlock();
-        self.in_flight -|= 1;
-        var prng = std.Random.DefaultPrng.init(0);
-        _ = self.limiter.recordAction(prng.random()) catch {};
-    }
+    pub const Reservation = struct {
+        state: *SocialState,
+        open: bool = true,
 
-    /// A reserved action failed: it does not count.
-    pub fn release(self: *SocialState) void {
-        self.acquire();
-        defer self.lock.unlock();
-        self.in_flight -|= 1;
-    }
+        /// The admitted action succeeded: it counts, even if the cap was
+        /// lowered (or the UTC day changed) while it ran.
+        pub fn commit(self: *Reservation) void {
+            self.finish(true);
+        }
+
+        /// The admitted action failed: it does not count.
+        pub fn release(self: *Reservation) void {
+            self.finish(false);
+        }
+
+        /// Exactly one transition: later commits/releases do nothing.
+        fn finish(self: *Reservation, counted: bool) void {
+            if (!self.open) return;
+            self.open = false;
+            self.state.acquire();
+            defer self.state.lock.unlock();
+            std.debug.assert(self.state.in_flight > 0);
+            self.state.in_flight -= 1;
+            if (counted) self.state.limiter.countAdmitted();
+        }
+    };
 
     /// The pause before an action: uniform in [min_delay_ms, max_delay_ms]
     /// of the current pacing config.
@@ -142,9 +153,11 @@ const PacingPort = struct {
     state: *SocialState,
     reset_buf: [24]u8 = undefined,
 
+    /// The caller (handle) holds the state lock.
     pub fn getState(self: *PacingPort) social.PacingState {
         const limiter = &self.state.limiter;
-        const remaining = limiter.remaining();
+        // Actions in flight already hold capacity.
+        const remaining = limiter.remaining() -| self.state.in_flight;
         return .{
             .remaining_actions = remaining,
             .reset_at = formatUtcMidnight(&self.reset_buf, limiter.current_day + 1),
@@ -152,6 +165,7 @@ const PacingPort = struct {
         };
     }
 
+    /// The caller (handle) holds the state lock.
     pub fn configure(self: *PacingPort, params: social.SetPacingParams) void {
         self.state.limiter.updateConfig(.{
             .min_delay_ms = params.min_delay_ms,

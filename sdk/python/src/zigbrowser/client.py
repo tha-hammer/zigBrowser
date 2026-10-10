@@ -124,23 +124,27 @@ class PageNamespace:
 
 
 class LinkedInNamespace:
-    """Not routed by the automation socket yet: every linkedin.* call answers
-    -32601 (ProtocolError). Kept for request-shape parity with
-    src/linkedin.zig. Use dom.*/page.* for LinkedIn automation today."""
+    """linkedin.com flows. Each call is one command run by the browser: it
+    needs a signed-in profile (the li_at session cookie; otherwise -32011
+    "logged_out" before anything is opened), takes URLs on
+    https://www.linkedin.com only, and actions share the social pacing
+    (social.rate_status / social.set_pacing: a pause before each action and
+    a daily cap, -32010 "social_daily_cap")."""
+
+    SEARCH_TYPES = ("people", "companies", "jobs", "content", "all")
 
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def connect(self, profile_url: str, note: str | None = None) -> dict:
-        params = {"profileUrl": profile_url}
-        if note is not None:
-            params["note"] = note
-        return self._client.call("linkedin.connect", params)
-
     def visit(self, profile_url: str) -> dict:
-        return self._client.call(
-            "linkedin.visit", {"profileUrl": profile_url}
-        )
+        return self._client.call("linkedin.visit", {"profileUrl": profile_url})
+
+    def connect(self, profile_url: str, note: str | None = None) -> dict:
+        """Send an invitation; a note longer than 300 characters is cut to 300."""
+        return self._client.call("linkedin.connect", _drop_none(profileUrl=profile_url, note=note))
+
+    def follow(self, profile_url: str) -> dict:
+        return self._client.call("linkedin.follow", {"profileUrl": profile_url})
 
     def message(
         self,
@@ -148,68 +152,67 @@ class LinkedInNamespace:
         conversation_url: str | None = None,
         profile_url: str | None = None,
     ) -> dict:
-        params = {"text": text}
-        if conversation_url is not None:
-            params["conversationUrl"] = conversation_url
-        if profile_url is not None:
-            params["profileUrl"] = profile_url
-        return self._client.call("linkedin.message", params)
+        """Send text in a conversation, or from a profile's Message button
+        (exactly one of the two URLs)."""
+        if (conversation_url is None) == (profile_url is None):
+            raise ValueError("pass exactly one of conversation_url, profile_url")
+        return self._client.call(
+            "linkedin.message",
+            _drop_none(text=text, conversationUrl=conversation_url, profileUrl=profile_url),
+        )
 
     def like(self, post_url: str) -> dict:
         return self._client.call("linkedin.like", {"postUrl": post_url})
 
     def comment(self, post_url: str, text: str) -> dict:
-        return self._client.call(
-            "linkedin.comment", {"postUrl": post_url, "text": text}
-        )
+        return self._client.call("linkedin.comment", {"postUrl": post_url, "text": text})
 
-    def search(self, query: str, filters: dict | None = None) -> dict:
+    def search(self, query: str, search_type: str = "people") -> dict:
+        """{ok, url, resultCount}: opens LinkedIn's search for query."""
+        if search_type not in self.SEARCH_TYPES:
+            raise ValueError(f"search_type must be one of {self.SEARCH_TYPES}")
         params = {"query": query}
-        if filters is not None:
-            params["filters"] = filters
+        if search_type != "people":
+            params["searchType"] = search_type
         return self._client.call("linkedin.search", params)
 
     def extract(self, profile_url: str) -> dict:
-        """No Zig implementation exists (src/linkedin.zig has no extract)."""
-        return self._client.call(
-            "linkedin.extract", {"profileUrl": profile_url}
-        )
+        """Read-only profile summary: {name, headline, location} (null when absent)."""
+        return self._client.call("linkedin.extract", {"profileUrl": profile_url})
 
-    def follow(self, profile_url: str) -> dict:
-        return self._client.call(
-            "linkedin.follow", {"profileUrl": profile_url}
-        )
+    def selfcheck(self) -> dict:
+        """{selector_name: count} for LinkedIn's selector table on the current page."""
+        return self._client.call("linkedin.selfcheck")
 
 
 class InstagramNamespace:
-    """Not routed by the automation socket yet: every instagram.* call
-    answers -32601 (ProtocolError)."""
+    """instagram.com flows. Same rules as LinkedInNamespace: a signed-in
+    profile (sessionid cookie), URLs on https://www.instagram.com only, and
+    the shared social pacing for actions."""
 
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
     def follow(self, profile_url: str) -> dict:
-        return self._client.call(
-            "instagram.follow", {"profileUrl": profile_url}
-        )
+        return self._client.call("instagram.follow", {"profileUrl": profile_url})
 
     def like(self, post_url: str) -> dict:
         return self._client.call("instagram.like", {"postUrl": post_url})
 
     def comment(self, post_url: str, text: str) -> dict:
-        return self._client.call(
-            "instagram.comment", {"postUrl": post_url, "text": text}
-        )
+        return self._client.call("instagram.comment", {"postUrl": post_url, "text": text})
 
     def dm(self, username: str, text: str) -> dict:
-        return self._client.call(
-            "instagram.dm", {"username": username, "text": text}
-        )
+        """Open username's profile, press Message, send text."""
+        return self._client.call("instagram.dm", {"username": username, "text": text})
 
     def story_view(self, username: str) -> dict:
-        return self._client.call(
-            "instagram.story_view", {"username": username}
-        )
+        """{ok, framesViewed}: views username's stories frame by frame."""
+        return self._client.call("instagram.story_view", {"username": username})
+
+    def selfcheck(self) -> dict:
+        """{selector_name: count} for Instagram's selector table on the current page."""
+        return self._client.call("instagram.selfcheck")
 
 
 class SocialNamespace:

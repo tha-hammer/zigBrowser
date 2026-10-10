@@ -130,8 +130,11 @@ pub fn handleWithBudget(
     budget_ms: u64,
 ) error{OutOfMemory}!engine_mod.Outcome {
     const started = ext.nowMs();
+    // One absolute deadline for everything below: cookie gate, pacing
+    // pause and every flow step.
+    const deadline_ms = started +| budget_ms;
     var trace = Trace.init(ext, call);
-    const outcome = try execute(gpa, state, env, ext, call, params_json, budget_ms, &trace);
+    const outcome = try execute(gpa, state, env, ext, call, params_json, deadline_ms, &trace);
     trace.finish(&outcome, ext.nowMs() -| started);
     return outcome;
 }
@@ -143,7 +146,7 @@ fn execute(
     ext: *engine_mod.External,
     call: Call,
     params_json: []const u8,
-    budget_ms: u64,
+    deadline_ms: u64,
     trace: *Trace,
 ) error{OutOfMemory}!engine_mod.Outcome {
     const ids = ext.ids();
@@ -174,26 +177,26 @@ fn execute(
 
     // 2. Login gate before navigation.
     if (call.needsSession()) {
-        if (try sessionGate(gpa, env, ext, call, s)) |failure| return failure;
+        if (try sessionGate(gpa, env, ext, call, s, deadline_ms)) |failure| return failure;
         trace.login_verified = true;
     }
 
     var runner = flow_runner.Runner{
         .gpa = gpa,
         .ext = ext,
-        .deadline_ms = ext.nowMs() +| budget_ms,
+        .deadline_ms = deadline_ms,
         .deadline_reason = call.deadlineReason(),
         .observer = trace.observer(),
     };
     defer runner.deinit();
 
-    // 3. Pacing for actions: reserve, pause, then commit or release.
-    var reserved = false;
-    defer if (reserved) state.release();
+    // 3. Pacing for actions: reserve, pause, then commit (success) or
+    //    release (any other way out).
+    var reservation: ?social_routes.SocialState.Reservation = null;
+    defer if (reservation) |*r| r.release();
     if (call.isAction()) {
         trace.remaining_actions = state.remaining();
-        if (!state.reserve()) return engine_mod.automationFailure(gpa, .platform_rate_limited, "social_daily_cap", ids);
-        reserved = true;
+        reservation = state.reserve() orelse return engine_mod.automationFailure(gpa, .platform_rate_limited, "social_daily_cap", ids);
         var csprng: std.Random.DefaultCsprng = undefined;
         const random = state.delayRandom(&csprng) orelse return .{ .failure = .{ .code = engine_mod.internal_error_code, .message = "No entropy for pacing" } };
         const delay_ms = state.actionDelayMs(random);
@@ -209,26 +212,29 @@ fn execute(
         error.LoggedOut => return engine_mod.automationFailure(gpa, .session_invalid, "logged_out", ids),
     };
     const json = result orelse return runner.takeFailure();
-    if (reserved) {
-        reserved = false;
-        state.commit();
-    }
+    if (reservation) |*r| r.commit();
     return .{ .result = json };
 }
 
 /// The platform's session cookie must be in the store (never reads or
 /// reports its value). Returns the failure, or null to go on.
-fn sessionGate(gpa: std.mem.Allocator, env: Env, ext: *engine_mod.External, call: Call, s: flow.Site) error{OutOfMemory}!?engine_mod.Outcome {
+fn sessionGate(gpa: std.mem.Allocator, env: Env, ext: *engine_mod.External, call: Call, s: flow.Site, deadline_ms: u64) error{OutOfMemory}!?engine_mod.Outcome {
     const ids = ext.ids();
     const store = env.cookies orelse return try engine_mod.automationFailure(gpa, .session_invalid, "unsupported", ids);
+    const timeout_ms = @min(cookie_timeout_ms, deadline_ms -| ext.nowMs());
+    if (timeout_ms == 0) return try engine_mod.automationFailure(gpa, .action_timeout, call.deadlineReason(), ids);
     const url = try std.fmt.allocPrint(gpa, "{s}/", .{s.base()});
     defer gpa.free(url);
-    const text_json = store.getAll(gpa, url, cookie_timeout_ms) catch |err| return try engine_mod.automationFailure(gpa, switch (err) {
+    const text_json = store.getAll(gpa, url, timeout_ms) catch |err| return try engine_mod.automationFailure(gpa, switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Timeout => .action_timeout,
         error.Cancelled => .cancelled,
         else => .session_invalid,
-    }, "session_cookie_unreadable", ids);
+    }, if (err == error.Timeout and timeout_ms < cookie_timeout_ms)
+        // Cut short by the flow budget, not by the cookie store.
+        call.deadlineReason()
+    else
+        "session_cookie_unreadable", ids);
     defer gpa.free(text_json);
     const Cookie = struct { name: []const u8 = "", value: []const u8 = "" };
     const cookies = std.json.parseFromSlice([]const Cookie, gpa, text_json, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
@@ -399,6 +405,8 @@ const Trace = struct {
     has_profile_hash: bool = false,
     post_hash_buf: Hex64 = undefined,
     has_post_hash: bool = false,
+    conversation_hash_buf: Hex64 = undefined,
+    has_conversation_hash: bool = false,
     target_host: []const u8 = "",
     note_provided: bool = false,
     note_length: usize = 0,
@@ -418,9 +426,13 @@ const Trace = struct {
 
     fn describe(self: *Trace, call: Call, s: flow.Site, p: Params) void {
         self.target_host = s.host;
-        if (p.get("profileUrl") orelse p.get("conversationUrl") orelse p.get("username")) |profile| {
+        if (p.get("profileUrl") orelse p.get("username")) |profile| {
             _ = sha256Hex(&self.profile_hash_buf, profile);
             self.has_profile_hash = true;
+        }
+        if (p.get("conversationUrl")) |conversation| {
+            _ = sha256Hex(&self.conversation_hash_buf, conversation);
+            self.has_conversation_hash = true;
         }
         if (p.get("postUrl")) |post| {
             _ = sha256Hex(&self.post_hash_buf, post);
@@ -509,6 +521,7 @@ const Trace = struct {
         put(&entries, &count, "social.step_count", std.fmt.bufPrint(&bufs[0], "{d}", .{self.step_index}) catch unreachable);
         if (self.has_profile_hash) put(&entries, &count, "profile.id_hash", &self.profile_hash_buf);
         if (self.has_post_hash) put(&entries, &count, "post.id_hash", &self.post_hash_buf);
+        if (self.has_conversation_hash) put(&entries, &count, "conversation.id_hash", &self.conversation_hash_buf);
         if (self.target_host.len > 0) put(&entries, &count, "target.host", self.target_host);
         if (self.note_provided) {
             put(&entries, &count, "note.provided", "true");

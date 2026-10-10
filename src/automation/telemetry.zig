@@ -453,6 +453,11 @@ fn parseUrl(url: []const u8) ParsedUrl {
 /// already crossed the TelemetrySink boundary, i.e. redacted ones.
 pub const RecentTraceStore = struct {
     pub const max_spans_per_trace = 64;
+    /// Child spans that are the primary diagnostic unit of a command (a
+    /// social flow's compound span arrives after all its step events):
+    /// kept like the root, after it, at the cost of the newest ordinary
+    /// child.
+    pub const pinned_span_names = [_][]const u8{"automation.social.compound"};
 
     allocator: std.mem.Allocator,
     capacity: usize,
@@ -462,9 +467,11 @@ pub const RecentTraceStore = struct {
 
     const Trace = struct {
         trace_id: []u8,
-        /// Serialized spans; the root (automation.command) is kept first.
+        /// Serialized spans: the root (automation.command) first, then
+        /// pinned spans, then ordinary children.
         spans: std.ArrayListUnmanaged([]u8) = .empty,
         has_root: bool = false,
+        pinned: usize = 0,
 
         fn deinit(self: *Trace, allocator: std.mem.Allocator) void {
             for (self.spans.items) |span| allocator.free(span);
@@ -502,34 +509,48 @@ pub const RecentTraceStore = struct {
         const span = scratch.spanAt(0);
         const json = try spanJson(self.allocator, span.name, span.trace_id, span.span_id, null, span.command_id, span.attributes.entries.items);
         errdefer self.allocator.free(json);
-        try self.add(attrs.trace_id, json, true);
+        try self.add(attrs.trace_id, json, .root);
     }
 
     fn recordChild(ptr: *anyopaque, child: ChildSpan) anyerror!void {
         const self: *RecentTraceStore = @ptrCast(@alignCast(ptr));
         const json = try spanJson(self.allocator, child.name, child.trace_id, child.span_id orelse "", child.parent_span_id, child.command_id, child.attributes);
         errdefer self.allocator.free(json);
-        try self.add(child.trace_id, json, false);
+        const kind: Kind = for (pinned_span_names) |name| {
+            if (std.mem.eql(u8, name, child.name)) break .pinned;
+        } else .child;
+        try self.add(child.trace_id, json, kind);
     }
 
-    fn add(self: *RecentTraceStore, trace_id: []const u8, json: []u8, is_root: bool) !void {
+    const Kind = enum { root, pinned, child };
+
+    fn add(self: *RecentTraceStore, trace_id: []const u8, json: []u8, kind_in: Kind) !void {
         self.acquire();
         defer self.lock.unlock();
         const trace = try self.traceFor(trace_id);
-        if (is_root and !trace.has_root and trace.spans.items.len >= max_spans_per_trace) {
-            // The root (command outcome) arrives last; make room by dropping
-            // the newest child rather than losing the root.
+        // A second root is an ordinary span.
+        const kind: Kind = if (kind_in == .root and trace.has_root) .child else kind_in;
+        if (trace.spans.items.len >= max_spans_per_trace) {
+            // The root (command outcome) and pinned spans arrive after the
+            // step children: make room by dropping the newest ordinary
+            // child rather than losing them.
+            const kept = trace.pinned + @intFromBool(trace.has_root);
+            if (kind == .child or trace.spans.items.len <= kept) {
+                self.allocator.free(json);
+                return;
+            }
             self.allocator.free(trace.spans.pop().?);
         }
-        if (trace.spans.items.len >= max_spans_per_trace) {
-            self.allocator.free(json);
-            return;
-        }
-        if (is_root and !trace.has_root) {
-            try trace.spans.insert(self.allocator, 0, json);
-            trace.has_root = true;
-        } else {
-            try trace.spans.append(self.allocator, json);
+        switch (kind) {
+            .root => {
+                try trace.spans.insert(self.allocator, 0, json);
+                trace.has_root = true;
+            },
+            .pinned => {
+                try trace.spans.insert(self.allocator, @intFromBool(trace.has_root) + trace.pinned, json);
+                trace.pinned += 1;
+            },
+            .child => try trace.spans.append(self.allocator, json),
         }
     }
 

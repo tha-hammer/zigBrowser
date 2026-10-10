@@ -148,13 +148,35 @@ test "story_view opens /stories/<username>/, waits for media, and clicks Next fr
     try expectSelector(&single, 0, "http://127.0.0.1:9/stories/ada.lovelace/");
     try expectSelector(&single, 2, instagram.selectors.story_media);
 
-    // Next leaves the viewer: the click counts, then it stops.
+    // Next closes the viewer (the page leaves /stories/): done after that frame.
     var leaving = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/ada.lovelace/\"}" }} };
     defer leaving.deinit();
     const left = (try instagram.storyView(gpa, &leaving, fixture_site, "ada.lovelace")).?;
     defer gpa.free(left);
     try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", left);
-    try std.testing.expectEqual(@as(u64, instagram.story_frame_ms), leaving.now_ms);
+    // First frame viewed, Next, then the frame time in which the viewer closed.
+    try std.testing.expectEqual(@as(u64, 2 * instagram.story_frame_ms), leaving.now_ms);
+
+    // The last Next's click is cut short as the viewer closes (the URL
+    // left /stories/): completion.
+    var cut = FakeRunner{ .rules = &.{
+        .{ .method = "dom.click", .contains = "Next", .result = null },
+        .{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/ada.lovelace/\"}" },
+    } };
+    defer cut.deinit();
+    const done = (try instagram.storyView(gpa, &cut, fixture_site, "ada.lovelace")).?;
+    defer gpa.free(done);
+    try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", done);
+
+    // A failed Next while the viewer is still on /stories/ fails the flow,
+    // even if no story media is visible (no media is not evidence).
+    var still_open = FakeRunner{ .rules = &.{
+        .{ .method = "dom.click", .contains = "Next", .result = null },
+        .{ .method = "dom.query", .contains = "section video", .result = "{\"elements\":[]}" },
+        .{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/stories/ada.lovelace/2/\"}" },
+    } };
+    defer still_open.deinit();
+    try std.testing.expect((try instagram.storyView(gpa, &still_open, fixture_site, "ada.lovelace")) == null);
 
     // Next forever: frames until the flow budget would not cover another.
     var endless = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/stories/ada.lovelace/9/\"}" }} };
@@ -165,8 +187,16 @@ test "story_view opens /stories/<username>/, waits for media, and clicks Next fr
     defer parsed.deinit();
     try std.testing.expect(parsed.value.framesViewed > 10 and parsed.value.framesViewed <= instagram.max_story_frames);
     try std.testing.expect(endless.now_ms <= endless.budget_ms);
+    // Every step's timeout fits the flow budget at the time it starts.
+    for (endless.steps.items) |st| {
+        const p = try std.json.parseFromSlice(std.json.Value, gpa, st.params, .{});
+        defer p.deinit();
+        const obj = p.value.object;
+        const ms = if (obj.get("timeout_ms")) |t| t.integer else if (obj.get("options")) |o| o.object.get("timeout_ms").?.integer else return error.TestStepWithoutTimeout;
+        try std.testing.expect(ms <= 120_000);
+    }
 
-    // A failing page.url step fails the flow (not a silent stop).
+    // A failed page.url step fails the flow.
     var broken = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = null }} };
     defer broken.deinit();
     try std.testing.expect((try instagram.storyView(gpa, &broken, fixture_site, "ada.lovelace")) == null);

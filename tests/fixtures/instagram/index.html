@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Instagram Fixture</title>
+    <!-- Imitates the parts of instagram.com that src/instagram.zig drives,
+         served for every Instagram-shaped path by
+         tests/e2e/social_flows_test.py:
+           /<username>/              profile (Follow, Message -> DM composer)
+           /p/<id>/                  post (Like, comment)
+           /stories/<username>/      three story frames; Next on the last one
+                                     leaves the viewer for the profile
+         ?loggedout=1 renders a logged-out page (login form).
+         Everything the flows did is recorded in window.__ig. -->
+    <style>
+      body { font-family: sans-serif; margin: 16px; }
+      button, [role="button"] { margin: 6px 4px; padding: 4px 10px; display: inline-block; cursor: pointer; }
+      svg { width: 24px; height: 24px; }
+      [contenteditable] { min-height: 32px; border: 1px solid #999; padding: 4px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <nav id="nav"></nav>
+    <main id="main"></main>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var path = location.pathname;
+        var ig = window.__ig = { page: '', events: [], result: null, frames: [] };
+        var nav = document.getElementById('nav');
+        var main = document.getElementById('main');
+        function icon(label) {
+          return '<svg aria-label="' + label + '" role="img" viewBox="0 0 24 24"><title>' + label + '</title><rect width="24" height="24"/></svg>';
+        }
+
+        if (params.get('loggedout') === '1') {
+          ig.page = 'loggedout';
+          main.innerHTML = '<form><input name="username"><input name="password" type="password"></form><a href="/accounts/login/">Log in</a>';
+          return;
+        }
+        nav.innerHTML = '<a href="/">' + icon('Home') + '</a> <a href="/direct/inbox/">Messages</a>';
+
+        var m;
+        if ((m = path.match(/^\/stories\/([A-Za-z0-9._]+)\/$/))) {
+          ig.page = 'stories:' + m[1];
+          var user = m[1];
+          var frame = 1;
+          main.innerHTML = '<section><img alt="story" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="200" height="300"><button aria-label="Next">Next</button></section>';
+          ig.frames.push(frame);
+          main.querySelector('[aria-label="Next"]').addEventListener('click', function () {
+            if (frame === 3) {
+              ig.result = { action: 'story_view', frames: ig.frames.slice() };
+              try { sessionStorage.setItem('ig_story_frames', JSON.stringify(ig.frames)); } catch (e) {}
+              location.href = '/' + user + '/';
+              return;
+            }
+            frame += 1;
+            ig.frames.push(frame);
+          });
+        } else if ((m = path.match(/^\/p\/([^/]+)\/$/))) {
+          ig.page = 'post:' + m[1];
+          main.innerHTML =
+            '<article><section><span role="button" id="like">' + icon('Like') + '</span>' +
+            '<span role="button">' + icon('Comment') + '</span></section>' +
+            // A comment's own like heart sits in a list, not in the action bar.
+            '<ul><li>nice! <span role="button">' + icon('Like') + '</span></li></ul>' +
+            '<form><textarea aria-label="Add a comment…"></textarea><div role="button" id="post">Post</div></form></article>';
+          var like = document.getElementById('like');
+          like.addEventListener('click', function () {
+            like.innerHTML = icon('Unlike');
+            ig.result = { action: 'like' };
+          });
+          var area = main.querySelector('textarea');
+          area.addEventListener('keydown', function () { ig.events.push('keydown:comment'); });
+          document.getElementById('post').addEventListener('click', function () { ig.result = { action: 'comment', text: area.value }; });
+        } else if ((m = path.match(/^\/([A-Za-z0-9._]+)\/$/))) {
+          ig.page = 'profile:' + m[1];
+          try { ig.storyFrames = JSON.parse(sessionStorage.getItem('ig_story_frames') || 'null'); } catch (e) {}
+          main.innerHTML =
+            '<header><h2>' + m[1] + '</h2><button id="follow">Follow</button><div role="button" id="message">Message</div></header>' +
+            // Suggested accounts have Follow buttons outside the header.
+            '<aside><button>Follow</button></aside>' +
+            // The profile grid: images in a section, like a story frame's.
+            '<section class="grid"><img alt="post" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="100" height="100"></section>' +
+            '<div id="dm" hidden><div aria-label="Message" contenteditable="true"></div><div role="button" id="send">Send</div></div>';
+          var follow = document.getElementById('follow');
+          follow.addEventListener('click', function () { follow.textContent = 'Following'; ig.result = { action: 'follow' }; });
+          var dm = document.getElementById('dm');
+          document.getElementById('message').addEventListener('click', function () { dm.hidden = false; });
+          var box = dm.querySelector('[contenteditable]');
+          document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: box.textContent }; });
+        } else {
+          ig.page = 'other';
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -67,6 +67,14 @@ pub const RateLimiter = struct {
         return decision;
     }
 
+    /// Counts one action that was admitted earlier and has now succeeded:
+    /// it counts even if the cap was lowered meanwhile (or the UTC day
+    /// changed: it then counts for the new day).
+    pub fn countAdmitted(self: *RateLimiter) void {
+        self.maybeResetDay();
+        self.actions_today +|= 1;
+    }
+
     pub fn updateConfig(self: *RateLimiter, config: PacingConfig) void {
         self.config = config;
     }

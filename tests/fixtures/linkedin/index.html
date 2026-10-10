@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>LinkedIn Fixture</title>
+    <!-- Imitates the parts of linkedin.com that src/linkedin.zig drives, served
+         for every LinkedIn-shaped path by tests/e2e/social_flows_test.py:
+           /in/<name>/                 profile (Connect, Follow, Message)
+           /feed/update/<id>/          post (Like, Comment)
+           /messaging/thread/<id>/     conversation
+           /search/results/<type>/     search results (?keywords=)
+         ?loggedout=1 renders a signed-out page (sign-in link, no nav "Me").
+         Everything the flows did is recorded in window.__li. -->
+    <style>
+      body { font-family: sans-serif; margin: 16px; }
+      button, a { margin: 6px 4px; padding: 4px 10px; display: inline-block; }
+      [contenteditable] { min-height: 32px; border: 1px solid #999; padding: 4px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <header id="nav"></header>
+    <main id="main"></main>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var path = location.pathname;
+        var li = window.__li = { page: '', events: [], sent: [], result: null };
+        var nav = document.getElementById('nav');
+        var main = document.getElementById('main');
+        function record(event) { li.events.push(event); }
+
+        if (params.get('loggedout') === '1') {
+          li.page = 'loggedout';
+          nav.innerHTML = '<a href="/login">Sign in</a> <a href="/signup">Join now</a>';
+          main.innerHTML = '<h1>Welcome to your professional community</h1>';
+          return;
+        }
+        nav.innerHTML = '<div class="global-nav__me"><img class="global-nav__me-photo" alt="Ada Lovelace" src="data:,"></div>';
+
+        // A Draft-like editor: cancels beforeinput and keeps its own text.
+        function editor(el) {
+          var model = '';
+          el.addEventListener('beforeinput', function (e) {
+            e.preventDefault();
+            var sel = window.getSelection();
+            var all = sel.rangeCount > 0 && !sel.isCollapsed && sel.toString() === model;
+            if (e.inputType === 'insertText') model = (all ? '' : model) + (e.data || '');
+            else if (e.inputType === 'deleteContentBackward') model = all ? '' : model.slice(0, -1);
+            else if (e.inputType === 'deleteContent' && all) model = '';
+            el.textContent = model;
+            var r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+            sel.removeAllRanges(); sel.addRange(r);
+          });
+          return function () { return model; };
+        }
+
+        var m;
+        if ((m = path.match(/^\/in\/([^/]+)\/$/))) {
+          li.page = 'profile:' + m[1];
+          var name = 'Ada Lovelace';
+          main.innerHTML =
+            '<h1>' + name + '</h1>' +
+            '<div class="text-body-medium break-words">Analyst of the Analytical Engine</div>' +
+            '<span class="text-body-small inline t-black--light break-words">London, England</span>' +
+            '<div id="actions">' +
+            '  <button id="connect" aria-label="Invite ' + name + ' to connect">Connect</button>' +
+            '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
+            '  <a id="message" href="/messaging/compose/?recipient=' + m[1] + '">Message</a>' +
+            '</div>' +
+            '<div id="invite" role="dialog" hidden>' +
+            '  <button aria-label="Add a note">Add a note</button>' +
+            '  <button aria-label="Send without a note">Send without a note</button>' +
+            '  <div id="note-box" hidden><textarea name="message"></textarea>' +
+            '  <button aria-label="Send invitation">Send</button></div>' +
+            '</div>' +
+            '<section id="composer" hidden><div class="msg-form__contenteditable" contenteditable="true"></div>' +
+            '<button class="msg-form__send-button">Send</button></section>' +
+            // A suggestion card outside <main> must not match the main actions.
+            '';
+          document.body.insertAdjacentHTML('beforeend', '<aside><button aria-label="Follow Charles Babbage">Follow</button></aside>');
+          var invite = document.getElementById('invite');
+          document.getElementById('connect').addEventListener('click', function () { record('click:connect'); invite.hidden = false; });
+          function pending(note) {
+            invite.hidden = true;
+            li.result = { action: 'connect', note: note };
+            var b = document.getElementById('connect');
+            b.setAttribute('aria-label', 'Pending, click to withdraw invitation sent to ' + name);
+            b.textContent = 'Pending';
+          }
+          invite.querySelector('[aria-label="Add a note"]').addEventListener('click', function () {
+            record('click:add_note'); document.getElementById('note-box').hidden = false;
+          });
+          var noteInput = invite.querySelector('textarea');
+          noteInput.addEventListener('keydown', function () { record('keydown:note'); });
+          invite.querySelector('[aria-label="Send invitation"]').addEventListener('click', function () { pending(noteInput.value); });
+          invite.querySelector('[aria-label="Send without a note"]').addEventListener('click', function () { pending(null); });
+          document.getElementById('follow').addEventListener('click', function () {
+            var b = document.getElementById('follow');
+            b.setAttribute('aria-label', 'Following ' + name);
+            b.textContent = 'Following';
+            li.result = { action: 'follow' };
+          });
+          var composer = document.getElementById('composer');
+          var text = editor(composer.querySelector('[contenteditable]'));
+          document.getElementById('message').addEventListener('click', function (e) {
+            e.preventDefault(); record('click:message'); composer.hidden = false;
+          });
+          composer.querySelector('button').addEventListener('click', function () {
+            li.sent.push(text()); li.result = { action: 'message', text: text() };
+          });
+        } else if ((m = path.match(/^\/messaging\/thread\/([^/]+)\/$/))) {
+          li.page = 'conversation:' + m[1];
+          main.innerHTML = '<div class="msg-form__contenteditable" contenteditable="true"></div><button class="msg-form__send-button">Send</button>';
+          var convText = editor(main.querySelector('[contenteditable]'));
+          main.querySelector('button').addEventListener('click', function () {
+            li.sent.push(convText()); li.result = { action: 'message', text: convText() };
+          });
+        } else if ((m = path.match(/^\/feed\/update\/([^/]+)\/$/))) {
+          li.page = 'post:' + m[1];
+          main.innerHTML =
+            '<article><p>Post body</p>' +
+            '<button class="react-button__trigger" aria-pressed="false">Like</button>' +
+            '<button aria-label="Comment">Comment</button>' +
+            '<div class="comments-comment-box__form" hidden><div contenteditable="true"></div>' +
+            '<button class="comments-comment-box__submit-button">Post</button></div></article>' +
+            // Another post's reaction button further down the feed.
+            '<article><button class="react-button__trigger" aria-pressed="false">Like</button></article>';
+          var likeButton = main.querySelector('.react-button__trigger');
+          likeButton.addEventListener('click', function () { likeButton.setAttribute('aria-pressed', 'true'); li.result = { action: 'like' }; });
+          var form = main.querySelector('.comments-comment-box__form');
+          main.querySelector('[aria-label="Comment"]').addEventListener('click', function () { form.hidden = false; });
+          var commentText = editor(form.querySelector('[contenteditable]'));
+          form.querySelector('button').addEventListener('click', function () { li.result = { action: 'comment', text: commentText() }; });
+        } else if ((m = path.match(/^\/search\/results\/([^/]+)\/$/))) {
+          li.page = 'search';
+          li.result = { action: 'search', type: m[1], keywords: params.get('keywords') };
+          var items = '';
+          for (var i = 0; i < 3; i += 1) items += '<li class="reusable-search__result-container">Result ' + i + '</li>';
+          main.innerHTML = '<ul>' + items + '</ul>';
+        } else {
+          li.page = 'other';
+          main.innerHTML = '<h1>Feed</h1>';
+        }
+      })();
+    </script>
+  </body>
+</html>

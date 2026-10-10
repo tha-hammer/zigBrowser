@@ -531,6 +531,30 @@ test "RecentTraceStore keeps a late root even after the child cap is reached" {
     try std.testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
 }
 
+test "RecentTraceStore keeps a late social compound span (pinned after the root) past the child cap" {
+    var store = telemetry.RecentTraceStore.init(gpa, 2);
+    defer store.deinit();
+    const sink = store.sink();
+    for (0..telemetry.RecentTraceStore.max_spans_per_trace + 6) |_| {
+        try sink.recordChildSpan(.{ .name = "automation.social.action", .trace_id = "t", .parent_span_id = "k", .command_id = "c", .attributes = &.{} });
+    }
+    try sink.recordChildSpan(.{ .name = "automation.social.compound", .trace_id = "t", .span_id = "k", .parent_span_id = "r", .command_id = "c", .attributes = &.{} });
+    try sink.recordCommandSpan(rootAttrs("t", "r"));
+    const json = try store.queryJson(gpa, "t");
+    defer gpa.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    const spans = parsed.value.object.get("spans").?.array.items;
+    try std.testing.expectEqual(telemetry.RecentTraceStore.max_spans_per_trace, spans.len);
+    try std.testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings("automation.social.compound", spans[1].object.get("name").?.string);
+    // More children after both: still capped, root and compound stay.
+    try sink.recordChildSpan(.{ .name = "automation.social.action", .trace_id = "t", .parent_span_id = "k", .command_id = "c", .attributes = &.{} });
+    const again = try store.queryJson(gpa, "t");
+    defer gpa.free(again);
+    try std.testing.expect(std.mem.indexOf(u8, again, "automation.social.compound") != null);
+}
+
 test "native input is visible on the root span as input.mode=native" {
     var h: Harness = undefined;
     h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"x\":1,\"y\":2,\"document\":\"0123456789abcdef\"}}" }});
