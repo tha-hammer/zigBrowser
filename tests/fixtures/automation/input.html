@@ -22,6 +22,20 @@
       <button id="formsubmit" type="submit">Go</button>
     </form>
 
+    <!-- An invalid button type is a submit button (HTML normalizes it). -->
+    <form id="bogusform">
+      <input id="bf1" />
+      <input id="bf2" />
+      <button type="bogus">Go</button>
+    </form>
+    <script>
+      window.bogusSubmits = 0;
+      document.getElementById('bogusform').addEventListener('submit', function (event) {
+        event.preventDefault();
+        window.bogusSubmits += 1;
+      });
+    </script>
+
     <!-- Several text fields and no submit button: Enter must not submit. -->
     <form id="nosubmit">
       <input id="ns1" />
@@ -246,8 +260,10 @@
         sel.removeAllRanges();
         sel.addRange(range);
       }
+      window.draftTrustedBeforeInputs = 0;
       draft.addEventListener('beforeinput', function (event) {
         window.draftBeforeInputs += 1;
+        if (event.isTrusted) window.draftTrustedBeforeInputs += 1;
         event.preventDefault();
         var sel = window.getSelection();
         var replacingAll = sel.rangeCount > 0 && !sel.isCollapsed &&

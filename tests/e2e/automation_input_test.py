@@ -113,6 +113,8 @@ def run_press(socket_path: Path, t: float) -> None:
     # (HTML implicit submission), synthetic and native alike.
     press({"selector": "css=#ns1", "key": "Enter"})
     expect_equal("Enter without a default button does not submit", js("window.nosubmits"), 0)
+    press({"selector": "css=#bf1", "key": "Enter"})
+    expect_equal("an invalid button type is still the default button", js("window.bogusSubmits"), 1)
 
     # Modifiers: the target is focused before the first key event.
     events = press({"selector": "css=#q2", "key": "a", "modifiers": ["Control"]})
@@ -325,12 +327,22 @@ def run_native(socket_path: Path, t: float) -> None:
     expect_equal("native Enter submitted the form", js("window.submits"), submits + 1)
     expect_equal("native press without a default button", rpc("dom.press", {"selector": "css=#ns1", "key": "Enter", "options": native}), {"ok": True})
     expect_equal("native Enter without a default button does not submit", js("window.nosubmits"), 0)
+    expect_equal("native press on the invalid-type form", rpc("dom.press", {"selector": "css=#bf1", "key": "Enter", "options": native}), {"ok": True})
+    expect_equal("native Enter uses the normalized default button", js("window.bogusSubmits"), 2)
 
     # A Draft.js-style editor (cancels beforeinput, owns its model) receives
     # real typing: the browser's own trusted beforeinput reaches it.
-    js("(window.draftModel = '', document.getElementById('draft').textContent = '', 0)")
+    js("(window.draftModel = '', document.getElementById('draft').textContent = '', window.draftBeforeInputs = 0, window.draftTrustedBeforeInputs = 0, window.draftInputs = 0, 0)")
     expect_equal("native type into draft", rpc("dom.type", {"selector": "css=#draft", "text": "Real", "options": native}), {"ok": True})
     expect_equal("draft model after native type", js("window.draftModel"), "Real")
+    expect_equal("draft got one trusted beforeinput per character",
+                 js("[window.draftBeforeInputs, window.draftTrustedBeforeInputs]"), [4, 4])
+    expect_equal("cancelled beforeinput means no input events", js("window.draftInputs"), 0)
+
+    # Non-ASCII text through the real keymap path.
+    js("(document.getElementById('nativein').value = '', 0)")
+    expect_equal("native unicode type", rpc("dom.type", {"selector": "css=#nativein", "text": "café ✓", "options": native}), {"ok": True})
+    expect_equal("native unicode text", js("document.getElementById('nativein').value"), "café ✓")
 
     # Invalid native key names are rejected before anything is sent.
     error = rpc_error(socket_path, "dom.press", {"selector": "css=#q", "key": "F1x", "options": native}, next(ids), t)

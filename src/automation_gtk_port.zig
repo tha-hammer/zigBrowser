@@ -229,9 +229,17 @@ fn isDocumentToken(token: []const u8) bool {
     return true;
 }
 
+/// Reads the page's acknowledgement counters; swappable so tests can drive
+/// the debt rules without a page.
+var ack_reader: *const fn (deadline: i64) PortError!?Ack = readAckFromPage;
+
+fn readAck(deadline: i64) PortError!?Ack {
+    return ack_reader(deadline);
+}
+
 /// The page's acknowledgement counters, or null while no automation script
 /// answers (the document is being replaced). A malformed answer is EvalFailed.
-fn readAck(deadline: i64) PortError!?Ack {
+fn readAckFromPage(deadline: i64) PortError!?Ack {
     const gpa = std.heap.c_allocator;
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
@@ -399,6 +407,71 @@ fn docZ(buf: *[doc_len + 1]u8, token: []const u8) [*:0]const u8 {
     @memcpy(buf[0..doc_len], token[0..doc_len]);
     buf[doc_len] = 0;
     return @ptrCast(buf);
+}
+
+const FakeAcks = struct {
+    var script: []const FakeStep = &.{};
+    var index: usize = 0;
+
+    const FakeStep = union(enum) { ack: Ack, fail: PortError };
+
+    fn read(_: i64) PortError!?Ack {
+        const step = script[@min(index, script.len - 1)];
+        index += 1;
+        return switch (step) {
+            .ack => |a| a,
+            .fail => |e| e,
+        };
+    }
+
+    fn run(steps: []const FakeStep) void {
+        script = steps;
+        index = 0;
+        ack_reader = read;
+        debt = null;
+    }
+
+    fn reset() void {
+        ack_reader = readAckFromPage;
+        debt = null;
+    }
+};
+
+fn testAck(keyup: i64) Ack {
+    var a: Ack = .{ .keyup = keyup };
+    @memcpy(&a.doc, "0123456789abcdef");
+    return a;
+}
+
+test "a failed acknowledgement read after dispatch keeps the debt for the next call" {
+    defer FakeAcks.reset();
+    // Dispatched one key (target keyup 6); the read then fails.
+    FakeAcks.run(&.{.{ .fail = error.EvalFailed }});
+    try std.testing.expectError(error.EvalFailed, settle(testAck(6), deadlineAfter(1000)));
+    try std.testing.expect(debt != null);
+    try std.testing.expectEqual(@as(i64, 6), debt.?.keyup);
+
+    // The next call drains it first: the page still shows 5 twice, then 6;
+    // only then is its baseline read (keyup 6), and the debt is gone.
+    FakeAcks.run(&.{ .{ .ack = testAck(5) }, .{ .ack = testAck(5) }, .{ .ack = testAck(6) }, .{ .ack = testAck(6) } });
+    debt = testAck(6);
+    const base = try begin(null, deadlineAfter(1000));
+    try std.testing.expectEqual(@as(i64, 6), base.keyup);
+    try std.testing.expectEqual(@as(usize, 4), FakeAcks.index);
+    try std.testing.expect(debt == null);
+}
+
+test "debt is settled by an acknowledgement or a document change" {
+    defer FakeAcks.reset();
+    FakeAcks.run(&.{.{ .ack = testAck(6) }});
+    try std.testing.expectEqual(AckOutcome.acknowledged, try settle(testAck(6), deadlineAfter(1000)));
+    try std.testing.expect(debt == null);
+
+    var other = testAck(0);
+    @memcpy(&other.doc, "fedcba9876543210");
+    FakeAcks.run(&.{.{ .ack = other }});
+    try std.testing.expectEqual(AckOutcome.document_changed, try settle(testAck(6), deadlineAfter(1000)));
+    try std.testing.expect(debt == null);
 }
 
 test "C error codes map onto PortError" {

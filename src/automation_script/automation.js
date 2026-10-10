@@ -450,10 +450,12 @@
 
   function implicitSubmit(form) {
     const controls = Array.from(form.elements);
+    // Reflected .type: HTML normalizes a missing or invalid button type to
+    // 'submit'.
     const defaultButton = controls.find((el) => {
       const tag = el.tagName.toLowerCase();
-      const type = (el.getAttribute('type') || '').toLowerCase();
-      return (tag === 'button' && (type === '' || type === 'submit')) ||
+      const type = (el.type || '').toLowerCase();
+      return (tag === 'button' && type === 'submit') ||
         (tag === 'input' && (type === 'submit' || type === 'image'));
     });
     if (defaultButton) {
