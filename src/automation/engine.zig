@@ -123,6 +123,14 @@ pub const External = struct {
         return self.engine.clock.nowMs();
     }
 
+    pub fn route(self: *const External) router.RouteContext {
+        return self.run.route;
+    }
+
+    pub fn build(self: *const External) telemetry.BuildInfo {
+        return self.run.build;
+    }
+
     /// PagePort.url with an automation.platform.eval child span.
     pub fn url(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
         self.run.native_timeout_ms = timeout_ms;

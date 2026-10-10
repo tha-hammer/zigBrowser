@@ -463,3 +463,191 @@ test "getAll requires cookie-shaped objects from the store" {
         try std.testing.expectEqual(@as(i64, -32603), outcome.failure.code);
     }
 }
+
+test "import skips entries whose flags, expiry or sameSite are malformed (never weakens them)" {
+    const json_text =
+        \\[
+        \\  {"name":"a","value":"1","domain":"x.test","secure":"yes"},
+        \\  {"name":"b","value":"1","domain":"x.test","httpOnly":1},
+        \\  {"name":"c","value":"1","domain":"x.test","session":"false"},
+        \\  {"name":"d","value":"1","domain":"x.test","expirationDate":"tomorrow"},
+        \\  {"name":"e","value":"1","domain":"x.test","expires":-2},
+        \\  {"name":"f","value":"1","domain":"x.test","sameSite":"sometimes"},
+        \\  {"name":"g","value":"1","domain":"x.test","sameSite":7},
+        \\  {"name":"ok","value":"1","domain":"x.test","sameSite":"unspecified","secure":true}
+        \\]
+    ;
+    const json_path = try writeTemp("flags.json", json_text);
+    defer gpa.free(json_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, json_path) catch {};
+    const json_params = try importParams(json_path, "json");
+    defer gpa.free(json_params);
+
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var outcome = try call(&fake, "cookies.import", json_params);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":7}", outcome.result);
+    try std.testing.expect(std.mem.indexOf(u8, fake.sets.items[0], "\"name\":\"ok\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fake.sets.items[0], "\"secure\":true") != null);
+
+    const netscape_text =
+        "x.test\tMAYBE\t/\tTRUE\t0\tbad_sub\tv\n" ++
+        "x.test\tFALSE\t/\tyes\t0\tbad_secure\tv\n" ++
+        "x.test\tFALSE\t/\tTRUE\t-5\tbad_expiry\tv\n" ++
+        "x.test\tfalse\t/\ttrue\t0\tok_lower\tv\n";
+    const ns_path = try writeTemp("flags.txt", netscape_text);
+    defer gpa.free(ns_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, ns_path) catch {};
+    const ns_params = try importParams(ns_path, "netscape");
+    defer gpa.free(ns_params);
+    var fake2 = FakeCookiePort{};
+    defer fake2.deinit();
+    var ns = try call(&fake2, "cookies.import", ns_params);
+    defer ns.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"imported\":1,\"skipped\":3}", ns.result);
+    try std.testing.expect(std.mem.indexOf(u8, fake2.sets.items[0], "\"secure\":true") != null);
+}
+
+/// CookiePort whose set() takes `cost_ms` of fake time.
+const SlowStore = struct {
+    clock: *fakes.FakeClock,
+    cost_ms: u64,
+    timeouts: std.ArrayListUnmanaged(u64) = .empty,
+
+    fn port(self: *SlowStore) cookie_port.CookiePort {
+        return .{ .ptr = self, .vtable = &.{ .getAll = FailAfter.getAll, .set = set, .delete = FailAfter.delete } };
+    }
+    fn set(ptr: *anyopaque, _: []const u8, timeout_ms: u64) cookie_port.PortError!void {
+        const self: *SlowStore = @ptrCast(@alignCast(ptr));
+        self.timeouts.append(gpa, timeout_ms) catch return error.OutOfMemory;
+        self.clock.now_ms += self.cost_ms;
+    }
+};
+
+test "the whole import shares one deadline; sets get only the remaining time" {
+    var lines: std.ArrayListUnmanaged(u8) = .empty;
+    defer lines.deinit(gpa);
+    for (0..10) |i| try lines.print(gpa, "x.test\tFALSE\t/\tFALSE\t0\tc{d}\tv\n", .{i});
+    const path = try writeTemp("budget.txt", lines.items);
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "netscape");
+    defer gpa.free(params);
+
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var store = SlowStore{ .clock = &clock, .cost_ms = cookie_routes.import_budget_ms / 4 };
+    defer store.timeouts.deinit(gpa);
+    const Call = struct {
+        port: cookie_port.CookiePort,
+        params: []const u8,
+        fn run(c: @This(), a: std.mem.Allocator, ext: *automation.engine.External) error{OutOfMemory}!automation.engine.Outcome {
+            return cookie_routes.handle(a, io, c.port, ext, .import, c.params);
+        }
+    };
+    var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
+    var outcome = try eng.executeExternal(gpa, "cookies.import", "cookies", .{}, Call{ .port = store.port(), .params = params }, Call.run);
+    defer outcome.deinit(gpa);
+
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 4), store.timeouts.items.len);
+    try std.testing.expectEqual(cookie_routes.import_budget_ms, store.timeouts.items[0]);
+    try std.testing.expectEqual(cookie_routes.import_budget_ms / 4, store.timeouts.items[3]);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqualStrings("import_partial", data.value.object.get("reason").?.string);
+    try std.testing.expectEqual(@as(i64, 4), data.value.object.get("imported").?.integer);
+}
+
+/// Collects each cookie child span separately for per-span field checks.
+const SpanCollector = struct {
+    roots: std.ArrayListUnmanaged([3][]u8) = .empty, // trace, span, command
+    children: std.ArrayListUnmanaged(std.json.Parsed(std.json.Value)) = .empty,
+
+    fn deinit(self: *SpanCollector) void {
+        for (self.roots.items) |r| for (r) |s| gpa.free(s);
+        self.roots.deinit(gpa);
+        for (self.children.items) |*c| c.deinit();
+        self.children.deinit(gpa);
+    }
+    fn sink(self: *SpanCollector) automation.telemetry.TelemetrySink {
+        return .{ .ptr = self, .vtable = &.{ .recordCommandSpan = recordCommand, .recordChildSpan = recordChild } };
+    }
+    fn recordCommand(ptr: *anyopaque, attrs: automation.telemetry.CommandSpanAttrs) anyerror!void {
+        const self: *SpanCollector = @ptrCast(@alignCast(ptr));
+        try self.roots.append(gpa, .{ try gpa.dupe(u8, attrs.trace_id), try gpa.dupe(u8, attrs.span_id), try gpa.dupe(u8, attrs.command_id) });
+    }
+    fn recordChild(ptr: *anyopaque, span: automation.telemetry.ChildSpan) anyerror!void {
+        const self: *SpanCollector = @ptrCast(@alignCast(ptr));
+        if (!std.mem.eql(u8, span.name, "automation.cookie.command")) return;
+        const json = try std.json.Stringify.valueAlloc(gpa, span, .{});
+        defer gpa.free(json);
+        try self.children.append(gpa, try std.json.parseFromSlice(std.json.Value, gpa, json, .{}));
+    }
+};
+
+const required_cookie_span_attrs = [_][]const u8{
+    "cookie.operation", "cookie.name_hash", "cookie.domain_hash", "cookie.count", "cookie.scope",
+    "result.status",    "platform.error_class", "duration_ms", "page.id", "window.id", "backend.name",
+};
+
+test "cookie child spans carry every required field and hang off their root (success and failure)" {
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    var collector: SpanCollector = .{};
+    defer collector.deinit();
+
+    var ok = try callWithSink(&fake, "cookies.set", "{\"name\":\"a\",\"value\":\"v\",\"domain\":\"d.test\"}", collector.sink());
+    ok.deinit(gpa);
+    fake.fail = error.Timeout;
+    var bad = try callWithSink(&fake, "cookies.delete", "{\"name\":\"a\"}", collector.sink());
+    bad.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), collector.children.items.len);
+    for (collector.children.items, collector.roots.items, 0..) |child, root, i| {
+        const obj = child.value.object;
+        try std.testing.expectEqualStrings(root[0], obj.get("trace_id").?.string);
+        try std.testing.expectEqualStrings(root[1], obj.get("parent_span_id").?.string);
+        try std.testing.expectEqualStrings(root[2], obj.get("command_id").?.string);
+        var attrs = std.StringHashMap([]const u8).init(gpa);
+        defer attrs.deinit();
+        for (obj.get("attributes").?.array.items) |entry| try attrs.put(entry.object.get("key").?.string, entry.object.get("value").?.string);
+        for (required_cookie_span_attrs) |key| {
+            if (!attrs.contains(key)) {
+                std.debug.print("span {d} missing {s}\n", .{ i, key });
+                return error.TestMissingAttr;
+            }
+        }
+        try std.testing.expectEqualStrings(if (i == 0) "ok" else "error", attrs.get("result.status").?);
+        if (i == 1) try std.testing.expectEqualStrings("Timeout", attrs.get("platform.error_class").?);
+    }
+}
+
+test "partial import reports the applied count in the cookie span" {
+    var fake = FailAfter{ .ok_sets = 2 };
+    const text = "a.test\tFALSE\t/\tFALSE\t0\tc0\tv\n" ++ "a.test\tFALSE\t/\tFALSE\t0\tc1\tv\n" ++ "a.test\tFALSE\t/\tFALSE\t0\tc2\tv\n";
+    const path = try writeTemp("partial-span.txt", text);
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "netscape");
+    defer gpa.free(params);
+
+    var collector: SpanCollector = .{};
+    defer collector.deinit();
+    const Call = struct {
+        port: cookie_port.CookiePort,
+        params: []const u8,
+        fn run(c: @This(), a: std.mem.Allocator, ext: *automation.engine.External) error{OutOfMemory}!automation.engine.Outcome {
+            return cookie_routes.handle(a, io, c.port, ext, .import, c.params);
+        }
+    };
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
+    var outcome = try eng.executeExternal(gpa, "cookies.import", "cookies", .{ .route = .{ .telemetry_sink = collector.sink() } }, Call{ .port = fake.port(), .params = params }, Call.run);
+    defer outcome.deinit(gpa);
+    for (collector.children.items[0].value.object.get("attributes").?.array.items) |entry| {
+        if (std.mem.eql(u8, entry.object.get("key").?.string, "cookie.count")) try std.testing.expectEqualStrings("2", entry.object.get("value").?.string);
+    }
+}

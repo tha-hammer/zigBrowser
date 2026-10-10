@@ -35,6 +35,10 @@ pub const max_import_bytes = 4 * 1024 * 1024;
 /// cookies.import refuses files with more cookie entries than this, before
 /// any cookie is set.
 pub const max_import_cookies = 5000;
+/// One deadline for a whole cookies.import: each set gets only the time
+/// left, so a stalled store cannot hold the command (or server shutdown)
+/// for longer than this.
+pub const import_budget_ms: u64 = 30_000;
 const max_name_len = 256;
 const max_value_len = 4096;
 const max_domain_len = 253;
@@ -63,7 +67,7 @@ pub fn handle(
 ) error{OutOfMemory}!engine_mod.Outcome {
     const started = ext.nowMs();
     var span = SpanInfo{ .operation = operationName(verb) };
-    const outcome = try handleInner(gpa, io, port, ext.ids(), verb, params_json, &span);
+    const outcome = try handleInner(gpa, io, port, ext, verb, params_json, &span);
     span.record(ext, &outcome, started);
     return outcome;
 }
@@ -100,8 +104,12 @@ const SpanInfo = struct {
     fn record(self: *const SpanInfo, ext: *engine_mod.External, outcome: *const engine_mod.Outcome, started: u64) void {
         var bufs: [2][24]u8 = undefined;
         const ok = outcome.* == .result;
+        const route = ext.route();
         const entries = [_]@import("telemetry.zig").AttrMap.Entry{
             .{ .key = "cookie.operation", .value = self.operation },
+            .{ .key = "page.id", .value = route.page_id },
+            .{ .key = "window.id", .value = route.window_id },
+            .{ .key = "backend.name", .value = ext.build().backend_name },
             .{ .key = "cookie.name_hash", .value = self.name_hash orelse "" },
             .{ .key = "cookie.domain_hash", .value = self.domain_hash orelse "" },
             .{ .key = "cookie.count", .value = std.fmt.bufPrint(&bufs[0], "{d}", .{self.count}) catch unreachable },
@@ -118,11 +126,12 @@ fn handleInner(
     gpa: std.mem.Allocator,
     io: std.Io,
     port: ?cookie_port_mod.CookiePort,
-    ids: script_command.Ids,
+    ext: *engine_mod.External,
     verb: Verb,
     params_json: []const u8,
     span: *SpanInfo,
 ) error{OutOfMemory}!engine_mod.Outcome {
+    const ids = ext.ids();
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return invalidParams(gpa, null, ids),
@@ -154,7 +163,7 @@ fn handleInner(
             span.hashName(cookie.name);
             span.hashDomain(cookie.domain);
             span.scope = "single";
-            if (try setOne(gpa, store, cookie, ids, span)) |failure| return failure;
+            if (try setOne(gpa, store, cookie, port_timeout_ms, ids, span)) |failure| return failure;
             span.count = 1;
             return okResult(gpa);
         },
@@ -173,7 +182,7 @@ fn handleInner(
             span.count = 1;
             return okResult(gpa);
         },
-        .import => importFile(gpa, io, store, params, ids, span),
+        .import => importFile(gpa, io, store, params, ext, span),
     };
 }
 
@@ -221,17 +230,18 @@ fn hasControl(text: []const u8) bool {
 }
 
 /// Returns null on success, or the failure outcome.
-fn setOne(gpa: std.mem.Allocator, store: cookie_port_mod.CookiePort, cookie: Cookie, ids: script_command.Ids, span: *SpanInfo) error{OutOfMemory}!?engine_mod.Outcome {
+fn setOne(gpa: std.mem.Allocator, store: cookie_port_mod.CookiePort, cookie: Cookie, timeout_ms: u64, ids: script_command.Ids, span: *SpanInfo) error{OutOfMemory}!?engine_mod.Outcome {
     const json = try std.json.Stringify.valueAlloc(gpa, cookie, .{ .emit_null_optional_fields = false });
     defer gpa.free(json);
-    store.set(json, port_timeout_ms) catch |err| {
+    store.set(json, timeout_ms) catch |err| {
         span.error_class = @errorName(err);
         return try portFailure(gpa, err, ids);
     };
     return null;
 }
 
-fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookiePort, params: std.json.ObjectMap, ids: script_command.Ids, span: *SpanInfo) error{OutOfMemory}!engine_mod.Outcome {
+fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookiePort, params: std.json.ObjectMap, ext: *engine_mod.External, span: *SpanInfo) error{OutOfMemory}!engine_mod.Outcome {
+    const ids = ext.ids();
     const path = stringField(params, "path") orelse return invalidParams(gpa, "missing_path", ids);
     if (path.len == 0 or hasControl(path)) return invalidParams(gpa, "missing_path", ids);
     const format_name = stringField(params, "format") orelse return invalidParams(gpa, "unknown_format", ids);
@@ -282,10 +292,17 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
         },
     }
 
+    const deadline = ext.nowMs() +| import_budget_ms;
     for (cookies.items, 0..) |cookie, index| {
-        if (try setOne(gpa, store, cookie, ids, span)) |failure| {
-            var owned = failure;
+        const remaining = deadline -| ext.nowMs();
+        const failure: ?engine_mod.Outcome = if (remaining == 0) blk: {
+            span.error_class = "Timeout";
+            break :blk try engine_mod.automationFailure(gpa, .action_timeout, null, ids);
+        } else try setOne(gpa, store, cookie, remaining, ids, span);
+        if (failure) |f| {
+            var owned = f;
             defer owned.deinit(gpa);
+            span.count = counts.imported;
             return partialFailure(gpa, owned.failure, counts.imported, index, ids);
         }
         counts.imported += 1;
@@ -295,7 +312,9 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
 }
 
 /// Same error code as the failing set, with data saying how far the import
-/// got (no cookie names or values).
+/// got (no cookie names or values). `failed_index` counts valid entries only
+/// (skipped malformed lines/objects are not numbered), so it equals
+/// `imported`.
 fn partialFailure(gpa: std.mem.Allocator, failure: engine_mod.Failure, imported: u32, failed_index: usize, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
     const Data = struct { reason: []const u8, imported: u32, failed_index: usize, trace_id: []const u8, command_id: []const u8 };
     return .{ .failure = .{
@@ -336,16 +355,25 @@ fn parseNetscapeLine(line_in: []const u8) ??Cookie {
     if (n != fields.len) return @as(?Cookie, null);
 
     const expires = std.fmt.parseInt(i64, fields[4], 10) catch return @as(?Cookie, null);
+    if (expires < 0) return @as(?Cookie, null);
+    _ = netscapeBool(fields[1]) orelse return @as(?Cookie, null); // include-subdomains column
     const cookie = Cookie{
         .domain = fields[0],
         .path = fields[2],
-        .secure = std.ascii.eqlIgnoreCase(fields[3], "TRUE"),
-        .expires = if (expires <= 0) -1 else expires,
+        .secure = netscapeBool(fields[3]) orelse return @as(?Cookie, null),
+        .expires = if (expires == 0) -1 else expires,
         .name = fields[5],
         .value = fields[6],
         .httpOnly = http_only,
     };
     return if (validCookie(cookie)) cookie else @as(?Cookie, null);
+}
+
+/// Netscape TRUE/FALSE column (case-insensitive); anything else is malformed.
+fn netscapeBool(text: []const u8) ?bool {
+    if (std.ascii.eqlIgnoreCase(text, "TRUE")) return true;
+    if (std.ascii.eqlIgnoreCase(text, "FALSE")) return false;
+    return null;
 }
 
 fn cookieFromSetParams(params: std.json.ObjectMap) ?Cookie {
@@ -370,7 +398,9 @@ fn cookieFromSetParams(params: std.json.ObjectMap) ?Cookie {
 
 /// Browser-extension export ({expirationDate, session, sameSite:
 /// no_restriction|lax|strict|unspecified, ...}) or our own shape. Unknown
-/// extra keys (hostOnly, storeId, id) are ignored.
+/// extra keys (hostOnly, storeId, id) are ignored, but a known field with a
+/// wrong type or value makes the whole entry malformed (it is skipped rather
+/// than imported with weaker flags).
 fn cookieFromJsonExport(object: std.json.ObjectMap) ?Cookie {
     var cookie = Cookie{
         .name = stringField(object, "name") orelse return null,
@@ -378,23 +408,38 @@ fn cookieFromJsonExport(object: std.json.ObjectMap) ?Cookie {
         .domain = stringField(object, "domain") orelse return null,
     };
     if (object.get("path")) |_| cookie.path = stringField(object, "path") orelse return null;
-    if (object.get("httpOnly")) |value| cookie.httpOnly = boolValue(value) orelse false;
-    if (object.get("secure")) |value| cookie.secure = boolValue(value) orelse false;
+    if (object.get("httpOnly")) |value| cookie.httpOnly = boolValue(value) orelse return null;
+    if (object.get("secure")) |value| cookie.secure = boolValue(value) orelse return null;
+    const session = if (object.get("session")) |value| boolValue(value) orelse return null else false;
 
-    const session = if (object.get("session")) |value| boolValue(value) orelse false else false;
-    const expiry_value = object.get("expirationDate") orelse object.get("expires");
-    if (!session) {
-        if (expiry_value) |value| cookie.expires = switch (value) {
-            .integer => |n| if (n > 0) n else -1,
-            .float => |f| if (f > 0 and f < 9.0e15) @intFromFloat(@floor(f)) else -1,
-            else => -1,
-        };
+    if (object.get("expirationDate")) |value| {
+        const seconds = exportSeconds(value) orelse return null;
+        if (!session) cookie.expires = seconds;
     }
-    if (object.get("sameSite")) |value| switch (value) {
-        .string => |s| cookie.sameSite = canonicalSameSite(s),
-        else => {},
-    };
+    if (object.get("expires")) |value| {
+        const seconds: i64 = switch (value) {
+            .integer => |n| if (n == -1) -1 else if (n > 0) n else return null,
+            else => return null,
+        };
+        if (!session) cookie.expires = seconds;
+    }
+    if (object.get("sameSite")) |value| {
+        const text = switch (value) {
+            .string => |s| s,
+            else => return null,
+        };
+        if (!std.ascii.eqlIgnoreCase(text, "unspecified")) cookie.sameSite = canonicalSameSite(text) orelse return null;
+    }
     return if (validCookie(cookie)) cookie else null;
+}
+
+/// expirationDate: positive unix seconds (fractional allowed).
+fn exportSeconds(value: std.json.Value) ?i64 {
+    return switch (value) {
+        .integer => |n| if (n > 0) n else null,
+        .float => |f| if (f > 0 and f < 9.0e15) @as(i64, @intFromFloat(@floor(f))) else null,
+        else => null,
+    };
 }
 
 fn canonicalSameSite(text: []const u8) ?[]const u8 {
