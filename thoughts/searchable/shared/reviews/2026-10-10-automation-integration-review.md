@@ -184,6 +184,7 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `1ca9ac5` + `07bf6b5` — N21 real-binary pacing restart E2E and cleanup follow-up | Exact test/build/docs diffs plus a clean-export build and direct bounded Xvfb execution | **APPROVED; direct E2E GREEN 5/5; N21 CLOSED**. | The real CLI/server, Python SDK/socket, routed LinkedIn actions and effective profile are exercised without bypassing production. Same-profile restart restores 98 remaining, a second profile starts 100/100, the file is 0600, and corrupt content falls back without entering stderr. The clean export and cache were deleted immediately (`/tmp` 22% used). `07bf6b5` closes 4808 by stopping the launched process and closing stderr if the socket wait fails. Mailed approval as 4810/4816. |
 | Shared N23 WIP after the stable-id C/adapter seam was connected | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **GREEN 84/84 steps, 636/636 tests**. | All existing production-chain E2Es and the expanded server/engine/queue/adapter unit suites passed. This is an in-progress shared-tree gate, not commit evidence: the dedicated live popup/target-matrix E2E and its build wiring were not yet present, and cc_1's tracker-lifetime SHOULD 4824 remains open. |
 | Shared N23/native-fix WIP before this review checkpoint | `timeout 900 xvfb-run -a zig build test --summary all` in the worktree | **RED: 81/83 steps, 634/635 tests**. | The sole failure is the deliberately fail-closed adapter completeness test: `PagePort.listWindows is not implemented by the GTK adapter`. All reached production E2Es passed, including core, SDK, profile, social, X, readiness, lifecycle, scroll, native ports and cookies. This is expected while cc_1's N23 registry/adapter half is absent, not a committed-HEAD regression. |
+| Shared N23 WIP with the stable-id GTK adapter and real socket popup test | Exact in-progress diff review; bounded shared-worktree Xvfb gate | **GREEN 85/85 steps, 639/639 tests; CODE/EVIDENCE PARTIAL; commit pending**. | Stable u32 ids, GTK-only pointer resolution, primary id 1, target-specific readiness, primary-first owned list JSON, exact-id close, all PagePort target propagation, id-exhaustion refusal, refused-child release and an in-flight work-counter barrier are present. The production binary/socket probe passes popup listing/opener identity, targeted title/fill/click/eval isolation, postMessage to the opener, primary-close refusal, popup close and later `no_window`, then stops without pinning the deferred broken-opener state. `page.list`/`page.close` use instrumented `External` wrappers; their sink regression checks three parented children, operation order, standard error mapping and absence of URL/title content. Queue OOM after a newly-created line now drops the empty line, with a failing-allocator regression that kills the mutant (closes 4840). Still open before commit: a per-id ACK/debt isolation oracle that kills a shared-tracker mutant (4830), a retained resolver for the pending close-race Promise (4833), and preservation of OOM while parsing the GTK list JSON (4837/4838). SHOULD: generation reset prevents cross-run debt, but UI close and expired post-close lock still retain tracker entries for the rest of a run. |
 | Shared worktree after `4dafb3a`, pre-log-commit gate | `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 628/629 tests; committed N21 tests passed**. | The only failed test was uncommitted cc_1 screenshot WIP: `webkit.test.screenshot returns a PNG...` failed its late-encoder counter and both dynamic-growth assertions. The after-measure test hook starts an asynchronous JS evaluation and immediately starts the snapshot, so the capture can beat the growth. All reached socket E2Es passed. Mailed cc_1 as 4783. This is not an N21 or committed-HEAD regression. |
 | Shared N17–N20 WIP before mutation checkpoint | Bounded `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 612/613 tests**. | Every real-binary E2E passed, including the new native screenshot/file/scroll and platform-signal cases. The sole failure is `automation_server_test.zig:1056`: the routed x.post oracle expects 8 evals, while the new N20 scans make 14. Mailed cc_2 as 4752; this is owner WIP, not a committed-HEAD regression. |
 
@@ -1600,27 +1601,37 @@ The server-fake half of 4812 is **closed in the current WIP, pending commit**:
 every bounded fake-handle operation now returns `NoPage` when gone, and routed
 closed/unknown-window cases cover reload, screenshot, navigate, title,
 setInputFiles, native scroll, synthetic eval and native click with zero page,
-eval or input work. The GTK adapter half remains a BLOCKER-for-tests: every
-adapter method currently ignores its `ptr` and targets the primary. Prove
-target-id propagation through all distinct direct paths, including
-navigate/reload/read, screenshot, setInputFiles, native input/scroll and the
-per-window pointer cache. Mailed as 4812/4818. The native
-stable-id registry, atomic primary-first snapshot, safe in-flight close,
-u32-exhaustion refusal and popup-close live E2E are not yet present. The
-existing `ReplaceDriver` test also asserts the forbidden index-0 promotion
-after the original primary closes and must be inverted; mailed as 4813.
-The 4817 ACK/debt drift is **structurally closed in the current WIP, pending
-the two-window adapter oracle**: ACK trackers are keyed per stable id, their
-reader retains the targeted handle, and final scroll offsets use that same
-handle. The native WIP carries only a numeric id across threads, resolves it
-on GTK, and keeps the default fixed at id 1. Early WIP review found and cc_1
-immediately corrected a `finishScroll` parameter/local shadow that would have
-lost the port handle.
+eval or input work. The GTK adapter half is also present in the current WIP:
+every adapter method passes the numeric id from its handle, and the direct live
+matrix distinguishes window 2 by URL/title, page-world value, trusted input
+log, scroll offsets, screenshot pixels, file change, navigation and pointer
+cache while checking that no page work reached window 1. The native registry
+carries only a stable never-reused numeric id across threads, resolves it on
+GTK, binds the default permanently to id 1, returns an owned atomic
+primary-first list snapshot, refuses u32 wrap, releases a refused child view,
+and cancels an in-flight eval when its exact window closes. `ReplaceDriver` is
+inverted so the child at array index zero is never promoted. BlueBeaver's real
+binary/socket probe independently passes popup listing/opener identity,
+targeted title/fill/eval isolation, close and subsequent `no_window`. Mailed as
+4812/4818/4827; commit and a green joint gate are still pending.
+
+The 4817 ACK/debt drift is **CODE CLOSED but EVIDENCE OPEN in the current WIP**:
+ACK trackers are keyed per stable id, their reader retains the targeted handle,
+and final scroll offsets use that same handle. However, the live matrix performs
+native work only on window 2 and then uses a page-world eval on window 1; a
+mutant that returns one shared tracker can survive. Require an id-1/id-2 tracker
+isolation/debt oracle (and preferably a real native id-1 call after id-2) before
+closing the test blocker. Mailed as 4830. The in-flight-close test now waits for
+the GTK work counter, but its pending Promise must retain its resolver as the
+older LiveDriver regression does; otherwise WebKit can fail it before close.
+Mailed as 4833.
+
 **OPEN SHOULD (4824):** tracker cleanup is best-effort only after
-`closeWindow`; an expired post-close lock, a user/UI close, and normal app-run
-teardown retain entries, while ids restart from 1 on a later app run. Prove a
-hard lifetime bound or clear state at the window/run boundary so popup churn
-and same-id later runs cannot retain stale debt indefinitely.
+`closeWindow`; an expired post-close lock and a user/UI close retain entries.
+The generation reset now clears all state before a later run can reuse id 1,
+closing the cross-run debt part; it does not bound serial popup churn inside
+one run. Prove a hard per-window lifetime bound or evict closed entries without
+racing an active native transaction.
 
 The targeted-command `forWindow` telemetry finding 4819 is **closed in the
 current WIP, pending commit**. A refused handle is replaced by a complete
@@ -1629,6 +1640,30 @@ NoPage/Unsupported stand-in and the already-parsed command still runs through
 redacted command facts. The sink regression pins `dom`, `window-2` and
 `selector.kind` while the wire remains `-32011 unsupported`. Re-reviewed and
 mailed approval as 4826.
+
+The platform-child telemetry finding 4834 is **closed in the current WIP,
+pending commit**. `External.listWindows` and `External.closeWindow` emit the
+same `automation.platform.eval` child shape as the other PagePort calls, and
+`handleWindows` uses those wrappers. The sink regression observes one child
+for `page.list`, then list-plus-close for `page.close`, requires each child's
+parent to be a command root, and rejects representative URL/title content.
+It also pins `EvalFailed` as `-32603` and list timeout as `-32009`. The docs now
+correctly say only the other `page.*` calls and `dom.*` take an optional id.
+Re-reviewed and mailed as 4837; the joint green gate is still pending.
+
+**OPEN SHOULD (4837/4838):** GTK `listWindows` parses its owned C JSON with
+`parseFromSlice(...) catch return error.EvalFailed`, which collapses allocator
+exhaustion into a wire-visible evaluation failure instead of propagating
+`OutOfMemory`. The server's standard mapping is otherwise correct: adapter
+`EvalFailed` becomes `-32603`, not `session_invalid`. Preserve OOM explicitly
+at the N23 parse boundary before the joint commit.
+
+The pre-existing opener loss after `page.close` is still **DEFERRED by
+orchestrator**, not an N23 gate. The real socket test now stops its required
+acceptance path after close plus later `no_window` and does not assert the
+current broken unloaded state. The user docs retain the measured workaround,
+without making it a regression oracle. This closes 4832 in the current WIP,
+pending commit.
 
 ## Deferred scope note
 
