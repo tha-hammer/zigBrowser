@@ -382,3 +382,42 @@ test "timeout_ms 0 means exactly one immediate attempt" {
     try std.testing.expectEqual(@as(usize, 1), h.evalCount());
     try std.testing.expectEqual(@as(usize, 0), h.clock.sleeps.items.len);
 }
+
+test "waitFor: a readiness barrier runs first, so JS and native share the post-readiness budget" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":true,\"data\":{\"reason\":\"timeout\"}}" }});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.url_cost_ms = 1500; // first load still in flight
+
+    var outcome = try h.run("dom.waitFor", "{\"selector\":\"css=#never\",\"timeout_ms\":3000}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.url_calls);
+    try std.testing.expectEqual(@as(u64, 3000), h.fake.last_read_timeout_ms);
+    const call = h.fake.eval_calls.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"timeout_ms\":1500") != null);
+    try std.testing.expectEqual(@as(u64, 1500 + engine.wait_for_native_grace_ms), call.timeout_ms);
+}
+
+test "waitFor: a readiness barrier that times out is action_timeout and never evaluates" {
+    var h: Harness = undefined;
+    h.init(&.{});
+    defer h.deinit();
+    h.fake.url_result = error.Timeout;
+
+    var outcome = try h.run("dom.waitFor", "{\"selector\":\"css=#x\",\"timeout_ms\":100}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
+}
+
+test "non-wait commands do not pay for a readiness barrier" {
+    var h: Harness = undefined;
+    h.init(&.{ok});
+    defer h.deinit();
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.url_calls);
+}

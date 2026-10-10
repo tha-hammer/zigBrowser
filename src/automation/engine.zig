@@ -303,6 +303,14 @@ pub const Engine = struct {
             if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
             ids.attempt_index = run.attempts;
             run.attempts += 1;
+            if (is_wait) {
+                // Readiness barrier: PagePort ops wait for the first page
+                // load. Doing that here, before the JS timeout is computed,
+                // makes readiness come out of the same budget for JS and
+                // native, so the script's timeout stays authoritative.
+                const barrier = self.port.url(gpa, @max(deadline -| self.clock.nowMs(), 1)) catch |err| return portFailure(gpa, err, .action, ids);
+                gpa.free(barrier);
+            }
             const remaining = deadline -| self.clock.nowMs();
             // waitFor: the script's JS timeout is authoritative; the native
             // call gets extra grace on top so JS settles first.

@@ -60,7 +60,10 @@ pub const PagePort = struct {
         navigate: *const fn (ptr: *anyopaque, url: []const u8, timeout_ms: u64) PortError!void,
         /// Reload the current page and block until the load finishes/fails.
         reload: *const fn (ptr: *anyopaque, timeout_ms: u64) PortError!void,
-        /// Current committed URI ("" if none).
+        /// Current committed URI ("" if none). Like every op except
+        /// navigate, it first waits (within `timeout_ms`) for the primary
+        /// window's first load to finish; the engine relies on this as a
+        /// readiness barrier before dom.waitFor.
         url: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
         /// Current document title ("" if none).
         title: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8,
