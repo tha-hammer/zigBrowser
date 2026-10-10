@@ -189,7 +189,9 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `96571ce` — N23 handoff update | Exact documentation diff | **FOLLOW-UP REQUIRED.** | The N21, screenshot and scroll updates are accurate, but its N23 workaround/deferred-language became obsolete when the orchestrator reversed the deferral. After the native fix lands, cc_2 must remove the claims that closing a popup unloads the opener and that navigating it again is the supported recovery. |
 | `1088651` — shared-process-safe popup close | Exact six-file diff review; author clean-snapshot gate and two reported mutants | **CODE APPROVED; TEST FOLLOW-UP REQUIRED. Author gate GREEN 85/85 steps, 641/641 tests.** | Related views inherit one GTK-thread-only process-group id; destroy terminates only the last live member, while single-window timeout and app teardown retain termination. The WebKit `close` signal destroys only a script-opened popup and is disconnected before `ZbWindow` free. Both client `page.close` and fixture-owned `window.close()` traverse the production chain and kill always-terminate/no-close-handler mutants. The committed E2E captured its first URL baseline after close, did not pin the requested exact Alice state, and could race the second postMessage against self-close. Mailed required follow-up as 4852/4853/4855. |
 | `e76679a` — popup-close docs/handoff | Exact two-file documentation diff; clean-HEAD gate is separate baseline evidence | **APPROVED subject to removal of one transient review note.** | Correctly removes the obsolete navigate workaround and deferred item, documents both close paths, and cites `1088651`. Its evidence row openly says the exact oracle is still being tightened; replace that transient RoseCat-mail note with the test follow-up SHA when it lands. Mailed as 4856. |
-| Popup-close exact-oracle follow-up WIP after `e76679a` | Exact three-file diff review; reviewer `timeout 900 xvfb-run -a zig build test --summary all` with pre/post author-file hashes | **GREEN 85/85 steps, 641/641 tests; E2E APPROVED; commit pending.** | The socket E2E now captures the opener URL before either close and requires exact equality after both; resets the opener to a sentinel; waits for the second postMessage; requires `got:user=alice`; and checks the self-closed id is `-32011 no_window`. The production chain passes and the three author-file hashes stayed unchanged. Separate BLOCKER-for-TDD: the same WIP replaces the eight-entry tracker cleanup batch with a complete sweep, but no >8 oracle kills restoration of the old cap; add that test or revert to a comment-only NIT. Mailed as 4859/4863. |
+| `d689f72` — exact popup-close oracles and uncapped tracker sweep | Exact three-file diff review; reviewer `timeout 900 xvfb-run -a zig build test --summary all` with pre/post author-file hashes; author full gate | **POPUP-CLOSE APPROVED / BLOCKER CLOSED; GREEN 85/85 steps, 641/641 tests. TRACKER TEST BLOCKER OPEN.** | The socket E2E captures the opener URL before either close and requires exact equality after both; resets the opener to a sentinel; waits for the second postMessage; requires `got:user=alice`; and checks the self-closed id is `-32011 no_window`. The production chain passes and the three author-file hashes stayed unchanged. Separate BLOCKER-for-TDD: the same commit replaces the eight-entry tracker cleanup batch with a complete sweep, but no >8 oracle kills restoration of the old cap; add that test or revert the sweep in a no-amend follow-up. Mailed as 4859/4863/4868. |
+| `92ea230` — final N23 handoff evidence update | Exact one-file documentation diff | **DOCS APPROVED; FINAL GATE RED.** | The handoff correctly cites `d689f72` for both exact popup-close opener oracles and assigns the remaining tracker-sweep test to cc_1. BlueBeaver's independent clean export passed 85/85 steps and 641/641 tests, but the orchestrator's clean gate at the same HEAD timed out in `native text: a navigation blocked by policy does not refuse later typing` and ended 640/641. The latter reopens final/N23 gate acceptance until cc_1 fixes the hang and a clean full gate passes. |
+| `7059814` — gone-tracker >8 oracle | Exact committed adapter-test diff; owner clean export and restoration mutant | **APPROVED; TRACKER TEST BLOCKER CLOSED. Owner gate GREEN 85/85 steps, 642/642 tests; mutant RED.** | The test creates ids 1..16 while all are live, makes only id 1 live, and requires one lookup to leave exactly id 1. Restoring the old eight-removal cap leaves stale entries and fails. This closes 4859/4865/4868, but does not supersede the independent policy-blocked-navigation hang. Mailed as 4870/4873. |
 | Shared worktree after `4dafb3a`, pre-log-commit gate | `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 628/629 tests; committed N21 tests passed**. | The only failed test was uncommitted cc_1 screenshot WIP: `webkit.test.screenshot returns a PNG...` failed its late-encoder counter and both dynamic-growth assertions. The after-measure test hook starts an asynchronous JS evaluation and immediately starts the snapshot, so the capture can beat the growth. All reached socket E2Es passed. Mailed cc_1 as 4783. This is not an N21 or committed-HEAD regression. |
 | Shared N17–N20 WIP before mutation checkpoint | Bounded `timeout 900 xvfb-run -a zig build test --summary all` | **RED: 81/83 steps, 612/613 tests**. | Every real-binary E2E passed, including the new native screenshot/file/scroll and platform-signal cases. The sole failure is `automation_server_test.zig:1056`: the routed x.post oracle expects 8 evals, while the new N20 scans make 14. Mailed cc_2 as 4752; this is owner WIP, not a committed-HEAD regression. |
 
@@ -1581,8 +1583,7 @@ existing native bridge also identifies the default window as current array
 index zero and compacts that array on close; after the original primary closes,
 an untargeted call can silently fall through to a popup.
 
-Status: **CODE CLOSED by `1088651`; exact E2E follow-up APPROVED in the
-current WIP, commit pending (cc_1 / BlackRobin)**. The engine,
+Status: **CLOSED by `1088651` + `d689f72`.** The engine,
 stable-id registry, default-primary binding, per-window FIFO and empty-line
 retirement contracts are **CLOSED by `3528d84`**. N23 deliberately targets
 only `page.*`/`dom.*`; site-flow `window_id` support and its two-window X route
@@ -1593,10 +1594,9 @@ with its opener, losing its DOM state and breaking eval/navigation. N23 now
 requires shared-process-aware close behavior before approval. `1088651`
 implements it with an explicit related-view process family and a real WebKit
 `close` handler; the implementation and both substantive mutants are approved.
-The current no-amend follow-up adds the exact pre-close URL baseline, requested
+`d689f72` adds the exact pre-close URL baseline, requested
 `got:user=alice` state, deterministic second-message wait and self-closed
 `no_window` assertion; the reviewer full gate is green with unchanged hashes.
-The close blocker can be marked fully closed once that follow-up is committed.
 Seam review was mailed as 4791/4795; the reopened close BLOCKER and follow-ups
 were mailed as 4848/4852/4853/4855/4863.
 
@@ -1662,8 +1662,7 @@ Re-reviewed and mailed as 4837; the joint and reviewer gates are green.
 native output becomes `EvalFailed`. The server maps the latter to `-32603`, not
 `session_invalid`, and preserves timeout/cancellation mappings.
 
-**CODE CLOSED by `1088651`; TEST FOLLOW-UP APPROVED IN WIP, COMMIT PENDING:
-popup close must preserve its opener.** The
+**CLOSED by `1088651` + `d689f72`: popup close preserves its opener.** The
 real socket test stops after close plus later `no_window`, so the green gate is
 a false negative. The orchestrator's real binary/Python SDK probe proves both
 the symptom and its shared-process cause: `on_window_destroy` unconditionally
@@ -1671,11 +1670,69 @@ calls `webkit_web_view_terminate_web_process`, taking down related live views.
 `1088651` now terminates only for the last live related view (retaining the sole
 hung-window fallback), and wires popup-initiated `window.close()` to the exact
 toplevel. Its production-chain E2E covers both paths and kills the old behavior,
-and the no-amend follow-up now captures URL before either close, requires exact
+and `d689f72` captures URL before either close, requires exact
 equality after each, resets and waits for the second Alice postMessage, pins
 `got:user=alice`, and requires the self-closed id to answer `-32011 no_window`.
 That exact production-chain scenario passes in the reviewer gate. The test
-follow-up is approved and awaits its own commit.
+follow-up is approved and committed; the orchestrator's reversed close blocker
+is closed.
+
+### BLOCKER-for-tests — uncapped gone-window tracker sweep lacks a >8 oracle
+
+`d689f72` also replaces the adapter's eight-entry cleanup batch with a complete
+sweep and strengthens the comment to claim that every gone tracker is removed
+on the next lookup. The existing acknowledgement-state test creates only ids 1
+and 2. Restoring the old `[8]` batch therefore passes all 641 tests, so the new
+behavior was not introduced under the required red/green TDD loop.
+
+Status: **CLOSED by `7059814`.** The follow-up populates ids 1 through 16 under
+an all-alive fake, makes only id 1 live, and requires the next lookup to leave
+exactly id 1. Its clean export passed 85/85 steps and 642/642 tests. Restoring
+the old cap makes the new test fail, so the behavior is now mutation-sensitive.
+Mailed before and after commit as 4859/4865/4868/4870/4873.
+
+### BLOCKER — policy-blocked-navigation live test can exceed its watchdog
+
+The orchestrator's clean gate at `92ea230` ended **640/641** when
+`native text: a navigation blocked by policy does not refuse later typing`
+hit the live-test watchdog and exited 124. Independent green gates do not
+override that reproduced final-gate failure. Popup-close code and exact
+oracles remain approved in isolation, but N23/final integration is not green
+until this hang is fixed and a clean gate passes every test.
+
+The direct hang seam is `BlockedDriver.run`: its focus/token failure paths
+return without invoking `LiveDriver.quit`, which is called only at the success
+tail. Any bounded setup failure therefore leaves `zb_app_run` alive until the
+60 s process watchdog hides the original failure with exit 124;
+`NavEndDriver.run` has the same pattern. A second boundedness defect is in the
+shared helper: `waitNotLeaving` counts only its requested 20 ms sleeps toward
+an 8 s budget, although every embedded eval may itself wait 5000 ms.
+`pendingId` has the same accounting error. A failed or delayed eval can thus
+keep either helper alive far beyond its stated bound. The fix must quit the GTK
+loop on every driver exit, identify the actual failed operation, retain the
+production policy-blocked-navigation semantics, and use real monotonic
+deadlines; merely raising the watchdog is insufficient.
+
+A reviewer rerun of the existing root-test binary passed all 95 tests in about
+30 s; the affected case took WebKit's `never started` policy-order branch and
+printed `sent 3, value abc`. This confirms the behavior can pass but does not
+clear the intermittent final-gate failure. Its setup first ignores an empty
+result from a fixed-5-second readiness eval, then gives the focus click only
+another five seconds. A slow initial load under the full parallel gate can
+therefore reach the early-return/no-quit path. Readiness must be explicit and
+checked under its own adequate bound without weakening the action deadlines.
+The driver's chained per-operation maxima also exceed its 60-second watchdog;
+after cleanup is unconditional, it must either stop at the first failed
+prerequisite or enforce one overall deadline so a series of bounded failures
+cannot still be reclassified as exit 124.
+
+A later bounded reviewer worktree gate at `7059814`, while cc_1's eight-worker
+stress reproduction was running, passed **85/85 steps and 642/642 tests**; the
+affected case again took `never started`. That passing sample is useful load
+evidence but does not close the orchestrator's reproduced hang or repair the
+deterministic cleanup/deadline defects above.
+
+Status: **OPEN (cc_1 / BlackRobin).** Mailed as 4871/4872/4874/4875.
 
 ## Deferred scope note
 
