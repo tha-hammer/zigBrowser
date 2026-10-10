@@ -303,8 +303,11 @@ test "options.humanize: native click/type/press only, never with delay_ms or syn
         // synthetic (explicit or default) + humanize
         .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"humanize\":true}}" },
         .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"options\":{\"input\":\"synthetic\",\"humanize\":true}}" },
-        // delay_ms + humanize
+        // delay_ms + humanize (any verb; click/press do not use delay_ms)
         .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"delay_ms\":40,\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+        .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"delay_ms\":40,\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+        .{ .method = "dom.press", .params = "{\"key\":\"Enter\",\"delay_ms\":40,\"options\":{\"input\":\"native\",\"humanize\":true}}" },
+        .{ .method = "dom.type", .params = "{\"selector\":\"css=#q\",\"text\":\"hi\",\"delay_ms\":0,\"options\":{\"input\":\"native\",\"humanize\":true}}" },
         // wrong type
         .{ .method = "dom.click", .params = "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":1}}" },
         // other methods

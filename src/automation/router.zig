@@ -205,7 +205,8 @@ pub fn parse(
     // humanize: native input only (synthetic events have no pointer path)
     // and never with delay_ms (humanize owns the timing).
     command.humanize = humanizeOption(obj) catch return error.BadArgs;
-    if (command.humanize and (input != .native or command.delay_ms != null)) return error.BadArgs;
+    // delay_ms is only parsed for dom.type, so check its presence directly.
+    if (command.humanize and (input != .native or obj.get("delay_ms") != null)) return error.BadArgs;
 
     command.arena = arena;
 
