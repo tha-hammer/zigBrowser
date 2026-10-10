@@ -140,7 +140,19 @@ fn title(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u8 
 // (and mouse and key queues are not ordered against each other), so without
 // the wait a following step could run before the page saw the input.
 
-const ack_body = "const a = globalThis.__zbAutomation; if (!a) return 'null'; const c = a.inputAck(); return JSON.stringify([c.mouseup, c.keyup]);";
+const ack_body = "const a = globalThis.__zbAutomation; if (!a) return 'null'; return JSON.stringify(a.inputAck());";
+
+const Ack = struct {
+    /// Per-document id; a different one means the input navigated.
+    doc: [16]u8 = undefined,
+    doc_len: usize = 0,
+    mouseup: i64 = 0,
+    keyup: i64 = 0,
+
+    fn sameDocument(self: Ack, other: Ack) bool {
+        return std.mem.eql(u8, self.doc[0..self.doc_len], other.doc[0..other.doc_len]);
+    }
+};
 
 fn monotonicMs() i64 {
     var ts: std.c.timespec = undefined;
@@ -159,27 +171,45 @@ fn remainingMs(deadline: i64) PortError!u64 {
     return @intCast(left);
 }
 
-fn readAck(deadline: i64) PortError![2]i64 {
+/// The page's acknowledgement counters, or null while no automation script
+/// answers (the document is being replaced).
+fn readAck(deadline: i64) PortError!?Ack {
     const gpa = std.heap.c_allocator;
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
-    return std.json.parseFromSliceLeaky([2]i64, gpa, out, .{}) catch error.EvalFailed;
+    if (std.mem.eql(u8, out, "null")) return null;
+    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64 };
+    const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
+    defer parsed.deinit();
+    var ack: Ack = .{ .mouseup = parsed.value.mouseup, .keyup = parsed.value.keyup };
+    ack.doc_len = @min(parsed.value.doc.len, ack.doc.len);
+    @memcpy(ack.doc[0..ack.doc_len], parsed.value.doc[0..ack.doc_len]);
+    return ack;
 }
 
-/// Wait until the page acknowledged `mouseups` / `keyups` more trusted events.
-fn waitAck(base: [2]i64, mouseups: i64, keyups: i64, deadline: i64) PortError!void {
+fn readBaseline(deadline: i64) PortError!Ack {
     while (true) {
-        const now = try readAck(deadline);
-        if (now[0] >= base[0] + mouseups and now[1] >= base[1] + keyups) return;
-        _ = try remainingMs(deadline);
-        sleepMs(5);
+        if (try readAck(deadline)) |ack| return ack;
+        sleepMs(@min(5, try remainingMs(deadline)));
+    }
+}
+
+/// Wait until the page acknowledged `mouseups` / `keyups` more trusted
+/// events, or a new document replaced it (the input navigated: delivered).
+fn waitAck(base: Ack, mouseups: i64, keyups: i64, deadline: i64) PortError!void {
+    while (true) {
+        if (try readAck(deadline)) |now| {
+            if (!now.sameDocument(base)) return;
+            if (now.mouseup >= base.mouseup + mouseups and now.keyup >= base.keyup + keyups) return;
+        }
+        sleepMs(@min(5, try remainingMs(deadline)));
     }
 }
 
 /// Real pointer motion + left click at viewport CSS px (x, y).
 pub fn nativeClick(_: *anyopaque, x: f64, y: f64, timeout_ms: u64) PortError!void {
     const deadline = monotonicMs() + @as(i64, @intCast(@min(timeout_ms, std.math.maxInt(i32))));
-    const base = try readAck(deadline);
+    const base = try readBaseline(deadline);
     var err: [*c]u8 = null;
     const rc = c.zb_native_click(null, x, y, 1, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
@@ -190,11 +220,12 @@ pub fn nativeClick(_: *anyopaque, x: f64, y: f64, timeout_ms: u64) PortError!voi
 /// One real key press (DOM key name) with modifiers: bit0 Shift, bit1
 /// Control, bit2 Alt, bit3 Meta. Unknown keys are EvalFailed.
 pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64) PortError!void {
+    if (std.mem.indexOfScalar(u8, key, 0) != null) return error.EvalFailed;
     const deadline = monotonicMs() + @as(i64, @intCast(@min(timeout_ms, std.math.maxInt(i32))));
     const gpa = std.heap.c_allocator;
     const key_z = try gpa.dupeZ(u8, key);
     defer gpa.free(key_z);
-    const base = try readAck(deadline);
+    const base = try readBaseline(deadline);
     var releases: c_int = 0;
     var err: [*c]u8 = null;
     const rc = c.zb_native_key(null, key_z.ptr, @intCast(modifiers & 0x0f), clampMs(try remainingMs(deadline)), &releases, &err);
@@ -208,11 +239,13 @@ pub fn nativeKey(_: *anyopaque, key: []const u8, modifiers: u8, timeout_ms: u64)
 /// a partial side effect; callers must not retype the prefix.
 pub fn nativeText(_: *anyopaque, text: []const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
     sent_chars.* = 0;
+    // The C ABI is NUL-terminated: refuse rather than silently truncate.
+    if (std.mem.indexOfScalar(u8, text, 0) != null) return error.EvalFailed;
     const deadline = monotonicMs() + @as(i64, @intCast(@min(timeout_ms, std.math.maxInt(i32))));
     const gpa = std.heap.c_allocator;
     const text_z = try gpa.dupeZ(u8, text);
     defer gpa.free(text_z);
-    const base = try readAck(deadline);
+    const base = try readBaseline(deadline);
     var releases: c_int = 0;
     var chars: c_int = 0;
     var err: [*c]u8 = null;

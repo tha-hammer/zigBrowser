@@ -61,6 +61,10 @@ const TestLoop = struct {
     }
 };
 
+fn wallMs() i64 {
+    return @divTrunc(gfile.g_get_real_time(), std.time.us_per_ms);
+}
+
 fn monotonicMs() i64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
@@ -318,7 +322,12 @@ const fixture_a =
     \\['mousedown', 'mouseup', 'click'].forEach(function (t) {
     \\  document.getElementById('nb').addEventListener(t, function (e) { nativeLog.push(t + ':' + e.isTrusted); }); });
     \\document.getElementById('ni').addEventListener('keydown', function (e) {
-    \\  nativeLog.push('keydown:' + e.key + ':' + e.isTrusted + ':' + e.shiftKey); });</script>
+    \\  nativeLog.push('keydown:' + e.key + ':' + e.isTrusted + ':' + e.shiftKey); });
+    \\window.lastTrustedMouseUp = 0; window.lastTrustedKeyUp = 0;
+    \\document.addEventListener('mouseup', function (e) { if (e.isTrusted) window.lastTrustedMouseUp = Date.now(); }, true);
+    \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = Date.now(); }, true);</script>
+    \\<a id="navlink" href="b.html" style="position:fixed;left:20px;top:240px;width:120px;height:30px;display:block">to B</a>
+    \\<form action="b.html"><input id="navq" name="q" style="position:fixed;left:20px;top:290px;width:200px;height:30px"></form>
     \\<script>window.pageMarker = 7; setTimeout(function () {
     \\  var p = document.createElement('p'); p.id = 'late'; p.textContent = 'late';
     \\  document.body.appendChild(p); }, 300);</script>
@@ -705,8 +714,13 @@ const LiveDriver = struct {
     /// Native events reach the page asynchronously: wait (up to 3 s) until
     /// the automation world has acknowledged `mouseups` / `keyups` more events.
     fn waitInputAck(self: *LiveDriver, base: [2]i64, mouseups: i64, keyups: i64) bool {
+        return self.waitInputAckFor(base, mouseups, keyups, 3000);
+    }
+
+    /// Draining a backlog of hundreds of queued keys can take seconds.
+    fn waitInputAckFor(self: *LiveDriver, base: [2]i64, mouseups: i64, keyups: i64, limit_ms: u32) bool {
         var waited: u32 = 0;
-        while (waited < 3000) : (waited += 10) {
+        while (waited < limit_ms) : (waited += 10) {
             const now = self.inputAck() orelse return false;
             if (now[0] >= base[0] + mouseups and now[1] >= base[1] + keyups) return true;
             sleepMs(10);
@@ -800,7 +814,7 @@ const LiveDriver = struct {
         self.check(long_chars == long_releases, "chars sent are reported exactly (one release per plain char)");
         // Every reported key was handed to WebKit and still reaches the page
         // after the timeout; wait for them so later steps start clean.
-        self.check(self.waitInputAck(long_base, 0, long_releases), "all keys reported as sent reach the page");
+        self.check(self.waitInputAckFor(long_base, 0, long_releases, 20_000), "all keys reported as sent reach the page");
     }
 
     // N7 port layer: locate gives the actionable centre; the GTK port's native
@@ -823,27 +837,104 @@ const LiveDriver = struct {
         self.check(blocked.out != null and std.mem.indexOf(u8, blocked.out.?, "element_obscured") != null, "locate refuses an obscured element");
         _ = self.eval(null, "document.getElementById('nbcover').remove(); return 0;", null, null, 5000);
 
-        // nativeClick returns after the page saw the trusted click: no extra wait.
+        // Oracle: the page stamps Date.now() on trusted mouseup/keyup; the host
+        // stamps the wall clock the instant the port call returns. A port that
+        // returned before the page handled the input would have a later (or
+        // zero) page stamp. Follow-up evals cannot mask an early return.
+        _ = self.eval(null, "window.lastTrustedMouseUp = 0; window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         gtk_port.nativeClick(port.ptr, want[0], want[1], 5000) catch return self.check(false, "port nativeClick on the button succeeds");
-        self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "port nativeClick returns after the trusted click is handled");
+        const click_returned = wallMs();
+        self.check(self.pageStampAtOrBefore("lastTrustedMouseUp", click_returned), "port nativeClick returned only after the page handled the trusted mouseup");
+        self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "port nativeClick delivered a trusted click");
 
         const input = self.center("ni") orelse return self.check(false, "input center");
         gtk_port.nativeClick(port.ptr, input[0], input[1], 5000) catch return self.check(false, "port nativeClick on the input succeeds");
+        _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         var sent: usize = 0;
         gtk_port.nativeText(port.ptr, "ok", 5000, &sent) catch return self.check(false, "port nativeText succeeds");
+        const text_returned = wallMs();
         self.check(sent == 2, "port nativeText reports 2 chars sent");
+        self.check(self.pageStampAtOrBefore("lastTrustedKeyUp", text_returned), "port nativeText returned only after the page handled its keyups");
         const value = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
-        self.check(eq(value.out, "ok"), "port nativeText typed before returning");
+        self.check(eq(value.out, "ok"), "port nativeText typed the text");
+        _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         gtk_port.nativeKey(port.ptr, "a", 1, 5000) catch return self.check(false, "port nativeKey succeeds");
+        const key_returned = wallMs();
+        self.check(self.pageStampAtOrBefore("lastTrustedKeyUp", key_returned), "port nativeKey returned only after the page handled its keyups");
         const shifted = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
-        self.check(eq(shifted.out, "okA"), "port nativeKey(Shift+a) typed before returning");
+        self.check(eq(shifted.out, "okA"), "port nativeKey(Shift+a) typed A");
+
+        // Embedded NUL is refused instead of silently truncated at the C ABI.
+        var nul_sent: usize = 99;
+        self.check(if (gtk_port.nativeText(port.ptr, "a\x00b", 5000, &nul_sent)) |_| false else |e| e == error.EvalFailed, "port nativeText refuses embedded NUL");
+        self.check(nul_sent == 0, "nothing was sent for NUL text");
+        self.check(if (gtk_port.nativeKey(port.ptr, "a\x00", 0, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey refuses embedded NUL");
+        const after_nul = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        self.check(eq(after_nul.out, "okA"), "NUL input typed nothing");
+
+        // locate honours force (skips actionability) and focus-for-type puts
+        // the caret at the end of existing text.
+        _ = self.eval(null, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
+        const forced = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\",\"options\":{\"force\":true}}", c.ZB_AUTOMATION_WORLD, 5000);
+        self.check(forced.out != null and std.mem.indexOf(u8, forced.out.?, "\"ok\":true") != null, "locate with force skips actionability");
+        _ = self.eval(null, "document.getElementById('nbcover').remove(); var i = document.getElementById('ni'); i.focus(); i.setSelectionRange(0, 0); return 0;", null, null, 5000);
+        _ = self.eval(null, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#ni\",\"action\":\"type\",\"focus\":true}", c.ZB_AUTOMATION_WORLD, 5000);
+        var tail_sent: usize = 0;
+        gtk_port.nativeText(port.ptr, "Z", 5000, &tail_sent) catch return self.check(false, "port nativeText after locate succeeds");
+        const appended = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
+        self.check(eq(appended.out, "okAZ"), "locate focus:true for type appends at the end");
 
         var partial: usize = 0;
         const long_text = "y" ** 2000;
+        const partial_base = self.inputAck() orelse return self.check(false, "inputAck available");
         const partial_result = gtk_port.nativeText(port.ptr, long_text, 50, &partial);
         self.check(if (partial_result) |_| false else |e| e == error.Timeout, "port nativeText times out on long text");
         self.check(partial > 0 and partial < 2000, "port nativeText reports partial progress on timeout");
+        // The sent prefix keeps arriving after the timeout (acks are counts,
+        // not tied to a request); let it drain before the next step.
+        self.check(self.waitInputAckFor(partial_base, 0, @intCast(partial), 20_000), "the partial prefix reaches the page");
         self.check(if (gtk_port.nativeKey(port.ptr, "F1x", 0, 5000)) |_| false else |e| e == error.EvalFailed, "port nativeKey rejects unknown keys");
+
+        // Input that navigates resets the per-document ack counters; the port
+        // must treat the new document as delivery, not wait to its deadline.
+        var nav_err: [*c]u8 = null;
+        const nav_start = monotonicMs();
+        const link = self.center("navlink") orelse return self.check(false, "link center");
+        const link_result = gtk_port.nativeClick(port.ptr, link[0], link[1], 5000);
+        self.check(if (link_result) |_| true else |_| false, "native click on a navigating link succeeds");
+        self.check(monotonicMs() - nav_start < 3000, "navigating click returned without waiting for its deadline");
+        var nav_waited: u32 = 0;
+        while (nav_waited < 3000) : (nav_waited += 10) {
+            if (std.mem.endsWith(u8, self.str(&nav_rc_dummy, .url), "b.html")) break;
+            sleepMs(10);
+        }
+        self.check(std.mem.endsWith(u8, self.str(&nav_rc_dummy, .url), "b.html"), "the link navigated to B");
+        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &nav_err);
+        c.zb_automation_free(nav_err);
+        nav_err = null;
+        const navq = self.center("navq") orelse return self.check(false, "form input center");
+        gtk_port.nativeClick(port.ptr, navq[0], navq[1], 5000) catch return self.check(false, "focus the form input");
+        const enter_start = monotonicMs();
+        const enter_result = gtk_port.nativeKey(port.ptr, "Enter", 0, 5000);
+        self.check(if (enter_result) |_| true else |_| false, "native Enter that submits a form succeeds");
+        self.check(monotonicMs() - enter_start < 3000, "navigating Enter returned without waiting for its deadline");
+        nav_waited = 0;
+        while (nav_waited < 3000) : (nav_waited += 10) {
+            if (std.mem.indexOf(u8, self.str(&nav_rc_dummy, .url), "b.html") != null) break;
+            sleepMs(10);
+        }
+        self.check(std.mem.indexOf(u8, self.str(&nav_rc_dummy, .url), "b.html") != null, "Enter submitted the form to B");
+        _ = c.zb_automation_navigate(null, self.uri_a.ptr, 15000, &nav_err);
+        c.zb_automation_free(nav_err);
+    }
+
+    var nav_rc_dummy: c_int = 0;
+
+    fn pageStampAtOrBefore(self: *LiveDriver, comptime name: []const u8, returned_ms: i64) bool {
+        const r = self.eval(null, "return String(window." ++ name ++ ");", null, null, 5000);
+        const out = r.out orelse return false;
+        const stamp = std.fmt.parseInt(i64, out, 10) catch return false;
+        return stamp > 0 and stamp <= returned_ms;
     }
 
     // Explicit child windows wait for their own first load, not the primary's.
