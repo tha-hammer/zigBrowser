@@ -36,12 +36,12 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     const valid_uri = uri.validate(arena, spec.url) catch |err| {
         return mapUriErr(err);
     };
-    try applyProfileDir(arena, spec);
+    const profile_dir = try applyProfileDir(arena, spec);
 
     if (spec.automation_api) {
         // automation.js must be registered before zb_app_run builds the window.
         automation_gtk_port.installScript();
-        const config = buildAutomationConfig(arena, io, spec) catch |err| {
+        const config = buildAutomationConfig(arena, io, spec, profile_dir) catch |err| {
             if (err == error.EmptyTokenFile) std.debug.print("--automation-token-file is empty\n", .{});
             return error.WriteFailed;
         };
@@ -63,24 +63,42 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
 /// Persistent profile for cookies and site data: --profile-dir, else the
 /// default under $XDG_DATA_HOME or ~/.local/share. An explicit directory that
 /// cannot be created is an error; when the default cannot be resolved or
-/// created, the browser runs on WebKit's default context.
-fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError!void {
-    if (comptime builtin.os.tag != .linux) return;
+/// created, the browser runs on WebKit's default context. Returns the
+/// profile directory in use, or null when there is none.
+fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError!?[]const u8 {
+    if (comptime builtin.os.tag != .linux) return null;
     const explicit = spec.profile_dir != null;
     const dir = spec.profile_dir orelse
         (cli.defaultProfileDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse {
         // No profile resolved: make sure no earlier run's profile lingers.
         _ = c.zb_app_set_profile_dir(null, null);
-        return;
+        return null;
     };
     const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
 
     var err: [*c]u8 = null;
-    if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return;
+    if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return dir;
     defer c.zb_automation_free(err);
     // On failure the shim already cleared any previous profile.
     std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
     if (explicit) return error.WriteFailed;
+    return null;
+}
+
+/// N21: the pacing state lives with the profile it belongs to
+/// ("<profile>/automation-pacing.json"); without a profile it stays in
+/// memory ("").
+fn pacingStatePath(allocator: std.mem.Allocator, profile_dir: ?[]const u8) ![]const u8 {
+    const dir = profile_dir orelse return "";
+    return std.fs.path.join(allocator, &.{ dir, "automation-pacing.json" });
+}
+
+test "the pacing state file sits in the profile in use, or nowhere without one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("/home/u/.local/share/zigbrowser/profile/automation-pacing.json", try pacingStatePath(arena.allocator(), "/home/u/.local/share/zigbrowser/profile"));
+    try std.testing.expectEqualStrings("/tmp/p/automation-pacing.json", try pacingStatePath(arena.allocator(), "/tmp/p/"));
+    try std.testing.expectEqualStrings("", try pacingStatePath(arena.allocator(), null));
 }
 
 fn runScreenshot(arena: std.mem.Allocator, spec: ScreenshotSpec) errors.BrowserError!u8 {
@@ -105,10 +123,12 @@ fn buildAutomationConfig(
     allocator: std.mem.Allocator,
     io: std.Io,
     spec: OpenSpec,
+    profile_dir: ?[]const u8,
 ) !automation_server.Config {
     const socket_path = try automationSocketPath(allocator, io);
     const credentials = try automationCredentials(allocator, io, spec.automation_token_file, socket_path);
     return .{
+        .pacing_state_path = try pacingStatePath(allocator, profile_dir),
         .enabled = true,
         .socket_path = socket_path,
         .token = credentials.token,
