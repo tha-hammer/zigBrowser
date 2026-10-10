@@ -1,50 +1,224 @@
 const std = @import("std");
 const automation_server = @import("automation_server");
+const page_port = automation_server.automation.page_port;
 
 const net = std.Io.net;
 const testing = std.testing;
 
-test "automation API server listens on UDS and round-trips length-prefixed JSON-RPC" {
+test "automation API server dispatches page.url through the PagePort and returns the real url" {
     if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("url", .{});
+    defer fixture.deinit();
 
-    const socket_path = try std.fmt.allocPrint(
-        testing.allocator,
-        "/tmp/zigbrowser-automation-server-{x}.sock",
-        .{testing.random_seed},
-    );
-    defer testing.allocator.free(socket_path);
-    cleanupSocketPath(socket_path);
-    defer cleanupSocketPath(socket_path);
-
-    var server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
-        .enabled = true,
-        .socket_path = socket_path,
-        .token = "",
-    });
-    defer server.deinit();
-
-    try server.start();
-    defer server.stop();
-
-    const address = try net.UnixAddress.init(socket_path);
-    var stream = try address.connect(testing.io);
+    var stream = try fixture.connect();
     defer stream.close(testing.io);
-
-    try writeFrame(
-        stream,
-        "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"params\":{},\"id\":1}",
-    );
-
-    const response = try readFrame(stream);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"params\":{},\"id\":1}");
     defer testing.allocator.free(response);
 
-    try testing.expect(std.mem.indexOf(u8, response, "\"jsonrpc\":\"2.0\"") != null);
-    try testing.expect(std.mem.indexOf(u8, response, "\"id\":1") != null);
-    try testing.expect(std.mem.indexOf(u8, response, "\"method\":\"page.url\"") != null);
-    try testing.expect(std.mem.indexOf(u8, response, "\"ok\":true") != null);
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"result\":{\"url\":\"file:///fixture/index.html\"},\"id\":1}",
+        response,
+    );
+    try testing.expect(std.mem.indexOf(u8, response, "\"method\"") == null);
 
-    server.stop();
-    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, socket_path, .{}));
+    fixture.server.stop();
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, fixture.socket_path, .{}));
+}
+
+test "dom result object is installed directly as the JSON-RPC result" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("dom", .{ .eval_reply = "{\"ok\":true,\"value\":{\"text\":\"Ready \\\"now\\\"\"}}" });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.getText\",\"params\":{\"selector\":\"css=#s\"},\"id\":\"a\"}");
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"result\":{\"text\":\"Ready \\\"now\\\"\"},\"id\":\"a\"}",
+        response,
+    );
+}
+
+test "page.evaluate array, null and >4 KiB results round-trip unquoted" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const big = "y" ** 6000;
+    var fixture = try Fixture.start("eval", .{ .eval_reply = "{\"ok\":true,\"value\":[null,\"" ++ big ++ "\",{\"k\":1.5}]}" });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.evaluate\",\"params\":{\"expression\":\"x\"},\"id\":2}");
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"result\":{\"result\":[null,\"" ++ big ++ "\",{\"k\":1.5}]},\"id\":2}",
+        response,
+    );
+}
+
+test "automation failure becomes a JSON-RPC error with code, name and data" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("err", .{ .eval_reply = "{\"ok\":false,\"error\":\"element_disabled\",\"retryable\":false,\"data\":{\"reason\":\"enabled\"}}" });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\"},\"id\":3}");
+    defer testing.allocator.free(response);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+    defer parsed.deinit();
+    const err = parsed.value.object.get("error").?.object;
+    try testing.expectEqual(@as(i64, -32005), err.get("code").?.integer);
+    try testing.expectEqualStrings("element_disabled", err.get("message").?.string);
+    const data = err.get("data").?.object;
+    try testing.expectEqualStrings("enabled", data.get("reason").?.string);
+    try testing.expect(data.get("trace_id") != null);
+    try testing.expect(data.get("command_id") != null);
+    try testing.expectEqual(@as(i64, 3), parsed.value.object.get("id").?.integer);
+}
+
+test "non-object params map to -32602" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("params", .{});
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"params\":[1],\"id\":4}");
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "\"code\":-32602") != null);
+}
+
+test "server without a PagePort answers session_invalid instead of a template" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("noport", .{ .with_port = false });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"params\":{},\"id\":5}");
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "\"code\":-32011") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "\"ok\":true") == null);
+}
+
+test "one connection carries several requests (persistent SDK clients)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("persist", .{});
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    for (0..3) |i| {
+        const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"page.title\",\"id\":{d}}}", .{i});
+        defer testing.allocator.free(request);
+        const response = try roundTrip(stream, request);
+        defer testing.allocator.free(response);
+        const expected = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"result\":{{\"title\":\"Fixture\"}},\"id\":{d}}}", .{i});
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, response);
+    }
+}
+
+test "a second client is served while the first stays connected, and stop() closes idle clients" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("multi", .{});
+    defer fixture.deinit();
+
+    var idle = try fixture.connect();
+    defer idle.close(testing.io);
+    const first = try roundTrip(idle, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":1}");
+    testing.allocator.free(first);
+
+    var other = try fixture.connect();
+    defer other.close(testing.io);
+    const second = try roundTrip(other, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":2}");
+    defer testing.allocator.free(second);
+    try testing.expect(std.mem.indexOf(u8, second, "file:///fixture/index.html") != null);
+
+    // `idle` is still open and blocked server-side in a frame read.
+    fixture.server.stop();
+}
+
+const FixtureOptions = struct {
+    with_port: bool = true,
+    eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
+};
+
+const Fixture = struct {
+    socket_path: []u8,
+    fake: FakePort,
+    server: automation_server.AutomationApiServer,
+
+    fn start(comptime tag: []const u8, options: FixtureOptions) !*Fixture {
+        const self = try testing.allocator.create(Fixture);
+        errdefer testing.allocator.destroy(self);
+        self.socket_path = try std.fmt.allocPrint(
+            testing.allocator,
+            "/tmp/zigbrowser-automation-" ++ tag ++ "-{x}.sock",
+            .{testing.random_seed},
+        );
+        cleanupSocketPath(self.socket_path);
+        self.fake = .{ .eval_reply = options.eval_reply };
+        self.server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+            .enabled = true,
+            .socket_path = self.socket_path,
+            .token = "",
+            .page_port = if (options.with_port) self.fake.port() else null,
+        });
+        try self.server.start();
+        return self;
+    }
+
+    fn connect(self: *Fixture) !net.Stream {
+        const address = try net.UnixAddress.init(self.socket_path);
+        return address.connect(testing.io);
+    }
+
+    fn deinit(self: *Fixture) void {
+        self.server.deinit();
+        cleanupSocketPath(self.socket_path);
+        testing.allocator.free(self.socket_path);
+        testing.allocator.destroy(self);
+    }
+};
+
+/// Minimal PagePort for socket-level tests; engine behaviour is covered by
+/// tests/automation_engine_test.zig.
+const FakePort = struct {
+    eval_reply: []const u8,
+
+    fn port(self: *FakePort) page_port.PagePort {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable = page_port.PagePort.VTable{
+        .evalJson = evalJson,
+        .navigate = navigate,
+        .reload = reload,
+        .url = url,
+        .title = title,
+    };
+
+    fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
+        _ = .{ world, body, arg, timeout_ms };
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        return gpa.dupe(u8, self.eval_reply);
+    }
+    fn navigate(_: *anyopaque, _: []const u8, _: u64) page_port.PortError!void {}
+    fn reload(_: *anyopaque, _: u64) page_port.PortError!void {}
+    fn url(_: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+        return gpa.dupe(u8, "file:///fixture/index.html");
+    }
+    fn title(_: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+        return gpa.dupe(u8, "Fixture");
+    }
+};
+
+fn roundTrip(stream: net.Stream, request: []const u8) ![]u8 {
+    try writeFrame(stream, request);
+    return readFrame(stream);
 }
 
 test "automation API server accepts WebSocket upgrade and pushes ready notification" {

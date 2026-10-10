@@ -130,10 +130,18 @@ def main() -> int:
             result = response.get("result")
             if response.get("jsonrpc") != "2.0" or response.get("id") != 1:
                 raise AssertionError(f"bad JSON-RPC envelope: {response}")
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                raise AssertionError(f"missing ok result: {response}")
-            if result.get("method") != "page.url":
-                raise AssertionError(f"wrong method result: {response}")
+            # The server must dispatch through the engine, never echo the
+            # old {"ok":true,"method":...} acknowledgement template.
+            if isinstance(result, dict) and "method" in result:
+                raise AssertionError(f"server returned the ack template: {response}")
+            error = response.get("error")
+            if result is not None:
+                if not isinstance(result, dict) or not isinstance(result.get("url"), str):
+                    raise AssertionError(f"page.url result is not {{url}}: {response}")
+            elif not (isinstance(error, dict) and error.get("code") == -32011):
+                # TRANSITIONAL: until app.zig passes the GTK PagePort, the server
+                # has no page and answers session_invalid (-32011).
+                raise AssertionError(f"unexpected page.url response: {response}")
             nav_deadline = time.monotonic() + args.timeout_sec
             while time.monotonic() < nav_deadline:
                 if any(line.startswith("NAV\t") for line in stdout_lines):

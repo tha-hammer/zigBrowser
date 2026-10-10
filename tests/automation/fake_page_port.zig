@@ -30,6 +30,7 @@ pub const FakePagePort = struct {
     current_url: []const u8 = "about:blank",
     current_title: []const u8 = "",
     url_result: ?page_port.PortError = null,
+    last_read_timeout_ms: u64 = 0,
     /// When set, every eval advances this clock (simulates work taking time).
     clock: ?*FakeClock = null,
     eval_cost_ms: u64 = 0,
@@ -98,15 +99,15 @@ pub const FakePagePort = struct {
     }
 
     fn url(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
-        _ = timeout_ms;
         const self = from(ptr);
+        self.last_read_timeout_ms = timeout_ms;
         if (self.url_result) |err| return err;
         return gpa.dupe(u8, self.current_url);
     }
 
     fn title(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
-        _ = timeout_ms;
         const self = from(ptr);
+        self.last_read_timeout_ms = timeout_ms;
         return gpa.dupe(u8, self.current_title);
     }
 };

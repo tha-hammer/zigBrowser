@@ -1,8 +1,10 @@
 const std = @import("std");
-const automation = @import("automation.zig");
+pub const automation = @import("automation.zig");
 const automation_websocket = @import("automation_websocket.zig");
 
 const net = std.Io.net;
+const page_port = automation.page_port;
+const engine_mod = automation.engine;
 
 const max_frame_bytes = 64 * 1024;
 
@@ -10,6 +12,18 @@ pub const Config = struct {
     enabled: bool = false,
     socket_path: []const u8 = "",
     token: []const u8 = "",
+    /// Live page the engine drives. Without one, every command answers
+    /// session_invalid (-32011).
+    page_port: ?page_port.PagePort = null,
+};
+
+/// One accepted client. Each connection has its own thread and may carry any
+/// number of length-prefixed requests until the client closes it.
+const Connection = struct {
+    server: *AutomationApiServer,
+    stream: net.Stream,
+    thread: std.Thread = undefined,
+    done: std.atomic.Value(bool) = .{ .raw = false },
 };
 
 pub const AutomationApiServer = struct {
@@ -19,6 +33,10 @@ pub const AutomationApiServer = struct {
     listener: ?net.Server = null,
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = .{ .raw = false },
+    clock: engine_mod.IoClock,
+    engine: ?engine_mod.Engine = null,
+    connections_mutex: std.Io.Mutex = .init,
+    connections: std.ArrayListUnmanaged(*Connection) = .empty,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -28,16 +46,19 @@ pub const AutomationApiServer = struct {
         return .{
             .allocator = allocator,
             .io = io,
+            .clock = .{ .io = io },
             .config = .{
                 .enabled = config.enabled,
                 .socket_path = try allocator.dupe(u8, config.socket_path),
                 .token = try allocator.dupe(u8, config.token),
+                .page_port = config.page_port,
             },
         };
     }
 
     pub fn deinit(self: *AutomationApiServer) void {
         self.stop();
+        self.connections.deinit(self.allocator);
         self.allocator.free(self.config.socket_path);
         self.allocator.free(self.config.token);
         self.* = undefined;
@@ -47,6 +68,10 @@ pub const AutomationApiServer = struct {
         if (!self.config.enabled) return;
         if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
         if (self.listener != null) return;
+
+        // The engine keeps a pointer to `self.clock`, so it is built here,
+        // once the server has reached its final address.
+        if (self.config.page_port) |port| self.engine = engine_mod.Engine.init(port, self.clock.clock());
 
         try cleanupSocketPath(self.io, self.config.socket_path);
         const address = try net.UnixAddress.init(self.config.socket_path);
@@ -65,6 +90,8 @@ pub const AutomationApiServer = struct {
             self.thread = null;
         }
 
+        self.closeConnections();
+
         if (self.listener) |*listener| {
             listener.deinit(self.io);
             self.listener = null;
@@ -73,9 +100,43 @@ pub const AutomationApiServer = struct {
         if (had_listener) cleanupSocketPath(self.io, self.config.socket_path) catch {};
     }
 
+    /// Unblocks every connection thread (shutdown wakes a pending read) and
+    /// joins it. A thread busy in the engine finishes its current command
+    /// first; PagePort calls are bounded by their deadline or by the GTK loop
+    /// ending.
+    fn closeConnections(self: *AutomationApiServer) void {
+        self.connections_mutex.lockUncancelable(self.io);
+        const list = self.connections.toOwnedSlice(self.allocator) catch &.{};
+        self.connections_mutex.unlock(self.io);
+        defer self.allocator.free(list);
+
+        for (list) |connection| connection.stream.shutdown(self.io, .both) catch {};
+        for (list) |connection| self.destroyConnection(connection);
+    }
+
+    fn destroyConnection(self: *AutomationApiServer, connection: *Connection) void {
+        connection.thread.join();
+        connection.stream.close(self.io);
+        self.allocator.destroy(connection);
+    }
+
+    /// Joins connections whose client already hung up.
+    fn reapConnections(self: *AutomationApiServer) void {
+        self.connections_mutex.lockUncancelable(self.io);
+        defer self.connections_mutex.unlock(self.io);
+        var i: usize = 0;
+        while (i < self.connections.items.len) {
+            const connection = self.connections.items[i];
+            if (connection.done.load(.acquire)) {
+                _ = self.connections.swapRemove(i);
+                self.destroyConnection(connection);
+            } else i += 1;
+        }
+    }
+
     fn serveLoop(self: *AutomationApiServer) void {
         while (!self.stopping.load(.acquire)) {
-            var stream = self.listener.?.accept(self.io) catch |err| {
+            const stream = self.listener.?.accept(self.io) catch |err| {
                 if (self.stopping.load(.acquire)) break;
                 switch (err) {
                     error.SocketNotListening,
@@ -85,11 +146,35 @@ pub const AutomationApiServer = struct {
                     else => break,
                 }
             };
-            defer stream.close(self.io);
 
-            if (self.stopping.load(.acquire)) break;
-            self.handleStream(stream) catch {};
+            if (self.stopping.load(.acquire)) {
+                stream.close(self.io);
+                break;
+            }
+            self.reapConnections();
+            self.spawnConnection(stream) catch stream.close(self.io);
         }
+    }
+
+    fn spawnConnection(self: *AutomationApiServer, stream: net.Stream) !void {
+        const connection = try self.allocator.create(Connection);
+        errdefer self.allocator.destroy(connection);
+        connection.* = .{ .server = self, .stream = stream };
+
+        self.connections_mutex.lockUncancelable(self.io);
+        defer self.connections_mutex.unlock(self.io);
+        try self.connections.ensureUnusedCapacity(self.allocator, 1);
+        connection.thread = try std.Thread.spawn(.{}, connectionMain, .{connection});
+        self.connections.appendAssumeCapacity(connection);
+    }
+
+    fn connectionMain(connection: *Connection) void {
+        defer connection.done.store(true, .release);
+        const server = connection.server;
+        server.handleStream(connection.stream) catch {};
+        // Hang up now so the client sees EOF; the fd itself is closed when
+        // the connection is reaped or the server stops.
+        connection.stream.shutdown(server.io, .both) catch {};
     }
 
     fn handleStream(self: *AutomationApiServer, stream: net.Stream) !void {
@@ -105,75 +190,91 @@ pub const AutomationApiServer = struct {
             return;
         }
 
-        const payload_len = std.mem.readInt(u32, &header, .big);
-        if (payload_len > max_frame_bytes) {
-            const response = try jsonRpcError(std.heap.smp_allocator, "null", -32700, "Parse error");
+        while (!self.stopping.load(.acquire)) {
+            const payload_len = std.mem.readInt(u32, &header, .big);
+            if (payload_len > max_frame_bytes) {
+                const response = try jsonRpcError(std.heap.smp_allocator, "null", -32700, "Parse error", null);
+                defer std.heap.smp_allocator.free(response);
+                try writeFrame(&writer, response);
+                return;
+            }
+
+            const payload = try std.heap.smp_allocator.alloc(u8, payload_len);
+            defer std.heap.smp_allocator.free(payload);
+            reader.interface.readSliceAll(payload) catch return;
+
+            const engine: ?*engine_mod.Engine = if (self.engine) |*e| e else null;
+            const response = handleRequest(std.heap.smp_allocator, payload, self.config.token, engine) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+            };
             defer std.heap.smp_allocator.free(response);
             try writeFrame(&writer, response);
-            return;
+
+            reader.interface.readSliceAll(&header) catch return;
         }
-
-        const payload = try std.heap.smp_allocator.alloc(u8, payload_len);
-        defer std.heap.smp_allocator.free(payload);
-        reader.interface.readSliceAll(payload) catch return;
-
-        const response = handleRequest(std.heap.smp_allocator, payload, self.config.token) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => try jsonRpcError(std.heap.smp_allocator, "null", -32603, "Internal error"),
-        };
-        defer std.heap.smp_allocator.free(response);
-        try writeFrame(&writer, response);
     }
 };
 
-fn handleRequest(allocator: std.mem.Allocator, payload: []const u8, token: []const u8) ![]u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
-        return jsonRpcError(allocator, "null", -32700, "Parse error");
+fn handleRequest(allocator: std.mem.Allocator, payload: []const u8, token: []const u8, engine: ?*engine_mod.Engine) error{OutOfMemory}![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return jsonRpcError(allocator, "null", -32700, "Parse error", null),
     };
     defer parsed.deinit();
 
     const obj = switch (parsed.value) {
         .object => |object| object,
-        else => return jsonRpcError(allocator, "null", -32600, "Invalid Request"),
+        else => return jsonRpcError(allocator, "null", -32600, "Invalid Request", null),
     };
 
     const id_json = try idJson(allocator, obj.get("id"));
     defer allocator.free(id_json);
 
-    const jsonrpc = switch (obj.get("jsonrpc") orelse return jsonRpcError(allocator, id_json, -32600, "Invalid Request")) {
+    const jsonrpc = switch (obj.get("jsonrpc") orelse return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null)) {
         .string => |value| value,
-        else => return jsonRpcError(allocator, id_json, -32600, "Invalid Request"),
+        else => return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null),
     };
     if (!std.mem.eql(u8, jsonrpc, "2.0")) {
-        return jsonRpcError(allocator, id_json, -32600, "Invalid Request");
+        return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null);
     }
 
     if (token.len > 0 and !requestHasToken(obj, token)) {
-        return jsonRpcError(allocator, id_json, -32000, "Authentication failed");
+        return jsonRpcError(allocator, id_json, -32000, "Authentication failed", null);
     }
 
-    const method = switch (obj.get("method") orelse return jsonRpcError(allocator, id_json, -32600, "Invalid Request")) {
+    const method = switch (obj.get("method") orelse return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null)) {
         .string => |value| value,
-        else => return jsonRpcError(allocator, id_json, -32600, "Invalid Request"),
+        else => return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null),
     };
-    if (method.len == 0) return jsonRpcError(allocator, id_json, -32600, "Invalid Request");
+    if (method.len == 0) return jsonRpcError(allocator, id_json, -32600, "Invalid Request", null);
 
-    const params_json = try paramsJson(allocator, obj.get("params"));
+    const params_json = paramsJson(allocator, obj.get("params")) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidParams => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
     defer allocator.free(params_json);
 
     var command = automation.router.parse(allocator, method, params_json, .{}) catch |err| switch (err) {
-        error.UnknownCommand => return jsonRpcError(allocator, id_json, -32601, "Method not found"),
-        error.BadArgs => return jsonRpcError(allocator, id_json, -32602, "Invalid params"),
+        error.UnknownCommand => return jsonRpcError(allocator, id_json, -32601, "Method not found", null),
+        error.BadArgs => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
     };
     defer command.deinit();
 
-    const method_json = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(method, .{})});
-    defer allocator.free(method_json);
-    return std.fmt.allocPrint(
-        allocator,
-        "{{\"jsonrpc\":\"2.0\",\"result\":{{\"ok\":true,\"method\":{s}}},\"id\":{s}}}",
-        .{ method_json, id_json },
-    );
+    const active_engine = engine orelse {
+        const session_invalid = automation.errors.AutomationError.session_invalid;
+        return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(session_invalid), automation.errors.name(session_invalid), null);
+    };
+
+    var outcome = try active_engine.execute(allocator, &command);
+    defer outcome.deinit(allocator);
+    return switch (outcome) {
+        .result => |result_json| std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+            .{ result_json, id_json },
+        ),
+        .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
+    };
 }
 
 fn requestHasToken(obj: std.json.ObjectMap, token: []const u8) bool {
@@ -184,15 +285,15 @@ fn requestHasToken(obj: std.json.ObjectMap, token: []const u8) bool {
     };
 }
 
-fn paramsJson(allocator: std.mem.Allocator, maybe_params: ?std.json.Value) ![]u8 {
+fn paramsJson(allocator: std.mem.Allocator, maybe_params: ?std.json.Value) error{ OutOfMemory, InvalidParams }![]u8 {
     const params = maybe_params orelse return allocator.dupe(u8, "{}");
     return switch (params) {
-        .object => std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(params, .{})}),
+        .object => try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(params, .{})}),
         else => error.InvalidParams,
     };
 }
 
-fn idJson(allocator: std.mem.Allocator, maybe_id: ?std.json.Value) ![]u8 {
+fn idJson(allocator: std.mem.Allocator, maybe_id: ?std.json.Value) error{OutOfMemory}![]u8 {
     const id = maybe_id orelse return allocator.dupe(u8, "null");
     return switch (id) {
         .null,
@@ -209,9 +310,16 @@ fn jsonRpcError(
     id_json: []const u8,
     code: i64,
     message: []const u8,
-) ![]u8 {
+    /// Optional JSON object for `error.data`, inserted as-is.
+    data_json: ?[]const u8,
+) error{OutOfMemory}![]u8 {
     const message_json = try std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(message, .{})});
     defer allocator.free(message_json);
+    if (data_json) |data| return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{},\"message\":{s},\"data\":{s}}},\"id\":{s}}}",
+        .{ code, message_json, data, id_json },
+    );
     return std.fmt.allocPrint(
         allocator,
         "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{},\"message\":{s}}},\"id\":{s}}}",

@@ -493,3 +493,33 @@ test "waitFor script timeout maps to element_not_found, not a platform timeout" 
     defer outcome.deinit(gpa);
     try expectFailure(outcome, -32001, "element_not_found");
 }
+
+test "near-max timeout_ms is clamped below the JS/ABI limits without overflow" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true}}" }};
+
+    var outcome = try h.run("dom.waitFor", "{\"selector\":\"css=#x\",\"timeout_ms\":18446744073709551615}");
+    defer outcome.deinit(gpa);
+    const call = h.fake.eval_calls.items[0];
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(i32)), call.timeout_ms);
+    try std.testing.expect(call.timeout_ms <= std.math.maxInt(u32));
+    const expected_js = try std.fmt.allocPrint(gpa, "\"timeout_ms\":{d}", .{engine.max_timeout_ms});
+    defer gpa.free(expected_js);
+    try std.testing.expect(std.mem.indexOf(u8, call.arg, expected_js) != null);
+
+    var nav = try h.run("page.navigate", "{\"url\":\"http://x/\",\"timeout_ms\":18446744073709551615}");
+    defer nav.deinit(gpa);
+    try std.testing.expectEqual(engine.max_timeout_ms, h.fake.navigate_timeouts.items[0]);
+}
+
+test "url and title receive the command deadline" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+
+    var outcome = try h.run("page.title", "{}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(u64, 30000), h.fake.last_read_timeout_ms);
+}

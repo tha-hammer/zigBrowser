@@ -82,6 +82,11 @@ pub const Outcome = union(enum) {
 /// authoritative JS timeout settles before the native call gives up.
 pub const wait_for_native_grace_ms: u64 = 1000;
 
+/// Upper bound for any command deadline. JS timers overflow above 2^31-1 ms
+/// and the native ABI takes a 32-bit timeout, so larger values are clamped
+/// (leaving room for the waitFor grace).
+pub const max_timeout_ms: u64 = std.math.maxInt(i32) - wait_for_native_grace_ms;
+
 pub const Engine = struct {
     port: page_port.PagePort,
     clock: Clock,
@@ -94,7 +99,7 @@ pub const Engine = struct {
     pub fn execute(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
         const ids = self.nextIds(&ids_buf);
-        const timeout_ms = command.timeout_ms orelse default_timeout_ms;
+        const timeout_ms = @min(command.timeout_ms orelse default_timeout_ms, max_timeout_ms);
         return switch (command.verb) {
             .page_url => {
                 const value = self.port.url(gpa, timeout_ms) catch |err| return portFailure(gpa, err, .action, ids);
