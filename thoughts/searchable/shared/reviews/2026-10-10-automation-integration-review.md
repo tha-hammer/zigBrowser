@@ -65,8 +65,186 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `ab9bab3` — `dom.press` script/live E2E | Exact diff review; an isolated-XDG reviewer gate caught the expected red phase immediately before the JS landed; author reports final 60/60 steps, 398/398 tests | **BLOCKED pending follow-up**. | BLOCKER: printable insertion appends instead of replacing the caret/selection and treats all input types as text. SHOULD: focus must precede modifier keydowns; tests must assert exact keydown/keypress/keyup ordering, exact counts, suppression after cancelled keydown, and no Draft-style synthetic `input` after cancelled `beforeinput`. Mailed cc_1 before N3. |
 | `5046b78` — social IDs/root spans and strict params | Exact diff review; included in the later 62/62 reviewer gate | **PARTIAL**. | Closes error/root ID continuity, one root per routed social call, queued-cancellation lifecycle, and strict params. BLOCKER remains: `social.login_check` calls `PagePort.url` and `evalJson` directly, so both native operations omit required `automation.platform.eval` children. Mailed cc_2 before N5. |
 | In-progress cc_1 profile/press follow-up after `5046b78` | Exact diff review, then `xvfb-run -a zig build test --summary all` | **GREEN**: 62/62 steps, 413/413 tests; all five real-binary automation E2Es passed. | The shared E2E runner now supplies a unique temporary XDG data/cache root per test process, closing the real-profile contamination/parallel-sharing blocker. Press now focuses before modifiers, replaces selections, excludes non-text inputs, respects cancelled keydown/beforeinput, emits the contracted keypress sequence, and has exact live assertions. Awaiting owner commit. |
+| `8c275b5` / `a37fc35` — isolated E2E profiles and N2 press fixes | Exact diff review; included in the clean-export gate at `448c306` | **APPROVED** for the requested scope. | Every build-gated automation launcher gets a fresh XDG data/cache root. Press focus/event order, Enter keypress, cancellation, selection replacement, non-text inputs, and Draft-style cancelled `beforeinput` are covered. Known non-blocking limits: no Backspace/Delete editing default and no Enter newline default in textarea/contenteditable. |
+| `fa21e3b` / `955b032` / `448c306` — N3 `dom.selectOption` | Exact diff review; clean-export gate at `448c306` | **BLOCKED pending one native-select fix**. | Popup lookup is scoped, retries own all async waiting, no timer can click after timeout, disabled options/optgroups map to `element_disabled`, and the live socket covers value/label/index, ARIA, delayed render, and ghost-click prevention. BLOCKER: selecting a later native option by label/index when values are duplicated assigns `select.value`, which selects the first duplicate. SHOULD: an ARIA option is checked for visibility but not receives-events before direct synthetic dispatch. |
+| `a094020` — external-command PagePort child spans | Exact diff review; clean-export gate at `448c306` | **APPROVED**. | `social.login_check` uses instrumented `Engine.External.url/evalJson`; success emits exactly two correctly parented children and URL failure emits exactly one, with trace/command continuity and no username/script/result leak. This closes the last N6 blocker. |
+| `817f369` / `2fd84a2` — N5 cookie routes and follow-up | Exact diff review; author reports 64/64 steps and 431/431 tests for `2fd84a2`; reviewer clean-export gate predates it | **BLOCKED pending follow-up and native integration**. | Socket routing, value-free roots, one EV17 child, C-boundary control rejection, prevalidation, byte/count caps, partial-failure data, and basic adapter-result validation are present. BLOCKERS: malformed JSON/Netscape flags can silently downgrade secure/httpOnly/session/sameSite; 5,000 independent 10-second native budgets permit nearly 14 hours of work; EV17 omits required page/backend dimensions. Production GTK CookiePort and live profile round-trip remain open. |
+| Clean export of `448c306` | `task_export_dir=$(mktemp -d); git archive HEAD \| tar -x -C "$task_export_dir"; cd "$task_export_dir"; timeout 900 xvfb-run -a zig build test --summary all` | **GREEN**: 64/64 steps, 426/426 tests. | All five live automation E2Es passed. The expected Windows/runtime probe printed its DISPLAY skip while the overall build step succeeded. This result does not claim coverage for the later `2fd84a2`. |
+| Automation socket security pass at `448c306` | Source-level lifecycle/auth audit against the Phase 2/3 transport contract | **BLOCKED**. | Socket mode is inherited from umask and is not forced to 0600; default token is empty and therefore disables authentication while exposing `page.evaluate`; token comparison uses timing-dependent `std.mem.eql`; WebSocket upgrade bypasses the JSON auth gate. Mailed cc_2, cc'ing cc_1 for app-level token coordination. |
+| `de0c800` — Python SDK wrapper alignment and auth | Exact diff review; author reports 64/64 steps and 431/431 tests | **BLOCKED**. | Top-level auth serialization matches the current server. BLOCKER: the new mock-only “server alignment” table claims `linkedin.follow` is accepted, but the production server routes only cookies.*, social.*, and the core router, whose method table has no linkedin.*; a live call returns -32601. The canned OK server cannot prove production conformance. Mailed cc_2 with an explicit stop-before-N9b request. |
+| `3ecfc25` — Node typed wrappers and auth | Exact diff review; author reports 38 Vitest cases and a green Zig gate | **APPROVED for wire serialization; production conformance remains open**. | All 24 serialized request shapes match the current cookies/social/core router contracts. SHOULD: the suite uses a canned mock and cannot prove the server accepts those requests or returns the declared types; only title has a result-shape assertion. Mailed cc_2 and directed work back to the open N5/security blockers. |
+| `fefa281` / `e998714` — strict cookie import, bounded/cancellable batch | Exact diff review; author reports a green gate | **PARTIAL; two persistence blockers remain**. | Strict Netscape field count/booleans/expiry and malformed JSON scalar types are handled; one 30-second set budget, between-entry cancellation, full child dimensions, and non-vacuous partial-count coverage are present. BLOCKER: `session:false` plus `expires:-1`, or conflicting `expirationDate`/`expires`, can still downgrade a persistent cookie to session. BLOCKER: accepted expiry range exceeds GLib's representable range. SHOULD: the stated whole-import deadline begins after read/parse. |
+| `4a56ad2` — automation socket hardening | Exact diff review | **PARTIAL**. | Closes forced socket mode 0600, fixed-digest timing-safe token comparison, and configured-token WebSocket auth. Default launch still supplies an empty token, so JSON-RPC and WebSocket dispatch remain unauthenticated; default socket entropy is still only the PID. Generated-token and CSPRNG-path integration remain blocking. |
+| `e72b2df` / `279d60c` — GTK cookie bridge and real-binary E2E | Exact diff review; author reports 65/65 steps and 441/441 tests | **BLOCKED pending native lifecycle/range fixes and stronger E2E assertions**. | C inputs/results have clear copied ownership and error strings omit values. BLOCKER: cookie async jobs are not in the tracked set cancelled/released on window/loop teardown. BLOCKER: `g_date_time_new_from_unix_utc` NULL is unchecked for out-of-range expiry. The real socket/profile E2E proves set, HttpOnly, delete, import, and restart persistence, but not exact object-bound secure/expiry round-trip; its output-redaction snapshot races shutdown. |
+| `c1c0695` — exact native selection and ARIA actionability | Exact diff review | **APPROVED**. | Selecting by label/index now selects the resolved option even when values repeat; the live socket checks exact `selectedIndex`. ARIA options now pass the click actionability/receives-events checks, with a covered-option no-click regression. Closes the final N3 blocker and SHOULD. |
+| `bb5f20c` — shared SDK/server conformance fixture | Exact diff review | **APPROVED for the reported supported-method scope**. | Python and Node emit one shared set of 27 wire cases, and a real AF_UNIX `AutomationApiServer` test proves those cases route without envelope/method/param rejection. Unsupported linkedin/instagram namespaces are explicitly documented and excluded; adding `linkedin.follow` to the aligned set fails -32601. Closes the misleading Python alignment blocker and Node mock-only SHOULD without claiming unsupported routes exist. |
+| `4377674` — CSPRNG socket name and object-bound native cookie assertions | Exact diff review | **APPROVED for the stated slice**. | Default socket names now use 64 bits from OS secure randomness. The in-process GTK seam parses each returned cookie and proves exact persistent/session expiry, HttpOnly, Secure, SameSite, domain/path/value, and URL scope on the same object. Watchdog spawn failure is cleaned up. Default auth, native expiry defense, async cookie teardown, and the real-binary output-snapshot race remain separate findings. |
+| `c99d4fb` — cookie contradiction/range/deadline follow-up | Exact diff review | **BLOCKED pending three follow-ups**. | Correctly rejects dual expiry fields and most session contradictions, caps every numeric import/set format at GLib year 9999, and checks cancellation before read and after parse. BLOCKER: `session:true` with a positive `expires` field is still silently weakened. BLOCKER: synchronous path reading can block forever on a FIFO/device despite the nominal deadline. BLOCKER: Netscape include-subdomains is parsed then discarded, so `FALSE` with a dotted domain can widen scope. |
+| `99fdf20` — server token sidecar | Exact diff review | **PARTIAL; app integration and one failure cleanup remain**. | The server publishes an exclusively created mode-0600 token before listen, refuses a blank sidecar token, replaces rather than follows a pre-planted symlink, removes the sidecar on normal stop and later startup failures, and documents the same-UID trust boundary. BLOCKER: the cleanup `errdefer` is registered only after `writeTokenFile` succeeds, so create-then-write/flush failure can leave a partial sidecar. Production app generation/client auth and missing/wrong live dispatch proof remain open. |
+| `9f2e995` — SDK sidecar discovery and CLI trace hint | Exact diff review | **BLOCKED pending reconnect fix**. | Python sync/async and Node read `<socket>.token` when no explicit token is supplied, and the CLI inherits it; the corrected `zigbrowser-cli trace` hint is approved. BLOCKER: the discovered token is cached indistinguishably from an explicit token, so reconnecting the same client after a browser restart continues sending the prior session's token instead of rereading the rotated sidecar. |
+| `5f7381c` — SDK token rotation on reconnect | Exact diff review | **APPROVED**. | Python sync/async and Node distinguish explicit credentials from discovered credentials, reread on every connect, and clear a prior discovered token if the sidecar disappears. Same-object rotate/reconnect coverage exists for all three clients. Closes the `9f2e995` blocker. |
+| `20340b9` — WebSocket auth casing and init OOM cleanup | Exact diff review | **APPROVED for its stated fixes**. | Header field names and the Bearer scheme are ASCII-case-insensitive while token bytes remain exact; allocation-failure enumeration proves all successful config dupes are released. The separate create-then-write sidecar cleanup blocker remains open. |
+| `64fc8e2` — N7 native GDK seam | Exact diff review; author reports 65/65 steps, 451/451 tests | **BLOCKED; isolated seam only**. | Basic native click/key/text reach the page as trusted events and copied string/job ownership is sound. BLOCKERS: a whole native text runs as an unbounded synchronous GTK job; the ack counters accept spoofable untrusted events; tests call the C exports directly rather than the socket production chain; and no Draft-style cancelled-beforeinput contenteditable is covered. Exact function-key parsing and non-ASCII behavior are SHOULDs. Mailed both owners; PagePort/router integration is parked. |
+| Clean export of `64fc8e2` (also covers `20340b9` and `5f7381c`) | `review_export_dir=$(mktemp -d); git archive HEAD \| tar -x -C "$review_export_dir"; cd "$review_export_dir"; timeout 900 xvfb-run -a zig build test --summary all` | **GREEN**: 65/65 steps, 452/452 tests. | All real-binary automation E2Es passed, including the exact `dom.selectOption` ghost case on this run. The expected Windows/runtime DISPLAY probe printed its skip while the overall build step succeeded. |
+| `2579d7c` — `telemetry.query` and bounded recent-trace store | Exact diff review; author reports 65/65 steps, 456/456 tests | **BLOCKED**. | Auth/envelope placement, redacted sink-boundary storage, bounded trace eviction, configured-sink fanout, and strict params are present. BLOCKER: child spans are emitted before the root, but a full 64-span trace drops every later span before considering `is_root`; a retry-heavy trace therefore loses its root/outcome instead of remaining a root-first tree. Mailed cc_2 with a 64-children-then-root regression requirement. |
+| `2891c69` — tracked/drained native cookie jobs and expiry defense | Exact diff review; author reports 65/65 steps, 456/456 tests | **CODE PARTIAL; evidence BLOCKED**. | Cookie jobs now participate in window tracking/cancellation, callback refs are counted, callbacks untrack exactly once, and expiry outside GLib's range or a NULL `GDateTime` is rejected without a value leak. BLOCKER: the 30-call “timeout” regression discards every status and can pass if every call completes normally; no known cookie callback is held across loop end, and the one-second drain silently tolerates exhaustion. Require deterministic abandoned-cookie and loop-end proofs. |
+| `c4b763c` — Python/Node SDK live binary tests | Exact diff review; author reports a green 66-step gate and manual Node live run | **PARTIAL**. | Python is build-gated and proves the SDK over the real socket/router/engine/page chain, including typed error and trace lookup. BLOCKER: Node cleanup attaches its exit listener after an unconditional kill; if the child already exited, the promise never resolves. SHOULD: Node live coverage is optional and not CI/build-gated. N9 also remains blocked by `2579d7c`. |
+| `e63549e` — real-binary cookie object assertions and output drain | Exact diff review | **APPROVED**. | Exact expiry, HttpOnly, Secure, session/persistent behavior are bound to named objects over the real socket and restart. Output redaction is checked only after both browser processes exit and both stdout/stderr readers reach EOF. Closes the native-cookie round-trip and output-snapshot findings. |
+| Clean export of `e63549e` (covers `2579d7c` through `e63549e`) | `review_export_dir=$(mktemp -d); git archive HEAD \| tar -x -C "$review_export_dir"; cd "$review_export_dir"; timeout 900 xvfb-run -a zig build test --summary all` | **GREEN**: 66/66 steps, 456/456 tests. | All real-binary E2Es passed, including Python SDK, cookies, startup readiness, and exact `dom.selectOption`. This does not close the source/test-review blockers recorded above. |
+| `1489aab` — authenticated-by-default app integration | Exact diff review; author reports 66/66 steps, 457/457 tests | **APPROVED**. | Default launch uses a 256-bit OS-random per-session token and a mode-0600 sidecar; explicit blank files fail closed. Every real E2E client authenticates, missing/wrong `page.evaluate` cannot dispatch, and normal shutdown removes the sidecar. Same-UID readers are explicitly the trust boundary. Overall security closure still awaits the server's create-then-write failure cleanup. |
+| `611a95d` — strict cookie import scope and special-file refusal | Exact diff review; author reports 66/66 steps, 460/460 tests | **APPROVED**. | Nonblocking open plus an opened-descriptor regular-file check rejects FIFO/device/directory without TOCTOU or a blocking open; the 4 MiB bound remains. `session:true` rejects both persistent-expiry spellings, and Netscape subdomain flags must agree with the leading dot. Closes the three remaining Zig cookie-route blockers. |
+| `a10fdc4` — readiness E2E budget under gate load | Exact diff review; included in author's 66-step gate | **APPROVED**. | Raising the RPC budget from 3 s to 5 s leaves it above the 2 s delayed-load fixture plus loaded startup while preserving the property that readiness consumes the command budget rather than the 1 s native grace. |
+| `9bce6b5` — sidecar failure cleanup, late trace root, Node teardown | Exact diff review; author reports a green gate and Node live 1/1 | **APPROVED**. | Post-create sidecar failures unlink the partial file and a fault-injection test proves neither sidecar nor socket remains. A full recent trace evicts one child for its late root. Node observes exit before signaling and bounds both shutdown stages. Closes the security, trace-store, and Node-hang blockers. NIT: the unused race timer remains referenced for 8 s after a fast Node shutdown. |
+| `5f0fcf9` — N10 automation guide and coverage guard | Exact diff review; author reports 66/66 steps, 463/463 tests on rerun | **PARTIAL; SHOULD corrections mailed**. | The guide covers the socket/auth trust boundary, method and error reference, profiles, cookies, SDKs, contenteditable, synthetic input, and telemetry; the guard prevents methods and codes from disappearing entirely. Corrections required: explain explicit-token setup and the CLI limitation; distinguish contenteditable `fill`'s one replacement event from `type`'s per-character key sequence; and qualify blanket deadline/retry/readiness statements for external methods, `dom.query`, navigation, and cookies. The guard is substring-only and cannot prove those semantics. |
+| `6d1de0e` — deterministic off-viewport `selectOption` | Exact diff review; author reports 5/5 standalone, Playwright 34/34, and a green full gate | **APPROVED**. | The E2E proves the ghost combobox begins outside the viewport and still requires exact `-32001/no_option`; unexpected errors now include full data. Scrolling the control before its receives-events hit test fixes the root cause without broadening the accepted error set. |
+| `845146f` — deterministic loop-end result and live-eval deflake | Raw failing backtrace, exact diff/refcount review; author reports 25/25 stress passes and 66/66 steps, 463/463 tests | **CORE FIX APPROVED; cleanup SHOULD open**. | The observed `expected 5, found 3` is the pending eval returning JS instead of NO_LOOP. The nearby DISPLAY diagnostic belongs to the preceding intentional GTK-init-failure test, not the live test. Retaining the never-settling Promise resolver and completing tracked jobs with NO_LOOP before WebKit process teardown address the two actual races without double completion/ref release. SHOULD: make DISPLAY/stderr restoration and partial `pipe`/`dup` failure cleanup exception-safe. |
+| `0a3643d` / `366344b` — deterministic cookie timeout and loop-end teardown | Exact state/refcount review; clean-export gate at `366344b` | **APPROVED**. | The delay-hit handshake proves the timeout case entered RUNNING rather than expiring while queued. A held cookie timer/callback ref is outstanding when the GTK loop ends; the waiter must receive `NO_LOOP`, the timer source and async ref are released once on GTK, and final live-job count is zero. This closes the cookie teardown evidence blocker. |
+| `1a29268` — N10 documentation corrections | Exact diff review | **PARTIAL; SHOULD open**. | Explicit-token setup, the CLI limitation, contenteditable fill/type differences, query immediacy, and readiness exceptions are documented. The timeout section still incorrectly applies to every command and `2be72b7` obscures the valid `timeout_ms:0` one-attempt contract: page calls receive only a 1 ms native budget, but the engine still performs one attempt. |
+| `87aba0d` — deadline-bounded native text | Exact diff and ownership review; included in clean-export gate at `366344b` | **APPROVED for this N7 blocker**. | Text is split into bounded synchronous per-code-point jobs using the remaining deadline, reports the actual release prefix, and cannot trap the GTK thread for an unbounded whole string. N7 remains open for trusted acknowledgement, production PagePort/socket routing, Draft-style native behavior, and exact key parsing. |
+| `106a539` — action scrolling for click/fill/type | Exact diff review; live E2E included in clean-export gate at `366344b` | **APPROVED**. | Non-force actions scroll before visibility/receives-events checks, while force semantics remain unchanged. Live click/fill below the fold are non-vacuous. NIT: add an explicit below-fold type assertion when touching the fixture next. |
+| `ddb80b7` / `880b19b` / `2be72b7` — N11 X routing, flows, and live E2E | Exact source/test diff review; clean-export gate at `366344b` | **BLOCKED**. | The page queue is held for the whole flow; nested steps use the same root IDs, sink, and cancellation; strict params, pacing, stale-draft replacement, schedule conversion, and the real socket chain are present. BLOCKER: a successful-but-malformed nested result can leave `failure == null` and panic in `Runner.takeFailure`. BLOCKER: Post selection treats a positive bbox as actionability and can choose a hidden/obscured or wrong duplicate. BLOCKER: the queue E2E can be vacuous and compares client response timestamps even though the queue ticket is released before the first response is written. SHOULD: assert the Draft fixture's cancelled-beforeinput event record, remove the fixture-only public `compose_url`, and define a whole-flow deadline. |
+| `8cfd802` — target-specific child-window readiness | Exact concurrency/lifetime review; included in clean-export gate at `366344b` | **CODE APPROVED; regression evidence BLOCKED**. | The mutex-protected snapshot carries readiness per live window, off-thread code only compares opaque pointers, explicit stale targets return `NO_WINDOW`, and GTK still revalidates before use. The local-file child can finish loading before the test issues its eval, so the test does not prove an operation submitted while the child is unready waits for that child's load. |
+| Clean export of `366344b` | `D=$(mktemp -d); git archive HEAD \| tar -x -C "$D"; cd "$D"; timeout 900 xvfb-run -a zig build test --summary all` | **GREEN**: 71/71 steps, 486/486 tests. | All real-binary E2Es passed, including cookies, profile/readiness, SDK, input, and X flows. A green gate does not close the source/test-proof blockers above. |
 
 ## Open findings
+
+### BLOCKER — trusted native input is not proven end to end
+
+`64fc8e2` adds useful isolated C seams. Its isolated-world acknowledgement
+counters still count untrusted synthetic events, allowing page code to make a
+later native step proceed before the prior trusted event arrives. The tests
+call `zb_native_*` directly and cover only a plain input, not the socket chain
+or a Draft-style contenteditable that cancels `beforeinput`.
+
+Status: **OPEN (cc_1 / BlackRobin and cc_2 / BlueBeaver)**. Commit `87aba0d`
+closes the unbounded-text subfinding by dispatching one character at a time
+with the remaining deadline. Count only trusted acknowledgements, then prove
+socket-to-page click/type/press plus cancelled contenteditable behavior and
+exact supported/unsupported key parsing before calling N7 green. Mailed
+2026-10-10; cookie-related STOP lifted after `366344b`.
+
+### BLOCKER — capped recent traces can discard their root span
+
+`2579d7c` records child spans during command execution and records the root at
+completion. `RecentTraceStore.add` drops any incoming span when the trace has
+already reached 64 entries before it checks `is_root`; therefore a command with
+64 retry children has no root, command status, or duration in
+`telemetry.query`, contradicting the root-first tree contract.
+
+Status: **CLOSED by `9bce6b5`**. A late root at the cap evicts the newest child,
+is inserted at index zero, and leaves the total at 64; 70 children followed by
+a root cover the regression.
+
+### BLOCKER — SDK alignment tests bypass the production router
+
+The Python N9 table in `de0c800` feeds canned success responses and asserts only
+the request bytes written by the SDK. It nevertheless claims every row is
+accepted by the production server and includes `linkedin.follow`, which is not
+routed by `AutomationApiServer` or `automation.router` and therefore returns
+`-32601` on the real socket.
+
+Status: **CLOSED by `bb5f20c`**. Unsupported linkedin/instagram namespaces are
+explicitly documented as returning `-32601` and are not called server-aligned.
+The shared supported-method fixture is consumed by both SDK tests and sent over
+a real AF_UNIX connection to `AutomationApiServer`, where method/param/envelope
+rejections fail the test.
+
+### BLOCKER — automation socket authentication and permissions are not secure by default
+
+`4a56ad2` forces the socket to mode 0600, compares fixed SHA-256 digests with
+`timing_safe.eql`, and applies Bearer authentication to a configured-token
+WebSocket upgrade. However, `automationToken()` still returns an empty token
+when no token file is supplied, and both JSON-RPC and WebSocket interpret that
+as “skip auth,” so default `page.evaluate` remains unauthenticated. Commit
+`4377674` closes the predictable-PID path by drawing a 64-bit socket nonce from
+OS secure randomness.
+
+Status: **CLOSED by `1489aab` and `9bce6b5`**, building on `4a56ad2` and
+`4377674`. Default product launch always authenticates; socket and sidecar are
+0600, the path is unpredictable, comparisons are timing-safe, JSON-RPC and
+WebSocket enforce the configured token, missing/wrong live `page.evaluate`
+does not dispatch, and every tested normal/failure path removes the sidecar.
+`AutomationApiServer.Config{ .token = "", .token_file_path = "" }` still
+provides an explicit internal/test opt-out; it is not reachable from the
+`--automation-api` app path and must not be exposed as a user-facing default.
+Same-UID processes that can read the sidecar remain intentionally trusted.
+
+### BLOCKER — cookie persistence can still be weakened or exceed the native range
+
+`fefa281` closes the original malformed scalar-flag downgrade, total-set budget,
+and EV17 dimension gaps; `e998714` adds cancellation; `c99d4fb` rejects dual
+expiry fields, `session:false` without a persistent expiry, and values beyond
+GLib year 9999. Three route/import issues remain. The agreement check only
+rejects `session:true` with `expirationDate`, not with a positive `expires`, so
+that case is silently weakened to session. The synchronous file read can block
+forever on a FIFO/device despite starting the clock first. Netscape's
+include-subdomains column is parsed and discarded, allowing `FALSE` plus a
+dotted domain to widen scope.
+
+Status: **CLOSED by `611a95d`, `2891c69`, and `e63549e`**. The route now rejects
+the remaining session contradiction and Netscape scope mismatch and refuses
+non-regular opened handles without a blocking FIFO open. Native range/NULL
+validation, exact real-socket object round trip, and shutdown-safe output
+redaction are also covered. The separate non-vacuous async-teardown evidence
+finding below remains open.
+
+### BLOCKER — GTK cookie jobs need deterministic async teardown
+
+Cookie get/add/delete are async WebKit operations, but `auto_start_cookies()`
+does not add them to `zb_auto_inflight`. Window destruction therefore cancels
+and releases eval/load jobs but not cookie jobs. If loop end moves a running
+cookie job to ABANDONED, the follow-up GTK abandonment source is rejected
+because the loop has already ended, leaving the callback-held ref dependent on
+a main context that may no longer iterate.
+
+Status: **CLOSED by `366344b`**, building on `2891c69` and `0a3643d`. A hit
+counter proves the short-deadline cookie operation entered RUNNING before it
+returned TIMEOUT. A separate 60-second held cookie timer is outstanding when
+the loop quits; its waiter receives `NO_LOOP`, loop-end removes the source and
+releases its async ref on GTK, and the test ends with zero live jobs.
+
+### BLOCKER — X flow error handling and Post selection must be total
+
+`ddb80b7` force-unwraps `Runner.failure` whenever a flow returns null. A
+successful nested `dom.query` result that is malformed makes `countMatches` or
+`hasVisibleElement` return null while leaving only `last_result`, so an
+untrusted page result can panic the server process instead of producing
+`-32603`. In addition, `880b19b` treats any positive bounding box as a visible
+Post button and later clicks a non-strict selector. `visibility:hidden`, zero
+opacity, an overlay, or the first of multiple same-testid elements can make it
+choose a target that the click can never act on while a later target is valid.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Make malformed successes map to a stable
+internal failure and select a concrete Post element through the same
+visibility/receives-events trial semantics used by the eventual click. Cover
+malformed results, hidden/obscured nodes, and duplicate same-testid nodes.
+Mailed 2026-10-10 before later N11 work.
+
+### BLOCKER — X queue E2E does not prove one-turn execution
+
+`2be72b7` delays a second client by 150 ms and compares the two clients'
+response receipt times. The fixture has no deliberate mid-flow hold, so the
+second request can start only after the X flow already finished and the test
+still passes. Conversely, `handleX` releases the queue ticket before
+`handleStream` writes the first response, so a correctly queued second request
+can reach its client before the first client records its response and make the
+test fail.
+
+Status: **OPEN (cc_2 / BlueBeaver)**. Add a deterministic fixture/server
+handshake that holds the X flow between two page steps and assert the racing
+page command cannot observe or mutate that intermediate state. Do not use
+cross-connection response timestamps as the serialization oracle. Mailed
+2026-10-10.
+
+### BLOCKER — native select by label/index mishandles duplicate values
+
+`selectNative()` resolves the correct option, then assigns `select.value` for a
+single select. If multiple options share that value, this selects the first one
+instead of the option found by label or index while still returning success.
+
+Status: **CLOSED by `c1c0695`**. The resolved option object is selected directly,
+duplicate values are covered by label and two indexes in the live socket E2E,
+and ARIA options now also pass click actionability before dispatch.
 
 ### BLOCKER — GTK dispatch must never run inline on the server thread
 
@@ -426,6 +604,13 @@ for the resolved target before declaring the second-priority M9/window path
 complete.
 
 Owner: cc_1 / BlackRobin. Mailed 2026-10-10.
+
+Status: **CODE CLOSED by `8cfd802`; regression evidence OPEN (cc_1 /
+BlackRobin)**. The production waiter now selects the explicit live window in a
+mutex-protected snapshot and waits for that window's first-load flag. The live
+test opens a fast local `file:` child and does not prove the child is still
+unready when the eval is submitted; use a deterministically delayed child and
+a pre-load handshake before closing the evidence gap.
 
 ### SHOULD — preserve accepted `dom.type.delay_ms`
 
