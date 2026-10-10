@@ -7,6 +7,7 @@ const page_port = automation.page_port;
 const engine_mod = automation.engine;
 const queue_mod = automation.queue;
 const social_routes = automation.social_routes;
+const cookie_routes = automation.cookie_routes;
 
 /// The automation API drives the primary window's page.
 pub const primary_route = automation.router.RouteContext{ .page_id = "page-1", .window_id = "window-1" };
@@ -23,6 +24,9 @@ pub const Config = struct {
     /// Receives one root `automation.command` span (plus child spans) per
     /// command. Optional; must be thread-safe.
     telemetry_sink: ?automation.telemetry.TelemetrySink = null,
+    /// Browser cookie store for cookies.*. Without one they answer
+    /// session_invalid (-32011).
+    cookie_port: ?automation.cookie_port.CookiePort = null,
     /// Backend/version dimensions stamped on every span.
     build_info: automation.telemetry.BuildInfo = .{},
 };
@@ -69,6 +73,7 @@ pub const AutomationApiServer = struct {
                 .page_port = config.page_port,
                 .telemetry_sink = config.telemetry_sink,
                 .build_info = config.build_info,
+                .cookie_port = config.cookie_port,
             },
         };
     }
@@ -248,7 +253,7 @@ pub const AutomationApiServer = struct {
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
         route.telemetry_sink = self.config.telemetry_sink;
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info);
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port });
     }
 };
 
@@ -261,6 +266,7 @@ fn handleRequestWith(
     social: *social_routes.SocialState,
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
+    cookies: CookieContext,
 ) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -300,6 +306,9 @@ fn handleRequestWith(
     };
     defer allocator.free(params_json);
 
+    if (cookie_routes.verbFromMethod(method)) |verb| {
+        return handleCookies(allocator, id_json, method, verb, params_json, engine, cookies, route, build_info);
+    }
     if (social_routes.verbFromMethod(method)) |verb| {
         return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
     }
@@ -327,6 +336,49 @@ fn handleRequestWith(
         .route = route,
         .build = build_info,
     });
+    defer outcome.deinit(allocator);
+    return switch (outcome) {
+        .result => |result_json| std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+            .{ result_json, id_json },
+        ),
+        .failure => |failure| jsonRpcError(allocator, id_json, failure.code, failure.message, failure.data_json),
+    };
+}
+
+const CookieContext = struct {
+    io: std.Io,
+    port: ?automation.cookie_port.CookiePort,
+};
+
+/// cookies.* do not touch the page DOM, so they skip the page queue; they
+/// still get ids and one root span via executeExternal.
+fn handleCookies(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    method: []const u8,
+    verb: cookie_routes.Verb,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    cookies: CookieContext,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    const CookieCall = struct {
+        cookies: CookieContext,
+        verb: cookie_routes.Verb,
+        params_json: []const u8,
+
+        fn run(self: @This(), gpa: std.mem.Allocator, ids: automation.script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+            return cookie_routes.handle(gpa, self.cookies.io, self.cookies.port, self.verb, self.params_json, ids);
+        }
+    };
+    var outcome = try engine.executeExternal(allocator, method, "cookies", .{ .route = route, .build = build_info }, CookieCall{
+        .cookies = cookies,
+        .verb = verb,
+        .params_json = params_json,
+    }, CookieCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

@@ -1,6 +1,7 @@
 const std = @import("std");
 const automation_server = @import("automation_server");
 const page_port = automation_server.automation.page_port;
+const cookie_port = automation_server.automation.cookie_port;
 
 const net = std.Io.net;
 const testing = std.testing;
@@ -432,11 +433,91 @@ test "social.* failures carry ids and every social call records one root span" {
     try testing.expect(saw_login_trace);
 }
 
+test "cookies.* are routed through the CookiePort with ids, one root span each, values never in telemetry" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var store = MemoryCookieStore{};
+    defer store.deinit();
+    var fixture = try Fixture.start("cookies", .{ .sink = &sink, .cookies = &store });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const set = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.set\",\"params\":{\"name\":\"sid\",\"value\":\"s3cr3t-cookie\",\"domain\":\"example.com\"},\"id\":1}");
+    defer testing.allocator.free(set);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", set);
+
+    const all = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.getAll\",\"id\":2}");
+    defer testing.allocator.free(all);
+    try testing.expect(std.mem.indexOf(u8, all, "\"result\":{\"cookies\":[{\"name\":\"sid\",\"value\":\"s3cr3t-cookie\"") != null);
+
+    const del = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.delete\",\"params\":{\"name\":\"sid\"},\"id\":3}");
+    defer testing.allocator.free(del);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":3}", del);
+
+    const empty = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.getAll\",\"id\":4}");
+    defer testing.allocator.free(empty);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"cookies\":[]},\"id\":4}", empty);
+    fixture.server.stop();
+
+    var roots: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        roots += 1;
+        try testing.expectEqualStrings("cookies", span.attr("rpc.namespace").?);
+    }
+    try testing.expectEqual(@as(usize, 4), roots);
+    try testing.expect(!sink.containsRaw("s3cr3t-cookie"));
+}
+
+test "cookies.* without a cookie store is session_invalid with ids" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("nocookies", .{});
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.getAll\",\"id\":1}");
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "\"code\":-32011") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "\"trace_id\"") != null);
+}
+
+/// In-memory CookiePort: one cookie slot is enough for the socket test.
+const MemoryCookieStore = struct {
+    cookie_json: ?[]u8 = null,
+
+    fn deinit(self: *MemoryCookieStore) void {
+        if (self.cookie_json) |c| testing.allocator.free(c);
+    }
+
+    fn port(self: *MemoryCookieStore) cookie_port.CookiePort {
+        return .{ .ptr = self, .vtable = &.{ .getAll = getAll, .set = set, .delete = delete } };
+    }
+
+    fn getAll(ptr: *anyopaque, gpa: std.mem.Allocator, _: ?[]const u8, _: u64) cookie_port.PortError![]u8 {
+        const self: *MemoryCookieStore = @ptrCast(@alignCast(ptr));
+        const c = self.cookie_json orelse return gpa.dupe(u8, "[]");
+        return std.fmt.allocPrint(gpa, "[{s}]", .{c}) catch error.OutOfMemory;
+    }
+    fn set(ptr: *anyopaque, cookie_json: []const u8, _: u64) cookie_port.PortError!void {
+        const self: *MemoryCookieStore = @ptrCast(@alignCast(ptr));
+        self.deinit();
+        self.cookie_json = testing.allocator.dupe(u8, cookie_json) catch return error.OutOfMemory;
+    }
+    fn delete(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: u64) cookie_port.PortError!void {
+        const self: *MemoryCookieStore = @ptrCast(@alignCast(ptr));
+        self.deinit();
+        self.cookie_json = null;
+    }
+};
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
     eval_delay_ms: u64 = 0,
     sink: ?*automation_server.automation.telemetry.InMemoryTelemetrySink = null,
+    cookies: ?*MemoryCookieStore = null,
 };
 
 const Fixture = struct {
@@ -460,6 +541,7 @@ const Fixture = struct {
             .token = "",
             .page_port = if (options.with_port) self.fake.port() else null,
             .telemetry_sink = if (options.sink) |sink| sink.sink() else null,
+            .cookie_port = if (options.cookies) |store| store.port() else null,
         });
         try self.server.start();
         return self;
