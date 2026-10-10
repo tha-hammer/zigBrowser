@@ -1,5 +1,6 @@
 import net from "node:net";
 import { AutomationError } from "./errors.js";
+import { CookiesNamespace, DomNamespace, PageNamespace, SocialNamespace } from "./methods.js";
 
 type EventCallback = (params: Record<string, unknown>) => void;
 
@@ -11,9 +12,22 @@ export class ZigBrowser {
   private pendingReject: ((reason: Error) => void) | null = null;
   private buffer = Buffer.alloc(0);
   private eventListeners = new Map<string, EventCallback[]>();
+  private token: string | undefined;
 
-  constructor(opts: { socketPath: string }) {
+  readonly dom: DomNamespace;
+  readonly page: PageNamespace;
+  readonly cookies: CookiesNamespace;
+  readonly social: SocialNamespace;
+
+  /** `token`: sent as `auth` on every request (--automation-token-file). */
+  constructor(opts: { socketPath: string; token?: string }) {
     this.socketPath = opts.socketPath;
+    this.token = opts.token;
+    const call = (method: string, params?: Record<string, unknown>) => this.call(method, params);
+    this.dom = new DomNamespace(call);
+    this.page = new PageNamespace(call);
+    this.cookies = new CookiesNamespace(call);
+    this.social = new SocialNamespace(call);
   }
 
   async connect(): Promise<void> {
@@ -52,7 +66,8 @@ export class ZigBrowser {
     if (!this.socket) throw new Error("Not connected");
 
     const id = ++this.idCounter;
-    const request = { jsonrpc: "2.0", method, params: params ?? {}, id };
+    const request: Record<string, unknown> = { jsonrpc: "2.0", method, params: params ?? {}, id };
+    if (this.token) request.auth = this.token;
     const data = Buffer.from(JSON.stringify(request), "utf-8");
     const header = Buffer.alloc(4);
     header.writeUInt32BE(data.length);
