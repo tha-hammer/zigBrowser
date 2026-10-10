@@ -10,11 +10,16 @@ from collections.abc import Callable
 from zigbrowser.errors import AutomationError
 
 
+def _drop_none(**params) -> dict:
+    return {k: v for k, v in params.items() if v is not None}
+
+
 class DomNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
     def click(self, selector: str, **options) -> dict:
+        """options: force, trial, timeout_ms, strict."""
         params = {"selector": selector}
         if options:
             params["options"] = options
@@ -26,48 +31,88 @@ class DomNamespace:
             params["options"] = options
         return self._client.call("dom.fill", params)
 
-    def type(self, selector: str, text: str, **options) -> dict:
-        params = {"selector": selector, "text": text}
+    def type(
+        self, selector: str, text: str, delay_ms: int | None = None, **options
+    ) -> dict:
+        params = _drop_none(selector=selector, text=text, delay_ms=delay_ms)
         if options:
             params["options"] = options
         return self._client.call("dom.type", params)
 
-    def query(self, selector: str, timeout_ms: int | None = None) -> dict:
-        params = {"selector": selector}
-        if timeout_ms is not None:
-            params["timeout_ms"] = timeout_ms
-        return self._client.call("dom.query", params)
-
-    def get_text(self, selector: str) -> dict:
-        return self._client.call("dom.getText", {"selector": selector})
-
-    def get_attribute(self, selector: str, name: str) -> dict:
+    def press(
+        self,
+        key: str,
+        selector: str | None = None,
+        modifiers: list[str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict:
+        """Press one key (KeyboardEvent.key). No selector = focused element.
+        modifiers: subset of Shift, Control, Alt, Meta."""
         return self._client.call(
-            "dom.getAttribute", {"selector": selector, "name": name}
+            "dom.press",
+            _drop_none(key=key, selector=selector, modifiers=modifiers, timeout_ms=timeout_ms),
         )
 
-    def wait_for(self, selector: str, **options) -> dict:
-        params = {"selector": selector}
-        if options:
-            params["options"] = options
-        return self._client.call("dom.waitFor", params)
+    def select_option(
+        self,
+        selector: str,
+        value: str | None = None,
+        label: str | None = None,
+        index: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict:
+        """Select by exactly one of value, label or index."""
+        if sum(x is not None for x in (value, label, index)) != 1:
+            raise ValueError("select_option needs exactly one of value, label, index")
+        return self._client.call(
+            "dom.selectOption",
+            _drop_none(selector=selector, value=value, label=label, index=index, timeout_ms=timeout_ms),
+        )
+
+    def query(self, selector: str, timeout_ms: int | None = None) -> dict:
+        return self._client.call("dom.query", _drop_none(selector=selector, timeout_ms=timeout_ms))
+
+    def get_text(self, selector: str, timeout_ms: int | None = None) -> dict:
+        return self._client.call("dom.getText", _drop_none(selector=selector, timeout_ms=timeout_ms))
+
+    def get_attribute(self, selector: str, name: str, timeout_ms: int | None = None) -> dict:
+        return self._client.call(
+            "dom.getAttribute", _drop_none(selector=selector, name=name, timeout_ms=timeout_ms)
+        )
+
+    def wait_for(
+        self,
+        selector: str,
+        state: str | None = None,
+        timeout_ms: int | None = None,
+        strict: bool | None = None,
+    ) -> dict:
+        """state: attached | visible (default) | hidden | detached."""
+        return self._client.call(
+            "dom.waitFor",
+            _drop_none(selector=selector, state=state, timeout_ms=timeout_ms, strict=strict),
+        )
 
 
 class PageNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def navigate(self, url: str, wait_until: str | None = None) -> dict:
-        params = {"url": url}
-        if wait_until is not None:
-            params["waitUntil"] = wait_until
-        return self._client.call("page.navigate", params)
+    def navigate(
+        self, url: str, wait_until: str | None = None, timeout_ms: int | None = None
+    ) -> dict:
+        return self._client.call(
+            "page.navigate", _drop_none(url=url, waitUntil=wait_until, timeout_ms=timeout_ms)
+        )
 
-    def reload(self, wait_until: str | None = None) -> dict:
-        params = {}
-        if wait_until is not None:
-            params["waitUntil"] = wait_until
-        return self._client.call("page.reload", params)
+    def reload(self, wait_until: str | None = None, timeout_ms: int | None = None) -> dict:
+        return self._client.call("page.reload", _drop_none(waitUntil=wait_until, timeout_ms=timeout_ms))
+
+    def url(self) -> dict:
+        return self._client.call("page.url")
+
+    def title(self) -> dict:
+        return self._client.call("page.title")
 
     def screenshot(self, **options) -> dict:
         return self._client.call("page.screenshot", options or {})
@@ -123,6 +168,11 @@ class LinkedInNamespace:
     def extract(self, profile_url: str) -> dict:
         return self._client.call(
             "linkedin.extract", {"profileUrl": profile_url}
+        )
+
+    def follow(self, profile_url: str) -> dict:
+        return self._client.call(
+            "linkedin.follow", {"profileUrl": profile_url}
         )
 
 
@@ -186,18 +236,45 @@ class SocialNamespace:
 
 
 class CookiesNamespace:
+    IMPORT_FORMATS = ("netscape", "json")
+
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def get_all(self) -> dict:
-        return self._client.call("cookies.getAll")
+    def get_all(self, url: str | None = None) -> dict:
+        """All cookies, or those that would be sent to url."""
+        return self._client.call("cookies.getAll", _drop_none(url=url))
 
-    def set(self, name: str, value: str, **options) -> dict:
-        params = {"name": name, "value": value, **options}
-        return self._client.call("cookies.set", params)
+    def set(
+        self,
+        name: str,
+        value: str,
+        domain: str,
+        path: str | None = None,
+        expires: int | None = None,
+        http_only: bool | None = None,
+        secure: bool | None = None,
+        same_site: str | None = None,
+    ) -> dict:
+        """expires: unix seconds (-1 = session). same_site: Lax|Strict|None."""
+        return self._client.call(
+            "cookies.set",
+            _drop_none(
+                name=name, value=value, domain=domain, path=path, expires=expires,
+                httpOnly=http_only, secure=secure, sameSite=same_site,
+            ),
+        )
 
-    def delete(self, name: str) -> dict:
-        return self._client.call("cookies.delete", {"name": name})
+    def delete(self, name: str, domain: str | None = None) -> dict:
+        """No domain = delete the cookie on every domain."""
+        return self._client.call("cookies.delete", _drop_none(name=name, domain=domain))
+
+    def import_file(self, path: str, format: str) -> dict:
+        """Import a cookies.txt (format="netscape") or a JSON export
+        (format="json"). The path is read by the browser process."""
+        if format not in self.IMPORT_FORMATS:
+            raise ValueError(f"format must be one of {self.IMPORT_FORMATS}")
+        return self._client.call("cookies.import", {"path": path, "format": format})
 
 
 class ZigBrowser:
@@ -288,6 +365,8 @@ class ZigBrowser:
             "params": params or {},
             "id": next(self._id_counter),
         }
+        if self._token:
+            request["auth"] = self._token
         self._send(json.dumps(request))
 
         if self._reader_running:
@@ -367,6 +446,8 @@ class AsyncZigBrowser:
             "params": params or {},
             "id": next(self._id_counter),
         }
+        if self._token:
+            request["auth"] = self._token
         data = json.dumps(request).encode("utf-8")
         self._writer.write(struct.pack(">I", len(data)) + data)
         await self._writer.drain()
