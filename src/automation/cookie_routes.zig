@@ -30,7 +30,11 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
 }
 
 const port_timeout_ms: u64 = 10_000;
-const max_import_bytes = 4 * 1024 * 1024;
+/// cookies.import reads at most this many bytes (bounded allocation).
+pub const max_import_bytes = 4 * 1024 * 1024;
+/// cookies.import refuses files with more cookie entries than this, before
+/// any cookie is set.
+pub const max_import_cookies = 5000;
 const max_name_len = 256;
 const max_value_len = 4096;
 const max_domain_len = 253;
@@ -57,7 +61,68 @@ pub fn handle(
     verb: Verb,
     params_json: []const u8,
 ) error{OutOfMemory}!engine_mod.Outcome {
-    const ids = ext.ids();
+    const started = ext.nowMs();
+    var span = SpanInfo{ .operation = operationName(verb) };
+    const outcome = try handleInner(gpa, io, port, ext.ids(), verb, params_json, &span);
+    span.record(ext, &outcome, started);
+    return outcome;
+}
+
+fn operationName(verb: Verb) []const u8 {
+    return switch (verb) {
+        .get_all => "getAll",
+        .set => "set",
+        .delete => "delete",
+        .import => "import",
+    };
+}
+
+/// The automation.cookie.command child span: operation, hashed name/domain,
+/// count and scope only -- never values, URLs or file paths.
+const SpanInfo = struct {
+    operation: []const u8,
+    name_hash: ?[]const u8 = null,
+    domain_hash: ?[]const u8 = null,
+    count: u32 = 0,
+    scope: []const u8 = "",
+    error_class: []const u8 = "",
+    name_buf: [16]u8 = undefined,
+    domain_buf: [16]u8 = undefined,
+
+    fn hashName(self: *SpanInfo, name: []const u8) void {
+        self.name_hash = std.fmt.bufPrint(&self.name_buf, "{x:0>16}", .{std.hash.Wyhash.hash(0, name)}) catch unreachable;
+    }
+
+    fn hashDomain(self: *SpanInfo, domain: []const u8) void {
+        self.domain_hash = std.fmt.bufPrint(&self.domain_buf, "{x:0>16}", .{std.hash.Wyhash.hash(0, domain)}) catch unreachable;
+    }
+
+    fn record(self: *const SpanInfo, ext: *engine_mod.External, outcome: *const engine_mod.Outcome, started: u64) void {
+        var bufs: [2][24]u8 = undefined;
+        const ok = outcome.* == .result;
+        const entries = [_]@import("telemetry.zig").AttrMap.Entry{
+            .{ .key = "cookie.operation", .value = self.operation },
+            .{ .key = "cookie.name_hash", .value = self.name_hash orelse "" },
+            .{ .key = "cookie.domain_hash", .value = self.domain_hash orelse "" },
+            .{ .key = "cookie.count", .value = std.fmt.bufPrint(&bufs[0], "{d}", .{self.count}) catch unreachable },
+            .{ .key = "cookie.scope", .value = self.scope },
+            .{ .key = "result.status", .value = if (ok) "ok" else "error" },
+            .{ .key = "platform.error_class", .value = if (ok) "" else self.error_class },
+            .{ .key = "duration_ms", .value = std.fmt.bufPrint(&bufs[1], "{d}", .{ext.nowMs() -| started}) catch unreachable },
+        };
+        ext.childSpan("automation.cookie.command", &entries);
+    }
+};
+
+fn handleInner(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    port: ?cookie_port_mod.CookiePort,
+    ids: script_command.Ids,
+    verb: Verb,
+    params_json: []const u8,
+    span: *SpanInfo,
+) error{OutOfMemory}!engine_mod.Outcome {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return invalidParams(gpa, null, ids),
@@ -78,12 +143,19 @@ pub fn handle(
         if (!inList(allowed, entry.key_ptr.*)) return invalidParams(gpa, "unknown_param", ids);
     }
 
-    const store = port orelse return engine_mod.automationFailure(gpa, .session_invalid, null, ids);
+    const store = port orelse {
+        span.error_class = "NoPage";
+        return engine_mod.automationFailure(gpa, .session_invalid, null, ids);
+    };
     return switch (verb) {
-        .get_all => getAll(gpa, store, params, ids),
+        .get_all => getAll(gpa, store, params, ids, span),
         .set => {
             const cookie = cookieFromSetParams(params) orelse return invalidParams(gpa, "invalid_cookie", ids);
-            if (try setOne(gpa, store, cookie, ids)) |failure| return failure;
+            span.hashName(cookie.name);
+            span.hashDomain(cookie.domain);
+            span.scope = "single";
+            if (try setOne(gpa, store, cookie, ids, span)) |failure| return failure;
+            span.count = 1;
             return okResult(gpa);
         },
         .delete => {
@@ -91,87 +163,152 @@ pub fn handle(
             if (!validName(name)) return invalidParams(gpa, "invalid_cookie", ids);
             const domain: ?[]const u8 = if (params.get("domain")) |_| (stringField(params, "domain") orelse return invalidParams(gpa, "invalid_cookie", ids)) else null;
             if (domain) |d| if (!validDomain(d)) return invalidParams(gpa, "invalid_cookie", ids);
-            store.delete(name, domain, port_timeout_ms) catch |err| return portFailure(gpa, err, ids);
+            span.hashName(name);
+            if (domain) |d| span.hashDomain(d);
+            span.scope = if (domain != null) "domain" else "all_domains";
+            store.delete(name, domain, port_timeout_ms) catch |err| {
+                span.error_class = @errorName(err);
+                return portFailure(gpa, err, ids);
+            };
+            span.count = 1;
             return okResult(gpa);
         },
-        .import => importFile(gpa, io, store, params, ids),
+        .import => importFile(gpa, io, store, params, ids, span),
     };
 }
 
 const set_keys = [_][]const u8{ "name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite" };
 
-fn getAll(gpa: std.mem.Allocator, store: cookie_port_mod.CookiePort, params: std.json.ObjectMap, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+fn getAll(gpa: std.mem.Allocator, store: cookie_port_mod.CookiePort, params: std.json.ObjectMap, ids: script_command.Ids, span: *SpanInfo) error{OutOfMemory}!engine_mod.Outcome {
     const url: ?[]const u8 = if (params.get("url")) |_| (stringField(params, "url") orelse return invalidParams(gpa, null, ids)) else null;
-    if (url) |u| if (std.mem.indexOfScalar(u8, u, 0) != null) return invalidParams(gpa, null, ids);
-    const text = store.getAll(gpa, url, port_timeout_ms) catch |err| return portFailure(gpa, err, ids);
+    if (url) |u| if (u.len == 0 or hasControl(u)) return invalidParams(gpa, "invalid_url", ids);
+    span.scope = if (url != null) "url" else "all";
+    const text = store.getAll(gpa, url, port_timeout_ms) catch |err| {
+        span.error_class = @errorName(err);
+        return portFailure(gpa, err, ids);
+    };
     defer gpa.free(text);
 
-    // The store must answer a JSON array; never echo it otherwise.
+    // The store must answer an array of cookie-shaped objects; never echo it
+    // otherwise.
     var check = std.json.parseFromSlice(std.json.Value, gpa, text, .{ .parse_numbers = false }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return internal("Malformed cookie store result"),
     };
     defer check.deinit();
-    if (check.value != .array) return internal("Malformed cookie store result");
+    const items = switch (check.value) {
+        .array => |array| array.items,
+        else => return internal("Malformed cookie store result"),
+    };
+    for (items) |item| {
+        const object = switch (item) {
+            .object => |o| o,
+            else => return internal("Malformed cookie store result"),
+        };
+        for ([_][]const u8{ "name", "value", "domain" }) |key| {
+            if (stringField(object, key) == null) return internal("Malformed cookie store result");
+        }
+    }
+    span.count = @intCast(@min(items.len, std.math.maxInt(u32)));
     return .{ .result = try std.fmt.allocPrint(gpa, "{{\"cookies\":{s}}}", .{text}) };
 }
 
+fn hasControl(text: []const u8) bool {
+    for (text) |c| {
+        if (c < 0x20 or c == 0x7f) return true;
+    }
+    return false;
+}
+
 /// Returns null on success, or the failure outcome.
-fn setOne(gpa: std.mem.Allocator, store: cookie_port_mod.CookiePort, cookie: Cookie, ids: script_command.Ids) error{OutOfMemory}!?engine_mod.Outcome {
+fn setOne(gpa: std.mem.Allocator, store: cookie_port_mod.CookiePort, cookie: Cookie, ids: script_command.Ids, span: *SpanInfo) error{OutOfMemory}!?engine_mod.Outcome {
     const json = try std.json.Stringify.valueAlloc(gpa, cookie, .{ .emit_null_optional_fields = false });
     defer gpa.free(json);
-    store.set(json, port_timeout_ms) catch |err| return try portFailure(gpa, err, ids);
+    store.set(json, port_timeout_ms) catch |err| {
+        span.error_class = @errorName(err);
+        return try portFailure(gpa, err, ids);
+    };
     return null;
 }
 
-fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookiePort, params: std.json.ObjectMap, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookiePort, params: std.json.ObjectMap, ids: script_command.Ids, span: *SpanInfo) error{OutOfMemory}!engine_mod.Outcome {
     const path = stringField(params, "path") orelse return invalidParams(gpa, "missing_path", ids);
-    if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return invalidParams(gpa, "missing_path", ids);
+    if (path.len == 0 or hasControl(path)) return invalidParams(gpa, "missing_path", ids);
     const format_name = stringField(params, "format") orelse return invalidParams(gpa, "unknown_format", ids);
     const Format = enum { netscape, json };
     const format: Format = if (std.mem.eql(u8, format_name, "netscape")) .netscape else if (std.mem.eql(u8, format_name, "json")) .json else return invalidParams(gpa, "unknown_format", ids);
+    span.scope = @tagName(format);
 
-    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_import_bytes)) catch |err| switch (err) {
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_import_bytes + 1)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
+        error.StreamTooLong => return invalidParams(gpa, "file_too_large", ids),
         else => return invalidParams(gpa, "unreadable_file", ids),
     };
     defer gpa.free(text);
+    if (text.len > max_import_bytes) return invalidParams(gpa, "file_too_large", ids);
 
+    // Collect and validate every entry first so caps apply before any set.
+    var cookies: std.ArrayListUnmanaged(Cookie) = .empty;
+    defer cookies.deinit(gpa);
     var counts = Counts{};
+    var json_doc: ?std.json.Parsed(std.json.Value) = null;
+    defer if (json_doc) |*doc| doc.deinit();
     switch (format) {
         .netscape => {
             var lines = std.mem.splitScalar(u8, text, '\n');
             while (lines.next()) |raw_line| {
-                const cookie = parseNetscapeLine(std.mem.trimEnd(u8, raw_line, "\r")) orelse continue;
-                if (cookie) |valid| {
-                    if (try setOne(gpa, store, valid, ids)) |failure| return failure;
-                    counts.imported += 1;
-                } else counts.skipped += 1;
+                const entry = parseNetscapeLine(std.mem.trimEnd(u8, raw_line, "\r")) orelse continue;
+                if (cookies.items.len + counts.skipped >= max_import_cookies) return invalidParams(gpa, "too_many_cookies", ids);
+                if (entry) |valid| try cookies.append(gpa, valid) else counts.skipped += 1;
             }
         },
         .json => {
-            var parsed = std.json.parseFromSlice(std.json.Value, gpa, text, .{}) catch |err| switch (err) {
+            json_doc = std.json.parseFromSlice(std.json.Value, gpa, text, .{}) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return invalidParams(gpa, "unparsable_file", ids),
             };
-            defer parsed.deinit();
-            const items = switch (parsed.value) {
+            const items = switch (json_doc.?.value) {
                 .array => |array| array.items,
                 else => return invalidParams(gpa, "unparsable_file", ids),
             };
+            if (items.len > max_import_cookies) return invalidParams(gpa, "too_many_cookies", ids);
             for (items) |item| {
-                const cookie = switch (item) {
+                const entry = switch (item) {
                     .object => |object| cookieFromJsonExport(object),
                     else => null,
                 };
-                if (cookie) |valid| {
-                    if (try setOne(gpa, store, valid, ids)) |failure| return failure;
-                    counts.imported += 1;
-                } else counts.skipped += 1;
+                if (entry) |valid| try cookies.append(gpa, valid) else counts.skipped += 1;
             }
         },
     }
+
+    for (cookies.items, 0..) |cookie, index| {
+        if (try setOne(gpa, store, cookie, ids, span)) |failure| {
+            var owned = failure;
+            defer owned.deinit(gpa);
+            return partialFailure(gpa, owned.failure, counts.imported, index, ids);
+        }
+        counts.imported += 1;
+    }
+    span.count = counts.imported;
     return .{ .result = try std.json.Stringify.valueAlloc(gpa, counts, .{}) };
+}
+
+/// Same error code as the failing set, with data saying how far the import
+/// got (no cookie names or values).
+fn partialFailure(gpa: std.mem.Allocator, failure: engine_mod.Failure, imported: u32, failed_index: usize, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+    const Data = struct { reason: []const u8, imported: u32, failed_index: usize, trace_id: []const u8, command_id: []const u8 };
+    return .{ .failure = .{
+        .code = failure.code,
+        .message = failure.message,
+        .data_json = try std.json.Stringify.valueAlloc(gpa, Data{
+            .reason = "import_partial",
+            .imported = imported,
+            .failed_index = failed_index,
+            .trace_id = ids.trace_id,
+            .command_id = ids.command_id,
+        }, .{}),
+    } };
 }
 
 const Counts = struct { imported: u32 = 0, skipped: u32 = 0 };

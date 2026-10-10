@@ -280,3 +280,186 @@ test "import errors: bad format, unreadable file, unparsable json -> -32602, no 
     try std.testing.expect(std.mem.indexOf(u8, garbage.failure.data_json.?, "secret") == null);
     try std.testing.expectEqual(@as(usize, 0), fake.sets.items.len);
 }
+
+/// Records everything crossing the TelemetrySink vtable.
+const SpySink = struct {
+    seen: std.ArrayListUnmanaged(u8) = .empty,
+    cookie_spans: usize = 0,
+    roots: usize = 0,
+
+    fn sink(self: *SpySink) automation.telemetry.TelemetrySink {
+        return .{ .ptr = self, .vtable = &.{ .recordCommandSpan = recordCommand, .recordChildSpan = recordChild } };
+    }
+    fn recordCommand(ptr: *anyopaque, attrs: automation.telemetry.CommandSpanAttrs) anyerror!void {
+        const self: *SpySink = @ptrCast(@alignCast(ptr));
+        self.roots += 1;
+        const json = try std.json.Stringify.valueAlloc(gpa, attrs, .{});
+        defer gpa.free(json);
+        try self.seen.appendSlice(gpa, json);
+    }
+    fn recordChild(ptr: *anyopaque, span: automation.telemetry.ChildSpan) anyerror!void {
+        const self: *SpySink = @ptrCast(@alignCast(ptr));
+        if (std.mem.eql(u8, span.name, "automation.cookie.command")) self.cookie_spans += 1;
+        const json = try std.json.Stringify.valueAlloc(gpa, span, .{});
+        defer gpa.free(json);
+        try self.seen.appendSlice(gpa, json);
+    }
+};
+
+test "each cookies.* call records one automation.cookie.command child; nothing raw crosses the sink" {
+    var fake = FakeCookiePort{ .store_json = "[{\"name\":\"sid\",\"value\":\"v4lue-in-store\",\"domain\":\"example.com\",\"path\":\"/\",\"expires\":-1,\"httpOnly\":false,\"secure\":false}]" };
+    defer fake.deinit();
+    var spy: SpySink = .{};
+    defer spy.seen.deinit(gpa);
+
+    const path = try writeTemp("spy.txt", ".example.com\tTRUE\t/\tFALSE\t0\timported_name\timp0rted-v4lue\n");
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const import_params = try importParams(path, "netscape");
+    defer gpa.free(import_params);
+
+    const calls = [_][2][]const u8{
+        .{ "cookies.set", "{\"name\":\"secret_name\",\"value\":\"s3cret-v4lue\",\"domain\":\"private.example\"}" },
+        .{ "cookies.getAll", "{\"url\":\"https://private.example/account?token=q\"}" },
+        .{ "cookies.delete", "{\"name\":\"secret_name\",\"domain\":\"private.example\"}" },
+        .{ "cookies.import", import_params },
+    };
+    for (calls) |c| {
+        var outcome = try callWithSink(&fake, c[0], c[1], spy.sink());
+        outcome.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 4), spy.roots);
+    try std.testing.expectEqual(@as(usize, 4), spy.cookie_spans);
+    for ([_][]const u8{ "s3cret-v4lue", "v4lue-in-store", "imp0rted-v4lue", "secret_name", "imported_name", "private.example", "token=q", "/account", path }) |needle| {
+        if (std.mem.indexOf(u8, spy.seen.items, needle) != null) {
+            std.debug.print("raw value crossed the sink: {s}\n", .{needle});
+            return error.TestRawValueLeaked;
+        }
+    }
+    for ([_][]const u8{ "\"cookie.operation\"", "\"set\"", "\"getAll\"", "\"delete\"", "\"import\"", "\"cookie.name_hash\"", "\"cookie.domain_hash\"", "\"cookie.count\"", "\"cookie.scope\"" }) |needle| {
+        if (std.mem.indexOf(u8, spy.seen.items, needle) == null) {
+            std.debug.print("missing in cookie spans: {s}\n", .{needle});
+            return error.TestMissingAttr;
+        }
+    }
+}
+
+test "NUL and control characters are rejected before the C boundary" {
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+    const bad = [_][2][]const u8{
+        .{ "cookies.getAll", "{\"url\":\"https://a.test/\\u0000x\"}" },
+        .{ "cookies.getAll", "{\"url\":\"https://a.test/\\u0007x\"}" },
+        .{ "cookies.set", "{\"name\":\"a\\u0000b\",\"value\":\"v\",\"domain\":\"d.test\"}" },
+        .{ "cookies.set", "{\"name\":\"a\",\"value\":\"v\\u0000\",\"domain\":\"d.test\"}" },
+        .{ "cookies.set", "{\"name\":\"a\",\"value\":\"v\",\"domain\":\"d.test\\u0000\"}" },
+        .{ "cookies.set", "{\"name\":\"a\",\"value\":\"v\",\"domain\":\"d.test\",\"path\":\"/\\u0000\"}" },
+        .{ "cookies.delete", "{\"name\":\"a\\u0000\"}" },
+        .{ "cookies.delete", "{\"name\":\"a\",\"domain\":\"d\\u0000.test\"}" },
+        .{ "cookies.import", "{\"path\":\"/tmp/a\\u0000b\",\"format\":\"json\"}" },
+    };
+    for (bad) |c| {
+        var outcome = try call(&fake, c[0], c[1]);
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32602), outcome.failure.code);
+    }
+    try std.testing.expectEqual(@as(usize, 0), fake.sets.items.len);
+    try std.testing.expectEqual(@as(usize, 0), fake.deletes.items.len);
+    try std.testing.expect(fake.get_url == null);
+}
+
+test "import refuses files over the byte cap and over the cookie-count cap before any set" {
+    var fake = FakeCookiePort{};
+    defer fake.deinit();
+
+    const big = try gpa.alloc(u8, cookie_routes.max_import_bytes + 1);
+    defer gpa.free(big);
+    @memset(big, '#');
+    const big_path = try writeTemp("big.txt", big);
+    defer gpa.free(big_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, big_path) catch {};
+    const big_params = try importParams(big_path, "netscape");
+    defer gpa.free(big_params);
+    var too_big = try call(&fake, "cookies.import", big_params);
+    defer too_big.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32602), too_big.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, too_big.failure.data_json.?, "file_too_large") != null);
+
+    var lines: std.ArrayListUnmanaged(u8) = .empty;
+    defer lines.deinit(gpa);
+    for (0..cookie_routes.max_import_cookies + 1) |i| {
+        try lines.print(gpa, "example.com\tFALSE\t/\tFALSE\t0\tc{d}\tv\n", .{i});
+    }
+    const many_path = try writeTemp("many.txt", lines.items);
+    defer gpa.free(many_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, many_path) catch {};
+    const many_params = try importParams(many_path, "netscape");
+    defer gpa.free(many_params);
+    var too_many = try call(&fake, "cookies.import", many_params);
+    defer too_many.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32602), too_many.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, too_many.failure.data_json.?, "too_many_cookies") != null);
+    try std.testing.expectEqual(@as(usize, 0), fake.sets.items.len);
+}
+
+test "a store failure mid-import reports how many were applied and where it stopped" {
+    var fake = FailAfter{ .ok_sets = 2 };
+    const text = "a.test\tFALSE\t/\tFALSE\t0\tc0\tv\n" ++ "a.test\tFALSE\t/\tFALSE\t0\tc1\tv\n" ++ "a.test\tFALSE\t/\tFALSE\t0\tc2\tv\n" ++ "a.test\tFALSE\t/\tFALSE\t0\tc3\tv\n";
+    const path = try writeTemp("partial.txt", text);
+    defer gpa.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const params = try importParams(path, "netscape");
+    defer gpa.free(params);
+
+    const Call = struct {
+        port: cookie_port.CookiePort,
+        params: []const u8,
+        fn run(c: @This(), a: std.mem.Allocator, ext: *automation.engine.External) error{OutOfMemory}!automation.engine.Outcome {
+            return cookie_routes.handle(a, io, c.port, ext, .import, c.params);
+        }
+    };
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
+    var outcome = try eng.executeExternal(gpa, "cookies.import", "cookies", .{}, Call{ .port = fake.port(), .params = params }, Call.run);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    try std.testing.expectEqualStrings("import_partial", data.value.object.get("reason").?.string);
+    try std.testing.expectEqual(@as(i64, 2), data.value.object.get("imported").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), data.value.object.get("failed_index").?.integer);
+    try std.testing.expect(data.value.object.get("trace_id") != null);
+}
+
+const FailAfter = struct {
+    ok_sets: usize,
+    sets: usize = 0,
+
+    fn port(self: *FailAfter) cookie_port.CookiePort {
+        return .{ .ptr = self, .vtable = &.{ .getAll = getAll, .set = set, .delete = delete } };
+    }
+    fn getAll(_: *anyopaque, a: std.mem.Allocator, _: ?[]const u8, _: u64) cookie_port.PortError![]u8 {
+        return a.dupe(u8, "[]");
+    }
+    fn set(ptr: *anyopaque, _: []const u8, _: u64) cookie_port.PortError!void {
+        const self: *FailAfter = @ptrCast(@alignCast(ptr));
+        if (self.sets == self.ok_sets) return error.Timeout;
+        self.sets += 1;
+    }
+    fn delete(_: *anyopaque, _: []const u8, _: ?[]const u8, _: u64) cookie_port.PortError!void {}
+};
+
+test "getAll requires cookie-shaped objects from the store" {
+    for ([_][]const u8{
+        "[1,2]",
+        "[{\"name\":\"a\"}]",
+        "[{\"name\":\"a\",\"value\":\"v\",\"domain\":3}]",
+    }) |store| {
+        var fake = FakeCookiePort{ .store_json = store };
+        defer fake.deinit();
+        var outcome = try call(&fake, "cookies.getAll", "{}");
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32603), outcome.failure.code);
+    }
+}
