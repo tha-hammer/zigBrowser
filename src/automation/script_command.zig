@@ -131,6 +131,8 @@ pub const ScriptResult = struct {
     reason: ?[]const u8,
     retryable: bool,
     data: ?std.json.Value,
+    /// automation.js child span drafts (`telemetry` array), if any.
+    telemetry: ?std.json.Value,
 
     pub fn deinit(self: *ScriptResult) void {
         self.parsed.deinit();
@@ -162,6 +164,7 @@ pub fn parseScriptResult(gpa: std.mem.Allocator, text: []const u8) error{ OutOfM
         .reason = null,
         .retryable = false,
         .data = data,
+        .telemetry = obj.get("telemetry"),
     };
     if (ok) return result;
 

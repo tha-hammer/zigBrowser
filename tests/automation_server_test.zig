@@ -194,10 +194,38 @@ test "stop() cancels a command stuck in its retry loop" {
     try testing.expect(std.mem.indexOf(u8, response.?, "\"code\":-32012") != null);
 }
 
+test "server records one root span per command with the primary page/window ids" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("telemetry", .{ .sink = &sink });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    for (0..2) |_| {
+        const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":1}");
+        testing.allocator.free(response);
+    }
+    fixture.server.stop();
+
+    var roots: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        roots += 1;
+        try testing.expectEqualStrings("page-1", span.attr("page.id").?);
+        try testing.expectEqualStrings("window-1", span.attr("window.id").?);
+        try testing.expectEqualStrings("0", span.attr("queue.wait_ms").?);
+        try testing.expectEqualStrings("ok", span.attr("result.status").?);
+    }
+    try testing.expectEqual(@as(usize, 2), roots);
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
     eval_delay_ms: u64 = 0,
+    sink: ?*automation_server.automation.telemetry.InMemoryTelemetrySink = null,
 };
 
 const Fixture = struct {
@@ -220,6 +248,7 @@ const Fixture = struct {
             .socket_path = self.socket_path,
             .token = "",
             .page_port = if (options.with_port) self.fake.port() else null,
+            .telemetry_sink = options.sink,
         });
         try self.server.start();
         return self;

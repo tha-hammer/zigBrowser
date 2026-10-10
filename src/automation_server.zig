@@ -8,7 +8,7 @@ const engine_mod = automation.engine;
 const queue_mod = automation.queue;
 
 /// The automation API drives the primary window's page.
-const primary_page_id = "page-1";
+pub const primary_route = automation.router.RouteContext{ .page_id = "page-1", .window_id = "window-1" };
 
 const max_frame_bytes = 64 * 1024;
 
@@ -19,6 +19,10 @@ pub const Config = struct {
     /// Live page the engine drives. Without one, every command answers
     /// session_invalid (-32011).
     page_port: ?page_port.PagePort = null,
+    /// Receives one root `automation.command` span (plus child spans) per
+    /// command. Optional; the in-memory sink grows without bound, so only
+    /// tests and diagnostics should set it.
+    telemetry_sink: ?*automation.telemetry.InMemoryTelemetrySink = null,
 };
 
 /// One accepted client. Each connection has its own thread and may carry any
@@ -59,6 +63,7 @@ pub const AutomationApiServer = struct {
                 .socket_path = try allocator.dupe(u8, config.socket_path),
                 .token = try allocator.dupe(u8, config.token),
                 .page_port = config.page_port,
+                .telemetry_sink = config.telemetry_sink,
             },
         };
     }
@@ -228,7 +233,9 @@ pub const AutomationApiServer = struct {
 
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         const engine: ?*engine_mod.Engine = if (self.engine) |*e| e else null;
-        return handleRequestWith(allocator, payload, self.config.token, engine, &self.queue);
+        var route = primary_route;
+        route.telemetry_sink = self.config.telemetry_sink;
+        return handleRequestWith(allocator, payload, self.config.token, engine, &self.queue, route);
     }
 };
 
@@ -238,6 +245,7 @@ fn handleRequestWith(
     token: []const u8,
     engine: ?*engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
+    route: automation.router.RouteContext,
 ) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -277,7 +285,9 @@ fn handleRequestWith(
     };
     defer allocator.free(params_json);
 
-    var command = automation.router.parse(allocator, method, params_json, .{}) catch |err| switch (err) {
+    // The engine records the root span after execution; the router gets the
+    // page identity only, so it does not record a second root span.
+    var command = automation.router.parse(allocator, method, params_json, .{ .page_id = route.page_id, .window_id = route.window_id }) catch |err| switch (err) {
         error.UnknownCommand => return jsonRpcError(allocator, id_json, -32601, "Method not found", null),
         error.BadArgs => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
     };
@@ -288,7 +298,7 @@ fn handleRequestWith(
         return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(session_invalid), automation.errors.name(session_invalid), null);
     };
 
-    const ticket = queue.acquire(primary_page_id) catch |err| switch (err) {
+    const ticket = queue.acquire(route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => {
             const cancelled = automation.errors.AutomationError.cancelled;
@@ -300,6 +310,7 @@ fn handleRequestWith(
     var outcome = try active_engine.executeWith(allocator, &command, .{
         .cancel = &ticket.cancelled,
         .queue_wait_ms = ticket.wait_ms,
+        .route = route,
     });
     defer outcome.deinit(allocator);
     return switch (outcome) {

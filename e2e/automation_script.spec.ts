@@ -128,6 +128,9 @@ test.describe('selector engine', () => {
     const missing = await handle(page, { op: 'query', selector: 'testid=send-message-btn' });
     expect(missing.telemetry[0].attributes['attempt.index']).toBe('0');
 
+    const large = await handle(page, { op: 'query', selector: 'testid=send-message-btn', attempt_index: 4294967295 });
+    expect(large.telemetry[0].attributes['attempt.index']).toBe('4294967295');
+
     const bogus = await handle(page, { op: 'query', selector: 'testid=send-message-btn', attempt_index: 'x<y' });
     expect(bogus.telemetry[0].attributes['attempt.index']).toBe('0');
 

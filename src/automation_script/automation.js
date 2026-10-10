@@ -15,7 +15,7 @@
   const FNV_OFFSET_BASIS_32 = 2166136261;
   const FNV_PRIME_32 = 16777619;
   const BBOX_DECIMAL_SCALE = 100;
-  const MAX_ATTEMPT_INDEX = 1000000;
+  const MAX_ATTEMPT_INDEX = 0xffffffff; // engine sends a u32
 
   let nextElementId = 1;
   let nextSpanId = 1;
@@ -487,7 +487,7 @@
 
   function attemptIndex(command) {
     const index = command.attempt_index;
-    return Number.isInteger(index) && index >= 0 ? String(Math.min(index, MAX_ATTEMPT_INDEX)) : '0';
+    return Number.isInteger(index) && index >= 0 && index <= MAX_ATTEMPT_INDEX ? String(index) : '0';
   }
 
   function requiredChecks(action) {

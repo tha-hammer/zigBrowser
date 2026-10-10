@@ -8,6 +8,7 @@ const errors = @import("error.zig");
 const router = @import("router.zig");
 const page_port = @import("page_port.zig");
 const script_command = @import("script_command.zig");
+const telemetry = @import("telemetry.zig");
 
 pub const default_timeout_ms: u64 = 30000;
 
@@ -98,14 +99,27 @@ pub const ExecuteOptions = struct {
     /// Checked before the command starts and before every retry attempt
     /// (the per-page queue sets it on shutdown).
     cancel: ?*const std.atomic.Value(bool) = null,
-    /// Time the command spent queued behind same-page commands.
+    /// Time the command spent queued behind same-page commands. It counts
+    /// against the command's deadline.
     queue_wait_ms: u64 = 0,
+    /// Page/window identity and the telemetry sink (M11). Without a sink no
+    /// spans are recorded.
+    route: router.RouteContext = .{},
 };
 
-fn isCancelled(cancel: ?*const std.atomic.Value(bool)) bool {
-    const flag = cancel orelse return false;
-    return flag.load(.acquire);
-}
+/// State for one command execution.
+const Run = struct {
+    ids: script_command.Ids,
+    cancel: ?*const std.atomic.Value(bool),
+    sink: ?*telemetry.InMemoryTelemetrySink,
+    /// Monotonic across the whole command (retries and per-character ops).
+    attempts: u32 = 0,
+
+    fn cancelled(self: *const Run) bool {
+        const flag = self.cancel orelse return false;
+        return flag.load(.acquire);
+    }
+};
 
 pub const Engine = struct {
     port: page_port.PagePort,
@@ -120,31 +134,65 @@ pub const Engine = struct {
         return self.executeWith(gpa, command, .{});
     }
 
+    /// Runs one command and records exactly one root `automation.command`
+    /// span for it (when a sink is configured).
     pub fn executeWith(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, options: ExecuteOptions) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
-        const ids = self.nextIds(&ids_buf);
-        if (isCancelled(options.cancel)) return automationFailure(gpa, .cancelled, null, ids);
-        const timeout_ms = @min(command.timeout_ms orelse default_timeout_ms, max_timeout_ms);
+        var run = Run{ .ids = self.nextIds(&ids_buf), .cancel = options.cancel, .sink = options.route.telemetry_sink };
+        const started = self.clock.nowMs();
+        const outcome = try self.executeRun(gpa, command, options, &run);
+        recordRootSpan(command, options, &run, &outcome, self.clock.nowMs() -| started);
+        return outcome;
+    }
+
+    fn executeRun(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, options: ExecuteOptions, run: *Run) error{OutOfMemory}!Outcome {
+        const ids = run.ids;
+        if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
+        const requested_ms = commandTimeout(command);
+        if (options.queue_wait_ms > 0 and options.queue_wait_ms >= requested_ms) {
+            return timeoutWithReason(gpa, timeoutErrorFor(command.verb), "queued_past_deadline", ids, 0);
+        }
+        const timeout_ms = requested_ms - options.queue_wait_ms;
         return switch (command.verb) {
             .page_url => {
-                const value = self.port.url(gpa, timeout_ms) catch |err| return portFailure(gpa, err, .action, ids);
+                const started = self.clock.nowMs();
+                const value = self.port.url(gpa, timeout_ms) catch |err| {
+                    self.platformSpan(run, "url", null, 0, 0, started, "error");
+                    return portFailure(gpa, err, .action, ids);
+                };
                 defer gpa.free(value);
+                self.platformSpan(run, "url", null, 0, value.len, started, "ok");
                 return stringResult(gpa, "url", value);
             },
             .page_title => {
-                const value = self.port.title(gpa, timeout_ms) catch |err| return portFailure(gpa, err, .action, ids);
+                const started = self.clock.nowMs();
+                const value = self.port.title(gpa, timeout_ms) catch |err| {
+                    self.platformSpan(run, "title", null, 0, 0, started, "error");
+                    return portFailure(gpa, err, .action, ids);
+                };
                 defer gpa.free(value);
+                self.platformSpan(run, "title", null, 0, value.len, started, "ok");
                 return stringResult(gpa, "title", value);
             },
             .page_navigate => {
-                self.port.navigate(command.url.?, timeout_ms) catch |err| return portFailure(gpa, err, .navigation, ids);
+                const started = self.clock.nowMs();
+                self.port.navigate(command.url.?, timeout_ms) catch |err| {
+                    self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, "error");
+                    return portFailure(gpa, err, .navigation, ids);
+                };
+                self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, "ok");
                 return okResult(gpa);
             },
             .page_reload => {
-                self.port.reload(timeout_ms) catch |err| return portFailure(gpa, err, .navigation, ids);
+                const started = self.clock.nowMs();
+                self.port.reload(timeout_ms) catch |err| {
+                    self.platformSpan(run, "reload", null, 0, 0, started, "error");
+                    return portFailure(gpa, err, .navigation, ids);
+                };
+                self.platformSpan(run, "reload", null, 0, 0, started, "ok");
                 return okResult(gpa);
             },
-            .page_evaluate => self.evaluate(gpa, command.expression.?, timeout_ms, ids),
+            .page_evaluate => self.evaluate(gpa, command.expression.?, timeout_ms, run),
             .page_screenshot => .{ .failure = .{ .code = internal_error_code, .message = "page.screenshot is not supported" } },
             .dom_query,
             .dom_click,
@@ -153,15 +201,21 @@ pub const Engine = struct {
             .dom_get_text,
             .dom_get_attribute,
             .dom_wait_for,
-            => self.runDom(gpa, command, timeout_ms, ids, options.cancel),
+            => self.runDom(gpa, command, timeout_ms, run),
         };
     }
 
-    fn evaluate(self: *Engine, gpa: std.mem.Allocator, expression: []const u8, timeout_ms: u64, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+    fn evaluate(self: *Engine, gpa: std.mem.Allocator, expression: []const u8, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
+        const ids = run.ids;
         const body = try script_command.buildEvaluateBody(gpa, expression);
         defer gpa.free(body);
-        const text = self.port.evalJson(gpa, .page, body, "null", timeout_ms) catch |err| return portFailure(gpa, err, .action, ids);
+        const started = self.clock.nowMs();
+        const text = self.port.evalJson(gpa, .page, body, "null", timeout_ms) catch |err| {
+            self.platformSpan(run, "evalJson", .page, body.len, 0, started, "error");
+            return portFailure(gpa, err, .action, ids);
+        };
         defer gpa.free(text);
+        self.platformSpan(run, "evalJson", .page, body.len, text.len, started, "ok");
 
         var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -175,37 +229,34 @@ pub const Engine = struct {
         return .{ .result = try std.fmt.allocPrint(gpa, "{{\"result\":{s}}}", .{value_json}) };
     }
 
-    fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, ids: script_command.Ids, cancel: ?*const std.atomic.Value(bool)) error{OutOfMemory}!Outcome {
+    fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, run: *Run) error{OutOfMemory}!Outcome {
         const deadline = self.clock.nowMs() +| timeout_ms;
-        // One monotonic attempt counter for the whole command, including the
-        // per-character ops of a delayed dom.type.
-        var attempts: u32 = 0;
         if (command.verb == .dom_type and command.text.?.len > 0) {
             if (command.delay_ms) |delay_ms| {
-                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, ids, &attempts, cancel);
+                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, run);
             }
         }
-        return self.runDomUntil(gpa, command, deadline, ids, &attempts, cancel);
+        return self.runDomUntil(gpa, command, deadline, run);
     }
 
     /// dom.type with delay_ms: one `type` op per character (UTF-8 code
     /// point), sleeping delay_ms between characters. Stops at the first
     /// failing character; never sleeps past the command deadline.
-    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, ids: script_command.Ids, attempts: *u32, cancel: ?*const std.atomic.Value(bool)) error{OutOfMemory}!Outcome {
-        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, ids, attempts, cancel);
+    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
+        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, run);
         var characters = view.iterator();
         var first = true;
         while (characters.nextCodepointSlice()) |character| {
             if (!first) {
                 const now = self.clock.nowMs();
-                if (now +| delay_ms >= deadline) return timeoutWithReason(gpa, .action_timeout, "type_delay_exceeds_timeout", ids, attempts.*);
+                if (now +| delay_ms >= deadline) return timeoutWithReason(gpa, .action_timeout, "type_delay_exceeds_timeout", run.ids, run.attempts);
                 self.clock.sleepMs(delay_ms);
             }
             first = false;
 
             var single = command.*;
             single.text = character;
-            var outcome = try self.runDomUntil(gpa, &single, deadline, ids, attempts, cancel);
+            var outcome = try self.runDomUntil(gpa, &single, deadline, run);
             switch (outcome) {
                 .failure => return outcome,
                 .result => outcome.deinit(gpa),
@@ -216,17 +267,19 @@ pub const Engine = struct {
 
     /// M7 retry loop: retryable script failures are retried every
     /// `poll_interval_ms` while a full poll interval still fits before
-    /// `deadline`; no attempt starts at or after the deadline and no native
-    /// call is given more than the remaining time. waitFor owns its own wait
-    /// in JS, so only a missing script is retried for it.
-    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, base_ids: script_command.Ids, attempts: *u32, cancel: ?*const std.atomic.Value(bool)) error{OutOfMemory}!Outcome {
+    /// `deadline`. The first attempt always runs (so `timeout_ms: 0` means
+    /// "exactly one attempt"); no later attempt starts at or after the
+    /// deadline, and no native call is given more than the remaining time.
+    /// waitFor owns its own wait in JS, so only a missing script is retried
+    /// for it.
+    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, run: *Run) error{OutOfMemory}!Outcome {
         const is_wait = command.verb == .dom_wait_for;
-        var ids = base_ids;
+        var ids = run.ids;
         var last: LastFailure = .{};
         while (true) {
-            if (isCancelled(cancel)) return automationFailure(gpa, .cancelled, null, ids);
-            ids.attempt_index = attempts.*;
-            attempts.* += 1;
+            if (run.cancelled()) return automationFailure(gpa, .cancelled, null, ids);
+            ids.attempt_index = run.attempts;
+            run.attempts += 1;
             const remaining = deadline -| self.clock.nowMs();
             // waitFor: the script's JS timeout is authoritative; the native
             // call gets extra grace on top so JS settles first.
@@ -239,14 +292,20 @@ pub const Engine = struct {
             };
             defer gpa.free(command_json);
 
-            const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| return portFailure(gpa, err, .action, ids);
+            const started = self.clock.nowMs();
+            const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| {
+                self.platformSpanAttempt(run, ids.attempt_index, command_json.len, 0, started, "error");
+                return portFailure(gpa, err, .action, ids);
+            };
             defer gpa.free(text);
+            self.platformSpanAttempt(run, ids.attempt_index, command_json.len, text.len, started, "ok");
 
             var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.MalformedScriptResult => return malformedResult(),
             };
             defer script_result.deinit();
+            forwardScriptSpans(run, &script_result);
 
             if (script_result.ok) {
                 return .{ .result = try std.json.Stringify.valueAlloc(gpa, script_result.value, .{}) };
@@ -255,9 +314,34 @@ pub const Engine = struct {
             last.record(&script_result);
 
             const now = self.clock.nowMs();
-            if (now +| poll_interval_ms >= deadline) return deadlineFailure(gpa, &last, ids, attempts.*);
+            if (now +| poll_interval_ms >= deadline) return deadlineFailure(gpa, &last, ids, run.attempts);
             self.clock.sleepMs(poll_interval_ms);
         }
+    }
+
+    fn platformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {
+        self.recordPlatformSpan(run, op, world, 0, payload_bytes, result_bytes, started, status);
+    }
+
+    fn platformSpanAttempt(self: *Engine, run: *const Run, attempt_index: u32, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {
+        self.recordPlatformSpan(run, "evalJson", .automation, attempt_index, payload_bytes, result_bytes, started, status);
+    }
+
+    /// `automation.platform.eval` child span: sizes and timing only, never
+    /// the script, expression, URL or result bodies.
+    fn recordPlatformSpan(self: *Engine, run: *const Run, op: []const u8, world: ?page_port.World, attempt_index: u32, payload_bytes: usize, result_bytes: usize, started: u64, status: []const u8) void {
+        const sink = run.sink orelse return;
+        var bufs: [4][24]u8 = undefined;
+        const entries = [_]telemetry.AttrMap.Entry{
+            .{ .key = "page_port.op", .value = op },
+            .{ .key = "script.world", .value = if (world) |w| @tagName(w) else "none" },
+            .{ .key = "attempt.index", .value = std.fmt.bufPrint(&bufs[0], "{d}", .{attempt_index}) catch unreachable },
+            .{ .key = "payload.bytes", .value = std.fmt.bufPrint(&bufs[1], "{d}", .{payload_bytes}) catch unreachable },
+            .{ .key = "result.bytes", .value = std.fmt.bufPrint(&bufs[2], "{d}", .{result_bytes}) catch unreachable },
+            .{ .key = "duration_ms", .value = std.fmt.bufPrint(&bufs[3], "{d}", .{self.clock.nowMs() -| started}) catch unreachable },
+            .{ .key = "result.status", .value = status },
+        };
+        sink.recordChildSpan("automation.platform.eval", run.ids.trace_id, null, run.ids.parent_span_id, run.ids.command_id, &entries) catch {};
     }
 
     const IdsBuf = struct {
@@ -279,6 +363,108 @@ pub const Engine = struct {
         };
     }
 };
+
+fn commandTimeout(command: *const router.ParsedCommand) u64 {
+    return @min(command.timeout_ms orelse default_timeout_ms, max_timeout_ms);
+}
+
+fn timeoutErrorFor(verb: router.Verb) errors.AutomationError {
+    return switch (verb) {
+        .page_navigate, .page_reload => .navigation_timeout,
+        else => .action_timeout,
+    };
+}
+
+fn actionName(verb: router.Verb) ?[]const u8 {
+    return switch (verb) {
+        .dom_click, .dom_fill, .dom_type => script_command.opName(verb),
+        else => null,
+    };
+}
+
+fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions, run: *const Run, outcome: *const Outcome, duration_ms: u64) void {
+    const sink = run.sink orelse return;
+    const automation_error: ?[]const u8 = switch (outcome.*) {
+        .result => null,
+        .failure => |failure| if (failure.code <= errors.downstreamCode(.element_not_found) and failure.code >= errors.downstreamCode(.cancelled)) failure.message else null,
+    };
+    sink.recordCommandSpan(.{
+        .trace_id = run.ids.trace_id,
+        .span_id = run.ids.parent_span_id,
+        .command_id = run.ids.command_id,
+        .method = command.method,
+        .namespace = @tagName(command.namespace),
+        .page_id = options.route.page_id,
+        .window_id = options.route.window_id,
+        .selector = command.selector,
+        .selector_strict = if (command.selector != null) command.strict else null,
+        .typed_value = command.value orelse command.text,
+        .url = command.url,
+        .action_name = actionName(command.verb),
+        .action_force = command.force,
+        .action_trial = command.trial,
+        .timeout_ms = commandTimeout(command),
+        .queue_wait_ms = options.queue_wait_ms,
+        .duration_ms = duration_ms,
+        .retry_count = run.attempts -| 1,
+        .result_status = if (outcome.* == .result) "ok" else "error",
+        .automation_error = automation_error,
+    }) catch {};
+}
+
+/// Re-parents allowlisted automation.js child spans under the root span and
+/// drops any attribute or span name the allowlist does not know.
+fn forwardScriptSpans(run: *const Run, script_result: *const script_command.ScriptResult) void {
+    const sink = run.sink orelse return;
+    const spans = switch (script_result.telemetry orelse return) {
+        .array => |array| array.items,
+        else => return,
+    };
+    for (spans) |span_value| {
+        const span = switch (span_value) {
+            .object => |object| object,
+            else => continue,
+        };
+        const name = stringField(span, "name") orelse continue;
+        if (!inList(&telemetry.script_child_span_names, name)) continue;
+
+        var entries: [telemetry.script_child_attribute_allowlist.len]telemetry.AttrMap.Entry = undefined;
+        var count: usize = 0;
+        if (span.get("attributes")) |attributes_value| switch (attributes_value) {
+            .object => |attributes| {
+                var it = attributes.iterator();
+                while (it.next()) |entry| {
+                    if (count == entries.len) break;
+                    if (!inList(&telemetry.script_child_attribute_allowlist, entry.key_ptr.*)) continue;
+                    const value: []const u8 = switch (entry.value_ptr.*) {
+                        .string => |text| text,
+                        .number_string => |text| text,
+                        .bool => |b| if (b) "true" else "false",
+                        else => continue,
+                    };
+                    entries[count] = .{ .key = entry.key_ptr.*, .value = value };
+                    count += 1;
+                }
+            },
+            else => {},
+        };
+        sink.recordChildSpan(name, run.ids.trace_id, stringField(span, "span_id"), run.ids.parent_span_id, run.ids.command_id, entries[0..count]) catch {};
+    }
+}
+
+fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    return switch (object.get(key) orelse return null) {
+        .string => |text| text,
+        else => null,
+    };
+}
+
+fn inList(list: []const []const u8, item: []const u8) bool {
+    for (list) |entry| {
+        if (std.mem.eql(u8, entry, item)) return true;
+    }
+    return false;
+}
 
 const PortContext = enum { action, navigation };
 

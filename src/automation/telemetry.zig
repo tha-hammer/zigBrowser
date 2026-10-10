@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const url_scheme_separator = "://";
 const url_default_path = "/";
@@ -63,11 +64,53 @@ pub const RootCommandAttrs = struct {
     url: ?[]const u8 = null,
 };
 
+/// Root `automation.command` span recorded by the engine after a command
+/// finishes. Raw selector/typed values/URLs are hashed or classified by the
+/// sink and never stored.
+pub const CommandSpanAttrs = struct {
+    trace_id: []const u8,
+    span_id: []const u8,
+    command_id: []const u8,
+    method: []const u8,
+    namespace: []const u8,
+    page_id: []const u8,
+    window_id: []const u8,
+    selector: ?[]const u8 = null,
+    selector_strict: ?bool = null,
+    typed_value: ?[]const u8 = null,
+    url: ?[]const u8 = null,
+    action_name: ?[]const u8 = null,
+    action_force: bool = false,
+    action_trial: bool = false,
+    timeout_ms: u64,
+    queue_wait_ms: u64,
+    duration_ms: u64,
+    retry_count: u32,
+    result_status: []const u8,
+    automation_error: ?[]const u8 = null,
+};
+
+/// Child span attribute keys accepted from automation.js. Anything else the
+/// page-side script reports is dropped before it reaches the sink.
+pub const script_child_attribute_allowlist = [_][]const u8{
+    "selector.kind",              "selector.hash",           "selector.strict",
+    "selector.match_count",       "dom.frame_depth",         "attempt.index",
+    "script.world",               "result.status",           "duration_ms",
+    "action.name",                "action.force",            "action.trial",
+    "actionability.check",        "actionability.required_checks", "actionability.passed",
+    "actionability.failed_check", "bbox.width",              "bbox.height",
+    "automation.error",
+};
+
+pub const script_child_span_names = [_][]const u8{ "automation.selector.resolve", "automation.actionability.check" };
+
 pub const InMemoryTelemetrySink = struct {
     allocator: std.mem.Allocator,
     spans: std.ArrayListUnmanaged(Span),
     owned_strings: std.ArrayListUnmanaged([]const u8),
     next_id: u64,
+    /// Engine threads record concurrently; held only while appending.
+    lock: std.atomic.Mutex = .unlocked,
 
     pub fn init(allocator: std.mem.Allocator) InMemoryTelemetrySink {
         return .{
@@ -111,7 +154,101 @@ pub const InMemoryTelemetrySink = struct {
         return false;
     }
 
+    fn acquire(self: *InMemoryTelemetrySink) void {
+        while (!self.lock.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    pub fn recordCommandSpan(self: *InMemoryTelemetrySink, attrs: CommandSpanAttrs) !void {
+        self.acquire();
+        defer self.lock.unlock();
+
+        var attributes = AttrMap.init();
+        errdefer attributes.deinit(self.allocator);
+        try self.putAttr(&attributes, "rpc.method", attrs.method);
+        try self.putAttr(&attributes, "rpc.namespace", attrs.namespace);
+        try self.putAttr(&attributes, "page.id", attrs.page_id);
+        try self.putAttr(&attributes, "window.id", attrs.window_id);
+        try self.putAttr(&attributes, "os.name", @tagName(builtin.os.tag));
+        try self.putAttr(&attributes, "arch", @tagName(builtin.cpu.arch));
+        try self.putOwnedAttr(&attributes, "timeout_ms", try self.formatInt(attrs.timeout_ms));
+        try self.putOwnedAttr(&attributes, "queue.wait_ms", try self.formatInt(attrs.queue_wait_ms));
+        try self.putOwnedAttr(&attributes, "duration_ms", try self.formatInt(attrs.duration_ms));
+        try self.putOwnedAttr(&attributes, "retry.count", try self.formatInt(attrs.retry_count));
+        try self.putAttr(&attributes, "result.status", attrs.result_status);
+        try self.putAttr(&attributes, "automation.error", attrs.automation_error orelse "");
+
+        if (attrs.selector) |selector| {
+            try self.putAttr(&attributes, "selector.kind", selectorKind(selector));
+            try self.putOwnedAttr(&attributes, "selector.hash", try self.hashText(selector));
+            if (attrs.selector_strict) |strict| {
+                try self.putAttr(&attributes, "selector.strict", if (strict) "true" else "false");
+            }
+        }
+        if (attrs.action_name) |action| {
+            try self.putAttr(&attributes, "action.name", action);
+            try self.putAttr(&attributes, "action.force", if (attrs.action_force) "true" else "false");
+            try self.putAttr(&attributes, "action.trial", if (attrs.action_trial) "true" else "false");
+        }
+        if (attrs.typed_value) |value| {
+            try self.putOwnedAttr(&attributes, "typed.length", try self.formatInt(value.len));
+            try self.putAttr(&attributes, "typed.class", classifyTypedValue(value));
+        }
+        if (attrs.url) |url| {
+            const parsed = parseUrl(url);
+            if (parsed.host.len > 0) try self.putAttr(&attributes, "target.host", parsed.host);
+            try self.putOwnedAttr(&attributes, "target.origin_hash", try self.hashText(parsed.origin));
+            try self.putOwnedAttr(&attributes, "target.path_hash", try self.hashText(parsed.path));
+        }
+
+        try self.spans.append(self.allocator, .{
+            .name = "automation.command",
+            .trace_id = try self.dupe(attrs.trace_id),
+            .span_id = try self.dupe(attrs.span_id),
+            .parent_span_id = null,
+            .command_id = try self.dupe(attrs.command_id),
+            .attributes = attributes,
+        });
+    }
+
+    /// Child span under a root command span. `span_id == null` assigns one.
+    /// Attribute keys/values are copied.
+    pub fn recordChildSpan(
+        self: *InMemoryTelemetrySink,
+        name: []const u8,
+        trace_id: []const u8,
+        span_id: ?[]const u8,
+        parent_span_id: []const u8,
+        command_id: []const u8,
+        attributes_in: []const AttrMap.Entry,
+    ) !void {
+        self.acquire();
+        defer self.lock.unlock();
+
+        var attributes = AttrMap.init();
+        errdefer attributes.deinit(self.allocator);
+        for (attributes_in) |entry| try attributes.put(self.allocator, try self.dupe(entry.key), try self.dupe(entry.value));
+        try self.spans.append(self.allocator, .{
+            .name = try self.dupe(name),
+            .trace_id = try self.dupe(trace_id),
+            .span_id = if (span_id) |id| try self.dupe(id) else try self.nextId("span"),
+            .parent_span_id = try self.dupe(parent_span_id),
+            .command_id = try self.dupe(command_id),
+            .attributes = attributes,
+        });
+    }
+
+    /// Spans (root and children) recorded for `command_id`.
+    pub fn countSpans(self: *const InMemoryTelemetrySink, name: []const u8, command_id: []const u8) usize {
+        var count: usize = 0;
+        for (self.spans.items) |span| {
+            if (std.mem.eql(u8, span.name, name) and std.mem.eql(u8, span.command_id, command_id)) count += 1;
+        }
+        return count;
+    }
+
     pub fn recordRootCommand(self: *InMemoryTelemetrySink, attrs: RootCommandAttrs) !void {
+        self.acquire();
+        defer self.lock.unlock();
         const trace_id = try self.nextId("trace");
         const span_id = try self.nextId("span");
         const command_id = try self.nextId("cmd");
@@ -174,7 +311,7 @@ pub const InMemoryTelemetrySink = struct {
         return owned;
     }
 
-    fn formatInt(self: *InMemoryTelemetrySink, value: usize) ![]const u8 {
+    fn formatInt(self: *InMemoryTelemetrySink, value: u64) ![]const u8 {
         const owned = try std.fmt.allocPrint(self.allocator, "{d}", .{value});
         try self.owned_strings.append(self.allocator, owned);
         return owned;

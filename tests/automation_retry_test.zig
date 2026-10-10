@@ -369,3 +369,15 @@ test "delayed typing keeps one monotonic attempt_index across characters" {
         try std.testing.expectEqual(@as(i64, @intCast(i)), arg.value.object.get("attempt_index").?.integer);
     }
 }
+
+test "timeout_ms 0 means exactly one immediate attempt" {
+    var h: Harness = undefined;
+    h.init(&.{ not_found, ok });
+    defer h.deinit();
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":0}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try std.testing.expectEqual(@as(usize, 1), h.evalCount());
+    try std.testing.expectEqual(@as(usize, 0), h.clock.sleeps.items.len);
+}
