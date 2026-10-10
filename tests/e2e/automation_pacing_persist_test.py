@@ -45,7 +45,12 @@ class Browser:
             prefix + [str(binary), f"{origin}/feed/", "--automation-api", "--profile-dir", str(profile)],
             stdout=subprocess.DEVNULL, stderr=self._stderr, text=True, env=env,
         )
-        wait_for_socket(self.socket_path, timeout_sec)
+        try:
+            wait_for_socket(self.socket_path, timeout_sec)
+        except BaseException:
+            # A browser that never served its socket must not outlive the test.
+            self.stop()
+            raise
 
     def stop(self) -> None:
         if self.proc.poll() is None:
