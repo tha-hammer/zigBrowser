@@ -608,7 +608,7 @@ test "native dom.click: locate (no focus, no text), then one trusted click at th
     h.fake.eval_cost_ms = 300;
     h.fake.eval_replies = &.{.{ .json = located_reply }};
 
-    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"timeout_ms\":1000,\"force\":true}}");
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"timeout_ms\":1000}}");
     defer outcome.deinit(gpa);
     try expectResult(outcome, "{\"ok\":true}");
 
@@ -617,7 +617,7 @@ test "native dom.click: locate (no focus, no text), then one trusted click at th
     try std.testing.expect(std.mem.indexOf(u8, arg, "\"op\":\"locate\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg, "\"action\":\"click\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg, "\"focus\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, arg, "\"force\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg, "\"force\":false") != null);
 
     try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
     const click = h.fake.native_calls.items[0];
@@ -811,4 +811,39 @@ test "a malformed locate answer is an internal error, and nothing is clicked" {
         try expectFailure(outcome, -32603, "Malformed script result");
     }
     try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+}
+
+test "a native type failing after progress keeps its error class, with partial_input and sent_chars" {
+    const cases = [_]struct { err: automation.page_port.PortError, code: i64, message: []const u8 }{
+        .{ .err = error.Timeout, .code = -32009, .message = "action_timeout" },
+        .{ .err = error.Cancelled, .code = -32012, .message = "cancelled" },
+        .{ .err = error.NoPage, .code = -32011, .message = "session_invalid" },
+        .{ .err = error.EvalFailed, .code = -32603, .message = "Evaluation failed" },
+    };
+    for (cases) |case| {
+        var h: Harness = undefined;
+        h.init();
+        defer h.deinit();
+        h.fake.eval_replies = &.{.{ .json = located_reply }};
+        h.fake.native_fail_at = 0;
+        h.fake.native_error = case.err;
+        h.fake.native_failed_sent = 2;
+        var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"abcd\",\"options\":{\"input\":\"native\"}}");
+        defer outcome.deinit(gpa);
+        try expectFailureData(outcome, case.code, case.message, "\"reason\":\"partial_input\"");
+        try expectFailureData(outcome, case.code, case.message, "\"sent_chars\":2");
+        try expectFailureData(outcome, case.code, case.message, "\"trace_id\"");
+    }
+}
+
+test "a native type that reports fewer code points than requested is a partial failure, not success" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_success_sent = 1;
+    var outcome = try h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"a\\nb\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32603, "Incomplete native input", "\"sent_chars\":1");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
 }

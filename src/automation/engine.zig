@@ -571,12 +571,16 @@ pub const Engine = struct {
         self.port.nativeText(text, remaining, &sent) catch |err| {
             sent_total.* += sent;
             self.platformSpan(run, "nativeText", null, text.len, 0, started, @errorName(err));
-            if (err == error.OutOfMemory) return error.OutOfMemory;
-            if (sent_total.* > 0) return try partialInput(gpa, .action_timeout, "partial_input", sent_total.*, run);
+            if (sent_total.* > 0) return try partialPortFailure(gpa, err, sent_total.*, run);
             return try portFailure(gpa, err, .action, run.ids);
         };
         sent_total.* += sent;
         self.platformSpan(run, "nativeText", null, text.len, 0, started, "ok");
+        // Success means every requested code point was dispatched; a short
+        // count (e.g. the backend stopped at a navigation) is a partial
+        // side effect, never success and never replayed.
+        const requested = std.unicode.utf8CountCodepoints(text) catch text.len;
+        if (sent != requested) return try partialInternal(gpa, "Incomplete native input", sent_total.*, run);
         return null;
     }
 
@@ -682,6 +686,7 @@ const RootFacts = struct {
     action_name: ?[]const u8 = null,
     action_force: bool = false,
     action_trial: bool = false,
+    input_mode: router.InputMode = .synthetic,
     timeout_ms: u64,
 };
 
@@ -696,6 +701,7 @@ fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions,
         .action_name = actionName(command.verb),
         .action_force = command.force,
         .action_trial = command.trial,
+        .input_mode = command.input,
         .timeout_ms = commandTimeout(command),
     }, options, run, outcome, duration_ms);
 }
@@ -720,6 +726,7 @@ fn recordRoot(facts: RootFacts, options: ExecuteOptions, run: *const Run, outcom
         .action_name = facts.action_name,
         .action_force = facts.action_force,
         .action_trial = facts.action_trial,
+        .input_mode = @tagName(facts.input_mode),
         .selector_match_count = run.matchCount(),
         .build = options.build,
         .timeout_ms = facts.timeout_ms,
@@ -969,6 +976,30 @@ fn modifierBits(modifiers: []const []const u8) u8 {
 /// A native type that stopped early. With `sent_chars > 0` the reason is
 /// always `partial_input`: the page already has that prefix.
 fn partialInput(gpa: std.mem.Allocator, automation_error: errors.AutomationError, reason: ?[]const u8, sent_chars: usize, run: *const Run) error{OutOfMemory}!Outcome {
+    return partialFailure(gpa, errors.downstreamCode(automation_error), errors.name(automation_error), reason, sent_chars, run);
+}
+
+/// A native type that failed after `sent_chars > 0` code points: the port
+/// error keeps its own class (Timeout -> action_timeout, Cancelled ->
+/// cancelled, NoPage/Unsupported -> session_invalid, EvalFailed -> -32603),
+/// plus `reason: partial_input` and `sent_chars`.
+fn partialPortFailure(gpa: std.mem.Allocator, err: page_port.PortError, sent_chars: usize, run: *const Run) error{OutOfMemory}!Outcome {
+    const automation_error: errors.AutomationError = switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.EvalFailed => return partialInternal(gpa, "Evaluation failed", sent_chars, run),
+        error.Timeout => .action_timeout,
+        error.Cancelled => .cancelled,
+        error.NoPage, error.Unsupported => .session_invalid,
+        error.NavigationFailed => .navigation_failed,
+    };
+    return partialInput(gpa, automation_error, null, sent_chars, run);
+}
+
+fn partialInternal(gpa: std.mem.Allocator, message: []const u8, sent_chars: usize, run: *const Run) error{OutOfMemory}!Outcome {
+    return partialFailure(gpa, internal_error_code, message, "partial_input", sent_chars, run);
+}
+
+fn partialFailure(gpa: std.mem.Allocator, code: i64, message: []const u8, reason: ?[]const u8, sent_chars: usize, run: *const Run) error{OutOfMemory}!Outcome {
     const data = AutomationErrorData{
         .reason = if (sent_chars > 0) "partial_input" else reason,
         .sent_chars = if (sent_chars > 0) sent_chars else null,
@@ -977,8 +1008,8 @@ fn partialInput(gpa: std.mem.Allocator, automation_error: errors.AutomationError
         .command_id = run.ids.command_id,
     };
     return .{ .failure = .{
-        .code = errors.downstreamCode(automation_error),
-        .message = errors.name(automation_error),
+        .code = code,
+        .message = message,
         .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
     } };
 }

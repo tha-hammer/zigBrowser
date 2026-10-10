@@ -126,6 +126,8 @@ pub const CommandSpanAttrs = struct {
     action_name: ?[]const u8 = null,
     action_force: bool = false,
     action_trial: bool = false,
+    /// "synthetic" | "native" (router.InputMode), for action commands.
+    input_mode: []const u8 = "synthetic",
     /// From the script's last selector.resolve span (already a count).
     selector_match_count: ?[]const u8 = null,
     build: BuildInfo = .{},
@@ -302,6 +304,7 @@ pub const InMemoryTelemetrySink = struct {
             try self.putAttr(&attributes, "action.name", action);
             try self.putAttr(&attributes, "action.force", if (attrs.action_force) "true" else "false");
             try self.putAttr(&attributes, "action.trial", if (attrs.action_trial) "true" else "false");
+            try self.putAttr(&attributes, "input.mode", attrs.input_mode);
         }
         if (redacted.typed_length) |length| try self.putOwnedAttr(&attributes, "typed.length", try self.formatInt(length));
         if (redacted.typed_class) |class| try self.putAttr(&attributes, "typed.class", class);

@@ -17,7 +17,7 @@ const required_root_attrs = [_][]const u8{
     "backend.version", "os.name",         "arch",            "app.version",               "git.sha",       "automation.script.version",
     "api.version",     "queue.wait_ms",   "duration_ms",     "timeout_ms",                "retry.count",   "result.status",
     "automation.error", "selector.kind",  "selector.hash",   "selector.strict",           "selector.match_count", "action.name",
-    "action.force",    "action.trial",
+    "action.force",    "action.trial",    "input.mode",
 };
 
 const required_platform_attrs = [_][]const u8{
@@ -103,6 +103,7 @@ test "exactly one root span per command with the required attributes" {
     try std.testing.expectEqualStrings("0", root.attr("retry.count").?);
     try std.testing.expectEqualStrings("30000", root.attr("timeout_ms").?);
     try std.testing.expectEqualStrings("click", root.attr("action.name").?);
+    try std.testing.expectEqualStrings("synthetic", root.attr("input.mode").?);
     try std.testing.expectEqualStrings("css", root.attr("selector.kind").?);
     try std.testing.expectEqualStrings("1", root.attr("selector.match_count").?);
     try std.testing.expectEqualStrings("webkitgtk", root.attr("backend.name").?);
@@ -528,4 +529,20 @@ test "RecentTraceStore keeps a late root even after the child cap is reached" {
     const spans = parsed.value.object.get("spans").?.array.items;
     try std.testing.expectEqual(telemetry.RecentTraceStore.max_spans_per_trace, spans.len);
     try std.testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
+}
+
+test "native input is visible on the root span as input.mode=native" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"x\":1,\"y\":2}}" }});
+    defer h.deinit();
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#go\",\"options\":{\"input\":\"native\"}}", 0);
+    defer outcome.deinit(gpa);
+    const root = try h.root();
+    try std.testing.expectEqualStrings("native", root.attr("input.mode").?);
+    var saw_native_span = false;
+    for (h.sink.spans.items) |span| {
+        const op = span.attr("page_port.op") orelse continue;
+        if (std.mem.eql(u8, op, "nativeClick")) saw_native_span = true;
+    }
+    try std.testing.expect(saw_native_span);
 }

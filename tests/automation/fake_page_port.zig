@@ -54,6 +54,9 @@ pub const FakePagePort = struct {
     native_error: page_port.PortError = error.Timeout,
     native_failed_sent: usize = 0,
     native_cost_ms: u64 = 0,
+    /// When set, a successful text call reports this many code points
+    /// (simulates a backend that stopped short).
+    native_success_sent: ?usize = null,
 
     pub fn init(gpa: std.mem.Allocator) FakePagePort {
         return .{ .gpa = gpa };
@@ -139,7 +142,7 @@ pub const FakePagePort = struct {
             sent_chars.* = self.native_failed_sent;
             return err;
         }
-        sent_chars.* = std.unicode.utf8CountCodepoints(text) catch text.len;
+        sent_chars.* = self.native_success_sent orelse (std.unicode.utf8CountCodepoints(text) catch text.len);
     }
 
     fn from(ptr: *anyopaque) *FakePagePort {

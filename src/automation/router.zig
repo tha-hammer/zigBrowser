@@ -25,7 +25,8 @@ pub const WaitState = enum { attached, visible, hidden, detached };
 
 /// `options.input`: synthetic DOM events from automation.js (default), or
 /// real platform input (PagePort.native*, `event.isTrusted === true`).
-/// Native is accepted for dom.click, dom.type and dom.press only.
+/// Native is accepted for dom.click, dom.type and dom.press only (without
+/// `force`); any other method with `input: "native"` is BadArgs.
 pub const InputMode = enum { synthetic, native };
 
 /// Internal (never parsed from JSON): turns a dom.* command into the
@@ -120,7 +121,6 @@ pub fn parse(
             command.selector = try requiredString(arena_allocator, obj, "selector");
             command.value = try requiredString(arena_allocator, obj, "value");
             applyActionOptions(&command, obj, true) catch return error.BadArgs;
-            if (command.input == .native) return error.BadArgs;
         },
         .dom_type => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
@@ -166,7 +166,6 @@ pub fn parse(
             if (choices != 1) return error.BadArgs;
             command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
             command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
-            if ((parseInputMode(obj) catch return error.BadArgs) == .native) return error.BadArgs;
         },
         .page_navigate => {
             command.url = try requiredCString(arena_allocator, obj, "url");
@@ -188,6 +187,18 @@ pub fn parse(
         .page_screenshot => {
             command.full_page = optionalBool(obj, "fullPage", false) catch return error.BadArgs;
         },
+    }
+
+    // `options.input` is validated for every method; native input exists
+    // only for click/type/press, and never with force (a trusted event at
+    // a covered element's centre would land on whatever covers it).
+    const input = parseInputMode(obj) catch return error.BadArgs;
+    if (input == .native) {
+        switch (verb) {
+            .dom_click, .dom_type, .dom_press => {},
+            else => return error.BadArgs,
+        }
+        if (command.force) return error.BadArgs;
     }
 
     command.arena = arena;
