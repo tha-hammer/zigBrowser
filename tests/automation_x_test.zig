@@ -205,6 +205,21 @@ test "a failed post does not consume an X action" {
     try std.testing.expectEqual(x_routes.default_daily_cap, h.state.remaining());
 }
 
+test "x.selfcheck reports a count per selector without navigating, typing or pacing" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    var outcome = try h.call("x.selfcheck", "{}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.startsWith(u8, outcome.result, "{\"composer\":1,"));
+    try std.testing.expectEqual(@as(usize, 0), h.fake.navigate_calls.items.len);
+    for (h.fake.eval_calls.items) |call| try std.testing.expect(std.mem.indexOf(u8, call.arg, "\"op\":\"query\"") != null);
+    try std.testing.expectEqual(x_routes.default_daily_cap, h.state.remaining());
+    var bad = try h.call("x.selfcheck", "{\"selector\":\"x\"}");
+    defer bad.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32602), bad.failure.code);
+}
+
 test "x.login_check reports the composer on the current page" {
     var h: Harness = undefined;
     h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"elements\":[{\"id\":\"zb-1\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}}" }});

@@ -448,6 +448,7 @@ test "x method table" {
     try std.testing.expectEqual(x.Verb.post, x.verbFromMethod("x.post").?);
     try std.testing.expectEqual(x.Verb.schedule_post, x.verbFromMethod("x.schedule_post").?);
     try std.testing.expectEqual(x.Verb.login_check, x.verbFromMethod("x.login_check").?);
+    try std.testing.expectEqual(x.Verb.selfcheck, x.verbFromMethod("x.selfcheck").?);
     try std.testing.expect(x.verbFromMethod("x.delete") == null);
     try std.testing.expect(x.verbFromMethod("dom.click") == null);
 }
@@ -497,4 +498,62 @@ test "the Post search is a hard bound: every query and probe ends by the search 
     try std.testing.expect(checked > 10);
     try std.testing.expect(runner.inner.now_ms <= search_start.? + x.post_button_wait_ms);
     try std.testing.expect(runner.inner.now_ms + 1_000 > search_start.? + x.post_button_wait_ms);
+}
+
+/// Answers dom.query with one element, except for selectors containing
+/// `absent` (zero).
+const SelfCheckRunner = struct {
+    inner: FakeRunner = .{},
+    absent: []const u8 = "\x00none",
+
+    pub fn run(self: *SelfCheckRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
+        _ = try self.inner.run(method, params_json);
+        if (!std.mem.eql(u8, method, "dom.query")) return "{\"ok\":true}";
+        if (std.mem.indexOf(u8, params_json, self.absent) != null) return "{\"elements\":[]}";
+        return "{\"elements\":[{\"id\":\"e\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}";
+    }
+    pub fn nowMs(self: *const SelfCheckRunner) u64 {
+        return self.inner.nowMs();
+    }
+    pub fn remainingMs(self: *const SelfCheckRunner) u64 {
+        return self.inner.remainingMs();
+    }
+    pub fn pause(self: *SelfCheckRunner, ms: u64) bool {
+        return self.inner.pause(ms);
+    }
+    pub fn malformed(self: *SelfCheckRunner) error{OutOfMemory}!void {
+        return self.inner.malformed();
+    }
+    pub fn notFound(self: *SelfCheckRunner, reason: []const u8) error{OutOfMemory}!void {
+        return self.inner.notFound(reason);
+    }
+};
+
+test "x.selfcheck reports every selector-table entry, read-only, in table order" {
+    var runner = SelfCheckRunner{ .absent = "tweetTextarea_0" };
+    defer runner.inner.deinit();
+    const result = (try x.selfCheck(gpa, &runner)).?;
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings(
+        "{\"composer\":0,\"post_button.tweetButton\":1,\"post_button.tweetButtonInline\":1,\"post_success\":1," ++
+            "\"schedule_option\":1,\"schedule_month\":1,\"schedule_day\":1,\"schedule_year\":1,\"schedule_hour\":1," ++
+            "\"schedule_minute\":1,\"schedule_ampm\":1,\"schedule_confirm\":1,\"login_link\":1}",
+        result,
+    );
+    // Only queries: no navigation, no input.
+    for (runner.inner.steps.items) |s| try std.testing.expectEqualStrings("dom.query", s.method);
+    // Every string selector in the table (all but the copy template) is covered.
+    var string_selectors: usize = 0;
+    inline for (@typeInfo(x.selectors).@"struct".decls) |decl| {
+        if (comptime !std.mem.eql(u8, decl.name, "post_button_copy") and !std.mem.eql(u8, decl.name, "post_button_testids")) string_selectors += 1;
+    }
+    try std.testing.expectEqual(string_selectors + x.selectors.post_button_testids.len, runner.inner.steps.items.len);
+}
+
+test "x.selfcheck: an unusable query answer is malformed, not a partial report" {
+    var runner = FakeRunner{};
+    runner.answers = &.{.{ .method = "dom.query", .result = "{\"elements\":7}" }};
+    defer runner.deinit();
+    try std.testing.expect((try x.selfCheck(gpa, &runner)) == null);
+    try std.testing.expectEqual(@as(usize, 1), runner.malformed_calls);
 }

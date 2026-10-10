@@ -310,6 +310,13 @@ class XNamespace:
         page. Does not navigate."""
         return self._client.call("x.login_check")
 
+    def selfcheck(self) -> dict:
+        """{selector_name: count} for every entry of X's selector table on
+        the current page. Read-only: no navigation, no input, not paced.
+        Run it on a logged-in x.com page to see whether X's markup still
+        matches before posting."""
+        return self._client.call("x.selfcheck")
+
 
 def _sidecar_token(socket_path: str) -> str | None:
     """Per-session token the browser writes next to its socket

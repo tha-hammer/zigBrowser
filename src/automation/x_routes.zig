@@ -1,4 +1,5 @@
-//! N11: x.post / x.schedule_post / x.login_check over the automation socket.
+//! N11: x.post / x.schedule_post / x.login_check (and N13 x.selfcheck) over
+//! the automation socket.
 //! The flows live in src/x.zig; each step runs as an ordinary router command
 //! through Engine.External.runCommand, so it gets retries, actionability
 //! checks and telemetry under the x.* command's single root span.
@@ -191,7 +192,7 @@ pub fn handleWithBudget(
     const allowed: []const []const u8 = switch (verb) {
         .post => &.{ "text", "compose_url" },
         .schedule_post => &.{ "text", "date", "time", "compose_url" },
-        .login_check => &.{},
+        .login_check, .selfcheck => &.{},
     };
     var keys = params.iterator();
     while (keys.next()) |entry| {
@@ -203,6 +204,7 @@ pub fn handleWithBudget(
 
     const flow_result: x.Error!?[]u8 = switch (verb) {
         .login_check => x.loginCheck(gpa, &runner),
+        .selfcheck => x.selfCheck(gpa, &runner),
         .post, .schedule_post => blk: {
             const text = stringField(params, "text") orelse return invalidParams();
             // `compose_url` is a deliberate public override of the page the
@@ -227,7 +229,8 @@ pub fn handleWithBudget(
         error.LoggedOut => return engine_mod.automationFailure(gpa, .session_invalid, "logged_out", ids),
     };
     const json = result orelse return runner.takeFailure();
-    if (verb != .login_check) state.consume();
+    // Only posts and scheduled posts are paced; checks are read-only.
+    if (verb == .post or verb == .schedule_post) state.consume();
     return .{ .result = json };
 }
 

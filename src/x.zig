@@ -72,12 +72,13 @@ pub const post_button_poll_ms = 250;
 /// timeout; budget clamping leaves room for it.
 const wait_for_grace_ms = 1_000;
 
-pub const Verb = enum { post, schedule_post, login_check };
+pub const Verb = enum { post, schedule_post, login_check, selfcheck };
 
 pub fn verbFromMethod(method: []const u8) ?Verb {
     if (std.mem.eql(u8, method, "x.post")) return .post;
     if (std.mem.eql(u8, method, "x.schedule_post")) return .schedule_post;
     if (std.mem.eql(u8, method, "x.login_check")) return .login_check;
+    if (std.mem.eql(u8, method, "x.selfcheck")) return .selfcheck;
     return null;
 }
 
@@ -148,6 +149,41 @@ pub fn schedulePost(gpa: std.mem.Allocator, runner: anytype, params: SchedulePar
 pub fn loginCheck(gpa: std.mem.Allocator, runner: anytype) Error!?[]u8 {
     const composer_count = (try countMatches(gpa, runner, selectors.composer)) orelse return null;
     return try std.fmt.allocPrint(gpa, "{{\"loggedIn\":{},\"platform\":\"x\"}}", .{composer_count > 0});
+}
+
+/// Read-only: how many elements match each entry of `selectors` on the
+/// current page (no navigation, no input). Post buttons are reported per
+/// testid ("post_button.tweetButton"); the copy template is not a selector.
+/// Returns `{"<name>":count,...}` (owned) in table order, or null if a
+/// query failed or answered something unusable.
+pub fn selfCheck(gpa: std.mem.Allocator, runner: anytype) Error!?[]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.append(gpa, '{');
+    var first = true;
+    inline for (@typeInfo(selectors).@"struct".decls) |decl| {
+        const value = @field(selectors, decl.name);
+        if (comptime std.mem.eql(u8, decl.name, "post_button_copy")) continue;
+        if (comptime std.mem.eql(u8, decl.name, "post_button_testids")) {
+            for (value) |testid| {
+                var buf: [64]u8 = undefined;
+                const selector = std.fmt.bufPrint(&buf, "testid={s}", .{testid}) catch unreachable;
+                const count = (try countMatches(gpa, runner, selector)) orelse return null;
+                try appendCount(gpa, &out, &first, "post_button.", testid, count);
+            }
+        } else {
+            const count = (try countMatches(gpa, runner, value)) orelse return null;
+            try appendCount(gpa, &out, &first, "", decl.name, count);
+        }
+    }
+    try out.append(gpa, '}');
+    return try out.toOwnedSlice(gpa);
+}
+
+fn appendCount(gpa: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), first: *bool, prefix: []const u8, name: []const u8, count: usize) Error!void {
+    if (!first.*) try out.append(gpa, ',');
+    first.* = false;
+    try out.print(gpa, "\"{s}{s}\":{d}", .{ prefix, name, count });
 }
 
 fn validateText(text: []const u8) Error!void {

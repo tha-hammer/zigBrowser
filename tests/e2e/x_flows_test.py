@@ -187,6 +187,25 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("page after the flow", rpc.call("page.url")["url"], compose)
     passed.append("single-queue-turn")
 
+    # x.selfcheck: read-only selector-table report. With &all=1 every entry
+    # matches; after removing the composer exactly that entry drops to 0.
+    rpc.call("page.navigate", {"url": f"{base}?mode=compose&all=1"})
+    report = rpc.call("x.selfcheck", {})
+    expected_keys = [
+        "composer", "post_button.tweetButton", "post_button.tweetButtonInline", "post_success",
+        "schedule_option", "schedule_month", "schedule_day", "schedule_year", "schedule_hour",
+        "schedule_minute", "schedule_ampm", "schedule_confirm", "login_link",
+    ]
+    expect_equal("selfcheck keys", list(report), expected_keys)
+    missing = [name for name, count in report.items() if count < 1]
+    expect_equal("selfcheck all present", missing, [])
+    rpc.call("page.evaluate", {"expression": "document.querySelector('[data-testid=\"tweetTextarea_0\"]').remove(), true"})
+    after = rpc.call("x.selfcheck", {})
+    expect_equal("selfcheck composer removed", after["composer"], 0)
+    expect_equal("selfcheck others unchanged", {k: v for k, v in after.items() if k != "composer"}, {k: v for k, v in report.items() if k != "composer"})
+    expect_equal("selfcheck did not navigate", rpc.call("page.url")["url"], f"{base}?mode=compose&all=1")
+    passed.append("x.selfcheck")
+
     # Logged-out page: login link, no composer -> -32011 logged_out, nothing posted.
     response = rpc.raw("x.post", {"text": "should not post", "compose_url": f"{base}?mode=loggedout"})
     error = response.get("error") or {}

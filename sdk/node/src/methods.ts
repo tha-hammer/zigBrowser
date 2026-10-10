@@ -217,4 +217,11 @@ export class XNamespace {
   loginCheck(): Promise<XLoginCheckResult> {
     return this.call("x.login_check", {}) as Promise<XLoginCheckResult>;
   }
+  /**
+   * `{selector_name: count}` for every entry of X's selector table on the
+   * current page. Read-only (no navigation, no input, not paced).
+   */
+  selfcheck(): Promise<Record<string, number>> {
+    return this.call("x.selfcheck", {}) as Promise<Record<string, number>>;
+  }
 }

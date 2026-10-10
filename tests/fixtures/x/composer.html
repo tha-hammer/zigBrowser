@@ -10,6 +10,8 @@
                      appears 600 ms after load
          &hold=url: after a Post click the confirmation toast appears only once a
                     fetch of url settles (the test's server holds the flow there)
+         &all=1: also render a toast, an inline Post button and a login link, so
+                 every x.zig selector-table entry matches (for x.selfcheck)
          ?mode=loggedout: login link, no composer
          The page records what was posted in window.__xResult. -->
     <style>
@@ -28,6 +30,7 @@
         var params = new URLSearchParams(location.search);
         var mode = params.get('mode') || 'compose';
         var hold = params.get('hold');
+        var all = params.get('all') === '1';
         var app = document.getElementById('app');
         window.__xResult = null;
         window.__xPosts = 0;
@@ -53,7 +56,8 @@
           '  <select aria-label="Hour"></select><select aria-label="Minute"></select><select aria-label="AM/PM"></select>' +
           '  <button data-testid="scheduledConfirmationPrimaryAction">Confirm</button>' +
           '</div>' +
-          '<div id="toasts"></div>';
+          '<div id="toasts">' + (all ? '<div data-testid="toast" role="alert">Shown for selfcheck</div>' : '') + '</div>' +
+          (all ? '<button data-testid="tweetButtonInline" disabled>Post</button><a href="/login">Log in</a>' : '');
 
         function fill(select, values) {
           values.forEach(function (v) {

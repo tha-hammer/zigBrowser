@@ -205,6 +205,7 @@ by the socket yet; they answer -32601.
 | `x.post` | `text` (1-280 characters), `compose_url?` | `{ok:true}` once X shows its confirmation |
 | `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
 | `x.login_check` | — | `{loggedIn, platform:"x"}` (composer on the current page; does not navigate) |
+| `x.selfcheck` | — | `{<selector name>: count, ...}` for every entry of the X selector table on the current page (read-only, not paced) |
 
 - Each flow is one command: it opens the composer (`https://x.com/compose/post`
   unless `compose_url` names another page, e.g. a test fixture), clears any
@@ -221,7 +222,9 @@ by the socket yet; they answer -32601.
   `data.reason = "x_flow_deadline"`. With no Post button at all after 10 s:
   -32001 and `data.reason = "x_post_button_missing"`.
 - Selectors live in one table at the top of `src/x.zig`; update it when X
-  changes its markup.
+  changes its markup. `x.selfcheck` on a logged-in x.com page shows which
+  entries still match (a 0 for `composer` or both `post_button.*` means the
+  table needs updating; `login_link` and `post_success` are normally 0).
 
 ### Diagnostics
 

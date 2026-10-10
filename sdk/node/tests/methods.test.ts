@@ -49,6 +49,7 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "x.post.compose_url": (zb) => zb.x.post("hello", { composeUrl: "http://127.0.0.1:9/compose" }),
   "x.schedule_post": (zb) => zb.x.schedulePost("later", "2026-11-05", "14:07"),
   "x.login_check": (zb) => zb.x.loginCheck(),
+  "x.selfcheck": (zb) => zb.x.selfcheck(),
 };
 
 describe("typed wrappers", () => {
