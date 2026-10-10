@@ -2160,6 +2160,7 @@ const scroll_fixture =
     \\<div id="inner" style="position:fixed;left:400px;top:20px;width:200px;height:150px;overflow:auto">
     \\<div style="height:2000px">inner</div></div>
     \\<div style="height:6000px">page</div>
+    \\<div id="deep" style="position:absolute;left:0;top:4000px;width:40px;height:20px">deep</div>
     \\<script>window.wheels = [];
     \\document.addEventListener('wheel', function (e) {
     \\  window.wheels.push([e.target.id || e.target.tagName, Math.round(e.deltaY), e.isTrusted]); }, { capture: true, passive: true });</script>
@@ -2195,13 +2196,25 @@ const ScrollDriver = struct {
         var tok: [17]u8 = undefined;
         const t = d.token(&tok) orelse return self.check(false, "token");
 
-        gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "page scroll succeeds");
+        // measure (native scroll's target finder) moves nothing: the deep
+        // element's centre is reported far below the viewport, scroll 0.
+        const deep = d.eval("return JSON.stringify(globalThis.__zbAutomation.handle({ op: 'measure', selector: 'css=#deep' }).value);", c.ZB_AUTOMATION_WORLD);
+        self.check(std.mem.startsWith(u8, deep, "{\"x\":20,\"y\":4010,") and std.mem.endsWith(u8, deep, "\"scroll\":{\"x\":0,\"y\":0}}"), "measure reports the off-screen centre and scroll 0");
+        self.check(std.mem.eql(u8, d.eval("return String(window.scrollY);", null), "0"), "measure did not scroll");
+        const centre = d.eval("const v = globalThis.__zbAutomation.handle({ op: 'measure' }).value; return String(v.x === innerWidth / 2 && v.y === innerHeight / 2);", c.ZB_AUTOMATION_WORLD);
+        self.check(std.mem.eql(u8, centre, "true"), "measure without a selector is the viewport centre");
+        const none = d.eval("return JSON.stringify(globalThis.__zbAutomation.handle({ op: 'measure', selector: 'css=#absent' }));", c.ZB_AUTOMATION_WORLD);
+        if (!(std.mem.startsWith(u8, none, "{\"ok\":false") and std.mem.indexOf(u8, none, "\"retryable\":true") != null)) std.debug.print("measure absent: {s}\n", .{none});
+        self.check(std.mem.startsWith(u8, none, "{\"ok\":false") and std.mem.indexOf(u8, none, "\"retryable\":true") != null, "measure of a missing element is a retryable failure");
+
+        const page_offsets = gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "page scroll succeeds");
+        self.check(page_offsets.x == 0 and page_offsets.y == 300, "the port answers the settled offsets");
         // Read at once: nativeScroll returns after the scrolling finished.
         self.check(std.mem.eql(u8, d.eval("return String(Math.round(window.scrollY));", null), "300"), "the page scrolled by 300 CSS px by the time the call returned");
         self.check(std.mem.eql(u8, d.eval("return JSON.stringify(window.wheels);", null), "[[\"DIV\",300,true]]"), "one trusted wheel event of 300 px on the page");
 
         _ = d.eval("window.wheels = []; return 0;", null);
-        gtk_port.nativeScroll(port.ptr, 500, 95, 0, 100, std.mem.span(t), 5000) catch return self.check(false, "inner scroll succeeds");
+        _ = gtk_port.nativeScroll(port.ptr, 500, 95, 0, 100, std.mem.span(t), 5000) catch return self.check(false, "inner scroll succeeds");
         self.check(std.mem.eql(u8, d.eval("return String(Math.round(document.getElementById('inner').scrollTop));", null), "100"), "the inner scroller under the point scrolled by 100 by the time the call returned");
         self.check(self.settlesAt("window.scrollY", 300), "the page did not move");
         self.check(std.mem.startsWith(u8, d.eval("return JSON.stringify(window.wheels);", null), "[[\"DIV\",100,true]"), "a trusted wheel event of 100 px reached the inner scroller");
@@ -2213,7 +2226,7 @@ const ScrollDriver = struct {
         var bottom_copy: [32]u8 = undefined;
         const bottom_v = bottom_copy[0..@min(bottom.len, 32)];
         @memcpy(bottom_v, bottom[0..bottom_v.len]);
-        gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "a wheel at the end of the page returns");
+        _ = gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "a wheel at the end of the page returns");
         self.check(std.mem.eql(u8, d.eval("return String(Math.round(window.scrollY));", null), bottom_v), "nothing moved at the end of the page");
         _ = d.eval("window.scrollTo(0, 300); return 0;", null);
         sleepMs(300);

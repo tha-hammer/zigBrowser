@@ -129,6 +129,8 @@
         return scroll(command);
       case 'locate':
         return locate(command);
+      case 'measure':
+        return measure(command);
       case 'waitFor':
         return waitFor(command);
       case 'rateLimitScan':
@@ -233,6 +235,27 @@
       document: inputAck.doc,
       viewport: { width: globalScope.innerWidth, height: globalScope.innerHeight }
     }, telemetry);
+  }
+
+  // Native scroll (N18): where the target is now, without moving anything.
+  // Unlike locate it never scrolls (scrollIntoView would do the scroll
+  // synthetically before the real wheel) and runs no actionability checks:
+  // the target may be far off screen. Without a selector, x/y is the
+  // viewport centre. no_match is retryable.
+  function measure(command) {
+    const viewport = { width: globalScope.innerWidth, height: globalScope.innerHeight };
+    const answer = (x, y, telemetry) => success({
+      x, y, document: inputAck.doc, viewport,
+      scroll: { x: globalScope.scrollX, y: globalScope.scrollY }
+    }, telemetry);
+    if (command.selector === undefined || command.selector === null) {
+      return answer(viewport.width / 2, viewport.height / 2, []);
+    }
+    const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
+    if (!resolved.ok) return resolved.response;
+    if (resolved.elements.length === 0) return failure('no_match', command, resolved.telemetry, true);
+    const rect = resolved.elements[0].getBoundingClientRect();
+    return answer(rect.left + rect.width / 2, rect.top + rect.height / 2, resolved.telemetry);
   }
 
   // Focus as the synthetic action would leave it: for typing, the caret goes

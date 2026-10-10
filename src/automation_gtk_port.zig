@@ -53,6 +53,9 @@ const vtable: PagePort.VTable = .{
     .nativeText = nativeText,
     .nativeMove = nativeMove,
     .pointer = pointer,
+    .setInputFiles = setInputFiles,
+    .nativeScroll = nativeScroll,
+    .screenshot = screenshot,
 };
 
 fn mapCode(rc: c_int) PortError!void {
@@ -382,20 +385,15 @@ pub fn nativeMove(_: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_
     try mapNativeCode(rc);
 }
 
-/// A PNG of the page (PagePort v3.4 `screenshot`; page_port gets the shared
-/// type with the engine half). `png` is owned by the caller's gpa.
-pub const Screenshot = struct { png: []u8, width: u32, height: u32 };
-pub const max_screenshot_bytes: usize = 16 * 1024 * 1024;
-pub const ScreenshotError = PortError || error{TooLarge};
-
-/// PNG of the visible viewport, or of the whole document. Bounded by the
-/// deadline; an encoded PNG over max_screenshot_bytes is TooLarge.
-pub fn screenshot(_: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) ScreenshotError!Screenshot {
-    return screenshotWithLimit(gpa, full_page, max_screenshot_bytes, timeout_ms);
+/// PagePort v3.4: PNG of the visible viewport, or of the whole document.
+/// Bounded by the deadline; an encoded PNG over max_screenshot_bytes is
+/// TooLarge. `png` is owned by `gpa`.
+pub fn screenshot(_: *anyopaque, gpa: std.mem.Allocator, full_page: bool, timeout_ms: u64) PortError!page_port.Screenshot {
+    return screenshotWithLimit(gpa, full_page, page_port.max_screenshot_bytes, timeout_ms);
 }
 
 /// screenshot with an explicit encoded-size limit (tests use a tiny one).
-pub fn screenshotWithLimit(gpa: std.mem.Allocator, full_page: bool, max_bytes: usize, timeout_ms: u64) ScreenshotError!Screenshot {
+pub fn screenshotWithLimit(gpa: std.mem.Allocator, full_page: bool, max_bytes: usize, timeout_ms: u64) PortError!page_port.Screenshot {
     var png: [*c]u8 = null;
     var len: usize = 0;
     var width: c_int = 0;
@@ -423,7 +421,7 @@ const scroll_start_ms: i64 = 250;
 /// started has finished, so the next command sees the final offsets (or
 /// a navigation replaced the page). Timeout after dispatch is never
 /// retried.
-pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, document: ?[]const u8, timeout_ms: u64) PortError!page_port.ScrollOffsets {
     for ([_]f64{ x, y, delta_x, delta_y }) |v| if (!std.math.isFinite(v)) return error.EvalFailed;
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
@@ -437,8 +435,50 @@ pub fn nativeScroll(_: *anyopaque, x: f64, y: f64, delta_x: f64, delta_y: f64, d
     try mapNativeCode(rc);
     var target = base;
     target.wheel += 1;
-    if (try page_acks.settle(target, deadline) != .acknowledged) return;
-    try waitScrollSettled(&page_acks, base.scrolls, deadline);
+    if (try page_acks.settle(target, deadline) == .acknowledged) try waitScrollSettled(&page_acks, base.scrolls, deadline);
+    return readScrollOffsets(deadline);
+}
+
+/// The page's scrollX/scrollY once the scroll settled (same deadline).
+fn readScrollOffsets(deadline: i64) PortError!page_port.ScrollOffsets {
+    const gpa = std.heap.c_allocator;
+    const out = try evalJson(&port_tag, gpa, .automation, "return JSON.stringify([globalThis.scrollX, globalThis.scrollY]);", "null", try remainingMs(deadline));
+    defer gpa.free(out);
+    const offsets = std.json.parseFromSlice([2]f64, gpa, out, .{}) catch return error.EvalFailed;
+    defer offsets.deinit();
+    return .{ .x = offsets.value[0], .y = offsets.value[1] };
+}
+
+/// PagePort v3.3: answer the file chooser that `function_body`'s op (the
+/// automation.js chooseFiles command in `arg_json`) opens with `paths`.
+/// Returns the op's JSON answer. Paths that are not absolute, readable
+/// regular files: BadFile, nothing run. Chosen but unconfirmed (deadline,
+/// a failed op, a lost page): FilesUnconfirmed, never to be repeated.
+pub fn setInputFiles(_: *anyopaque, gpa: std.mem.Allocator, function_body: []const u8, arg_json: []const u8, paths: []const []const u8, timeout_ms: u64) PortError![]u8 {
+    if (paths.len == 0 or paths.len > std.math.maxInt(c_int)) return error.BadFile;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const body_z = try arena.dupeZ(u8, function_body);
+    const arg_z = try arena.dupeZ(u8, arg_json);
+    const paths_z = try arena.alloc([*c]const u8, paths.len);
+    for (paths, paths_z) |path, *slot| {
+        // The C ABI is NUL-terminated: an embedded NUL would name another file.
+        if (std.mem.indexOfScalar(u8, path, 0) != null) return error.BadFile;
+        slot.* = (try arena.dupeZ(u8, path)).ptr;
+    }
+    var out: [*c]u8 = null;
+    var err: [*c]u8 = null;
+    const rc = c.zb_set_input_files(null, body_z.ptr, arg_z.ptr, paths_z.ptr, @intCast(paths.len), clampMs(timeout_ms), &out, &err);
+    c.zb_automation_free(err);
+    defer c.zb_automation_free(out);
+    switch (rc) {
+        c.ZB_AUTO_ERR_BAD_FILE => return error.BadFile,
+        c.ZB_AUTO_ERR_FILES_UNCONFIRMED => return error.FilesUnconfirmed,
+        else => try mapCode(rc),
+    }
+    if (out == null) return error.EvalFailed;
+    return gpa.dupe(u8, std.mem.span(out));
 }
 
 /// After the wheel was acknowledged: wait until the scrolling it started
@@ -672,4 +712,19 @@ test "the GTK vtable implements the v3.2 pointer seam, not the Unsupported defau
     const port = pagePort().?;
     try std.testing.expect(port.vtable.nativeMove == &nativeMove);
     try std.testing.expect(port.vtable.pointer == &pointer);
+}
+
+test "the GTK vtable implements every PagePort method, none is left at its Unsupported default" {
+    if (!supported) return error.SkipZigTest;
+    // Any field added to PagePort.VTable with a default (the "not
+    // supported" answer) must be wired here in the same slice.
+    inline for (@typeInfo(PagePort.VTable).@"struct".fields) |field| {
+        if (field.default_value_ptr) |default_ptr| {
+            const default = @as(*const field.type, @ptrCast(@alignCast(default_ptr))).*;
+            if (@field(vtable, field.name) == default) {
+                std.debug.print("PagePort.{s} is not implemented by the GTK adapter\n", .{field.name});
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
 }
