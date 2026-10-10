@@ -124,6 +124,14 @@ static gboolean on_signal_force_quit(gpointer user_data);
 static void request_app_shutdown(ZbApp *app, int with_deadline);
 static void terminate_window_web_process(ZbWindow *win);
 
+/* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
+static void auto_install_script(ZbWindow *win);
+static void auto_publish_primary(ZbApp *app);
+static void auto_window_destroyed(ZbWindow *win);
+static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri);
+static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
+static void auto_nav_blocked(ZbWindow *win, const char *candidate);
+
 static void emit_safe_field(const char *text) {
   const char *p = text != NULL ? text : "";
   for (; *p != '\0'; ++p) {
@@ -325,6 +333,7 @@ static void app_remove_window(ZbApp *app, ZbWindow *win) {
     app->windows[app->n_windows - 1] = NULL;
     app->n_windows--;
     app_emit_wincount(app);
+    auto_publish_primary(app);
   }
 
   if (app->n_windows == 0 && gtk_main_level() > 0) {
@@ -667,6 +676,8 @@ static gboolean on_window_timeout(gpointer user_data) {
 
   emit_load_fail(win, timed_out_uri, win->load_error_domain,
                  win->load_error_code);
+  GError timeout_error = {G_IO_ERROR, G_IO_ERROR_TIMED_OUT, (char *)"load timed out"};
+  auto_load_failed(win, timed_out_uri, &timeout_error);
   g_free(timed_out_uri);
   return G_SOURCE_REMOVE;
 }
@@ -746,6 +757,7 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   }
 
   win->gtk_window = NULL;
+  auto_window_destroyed(win);
   app_remove_window(win->app, win);
   window_free(win);
 }
@@ -765,6 +777,10 @@ static gboolean on_window_load_failed(WebKitWebView *view,
 
   remove_source(&win->timeout_source_id);
 
+  /* An automation-driven load that fails gets no WebKit error page: that
+   * page loads asynchronously and would displace the client's next command. */
+  int automation_load = auto_load_failed(win, uri, error);
+
   if (win->load_superseded && is_cancelled_network_error(error)) {
     return TRUE;
   }
@@ -774,7 +790,7 @@ static gboolean on_window_load_failed(WebKitWebView *view,
   window_set_load_error(win, error);
 
   emit_load_fail(win, uri, win->load_error_domain, win->load_error_code);
-  return FALSE;
+  return automation_load ? TRUE : FALSE;
 }
 
 static void on_window_load_changed(WebKitWebView *view,
@@ -784,6 +800,8 @@ static void on_window_load_changed(WebKitWebView *view,
   if (win == NULL) {
     return;
   }
+
+  auto_load_event(win, load_event, webkit_web_view_get_uri(view));
 
   switch (load_event) {
     case WEBKIT_LOAD_STARTED:
@@ -887,6 +905,9 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
 
   webkit_policy_decision_ignore(decision);
   emit_protocol1(app, "BLOCKED", candidate);
+  if (win != NULL && dtype == ZB_DTYPE_NAVIGATION) {
+    auto_nav_blocked(win, candidate);
+  }
   return TRUE;
 }
 
@@ -948,9 +969,11 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
                                            NULL, 0);
 
   install_ipc_handler(win);
+  auto_install_script(win);
 
   app->windows[app->n_windows++] = win;
   app_emit_wincount(app);
+  auto_publish_primary(app);
   gtk_widget_show_all(win->gtk_window);
   return win;
 }
@@ -1135,6 +1158,18 @@ struct ZbAutoJob {
   ZbAutoStartFn start;
   ZbMainJobFn fn;
   void *ctx;
+
+  /* Async page ops. Inputs are owned copies; `target` is touched only on the
+   * GTK thread and is cleared when the window is destroyed. */
+  ZbWindow *requested;
+  ZbWindow *target;
+  char *body;
+  char *arg;
+  char *world;
+  char *url;
+  GCancellable *cancellable;
+  int op;
+  int load_armed; /* saw LOAD_STARTED for `url` */
 };
 
 static GMutex zb_auto_mutex;
@@ -1162,6 +1197,13 @@ static void auto_job_unref(gpointer data) {
   }
   g_free(job->result);
   g_free(job->err);
+  g_free(job->body);
+  g_free(job->arg);
+  g_free(job->world);
+  g_free(job->url);
+  if (job->cancellable != NULL) {
+    g_object_unref(job->cancellable);
+  }
   g_free(job);
 }
 
@@ -1314,6 +1356,444 @@ void zb_automation_loop_mark(int running) {
   g_mutex_unlock(&zb_auto_mutex);
 }
 
+/* ---- Automation bridge: windows, script injection, page ops ---- */
+
+enum {
+  ZB_OP_INVOKE = 0,
+  ZB_OP_EVAL,
+  ZB_OP_NAVIGATE,
+  ZB_OP_RELOAD,
+  ZB_OP_URL,
+};
+
+#define ZB_AUTO_SCRIPT_KEY "zb-automation-script"
+
+static char *zb_auto_script_source; /* set before zb_app_run */
+static ZbApp *zb_auto_app;          /* GTK thread only */
+static ZbWindow *zb_auto_primary;   /* guarded by zb_auto_mutex */
+static GList *zb_auto_inflight;     /* GTK thread only; holds one ref per job */
+
+void zb_automation_set_script(const char *source, size_t len) {
+  g_free(zb_auto_script_source);
+  zb_auto_script_source = source != NULL ? g_strndup(source, len) : NULL;
+}
+
+/* Child views built with webkit_web_view_new_with_related_view share their
+ * parent's content manager, so the marker keeps the script installed once. */
+static void auto_install_script(ZbWindow *win) {
+  if (zb_auto_script_source == NULL || win->ucm == NULL ||
+      g_object_get_data(G_OBJECT(win->ucm), ZB_AUTO_SCRIPT_KEY) != NULL) {
+    return;
+  }
+
+  WebKitUserScript *script = webkit_user_script_new_for_world(
+      zb_auto_script_source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+      WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, ZB_AUTOMATION_WORLD, NULL,
+      NULL);
+  webkit_user_content_manager_add_script(win->ucm, script);
+  webkit_user_script_unref(script);
+  g_object_set_data(G_OBJECT(win->ucm), ZB_AUTO_SCRIPT_KEY, GINT_TO_POINTER(1));
+}
+
+static void auto_publish_primary(ZbApp *app) {
+  g_mutex_lock(&zb_auto_mutex);
+  zb_auto_primary =
+      (app != NULL && app->n_windows > 0) ? app->windows[0] : NULL;
+  g_cond_broadcast(&zb_auto_cond);
+  g_mutex_unlock(&zb_auto_mutex);
+}
+
+ZbWindow *zb_automation_main_window(void) {
+  g_mutex_lock(&zb_auto_mutex);
+  ZbWindow *win = zb_auto_primary;
+  g_mutex_unlock(&zb_auto_mutex);
+  return win;
+}
+
+/* GTK thread: map a requested window (NULL = primary) to a live window. */
+static ZbWindow *auto_resolve_window(ZbWindow *requested) {
+  ZbApp *app = zb_auto_app;
+  if (app == NULL) {
+    return NULL;
+  }
+  for (int i = 0; i < app->n_windows; i++) {
+    ZbWindow *win = app->windows[i];
+    if (win != NULL && win->view != NULL &&
+        (requested == NULL ? i == 0 : win == requested)) {
+      return win;
+    }
+  }
+  return NULL;
+}
+
+static void auto_track(ZbAutoJob *job, ZbWindow *win) {
+  job->target = win;
+  zb_auto_inflight = g_list_prepend(zb_auto_inflight, auto_job_ref(job));
+}
+
+static void auto_untrack(ZbAutoJob *job) {
+  GList *link = g_list_find(zb_auto_inflight, job);
+  if (link != NULL) {
+    zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+    auto_job_unref(job);
+  }
+}
+
+/* GTK thread: complete tracked jobs on `win` whose op matches `pred`. */
+static void auto_complete_tracked(ZbWindow *win, int (*pred)(const ZbAutoJob *),
+                                  int code, const char *message) {
+  GList *link = zb_auto_inflight;
+  while (link != NULL) {
+    GList *next = link->next;
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && pred(job)) {
+      job->target = NULL;
+      auto_job_complete(job, code, NULL,
+                        message != NULL ? g_strdup(message) : NULL);
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+    }
+    link = next;
+  }
+}
+
+static int auto_is_any(const ZbAutoJob *job) {
+  (void)job;
+  return 1;
+}
+
+static int auto_is_load(const ZbAutoJob *job) {
+  return job->op == ZB_OP_NAVIGATE || job->op == ZB_OP_RELOAD;
+}
+
+/* WebKit may append a trailing slash ("http://h" -> "http://h/"). */
+static int auto_same_uri(const char *a, const char *b) {
+  if (a == NULL || b == NULL) {
+    return 0;
+  }
+  size_t la = strlen(a);
+  size_t lb = strlen(b);
+  if (la > 0 && a[la - 1] == '/') {
+    la--;
+  }
+  if (lb > 0 && b[lb - 1] == '/') {
+    lb--;
+  }
+  return la == lb && strncmp(a, b, la) == 0;
+}
+
+static void auto_window_destroyed(ZbWindow *win) {
+  for (GList *link = zb_auto_inflight; link != NULL; link = link->next) {
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && job->cancellable != NULL) {
+      g_cancellable_cancel(job->cancellable);
+    }
+  }
+  auto_complete_tracked(win, auto_is_any, ZB_AUTO_ERR_CANCELLED,
+                        "window destroyed");
+}
+
+/* A load job follows its own URI: LOAD_STARTED for that URI arms it,
+ * REDIRECTED moves it, a commit of any other URI disarms it (the load was
+ * displaced, e.g. by WebKit's error page for an earlier failure), and only
+ * FINISHED for its URI completes it. */
+static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri) {
+  GList *link = zb_auto_inflight;
+  while (link != NULL) {
+    GList *next = link->next;
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target != win || !auto_is_load(job)) {
+      link = next;
+      continue;
+    }
+
+    int same = auto_same_uri(job->url, uri);
+    if (event == WEBKIT_LOAD_STARTED && same) {
+      job->load_armed = 1;
+    } else if (event == WEBKIT_LOAD_REDIRECTED && job->load_armed) {
+      g_free(job->url);
+      job->url = g_strdup(uri);
+    } else if (event == WEBKIT_LOAD_COMMITTED && !same) {
+      job->load_armed = 0;
+    } else if (event == WEBKIT_LOAD_FINISHED && same && job->load_armed) {
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+    }
+    link = next;
+  }
+}
+
+/* Fails armed load jobs for `uri`; returns whether any matched. */
+static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error) {
+  int matched = 0;
+  GList *link = zb_auto_inflight;
+  while (link != NULL) {
+    GList *next = link->next;
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && auto_is_load(job) && job->load_armed &&
+        auto_same_uri(job->url, uri)) {
+      const char *message = is_cancelled_network_error(error)
+                                ? "navigation interrupted by another load"
+                                : (error != NULL && error->message != NULL
+                                       ? error->message
+                                       : "load failed");
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, g_strdup(message));
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+      matched = 1;
+    }
+    link = next;
+  }
+  return matched;
+}
+
+static void auto_nav_blocked(ZbWindow *win, const char *candidate) {
+  GList *link = zb_auto_inflight;
+  while (link != NULL) {
+    GList *next = link->next;
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && job->op == ZB_OP_NAVIGATE &&
+        g_strcmp0(job->url, candidate) == 0) {
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL,
+                        g_strdup("navigation blocked by policy"));
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+    }
+    link = next;
+  }
+}
+
+static gboolean auto_cancel_dispatch(gpointer data) {
+  g_cancellable_cancel(G_CANCELLABLE(data));
+  return G_SOURCE_REMOVE;
+}
+
+/* Cancel on the GTK thread: "cancelled" handlers run in the cancelling
+ * thread, and WebKit's handlers must not run on the server thread. */
+static void auto_cancel_on_gtk_thread(GCancellable *cancellable) {
+  GSource *source = g_idle_source_new();
+  g_source_set_callback(source, auto_cancel_dispatch, g_object_ref(cancellable),
+                        g_object_unref);
+  g_source_attach(source, g_main_context_default());
+  g_source_unref(source);
+}
+
+static void on_auto_eval_done(GObject *object, GAsyncResult *result,
+                              gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  GError *error = NULL;
+  JSCValue *value = webkit_web_view_call_async_javascript_function_finish(
+      WEBKIT_WEB_VIEW(object), result, &error);
+  auto_untrack(job);
+
+  if (value == NULL) {
+    int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)
+                   ? ZB_AUTO_ERR_CANCELLED
+                   : ZB_AUTO_ERR_JS;
+    auto_job_complete(job, code, NULL,
+                      g_strdup(error != NULL ? error->message : "eval failed"));
+    g_clear_error(&error);
+  } else {
+    char *out = NULL;
+    if (jsc_value_is_string(value)) {
+      out = jsc_value_to_string(value);
+    } else if (!jsc_value_is_undefined(value)) {
+      out = jsc_value_to_json(value, 0);
+    }
+    g_object_unref(value);
+    auto_job_complete(job, ZB_AUTO_OK, out != NULL ? out : g_strdup("null"),
+                      NULL);
+  }
+  auto_job_unref(job);
+}
+
+static void auto_start_eval(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+
+  GVariantDict dict;
+  g_variant_dict_init(&dict, NULL);
+  g_variant_dict_insert(&dict, "arg", "s", job->arg);
+  GVariant *args = g_variant_dict_end(&dict);
+
+  auto_track(job, win);
+  webkit_web_view_call_async_javascript_function(
+      win->view, job->body, -1, args, job->world, NULL, job->cancellable,
+      on_auto_eval_done, auto_job_ref(job));
+}
+
+/* Mirrors zb_reload: mark the in-flight load superseded so its cancellation
+ * and FINISHED are ignored, then start the new load. */
+static void auto_start_load(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+
+  auto_track(job, win);
+  win->load_superseded = 1;
+  win->suppress_success_emit = 0;
+  window_clear_pending_nav(win);
+  if (win->cancellable != NULL) {
+    g_cancellable_cancel(win->cancellable);
+  }
+  webkit_web_view_stop_loading(win->view);
+
+  if (job->op == ZB_OP_NAVIGATE) {
+    webkit_web_view_load_uri(win->view, job->url);
+  } else {
+    job->url = g_strdup(webkit_web_view_get_uri(win->view));
+    webkit_web_view_reload(win->view);
+  }
+}
+
+static void auto_start_get(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+
+  const char *value = webkit_web_view_get_uri(win->view);
+  auto_job_complete(job, ZB_AUTO_OK, g_strdup(value != NULL ? value : ""), NULL);
+}
+
+static int auto_wait_for_primary(gint64 deadline_us) {
+  int code = ZB_AUTO_OK;
+  g_mutex_lock(&zb_auto_mutex);
+  while (zb_auto_primary == NULL) {
+    if (auto_loop_ended_locked()) {
+      code = ZB_AUTO_ERR_NO_LOOP;
+      break;
+    }
+    if (!g_cond_wait_until(&zb_auto_cond, &zb_auto_mutex, deadline_us) &&
+        zb_auto_primary == NULL) {
+      code = auto_loop_ended_locked() ? ZB_AUTO_ERR_NO_LOOP : ZB_AUTO_ERR_NO_WINDOW;
+      break;
+    }
+  }
+  g_mutex_unlock(&zb_auto_mutex);
+  return code;
+}
+
+/* Waiter side shared by every page op. Moves the job's outputs to the
+ * caller when the job finished, whatever its code. */
+static int auto_run_op(ZbAutoJob *job, ZbWindow *win, unsigned int timeout_ms,
+                       char **out_result, char **out_err) {
+  if (out_result != NULL) {
+    *out_result = NULL;
+  }
+  if (out_err != NULL) {
+    *out_err = NULL;
+  }
+  if (auto_on_gtk_thread()) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+
+  gint64 deadline = auto_deadline(timeout_ms);
+  int code = win == NULL ? auto_wait_for_primary(deadline) : ZB_AUTO_OK;
+  if (code != ZB_AUTO_OK) {
+    return code;
+  }
+
+  job->requested = win;
+  code = auto_job_submit(job);
+  if (code == ZB_AUTO_OK) {
+    code = auto_job_wait(job, deadline);
+  }
+
+  g_mutex_lock(&zb_auto_mutex);
+  int done = job->state == ZB_JOB_DONE;
+  if (done && out_result != NULL) {
+    *out_result = job->result;
+    job->result = NULL;
+  }
+  if (done && out_err != NULL) {
+    *out_err = job->err;
+    job->err = NULL;
+  }
+  g_mutex_unlock(&zb_auto_mutex);
+
+  if (!done && job->cancellable != NULL) {
+    auto_cancel_on_gtk_thread(job->cancellable);
+  }
+  return code;
+}
+
+static ZbAutoJob *auto_op_new(int op) {
+  int is_async = op == ZB_OP_EVAL || op == ZB_OP_NAVIGATE || op == ZB_OP_RELOAD;
+  ZbAutoStartFn start = op == ZB_OP_EVAL ? auto_start_eval
+                        : is_async      ? auto_start_load
+                                        : auto_start_get;
+  ZbAutoJob *job = auto_job_new(start, is_async);
+  job->op = op;
+  if (is_async) {
+    job->cancellable = g_cancellable_new();
+  }
+  return job;
+}
+
+int zb_automation_eval_json(ZbWindow *win, const char *function_body,
+                            const char *arg_json, const char *world,
+                            unsigned int timeout_ms, char **out_result,
+                            char **out_err) {
+  if (function_body == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_EVAL);
+  job->body = g_strdup(function_body);
+  job->arg = g_strdup(arg_json != NULL ? arg_json : "null");
+  job->world = g_strdup(world);
+  int code = auto_run_op(job, win, timeout_ms, out_result, out_err);
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_automation_navigate(ZbWindow *win, const char *url, unsigned int timeout_ms,
+                           char **out_err) {
+  if (url == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  ZbAutoJob *job = auto_op_new(ZB_OP_NAVIGATE);
+  job->url = g_strdup(url);
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_automation_reload(ZbWindow *win, unsigned int timeout_ms, char **out_err) {
+  ZbAutoJob *job = auto_op_new(ZB_OP_RELOAD);
+  int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
+  auto_job_unref(job);
+  return code;
+}
+
+int zb_automation_get_url(ZbWindow *win, unsigned int timeout_ms, char **out_url) {
+  ZbAutoJob *job = auto_op_new(ZB_OP_URL);
+  int code = auto_run_op(job, win, timeout_ms, out_url, NULL);
+  auto_job_unref(job);
+  return code;
+}
+
+/* Reads document.title in the isolated world: webkit_web_view_get_title lags
+ * the DOM and is often still empty when the load finishes. */
+int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_title) {
+  return zb_automation_eval_json(win, "return document.title || '';", NULL,
+                                 ZB_AUTOMATION_WORLD, timeout_ms, out_title, NULL);
+}
+
+void zb_automation_free(char *p) {
+  g_free(p);
+}
+
 int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   const char *display = g_getenv("DISPLAY");
   if (display == NULL || display[0] == '\0') {
@@ -1356,8 +1836,10 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     return ZB_EXIT_GTK_INIT_FAILED;
   }
 
+  zb_auto_app = &app;
   ZbWindow *main_window = zb_window_new(&app, main_view);
   if (main_window == NULL) {
+    zb_auto_app = NULL;
     g_free(app.app_base);
     return ZB_EXIT_GTK_INIT_FAILED;
   }
@@ -1393,6 +1875,8 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     }
   }
 
+  zb_auto_app = NULL;
+  auto_publish_primary(NULL);
   g_free(app.app_base);
   g_free(app.pending_subwindow_seed_uri);
   app.app_base = NULL;

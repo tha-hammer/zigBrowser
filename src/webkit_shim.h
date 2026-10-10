@@ -64,6 +64,48 @@ int zb_main_invoke_sync(ZbMainJobFn fn, void *ctx, unsigned int timeout_ms);
  * submissions queue and wait (the server starts before zb_app_run). */
 void zb_automation_loop_mark(int running);
 
+/* Isolated script world shared by the injected automation script and evals. */
+#define ZB_AUTOMATION_WORLD "zigbrowser-automation"
+
+/* Install `source` (automation.js) at document start, top frame, in
+ * ZB_AUTOMATION_WORLD, for the main window and every child window. Call before
+ * zb_app_run. The source is copied; NULL disables injection. */
+void zb_automation_set_script(const char *source, size_t len);
+
+/* Primary window (the first live window), or NULL before zb_app_run creates it
+ * and after the last window closes. Thread-safe snapshot; the ops below
+ * re-validate the pointer on the GTK thread. */
+ZbWindow *zb_automation_main_window(void);
+
+/* Ops below: win == NULL targets the primary window and waits for it to exist
+ * until the deadline (ZB_AUTO_ERR_NO_WINDOW). Every input string is copied
+ * before the call queues work. *out_* strings are heap-allocated by the shim
+ * (free with zb_automation_free) and are set only when the call says so.
+ * *out_err is diagnostic text and may contain page data. */
+
+/* Run `function_body` as the body of an async JS function in `world`
+ * (NULL = page world) and wait for its promise. The function sees one
+ * variable, `arg`, holding the string `arg_json` (NULL -> "null"); command
+ * data must travel through `arg`, never through the body. On ZB_AUTO_OK
+ * *out_result is the returned string verbatim, or the JSON encoding of a
+ * non-string value ("null" for undefined). ZB_AUTO_ERR_JS sets *out_err. */
+int zb_automation_eval_json(ZbWindow *win, const char *function_body,
+                            const char *arg_json, const char *world,
+                            unsigned int timeout_ms, char **out_result,
+                            char **out_err);
+
+/* Load `url` and wait for its load to finish. A load error or a navigation
+ * blocked by policy returns ZB_AUTO_ERR_NAV_FAILED and sets *out_err. */
+int zb_automation_navigate(ZbWindow *win, const char *url, unsigned int timeout_ms,
+                           char **out_err);
+int zb_automation_reload(ZbWindow *win, unsigned int timeout_ms, char **out_err);
+
+/* Current URI (WebKit's committed URI) / document.title; "" when none. */
+int zb_automation_get_url(ZbWindow *win, unsigned int timeout_ms, char **out_url);
+int zb_automation_get_title(ZbWindow *win, unsigned int timeout_ms, char **out_title);
+
+void zb_automation_free(char *p);
+
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);
 int zb_ipc_dispatch(const char *cmd, const char *args_json, const char **out_result,
