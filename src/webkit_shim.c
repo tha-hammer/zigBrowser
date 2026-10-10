@@ -2443,11 +2443,16 @@ static guint auto_keyval_for(const char *key) {
       return zb_named_keys[i].keyval;
     }
   }
-  if (key[0] == 'F' && key[1] >= '1' && key[1] <= '9') {
-    int n = atoi(key + 1);
+  /* F1..F12, exactly ("F1x" and "F13" are not keys). */
+  if (key[0] == 'F' && g_ascii_isdigit(key[1]) && key[1] != '0') {
+    int n = key[1] - '0';
+    if (key[2] != '\0') {
+      n = g_ascii_isdigit(key[2]) && key[3] == '\0' ? n * 10 + (key[2] - '0') : 0;
+    }
     if (n >= 1 && n <= 12) {
       return GDK_KEY_F1 + (guint)(n - 1);
     }
+    return 0;
   }
   if (g_utf8_validate(key, -1, NULL) && g_utf8_strlen(key, -1) == 1) {
     gunichar ch = g_utf8_get_char(key);

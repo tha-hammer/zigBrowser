@@ -763,6 +763,24 @@ const LiveDriver = struct {
         self.check(eq(after.out, "hiA"), "Shift+a typed an upper-case A");
         self.check(eq(self.nativeLog(), "keydown:h:true:false,keydown:i:true:false,keydown:Shift:true:true,keydown:A:true:true,keydown:Enter:true:false"), "native keys are trusted with key names and shift state");
 
+        // The ack counts trusted events only: page-dispatched fakes cannot
+        // satisfy a wait early.
+        const ack_before = self.inputAck() orelse return self.check(false, "inputAck available");
+        _ = self.eval(null, "document.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true})); document.dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); return 0;", null, null, 5000);
+        const ack_after = self.inputAck() orelse return self.check(false, "inputAck available");
+        self.check(ack_after[0] == ack_before[0] and ack_after[1] == ack_before[1], "synthetic page events do not count as input acks");
+
+        // Key names are parsed exactly.
+        var bad_err: [*c]u8 = null;
+        self.check(c.zb_native_key(null, "F1x", 0, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F1x is not a key");
+        c.zb_automation_free(bad_err);
+        bad_err = null;
+        self.check(c.zb_native_key(null, "F13", 0, 5000, null, &bad_err) == c.ZB_AUTO_ERR_INTERNAL, "F13 is not a key");
+        c.zb_automation_free(bad_err);
+        bad_err = null;
+        self.check(c.zb_native_key(null, "F12", 0, 5000, null, &bad_err) == c.ZB_AUTO_OK, "F12 is a key");
+        c.zb_automation_free(bad_err);
+
         // Long text is bounded by the deadline: one GTK-thread step per
         // character, so it stops early instead of holding the GTK thread.
         const long_text = "x" ** 2000;

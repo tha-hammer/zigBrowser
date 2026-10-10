@@ -20,9 +20,11 @@
   // Trusted-input acknowledgement: native (GDK) events reach the page
   // asynchronously, so callers compare these counts before and after sending
   // events to know the page has handled them. Counted in this isolated world.
+  // Only trusted (real input) events count, so a page dispatching synthetic
+  // keyup/mouseup cannot make a wait finish early.
   const inputAck = { mouseup: 0, keyup: 0 };
-  globalScope.addEventListener('mouseup', () => { inputAck.mouseup += 1; }, true);
-  globalScope.addEventListener('keyup', () => { inputAck.keyup += 1; }, true);
+  globalScope.addEventListener('mouseup', (event) => { if (event.isTrusted) inputAck.mouseup += 1; }, true);
+  globalScope.addEventListener('keyup', (event) => { if (event.isTrusted) inputAck.keyup += 1; }, true);
 
   let nextElementId = 1;
   let nextSpanId = 1;
