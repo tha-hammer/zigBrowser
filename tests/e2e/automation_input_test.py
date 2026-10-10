@@ -53,6 +53,13 @@ def run_contenteditable(socket_path: Path, t: float) -> None:
     expect_equal("empty fill plain", rpc("dom.fill", {"selector": "css=#plain", "value": ""}), ok)
     expect_equal("plain text after empty fill", evaluate(socket_path, "document.getElementById('plain').textContent", next(ids), t), "")
     expect_equal("input events after empty fill", plain_inputs(), 13)
+    # The text goes through the browser's own editing (execCommand), not a
+    # DOM splice: the browser can undo it, which a Range insert never allows.
+    expect_equal("type for undo", rpc("dom.type", {"selector": "css=#plain", "text": "ab"}), ok)
+    undone = evaluate(socket_path, "(function () { var p = document.getElementById('plain'); p.focus();"
+                      " document.execCommand('undo'); return p.textContent; })()", next(ids), t)
+    if undone == "ab" or not "ab".startswith(undone):
+        raise AssertionError(f"typing left no browser undo step (not native editing): after undo {undone!r}")
 
     # Draft.js-like editor: it cancels beforeinput and owns the edit.
     expect_equal("type into draft", rpc("dom.type", {"selector": "css=#draft", "text": "Hi X"}), ok)
