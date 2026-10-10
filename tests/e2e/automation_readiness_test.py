@@ -64,8 +64,13 @@ def main() -> int:
             sent_at = time.monotonic()
             response = rpc.raw("dom.waitFor", {"selector": "css=#never", "state": "attached", "timeout_ms": WAIT_TIMEOUT_MS})
             elapsed = time.monotonic() - sent_at
-            served_at = fixture.core_served_at
             rpc.close()
+            # Under load the browser may request /core late, so it can still be
+            # in flight when the answer arrives; wait for it before comparing.
+            deadline = time.monotonic() + 10
+            while fixture.core_served_at is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            served_at = fixture.core_served_at
             if served_at is None or served_at < sent_at:
                 raise AssertionError(f"waitFor was not sent during the initial load (sent={sent_at}, served={served_at})")
             error = response.get("error") or {}
