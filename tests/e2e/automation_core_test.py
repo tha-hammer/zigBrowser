@@ -61,6 +61,9 @@ class RpcClient:
         self.sock = sock
         self.next_id = 1
         self.max_response_bytes = 0
+        # Per-session token sidecar written by the server (0600), if any.
+        token_path = Path(str(socket_path) + ".token")
+        self.token = token_path.read_text() if token_path.exists() else None
 
     def close(self) -> None:
         self.sock.close()
@@ -78,6 +81,8 @@ class RpcClient:
         req_id = self.next_id
         self.next_id += 1
         request = {"jsonrpc": "2.0", "method": method, "id": req_id}
+        if self.token:
+            request["auth"] = self.token
         if params is not None:
             request["params"] = params
         payload = json.dumps(request, separators=(",", ":")).encode("utf-8")

@@ -18,6 +18,11 @@ pub const Config = struct {
     enabled: bool = false,
     socket_path: []const u8 = "",
     token: []const u8 = "",
+    /// When set, the server writes `token` to this path (new file, mode
+    /// 0600, never through an existing file or symlink) before accepting
+    /// connections, and removes it on stop or failed start. Clients read it
+    /// to authenticate. Requires a non-blank token.
+    token_file_path: []const u8 = "",
     /// Live page the engine drives. Without one, every command answers
     /// session_invalid (-32011).
     page_port: ?page_port.PagePort = null,
@@ -70,6 +75,7 @@ pub const AutomationApiServer = struct {
                 .enabled = config.enabled,
                 .socket_path = try allocator.dupe(u8, config.socket_path),
                 .token = try allocator.dupe(u8, config.token),
+                .token_file_path = try allocator.dupe(u8, config.token_file_path),
                 .page_port = config.page_port,
                 .telemetry_sink = config.telemetry_sink,
                 .build_info = config.build_info,
@@ -84,6 +90,7 @@ pub const AutomationApiServer = struct {
         self.queue.deinit();
         self.allocator.free(self.config.socket_path);
         self.allocator.free(self.config.token);
+        self.allocator.free(self.config.token_file_path);
         self.* = undefined;
     }
 
@@ -104,6 +111,12 @@ pub const AutomationApiServer = struct {
             self.queue.deinit();
             self.queue = queue_mod.PageCommandQueue.init(self.allocator, self.io);
         }
+
+        if (self.config.token_file_path.len > 0) {
+            if (std.mem.trim(u8, self.config.token, &std.ascii.whitespace).len == 0) return error.EmptyToken;
+            try writeTokenFile(self.io, self.config.token_file_path, self.config.token);
+        }
+        errdefer self.removeTokenFile();
 
         try cleanupSocketPath(self.io, self.config.socket_path);
         const address = try net.UnixAddress.init(self.config.socket_path);
@@ -139,7 +152,15 @@ pub const AutomationApiServer = struct {
             self.listener = null;
         }
 
-        if (had_listener) cleanupSocketPath(self.io, self.config.socket_path) catch {};
+        if (had_listener) {
+            cleanupSocketPath(self.io, self.config.socket_path) catch {};
+            self.removeTokenFile();
+        }
+    }
+
+    fn removeTokenFile(self: *AutomationApiServer) void {
+        if (self.config.token_file_path.len == 0) return;
+        cleanupSocketPath(self.io, self.config.token_file_path) catch {};
     }
 
     /// Unblocks every connection thread (read shutdown wakes a pending read) and
@@ -484,6 +505,23 @@ pub fn tokensEqual(given: []const u8, expected: []const u8) bool {
     Sha256.hash(given, &given_digest, .{});
     Sha256.hash(expected, &expected_digest, .{});
     return std.crypto.timing_safe.eql([Sha256.digest_length]u8, given_digest, expected_digest);
+}
+
+/// Unlinks whatever is at `path` (unlink never follows a symlink), then
+/// creates a brand-new 0600 file exclusively. If something re-appears in
+/// between, the exclusive create fails and so does startup.
+fn writeTokenFile(io: std.Io, path: []const u8, token: []const u8) !void {
+    try cleanupSocketPath(io, path);
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{
+        .exclusive = true,
+        .truncate = false,
+        .permissions = .fromMode(0o600),
+    });
+    defer file.close(io);
+    var buf: [256]u8 = undefined;
+    var writer = file.writer(io, &buf);
+    try writer.interface.writeAll(token);
+    try writer.interface.flush();
 }
 
 fn restrictSocketMode(allocator: std.mem.Allocator, socket_path: []const u8) !void {

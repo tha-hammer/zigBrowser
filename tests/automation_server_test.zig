@@ -680,6 +680,95 @@ test "SDK conformance: every shared wire case is routed and accepted by the real
     }
 }
 
+fn tmpPath(comptime tag: []const u8) ![]u8 {
+    return std.fmt.allocPrint(testing.allocator, "/tmp/zigbrowser-sidecar-" ++ tag ++ "-{x}", .{testing.random_seed});
+}
+
+test "token sidecar: written 0600 with the token before accepting, removed on stop" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const socket_path = try tmpPath("ok.sock");
+    defer testing.allocator.free(socket_path);
+    const token_path = try tmpPath("ok.sock.token");
+    defer testing.allocator.free(token_path);
+    cleanupSocketPath(socket_path);
+    cleanupSocketPath(token_path);
+
+    var server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = socket_path,
+        .token = "0123456789abcdef",
+        .token_file_path = token_path,
+    });
+    defer server.deinit();
+    try server.start();
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(testing.io, token_path, testing.allocator, .limited(256));
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("0123456789abcdef", content);
+    const stat = try std.Io.Dir.cwd().statFile(testing.io, token_path, .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+
+    server.stop();
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, token_path, .{}));
+}
+
+test "token sidecar never writes through a pre-planted symlink" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const socket_path = try tmpPath("sym.sock");
+    defer testing.allocator.free(socket_path);
+    const token_path = try tmpPath("sym.sock.token");
+    defer testing.allocator.free(token_path);
+    const victim = try tmpPath("victim");
+    defer testing.allocator.free(victim);
+    cleanupSocketPath(socket_path);
+    cleanupSocketPath(token_path);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = victim, .data = "victim" });
+    defer cleanupSocketPath(victim);
+    try std.Io.Dir.cwd().symLink(testing.io, victim, token_path, .{});
+
+    var server = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = socket_path,
+        .token = "fedcba9876543210",
+        .token_file_path = token_path,
+    });
+    defer server.deinit();
+    try server.start();
+
+    const victim_content = try std.Io.Dir.cwd().readFileAlloc(testing.io, victim, testing.allocator, .limited(64));
+    defer testing.allocator.free(victim_content);
+    try testing.expectEqualStrings("victim", victim_content);
+    const content = try std.Io.Dir.cwd().readFileAlloc(testing.io, token_path, testing.allocator, .limited(64));
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("fedcba9876543210", content);
+}
+
+test "token sidecar: whitespace-only token refused; failed start leaves no sidecar" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const token_path = try tmpPath("fail.token");
+    defer testing.allocator.free(token_path);
+    cleanupSocketPath(token_path);
+
+    var blank = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = "/tmp/zigbrowser-sidecar-blank.sock",
+        .token = "  \t\n",
+        .token_file_path = token_path,
+    });
+    defer blank.deinit();
+    try testing.expectError(error.EmptyToken, blank.start());
+
+    var broken = try automation_server.AutomationApiServer.init(testing.allocator, testing.io, .{
+        .enabled = true,
+        .socket_path = "/nonexistent-dir-zb/automation.sock",
+        .token = "0123456789abcdef",
+        .token_file_path = token_path,
+    });
+    defer broken.deinit();
+    try testing.expect(std.meta.isError(broken.start()));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(testing.io, token_path, .{}));
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",
