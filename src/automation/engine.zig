@@ -11,6 +11,17 @@ const script_command = @import("script_command.zig");
 
 pub const default_timeout_ms: u64 = 30000;
 
+/// M7: delay between retries of a retryable script failure.
+pub const poll_interval_ms: u64 = 16;
+
+/// Floor for one attempt's native deadline, so the final attempts close to
+/// the command deadline still get a real chance to run.
+pub const min_native_attempt_ms: u64 = 250;
+
+/// Script `data.reason` values that can never succeed on retry, even though
+/// automation.js marks them retryable.
+const non_retryable_reasons = [_][]const u8{ "malformed_selector", "malformed_command", "unknown_op", "missing_attribute_name" };
+
 /// JSON-RPC "Internal error"; used for failures outside the automation
 /// taxonomy (native eval failure, malformed script answer, JS exception).
 pub const internal_error_code: i64 = -32603;
@@ -151,31 +162,79 @@ pub const Engine = struct {
     }
 
     fn runDom(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, timeout_ms: u64, ids: script_command.Ids) error{OutOfMemory}!Outcome {
-        const is_wait = command.verb == .dom_wait_for;
-        // waitFor: the script owns the wait and its JS timeout is
-        // authoritative; the native call gets extra grace on top.
-        const script_timeout: ?u64 = if (is_wait) timeout_ms else null;
-        const native_timeout = if (is_wait) timeout_ms + wait_for_native_grace_ms else timeout_ms;
-
-        const command_json = script_command.buildCommandJson(gpa, command, ids, script_timeout) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.NotADomCommand => unreachable,
-        };
-        defer gpa.free(command_json);
-
-        const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| return portFailure(gpa, err, .action, ids);
-        defer gpa.free(text);
-
-        var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.MalformedScriptResult => return malformedResult(),
-        };
-        defer script_result.deinit();
-
-        if (script_result.ok) {
-            return .{ .result = try std.json.Stringify.valueAlloc(gpa, script_result.value, .{}) };
+        const deadline = self.clock.nowMs() +| timeout_ms;
+        if (command.verb == .dom_type) {
+            if (command.delay_ms) |delay_ms| {
+                if (delay_ms > 0) return self.typeWithDelay(gpa, command, delay_ms, deadline, ids);
+            }
         }
-        return scriptFailure(gpa, &script_result, ids);
+        return self.runDomUntil(gpa, command, deadline, ids);
+    }
+
+    /// dom.type with delay_ms: one `type` op per character (UTF-8 code
+    /// point), sleeping delay_ms between characters. Stops at the first
+    /// failing character.
+    fn typeWithDelay(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, delay_ms: u64, deadline: u64, ids: script_command.Ids) error{OutOfMemory}!Outcome {
+        const view = std.unicode.Utf8View.init(command.text.?) catch return self.runDomUntil(gpa, command, deadline, ids);
+        var characters = view.iterator();
+        var first = true;
+        while (characters.nextCodepointSlice()) |character| {
+            if (!first) self.clock.sleepMs(delay_ms);
+            first = false;
+
+            var single = command.*;
+            single.text = character;
+            var outcome = try self.runDomUntil(gpa, &single, deadline, ids);
+            switch (outcome) {
+                .failure => return outcome,
+                .result => outcome.deinit(gpa),
+            }
+        }
+        return okResult(gpa);
+    }
+
+    /// M7 retry loop: retryable script failures are retried every
+    /// `poll_interval_ms` until `deadline`; the last failure decides the
+    /// timeout error. waitFor owns its own wait in JS, so only a missing
+    /// script is retried for it.
+    fn runDomUntil(self: *Engine, gpa: std.mem.Allocator, command: *const router.ParsedCommand, deadline: u64, base_ids: script_command.Ids) error{OutOfMemory}!Outcome {
+        const is_wait = command.verb == .dom_wait_for;
+        var ids = base_ids;
+        var last: LastFailure = .{};
+        var attempt: u32 = 0;
+        while (true) : (attempt += 1) {
+            ids.attempt_index = attempt;
+            const remaining = deadline -| self.clock.nowMs();
+            // waitFor: the script's JS timeout is authoritative; the native
+            // call gets extra grace on top so JS settles first.
+            const script_timeout: ?u64 = if (is_wait) remaining else null;
+            const native_timeout = if (is_wait) remaining + wait_for_native_grace_ms else @max(remaining, min_native_attempt_ms);
+
+            const command_json = script_command.buildCommandJson(gpa, command, ids, script_timeout) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.NotADomCommand => unreachable,
+            };
+            defer gpa.free(command_json);
+
+            const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| return portFailure(gpa, err, .action, ids);
+            defer gpa.free(text);
+
+            var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.MalformedScriptResult => return malformedResult(),
+            };
+            defer script_result.deinit();
+
+            if (script_result.ok) {
+                return .{ .result = try std.json.Stringify.valueAlloc(gpa, script_result.value, .{}) };
+            }
+            if (!shouldRetry(&script_result, is_wait)) return scriptFailure(gpa, &script_result, ids);
+            last.record(&script_result);
+
+            const now = self.clock.nowMs();
+            if (now >= deadline) return deadlineFailure(gpa, &last, ids, attempt + 1);
+            self.clock.sleepMs(@min(poll_interval_ms, deadline - now));
+        }
     }
 
     const IdsBuf = struct {
@@ -228,9 +287,64 @@ fn automationFailure(gpa: std.mem.Allocator, automation_error: errors.Automation
 
 const AutomationErrorData = struct {
     reason: ?[]const u8 = null,
+    /// For action_timeout: the last retryable automation error observed.
+    last_error: ?[]const u8 = null,
+    /// For deadline failures: how many attempts ran.
+    attempts: ?u32 = null,
     trace_id: []const u8,
     command_id: []const u8,
 };
+
+fn shouldRetry(script_result: *const script_command.ScriptResult, is_wait: bool) bool {
+    const error_name = script_result.error_name.?;
+    if (std.mem.eql(u8, error_name, script_command.script_not_ready)) return true;
+    if (is_wait or !script_result.retryable) return false;
+    const automation_error = errors.fromName(error_name) catch return false;
+    if (!errors.isRetryable(automation_error)) return false;
+    const reason = script_result.reason orelse return true;
+    for (non_retryable_reasons) |fatal| {
+        if (std.mem.eql(u8, reason, fatal)) return false;
+    }
+    return true;
+}
+
+/// Copy of the last retryable failure (the script result it came from is
+/// freed every attempt).
+const LastFailure = struct {
+    automation_error: errors.AutomationError = .element_not_found,
+    reason_buf: [64]u8 = undefined,
+    reason_len: usize = 0,
+
+    fn record(self: *LastFailure, script_result: *const script_command.ScriptResult) void {
+        const error_name = script_result.error_name.?;
+        self.automation_error = errors.fromName(error_name) catch .element_not_found;
+        const text = script_result.reason orelse error_name;
+        self.reason_len = @min(text.len, self.reason_buf.len);
+        @memcpy(self.reason_buf[0..self.reason_len], text[0..self.reason_len]);
+    }
+
+    fn reason(self: *const LastFailure) ?[]const u8 {
+        return if (self.reason_len == 0) null else self.reason_buf[0..self.reason_len];
+    }
+};
+
+/// Deadline reached while retrying: never matched -> element_not_found;
+/// matched but never actionable -> action_timeout carrying the last error.
+fn deadlineFailure(gpa: std.mem.Allocator, last: *const LastFailure, ids: script_command.Ids, attempts: u32) error{OutOfMemory}!Outcome {
+    const timed_out_error: errors.AutomationError = if (last.automation_error == .element_not_found) .element_not_found else .action_timeout;
+    const data = AutomationErrorData{
+        .reason = last.reason(),
+        .last_error = if (timed_out_error == .action_timeout) errors.name(last.automation_error) else null,
+        .attempts = attempts,
+        .trace_id = ids.trace_id,
+        .command_id = ids.command_id,
+    };
+    return .{ .failure = .{
+        .code = errors.downstreamCode(timed_out_error),
+        .message = errors.name(timed_out_error),
+        .data_json = try std.json.Stringify.valueAlloc(gpa, data, .{ .emit_null_optional_fields = false }),
+    } };
+}
 
 fn malformedResult() Outcome {
     return .{ .failure = .{ .code = internal_error_code, .message = "Malformed script result" } };

@@ -102,11 +102,13 @@ pub fn parse(
         .dom_get_text => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
             command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
         },
         .dom_get_attribute => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
             command.name = try requiredString(arena_allocator, obj, "name");
             command.strict = optionBool(obj, "strict", true) catch return error.BadArgs;
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
         },
         .dom_wait_for => {
             command.selector = try requiredString(arena_allocator, obj, "selector");
@@ -250,6 +252,16 @@ fn optionBool(obj: std.json.ObjectMap, key: []const u8, default: bool) !bool {
         else => return error.BadArgs,
     };
     return optionalBool(options_obj, key, default);
+}
+
+/// `key` from `options` when present, else from the top level.
+fn optionU64(obj: std.json.ObjectMap, key: []const u8) !?u64 {
+    const options = obj.get("options") orelse return optionalU64(obj, key);
+    const options_obj = switch (options) {
+        .object => |object| object,
+        else => return error.BadArgs,
+    };
+    return (try optionalU64(options_obj, key)) orelse optionalU64(obj, key);
 }
 
 fn applyActionOptions(command: *ParsedCommand, obj: std.json.ObjectMap, strict_default: bool) !void {

@@ -135,3 +135,16 @@ test "router records root telemetry context without raw params" {
     try std.testing.expect(!sink.containsRaw("token=xyz"));
     try std.testing.expect(!sink.containsRaw("https://example.test/inbox?token=xyz"));
 }
+
+test "getText and getAttribute accept timeout_ms at top level or in options" {
+    const allocator = std.testing.allocator;
+    var top = try automation.router.parse(allocator, "dom.getText", "{\"selector\":\"css=#a\",\"timeout_ms\":250}", .{});
+    defer top.deinit();
+    try std.testing.expectEqual(@as(?u64, 250), top.timeout_ms);
+
+    var nested = try automation.router.parse(allocator, "dom.getAttribute", "{\"selector\":\"css=a\",\"name\":\"href\",\"options\":{\"timeout_ms\":75}}", .{});
+    defer nested.deinit();
+    try std.testing.expectEqual(@as(?u64, 75), nested.timeout_ms);
+
+    try std.testing.expectError(error.BadArgs, automation.router.parse(allocator, "dom.getText", "{\"selector\":\"css=#a\",\"timeout_ms\":-1}", .{}));
+}
