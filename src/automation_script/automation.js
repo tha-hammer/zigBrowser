@@ -48,31 +48,38 @@
   // so a new sequence does not start into a document that is going away.
   // It ends without a new document when it is cancelled, stopped or
   // superseded (its own signal aborts), or when the response replaces
-  // nothing (204, download). For those the browser numbers each request at
-  // its policy decision (navigationRequested; WebKit decides before this
-  // 'navigate' event fires, so the number usually waits in navRequests to
-  // be claimed), then reports the number that ended (navigationEnded).
-  // Only that navigation's own end clears it, never an older one's: the
-  // abort is bound to its object, the browser end to its id.
-  const navRequests = [];
-  const MAX_NAV_REQUESTS = 4;
+  // nothing (204, download, policy block). For those the browser cannot
+  // tell which navigation it was, so each navigation reports its
+  // destination as it starts (zbNavigation, a GTK-shell handler in this
+  // world) and keeps the arrival number the shell answers, on its own
+  // object; the answer also says whether the shell's policy refuses that
+  // destination, which ends the navigation at once. The shell's
+  // navigationEnded(seq) then names everything it had heard of when the
+  // load ended: it clears this document's pending navigation only if that
+  // one had arrived by then. A navigation started later arrives later, and
+  // one whose number is not back yet is never cleared this way
+  // (conservative: refuse, never a wrong clear). The abort is bound to its
+  // object too, so an older navigation's end never clears a newer one.
   if (globalScope.navigation && typeof globalScope.navigation.addEventListener === 'function') {
     globalScope.navigation.addEventListener('navigate', (event) => {
       if (event.destination && event.destination.sameDocument) return;
-      const started = { url: event.destination ? event.destination.url : '' };
-      for (let i = navRequests.length - 1; i >= 0; i -= 1) {
-        if (navRequests[i].url === started.url) {
-          started.id = navRequests[i].id;
-          navRequests.splice(0, i + 1); // this request and older, unclaimed ones
-          break;
-        }
-      }
+      const started = {};
       inputAck.navigations += 1;
       inputAck.pending = started;
       const ended = () => { if (inputAck.pending === started) inputAck.pending = null; };
       if (event.signal) {
         if (event.signal.aborted) ended();
         else event.signal.addEventListener('abort', ended);
+      }
+      const shell = globalScope.webkit && globalScope.webkit.messageHandlers &&
+        globalScope.webkit.messageHandlers.zbNavigation;
+      if (shell) {
+        const destination = event.destination ? String(event.destination.url) : '';
+        Promise.resolve(shell.postMessage(destination)).then((answer) => {
+          if (answer && typeof answer.seq === 'number') started.seq = answer.seq;
+          // The shell refuses this destination: nothing will replace us.
+          if (answer && answer.blocked === true) ended();
+        }, () => {});
       }
     });
   }
@@ -1043,24 +1050,15 @@
           navigations: inputAck.navigations, leaving: inputAck.pending !== null
         };
       },
-      // Browser side: request `id` is the pending navigation to `url`.
-      navigationRequested(id, url) {
+      // Shell side: a load ended without a new document after the shell
+      // had heard of navigations up to number `seq`.
+      navigationEnded(seq) {
         const pending = inputAck.pending;
-        if (pending !== null && pending.id === undefined && pending.url === url) {
-          pending.id = id;
-          return;
-        }
-        navRequests.push({ id, url });
-        if (navRequests.length > MAX_NAV_REQUESTS) navRequests.shift();
-      },
-      // Browser side: request `id` ended and this document stays.
-      navigationEnded(id) {
-        const pending = inputAck.pending;
-        if (pending !== null && pending.id !== undefined && pending.id === id) inputAck.pending = null;
+        if (pending !== null && pending.seq !== undefined && pending.seq <= seq) inputAck.pending = null;
       },
       debugPendingNavigation() {
         const pending = inputAck.pending;
-        return pending === null ? null : { url: pending.url, id: pending.id === undefined ? null : pending.id };
+        return pending === null ? null : { seq: pending.seq === undefined ? null : pending.seq };
       },
       documentToken: inputAck.doc,
       debugOutstandingWaits() {

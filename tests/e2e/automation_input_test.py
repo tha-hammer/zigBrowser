@@ -317,7 +317,7 @@ def run_native(socket_path: Path, t: float) -> None:
     # N8: a humanized click moves the real pointer to the target first. The
     # page sees trusted mousemoves before the one trusted click, and the
     # moves end on the button.
-    js("(window.trustLog = [], 0)")
+    js("(window.trustLog = [], window.moveLog = [], 0)")
     expect_equal("humanized native click", rpc("dom.click", {"selector": "css=#nativebtn",
                  "options": dict(native, humanize=True)}), {"ok": True})
     log = js("window.trustLog")
@@ -329,6 +329,18 @@ def run_native(socket_path: Path, t: float) -> None:
     if not all(log[i].endswith(":true") for i in moves):
         raise AssertionError(f"humanized click: untrusted mousemove in {log}")
     expect_equal("the last move before the click is on the button", log[clicks[0] - 1], "mousemove:nativebtn:true")
+    # Rule 1 on the real chain: the earlier native click left the pointer on
+    # this button, yet the path starts off the target and ends on it.
+    cx, cy = js("(function(){var r=document.getElementById('nativebtn').getBoundingClientRect();"
+                " return [r.left + r.width / 2, r.top + r.height / 2];})()")
+    path = js("window.moveLog")
+    if len(path) < 2 or not all(trusted for _, _, trusted in path):
+        raise AssertionError(f"humanized click: expected a trusted path, got {path}")
+    first, last = path[0], path[-1]
+    if abs(first[0] - cx) <= 1 and abs(first[1] - cy) <= 1:
+        raise AssertionError(f"humanized click: path started on the target {cx},{cy}: {path}")
+    if abs(last[0] - cx) > 1 or abs(last[1] - cy) > 1:
+        raise AssertionError(f"humanized click: path did not end on the target {cx},{cy}: {path}")
 
     # dom.type with real keys: trusted keydowns, text appended at the end.
     js("(function(){var i=document.getElementById('nativein'); i.value='pre'; i.setSelectionRange(0,0); window.trustLog=[]; return 0;})()")

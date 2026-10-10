@@ -419,7 +419,7 @@ const fixture_b =
     \\<!doctype html><html><head><title>Fixture B</title></head><body><p id="msg">Page B</p>
     \\<button id="danger" style="position:fixed;left:20px;top:120px;width:120px;height:40px" onclick="window.dangerClicked = (window.dangerClicked || 0) + 1">Danger</button>
     \\<script>window.bKeys = []; document.addEventListener('keydown', function (e) { window.bKeys.push(e.key); }, true);
-    \\window.bMoves = 0; document.addEventListener('mousemove', function () { window.bMoves += 1; }, true);</script>
+    \\window.bMoves = []; document.addEventListener('mousemove', function (e) { window.bMoves.push([e.clientX, e.clientY]); }, true);</script>
     \\</body></html>
 ;
 
@@ -1061,7 +1061,15 @@ const LiveDriver = struct {
         self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "native click with a stale document token is DocumentChanged");
         const danger = self.eval(null, "return String(window.dangerClicked || 0);", null, null, 5000);
         self.check(eq(danger.out, "0"), "nothing on the new document was clicked");
-        const b_moves = self.eval(null, "return String(window.bMoves);", null, null, 5000);
+        // The refused move's own point: WebKit may replay the last real
+        // pointer position (the previous click) into the new document.
+        var moves_buf: [256]u8 = undefined;
+        const moves_body = std.fmt.bufPrintZ(&moves_buf, "return String(window.bMoves.filter(function (m) {{ return Math.abs(m[0] - {d}) <= 1 && Math.abs(m[1] - {d}) <= 1; }}).length);", .{ want[0] + 5, want[1] + 5 }) catch return;
+        const b_moves = self.eval(null, moves_body, null, null, 5000);
+        if (!eq(b_moves.out, "0")) {
+            const seen = self.eval(null, "return JSON.stringify(window.bMoves);", null, null, 5000);
+            std.debug.print("page B moves: {s}\n", .{seen.out orelse "?"});
+        }
         self.check(eq(b_moves.out, "0"), "no motion reached the new document");
         var stale_sent: usize = 9;
         self.check(if (gtk_port.nativeText(port.ptr, "zz", token_a, 5000, &stale_sent)) |_| false else |e| e == error.DocumentChanged, "native text with a stale token is DocumentChanged");
@@ -1558,6 +1566,7 @@ const SelfCloseDriver = struct {
         err = null;
         const moved = self.openChild(1) orelse return self.check(false, "first child opened");
         const clicked = self.openChild(2) orelse return self.check(false, "second child opened");
+        const keyed = self.openChild(3) orelse return self.check(false, "third child opened");
         const lost_before = c.zb_automation_debug_pointer_lost();
 
         self.check(c.zb_automation_debug_close_on_motion(moved, 5000) == c.ZB_AUTO_OK, "arm close-on-motion (move)");
@@ -1573,7 +1582,18 @@ const SelfCloseDriver = struct {
         c.zb_automation_free(err);
         self.check(click_rc == c.ZB_AUTO_ERR_NO_WINDOW, "a click whose motion closed its window reports NO_WINDOW");
         self.check(c.zb_automation_debug_pointer_lost() == lost_before + 2, "the cache write found the clicked window gone");
-        self.check(c.zb_automation_window_at(1) == null, "both children are gone, the primary remains");
+
+        // A key press whose own handler closes the window: its release (and
+        // anything after it) is not sent to the destroyed window.
+        const skipped_before = c.zb_automation_debug_native_skipped();
+        self.check(c.zb_automation_debug_close_on_key(keyed, 5000) == c.ZB_AUTO_OK, "arm close-on-key");
+        var releases: c_int = 0;
+        err = null;
+        const key_rc = c.zb_native_key(keyed, "a", 0, null, 5000, &releases, &err);
+        c.zb_automation_free(err);
+        self.check(key_rc == c.ZB_AUTO_ERR_NO_WINDOW, "a key whose press closed its window reports NO_WINDOW");
+        self.check(c.zb_automation_debug_native_skipped() > skipped_before, "the key release was not sent to the destroyed window");
+        self.check(c.zb_automation_window_at(1) == null, "every child is gone, the primary remains");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -1718,12 +1738,12 @@ const NavEndDriver = struct {
         return false;
     }
 
-    /// The pending navigation's request id once the browser numbered it,
+    /// The pending navigation's arrival number once the shell answered it,
     /// when it differs from `not` (0 = any).
     fn pendingId(self: *NavEndDriver, not: i64) ?i64 {
         var waited: u32 = 0;
         while (waited < 3000) : (waited += 10) {
-            const r = self.eval("const p = globalThis.__zbAutomation.debugPendingNavigation(); return String(p && p.id !== null ? p.id : 0);", c.ZB_AUTOMATION_WORLD);
+            const r = self.eval("const p = globalThis.__zbAutomation.debugPendingNavigation(); return String(p && p.seq !== null ? p.seq : 0);", c.ZB_AUTOMATION_WORLD);
             const id = std.fmt.parseInt(i64, r, 10) catch 0;
             if (id != 0 and id != not) return id;
             sleepMs(10);
@@ -1767,25 +1787,45 @@ const NavEndDriver = struct {
         self.check(std.mem.eql(u8, self.eval("return document.getElementById('r').value;", null), "xz"), "the fresh call after the 204 typed into the same document");
 
         // 3. An older navigation's end never clears a newer one to the same
-        // URL. Navigation A (held 1.5 s, then 204) gets request id a; the
-        // page then starts B to the same URL, which supersedes A (A's
-        // abort must not clear B) and gets id b. A late end for a leaves B
-        // pending; only B's own 204 clears it.
+        // URL. Navigation A (held 1.5 s, then 204) gets arrival number a;
+        // the page then starts B to the same URL, which supersedes A (A's
+        // abort must not clear B) and gets b > a. An end the shell sent
+        // before it heard of B leaves B pending; only B's own 204 clears it.
         gtk_port.nativeClick(port.ptr, 120, 175, null, 5000) catch return self.check(false, "focus #s");
         const t3 = self.token(&tok) orelse return self.check(false, "token");
         sent = 0;
         const stopped_hold = gtk_port.nativeText(port.ptr, "u\nv", std.mem.span(t3), 10_000, &sent);
         self.check(if (stopped_hold) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a held navigation stops");
-        const id_a = self.pendingId(0) orelse return self.check(false, "navigation A got a request id");
+        const id_a = self.pendingId(0) orelse return self.check(false, "navigation A got an arrival number");
         _ = self.eval("location.href = '/hold?s=u'; return 0;", null);
-        const id_b = self.pendingId(id_a) orelse return self.check(false, "navigation B got its own request id");
+        const id_b = self.pendingId(id_a) orelse return self.check(false, "navigation B got its own arrival number");
         var stale: [96]u8 = undefined;
         const stale_body = std.fmt.bufPrintZ(&stale, "globalThis.__zbAutomation.navigationEnded({d}); return 0;", .{id_a}) catch return;
         _ = self.eval(stale_body, c.ZB_AUTOMATION_WORLD);
         self.check(std.mem.eql(u8, self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD), "true"), "A's late end leaves B pending");
-        self.check(id_b != id_a, "A and B have different ids");
+        self.check(id_b > id_a, "B arrived after A");
         self.check(self.waitNotLeaving(), "B's own 204 ends it");
         self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after both held navigations");
+
+        // 4. Same-URL supersession at once: C and D start in the same task,
+        // before any arrival number is back. D keeps its own number, not
+        // C's; an end sent before the shell heard of D leaves D pending;
+        // D's own 204 clears it.
+        const navs_before = self.eval("return String(globalThis.__zbAutomation.inputAck().navigations);", c.ZB_AUTOMATION_WORLD);
+        const before = std.fmt.parseInt(i64, navs_before, 10) catch -1;
+        _ = self.eval("location.href = '/hold?s=cd'; location.href = '/hold?s=cd'; return 0;", null);
+        const id_d = self.pendingId(id_b) orelse return self.check(false, "navigation D got an arrival number");
+        const navs_after = self.eval("return String(globalThis.__zbAutomation.inputAck().navigations);", c.ZB_AUTOMATION_WORLD);
+        // Both C and D started and reported: D's number is two past B's,
+        // so id_d - 1 is C's own arrival, not an older one.
+        self.check((std.fmt.parseInt(i64, navs_after, 10) catch -1) == before + 2, "C and D both started a navigation");
+        self.check(id_d == id_b + 2, "C and D both reported, D last");
+        var stale_c: [96]u8 = undefined;
+        const stale_c_body = std.fmt.bufPrintZ(&stale_c, "globalThis.__zbAutomation.navigationEnded({d}); return 0;", .{id_d - 1}) catch return;
+        _ = self.eval(stale_c_body, c.ZB_AUTOMATION_WORLD);
+        self.check(std.mem.eql(u8, self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD), "true"), "an older request's end leaves D pending");
+        self.check(self.waitNotLeaving(), "D's own 204 ends it");
+        self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after C and D");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -1813,5 +1853,86 @@ test "native text: a navigation that ends without a new document stops one seque
     _ = c.zb_app_run(uri.ptr, 0, 0);
     t.join();
     try std.testing.expectEqual(@as(u32, 0), driver.failures);
+    c.zb_automation_loop_mark(1);
+}
+
+// A navigation the shell's policy blocks (a file:// page posting to http)
+// never replaces the document: once blocked, a fresh native text call in
+// the same document types again, whatever order WebKit uses between the
+// page's 'navigate' report and the policy decision.
+const blocked_fixture =
+    \\<!doctype html><html><head><title>Blocked</title></head><body>
+    \\<form action="http://127.0.0.1:9/blocked"><input id="q" name="q" style="position:fixed;left:20px;top:40px;width:200px;height:30px"></form>
+    \\</body></html>
+;
+
+const BlockedDriver = struct {
+    nav: NavEndDriver = .{},
+
+    fn run(self: *BlockedDriver) void {
+        const d = &self.nav;
+        const port = gtk_port.pagePort().?;
+        _ = d.eval("return 1;", null);
+        var tok: [17]u8 = undefined;
+        gtk_port.nativeClick(port.ptr, 120, 55, null, 5000) catch return d.check(false, "focus #q");
+        const t = d.token(&tok) orelse return d.check(false, "token");
+        var sent: usize = 0;
+        const typed = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t), 10_000, &sent);
+        // Stopped after Enter (the page saw the navigation start), or not
+        // stopped at all (WebKit refused it before its 'navigate' event).
+        const stopped_after_enter = if (typed) |_| false else |e| e == error.DocumentChanged and sent == 2;
+        const not_started = if (typed) |_| sent == 3 else |_| false;
+        d.check(stopped_after_enter or not_started, "the blocked submit either stops the sequence after Enter or never starts");
+        d.check(d.waitNotLeaving(), "the blocked navigation is not pending");
+        d.check(std.mem.eql(u8, d.eval("return location.protocol;", null), "file:"), "the document stayed");
+        var fresh: usize = 0;
+        gtk_port.nativeText(port.ptr, "c", std.mem.span(t), 5000, &fresh) catch d.check(false, "a fresh native text after the blocked navigation types");
+        const value = d.eval("return document.getElementById('q').value;", null);
+        d.check(std.mem.endsWith(u8, value, "c") and std.mem.startsWith(u8, value, "a"), "the fresh call typed into the same document");
+        std.debug.print("blocked submit: {s}, sent {d}, value {s}\n", .{ if (stopped_after_enter) "stopped after Enter" else "never started", sent, value });
+
+        // A script navigation fires 'navigate' (and reports it) before the
+        // policy decision blocks it: the end the shell sends at the block
+        // must already cover that report.
+        const navs_before = std.fmt.parseInt(i64, d.eval("return String(globalThis.__zbAutomation.inputAck().navigations);", c.ZB_AUTOMATION_WORLD), 10) catch -1;
+        _ = d.eval("location.href = 'http://127.0.0.1:9/blocked'; return 0;", null);
+        d.check(d.waitNotLeaving(), "the blocked script navigation is not pending");
+        const navs_after = std.fmt.parseInt(i64, d.eval("return String(globalThis.__zbAutomation.inputAck().navigations);", c.ZB_AUTOMATION_WORLD), 10) catch -1;
+        d.check(navs_after == navs_before + 1, "the blocked script navigation started in the page");
+        d.check(std.mem.eql(u8, d.eval("return location.protocol;", null), "file:"), "the document stayed after the blocked script navigation");
+        gtk_port.nativeText(port.ptr, "d", std.mem.span(t), 5000, &fresh) catch d.check(false, "native text after the blocked script navigation types");
+        d.check(std.mem.endsWith(u8, d.eval("return document.getElementById('q').value;", null), "cd"), "it typed into the same document");
+        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+    }
+};
+
+test "native text: a navigation blocked by policy does not refuse later typing" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-blocked-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    const path = try std.fmt.allocPrintSentinel(arena, "{s}/blocked.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path, blocked_fixture.ptr, blocked_fixture.len, null) != 0);
+    const raw = gfile.g_filename_to_uri(path, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw);
+    const uri = try arena.dupeZ(u8, std.mem.span(raw));
+    var driver: BlockedDriver = .{};
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, BlockedDriver.run, .{&driver});
+    _ = c.zb_app_run(uri.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
     c.zb_automation_loop_mark(1);
 }

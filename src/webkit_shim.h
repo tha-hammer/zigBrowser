@@ -233,6 +233,10 @@ int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms);
 int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms);
 /* Test hook: pointer-cache writes dropped because the window had gone. */
 int zb_automation_debug_pointer_lost(void);
+/* Test hook: like close_on_motion, from the view's key-press handler. */
+int zb_automation_debug_close_on_key(ZbWindow *win, unsigned int timeout_ms);
+/* Test hook: key events not sent because their window was destroyed. */
+int zb_automation_debug_native_skipped(void);
 
 /* Track-B owned exports; hard-linked into the Zig binary. */
 int zb_policy_decide(const char *base, const char *candidate, int dtype);

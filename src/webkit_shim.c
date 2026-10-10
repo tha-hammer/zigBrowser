@@ -99,15 +99,6 @@ struct ZbWindow {
   /* Last dispatched native pointer position; guarded by zb_auto_mutex. */
   int auto_pointer_valid;
   double auto_pointer_x, auto_pointer_y;
-  /* Recent navigation requests (id, URL; a redirect keeps its request's
-   * id), so a load that ends without a new document can name the request
-   * it belonged to. auto_nav_seq numbers the requests (never 0). */
-  unsigned int auto_nav_seq;
-  int auto_nav_next;
-  struct {
-    int id;
-    char *url;
-  } auto_nav_recent[8];
   gulong sig_uri_notify;
 };
 
@@ -148,9 +139,9 @@ static void auto_window_destroyed(ZbWindow *win);
 static void auto_load_event(ZbWindow *win, WebKitLoadEvent event, const char *uri);
 static int auto_load_failed(ZbWindow *win, const char *uri, const GError *error);
 static void auto_nav_blocked(ZbWindow *win, const char *candidate);
-static int auto_navigation_requested(ZbWindow *win, const char *url, int is_redirect);
-static int auto_navigation_id_for(ZbWindow *win, const char *url);
-static void auto_navigation_ended(ZbWindow *win, int id);
+static void auto_navigation_ended(ZbWindow *win);
+static gboolean on_auto_navigation_message(WebKitUserContentManager *ucm, JSCValue *value,
+                                           WebKitScriptMessageReply *reply, gpointer data);
 static int auto_window_owns_load_deadline(ZbWindow *win);
 static void auto_uri_changed(ZbWindow *win, const char *uri);
 static void auto_first_load_done(ZbWindow *win);
@@ -393,9 +384,6 @@ static void window_free(ZbWindow *win) {
   g_free(win->seed_uri);
   g_free(win->pending_nav_uri);
   g_free(win->load_error_message);
-  for (gsize i = 0; i < G_N_ELEMENTS(win->auto_nav_recent); i++) {
-    g_free(win->auto_nav_recent[i].url);
-  }
   g_free(win);
 }
 
@@ -813,7 +801,7 @@ static gboolean on_window_load_failed(WebKitWebView *view,
    * error), not one a newer navigation replaced: that request's navigation
    * is over and the page keeps its document. */
   if (load_event != WEBKIT_LOAD_COMMITTED && !is_cancelled_network_error(error)) {
-    auto_navigation_ended(win, auto_navigation_id_for(win, uri));
+    auto_navigation_ended(win);
   }
 
   /* An automation-driven load that fails gets no WebKit error page: that
@@ -919,13 +907,6 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
     emit_protocol1(app, "BLOCKED", "(null)");
     return TRUE;
   }
-  int nav_id = 0;
-  if (win != NULL && type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
-    WebKitNavigationAction *action = webkit_navigation_policy_decision_get_navigation_action(
-        WEBKIT_NAVIGATION_POLICY_DECISION(decision));
-    nav_id = auto_navigation_requested(win, candidate,
-                                       action != NULL && webkit_navigation_action_is_redirect(action));
-  }
 
   if (win != NULL && win->seed_pending && win->is_child &&
       dtype == ZB_DTYPE_NAVIGATION) {
@@ -962,7 +943,7 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
   emit_protocol1(app, "BLOCKED", candidate);
   if (win != NULL && dtype == ZB_DTYPE_NAVIGATION) {
     auto_nav_blocked(win, candidate);
-    auto_navigation_ended(win, nav_id);
+    auto_navigation_ended(win);
   }
   return TRUE;
 }
@@ -1541,69 +1522,82 @@ static void auto_install_script(ZbWindow *win) {
       WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, ZB_AUTOMATION_WORLD, NULL,
       NULL);
   webkit_user_content_manager_add_script(win->ucm, script);
+  if (webkit_user_content_manager_register_script_message_handler_with_reply(
+          win->ucm, "zbNavigation", ZB_AUTOMATION_WORLD)) {
+    g_signal_connect(win->ucm, "script-message-with-reply-received::zbNavigation",
+                     G_CALLBACK(on_auto_navigation_message), NULL);
+  } else {
+    /* Without it no navigation gets an arrival number: a 204, download or
+     * blocked navigation then keeps refusing native text until the page
+     * navigates or cancels. Say so instead of degrading silently. */
+    fprintf(stderr, "automation: zbNavigation handler registration failed; "
+                    "ended navigations will not be reported to the page\n");
+  }
   webkit_user_script_unref(script);
   g_object_set_data(G_OBJECT(win->ucm), ZB_AUTO_SCRIPT_KEY, GINT_TO_POINTER(1));
 }
 
-/* GTK thread: fire-and-forget call into automation.js in `win` (no
- * callback, nothing waits for it). Calls into one view arrive in order. */
-static void auto_navigation_notify(ZbWindow *win, const char *body, int id, const char *url) {
-  if (win == NULL || win->view == NULL || id <= 0 || zb_auto_script_source == NULL) {
+/* Navigation reports from automation.js (see inputAck.pending there): the
+ * page posts each cross-document navigation's destination as it starts, in
+ * the automation world, and gets back {seq, blocked}.
+ * - seq: its arrival number. Page messages and load failures reach this
+ *   thread over the web process's one ordered connection, so a load
+ *   failure handled at arrival number N belongs to a navigation the page
+ *   reported at a number <= N; one the page starts later reports a larger
+ *   number.
+ * - blocked: this shell's policy refuses the destination (a pure function
+ *   of the URL, see on_window_decide_policy). WebKit may ask for that
+ *   decision before or after the page's report arrives, and the refusal
+ *   aborts nothing in the page, so the answer itself ends the navigation.
+ * Registered once per (shared) user content manager in the automation
+ * world, with no per-window data; the manager owns the handler and drops
+ * it when it is finalized. GTK thread only. */
+static double zb_auto_nav_seq;
+
+static int auto_policy_blocks_navigation(const char *url) {
+  ZbApp *app = zb_auto_app;
+  if (app == NULL || app->app_base == NULL || url == NULL || url[0] == '\0') {
+    return 0;
+  }
+  return zb_policy_decide(app->app_base, url, ZB_DTYPE_NAVIGATION) != ZB_DECISION_USE;
+}
+
+static gboolean on_auto_navigation_message(WebKitUserContentManager *ucm, JSCValue *value,
+                                           WebKitScriptMessageReply *reply, gpointer data) {
+  (void)ucm;
+  (void)data;
+  zb_auto_nav_seq += 1;
+  char *url = jsc_value_is_string(value) ? jsc_value_to_string(value) : NULL;
+  JSCContext *context = jsc_value_get_context(value);
+  JSCValue *answer = jsc_value_new_object(context, NULL, NULL);
+  JSCValue *seq = jsc_value_new_number(context, zb_auto_nav_seq);
+  JSCValue *blocked = jsc_value_new_boolean(context, auto_policy_blocks_navigation(url));
+  jsc_value_object_set_property(answer, "seq", seq);
+  jsc_value_object_set_property(answer, "blocked", blocked);
+  webkit_script_message_reply_return_value(reply, answer);
+  g_object_unref(blocked);
+  g_object_unref(seq);
+  g_object_unref(answer);
+  g_free(url);
+  return TRUE;
+}
+
+/* GTK thread: the load `win` was waiting for ended without a new document;
+ * the page's pending navigation is over if the page reported it before now.
+ * Fire and forget (no callback); calls into one view arrive in order. */
+static void auto_navigation_ended(ZbWindow *win) {
+  if (win == NULL || win->view == NULL || zb_auto_script_source == NULL) {
     return;
   }
+  static const char body[] =
+      "const a = globalThis.__zbAutomation; if (a && a.navigationEnded) a.navigationEnded(seq); return 0;";
   GVariantDict dict;
   g_variant_dict_init(&dict, NULL);
-  g_variant_dict_insert(&dict, "id", "i", id);
-  g_variant_dict_insert(&dict, "url", "s", url != NULL ? url : "");
+  g_variant_dict_insert(&dict, "seq", "d", zb_auto_nav_seq);
   GVariant *args = g_variant_ref_sink(g_variant_dict_end(&dict));
   webkit_web_view_call_async_javascript_function(win->view, body, -1, args, ZB_AUTOMATION_WORLD,
                                                   NULL, NULL, NULL, NULL);
   g_variant_unref(args);
-}
-
-/* GTK thread, at the navigation-action policy decision: number the request
- * (a redirect continues the latest one) and tell the page. WebKit fires the
- * page's 'navigate' event after this decision; automation.js matches the
- * number to that navigation by URL in either order. Returns the id. */
-static int auto_navigation_requested(ZbWindow *win, const char *url, int is_redirect) {
-  if (!is_redirect || win->auto_nav_seq == 0) {
-    win->auto_nav_seq = win->auto_nav_seq >= G_MAXINT ? 1 : win->auto_nav_seq + 1;
-  }
-  int id = (int)win->auto_nav_seq;
-  int slot = win->auto_nav_next;
-  g_free(win->auto_nav_recent[slot].url);
-  win->auto_nav_recent[slot].id = id;
-  win->auto_nav_recent[slot].url = g_strdup(url);
-  win->auto_nav_next = (slot + 1) % (int)G_N_ELEMENTS(win->auto_nav_recent);
-  if (!is_redirect) {
-    auto_navigation_notify(win,
-                           "const a = globalThis.__zbAutomation; if (a && a.navigationRequested) "
-                           "a.navigationRequested(id, url); return 0;",
-                           id, url);
-  }
-  return id;
-}
-
-/* The request a failed load of `url` belongs to: the latest one for that
- * URL, else (an unrecorded redirect target) the latest request. */
-static int auto_navigation_id_for(ZbWindow *win, const char *url) {
-  int n = (int)G_N_ELEMENTS(win->auto_nav_recent);
-  for (int k = 1; k <= n; k++) {
-    int slot = (win->auto_nav_next - k + n) % n;
-    if (win->auto_nav_recent[slot].url != NULL && g_strcmp0(win->auto_nav_recent[slot].url, url) == 0) {
-      return win->auto_nav_recent[slot].id;
-    }
-  }
-  return (int)win->auto_nav_seq;
-}
-
-/* GTK thread: request `id` ended without replacing the document (see
- * inputAck.pending in automation.js). */
-static void auto_navigation_ended(ZbWindow *win, int id) {
-  auto_navigation_notify(win,
-                         "const a = globalThis.__zbAutomation; if (a && a.navigationEnded) "
-                         "a.navigationEnded(id); return 0;",
-                         id, NULL);
 }
 
 /* GTK thread: publish the live windows (index 0 = primary) and whether each
@@ -2436,14 +2430,28 @@ static guint32 auto_event_time(void) {
 
 /* Give the view keyboard focus, and the toplevel a focus-in: under Xvfb
  * there is no window manager to activate the window. */
-static void auto_native_focus(ZbWindow *win) {
-  GtkWidget *view = GTK_WIDGET(win->view);
+static gint zb_auto_debug_native_skipped;
+
+int zb_automation_debug_native_skipped(void) {
+  return g_atomic_int_get(&zb_auto_debug_native_skipped);
+}
+
+/* Whether `toplevel` (referenced by the caller) is still a live window. */
+static int auto_toplevel_alive(GtkWidget *toplevel) {
+  GdkWindow *window = gtk_widget_get_window(toplevel);
+  return !gtk_widget_in_destruction(toplevel) && window != NULL && !gdk_window_is_destroyed(window);
+}
+
+/* Focus handlers are reentrant too: the widgets are held across them and
+ * `win` is not touched afterwards. Returns whether the window survived. */
+static int auto_native_focus(ZbWindow *win) {
+  GtkWidget *view = g_object_ref(GTK_WIDGET(win->view));
+  GtkWidget *toplevel = g_object_ref(gtk_widget_get_toplevel(view));
   if (!gtk_widget_has_focus(view)) {
     gtk_widget_grab_focus(view);
   }
-  GtkWidget *toplevel = gtk_widget_get_toplevel(view);
-  GdkWindow *window = gtk_widget_get_window(toplevel);
-  if (window != NULL && !gtk_window_has_toplevel_focus(GTK_WINDOW(toplevel))) {
+  if (auto_toplevel_alive(toplevel) && !gtk_window_has_toplevel_focus(GTK_WINDOW(toplevel))) {
+    GdkWindow *window = gtk_widget_get_window(toplevel);
     GdkEvent *focus = gdk_event_new(GDK_FOCUS_CHANGE);
     focus->focus_change.window = g_object_ref(window);
     focus->focus_change.send_event = TRUE;
@@ -2453,6 +2461,10 @@ static void auto_native_focus(ZbWindow *win) {
     gtk_widget_send_focus_change(toplevel, focus);
     gdk_event_free(focus);
   }
+  int alive = auto_toplevel_alive(toplevel);
+  g_object_unref(toplevel);
+  g_object_unref(view);
+  return alive;
 }
 
 static GdkSeat *auto_seat(GdkWindow *window) {
@@ -2509,11 +2521,12 @@ static void auto_native_click(ZbAutoJob *job, ZbWindow *win) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("view not realized"));
     return;
   }
-  auto_native_focus(win);
-  /* A handler of one event may destroy the window: keep the GdkWindow alive
-   * and send nothing more once it is gone. */
+  /* A handler of focus or of one event may destroy the window: keep the
+   * GdkWindow alive and send nothing more once it is gone. */
   g_object_ref(window);
-  auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
+  if (auto_native_focus(win)) {
+    auto_native_pointer(window, GDK_MOTION_NOTIFY, job->x, job->y, 0, 0);
+  }
   if (!gdk_window_is_destroyed(window)) {
     auto_native_pointer(window, GDK_BUTTON_PRESS, job->x, job->y, job->button, 0);
   }
@@ -2575,6 +2588,11 @@ static gboolean auto_is_modifier_keyval(guint keyval) {
 
 static void auto_native_key_event(GdkWindow *window, GdkEventType type, guint keyval,
                                   GdkModifierType state) {
+  /* An earlier event of this press closed the window: send no more. */
+  if (gdk_window_is_destroyed(window)) {
+    g_atomic_int_inc(&zb_auto_debug_native_skipped);
+    return;
+  }
   GdkEvent *event = gdk_event_new(type);
   event->key.window = g_object_ref(window);
   event->key.time = auto_event_time();
@@ -2828,29 +2846,42 @@ static void auto_native_dispatch(ZbAutoJob *job, ZbWindow *win) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("window not realized"));
     return;
   }
-  auto_native_focus(win);
-
+  guint keyval = 0;
   if (job->op == ZB_OP_NATIVE_KEY) {
-    guint keyval = auto_keyval_for(job->body);
+    keyval = auto_keyval_for(job->body);
     if (keyval == 0) {
       auto_job_complete(job, ZB_AUTO_ERR_INTERNAL, NULL, g_strdup("unknown key"));
       return;
     }
+  }
+
+  /* `win` is not used past focus: a focus or key handler may destroy it.
+   * The GdkWindow is held, and no event goes to it once it is destroyed. */
+  g_object_ref(window);
+  if (!auto_native_focus(win)) {
+    g_object_unref(window);
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("window closed during input"));
+    return;
+  }
+  if (job->op == ZB_OP_NATIVE_KEY) {
     job->releases = auto_native_press(window, keyval, job->modifiers);
   } else {
-    /* `win` is not used past this point: a key handler may destroy it. */
-    g_object_ref(window);
     for (const char *p = job->body; *p != '\0' && !gdk_window_is_destroyed(window);
          p = g_utf8_next_char(p)) {
       gunichar ch = g_utf8_get_char(p);
-      guint keyval = ch == '\n' ? GDK_KEY_Return : gdk_unicode_to_keyval(ch);
-      int shift = keyval != GDK_KEY_Return && auto_keyval_needs_shift(window, keyval);
+      guint code = ch == '\n' ? GDK_KEY_Return : gdk_unicode_to_keyval(ch);
+      int shift = code != GDK_KEY_Return && auto_keyval_needs_shift(window, code);
       /* Pass the lower-case keyval with Shift so the press matches a
        * keyboard; auto_native_press upper-cases it again. */
-      job->releases += auto_native_press(window, shift ? gdk_keyval_to_lower(keyval) : keyval,
+      job->releases += auto_native_press(window, shift ? gdk_keyval_to_lower(code) : code,
                                          shift ? ZB_NATIVE_MOD_SHIFT : 0);
     }
-    g_object_unref(window);
+  }
+  int closed = gdk_window_is_destroyed(window);
+  g_object_unref(window);
+  if (closed) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("window closed during input"));
+    return;
   }
   auto_job_complete(job, ZB_AUTO_OK, NULL, NULL);
 }
@@ -2898,6 +2929,7 @@ int zb_automation_debug_destroy_window(ZbWindow *win, unsigned int timeout_ms) {
   return zb_main_invoke_sync(auto_debug_destroy, win, timeout_ms);
 }
 
+/* Destroys the widget's toplevel from inside its own event handler. */
 static gboolean auto_debug_close_on_motion_cb(GtkWidget *widget, GdkEvent *event, gpointer data) {
   (void)event;
   (void)data;
@@ -2910,6 +2942,20 @@ static void auto_debug_close_on_motion(void *ctx) {
   if (win != NULL) {
     g_signal_connect(win->view, "motion-notify-event", G_CALLBACK(auto_debug_close_on_motion_cb), NULL);
   }
+}
+
+static void auto_debug_close_on_key(void *ctx) {
+  ZbWindow *win = auto_resolve_window((ZbWindow *)ctx);
+  if (win != NULL) {
+    g_signal_connect(win->view, "key-press-event", G_CALLBACK(auto_debug_close_on_motion_cb), NULL);
+  }
+}
+
+int zb_automation_debug_close_on_key(ZbWindow *win, unsigned int timeout_ms) {
+  if (win == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  return zb_main_invoke_sync(auto_debug_close_on_key, win, timeout_ms);
 }
 
 int zb_automation_debug_close_on_motion(ZbWindow *win, unsigned int timeout_ms) {
