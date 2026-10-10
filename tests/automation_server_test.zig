@@ -252,6 +252,68 @@ test "server can be stopped and started again" {
     try testing.expect(std.mem.indexOf(u8, response, "file:///fixture/index.html") != null);
 }
 
+test "commands that never reach the page still get one root span and ids" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("noport-telemetry", .{ .with_port = false, .sink = &sink });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#b\"},\"id\":1}");
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "\"code\":-32011") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "\"trace_id\"") != null);
+    fixture.server.stop();
+
+    try testing.expectEqual(@as(usize, 1), countRoots(&sink, "session_invalid"));
+}
+
+test "a command cancelled while queued gets a root span and ids" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("queued-cancel", .{
+        .eval_reply = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":true,\"data\":{\"reason\":\"strict_zero\"}}",
+        .sink = &sink,
+    });
+    defer fixture.deinit();
+
+    const Client = struct {
+        fn run(f: *Fixture, request: []const u8, out: *?[]u8) void {
+            var stream = f.connect() catch return;
+            defer stream.close(testing.io);
+            out.* = roundTrip(stream, request) catch null;
+        }
+    };
+    var running: ?[]u8 = null;
+    var queued: ?[]u8 = null;
+    const a = try std.Thread.spawn(.{}, Client.run, .{ fixture, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.click\",\"params\":{\"selector\":\"css=#never\"},\"id\":1}", &running });
+    while (fixture.fake.evals.load(.acquire) < 2) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    const b = try std.Thread.spawn(.{}, Client.run, .{ fixture, "{\"jsonrpc\":\"2.0\",\"method\":\"page.url\",\"id\":2}", &queued });
+    while (fixture.server.queue.pendingCount("page-1") < 1) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+
+    fixture.server.stop();
+    a.join();
+    b.join();
+    defer if (running) |r| testing.allocator.free(r);
+    defer if (queued) |r| testing.allocator.free(r);
+
+    try testing.expect(std.mem.indexOf(u8, queued.?, "\"code\":-32012") != null);
+    try testing.expect(std.mem.indexOf(u8, queued.?, "\"trace_id\"") != null);
+    try testing.expectEqual(@as(usize, 2), countRoots(&sink, "cancelled"));
+}
+
+fn countRoots(sink: *const automation_server.automation.telemetry.InMemoryTelemetrySink, automation_error: []const u8) usize {
+    var count: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.command")) continue;
+        if (std.mem.eql(u8, span.attr("automation.error").?, automation_error)) count += 1;
+    }
+    return count;
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

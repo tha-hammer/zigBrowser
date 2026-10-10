@@ -369,3 +369,15 @@ test "root duration covers queue wait plus execution" {
     const root = try h.root();
     try std.testing.expectEqualStrings("47", root.attr("duration_ms").?);
 }
+
+test "selector.kind is a bounded enum, never a raw client prefix" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"malformed_selector\"}}" }});
+    defer h.deinit();
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"token_secret=abc\"}", 0);
+    defer outcome.deinit(gpa);
+    const root = try h.root();
+    try std.testing.expectEqualStrings("invalid", root.attr("selector.kind").?);
+    try std.testing.expect(!h.sink.containsRaw("token_secret"));
+}

@@ -354,11 +354,16 @@ pub const InMemoryTelemetrySink = struct {
     }
 };
 
+const selector_kinds = [_][]const u8{ "role", "testid", "text", "css", "xpath" };
+
+/// One of the supported selector engines, or "invalid"; never the raw
+/// client-supplied prefix.
 fn selectorKind(selector: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, selector, '=')) |idx| {
-        return selector[0..idx];
+    const idx = std.mem.indexOfScalar(u8, selector, '=') orelse return "invalid";
+    for (selector_kinds) |kind| {
+        if (std.mem.eql(u8, selector[0..idx], kind)) return kind;
     }
-    return "unknown";
+    return "invalid";
 }
 
 fn classifyTypedValue(value: []const u8) []const u8 {

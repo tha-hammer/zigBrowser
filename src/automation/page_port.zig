@@ -86,3 +86,31 @@ pub const PagePort = struct {
         return self.vtable.title(self.ptr, gpa, timeout_ms);
     }
 };
+
+/// Port for a server with no page attached: every operation fails with
+/// `error.NoPage` (-> session_invalid), so such commands still run through
+/// the engine and get ids and a root span.
+pub const no_page: PagePort = .{ .ptr = @constCast(&no_page_state), .vtable = &no_page_vtable };
+
+var no_page_state: u8 = 0;
+
+const no_page_vtable = PagePort.VTable{
+    .evalJson = noPageEval,
+    .navigate = noPageNavigate,
+    .reload = noPageReload,
+    .url = noPageRead,
+    .title = noPageRead,
+};
+
+fn noPageEval(_: *anyopaque, _: std.mem.Allocator, _: World, _: []const u8, _: []const u8, _: u64) PortError![]u8 {
+    return error.NoPage;
+}
+fn noPageNavigate(_: *anyopaque, _: []const u8, _: u64) PortError!void {
+    return error.NoPage;
+}
+fn noPageReload(_: *anyopaque, _: u64) PortError!void {
+    return error.NoPage;
+}
+fn noPageRead(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]u8 {
+    return error.NoPage;
+}

@@ -43,7 +43,7 @@ pub const AutomationApiServer = struct {
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = .{ .raw = false },
     clock: engine_mod.IoClock,
-    engine: ?engine_mod.Engine = null,
+    engine: engine_mod.Engine = undefined,
     connections_mutex: std.Io.Mutex = .init,
     connections: std.ArrayListUnmanaged(*Connection) = .empty,
     /// Serializes commands per page (M8) and cancels them on stop().
@@ -85,8 +85,9 @@ pub const AutomationApiServer = struct {
         if (self.listener != null) return;
 
         // The engine keeps a pointer to `self.clock`, so it is built here,
-        // once the server has reached its final address.
-        if (self.config.page_port) |port| self.engine = engine_mod.Engine.init(port, self.clock.clock());
+        // once the server has reached its final address. Without a page every
+        // command answers session_invalid through the engine (ids + span).
+        self.engine = engine_mod.Engine.init(self.config.page_port orelse page_port.no_page, self.clock.clock());
         // A previous stop() shut the queue down for good; give a restarted
         // server a fresh one (every ticket was released when stop() joined
         // the connections).
@@ -241,10 +242,9 @@ pub const AutomationApiServer = struct {
     }
 
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
-        const engine: ?*engine_mod.Engine = if (self.engine) |*e| e else null;
         var route = primary_route;
         route.telemetry_sink = self.config.telemetry_sink;
-        return handleRequestWith(allocator, payload, self.config.token, engine, &self.queue, route, self.config.build_info);
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, route, self.config.build_info);
     }
 };
 
@@ -252,7 +252,7 @@ fn handleRequestWith(
     allocator: std.mem.Allocator,
     payload: []const u8,
     token: []const u8,
-    engine: ?*engine_mod.Engine,
+    engine: *engine_mod.Engine,
     queue: *queue_mod.PageCommandQueue,
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
@@ -303,23 +303,18 @@ fn handleRequestWith(
     };
     defer command.deinit();
 
-    const active_engine = engine orelse {
-        const session_invalid = automation.errors.AutomationError.session_invalid;
-        return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(session_invalid), automation.errors.name(session_invalid), null);
-    };
-
-    const ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+    // A command cancelled while queued still goes through the engine (with
+    // the cancel flag already set) so it gets ids and one root span.
+    const already_cancelled = std.atomic.Value(bool).init(true);
+    const maybe_ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.Cancelled => {
-            const cancelled = automation.errors.AutomationError.cancelled;
-            return jsonRpcError(allocator, id_json, automation.errors.downstreamCode(cancelled), automation.errors.name(cancelled), null);
-        },
+        error.Cancelled => null,
     };
-    defer queue.release(ticket);
+    defer if (maybe_ticket) |ticket| queue.release(ticket);
 
-    var outcome = try active_engine.executeWith(allocator, &command, .{
-        .cancel = &ticket.cancelled,
-        .queue_wait_ms = ticket.wait_ms,
+    var outcome = try engine.executeWith(allocator, &command, .{
+        .cancel = if (maybe_ticket) |ticket| &ticket.cancelled else &already_cancelled,
+        .queue_wait_ms = if (maybe_ticket) |ticket| ticket.wait_ms else 0,
         .route = route,
         .build = build_info,
     });
