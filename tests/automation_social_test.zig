@@ -1039,7 +1039,8 @@ test "N21 persister: actions are written as they count, and a fresh server state
         var r = h.state.reserve().?;
         r.commit();
     }
-    x.consume();
+    var x_post = x.reserve().?;
+    x_post.commit();
     const saved = pacing_store.load(io, gpa, d.path).ok;
     try std.testing.expectEqual(@as(u32, 2), saved.social.actions_today);
     try std.testing.expectEqual(@as(u32, 1), saved.x.actions_today);

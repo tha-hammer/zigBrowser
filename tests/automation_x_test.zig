@@ -704,3 +704,43 @@ test "N20 cancellation: a platform signal found by a scan that a stop raced stil
     try std.testing.expectEqual(@as(i64, -32010), outcome.failure.code);
     try std.testing.expectEqual(@as(usize, 0), h.fake.eval_calls.items.len);
 }
+
+test "X admission (RoseCat 4777): a post in flight elsewhere holds the last slot; this one is refused with no page work, then admitted once it is released" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    const day: i32 = @intCast(@divFloor(fakeWall(), 86_400_000));
+    h.state.restore(.{ .actions_today = 49, .daily_cap = 50, .min_delay_ms = 0, .max_delay_ms = 0 }, day);
+    var elsewhere = h.state.reserve().?; // another window's post, still running
+    try std.testing.expect(h.state.reserve() == null);
+    try std.testing.expectEqual(@as(u32, 0), h.state.remaining());
+
+    var refused = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer refused.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32010), refused.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, refused.failure.data_json.?, "x_daily_cap") != null);
+    try std.testing.expectEqual(@as(usize, 0), h.fake.navigate_calls.items.len);
+
+    // The other post failed: its slot is free again, and this one counts.
+    elsewhere.release();
+    var posted = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer posted.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", posted.result);
+    try std.testing.expectEqual(@as(u32, 0), h.state.remaining());
+    try std.testing.expect(h.state.reserve() == null);
+}
+
+test "X admission: a failed post releases its slot (nothing counted), and each reservation ends exactly once" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" }});
+    defer h.deinit();
+    var failed = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer failed.deinit(gpa);
+    try std.testing.expect(failed == .failure);
+    try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap), h.state.remaining());
+    var r = h.state.reserve().?;
+    r.commit();
+    r.commit();
+    r.release();
+    try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap - 1), h.state.remaining());
+}

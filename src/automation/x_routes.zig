@@ -35,27 +35,55 @@ pub const XState = struct {
     limiter: pacing.RateLimiter,
     /// N21: told after a counted post (persisted by the server).
     on_change: ?pacing.ChangeHook = null,
+    /// Posts admitted by `reserve` and not yet committed or released (a
+    /// post running in another window holds its slot).
+    in_flight: u32 = 0,
 
     pub fn init(wall_ms: *const fn () i64) XState {
         return .{ .limiter = pacing.RateLimiter.init(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = default_daily_cap }, wall_ms) };
     }
 
+    /// Posts left today, not counting posts in flight.
     pub fn remaining(self: *XState) u32 {
         self.acquire();
         defer self.lock.unlock();
-        return self.limiter.remaining();
+        return self.limiter.remaining() -| self.in_flight;
     }
 
-    /// Counts one successful post or scheduled post.
-    pub fn consume(self: *XState) void {
-        {
-            self.acquire();
-            defer self.lock.unlock();
-            var prng = std.Random.DefaultPrng.init(0);
-            _ = self.limiter.recordAction(prng.random()) catch {};
-        }
-        if (self.on_change) |hook| hook.changed(hook.ctx);
+    /// Atomically admits one post, counting posts in flight; null at the
+    /// cap. The caller ends it exactly once: commit (success, counts and is
+    /// persisted) or release (failure, does not count).
+    pub fn reserve(self: *XState) ?Reservation {
+        self.acquire();
+        defer self.lock.unlock();
+        if (self.limiter.remaining() <= self.in_flight) return null;
+        self.in_flight += 1;
+        return .{ .state = self };
     }
+
+    pub const Reservation = struct {
+        state: *XState,
+        open: bool = true,
+
+        pub fn commit(self: *Reservation) void {
+            self.finish(true);
+        }
+
+        pub fn release(self: *Reservation) void {
+            self.finish(false);
+        }
+
+        fn finish(self: *Reservation, counted: bool) void {
+            if (!self.open) return;
+            self.open = false;
+            self.state.acquire();
+            std.debug.assert(self.state.in_flight > 0);
+            self.state.in_flight -= 1;
+            if (counted) self.state.limiter.countAdmitted();
+            self.state.lock.unlock();
+            if (counted) if (self.state.on_change) |hook| hook.changed(hook.ctx);
+        }
+    };
 
     /// N21: state loaded at startup (see RateLimiter.restore).
     pub fn restore(self: *XState, saved: pacing.Persisted, day: i32) void {
@@ -131,6 +159,10 @@ pub fn handleWithBudget(
     const flow_ms = flow.flowBudgetMs(budget_ms, explicit_ms, humanized_text);
     var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| flow_ms, .deadline_reason = "x_flow_deadline", .platform = "x" };
     defer runner.deinit();
+    // A post's slot from admission to its end: committed on success,
+    // released on any other way out.
+    var reservation: ?XState.Reservation = null;
+    defer if (reservation) |*r| r.release();
 
     const flow_result: x.Error!?[]u8 = switch (verb) {
         .login_check => x.loginCheck(gpa, &runner),
@@ -142,7 +174,7 @@ pub fn handleWithBudget(
             // same client may already page.navigate anywhere. Default: x.com.
             const compose_url = if (params.get("compose_url")) |_| (stringField(params, "compose_url") orelse return invalidParams()) else x.compose_url;
             const input = inputOptions(params) orelse return invalidParams();
-            if (state.remaining() == 0) return engine_mod.automationFailure(gpa, .platform_rate_limited, "x_daily_cap", ids);
+            reservation = state.reserve() orelse return engine_mod.automationFailure(gpa, .platform_rate_limited, "x_daily_cap", ids);
             break :blk if (verb == .post)
                 x.post(gpa, &runner, .{ .text = text, .compose_url = compose_url, .input = input })
             else
@@ -167,7 +199,7 @@ pub fn handleWithBudget(
         return runner.takeFailure();
     }
     // Only posts and scheduled posts are paced; checks are read-only.
-    if (verb == .post or verb == .schedule_post) state.consume();
+    if (reservation) |*r| r.commit();
     return .{ .result = json };
 }
 
