@@ -120,7 +120,7 @@ pub fn parse(
             command.wait_state = parseWaitState(optionalStringRaw(obj, "state") orelse "visible") orelse return error.BadArgs;
         },
         .page_navigate => {
-            command.url = try requiredString(arena_allocator, obj, "url");
+            command.url = try requiredCString(arena_allocator, obj, "url");
             command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
             command.wait_until = try optionalString(arena_allocator, obj, "waitUntil");
         },
@@ -134,7 +134,7 @@ pub fn parse(
             if (obj.count() != 0) return error.BadArgs;
         },
         .page_evaluate => {
-            command.expression = try requiredString(arena_allocator, obj, "expression");
+            command.expression = try requiredCString(arena_allocator, obj, "expression");
         },
         .page_screenshot => {
             command.full_page = optionalBool(obj, "fullPage", false) catch return error.BadArgs;
@@ -200,6 +200,14 @@ fn requiredString(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: []
         .string => |text| allocator.dupe(u8, text) catch return error.BadArgs,
         else => error.BadArgs,
     };
+}
+
+/// Like requiredString, but rejects embedded NUL: these values are passed to
+/// the native layer as C strings.
+fn requiredCString(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: []const u8) error{BadArgs}![]const u8 {
+    const text = try requiredString(allocator, obj, key);
+    if (std.mem.indexOfScalar(u8, text, 0) != null) return error.BadArgs;
+    return text;
 }
 
 fn optionalString(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: []const u8) error{BadArgs}!?[]const u8 {

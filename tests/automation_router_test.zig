@@ -117,3 +117,11 @@ test "getText and getAttribute accept timeout_ms at top level or in options" {
 
     try std.testing.expectError(error.BadArgs, automation.router.parse(allocator, "dom.getText", "{\"selector\":\"css=#a\",\"timeout_ms\":-1}", .{}));
 }
+
+test "embedded NUL in url or expression is BadArgs (they reach C strings)" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.BadArgs, router.parse(allocator, "page.navigate", "{\"url\":\"http://a/\\u0000evil\"}", .{}));
+    try std.testing.expectError(error.BadArgs, router.parse(allocator, "page.evaluate", "{\"expression\":\"1\\u0000+2\"}", .{}));
+    var ok = try router.parse(allocator, "page.navigate", "{\"url\":\"http://a/\"}", .{});
+    ok.deinit();
+}
