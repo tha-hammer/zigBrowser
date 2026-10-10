@@ -2681,6 +2681,25 @@ static WebKitWebContext *app_create_web_context(void) {
 
 static int app_run(const char *uri, int print_title, int e2e_protocol);
 
+/* The loop has ended: every tracked in-flight job completes with NO_LOOP and
+ * its WebKit work is cancelled, before teardown terminates web processes
+ * (which would otherwise complete some of them with incidental errors). */
+static void auto_fail_inflight_on_loop_end(void) {
+  for (GList *link = zb_auto_inflight; link != NULL; link = link->next) {
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->cancellable != NULL) {
+      g_cancellable_cancel(job->cancellable);
+    }
+  }
+  while (zb_auto_inflight != NULL) {
+    ZbAutoJob *job = (ZbAutoJob *)zb_auto_inflight->data;
+    zb_auto_inflight = g_list_delete_link(zb_auto_inflight, zb_auto_inflight);
+    job->target = NULL;
+    auto_job_complete(job, ZB_AUTO_ERR_NO_LOOP, NULL, g_strdup("main loop ended"));
+    auto_job_unref(job);
+  }
+}
+
 /* After the loop ends and the windows are destroyed (which cancels their
  * in-flight jobs), let WebKit deliver the cancelled callbacks so their job
  * refs are released. Bounded: at most one second. */
@@ -2762,6 +2781,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
   zb_automation_loop_mark(1);
   gtk_main();
   zb_automation_loop_mark(0);
+  auto_fail_inflight_on_loop_end();
 
   remove_source(&app.sigint_source_id);
   remove_source(&app.sigterm_source_id);

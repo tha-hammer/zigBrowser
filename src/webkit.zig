@@ -226,8 +226,14 @@ test "a waiter queued before zb_app_run is released when GTK init fails" {
     const saved_copy: [:0]const u8 = if (saved) |d| try std.fmt.bufPrintZ(&saved_buf, "{s}", .{std.mem.span(d)}) else "";
     _ = setenv("DISPLAY", "", 1);
     const start = monotonicMs();
+    // Capture the shim's stderr so the expected message neither leaks into the
+    // gate log (where it reads like a failure) nor goes unchecked.
+    var captured = try StderrCapture.begin();
     const rc = c.zb_app_run("about:blank", 0, 0);
+    var message_buf: [512]u8 = undefined;
+    const message = captured.end(&message_buf);
     _ = setenv("DISPLAY", saved_copy.ptr, 1);
+    try std.testing.expect(std.mem.indexOf(u8, message, "DISPLAY is required") != null);
 
     t.join();
     try std.testing.expectEqual(@as(c_int, c.ZB_EXIT_DISPLAY_UNAVAILABLE), rc);
@@ -239,6 +245,37 @@ test "a waiter queued before zb_app_run is released when GTK init fails" {
 }
 
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn dup(fd: c_int) c_int;
+extern fn dup2(old: c_int, new: c_int) c_int;
+
+/// Redirects fd 2 into a pipe until `end`, which restores it and returns
+/// what was written (up to the buffer size; the message here is one line).
+const StderrCapture = struct {
+    saved: c_int,
+    read_fd: c_int,
+
+    fn begin() !StderrCapture {
+        var fds: [2]c_int = undefined;
+        if (std.c.pipe(&fds) != 0) return error.PipeFailed;
+        const saved = dup(2);
+        if (saved < 0 or dup2(fds[1], 2) < 0) return error.DupFailed;
+        _ = std.c.close(fds[1]);
+        return .{ .saved = saved, .read_fd = fds[0] };
+    }
+
+    fn end(self: *StderrCapture, buf: []u8) []const u8 {
+        _ = dup2(self.saved, 2);
+        _ = std.c.close(self.saved);
+        var len: usize = 0;
+        while (len < buf.len) {
+            const n = std.c.read(self.read_fd, buf[len..].ptr, buf.len - len);
+            if (n <= 0) break;
+            len += @intCast(n);
+        }
+        _ = std.c.close(self.read_fd);
+        return buf[0..len];
+    }
+};
 
 // --- Live WebView bridge test (needs a display; run under xvfb-run) ---
 //
@@ -363,7 +400,7 @@ const LiveDriver = struct {
     fn pendingEval(self: *LiveDriver) void {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_automation_eval_json(null, "await new Promise(function () {});", null, null, 30_000, &out, &err);
+        const rc = c.zb_automation_eval_json(null, "await new Promise(function (resolve) { globalThis.__zbHold2 = resolve; });", null, null, 30_000, &out, &err);
         c.zb_automation_free(out);
         c.zb_automation_free(err);
         self.pending_eval_rc.store(rc, .release);
@@ -420,7 +457,9 @@ const LiveDriver = struct {
         r = self.eval(null, "throw new Error('boom');", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_ERR_JS and r.err != null and std.mem.indexOf(u8, r.err.?, "boom") != null, "JS exception maps to ZB_AUTO_ERR_JS");
 
-        r = self.eval(null, "await new Promise(function () {});", null, null, 150);
+        // The resolver is kept reachable: an unreferenced pending promise can be
+        // garbage-collected, and WebKit then fails the call early.
+        r = self.eval(null, "await new Promise(function (resolve) { globalThis.__zbHold1 = resolve; });", null, null, 150);
         self.check(r.rc == c.ZB_AUTO_ERR_TIMEOUT, "never-settling promise times out");
         r = self.eval(null, "return 'alive';", null, null, 5000);
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "alive"), "eval still works after a timeout");
