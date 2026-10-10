@@ -204,6 +204,15 @@ def main() -> int:
             eprint(f"stderr={stderr_lines[-20:]}")
             return 1
 
+        # Profile isolation: the default profile must land under the harness's
+        # temporary XDG_DATA_HOME, never the developer's real one.
+        isolated = Path(env["XDG_DATA_HOME"]) / "zigbrowser" / "profile" / "cookies.sqlite"
+        real_root = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        if Path(env["XDG_DATA_HOME"]).resolve() == Path(real_root).resolve() or not isolated.exists():
+            print("FAIL\tautomation-api-profile-isolation")
+            eprint(f"expected the default profile under the temp root: {isolated}")
+            return 1
+
         deadline = time.monotonic() + 3.0
         while socket_path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)

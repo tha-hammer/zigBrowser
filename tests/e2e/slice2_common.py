@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import signal
@@ -70,8 +71,22 @@ def assert_children_exit(children: Iterable[int], timeout_sec: float) -> tuple[b
     return len(alive) == 0, alive
 
 
+def isolate_profile_env(env: dict[str, str]) -> dict[str, str]:
+    """Point XDG data/cache homes at a fresh temp root (removed at exit).
+
+    zigBrowser defaults its persistent profile to $XDG_DATA_HOME/zigbrowser/
+    profile, so without this every E2E launch would read and write the
+    developer's real cookies and site data and share them across parallel
+    tests."""
+    root = tempfile.mkdtemp(prefix="zb-e2e-xdg-")
+    atexit.register(shutil.rmtree, root, True)
+    env["XDG_DATA_HOME"] = os.path.join(root, "data")
+    env["XDG_CACHE_HOME"] = os.path.join(root, "cache")
+    return env
+
+
 def detect_runner(prefer_xvfb: bool) -> tuple[list[str], dict[str, str], str] | None:
-    env = dict(os.environ)
+    env = isolate_profile_env(dict(os.environ))
     xvfb = shutil.which("xvfb-run")
     display = env.get("DISPLAY")
 
