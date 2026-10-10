@@ -1019,3 +1019,23 @@ test "after a re-locate, only the final locate's timeout becomes document_change
     try expectFailureData(timed_out, -32001, "element_not_found", "\"reason\":\"document_changed\"");
     try std.testing.expectEqual(@as(u64, 100), t.clock.now_ms);
 }
+
+test "after a re-locate, real evidence from the new document is kept (element_obscured to the deadline is not document_changed)" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 10;
+    h.fake.eval_replies = &.{
+        .{ .json = located_reply },
+        .{ .json = "{\"ok\":false,\"error\":\"element_obscured\",\"retryable\":true,\"data\":{\"reason\":\"receives-events\"}}" },
+    };
+    h.fake.native_fail_at = 0;
+    h.fake.native_error = error.DocumentChanged;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"timeout_ms\":200}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32009, "action_timeout", "\"last_error\":\"element_obscured\"");
+    try expectFailureData(outcome, -32009, "action_timeout", "\"reason\":\"receives-events\"");
+    try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
+    try std.testing.expect(h.clock.now_ms <= 200);
+}

@@ -209,6 +209,10 @@ const Run = struct {
     build: telemetry.BuildInfo,
     /// Deadline handed to the native layer for the current call.
     native_timeout_ms: u64 = 0,
+    /// Set when runDomUntil's failure is a PagePort Timeout with no script
+    /// evidence before it (internal provenance; never inferred from the
+    /// public error code).
+    ended_on_bare_port_timeout: bool = false,
     /// Monotonic across the whole command (retries and per-character ops).
     attempts: u32 = 0,
     /// selector.match_count from the script's latest selector.resolve span.
@@ -452,6 +456,13 @@ pub const Engine = struct {
             const started = self.clock.nowMs();
             const text = self.port.evalJson(gpa, .automation, script_command.handle_body, command_json, native_timeout) catch |err| {
                 self.platformSpanAttempt(run, ids.attempt_index, command_json.len, 0, started, @errorName(err));
+                if (err == error.Timeout) {
+                    // A page call cut short by the command deadline after
+                    // earlier retryable failures: that evidence is the
+                    // answer. (A Timeout before the deadline stays one.)
+                    if (last.recorded and self.clock.nowMs() >= deadline) return deadlineFailure(gpa, &last, ids, run.attempts);
+                    run.ended_on_bare_port_timeout = true;
+                }
                 return portFailure(gpa, err, .action, ids);
             };
             defer gpa.free(text);
@@ -499,15 +510,18 @@ pub const Engine = struct {
             if (command.selector != null) {
                 var locate_command = command.*;
                 locate_command.locate = .{ .action = action, .focus = command.verb != .dom_click and !command.trial };
+                run.ended_on_bare_port_timeout = false;
                 var located = try self.runDomUntil(gpa, &locate_command, deadline, run);
                 switch (located) {
-                    .failure => |failure| {
+                    .failure => {
                         // Out of time while chasing a document that kept
-                        // changing: the final locate's action_timeout yields
-                        // to that evidence. Any other failure (cancelled,
-                        // internal, session, the script's own not-found)
-                        // is reported as it is.
-                        if (relocated and self.clock.nowMs() >= deadline and failure.code == errors.downstreamCode(.action_timeout)) {
+                        // changing: only a final locate that ended on a bare
+                        // PagePort Timeout (no evidence from the new
+                        // document) yields to that. Any other failure
+                        // (actionability evidence, cancelled, internal,
+                        // session, the script's own not-found) is reported
+                        // as it is.
+                        if (relocated and run.ended_on_bare_port_timeout and self.clock.nowMs() >= deadline) {
                             located.deinit(gpa);
                             return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
                         }
@@ -936,6 +950,8 @@ const LastFailure = struct {
     automation_error: errors.AutomationError = .element_not_found,
     reason_buf: [64]u8 = undefined,
     reason_len: usize = 0,
+    /// At least one retryable failure was recorded.
+    recorded: bool = false,
 
     /// Keeps the most specific evidence: once a match failed an
     /// actionability check, a later "not found" does not erase it.
@@ -943,6 +959,7 @@ const LastFailure = struct {
         const error_name = script_result.error_name.?;
         const observed = errors.fromName(error_name) catch .element_not_found;
         if (observed == .element_not_found and self.automation_error != .element_not_found) return;
+        self.recorded = true;
         self.automation_error = observed;
         const text = script_result.reason orelse error_name;
         self.reason_len = @min(text.len, self.reason_buf.len);

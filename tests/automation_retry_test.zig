@@ -422,3 +422,42 @@ test "non-wait commands do not pay for a readiness barrier" {
     defer outcome.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), h.fake.url_calls);
 }
+
+test "a final page call cut short by the deadline keeps the earlier retry evidence" {
+    // Attempt 1 (60 ms) finds nothing; attempt 2 gets the last 24 ms and the
+    // page call times out. The answer is the not-found evidence.
+    var h: Harness = undefined;
+    h.init(&.{ not_found, not_found });
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 60;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":100}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try expectData(outcome, "reason", "strict_zero");
+    try std.testing.expectEqual(@as(usize, 2), h.evalCount());
+
+    // Same with actionability evidence: action_timeout naming it.
+    var o: Harness = undefined;
+    o.init(&.{ obscured, obscured });
+    defer o.deinit();
+    o.fake.clock = &o.clock;
+    o.fake.eval_cost_ms = 60;
+    var covered = try o.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":100}}");
+    defer covered.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), covered.failure.code);
+    try expectData(covered, "last_error", "element_obscured");
+}
+
+test "a first page call that times out (no evidence yet) stays a bare action_timeout" {
+    var h: Harness = undefined;
+    h.init(&.{not_found});
+    defer h.deinit();
+    h.fake.clock = &h.clock;
+    h.fake.eval_cost_ms = 60;
+    var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":50}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
+    try std.testing.expect((try dataField(outcome, "last_error")) == null);
+    try std.testing.expectEqual(@as(usize, 1), h.evalCount());
+}
