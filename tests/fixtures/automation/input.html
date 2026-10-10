@@ -27,6 +27,9 @@
       <option value="b">Beta</option>
       <option value="c">Gamma</option>
       <option value="d" disabled>Delta</option>
+      <optgroup label="Retired" disabled>
+        <option value="e">Epsilon</option>
+      </optgroup>
     </select>
 
     <button id="combo" role="combobox" aria-controls="combo-list" aria-expanded="false">Pick a fruit</button>
@@ -47,6 +50,10 @@
     <button id="slowcombo" role="combobox" aria-controls="slow-list" aria-expanded="false">Pick slowly</button>
     <ul id="slow-list" role="listbox" hidden></ul>
 
+    <!-- Options appear 700 ms after opening: later than a short RPC timeout. -->
+    <button id="ghostcombo" role="combobox" aria-controls="ghost-list" aria-expanded="false">Ghost</button>
+    <ul id="ghost-list" role="listbox" hidden></ul>
+
     <!-- Decoy: an unrelated visible listbox with the same option names. -->
     <ul id="decoy" role="listbox">
       <li role="option" data-value="banana">Banana</li>
@@ -63,6 +70,23 @@
       window.decoyClicks = 0;
       document.querySelectorAll('#decoy [role=option]').forEach(function (option) {
         option.addEventListener('click', function () { window.decoyClicks += 1; });
+      });
+
+      window.ghostValue = null;
+      var ghost = document.getElementById('ghostcombo');
+      var ghostList = document.getElementById('ghost-list');
+      ghost.addEventListener('click', function () {
+        if (ghost.getAttribute('aria-expanded') === 'true') return;
+        ghost.setAttribute('aria-expanded', 'true');
+        setTimeout(function () {
+          var li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.setAttribute('data-value', 'boo');
+          li.textContent = 'Boo';
+          li.addEventListener('click', function () { window.ghostValue = 'boo'; });
+          ghostList.appendChild(li);
+          ghostList.hidden = false;
+        }, 700);
       });
 
       window.slowOpenClicks = 0;

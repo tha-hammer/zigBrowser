@@ -11,6 +11,7 @@ import argparse
 import json
 import socket
 import struct
+import time
 import subprocess
 import tempfile
 import threading
@@ -188,10 +189,18 @@ def run_select(socket_path: Path, t: float) -> None:
     expect_equal("select by index", rpc("dom.selectOption", {"selector": "css=#sel", "index": 0}), {"value": "a"})
     expect_equal("input/change after three selections", js("[window.selInputs, window.selChanges]"), [3, 3])
 
-    # Missing or disabled options fail as element_not_found / no_option.
+    def expect_option_disabled(label: str, params: dict) -> None:
+        error = rpc_error(socket_path, "dom.selectOption", dict(params, timeout_ms=300), next(ids), t)
+        expect_equal(f"{label} code", error["code"], -32005)
+        expect_equal(f"{label} reason", error["data"]["reason"], "option_disabled")
+
+    # Missing options fail as element_not_found / no_option; an option that
+    # exists but is disabled fails as element_disabled / option_disabled.
     expect_no_option("missing value", {"selector": "css=#sel", "value": "zzz"})
-    expect_no_option("disabled option", {"selector": "css=#sel", "value": "d"})
     expect_no_option("index out of range", {"selector": "css=#sel", "index": 9})
+    expect_option_disabled("disabled option by value", {"selector": "css=#sel", "value": "d"})
+    expect_option_disabled("disabled option by label", {"selector": "css=#sel", "label": "Delta"})
+    expect_option_disabled("option in a disabled optgroup", {"selector": "css=#sel", "value": "e"})
     expect_equal("failed selections left the value alone", js("document.getElementById('sel').value"), "a")
     expect_equal("failed selections fired nothing", js("[window.selInputs, window.selChanges]"), [3, 3])
 
@@ -219,11 +228,18 @@ def run_select(socket_path: Path, t: float) -> None:
     expect_equal("slow combobox opened once", js("window.slowOpenClicks"), 1)
     expect_equal("decoy still never clicked", js("window.decoyClicks"), 0)
 
+    # No ghost clicks: options that appear after the command timed out are
+    # never clicked, because no script work outlives an attempt.
+    expect_no_option("ghost combobox before its options render", {"selector": "css=#ghostcombo", "value": "boo"})
+    time.sleep(1.5)
+    expect_equal("ghost option never clicked", js("window.ghostValue"), None)
+    expect_equal("ghost option rendered meanwhile", js("document.querySelectorAll('#ghost-list [role=option]').length"), 1)
+
     # ARIA listbox: by value and by index; aria-disabled options are refused.
     expect_equal("listbox by value", rpc("dom.selectOption", {"selector": "css=#lb", "value": "two"}), {"value": "two"})
     expect_equal("listbox selection", js("Array.from(document.querySelectorAll('#lb [role=option]')).map(o => o.getAttribute('aria-selected'))"), ["false", "true", "false"])
     expect_equal("listbox by index", rpc("dom.selectOption", {"selector": "css=#lb", "index": 0}), {"value": "one"})
-    expect_no_option("aria-disabled option", {"selector": "css=#lb", "value": "three"})
+    expect_option_disabled("aria-disabled option", {"selector": "css=#lb", "value": "three"})
     expect_equal("aria-disabled option not selected", js("document.querySelector('#lb [data-value=three]').getAttribute('aria-selected')"), "false")
 
 

@@ -127,14 +127,14 @@
     return success({ ok: true }, []);
   }
 
-  // How long a combobox may take to render its options after opening.
-  const OPTION_POPUP_WAIT_MS = 1000;
-
   // dom.selectOption: a native <select> gets the option set plus input and
   // change; an ARIA combobox is clicked open and its matching role=option
   // clicked; an ARIA listbox has its matching option clicked. Exactly one of
-  // value / label / index identifies the option. No match (or a disabled
-  // option) fails retryably as element_not_found / no_option.
+  // value / label / index identifies the option. No match fails retryably as
+  // element_not_found / no_option; a disabled option fails as
+  // element_disabled / option_disabled. Every attempt is synchronous: options
+  // that render later are picked up by the engine's deadline-aware retry, so
+  // nothing can click after the command has returned.
   function selectOption(command) {
     const resolved = resolveForCommand(Object.assign({}, command, { strict: command.strict !== false }));
     if (!resolved.ok) return resolved.response;
@@ -152,7 +152,9 @@
     if (role === 'listbox') return clickAriaOption(element, command, telemetry);
     if (role === 'combobox' || element.getAttribute('aria-haspopup') === 'listbox') {
       if (element.getAttribute('aria-expanded') !== 'true') synthesizeClick(element);
-      return waitForAriaOption(element, command, telemetry);
+      const listbox = popupListbox(element);
+      if (!listbox) return failure('no_option', command, telemetry, true);
+      return clickAriaOption(listbox, command, telemetry);
     }
     return failure('not_selectable', command, telemetry, false);
   }
@@ -161,7 +163,9 @@
     const options = Array.from(select.options);
     const option = options.find((candidate, index) => optionMatches(command, index,
       candidate.value, normalizeText(candidate.label || candidate.textContent || '')));
-    if (!option || option.disabled) return failure('no_option', command, telemetry, true);
+    if (!option) return failure('no_option', command, telemetry, true);
+    // :disabled also covers options inside a disabled <optgroup>.
+    if (option.matches(':disabled')) return optionDisabled(telemetry);
 
     select.focus();
     if (select.multiple) {
@@ -210,32 +214,23 @@
       accessibleName(option))) || null;
   }
 
+  function optionDisabled(telemetry) {
+    return {
+      ok: false,
+      error: 'element_disabled',
+      retryable: false,
+      data: { reason: 'option_disabled' },
+      telemetry
+    };
+  }
+
   function clickAriaOption(container, command, telemetry) {
     const option = findAriaOption(container, command);
-    if (!option || option.getAttribute('aria-disabled') === 'true') {
-      return failure('no_option', command, telemetry, true);
-    }
+    if (!option || !isElementVisibleEnough(option)) return failure('no_option', command, telemetry, true);
+    if (option.getAttribute('aria-disabled') === 'true') return optionDisabled(telemetry);
     const value = ariaOptionValue(option);
     synthesizeClick(option);
     return success({ value }, telemetry);
-  }
-
-  function waitForAriaOption(combobox, command, telemetry) {
-    const deadline = nowMs() + OPTION_POPUP_WAIT_MS;
-    return new Promise((resolve) => {
-      function attempt() {
-        const listbox = popupListbox(combobox);
-        const option = listbox ? findAriaOption(listbox, command) : null;
-        if (option && isElementVisibleEnough(option)) {
-          resolve(clickAriaOption(listbox, command, telemetry));
-        } else if (nowMs() >= deadline) {
-          resolve(failure('no_option', command, telemetry, true));
-        } else {
-          setTimeout(attempt, WAIT_POLL_INTERVAL_MS);
-        }
-      }
-      attempt();
-    });
   }
 
   const MODIFIER_KEYS = {
