@@ -1,36 +1,51 @@
 import { describe, it, expect, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createMockServer, MockUDSServer } from "./helpers";
 import { ZigBrowser } from "../src/index";
 
-type Case = [string, (zb: ZigBrowser) => Promise<unknown>, string, Record<string, unknown>];
+// Shared with tests/automation_server_test.zig (which proves the real server
+// routes and accepts every case) and with the Python SDK tests.
+const wirePath =
+  process.env.ZB_WIRE_CASES ??
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../tests/fixtures/automation/sdk_wire_cases.json");
+const WIRE_CASES: Record<string, { method: string; params: Record<string, unknown> }> = Object.fromEntries(
+  (JSON.parse(fs.readFileSync(wirePath, "utf-8")).cases as { id: string; method: string; params: Record<string, unknown> }[]).map(
+    (c) => [c.id, { method: c.method, params: c.params }],
+  ),
+);
 
-// Every method the server's router accepts, with its exact wire params.
-const CASES: Case[] = [
-  ["dom.query", (zb) => zb.dom.query("css=li", { timeoutMs: 100, strict: true }), "dom.query", { selector: "css=li", timeout_ms: 100, strict: true }],
-  ["dom.click", (zb) => zb.dom.click("css=#b", { force: true, timeoutMs: 900 }), "dom.click", { selector: "css=#b", options: { force: true, timeout_ms: 900 } }],
-  ["dom.fill", (zb) => zb.dom.fill("css=#n", "Ada"), "dom.fill", { selector: "css=#n", value: "Ada" }],
-  ["dom.type", (zb) => zb.dom.type("css=#q", "zig", { delayMs: 40 }), "dom.type", { selector: "css=#q", text: "zig", delay_ms: 40 }],
-  ["dom.getText", (zb) => zb.dom.getText("css=#m", { timeoutMs: 300 }), "dom.getText", { selector: "css=#m", timeout_ms: 300 }],
-  ["dom.getAttribute", (zb) => zb.dom.getAttribute("css=a", "href"), "dom.getAttribute", { selector: "css=a", name: "href" }],
-  ["dom.waitFor", (zb) => zb.dom.waitFor("css=#x", { state: "hidden", timeoutMs: 250 }), "dom.waitFor", { selector: "css=#x", state: "hidden", timeout_ms: 250 }],
-  ["dom.press", (zb) => zb.dom.press("Enter"), "dom.press", { key: "Enter" }],
-  ["dom.press+", (zb) => zb.dom.press("a", { selector: "css=#q", modifiers: ["Control"], timeoutMs: 5 }), "dom.press", { key: "a", selector: "css=#q", modifiers: ["Control"], timeout_ms: 5 }],
-  ["dom.selectOption", (zb) => zb.dom.selectOption("css=#c", { label: "France" }), "dom.selectOption", { selector: "css=#c", label: "France" }],
-  ["page.navigate", (zb) => zb.page.navigate("https://e.test/", { waitUntil: "load", timeoutMs: 5000 }), "page.navigate", { url: "https://e.test/", waitUntil: "load", timeout_ms: 5000 }],
-  ["page.reload", (zb) => zb.page.reload(), "page.reload", {}],
-  ["page.url", (zb) => zb.page.url(), "page.url", {}],
-  ["page.title", (zb) => zb.page.title(), "page.title", {}],
-  ["page.evaluate", (zb) => zb.page.evaluate("1+1"), "page.evaluate", { expression: "1+1" }],
-  ["page.screenshot", (zb) => zb.page.screenshot({ fullPage: true }), "page.screenshot", { fullPage: true }],
-  ["cookies.getAll", (zb) => zb.cookies.getAll({ url: "https://e.test/" }), "cookies.getAll", { url: "https://e.test/" }],
-  ["cookies.set", (zb) => zb.cookies.set({ name: "sid", value: "v", domain: "e.test", httpOnly: true, sameSite: "Lax" }), "cookies.set", { name: "sid", value: "v", domain: "e.test", httpOnly: true, sameSite: "Lax" }],
-  ["cookies.delete", (zb) => zb.cookies.delete("sid"), "cookies.delete", { name: "sid" }],
-  ["cookies.import", (zb) => zb.cookies.import("/tmp/c.txt", "netscape"), "cookies.import", { path: "/tmp/c.txt", format: "netscape" }],
-  ["social.loginCheck", (zb) => zb.social.loginCheck(), "social.login_check", {}],
-  ["social.rateStatus", (zb) => zb.social.rateStatus(), "social.rate_status", {}],
-  ["social.pause", (zb) => zb.social.pause(10), "social.pause", { duration_ms: 10 }],
-  ["social.setPacing", (zb) => zb.social.setPacing({ dailyCap: 5 }), "social.set_pacing", { daily_cap: 5 }],
-];
+// How this SDK produces each shared case.
+const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
+  "dom.query": (zb) => zb.dom.query("css=li", { timeoutMs: 100 }),
+  "dom.click": (zb) => zb.dom.click("css=#b", { force: true, timeoutMs: 900 }),
+  "dom.fill": (zb) => zb.dom.fill("css=#n", "Ada"),
+  "dom.type": (zb) => zb.dom.type("css=#q", "zig", { delayMs: 40 }),
+  "dom.getText": (zb) => zb.dom.getText("css=#m", { timeoutMs: 300 }),
+  "dom.getAttribute": (zb) => zb.dom.getAttribute("css=a", "href", { timeoutMs: 300 }),
+  "dom.waitFor": (zb) => zb.dom.waitFor("css=#x", { state: "hidden", timeoutMs: 250 }),
+  "dom.press": (zb) => zb.dom.press("Enter"),
+  "dom.press.full": (zb) => zb.dom.press("a", { selector: "css=#q", modifiers: ["Control", "Shift"], timeoutMs: 500 }),
+  "dom.selectOption.value": (zb) => zb.dom.selectOption("css=#c", { value: "fr" }),
+  "dom.selectOption.label": (zb) => zb.dom.selectOption("css=#c", { label: "France" }),
+  "dom.selectOption.index": (zb) => zb.dom.selectOption("css=#c", { index: 2, timeoutMs: 100 }),
+  "page.navigate": (zb) => zb.page.navigate("https://example.com/", { timeoutMs: 5000 }),
+  "page.reload": (zb) => zb.page.reload(),
+  "page.url": (zb) => zb.page.url(),
+  "page.title": (zb) => zb.page.title(),
+  "page.evaluate": (zb) => zb.page.evaluate("1+1"),
+  "cookies.getAll": (zb) => zb.cookies.getAll(),
+  "cookies.getAll.url": (zb) => zb.cookies.getAll({ url: "https://example.com/" }),
+  "cookies.set": (zb) => zb.cookies.set({ name: "sid", value: "v", domain: "example.com", httpOnly: true, sameSite: "Lax" }),
+  "cookies.delete": (zb) => zb.cookies.delete("sid"),
+  "cookies.delete.domain": (zb) => zb.cookies.delete("sid", "example.com"),
+  "cookies.import": (zb) => zb.cookies.import("/nonexistent/zb-conformance/cookies.txt", "netscape"),
+  "social.login_check": (zb) => zb.social.loginCheck(),
+  "social.rate_status": (zb) => zb.social.rateStatus(),
+  "social.pause": (zb) => zb.social.pause(5),
+  "social.set_pacing": (zb) => zb.social.setPacing({ dailyCap: 5 }),
+};
 
 describe("typed wrappers", () => {
   let server: MockUDSServer;
@@ -38,16 +53,20 @@ describe("typed wrappers", () => {
     if (server) await server.close();
   });
 
-  for (const [name, invoke, method, params] of CASES) {
-    it(`${name} sends ${method}`, async () => {
+  it("covers every shared wire case", () => {
+    expect(Object.keys(INVOCATIONS).sort()).toEqual(Object.keys(WIRE_CASES).sort());
+  });
+
+  for (const id of Object.keys(WIRE_CASES).sort()) {
+    it(`${id} emits the shared wire case`, async () => {
       server = await createMockServer();
       server.setResponse({ jsonrpc: "2.0", result: { ok: true }, id: 1 });
       const zb = new ZigBrowser({ socketPath: server.path });
       await zb.connect();
-      await invoke(zb);
+      await INVOCATIONS[id](zb);
       const req = server.lastRequest();
-      expect(req.method).toBe(method);
-      expect(req.params).toEqual(params);
+      expect(req.method).toBe(WIRE_CASES[id].method);
+      expect(req.params).toEqual(WIRE_CASES[id].params);
       expect("auth" in req).toBe(false);
       await zb.disconnect();
     });

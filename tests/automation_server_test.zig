@@ -630,6 +630,56 @@ test "websocket upgrade requires the token (Authorization: Bearer) when one is c
     }
 }
 
+test "SDK conformance: every shared wire case is routed and accepted by the real server" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const text = try std.Io.Dir.cwd().readFileAlloc(testing.io, "tests/fixtures/automation/sdk_wire_cases.json", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(text);
+    const doc = try std.json.parseFromSlice(std.json.Value, testing.allocator, text, .{});
+    defer doc.deinit();
+
+    var store = MemoryCookieStore{};
+    defer store.deinit();
+    var fixture = try Fixture.start("conformance", .{
+        .cookies = &store,
+        .eval_reply = "{\"ok\":true,\"value\":{\"ok\":true}}",
+    });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    const cases = doc.value.object.get("cases").?.array.items;
+    try testing.expect(cases.len >= 20);
+    for (cases, 0..) |case, i| {
+        const obj = case.object;
+        const request = try std.json.Stringify.valueAlloc(testing.allocator, .{
+            .jsonrpc = "2.0",
+            .method = obj.get("method").?.string,
+            .params = obj.get("params").?,
+            .id = i,
+        }, .{});
+        defer testing.allocator.free(request);
+        const response = try roundTrip(stream, request);
+        defer testing.allocator.free(response);
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+        defer parsed.deinit();
+        if (parsed.value.object.get("error")) |err| {
+            const code = err.object.get("code").?.integer;
+            // Routed and well-formed; a semantic failure from a fake port
+            // (e.g. the nonexistent import file) is fine.
+            if (code == -32601 or code == -32602 or code == -32600) {
+                // cookies.import of a missing file is -32602 by design; it
+                // still proves the route and param names.
+                const is_missing_import = std.mem.eql(u8, obj.get("id").?.string, "cookies.import") and
+                    std.mem.eql(u8, err.object.get("data").?.object.get("reason").?.string, "unreadable_file");
+                if (!is_missing_import) {
+                    std.debug.print("case {s} rejected: {s}\n", .{ obj.get("id").?.string, response });
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }
+    }
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

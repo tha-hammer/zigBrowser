@@ -1,0 +1,32 @@
+{
+  "comment": "SDK conformance: every case is a request the SDKs emit. tests/automation_server_test.zig sends each one to the real server (fake ports) and requires it to be routed and accepted (no -32601/-32602). The Python and Node SDK tests require their wrappers to emit exactly these params and to cover every id.",
+  "cases": [
+    {"id": "dom.query", "method": "dom.query", "params": {"selector": "css=li", "timeout_ms": 100}},
+    {"id": "dom.click", "method": "dom.click", "params": {"selector": "css=#b", "options": {"force": true, "timeout_ms": 900}}},
+    {"id": "dom.fill", "method": "dom.fill", "params": {"selector": "css=#n", "value": "Ada"}},
+    {"id": "dom.type", "method": "dom.type", "params": {"selector": "css=#q", "text": "zig", "delay_ms": 40}},
+    {"id": "dom.getText", "method": "dom.getText", "params": {"selector": "css=#m", "timeout_ms": 300}},
+    {"id": "dom.getAttribute", "method": "dom.getAttribute", "params": {"selector": "css=a", "name": "href", "timeout_ms": 300}},
+    {"id": "dom.waitFor", "method": "dom.waitFor", "params": {"selector": "css=#x", "state": "hidden", "timeout_ms": 250}},
+    {"id": "dom.press", "method": "dom.press", "params": {"key": "Enter"}},
+    {"id": "dom.press.full", "method": "dom.press", "params": {"key": "a", "selector": "css=#q", "modifiers": ["Control", "Shift"], "timeout_ms": 500}},
+    {"id": "dom.selectOption.value", "method": "dom.selectOption", "params": {"selector": "css=#c", "value": "fr"}},
+    {"id": "dom.selectOption.label", "method": "dom.selectOption", "params": {"selector": "css=#c", "label": "France"}},
+    {"id": "dom.selectOption.index", "method": "dom.selectOption", "params": {"selector": "css=#c", "index": 2, "timeout_ms": 100}},
+    {"id": "page.navigate", "method": "page.navigate", "params": {"url": "https://example.com/", "timeout_ms": 5000}},
+    {"id": "page.reload", "method": "page.reload", "params": {}},
+    {"id": "page.url", "method": "page.url", "params": {}},
+    {"id": "page.title", "method": "page.title", "params": {}},
+    {"id": "page.evaluate", "method": "page.evaluate", "params": {"expression": "1+1"}},
+    {"id": "cookies.getAll", "method": "cookies.getAll", "params": {}},
+    {"id": "cookies.getAll.url", "method": "cookies.getAll", "params": {"url": "https://example.com/"}},
+    {"id": "cookies.set", "method": "cookies.set", "params": {"name": "sid", "value": "v", "domain": "example.com", "httpOnly": true, "sameSite": "Lax"}},
+    {"id": "cookies.delete", "method": "cookies.delete", "params": {"name": "sid"}},
+    {"id": "cookies.delete.domain", "method": "cookies.delete", "params": {"name": "sid", "domain": "example.com"}},
+    {"id": "cookies.import", "method": "cookies.import", "params": {"path": "/nonexistent/zb-conformance/cookies.txt", "format": "netscape"}},
+    {"id": "social.login_check", "method": "social.login_check", "params": {}},
+    {"id": "social.rate_status", "method": "social.rate_status", "params": {}},
+    {"id": "social.pause", "method": "social.pause", "params": {"duration_ms": 5}},
+    {"id": "social.set_pacing", "method": "social.set_pacing", "params": {"daily_cap": 5}}
+  ]
+}

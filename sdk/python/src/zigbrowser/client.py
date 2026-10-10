@@ -124,6 +124,10 @@ class PageNamespace:
 
 
 class LinkedInNamespace:
+    """Not routed by the automation socket yet: every linkedin.* call answers
+    -32601 (ProtocolError). Kept for request-shape parity with
+    src/linkedin.zig. Use dom.*/page.* for LinkedIn automation today."""
+
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
@@ -166,6 +170,7 @@ class LinkedInNamespace:
         return self._client.call("linkedin.search", params)
 
     def extract(self, profile_url: str) -> dict:
+        """No Zig implementation exists (src/linkedin.zig has no extract)."""
         return self._client.call(
             "linkedin.extract", {"profileUrl": profile_url}
         )
@@ -177,6 +182,9 @@ class LinkedInNamespace:
 
 
 class InstagramNamespace:
+    """Not routed by the automation socket yet: every instagram.* call
+    answers -32601 (ProtocolError)."""
+
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 

@@ -1,85 +1,78 @@
-"""N9: every wrapper sends exactly what the server's router accepts."""
+"""N9: wrappers emit the shared SDK wire cases (which the real server is
+proven to accept in tests/automation_server_test.zig)."""
 
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 from zigbrowser.client import AsyncZigBrowser, ZigBrowser
 
 OK = {"jsonrpc": "2.0", "result": {"ok": True}, "id": 1}
 
-CASES = [
-    # dom.*
-    (lambda zb: zb.dom.press("Enter"), "dom.press", {"key": "Enter"}),
-    (
-        lambda zb: zb.dom.press("a", selector="css=#q", modifiers=["Control", "Shift"], timeout_ms=500),
-        "dom.press",
-        {"key": "a", "selector": "css=#q", "modifiers": ["Control", "Shift"], "timeout_ms": 500},
-    ),
-    (lambda zb: zb.dom.select_option("css=#c", value="fr"), "dom.selectOption", {"selector": "css=#c", "value": "fr"}),
-    (lambda zb: zb.dom.select_option("css=#c", label="France"), "dom.selectOption", {"selector": "css=#c", "label": "France"}),
-    (
-        lambda zb: zb.dom.select_option("css=#c", index=2, timeout_ms=100),
-        "dom.selectOption",
-        {"selector": "css=#c", "index": 2, "timeout_ms": 100},
-    ),
-    (
-        lambda zb: zb.dom.wait_for("css=#x", state="hidden", timeout_ms=250),
-        "dom.waitFor",
-        {"selector": "css=#x", "state": "hidden", "timeout_ms": 250},
-    ),
-    (lambda zb: zb.dom.get_text("css=#m", timeout_ms=300), "dom.getText", {"selector": "css=#m", "timeout_ms": 300}),
-    (
-        lambda zb: zb.dom.get_attribute("css=a", "href", timeout_ms=300),
-        "dom.getAttribute",
-        {"selector": "css=a", "name": "href", "timeout_ms": 300},
-    ),
-    (
-        lambda zb: zb.dom.type("css=#q", "hi", delay_ms=40),
-        "dom.type",
-        {"selector": "css=#q", "text": "hi", "delay_ms": 40},
-    ),
-    (
-        lambda zb: zb.dom.click("css=#b", force=True, timeout_ms=900),
-        "dom.click",
-        {"selector": "css=#b", "options": {"force": True, "timeout_ms": 900}},
-    ),
-    # page.*
-    (lambda zb: zb.page.url(), "page.url", {}),
-    (lambda zb: zb.page.title(), "page.title", {}),
-    (
-        lambda zb: zb.page.navigate("https://example.com/", timeout_ms=5000),
-        "page.navigate",
-        {"url": "https://example.com/", "timeout_ms": 5000},
-    ),
-    # cookies.*
-    (lambda zb: zb.cookies.get_all(), "cookies.getAll", {}),
-    (lambda zb: zb.cookies.get_all(url="https://example.com/"), "cookies.getAll", {"url": "https://example.com/"}),
-    (lambda zb: zb.cookies.delete("sid"), "cookies.delete", {"name": "sid"}),
-    (lambda zb: zb.cookies.delete("sid", domain="example.com"), "cookies.delete", {"name": "sid", "domain": "example.com"}),
-    (
-        lambda zb: zb.cookies.set("sid", "v", domain="example.com", http_only=True, same_site="Lax"),
-        "cookies.set",
-        {"name": "sid", "value": "v", "domain": "example.com", "httpOnly": True, "sameSite": "Lax"},
-    ),
-    (
-        lambda zb: zb.cookies.import_file("/tmp/cookies.txt", "netscape"),
-        "cookies.import",
-        {"path": "/tmp/cookies.txt", "format": "netscape"},
-    ),
-    # social.* / linkedin.*
-    (lambda zb: zb.social.pause(5), "social.pause", {"duration_ms": 5}),
-    (lambda zb: zb.linkedin.follow("https://www.linkedin.com/in/x"), "linkedin.follow", {"profileUrl": "https://www.linkedin.com/in/x"}),
-]
+# Shared with tests/automation_server_test.zig, which proves the real server
+# routes and accepts every case, and with the Node SDK tests.
+WIRE_CASES = {
+    case["id"]: case
+    for case in json.loads(
+        (Path(__file__).resolve().parents[3] / "tests/fixtures/automation/sdk_wire_cases.json").read_text()
+    )["cases"]
+}
+
+# How this SDK produces each shared case.
+INVOCATIONS = {
+    "dom.query": lambda zb: zb.dom.query("css=li", timeout_ms=100),
+    "dom.click": lambda zb: zb.dom.click("css=#b", force=True, timeout_ms=900),
+    "dom.fill": lambda zb: zb.dom.fill("css=#n", "Ada"),
+    "dom.type": lambda zb: zb.dom.type("css=#q", "zig", delay_ms=40),
+    "dom.getText": lambda zb: zb.dom.get_text("css=#m", timeout_ms=300),
+    "dom.getAttribute": lambda zb: zb.dom.get_attribute("css=a", "href", timeout_ms=300),
+    "dom.waitFor": lambda zb: zb.dom.wait_for("css=#x", state="hidden", timeout_ms=250),
+    "dom.press": lambda zb: zb.dom.press("Enter"),
+    "dom.press.full": lambda zb: zb.dom.press("a", selector="css=#q", modifiers=["Control", "Shift"], timeout_ms=500),
+    "dom.selectOption.value": lambda zb: zb.dom.select_option("css=#c", value="fr"),
+    "dom.selectOption.label": lambda zb: zb.dom.select_option("css=#c", label="France"),
+    "dom.selectOption.index": lambda zb: zb.dom.select_option("css=#c", index=2, timeout_ms=100),
+    "page.navigate": lambda zb: zb.page.navigate("https://example.com/", timeout_ms=5000),
+    "page.reload": lambda zb: zb.page.reload(),
+    "page.url": lambda zb: zb.page.url(),
+    "page.title": lambda zb: zb.page.title(),
+    "page.evaluate": lambda zb: zb.page.evaluate("1+1"),
+    "cookies.getAll": lambda zb: zb.cookies.get_all(),
+    "cookies.getAll.url": lambda zb: zb.cookies.get_all(url="https://example.com/"),
+    "cookies.set": lambda zb: zb.cookies.set("sid", "v", domain="example.com", http_only=True, same_site="Lax"),
+    "cookies.delete": lambda zb: zb.cookies.delete("sid"),
+    "cookies.delete.domain": lambda zb: zb.cookies.delete("sid", domain="example.com"),
+    "cookies.import": lambda zb: zb.cookies.import_file("/nonexistent/zb-conformance/cookies.txt", "netscape"),
+    "social.login_check": lambda zb: zb.social.login_check(),
+    "social.rate_status": lambda zb: zb.social.rate_status(),
+    "social.pause": lambda zb: zb.social.pause(5),
+    "social.set_pacing": lambda zb: zb.social.set_pacing(daily_cap=5),
+}
 
 
-@pytest.mark.parametrize("invoke,method,params", CASES, ids=[c[1] + str(i) for i, c in enumerate(CASES)])
-def test_wrapper_wire_shape(mock_uds_server, invoke, method, params):
+def test_every_shared_case_has_a_wrapper():
+    assert sorted(INVOCATIONS) == sorted(WIRE_CASES)
+
+
+@pytest.mark.parametrize("case_id", sorted(WIRE_CASES))
+def test_wrapper_emits_the_shared_wire_case(mock_uds_server, case_id):
     mock_uds_server.set_response(OK)
     with ZigBrowser(socket_path=mock_uds_server.path) as zb:
-        invoke(zb)
+        INVOCATIONS[case_id](zb)
     req = mock_uds_server.last_request()
-    assert req["method"] == method
-    assert req["params"] == params
+    assert req["method"] == WIRE_CASES[case_id]["method"]
+    assert req["params"] == WIRE_CASES[case_id]["params"]
+
+
+def test_linkedin_follow_wire_shape_only(mock_uds_server):
+    """linkedin.* is NOT routed by the automation socket yet (-32601); this
+    only pins the request shape for parity with src/linkedin.zig."""
+    mock_uds_server.set_response(OK)
+    with ZigBrowser(socket_path=mock_uds_server.path) as zb:
+        zb.linkedin.follow("https://www.linkedin.com/in/x")
+    req = mock_uds_server.last_request()
+    assert req == {**req, "method": "linkedin.follow", "params": {"profileUrl": "https://www.linkedin.com/in/x"}}
 
 
 def test_select_option_requires_exactly_one_choice():
