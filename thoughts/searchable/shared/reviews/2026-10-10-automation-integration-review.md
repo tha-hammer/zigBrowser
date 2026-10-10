@@ -147,6 +147,17 @@ actual typed result. A fake `PagePort`, direct `page.evaluate`, or page-initiate
 | `a6241b6` — N16 login/cap/URL/typing/story/telemetry follow-up | Exact 12-file diff; clean-export bounded Xvfb gate with automatic deletion | **GREEN 79/79 steps, 564/564 tests; CODE BLOCKED**. | Approves exact platform hosts, removal of request `baseUrl`, pre-page cookie plus post-nav DOM gates, typed payloads, note truncation, basic story iteration, redacted EV7/EV8 shape, and sequential socket routing. BLOCKERS: admitted success can be silently uncounted after pacing reconfiguration; the cookie gate and default-30s story URL read escape the 120s budget; a >64-child trace drops late EV8; concurrency bypasses queue/flow/PagePort; closure does not start at an SDK. SHOULD: conversation/session hash schema. Mailed cc_2 as 4668 and 4671. |
 | `1219446` — navigation arrival barrier, policy-block recovery, and native-input reentrancy | Exact six-file diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 79/79 steps, 565/565 tests; N8 BLOCKER CLOSED**. | Each page navigation owns its shell arrival sequence; immediate same-URL C/D proves two page starts and two arrivals, stale completion cannot clear the newer navigation, and live canceled/204/policy-block cases all permit later input without touching a replacement document. The handler is isolated-world, once per shared content manager, synchronous, and has no window userdata. Focus/key self-close retains GObjects and stops later events. The socket E2E proves a repeated-target humanized path starts off-target and ends on-target with trusted moves. Mailed cc_1 approval after the exact gate. |
 | `57a56fd` — N17 native set-input-files | Exact C/JS/live-WebKit diff; clean-export `timeout 900 xvfb-run -a zig build test --summary all`, with automatic deletion | **GREEN 79/79 steps, 566/566 tests; CODE BLOCKED**. | Closes the unbounded post-chooser wait: the job stays async and a withheld WebKit callback returns bounded `FILES_UNCONFIRMED`. Paths are copied/validated without logging content, the handler is in the isolated world, and token ordering rejects an earlier unrelated chooser. BLOCKERS: an applied selection followed by JS/window/process failure loses unconfirmed provenance; the same state is set before the single-file rejection; an armed late chooser after timeout can become an unclaimed default dialog. SHOULD: missing `zbFiles` still clicks. Mailed cc_1 as 4693. |
+| `30472b3` — N17 exactly-once provenance and late-chooser tombstones | Exact C/JS state-machine, mutex, lifetime and production-path oracle review | **APPROVED; covered by clean gate at `3bcfbe3`**. | `files_applied` is the side-effect commit point and remaps every ambiguous failure; pre-commit/backstop deadlines select nothing; abandoned armed jobs stay as tombstones and cancel late choosers; missing isolated-world handler/token fails before click. C-owned strings, GObjects, tracked refs and exactly-once completion remain balanced. Closes all three open N17 findings. Mailed cc_1 as 4730. |
+| `e58635c` — N16 social closure follow-up | Exact deadline, reservation/concurrency, story, telemetry-retention, SDK/live-fixture and lock review | **APPROVED; covered by clean gate at `3bcfbe3`**. | Exact-once reservations and a two-page/full-flow cap oracle close admission races; one deadline covers cookies through page work; story closure uses URL evidence and retains click failures; compound telemetry is pinned and contains hashes/lengths only; the real binary is driven from the Python SDK. Closes the open N16 blockers. Mailed cc_2 as 4731. |
+| `8243dcf` — native/humanized X flow options | Exact router/flow/options/timeout/unit-test review, plus later real-binary evidence in `6507b96` | **APPROVED; covered by clean gate at `3bcfbe3`**. | Strict nested option parsing enforces native-only humanize, and the resolved options reach only the intended composer/type/schedule/submit input steps. The 120-second flow deadline remains authoritative. Mailed cc_2 as 4731. |
+| `3b4dd8f` — LinkedIn/Instagram SDK and docs closure | Exact Python/Node/shared-wire/server-conformance/docs review | **APPROVED; covered by clean gate at `3bcfbe3`**. | Both SDKs emit the routed production shapes, Node exposes both namespaces, validation helpers match server defaults, and docs describe the live-site and pacing boundaries. Mailed cc_2 as 4731. |
+| `9337bde` — N15 human handoff | Exact documentation/evidence review | **SHOULD, covered by clean gate at `3bcfbe3`**. | The delivery, risks and safe-live-run guidance are accurate. The X row attributes SDK verification to the grouped native/humanize options, although the committed typed X wrappers cannot express the `options` object; qualify that evidence or expose/test the options. Mailed cc_2 as 4731. |
+| `6507b96` — N14 trusted native/humanized X E2E | Exact fixture/build/live-test review | **APPROVED; covered by clean gate at `3bcfbe3`**. | The production binary is driven over the external socket. Exact posted/scheduled values, trusted per-character editing, humanized timing, trusted schedule/confirm/Post clicks, and trusted movement ending on Post are all observed in the page. Mailed cc_1 as 4730. |
+| `3bcfbe3` — browser-editing undo oracle | Exact test-only diff and exact-mutant rerun; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 81/81 steps, 577/577 tests; mutation guard 8 CLOSED**. | The real binary/socket test requires synthetic contenteditable typing to create browser undo history. The Range-insert fallback leaves `ab` unchanged and fails; the production execCommand path undoes to a proper prefix. The independent gate covers every reviewed commit from `30472b3` through this commit. Mailed cc_1 as 4732. |
+| `9ab165f` — N18 native wheel and event-only hover | Exact C/Zig/script/live-WebKit diff and thread/lifetime review; clean-export gate at `5a9031c` | **APPROVED native slice: 81/81 steps, 583/583 tests; public-route closure remains OPEN**. | `nativeScroll` validates finite inputs, atomically guards document identity at dispatch, holds the required GDK references, waits for the trusted-wheel acknowledgement and 100 ms scroll quiet (or 250 ms no-scroll) inside one deadline, and returns no retryable state after dispatch. The live test reads exact outer/inner offsets immediately and directly kills the stale-token shim guard. Synthetic hover is explicitly event-only; native hover must still establish CSS `:hover` through the PagePort/engine/socket path. Mailed cc_1 as 4738. |
+| `9b32f84` — flow `timeout_ms` and humanized budget sizing | Exact router/flow/deadline/arithmetic/unit/E2E diff; clean-export gate at `5a9031c` | **APPROVED after `8a16668`: 81/81 steps, 583/583 tests at `5a9031c`**. | Parsing, precedence, allowlists, absolute social deadlines and code-point budget arithmetic are correct. The original E2E did not distinguish sizing from a fixed 120-second route, so this was blocked in 4737. `8a16668` adds a route-level 3-second seeded oracle that dies if `humanized_text` is removed from the production sizing call and corrects the E2E's evidence claim. |
+| `5a9031c` — N15 handoff follow-up | Exact documentation diff; clean-export bounded Xvfb gate with automatic deletion | **APPROVED: 81/81 steps, 583/583 tests; one NIT closed by `8a16668`**. | The X evidence now distinguishes default SDK shapes from raw-socket options and the deferred section records window-close, session-hash, in-memory pacing, and SDK option gaps. `8a16668` clarifies that LinkedIn and Instagram share one social cap while X has its separate cap. Mailed cc_2 as 4737. |
+| `8a16668` — route-level humanized-budget oracle | Exact test/handoff diff and mutant-sensitivity review; clean export pinned to the commit under bounded Xvfb, with automatic deletion | **APPROVED: 81/81 steps, 584/584 tests**. | `handleWithBudget` receives a 3-second injected default, a seeded native/humanized engine, and 40 code points whose schedule cannot fit that default. Passing `null` instead of the text to `flowBudgetMs` makes the no-timeout request fail; explicit 3000 ms is the control and emits zero typed characters. The long E2E is now described only as trusted long-text evidence, and the pacing wording is exact. Closes 4737. Mailed cc_2 as 4743. |
 
 ## Mutation audit at `137dfa1`
 
@@ -167,6 +178,9 @@ Checkpoint gate after restoring guards 1-5: the same clean export passed
 | 3 | Invalid JSON-RPC IDs: serialize object/array/bool IDs instead of rejecting them. | `automation_server_test`: `object/array/bool ids are Invalid Request and never dispatch` — failed on the first object ID because the command dispatched. | `automation_api_lifecycle_test.py` — pass; it sends only valid integer IDs. | **KILLED** by the focused unit. The live E2E does not cover invalid IDs. |
 | 4 | Queue FIFO head guard: flip the uncontended/head comparison so queued waiters return immediately. | `automation_queue_test`: `same-page commands run strictly FIFO` — timed out/panicked with unreleased waiters. | `x_flows_test.py` — failed: the mid-flow racer bypassed serialization and the post timed out. | **KILLED** by both layers. |
 | 5 | Retry deadline guard: flip the full-poll-fit condition so a retryable failure terminates while budget remains. | `automation_retry_test`: `actionability failures until the deadline map to action_timeout; no attempt starts at the deadline` — failed after preserving the wrong first-attempt evidence. | `automation_core_test.py` — failed: a click stopped after one invisible attempt instead of retrying until actionable. | **KILLED** by both layers. |
+| 6 | Startup readiness: set the native bridge's `need_ready` guard to false so commands may run before the first load completes. | `webkit.test.automation bridge drives a live WebKitGTK page` — failed 10 checks, including initial title and injected-automation availability. | `automation_readiness_test.py` — passed despite the mutation. | **KILLED** by the focused live-WebKit unit. The dedicated readiness E2E does not independently detect removal of the native barrier. |
+| 7 | Isolated-world injection: install `automation.js` in the default page world instead of `ZB_AUTOMATION_WORLD`. | The live WebKit bridge unit failed 14 checks, including the missing automation-world object and page-world visibility. | `automation_core_test.py` timed out/failed. | **KILLED** by both layers. |
+| 8 | Contenteditable insertion: force the `execCommand('insertText'/'delete')` branch to return false so the Range-splice fallback performs every edit. | All 15 `js_contract` units passed. | `automation_input_test.py` passed at audit target `137dfa1`, including its Draft-style cancellation checks. | **SURVIVED at `137dfa1`; CLOSED by `3bcfbe3`.** The follow-up real-binary undo-history oracle fails on this exact mutant because a Range splice creates no browser undo step. Mailed cc_1 as 4722; reviewed closure mailed as 4732. |
 
 ## Closure audit at `b9299f6`
 
@@ -551,7 +565,13 @@ atomically before the flow, release it on failure, and commit it on success so
 only successful actions count. A cap-one, two-page concurrency test must prove
 that at most one flow touches its page.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Mailed as 4658 during diff review.
+Status: **CLOSED by `e58635c`**. `reserve` returns an owned exact-once
+reservation, successful admitted actions are counted even after a cap change,
+and `rate_status` subtracts in-flight capacity. The cap-one concurrency oracle
+runs two complete `Engine.External` flows on distinct page ports sharing one
+state; page B is refused before touching its port while page A is held inside
+its first page step, and cleanup always releases and joins page A. The pacing
+route holds the non-reentrant lock only once. Mailed approval as 4731.
 
 The follow-up WIP adds a locked `in_flight` count, but admission ownership is
 still not exact-once: `commit`/`release` saturating-decrement, and `commit`
@@ -617,7 +637,16 @@ the server route, page queue, socket framing, and SDK closure path while failing
 to assert primitive order and payloads. These are production contracts, not
 unit-only details.
 
-Status: **OPEN (cc_2 / BlueBeaver)**. Mailed as 4660 during diff review.
+Status: **CLOSED by `e58635c` and `3b4dd8f`**. One absolute deadline now
+covers the cookie gate, pacing pause and every page step. Story completion is
+positive URL evidence that the viewer left `/stories/`; a failed Next while it
+remains open preserves that click failure. The bounded trace store pins the
+late compound span beside the root. `social_flows_test.py` launches the real
+binary and starts at the production Python SDK, while shared Python/Node wire
+cases and the real-server conformance test cover every routed method. Conversation
+URLs use `conversation.id_hash`; raw payloads and cookie values do not cross the
+telemetry sink. `session.id_hash` remains intentionally undefined because this
+server has no session-id contract. Mailed approval as 4731.
 
 HEAD `1219446` substatus for the 4658/4660 review set:
 
@@ -703,8 +732,12 @@ is remapped. A caller can therefore retry an already-triggered auto-upload.
 The native job needs a separate side-effect-committed state, set only at the
 selection call, and every ambiguous failure after it must be unconfirmed.
 
-Status: **OPEN (cc_1 / BlackRobin)**. Add deterministic pre-commit and
-post-commit failure oracles. Mailed as 4693.
+Status: **CLOSED by `30472b3`**. `files_applied` is set under the automation
+mutex only immediately before `webkit_file_chooser_request_select_files`, and
+every non-OK completion after that point maps to `FILES_UNCONFIRMED`. A held
+pre-commit deadline stays a plain timeout with no selection; a post-commit
+script failure reports unconfirmed and is not retry-safe. Mailed approval as
+4730.
 
 ### BLOCKER — N17 timeout can expose a late default file dialog
 
@@ -717,7 +750,11 @@ masks that production branch. Preserve sufficient armed-job/tombstone state
 to cancel the associated late chooser and prove the production behavior with
 a deadline-before-chooser oracle.
 
-Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4693.
+Status: **CLOSED by `30472b3`**. An abandoned armed job remains tracked as a
+tombstone until its late chooser is cancelled or its operation answers. The
+production-path oracle leaves unmatched-chooser debug cancellation disabled,
+proves the late chooser cannot reach the default-dialog branch, and then proves
+a new call succeeds. Mailed approval as 4730.
 
 ### SHOULD — N17 clicks when the isolated-world file handler is unavailable
 
@@ -726,7 +763,9 @@ injected token is invalid. Handler registration failure therefore opens a
 native dialog and waits for timeout instead of failing before side effects.
 Require the handler and token, and diagnose `zbFiles` registration failure.
 
-Status: **OPEN (cc_1 / BlackRobin)**. Mailed as 4693.
+Status: **CLOSED by `30472b3`**. The isolated-world operation rejects a missing
+handler/token with `files_unavailable` before `element.click()`, and handler
+registration failure has an independent diagnostic. Mailed approval as 4730.
 
 ### BLOCKER — N18 synthetic hover does not establish browser hover state
 
@@ -738,7 +777,13 @@ finish with a real pointer move and the live oracle must assert a
 `:hover`-dependent effect, or the API must explicitly document a weaker
 event-only synthetic contract.
 
-Status: **OPEN (cc_1 / BlackRobin, cc_2 / BlueBeaver seam)**. Mailed as 4699.
+Status: **OPEN for production-chain evidence (cc_1 / BlackRobin, cc_2 /
+BlueBeaver seam)**. `9ab165f` explicitly defines synthetic hover as event-only
+and adds pointerover/enter/move, which resolves the synthetic contract choice.
+Its native primitive is a real pointer move. Closure still requires the routed
+native-hover implementation and a socket E2E whose oracle is a CSS
+`:hover`-dependent effect, not only listener events. Native-slice approval was
+mailed as 4738.
 
 ### BLOCKER — N18 wheel acknowledgement is not scroll completion
 
@@ -750,7 +795,15 @@ The PagePort/engine must verify a stable final offset under the same deadline,
 or the public API must be defined as one wheel dispatch rather than completed
 scrolling. The socket E2E must read the offset immediately after the response.
 
-Status: **OPEN (cc_1 / BlackRobin, cc_2 / BlueBeaver seam)**. Mailed as 4699.
+Status: **OPEN for PagePort/engine/socket integration (cc_1 / BlackRobin,
+cc_2 / BlueBeaver seam)**. `9ab165f` closes the native completion defect: the
+method waits for acknowledgement and then 100 ms quiet, or 250 ms with no
+scroll, under the same deadline. Its live WebKit test reads exact outer and
+inner offsets immediately after return, and a direct stale-token call proves
+no wheel dispatch. The agreed PagePort contract returns settled
+`ScrollOffsets`; closure still requires that interface to be wired and the
+socket E2E to read offsets immediately. Native-slice approval was mailed as
+4738.
 
 ### SHOULD — closing one window terminates every related WebKit child process
 
