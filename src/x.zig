@@ -5,7 +5,7 @@
 //! The runner is duck-typed:
 //! - `run(method, params_json)` executes one command and returns its
 //!   JSON-RPC result, or null when the command failed (the runner keeps that
-//!   failure for the caller; a later successful step clears it).
+//!   failure for the caller until a newer failure replaces it).
 //! - `nowMs()` and `remainingMs()`: the clock and what is left of the whole
 //!   flow's budget. Every step's timeout is clamped to the budget.
 //! - `pause(ms)`: waits (cancellable); false if the flow was cancelled.
@@ -192,17 +192,22 @@ fn submit(gpa: std.mem.Allocator, runner: anytype) Error!bool {
 /// element_not_found "x_post_button_missing" when no copy ever existed),
 /// a query failed, or the flow was cancelled.
 fn findPostButton(gpa: std.mem.Allocator, runner: anytype, buf: []u8) Error!?[]const u8 {
+    // A hard bound: every query and probe is clamped to what is left of the
+    // search (and of the flow), and nothing starts once it is spent.
     const give_up_at = runner.nowMs() +| post_button_wait_ms;
     var probed_any = false;
-    while (true) {
+    search: while (true) {
         for (selectors.post_button_testids) |testid| {
+            if (runner.nowMs() >= give_up_at) break :search;
             var testid_buf: [64]u8 = undefined;
             const all = std.fmt.bufPrint(&testid_buf, "testid={s}", .{testid}) catch unreachable;
-            const copies = (try countMatches(gpa, runner, all)) orelse return null;
+            const copies = (try countMatchesWithin(gpa, runner, all, give_up_at)) orelse return null;
             for (1..copies + 1) |n| {
+                const left = give_up_at -| runner.nowMs();
+                if (left == 0) break :search;
                 const copy = std.fmt.bufPrint(buf, selectors.post_button_copy, .{ testid, n }) catch unreachable;
                 probed_any = true;
-                if (try step(gpa, runner, "dom.click", .{ .selector = copy, .options = .{ .trial = true, .timeout_ms = budget(runner, probe_timeout_ms) } })) return copy;
+                if (try step(gpa, runner, "dom.click", .{ .selector = copy, .options = .{ .trial = true, .timeout_ms = budget(runner, @min(probe_timeout_ms, left)) } })) return copy;
             }
         }
         if (runner.nowMs() +| post_button_poll_ms >= give_up_at or runner.remainingMs() <= post_button_poll_ms) break;
@@ -236,7 +241,13 @@ fn step(gpa: std.mem.Allocator, runner: anytype, method: []const u8, params: any
 /// A successful answer that cannot be used is recorded as malformed, so the
 /// caller never sees a stale failure from an earlier step.
 fn countMatches(gpa: std.mem.Allocator, runner: anytype, selector: []const u8) Error!?usize {
-    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = budget(runner, query_timeout_ms) }, .{});
+    return countMatchesWithin(gpa, runner, selector, std.math.maxInt(u64));
+}
+
+/// countMatches with the query also clamped to end by `until_ms`.
+fn countMatchesWithin(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, until_ms: u64) Error!?usize {
+    const timeout_ms = budget(runner, @min(query_timeout_ms, until_ms -| runner.nowMs()));
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = timeout_ms }, .{});
     defer gpa.free(params);
     const result = (try runner.run("dom.query", params)) orelse return null;
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, result, .{}) catch |err| switch (err) {

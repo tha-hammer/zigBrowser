@@ -456,3 +456,28 @@ test "x.zig never sends a 0 ms deadline (the native page call needs real time)" 
         }
     }
 }
+
+test "the Post search is a hard bound: no query or probe outlives post_button_wait_ms" {
+    var runner = ProbeRunner{ .dialog_copies = 3, .actionable = null };
+    defer runner.inner.deinit();
+    try std.testing.expect((try x.post(gpa, &runner, .{ .text = "hi" })) == null);
+    // Find where the search started (the first Post query) and check every
+    // later step's timeout ends by its deadline. ProbeRunner advances time
+    // only on pauses, so step start times are the pause sums.
+    var start: ?usize = null;
+    for (runner.inner.steps.items, 0..) |s, i| {
+        if (std.mem.eql(u8, s.method, "dom.query")) {
+            start = i;
+            break;
+        }
+    }
+    try std.testing.expect(start != null);
+    for (runner.inner.steps.items[start.?..]) |s| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        const ms = if (obj.get("timeout_ms")) |t| t.integer else obj.get("options").?.object.get("timeout_ms").?.integer;
+        try std.testing.expect(ms <= x.post_button_wait_ms);
+    }
+    try std.testing.expect(runner.inner.now_ms <= x.post_button_wait_ms);
+}

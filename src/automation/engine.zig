@@ -501,7 +501,15 @@ pub const Engine = struct {
                 locate_command.locate = .{ .action = action, .focus = command.verb != .dom_click and !command.trial };
                 var located = try self.runDomUntil(gpa, &locate_command, deadline, run);
                 switch (located) {
-                    .failure => return located,
+                    .failure => {
+                        // Out of time while chasing a document that kept
+                        // changing: report that, not the last locate's timeout.
+                        if (relocated and self.clock.nowMs() >= deadline) {
+                            located.deinit(gpa);
+                            return automationFailure(gpa, .element_not_found, "document_changed", run.ids);
+                        }
+                        return located;
+                    },
                     .result => |json| {
                         defer located.deinit(gpa);
                         if (!parseTarget(gpa, json, &target)) return malformedResult();

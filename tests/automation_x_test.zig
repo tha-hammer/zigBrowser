@@ -18,6 +18,7 @@ const Harness = struct {
     engine: engine.Engine,
     state: x_routes.XState,
     sink: automation.telemetry.InMemoryTelemetrySink,
+    budget_ms: u64 = x_routes.flow_budget_ms,
 
     fn init(self: *Harness, replies: []const fakes.EvalReply) void {
         self.fake = fakes.FakePagePort.init(gpa);
@@ -26,6 +27,7 @@ const Harness = struct {
         self.engine = engine.Engine.init(self.fake.port(), self.clock.clock());
         self.state = x_routes.XState.init(fakeWall);
         self.sink = automation.telemetry.InMemoryTelemetrySink.init(gpa);
+        self.budget_ms = x_routes.flow_budget_ms;
     }
 
     fn deinit(self: *Harness) void {
@@ -39,14 +41,16 @@ const Harness = struct {
             state: *x_routes.XState,
             verb: x_routes.Verb,
             params: []const u8,
+            budget_ms: u64,
             fn run(c: @This(), a: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
-                return x_routes.handle(a, c.state, ext, c.verb, c.params);
+                return x_routes.handleWithBudget(a, c.state, ext, c.verb, c.params, c.budget_ms);
             }
         };
         return self.engine.executeExternal(gpa, method, "x", .{ .route = .{ .telemetry_sink = self.sink.sink() } }, Call{
             .state = &self.state,
             .verb = x_routes.verbFromMethod(method).?,
             .params = params,
+            .budget_ms = self.budget_ms,
         }, Call.run);
     }
 
@@ -242,7 +246,10 @@ test "an x.* flow has one overall deadline across its steps" {
     h.init(&.{ok_reply});
     defer h.deinit();
     h.fake.clock = &h.clock;
-    h.fake.eval_cost_ms = x_routes.flow_budget_ms / 3;
+    // Each page step takes 1 s (within its own timeout); the 3 s budget is
+    // spent after waitFor, click and fill, so the type step never starts.
+    h.budget_ms = 3_000;
+    h.fake.eval_cost_ms = 1_000;
 
     var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
     defer outcome.deinit(gpa);
@@ -277,8 +284,8 @@ test "a waitFor is not started without room for its native grace (hard flow budg
     h.init(&.{ok_reply});
     defer h.deinit();
     h.fake.clock = &h.clock;
-    // The navigation leaves 999 ms: less than the 1 s waitFor grace.
-    h.fake.navigate_cost_ms = x_routes.flow_budget_ms - 999;
+    // 999 ms of budget: less than the 1 s waitFor grace.
+    h.budget_ms = 999;
     var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
     defer outcome.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);

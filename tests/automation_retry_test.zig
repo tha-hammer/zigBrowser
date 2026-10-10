@@ -302,7 +302,8 @@ test "a slow attempt that ends past the deadline is not followed by another atte
     h.init(&.{ not_found, ok });
     defer h.deinit();
     h.fake.clock = &h.clock;
-    h.fake.eval_cost_ms = 60;
+    // The attempt uses its whole 50 ms (a port never runs past its timeout).
+    h.fake.eval_cost_ms = 50;
 
     var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"timeout_ms\":50}}");
     defer outcome.deinit(gpa);

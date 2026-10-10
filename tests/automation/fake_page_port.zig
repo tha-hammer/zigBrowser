@@ -37,8 +37,6 @@ pub const FakePagePort = struct {
     navigate_calls: std.ArrayListUnmanaged([]u8) = .empty,
     navigate_timeouts: std.ArrayListUnmanaged(u64) = .empty,
     navigate_result: page_port.PortError!void = {},
-    /// Simulated load time (advances `clock`).
-    navigate_cost_ms: u64 = 0,
     reload_calls: usize = 0,
     reload_result: page_port.PortError!void = {},
     current_url: []const u8 = "about:blank",
@@ -46,6 +44,8 @@ pub const FakePagePort = struct {
     url_result: ?page_port.PortError = null,
     last_read_timeout_ms: u64 = 0,
     /// When set, every eval advances this clock (simulates work taking time).
+    /// Like a real port it never runs past the timeout it was given: a cost
+    /// above the timeout consumes the timeout and returns Timeout.
     clock: ?*FakeClock = null,
     eval_cost_ms: u64 = 0,
     /// Simulated readiness wait inside url() (advances `clock`).
@@ -186,7 +186,13 @@ pub const FakePagePort = struct {
             .arg = self.gpa.dupe(u8, arg_json) catch return error.OutOfMemory,
             .timeout_ms = timeout_ms,
         }) catch return error.OutOfMemory;
-        if (self.clock) |clock| clock.now_ms += self.eval_cost_ms;
+        if (self.clock) |clock| {
+            if (self.eval_cost_ms > timeout_ms) {
+                clock.now_ms += timeout_ms;
+                return error.Timeout;
+            }
+            clock.now_ms += self.eval_cost_ms;
+        }
         if (self.eval_replies.len == 0) return error.EvalFailed;
         const reply = self.eval_replies[@min(index, self.eval_replies.len - 1)];
         return switch (reply) {
@@ -197,7 +203,6 @@ pub const FakePagePort = struct {
 
     fn navigate(ptr: *anyopaque, url_text: []const u8, timeout_ms: u64) page_port.PortError!void {
         const self = from(ptr);
-        if (self.clock) |clock| clock.now_ms += self.navigate_cost_ms;
         self.navigate_calls.append(self.gpa, self.gpa.dupe(u8, url_text) catch return error.OutOfMemory) catch return error.OutOfMemory;
         self.navigate_timeouts.append(self.gpa, timeout_ms) catch return error.OutOfMemory;
         return self.navigate_result;

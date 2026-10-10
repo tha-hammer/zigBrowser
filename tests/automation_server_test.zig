@@ -934,6 +934,8 @@ test "x.* holds the page queue for the whole flow: a racing page command is queu
 
     // The flow navigates to /a, then blocks in its first page step.
     fixture.fake.hold.store(true, .release);
+    // Never leave the flow blocked (a failed check would hang teardown).
+    defer fixture.fake.hold.store(false, .release);
     var flow = try fixture.connect();
     defer flow.close(testing.io);
     try writeFrame(flow, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"compose_url\":\"http://127.0.0.1:9/a\"},\"id\":1}");

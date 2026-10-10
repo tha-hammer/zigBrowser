@@ -165,6 +165,19 @@ pub fn handle(
     verb: Verb,
     params_json: []const u8,
 ) error{OutOfMemory}!engine_mod.Outcome {
+    return handleWithBudget(gpa, state, ext, verb, params_json, flow_budget_ms);
+}
+
+/// `handle` with an explicit flow budget (tests reach the budget edges
+/// without a page call that outlives its own timeout).
+pub fn handleWithBudget(
+    gpa: std.mem.Allocator,
+    state: *XState,
+    ext: *engine_mod.External,
+    verb: Verb,
+    params_json: []const u8,
+    budget_ms: u64,
+) error{OutOfMemory}!engine_mod.Outcome {
     const ids = ext.ids();
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -185,7 +198,7 @@ pub fn handle(
         if (!inList(allowed, entry.key_ptr.*)) return invalidParams();
     }
 
-    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| flow_budget_ms };
+    var runner = Runner{ .gpa = gpa, .ext = ext, .deadline_ms = ext.nowMs() +| budget_ms };
     defer runner.deinit();
 
     const flow_result: x.Error!?[]u8 = switch (verb) {

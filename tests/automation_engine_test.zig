@@ -976,6 +976,6 @@ test "a page that keeps replacing its document: re-locate until the deadline, th
     try expectFailureData(outcome, -32001, "element_not_found", "\"trace_id\"");
     try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "sent_chars") == null);
     try std.testing.expect(h.fake.native_calls.items.len > 1);
-    // The last locate may start just before the deadline (+50 ms eval).
-    try std.testing.expect(h.clock.now_ms <= 1000 + 50);
+    // Hard deadline: no page call outlives the time it was given.
+    try std.testing.expect(h.clock.now_ms <= 1000);
 }
