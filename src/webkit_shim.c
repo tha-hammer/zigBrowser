@@ -104,8 +104,12 @@ struct ZbWindow {
    * within a run, the first window is 1; the opener's id for a popup. */
   guint32 auto_id;
   guint32 auto_opener_id;
+  /* Windows created as related views of one another share a web process:
+   * the id of the first window of that family (a popup inherits it). */
+  guint32 process_group;
   gulong sig_uri_notify;
   gulong sig_file_chooser;
+  gulong sig_close;
 };
 
 struct ZbApp {
@@ -235,6 +239,34 @@ static void terminate_window_web_process(ZbWindow *win) {
     return;
   }
   webkit_web_view_terminate_web_process(win->view);
+}
+
+/* Whether another live window shares `win`'s web process (a popup and its
+ * opener, which are related views). Closing `win` must not terminate that
+ * process then: it would kill the other window's page too. */
+static int window_shares_process(ZbWindow *win) {
+  ZbApp *app = win != NULL ? win->app : NULL;
+  if (app == NULL) {
+    return 0;
+  }
+  for (int i = 0; i < app->n_windows; i++) {
+    ZbWindow *other = app->windows[i];
+    if (other != NULL && other != win && other->view != NULL && other->gtk_window != NULL &&
+        other->process_group == win->process_group) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* A page's own window.close(): honoured for windows a script opened (a
+ * login popup closing itself), as browsers do; the primary ignores it. */
+static void on_window_close(WebKitWebView *view, gpointer user_data) {
+  (void)view;
+  ZbWindow *win = (ZbWindow *)user_data;
+  if (win != NULL && win->auto_opener_id != 0 && win->gtk_window != NULL) {
+    gtk_widget_destroy(win->gtk_window);
+  }
 }
 
 static int is_cancelled_network_error(const GError *error) {
@@ -670,6 +702,10 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
   }
   ZbWindow *opener = app_find_window_by_view(app, parent_view);
   child_win->auto_opener_id = opener != NULL ? opener->auto_id : 0;
+  /* webkit_web_view_new_with_related_view: same web process as the opener. */
+  if (opener != NULL) {
+    child_win->process_group = opener->process_group;
+  }
 
   if (app->pending_subwindow_seed_uri != NULL) {
     g_free(child_win->seed_uri);
@@ -767,9 +803,17 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     if (win->cancellable != NULL) {
       g_cancellable_cancel(win->cancellable);
     }
-    terminate_window_web_process(win);
+    /* Only the last window of a process family ends the web process; a
+     * popup closing must leave its opener's page alive. */
+    if (!window_shares_process(win)) {
+      terminate_window_web_process(win);
+    }
     webkit_web_view_stop_loading(win->view);
 
+    if (win->sig_close != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_close);
+      win->sig_close = 0;
+    }
     if (win->sig_load_changed != 0) {
       g_signal_handler_disconnect(win->view, win->sig_load_changed);
       win->sig_load_changed = 0;
@@ -999,6 +1043,7 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   win->view = view;
   win->is_child = app->n_windows > 0;
   win->auto_id = (guint32)zb_auto_next_id++;
+  win->process_group = win->auto_id;
 
   win->context = webkit_web_view_get_context(view);
   if (win->context != NULL) {
@@ -1042,6 +1087,8 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   win->sig_file_chooser =
       g_signal_connect_data(view, "run-file-chooser",
                             G_CALLBACK(on_window_file_chooser), win, NULL, 0);
+  win->sig_close =
+      g_signal_connect_data(view, "close", G_CALLBACK(on_window_close), win, NULL, 0);
   win->sig_destroy = g_signal_connect_data(win->gtk_window, "destroy",
                                            G_CALLBACK(on_window_destroy), win,
                                            NULL, 0);

@@ -15,6 +15,7 @@
         var ok = document.getElementById('pass').value === 'secret';
         window.opener.postMessage({ user: user, ok: ok }, '*');
         document.getElementById('state').textContent = 'sent';
+        if (location.search.indexOf('close=1') >= 0) setTimeout(function () { window.close(); }, 0);
       });
     </script>
   </body>

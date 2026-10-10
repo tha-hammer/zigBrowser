@@ -9,10 +9,10 @@ touched. page.close closes the popup (the primary cannot be closed:
 -32602 primary_window); afterwards the same targeted call is -32011
 no_window and page.list no longer lists it.
 
-Known, documented (not changed here): closing a window ends its web
-process, which a popup shares with its opener, so the opener page stops
-answering after the popup is closed. Exit 77 (skip) without a
-binary/display."""
+Both ways a popup goes away leave the opener intact (same document: its
+DOM state and URL are unchanged, and it keeps answering): (a) page.close
+from the client, (b) the popup's own window.close() after it posted its
+result, the usual OAuth ending. Exit 77 (skip) without a binary/display."""
 
 from __future__ import annotations
 
@@ -89,6 +89,31 @@ def run(socket_path: Path, t: float) -> None:
     expect_equal("targeted call after close", error["code"], -32011)
     expect_equal("targeted call after close reason", error.get("data", {}).get("reason"), "no_window")
 
+    # (a) The opener survived page.close of its popup, state and URL intact.
+    opener_url = rpc("page.url", {})["url"]
+    if not opener_url.endswith("/opener.html"):
+        raise AssertionError(f"opener url after the popup close: {opener_url!r}")
+    expect_equal("opener state after page.close", rpc("dom.getText", {"selector": "css=#status"})["text"], "logged in as alice")
+    expect_equal("opener still answers", js("window.received"), {"user": "alice", "ok": True})
+
+    # (b) A popup that closes itself after posting its result.
+    js("openLogin(true)")
+    deadline = time.monotonic() + t
+    while time.monotonic() < deadline and len(rpc("page.list", {})["pages"]) != 2:
+        time.sleep(0.05)
+    pages = rpc("page.list", {})["pages"]
+    expect_equal("second popup listed", len(pages), 2)
+    second = {"window_id": pages[1]["window_id"]}
+    rpc("dom.fill", dict({"selector": "css=#user", "value": "bob"}, **second))
+    rpc("dom.fill", dict({"selector": "css=#pass", "value": "secret"}, **second))
+    rpc("dom.click", dict({"selector": "css=#submit"}, **second))
+    deadline = time.monotonic() + t
+    while time.monotonic() < deadline and len(rpc("page.list", {})["pages"]) != 1:
+        time.sleep(0.05)
+    expect_equal("the popup closed itself", [p["window_id"] for p in rpc("page.list", {})["pages"]], [primary_id])
+    expect_equal("opener state after the popup closed itself", rpc("dom.getText", {"selector": "css=#status"})["text"], "logged in as bob")
+    expect_equal("opener url after the popup closed itself", rpc("page.url", {})["url"], opener_url)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -130,7 +155,7 @@ def main() -> int:
             return 1
         terminate(proc)
 
-    print("PASS\tpopup login through window_id; page.list / page.close")
+    print("PASS\tpopup login through window_id; page.list / page.close; the opener survives both close paths")
     print("PASS\twindows")
     return 0
 

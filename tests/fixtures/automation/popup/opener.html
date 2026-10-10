@@ -7,7 +7,11 @@
       // N23: a site that logs in through a popup (OAuth-style): the popup
       // posts its result back to this window.
       window.received = null;
-      window.openLogin = function () { window.open('login.html', 'login', 'width=480,height=600'); return 0; };
+      // closeItself: the popup closes itself after posting (the usual OAuth end).
+      window.openLogin = function (closeItself) {
+        window.open(closeItself ? 'login.html?close=1' : 'login.html', 'login', 'width=480,height=600');
+        return 0;
+      };
       window.addEventListener('message', function (event) {
         window.received = event.data;
         document.getElementById('status').textContent = 'logged in as ' + event.data.user;

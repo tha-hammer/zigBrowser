@@ -104,9 +104,10 @@ int zb_automation_window_alive(uint32_t id);
  * snapshot taken on the GTK thread. Free with zb_automation_free. */
 int zb_automation_list_windows(unsigned int timeout_ms, char **out_json);
 /* Destroy window `id` and return once it is gone (NO_WINDOW if there is no
- * such window). Like any window close this goes through on_window_destroy,
- * which today also terminates the window's web process; related windows
- * (a popup and its opener) share that process (deferred, documented). */
+ * such window). Closing a window ends its web process only when no other
+ * live window shares it: a popup and its opener are related views in one
+ * process, so closing the popup leaves the opener's page as it was. A
+ * page's own window.close() closes a window a script opened, the same way. */
 int zb_automation_close_window(uint32_t id, unsigned int timeout_ms);
 
 /* Ops below: win is a window id (0 = the original primary, waited for until

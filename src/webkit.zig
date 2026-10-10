@@ -2826,6 +2826,21 @@ const WindowsDriver = struct {
         self.check(isNoPage(p77.nativeClick(10, 10, null, 2000)), "unknown window: native click NoPage");
         self.check(isNoPage(p77.screenshot(gpa, false, 2000)), "unknown window: screenshot NoPage");
 
+        // A popup that closes itself (window.close(), the OAuth pattern):
+        // it goes away, and the opener keeps its page and state.
+        _ = evalOn(p1, "window.open('b.html'); return 0;", .page);
+        waited = 0;
+        while (c.zb_automation_window_id_at(2) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        const self_closing = c.zb_automation_window_id_at(2);
+        self.check(self_closing == 3, "a second popup is window 3");
+        const p3 = p1.forWindow(self_closing) catch return self.check(false, "a handle for window 3");
+        self.check(says(p3, "return window.mark;", "B"), "window 3 is page B");
+        _ = evalOn(p3, "setTimeout(function () { window.close(); }, 0); return 0;", .page);
+        waited = 0;
+        while (c.zb_automation_window_alive(self_closing) != 0 and waited < 5000) : (waited += 10) sleepMs(10);
+        self.check(c.zb_automation_window_alive(self_closing) == 0, "the popup's own window.close() closed it");
+        self.check(says(p1, "return window.mark + ':' + window.log.join(',');", "A:click:true"), "the opener kept its page and state after the popup closed itself");
+
         // Ids are never wrapped: with the last u32 handed out, one more
         // popup gets it, the next one is refused.
         self.check(c.zb_automation_debug_next_window_id(0xffffffff, 5000) == c.ZB_AUTO_OK, "set the next id to the last u32");
@@ -2871,14 +2886,14 @@ const WindowsDriver = struct {
         self.check(p2.pointer() == null, "gone window: no pointer");
         self.check(c.zb_automation_debug_window_work(1) == before_gone, "nothing from the gone handle reached window 1");
 
-        // The primary after the popup closed. Closing a window still ends
-        // its web process (deferred: on_window_destroy), which the popup
-        // shares with its opener; report what the primary does now.
-        const after = p1.evalJson(gpa, .page, "return window.mark;", "null", 3000);
-        if (after) |out| {
-            std.debug.print("primary after popup close: answers {s}\n", .{out});
-            gpa.free(out);
-        } else |e| std.debug.print("primary after popup close: {s}\n", .{@errorName(e)});
+        // The primary after page.close of its popup: closing a window ends
+        // the web process only when no other window shares it, so page A
+        // is untouched (same document state, still answering).
+        self.check(says(p1, "return window.mark + ':' + window.log.join(',');", "A:click:true"), "the opener kept its page and state after closeWindow(2)");
+        if (p1.url(gpa, 5000)) |u| {
+            self.check(std.mem.endsWith(u8, u, "/a.html"), "the opener's url is unchanged");
+            gpa.free(u);
+        } else |_| self.check(false, "the opener answers page.url after the popup closed");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 
