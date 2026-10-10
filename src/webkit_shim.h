@@ -265,6 +265,10 @@ int zb_automation_debug_pointer_lost(void);
  * instead of opening the default dialog. */
 void zb_automation_debug_files_unmatched(int cancel);
 int zb_automation_debug_files_unmatched_hits(void);
+/* Test hooks: sleep `ms` before each PNG chunk is written (0 = off); count
+ * encodes stopped because their caller had given up. */
+void zb_automation_debug_png_write_hold(unsigned int ms);
+int zb_automation_debug_png_stopped(void);
 /* Test hooks: choosers cancelled because their job's caller had given up;
  * block the GTK thread for `ms` at set-files stage 1 (job start, before
  * its op is sent) or 2 (chooser, before the commit decision); 0 = off. */

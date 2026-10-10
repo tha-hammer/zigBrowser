@@ -1991,7 +1991,7 @@ static void auto_start_eval(ZbAutoJob *job) {
 /* Jobs stay tracked until their op answers, also after their caller gave
  * up (a tombstone): the op's click may still open a chooser, which must be
  * cancelled, never left to the default dialog. GTK thread only. */
-static int auto_files_live(ZbAutoJob *job) {
+static int auto_job_running(ZbAutoJob *job) {
   g_mutex_lock(&zb_auto_mutex);
   int live = job->state == ZB_JOB_RUNNING;
   g_mutex_unlock(&zb_auto_mutex);
@@ -2003,7 +2003,7 @@ static ZbAutoJob *auto_files_live_job_for(ZbWindow *win) {
   for (GList *link = zb_auto_inflight; link != NULL; link = link->next) {
     ZbAutoJob *job = (ZbAutoJob *)link->data;
     if (job->op == ZB_OP_SET_FILES && job->target == win && !job->files_answered &&
-        auto_files_live(job)) {
+        auto_job_running(job)) {
       return job;
     }
   }
@@ -2053,7 +2053,7 @@ static gboolean on_auto_files_message(WebKitUserContentManager *ucm, JSCValue *v
     GList *next = link->next;
     ZbAutoJob *job = (ZbAutoJob *)link->data;
     if (job != armed && job->op == ZB_OP_SET_FILES && job->target == armed->target &&
-        !auto_files_live(job)) {
+        !auto_job_running(job)) {
       job->target = NULL;
       auto_untrack(job);
     }
@@ -2136,7 +2136,7 @@ static void on_auto_files_eval_done(GObject *object, GAsyncResult *result, gpoin
   } else {
     char *out = jsc_value_is_string(value) ? jsc_value_to_string(value) : g_strdup("null");
     g_object_unref(value);
-    if (!g_str_has_prefix(out, "{\"ok\":true") || !auto_files_live(job)) {
+    if (!g_str_has_prefix(out, "{\"ok\":true") || !auto_job_running(job)) {
       /* The op refused (nothing clicked), or its caller already gave up. */
       job->target = NULL;
       auto_job_complete(job, ZB_AUTO_OK, out, NULL);
@@ -2245,17 +2245,52 @@ static gboolean on_window_file_chooser(WebKitWebView *view, WebKitFileChooserReq
 
 /* ---- Screenshot ----
  * webkit_web_view_get_snapshot (the viewport, or the whole document),
- * encoded to PNG on the GTK thread into memory. The encoder stops as soon
- * as the PNG would exceed the job's limit (TOO_LARGE, nothing returned). */
+ * encoded to PNG on the GTK thread into memory.
+ * - A full-document shot first measures the document (automation world;
+ *   the page cannot fake it) and refuses more than ZB_SCREENSHOT_MAX_PIXELS
+ *   device pixels before WebKit renders anything: the encoded-size limit
+ *   alone would not bound the raw surface.
+ * - The encoder stops as soon as the PNG would pass the job's limit
+ *   (TOO_LARGE, nothing returned) or the job is no longer running (its
+ *   caller gave up at the deadline), so abandoned encoding never keeps the
+ *   GTK thread busy past the next chunk. */
+
+#define ZB_SCREENSHOT_MAX_PIXELS (32.0 * 1024 * 1024)
 
 typedef struct {
+  ZbAutoJob *job;
   GByteArray *bytes;
   gsize max;
+  int stop; /* 0 writing, 1 over the limit, 2 the caller gave up */
 } ZbPngSink;
+
+static gint zb_auto_debug_png_hold_ms;
+static gint zb_auto_debug_png_stopped;
+
+void zb_automation_debug_png_write_hold(unsigned int ms) {
+  g_atomic_int_set(&zb_auto_debug_png_hold_ms, (gint)ms);
+}
+
+int zb_automation_debug_png_stopped(void) {
+  return g_atomic_int_get(&zb_auto_debug_png_stopped);
+}
 
 static cairo_status_t auto_png_write(void *closure, const unsigned char *data, unsigned int length) {
   ZbPngSink *sink = (ZbPngSink *)closure;
-  if (sink->bytes->len + (gsize)length > sink->max) {
+  guint hold = (guint)g_atomic_int_get(&zb_auto_debug_png_hold_ms);
+  if (hold > 0) {
+    g_usleep((gulong)hold * 1000); /* test hook: a slow encoder */
+  }
+  g_mutex_lock(&zb_auto_mutex);
+  int running = sink->job->state == ZB_JOB_RUNNING;
+  g_mutex_unlock(&zb_auto_mutex);
+  if (!running) {
+    sink->stop = 2;
+    return CAIRO_STATUS_WRITE_ERROR;
+  }
+  /* bytes->len <= max always holds, so this cannot overflow. */
+  if ((gsize)length > sink->max - sink->bytes->len) {
+    sink->stop = 1;
     return CAIRO_STATUS_WRITE_ERROR;
   }
   g_byte_array_append(sink->bytes, data, length);
@@ -2276,12 +2311,15 @@ static void on_auto_snapshot_ready(GObject *object, GAsyncResult *result, gpoint
     auto_async_release(job);
     return;
   }
-  ZbPngSink sink = {g_byte_array_new(), job->max_png};
+  ZbPngSink sink = {job, g_byte_array_new(), job->max_png, 0};
   cairo_status_t status = cairo_surface_write_to_png_stream(surface, auto_png_write, &sink);
   int width = cairo_image_surface_get_width(surface);
   int height = cairo_image_surface_get_height(surface);
   cairo_surface_destroy(surface);
-  if (status == CAIRO_STATUS_WRITE_ERROR && sink.bytes->len > 0) {
+  if (sink.stop == 2) {
+    g_atomic_int_inc(&zb_auto_debug_png_stopped);
+    g_byte_array_unref(sink.bytes);
+  } else if (sink.stop == 1) {
     g_byte_array_unref(sink.bytes);
     auto_job_complete(job, ZB_AUTO_ERR_TOO_LARGE, NULL,
                       g_strdup_printf("the PNG is larger than %" G_GSIZE_FORMAT " bytes", job->max_png));
@@ -2298,18 +2336,66 @@ static void on_auto_snapshot_ready(GObject *object, GAsyncResult *result, gpoint
   auto_async_release(job);
 }
 
-static void auto_start_screenshot(ZbAutoJob *job) {
-  ZbWindow *win = auto_resolve_window(job->requested);
-  if (win == NULL) {
-    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
-    return;
-  }
+static void auto_screenshot_snapshot(ZbAutoJob *job, ZbWindow *win) {
   auto_track(job, win);
   webkit_web_view_get_snapshot(win->view,
                                job->full_page ? WEBKIT_SNAPSHOT_REGION_FULL_DOCUMENT
                                               : WEBKIT_SNAPSHOT_REGION_VISIBLE,
                                WEBKIT_SNAPSHOT_OPTIONS_NONE, job->cancellable,
                                on_auto_snapshot_ready, auto_async_ref(job));
+}
+
+static void on_auto_shot_measured(GObject *object, GAsyncResult *result, gpointer user_data) {
+  ZbAutoJob *job = (ZbAutoJob *)user_data;
+  GError *error = NULL;
+  JSCValue *value = webkit_web_view_call_async_javascript_function_finish(
+      WEBKIT_WEB_VIEW(object), result, &error);
+  auto_untrack(job);
+  double width = 0, height = 0, ratio = 0;
+  char *text = value != NULL && jsc_value_is_string(value) ? jsc_value_to_string(value) : NULL;
+  int parsed = text != NULL && sscanf(text, "[%lf,%lf,%lf]", &width, &height, &ratio) == 3;
+  g_free(text);
+  if (value != NULL) {
+    g_object_unref(value);
+  }
+  ZbWindow *win = auto_resolve_window(job->requested);
+  int live = auto_job_running(job);
+  if (!parsed) {
+    int code = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ? ZB_AUTO_ERR_CANCELLED
+                                                                         : ZB_AUTO_ERR_INTERNAL;
+    auto_job_complete(job, code, NULL, g_strdup("could not measure the document"));
+  } else if (width * height * ratio * ratio > ZB_SCREENSHOT_MAX_PIXELS) {
+    auto_job_complete(job, ZB_AUTO_ERR_TOO_LARGE, NULL,
+                      g_strdup_printf("the document is %.0f x %.0f CSS px, more than %.0f pixels",
+                                      width, height, ZB_SCREENSHOT_MAX_PIXELS));
+  } else if (!live) {
+    /* The caller gave up while measuring: render nothing. */
+  } else if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+  } else {
+    auto_screenshot_snapshot(job, win);
+  }
+  g_clear_error(&error);
+  auto_async_release(job);
+}
+
+static void auto_start_screenshot(ZbAutoJob *job) {
+  ZbWindow *win = auto_resolve_window(job->requested);
+  if (win == NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
+    return;
+  }
+  if (!job->full_page) {
+    auto_screenshot_snapshot(job, win);
+    return;
+  }
+  static const char measure[] =
+      "const e = document.documentElement; return JSON.stringify([Math.max(e.scrollWidth, innerWidth), "
+      "Math.max(e.scrollHeight, innerHeight), devicePixelRatio || 1]);";
+  auto_track(job, win);
+  webkit_web_view_call_async_javascript_function(win->view, measure, -1, NULL, ZB_AUTOMATION_WORLD,
+                                                  NULL, job->cancellable, on_auto_shot_measured,
+                                                  auto_async_ref(job));
 }
 
 /* Mirrors zb_reload: mark the in-flight load superseded so its cancellation

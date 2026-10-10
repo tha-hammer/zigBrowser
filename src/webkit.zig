@@ -312,7 +312,33 @@ const gfile = struct {
     extern fn g_free(mem: ?*anyopaque) void;
     extern fn gtk_main_quit() void;
     extern fn g_get_real_time() i64;
+    extern fn g_dir_open(path: [*:0]const u8, flags: c_uint, err: ?*?*anyopaque) ?*anyopaque;
+    extern fn g_dir_read_name(dir: *anyopaque) ?[*:0]const u8;
+    extern fn g_dir_close(dir: *anyopaque) void;
+    extern fn g_file_test(filename: [*:0]const u8, test_flags: c_uint) c_int;
+    extern fn g_remove(filename: [*:0]const u8) c_int;
+    extern fn g_rmdir(filename: [*:0]const u8) c_int;
 };
+
+/// Deletes a test's temporary directory tree (/tmp is a shared tmpfs).
+/// Symlinks are removed, never followed.
+fn removeTree(path: [*:0]const u8) void {
+    const is_symlink: c_uint = 1 << 1;
+    const is_dir: c_uint = 1 << 2;
+    if (gfile.g_dir_open(path, 0, null)) |dir| {
+        defer gfile.g_dir_close(dir);
+        while (gfile.g_dir_read_name(dir)) |name| {
+            var buf: [4096]u8 = undefined;
+            const child = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ std.mem.span(path), std.mem.span(name) }) catch continue;
+            if (gfile.g_file_test(child, is_dir) != 0 and gfile.g_file_test(child, is_symlink) == 0) {
+                removeTree(child);
+            } else {
+                _ = gfile.g_remove(child);
+            }
+        }
+    }
+    _ = gfile.g_rmdir(path);
+}
 
 const fixture_a =
     \\<!doctype html><html><head><title>Fixture A</title></head><body>
@@ -1330,6 +1356,7 @@ test "automation bridge drives a live WebKitGTK page" {
 
     const dir = gfile.g_dir_make_tmp("zb-bridge-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir);
+    defer removeTree(dir);
     const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
     const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
     const path_missing = try std.fmt.allocPrintSentinel(arena, "{s}/missing.html", .{dir}, 0);
@@ -1431,6 +1458,7 @@ test "zb_app_set_profile_dir creates the directory 0700 and reports failures" {
     try skipUnlessGtk();
     const base = gfile.g_dir_make_tmp("zb-profile-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(base);
+    defer removeTree(base);
     var buf: [512]u8 = undefined;
     const dir = try std.fmt.bufPrintZ(&buf, "{s}/nested/profile", .{base});
 
@@ -1500,6 +1528,7 @@ test "the native pointer cache belongs to its window" {
     const arena = arena_state.allocator();
     const dir = gfile.g_dir_make_tmp("zb-pointer-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir);
+    defer removeTree(dir);
     const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
     const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
@@ -1606,6 +1635,7 @@ test "a window closed by its own input event is never touched afterwards" {
     const arena = arena_state.allocator();
     const dir = gfile.g_dir_make_tmp("zb-selfclose-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir);
+    defer removeTree(dir);
     const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
     const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
@@ -1914,6 +1944,7 @@ test "native text: a navigation blocked by policy does not refuse later typing" 
     const arena = arena_state.allocator();
     const dir = gfile.g_dir_make_tmp("zb-blocked-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir);
+    defer removeTree(dir);
     const path = try std.fmt.allocPrintSentinel(arena, "{s}/blocked.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path, blocked_fixture.ptr, blocked_fixture.len, null) != 0);
     const raw = gfile.g_filename_to_uri(path, null, null) orelse return error.UriFailed;
@@ -2123,6 +2154,7 @@ test "set input files answers the file chooser the input's click opens" {
     const arena = arena_state.allocator();
     const dir_raw = gfile.g_dir_make_tmp("zb-files-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir_raw);
+    defer removeTree(dir_raw);
     const dir = try arena.dupeZ(u8, std.mem.span(dir_raw));
     const page = try std.fmt.allocPrintSentinel(arena, "{s}/files.html", .{dir}, 0);
     const a = try std.fmt.allocPrintSentinel(arena, "{s}/a.txt", .{dir}, 0);
@@ -2256,6 +2288,7 @@ test "native scroll sends a trusted wheel event that scrolls the scroller under 
     const arena = arena_state.allocator();
     const dir = gfile.g_dir_make_tmp("zb-scroll-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir);
+    defer removeTree(dir);
     const path = try std.fmt.allocPrintSentinel(arena, "{s}/scroll.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path, scroll_fixture.ptr, scroll_fixture.len, null) != 0);
     const raw = gfile.g_filename_to_uri(path, null, null) orelse return error.UriFailed;
@@ -2373,11 +2406,48 @@ const ShotDriver = struct {
             break :blk false;
         } else |e| e == error.TooLarge, "a PNG over the limit is TooLarge");
 
+        // A limit below the first encoder chunk is still TooLarge.
+        const one_byte = gtk_port.screenshotWithLimit(gpa, false, 1, 10_000);
+        self.check(if (one_byte) |shot| blk: {
+            gpa.free(shot.png);
+            break :blk false;
+        } else |e| e == error.TooLarge, "a 1-byte limit is TooLarge");
+
         // Bounded by the deadline.
         const started = monotonicMs();
         const late = gtk_port.screenshot(port.ptr, gpa, true, 1);
         if (late) |shot| gpa.free(shot.png) else |_| {}
         self.check(monotonicMs() - started < 1000, "a 1 ms deadline returns promptly");
+
+        // An encoder still running at the deadline (held 150 ms per chunk)
+        // stops at its next chunk: the caller returns at the deadline, and
+        // the GTK thread is free again for the next page call.
+        const stopped_before = c.zb_automation_debug_png_stopped();
+        c.zb_automation_debug_png_write_hold(150);
+        const held_start = monotonicMs();
+        const held = gtk_port.screenshot(port.ptr, gpa, false, 200);
+        const held_ms = monotonicMs() - held_start;
+        if (held) |shot| gpa.free(shot.png) else |_| {}
+        self.check(if (held) |_| false else |e| e == error.Timeout, "a held encoder past the deadline is a Timeout");
+        self.check(held_ms < 600, "the caller returned at its deadline");
+        var waited: u32 = 0;
+        while (c.zb_automation_debug_png_stopped() == stopped_before and waited < 2000) : (waited += 10) sleepMs(10);
+        c.zb_automation_debug_png_write_hold(0);
+        self.check(c.zb_automation_debug_png_stopped() == stopped_before + 1, "the abandoned encoder stopped");
+        const next_start = monotonicMs();
+        self.check(std.mem.eql(u8, d.eval("return '1';", null), "1"), "the next page call works");
+        self.check(monotonicMs() - next_start < 500, "the next page call is prompt");
+
+        // A document over the pixel cap is refused before anything is
+        // rendered; the viewport shot still works.
+        _ = d.eval("const tall = document.createElement('div'); tall.id = 'tall'; tall.style.height = '50000px'; document.body.appendChild(tall); return 0;", null);
+        const huge = gtk_port.screenshot(port.ptr, gpa, true, 10_000);
+        self.check(if (huge) |shot| blk: {
+            gpa.free(shot.png);
+            break :blk false;
+        } else |e| e == error.TooLarge, "a full-page shot of a 50000 px document is TooLarge");
+        const still = gtk_port.screenshot(port.ptr, gpa, false, 10_000) catch return self.check(false, "the viewport shot of the tall page works");
+        gpa.free(still.png);
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
@@ -2390,6 +2460,7 @@ test "screenshot returns a PNG of the viewport or the whole document" {
     const arena = arena_state.allocator();
     const dir_raw = gfile.g_dir_make_tmp("zb-shot-XXXXXX", null) orelse return error.TmpDirFailed;
     defer gfile.g_free(dir_raw);
+    defer removeTree(dir_raw);
     const dir = try arena.dupeZ(u8, std.mem.span(dir_raw));
     const path = try std.fmt.allocPrintSentinel(arena, "{s}/shot.html", .{dir}, 0);
     try std.testing.expect(gfile.g_file_set_contents(path, shot_fixture.ptr, shot_fixture.len, null) != 0);
@@ -2425,6 +2496,8 @@ const ScanServer = struct {
         .{ .prefix = "/x/toast", .body = "<div data-testid=\"toast\" role=\"alert\">Something went wrong, but don't fret.</div>" },
         .{ .prefix = "/x/hidden-toast", .body = "<div data-testid=\"toast\" role=\"alert\" style=\"display:none\">Something went wrong</div>" },
         .{ .prefix = "/x/arkose", .body = "<iframe id=\"arkose_iframe\" src=\"about:blank\" title=\"arkose challenge\"></iframe>" },
+        .{ .prefix = "/x/hidden-arkose", .body = "<iframe id=\"arkose_iframe\" src=\"about:blank\" style=\"display:none\"></iframe>" },
+        .{ .prefix = "/in/hidden-authwall", .body = "<form class=\"authwall-join-form\" style=\"display:none\">Join</form>" },
         .{ .prefix = "/x/clean", .body = "<div data-testid=\"toast\" role=\"alert\">Your post was sent.</div>" },
         .{ .prefix = "/checkpoint/challenge/abc", .body = "<p>Let's do a quick security check</p>" },
         .{ .prefix = "/authwall", .body = "<p>Join LinkedIn</p>" },
@@ -2525,9 +2598,18 @@ const ScanDriver = struct {
         // Platform checks apply to their platform: an X toast pattern on a
         // LinkedIn page is not an X signal.
         self.expectClean("/x/toast", "linkedin", "an X toast is not a LinkedIn signal");
-        // The text itself never leaves the page: only a hash.
+        // Preloaded but hidden challenge or authwall nodes are not signals.
+        self.expectClean("/x/hidden-arkose", "x", "X: a hidden arkose iframe is not a signal");
+        self.expectClean("/in/hidden-authwall", "linkedin", "LinkedIn: a hidden authwall form is not a signal");
+        // The text itself never leaves the page: only its SHA-256, checked
+        // against an independent digest of the fixture text.
         const out = self.scan("/in/invite", "linkedin");
-        self.check(std.mem.indexOf(u8, out, "invitation limit") == null and std.mem.indexOf(u8, out, "\"text_hash\":\"") != null, "the modal text is reported only as a hash");
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash("You've reached the weekly invitation limit", &digest, .{});
+        var want: [64 + 16]u8 = undefined;
+        const want_field = std.fmt.bufPrint(&want, "\"text_hash\":\"{s}\"", .{std.fmt.bytesToHex(digest, .lower)}) catch return;
+        if (std.mem.indexOf(u8, out, want_field) == null) std.debug.print("invite scan: {s}\nwanted {s}\n", .{ out, want_field });
+        self.check(std.mem.indexOf(u8, out, "invitation limit") == null and std.mem.indexOf(u8, out, want_field) != null, "the modal text is reported only as its SHA-256");
         _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
