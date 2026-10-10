@@ -132,14 +132,14 @@ const LoginPort = struct {
 pub fn handle(
     gpa: std.mem.Allocator,
     state: *SocialState,
-    engine: *engine_mod.Engine,
+    /// From Engine.executeExternal: ids for failures, instrumented page access.
+    ext: *engine_mod.External,
     verb: Verb,
     params_json: []const u8,
     /// Set when the server stops; ends a running pause with `cancelled`.
     cancel: *const std.atomic.Value(bool),
-    /// Command ids (from Engine.executeExternal) attached to failures.
-    ids: script_command.Ids,
 ) error{OutOfMemory}!engine_mod.Outcome {
+    const ids = ext.ids();
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return invalidParams(),
@@ -161,7 +161,7 @@ pub fn handle(
     }
 
     return switch (verb) {
-        .login_check => loginCheck(gpa, engine, ids),
+        .login_check => loginCheck(gpa, ext),
         .rate_status => {
             state.acquire();
             defer state.lock.unlock();
@@ -191,10 +191,11 @@ pub fn handle(
     };
 }
 
-fn loginCheck(gpa: std.mem.Allocator, engine: *engine_mod.Engine, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
-    const url = engine.port.url(gpa, read_timeout_ms) catch |err| return portError(gpa, err, ids);
+fn loginCheck(gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+    const ids = ext.ids();
+    const url = ext.url(gpa, read_timeout_ms) catch |err| return portError(gpa, err, ids);
     defer gpa.free(url);
-    const text = engine.port.evalJson(gpa, .automation, login_check_body, "null", read_timeout_ms) catch |err| return portError(gpa, err, ids);
+    const text = ext.evalJson(gpa, .automation, login_check_body, "null", read_timeout_ms) catch |err| return portError(gpa, err, ids);
     defer gpa.free(text);
 
     var script_result = script_command.parseScriptResult(gpa, text) catch |err| switch (err) {

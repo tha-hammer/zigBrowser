@@ -7,7 +7,7 @@ const cookie_port = automation.cookie_port;
 
 const gpa = std.testing.allocator;
 const io = std.testing.io;
-const ids = automation.script_command.Ids{ .trace_id = "t-cookie", .parent_span_id = "p-cookie", .command_id = "c-cookie" };
+const fakes = @import("automation/fake_page_port.zig");
 
 const FakeCookiePort = struct {
     sets: std.ArrayListUnmanaged([]u8) = .empty,
@@ -54,8 +54,27 @@ const FakeCookiePort = struct {
 };
 
 fn call(fake: ?*FakeCookiePort, method: []const u8, params: []const u8) !automation.engine.Outcome {
-    const port: ?cookie_port.CookiePort = if (fake) |f| f.port() else null;
-    return cookie_routes.handle(gpa, io, port, cookie_routes.verbFromMethod(method).?, params, ids);
+    return callWithSink(fake, method, params, null);
+}
+
+fn callWithSink(fake: ?*FakeCookiePort, method: []const u8, params: []const u8, sink: ?automation.telemetry.TelemetrySink) !automation.engine.Outcome {
+    const Call = struct {
+        port: ?cookie_port.CookiePort,
+        verb: cookie_routes.Verb,
+        params: []const u8,
+
+        fn run(c: @This(), a: std.mem.Allocator, ext: *automation.engine.External) error{OutOfMemory}!automation.engine.Outcome {
+            return cookie_routes.handle(a, io, c.port, ext, c.verb, c.params);
+        }
+    };
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var eng = automation.engine.Engine.init(automation.page_port.no_page, clock.clock());
+    return eng.executeExternal(gpa, method, "cookies", .{ .route = .{ .telemetry_sink = sink } }, Call{
+        .port = if (fake) |f| f.port() else null,
+        .verb = cookie_routes.verbFromMethod(method).?,
+        .params = params,
+    }, Call.run);
 }
 
 test "only the cookie methods are recognised" {
@@ -156,7 +175,7 @@ test "no cookie store -> session_invalid with ids; port errors map like PagePort
     var none = try call(null, "cookies.getAll", "{}");
     defer none.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32011), none.failure.code);
-    try std.testing.expect(std.mem.indexOf(u8, none.failure.data_json.?, "\"trace_id\":\"t-cookie\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, none.failure.data_json.?, "\"trace_id\":\"") != null);
 
     var fake = FakeCookiePort{ .fail = error.Timeout };
     defer fake.deinit();

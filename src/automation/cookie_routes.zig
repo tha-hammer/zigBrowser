@@ -52,10 +52,12 @@ pub fn handle(
     gpa: std.mem.Allocator,
     io: std.Io,
     port: ?cookie_port_mod.CookiePort,
+    /// From Engine.executeExternal: ids for failures + child spans.
+    ext: *engine_mod.External,
     verb: Verb,
     params_json: []const u8,
-    ids: script_command.Ids,
 ) error{OutOfMemory}!engine_mod.Outcome {
+    const ids = ext.ids();
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return invalidParams(gpa, null, ids),

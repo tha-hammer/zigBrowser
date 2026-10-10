@@ -370,8 +370,8 @@ fn handleCookies(
         verb: cookie_routes.Verb,
         params_json: []const u8,
 
-        fn run(self: @This(), gpa: std.mem.Allocator, ids: automation.script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
-            return cookie_routes.handle(gpa, self.cookies.io, self.cookies.port, self.verb, self.params_json, ids);
+        fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            return cookie_routes.handle(gpa, self.cookies.io, self.cookies.port, ext, self.verb, self.params_json);
         }
     };
     var outcome = try engine.executeExternal(allocator, method, "cookies", .{ .route = route, .build = build_info }, CookieCall{
@@ -424,13 +424,12 @@ fn handleSocial(
     const already_cancelled = std.atomic.Value(bool).init(true);
     const SocialCall = struct {
         social: *social_routes.SocialState,
-        engine: *engine_mod.Engine,
         verb: social_routes.Verb,
         params_json: []const u8,
         cancel: *const std.atomic.Value(bool),
 
-        fn run(self: @This(), gpa: std.mem.Allocator, ids: automation.script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
-            return social_routes.handle(gpa, self.social, self.engine, self.verb, self.params_json, self.cancel, ids);
+        fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            return social_routes.handle(gpa, self.social, ext, self.verb, self.params_json, self.cancel);
         }
     };
     const cancel = if (ticket) |t| &t.cancelled else if (queued_cancelled) &already_cancelled else &not_cancelled;
@@ -439,7 +438,7 @@ fn handleSocial(
         .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
         .route = route,
         .build = build_info,
-    }, SocialCall{ .social = social, .engine = engine, .verb = verb, .params_json = params_json, .cancel = cancel }, SocialCall.run);
+    }, SocialCall{ .social = social, .verb = verb, .params_json = params_json, .cancel = cancel }, SocialCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

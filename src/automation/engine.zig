@@ -109,6 +109,58 @@ pub const ExecuteOptions = struct {
     build: telemetry.BuildInfo = .{},
 };
 
+/// Handle given to `executeExternal` bodies: the command's ids plus
+/// instrumented PagePort access and child-span recording under its root.
+pub const External = struct {
+    engine: *Engine,
+    run: *Run,
+
+    pub fn ids(self: *const External) script_command.Ids {
+        return self.run.ids;
+    }
+
+    pub fn nowMs(self: *const External) u64 {
+        return self.engine.clock.nowMs();
+    }
+
+    /// PagePort.url with an automation.platform.eval child span.
+    pub fn url(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]u8 {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        const value = self.engine.port.url(gpa, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "url", null, 0, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "url", null, 0, value.len, started, "ok");
+        return value;
+    }
+
+    /// PagePort.evalJson with an automation.platform.eval child span.
+    pub fn evalJson(self: *External, gpa: std.mem.Allocator, world: page_port.World, body: []const u8, arg_json: []const u8, timeout_ms: u64) page_port.PortError![]u8 {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        const text = self.engine.port.evalJson(gpa, world, body, arg_json, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "evalJson", world, body.len, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "evalJson", world, body.len, text.len, started, "ok");
+        return text;
+    }
+
+    /// Records a child span under this command's root. Attributes must
+    /// already be redacted.
+    pub fn childSpan(self: *External, name: []const u8, attributes: []const telemetry.AttrMap.Entry) void {
+        const sink = self.run.sink orelse return;
+        sink.recordChildSpan(.{
+            .name = name,
+            .trace_id = self.run.ids.trace_id,
+            .parent_span_id = self.run.ids.parent_span_id,
+            .command_id = self.run.ids.command_id,
+            .attributes = attributes,
+        }) catch {};
+    }
+};
+
 /// State for one command execution.
 const Run = struct {
     ids: script_command.Ids,
@@ -165,10 +217,12 @@ pub const Engine = struct {
         return outcome;
     }
 
-    /// Runs a command that is not a router verb (e.g. social.*) with the same
-    /// lifecycle as `executeWith`: fresh ids, a cancel check, and exactly one
-    /// root span. `body(context, gpa, ids)` produces the outcome; failures it
-    /// returns should carry the ids in their data.
+    /// Runs a command that is not a router verb (e.g. social.*, cookies.*)
+    /// with the same lifecycle as `executeWith`: fresh ids, a cancel check,
+    /// and exactly one root span. `body(context, gpa, ext)` produces the
+    /// outcome; it reaches the page through `ext` so PagePort calls get
+    /// automation.platform.eval children, and its failures should carry
+    /// `ext.ids()`.
     pub fn executeExternal(
         self: *Engine,
         gpa: std.mem.Allocator,
@@ -176,7 +230,7 @@ pub const Engine = struct {
         namespace: []const u8,
         options: ExecuteOptions,
         context: anytype,
-        comptime body: fn (@TypeOf(context), std.mem.Allocator, script_command.Ids) error{OutOfMemory}!Outcome,
+        comptime body: fn (@TypeOf(context), std.mem.Allocator, *External) error{OutOfMemory}!Outcome,
     ) error{OutOfMemory}!Outcome {
         var ids_buf: IdsBuf = undefined;
         var run = Run{
@@ -187,10 +241,11 @@ pub const Engine = struct {
             .build = options.build,
         };
         const started = self.clock.nowMs();
+        var ext = External{ .engine = self, .run = &run };
         const outcome = if (run.cancelled())
             try automationFailure(gpa, .cancelled, null, run.ids)
         else
-            try body(context, gpa, run.ids);
+            try body(context, gpa, &ext);
         recordRoot(.{ .method = method, .namespace = namespace, .timeout_ms = 0 }, options, &run, &outcome, options.queue_wait_ms +| (self.clock.nowMs() -| started));
         return outcome;
     }

@@ -418,19 +418,74 @@ test "social.* failures carry ids and every social call records one root span" {
     testing.allocator.free(status);
     fixture.server.stop();
 
-    var roots: usize = 0;
-    var saw_login_trace = false;
+    const command_id = err.get("data").?.object.get("command_id").?.string;
+    var login_roots: usize = 0;
+    var status_roots: usize = 0;
+    var login_root_span: []const u8 = "";
     for (sink.spans.items) |span| {
         if (!std.mem.eql(u8, span.name, "automation.command")) continue;
-        roots += 1;
         try testing.expectEqualStrings("social", span.attr("rpc.namespace").?);
         if (std.mem.eql(u8, span.attr("rpc.method").?, "social.login_check")) {
-            saw_login_trace = std.mem.eql(u8, span.trace_id, trace_id);
+            login_roots += 1;
+            login_root_span = span.span_id;
+            try testing.expectEqualStrings(trace_id, span.trace_id);
+            try testing.expectEqualStrings(command_id, span.command_id);
             try testing.expectEqualStrings("session_invalid", span.attr("automation.error").?);
+        } else if (std.mem.eql(u8, span.attr("rpc.method").?, "social.rate_status")) {
+            status_roots += 1;
         }
     }
-    try testing.expectEqual(@as(usize, 2), roots);
-    try testing.expect(saw_login_trace);
+    try testing.expectEqual(@as(usize, 1), login_roots);
+    try testing.expectEqual(@as(usize, 1), status_roots);
+
+    // The failed url() read emits exactly one errored platform.eval child and
+    // no eval child.
+    var children: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.platform.eval")) continue;
+        if (!std.mem.eql(u8, span.command_id, command_id)) continue;
+        children += 1;
+        try testing.expectEqualStrings("url", span.attr("page_port.op").?);
+        try testing.expectEqualStrings("NoPage", span.attr("platform.error_class").?);
+        try testing.expectEqualStrings(login_root_span, span.parent_span_id.?);
+    }
+    try testing.expectEqual(@as(usize, 1), children);
+}
+
+test "successful social.login_check emits url then automation-world evalJson children" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("social-spans", .{ .sink = &sink, .eval_reply = "{\"ok\":true,\"value\":{\"logged_in\":true,\"username\":\"Ada\"}}" });
+    defer fixture.deinit();
+
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    const login = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.login_check\",\"id\":1}");
+    defer testing.allocator.free(login);
+    fixture.server.stop();
+
+    var root: ?*const automation_server.automation.telemetry.Span = null;
+    for (sink.spans.items) |*span| {
+        if (std.mem.eql(u8, span.name, "automation.command")) root = span;
+    }
+    var ops: [2][]const u8 = undefined;
+    var n: usize = 0;
+    for (sink.spans.items) |span| {
+        if (!std.mem.eql(u8, span.name, "automation.platform.eval")) continue;
+        try testing.expect(n < 2);
+        try testing.expectEqualStrings(root.?.trace_id, span.trace_id);
+        try testing.expectEqualStrings(root.?.command_id, span.command_id);
+        try testing.expectEqualStrings(root.?.span_id, span.parent_span_id.?);
+        try testing.expectEqualStrings("", span.attr("platform.error_class").?);
+        ops[n] = span.attr("page_port.op").?;
+        if (n == 1) try testing.expectEqualStrings("automation", span.attr("script.world").?);
+        n += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqualStrings("url", ops[0]);
+    try testing.expectEqualStrings("evalJson", ops[1]);
+    try testing.expect(!sink.containsRaw("Ada"));
 }
 
 test "cookies.* are routed through the CookiePort with ids, one root span each, values never in telemetry" {

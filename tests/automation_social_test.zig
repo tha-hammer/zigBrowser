@@ -39,11 +39,23 @@ const Harness = struct {
 
     fn callWithCancel(self: *Harness, method: []const u8, params: []const u8, cancelled: bool) !engine.Outcome {
         const flag = std.atomic.Value(bool).init(cancelled);
-        return social_routes.handle(gpa, &self.state, &self.engine, social_routes.verbFromMethod(method).?, params, &flag, .{
-            .trace_id = "t-social",
-            .parent_span_id = "p-social",
-            .command_id = "c-social",
-        });
+        const Call = struct {
+            state: *social_routes.SocialState,
+            verb: social_routes.Verb,
+            params: []const u8,
+            cancel: *const std.atomic.Value(bool),
+
+            fn run(c: @This(), a: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
+                return social_routes.handle(a, c.state, ext, c.verb, c.params, c.cancel);
+            }
+        };
+        // Not cancelled at the engine level: the pause itself observes `flag`.
+        return self.engine.executeExternal(gpa, method, "social", .{}, Call{
+            .state = &self.state,
+            .verb = social_routes.verbFromMethod(method).?,
+            .params = params,
+            .cancel = &flag,
+        }, Call.run);
     }
 };
 
@@ -218,7 +230,7 @@ test "pause and set_pacing reject unknown params" {
     try std.testing.expectEqual(@as(u32, 100), h.state.pacingConfig().daily_cap);
 }
 
-test "social failures carry the trace and command ids passed in" {
+test "social failures carry the command ids" {
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
@@ -226,6 +238,6 @@ test "social failures carry the trace and command ids passed in" {
 
     var outcome = try h.call("social.login_check", "{}");
     defer outcome.deinit(gpa);
-    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"trace_id\":\"t-social\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"command_id\":\"c-social\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"trace_id\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"command_id\":\"cmd-") != null);
 }
