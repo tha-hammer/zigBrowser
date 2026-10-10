@@ -434,6 +434,7 @@ fn actionName(verb: router.Verb) ?[]const u8 {
 
 fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions, run: *const Run, outcome: *const Outcome, duration_ms: u64) void {
     const sink = run.sink orelse return;
+    var redaction_bufs: telemetry.RedactionBuffers = .{};
     const automation_error: ?[]const u8 = switch (outcome.*) {
         .result => null,
         .failure => |failure| if (failure.code <= errors.downstreamCode(.element_not_found) and failure.code >= errors.downstreamCode(.cancelled)) failure.message else null,
@@ -446,10 +447,8 @@ fn recordRootSpan(command: *const router.ParsedCommand, options: ExecuteOptions,
         .namespace = @tagName(command.namespace),
         .page_id = options.route.page_id,
         .window_id = options.route.window_id,
-        .selector = command.selector,
-        .selector_strict = if (command.selector != null) command.strict else null,
-        .typed_value = command.value orelse command.text,
-        .url = command.url,
+        // Redaction happens here, before the sink boundary.
+        .redacted = telemetry.redactCommand(&redaction_bufs, command.selector, command.strict, command.value orelse command.text, command.url),
         .action_name = actionName(command.verb),
         .action_force = command.force,
         .action_trial = command.trial,

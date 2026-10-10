@@ -62,6 +62,9 @@ pub const PageCommandQueue = struct {
         waiter.* = .{ .page = line };
         try line.waiters.append(self.allocator, waiter);
 
+        // An uncontended acquire reports exactly 0 (no clock granularity
+        // noise); only real waits are measured.
+        if (line.waiters.items[0] == waiter) return waiter;
         while (line.waiters.items[0] != waiter) {
             if (self.shutting_down) {
                 // `waiter` is freed by the errdefer above.

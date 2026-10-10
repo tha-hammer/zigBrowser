@@ -381,3 +381,60 @@ test "selector.kind is a bounded enum, never a raw client prefix" {
     try std.testing.expectEqualStrings("invalid", root.attr("selector.kind").?);
     try std.testing.expect(!h.sink.containsRaw("token_secret"));
 }
+
+/// Records the JSON of every value that crosses the TelemetrySink vtable, so
+/// redaction is checked at the boundary rather than inside one sink.
+const SpySink = struct {
+    seen: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn sink(self: *SpySink) telemetry.TelemetrySink {
+        return .{ .ptr = self, .vtable = &.{ .recordCommandSpan = recordCommand, .recordChildSpan = recordChild } };
+    }
+
+    fn recordCommand(ptr: *anyopaque, attrs: telemetry.CommandSpanAttrs) anyerror!void {
+        const self: *SpySink = @ptrCast(@alignCast(ptr));
+        const json = try std.json.Stringify.valueAlloc(gpa, attrs, .{});
+        defer gpa.free(json);
+        try self.seen.appendSlice(gpa, json);
+    }
+
+    fn recordChild(ptr: *anyopaque, span: telemetry.ChildSpan) anyerror!void {
+        const self: *SpySink = @ptrCast(@alignCast(ptr));
+        const json = try std.json.Stringify.valueAlloc(gpa, span, .{});
+        defer gpa.free(json);
+        try self.seen.appendSlice(gpa, json);
+    }
+};
+
+test "nothing raw crosses the TelemetrySink boundary (spy sink)" {
+    var fake = fakes.FakePagePort.init(gpa);
+    defer fake.deinit();
+    fake.eval_replies = &.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true},\"telemetry\":[{\"name\":\"automation.selector.resolve\",\"attributes\":{\"selector.hash\":\"h\",\"raw\":\"css=#password-field\"}}]}" }};
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var spy: SpySink = .{};
+    defer spy.seen.deinit(gpa);
+    var eng = engine.Engine.init(fake.port(), clock.clock());
+
+    const commands = [_][2][]const u8{
+        .{ "dom.fill", "{\"selector\":\"css=#password-field\",\"value\":\"password=abc\"}" },
+        .{ "dom.type", "{\"selector\":\"text=token_xyz\",\"text\":\"hunter2\"}" },
+        .{ "page.navigate", "{\"url\":\"https://alice:pw@example.com/reset?token=s3cret#frag\"}" },
+        .{ "page.evaluate", "{\"expression\":\"document.cookie\"}" },
+    };
+    for (commands) |c| {
+        var command = try router.parse(gpa, c[0], c[1], .{});
+        defer command.deinit();
+        var outcome = try eng.executeWith(gpa, &command, .{ .route = .{ .telemetry_sink = spy.sink() } });
+        outcome.deinit(gpa);
+    }
+    try std.testing.expect(spy.seen.items.len > 0);
+    for ([_][]const u8{ "#password-field", "password=abc", "token_xyz", "hunter2", "alice", ":pw@", "/reset", "s3cret", "frag", "document.cookie" }) |needle| {
+        if (std.mem.indexOf(u8, spy.seen.items, needle) != null) {
+            std.debug.print("raw value crossed the sink boundary: {s}\n", .{needle});
+            return error.TestRawValueLeaked;
+        }
+    }
+    try std.testing.expect(std.mem.indexOf(u8, spy.seen.items, "\"target_host\":\"example.com\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spy.seen.items, "\"typed_class\":\"secret-like\"") != null);
+}

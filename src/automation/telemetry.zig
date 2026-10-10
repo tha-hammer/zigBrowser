@@ -53,9 +53,67 @@ pub const Span = struct {
     }
 };
 
+/// Sensitive command inputs after redaction. Produced by `redactCommand`
+/// BEFORE anything reaches a `TelemetrySink`; raw selectors, typed values and
+/// URLs never cross the sink boundary.
+pub const RedactedCommand = struct {
+    selector_kind: ?[]const u8 = null,
+    selector_hash: ?[]const u8 = null,
+    selector_strict: ?bool = null,
+    typed_length: ?usize = null,
+    typed_class: ?[]const u8 = null,
+    /// host[:port] without userinfo.
+    target_host: ?[]const u8 = null,
+    target_origin_hash: ?[]const u8 = null,
+    target_path_hash: ?[]const u8 = null,
+};
+
+/// Backing storage for the hashes in a `RedactedCommand`.
+pub const RedactionBuffers = struct {
+    selector_hash: [16]u8 = undefined,
+    origin_hash: [16]u8 = undefined,
+    path_hash: [16]u8 = undefined,
+};
+
+/// The TelemetryRedactor step: hashes selectors and URL parts, reduces typed
+/// values to length + class. Slices in the result point into `bufs` or into
+/// static strings, except `target_host` (a sub-slice of `url`).
+pub fn redactCommand(
+    bufs: *RedactionBuffers,
+    selector: ?[]const u8,
+    selector_strict: bool,
+    typed_value: ?[]const u8,
+    url: ?[]const u8,
+) RedactedCommand {
+    var redacted = RedactedCommand{};
+    if (selector) |text| {
+        redacted.selector_kind = selectorKind(text);
+        redacted.selector_hash = hexHash(&bufs.selector_hash, std.hash.Wyhash.hash(0, text));
+        redacted.selector_strict = selector_strict;
+    }
+    if (typed_value) |value| {
+        redacted.typed_length = value.len;
+        redacted.typed_class = classifyTypedValue(value);
+    }
+    if (url) |text| {
+        const parsed = parseUrl(text);
+        if (parsed.host.len > 0) redacted.target_host = parsed.host;
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(parsed.scheme);
+        hasher.update(url_scheme_separator);
+        hasher.update(parsed.host);
+        redacted.target_origin_hash = hexHash(&bufs.origin_hash, hasher.final());
+        redacted.target_path_hash = hexHash(&bufs.path_hash, std.hash.Wyhash.hash(0, parsed.path));
+    }
+    return redacted;
+}
+
+fn hexHash(buf: *[16]u8, hash: u64) []const u8 {
+    return std.fmt.bufPrint(buf, "{x:0>16}", .{hash}) catch unreachable;
+}
+
 /// Root `automation.command` span recorded by the engine after a command
-/// finishes. Raw selector/typed values/URLs are hashed or classified by the
-/// sink and never stored.
+/// finishes. Contains only already-redacted values (see `redactCommand`).
 pub const CommandSpanAttrs = struct {
     trace_id: []const u8,
     span_id: []const u8,
@@ -64,10 +122,7 @@ pub const CommandSpanAttrs = struct {
     namespace: []const u8,
     page_id: []const u8,
     window_id: []const u8,
-    selector: ?[]const u8 = null,
-    selector_strict: ?bool = null,
-    typed_value: ?[]const u8 = null,
-    url: ?[]const u8 = null,
+    redacted: RedactedCommand = .{},
     action_name: ?[]const u8 = null,
     action_force: bool = false,
     action_trial: bool = false,
@@ -239,28 +294,20 @@ pub const InMemoryTelemetrySink = struct {
         try self.putAttr(&attributes, "api.version", attrs.build.api_version);
         if (attrs.selector_match_count) |count| try self.putAttr(&attributes, "selector.match_count", count);
 
-        if (attrs.selector) |selector| {
-            try self.putAttr(&attributes, "selector.kind", selectorKind(selector));
-            try self.putOwnedAttr(&attributes, "selector.hash", try self.hashText(selector));
-            if (attrs.selector_strict) |strict| {
-                try self.putAttr(&attributes, "selector.strict", if (strict) "true" else "false");
-            }
-        }
+        const redacted = attrs.redacted;
+        if (redacted.selector_kind) |kind| try self.putAttr(&attributes, "selector.kind", kind);
+        if (redacted.selector_hash) |hash| try self.putAttr(&attributes, "selector.hash", hash);
+        if (redacted.selector_strict) |strict| try self.putAttr(&attributes, "selector.strict", if (strict) "true" else "false");
         if (attrs.action_name) |action| {
             try self.putAttr(&attributes, "action.name", action);
             try self.putAttr(&attributes, "action.force", if (attrs.action_force) "true" else "false");
             try self.putAttr(&attributes, "action.trial", if (attrs.action_trial) "true" else "false");
         }
-        if (attrs.typed_value) |value| {
-            try self.putOwnedAttr(&attributes, "typed.length", try self.formatInt(value.len));
-            try self.putAttr(&attributes, "typed.class", classifyTypedValue(value));
-        }
-        if (attrs.url) |url| {
-            const parsed = parseUrl(url);
-            if (parsed.host.len > 0) try self.putAttr(&attributes, "target.host", parsed.host);
-            try self.putOwnedAttr(&attributes, "target.origin_hash", try self.hashOrigin(parsed));
-            try self.putOwnedAttr(&attributes, "target.path_hash", try self.hashText(parsed.path));
-        }
+        if (redacted.typed_length) |length| try self.putOwnedAttr(&attributes, "typed.length", try self.formatInt(length));
+        if (redacted.typed_class) |class| try self.putAttr(&attributes, "typed.class", class);
+        if (redacted.target_host) |host| try self.putAttr(&attributes, "target.host", host);
+        if (redacted.target_origin_hash) |hash| try self.putAttr(&attributes, "target.origin_hash", hash);
+        if (redacted.target_path_hash) |hash| try self.putAttr(&attributes, "target.path_hash", hash);
 
         try self.spans.append(self.allocator, .{
             .name = "automation.command",
@@ -331,24 +378,6 @@ pub const InMemoryTelemetrySink = struct {
 
     fn formatInt(self: *InMemoryTelemetrySink, value: u64) ![]const u8 {
         const owned = try std.fmt.allocPrint(self.allocator, "{d}", .{value});
-        try self.owned_strings.append(self.allocator, owned);
-        return owned;
-    }
-
-    /// Hash of scheme://host[:port] -- never includes userinfo.
-    fn hashOrigin(self: *InMemoryTelemetrySink, parsed: ParsedUrl) ![]const u8 {
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(parsed.scheme);
-        hasher.update(url_scheme_separator);
-        hasher.update(parsed.host);
-        const owned = try std.fmt.allocPrint(self.allocator, "{x}", .{hasher.final()});
-        try self.owned_strings.append(self.allocator, owned);
-        return owned;
-    }
-
-    fn hashText(self: *InMemoryTelemetrySink, value: []const u8) ![]const u8 {
-        const hash = std.hash.Wyhash.hash(0, value);
-        const owned = try std.fmt.allocPrint(self.allocator, "{x}", .{hash});
         try self.owned_strings.append(self.allocator, owned);
         return owned;
     }
