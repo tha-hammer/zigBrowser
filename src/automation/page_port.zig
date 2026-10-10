@@ -149,6 +149,12 @@ pub const PagePort = struct {
         return self.vtable.nativeClick != &unsupportedClick and self.vtable.nativeClick != &noPageClick;
     }
 
+    /// False when the backend has no pointer motion (v3.2 nativeMove left
+    /// at its Unsupported default).
+    pub fn supportsNativeMove(self: PagePort) bool {
+        return self.supportsNativeInput() and self.vtable.nativeMove != &unsupportedMove;
+    }
+
     pub fn nativeClick(self: PagePort, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
         return self.vtable.nativeClick(self.ptr, x, y, document, timeout_ms);
     }

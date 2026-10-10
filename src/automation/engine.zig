@@ -236,9 +236,11 @@ pub const Engine = struct {
     clock: Clock,
     next_command_id: std.atomic.Value(u64) = .init(1),
     /// N8 humanize randomness. Null in production: each humanized command
-    /// gets a ChaCha CSPRNG seeded from OS entropy. Tests inject a seeded
-    /// generator here for deterministic schedules.
+    /// gets its own ChaCha CSPRNG seeded from OS entropy. Tests inject a
+    /// seeded generator here; it only supplies each command's seed (under
+    /// `random_lock`), so concurrent page queues never share PRNG state.
     random: ?std.Random = null,
+    random_lock: std.atomic.Mutex = .unlocked,
 
     pub fn init(port: page_port.PagePort, clock: Clock) Engine {
         return .{ .port = port, .clock = clock };
@@ -512,6 +514,10 @@ pub const Engine = struct {
         };
         // A backend without native input says so before any page work.
         if (!self.port.supportsNativeInput()) return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
+        // A humanized click moves the pointer: without nativeMove, say so now.
+        if (command.humanize and command.verb == .dom_click and !self.port.supportsNativeMove()) {
+            return automationFailure(gpa, .session_invalid, "unsupported", run.ids);
+        }
         var csprng: std.Random.DefaultCsprng = undefined;
         const random: ?std.Random = if (command.humanize) (self.humanizeRandom(&csprng) orelse
             return .{ .failure = .{ .code = internal_error_code, .message = "No entropy for humanize" } }) else null;
@@ -622,7 +628,9 @@ pub const Engine = struct {
         var first = true;
         var index: usize = 0;
         while (characters.nextCodepointSlice()) |character| : (index += 1) {
-            if (!first) {
+            // delay_ms pauses between characters; humanize delays come
+            // before every character, the first included.
+            if (!first or delays != null) {
                 const delay_ms = if (delays) |d| d[index] else command.delay_ms.?;
                 if (self.clock.nowMs() +| delay_ms >= deadline) {
                     return .{ .done = try partialInput(gpa, .action_timeout, "type_delay_exceeds_timeout", sent_total, run) };
@@ -642,10 +650,18 @@ pub const Engine = struct {
     // command fails with action_timeout reason "humanize_budget" and sends
     // nothing. Delays are never compressed.
 
+    /// A per-command CSPRNG. Production seeds it from OS entropy (Zig
+    /// 0.16 has no std.crypto.random; std.Io randomSecure is the OS-entropy
+    /// source). An injected test RNG only provides the seed.
     fn humanizeRandom(self: *Engine, csprng: *std.Random.DefaultCsprng) ?std.Random {
-        if (self.random) |r| return r;
         var seed: [std.Random.DefaultCsprng.secret_seed_length]u8 = undefined;
-        std.Io.Threaded.global_single_threaded.io().randomSecure(&seed) catch return null;
+        if (self.random) |injected| {
+            while (!self.random_lock.tryLock()) std.atomic.spinLoopHint();
+            defer self.random_lock.unlock();
+            injected.bytes(&seed);
+        } else {
+            std.Io.Threaded.global_single_threaded.io().randomSecure(&seed) catch return null;
+        }
         csprng.* = .init(seed);
         return csprng.random();
     }
@@ -656,7 +672,10 @@ pub const Engine = struct {
     /// terminal (no re-locate, no click in the new document).
     fn humanClick(self: *Engine, gpa: std.mem.Allocator, random: std.Random, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
         const goal = page_port.Point{ .x = target.x, .y = target.y };
-        const start = self.port.pointer() orelse (offTargetStart(random, target) orelse return .{ .done = malformedResult() });
+        // Never start on the target: a cached pointer already there (e.g.
+        // a repeated click) gets an off-target start like an unknown one.
+        const cached = self.port.pointer();
+        const start = if (cached != null and distance(cached.?, goal) >= 1) cached.? else (offTargetStart(random, target) orelse return .{ .done = malformedResult() });
         const path = bezier.generateMousePath(gpa, random, .{ .x = start.x, .y = start.y }, .{ .x = goal.x, .y = goal.y }, .default()) catch return error.OutOfMemory;
         defer gpa.free(path.points);
         const gaps = path.points.len - 1;
@@ -701,8 +720,10 @@ pub const Engine = struct {
         const text = command.text.?;
         const delays = (try humanTypingDelays(gpa, random, text)) orelse return .{ .done = malformedResult() };
         defer gpa.free(delays);
+        // Exactly the sequence dispatch consumes: one delay before every
+        // code point, the first included.
         var planned: u64 = 0;
-        for (delays[@min(1, delays.len)..]) |ms| planned +|= ms;
+        for (delays) |ms| planned +|= ms;
         if (self.clock.nowMs() +| planned >= deadline) {
             return .{ .done = try timeoutWithReason(gpa, .action_timeout, "humanize_budget", run.ids, run.attempts) };
         }
@@ -1178,9 +1199,14 @@ fn offTargetStart(random: std.Random, target: *const Target) ?page_port.Point {
         };
         if (distance(point, .{ .x = target.x, .y = target.y }) >= 1) return point;
     }
-    // Pathological clamping: the farthest viewport corner.
-    const corner = page_port.Point{ .x = if (target.x * 2 < max_x) max_x else 0, .y = if (target.y * 2 < max_y) max_y else 0 };
-    return if (distance(corner, .{ .x = target.x, .y = target.y }) >= 1) corner else null;
+    // Clamping kept landing on the target (it sits in a corner of a tiny
+    // viewport): a random in-view point that is not the target.
+    attempt = 0;
+    while (attempt < 64) : (attempt += 1) {
+        const point = page_port.Point{ .x = random.float(f64) * max_x, .y = random.float(f64) * max_y };
+        if (distance(point, .{ .x = target.x, .y = target.y }) >= 1) return point;
+    }
+    return null;
 }
 
 fn distance(a: page_port.Point, b: page_port.Point) f64 {

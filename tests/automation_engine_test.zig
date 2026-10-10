@@ -1179,6 +1179,8 @@ test "humanized type: one code point per call, gaps within the typing profile (8
     try expectResult(outcome, "{\"ok\":true}");
     const calls = h.fake.native_calls.items;
     try std.testing.expectEqual(try std.unicode.utf8CountCodepoints(text), calls.len);
+    // The first character gets its delay too (the clock was 0 after locate).
+    try std.testing.expect(calls[0].at_ms >= 80 and calls[0].at_ms <= 200);
     var typed: [32]u8 = undefined;
     try std.testing.expectEqualStrings(text, h.fake.nativeTyped(&typed));
     for (calls[1..], 1..) |c, i| {
@@ -1242,4 +1244,81 @@ test "production humanize (no injected RNG) seeds from OS entropy and runs" {
     var outcome = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
     defer outcome.deinit(gpa);
     try expectResult(outcome, "{\"ok\":true}");
+}
+
+test "a one-character humanized type still waits its 80-200 ms key delay" {
+    var hh: HumanHarness = undefined;
+    hh.init(23);
+    defer hh.deinit();
+    var outcome = try hh.h.run("dom.type", "{\"selector\":\"css=#q\",\"text\":\"é\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectResult(outcome, "{\"ok\":true}");
+    const at = hh.h.fake.native_calls.items[0].at_ms;
+    try std.testing.expect(at >= 80 and at <= 200);
+}
+
+test "a repeated humanized click on the same target never starts on the target (cached pointer is there)" {
+    var hh: HumanHarness = undefined;
+    hh.init(29);
+    defer hh.deinit();
+    const h = &hh.h;
+    var first = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer first.deinit(gpa);
+    try std.testing.expectEqual(@as(f64, 500), h.fake.pointer_pos.?.x);
+    const before = h.fake.native_calls.items.len;
+    var second = try h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer second.deinit(gpa);
+    try expectResult(second, "{\"ok\":true}");
+    const start = h.fake.native_calls.items[before];
+    try std.testing.expect(start.kind == .move);
+    const d = dist(start, 500, 400);
+    try std.testing.expect(d >= 80 - 1e-9 and d <= 240 + 1e-9);
+}
+
+test "unknown-pointer start is in view and never the target, also for targets in viewport corners and a tiny viewport" {
+    const cases = [_][]const u8{
+        "{\"ok\":true,\"value\":{\"x\":0,\"y\":0,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":1000,\"height\":800}}}",
+        "{\"ok\":true,\"value\":{\"x\":999,\"y\":0,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":1000,\"height\":800}}}",
+        "{\"ok\":true,\"value\":{\"x\":0,\"y\":799,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":1000,\"height\":800}}}",
+        "{\"ok\":true,\"value\":{\"x\":999,\"y\":799,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":1000,\"height\":800}}}",
+        "{\"ok\":true,\"value\":{\"x\":0,\"y\":0,\"document\":\"0123456789abcdef\",\"viewport\":{\"width\":3,\"height\":3}}}",
+    };
+    const targets = [_][2]f64{ .{ 0, 0 }, .{ 999, 0 }, .{ 0, 799 }, .{ 999, 799 }, .{ 0, 0 } };
+    const limits = [_][2]f64{ .{ 999, 799 }, .{ 999, 799 }, .{ 999, 799 }, .{ 999, 799 }, .{ 2, 2 } };
+    for (cases, targets, limits) |reply, t, lim| {
+        for (0..20) |seed| {
+            var hh: HumanHarness = undefined;
+            hh.init(seed);
+            defer hh.deinit();
+            hh.h.fake.eval_replies = &.{.{ .json = reply }};
+            var outcome = try hh.h.run("dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+            defer outcome.deinit(gpa);
+            try expectResult(outcome, "{\"ok\":true}");
+            const start = hh.h.fake.native_calls.items[0];
+            try std.testing.expect(start.x >= 0 and start.x <= lim[0] and start.y >= 0 and start.y <= lim[1]);
+            try std.testing.expect(dist(start, t[0], t[1]) >= 1);
+        }
+    }
+}
+
+test "humanized click on a backend without nativeMove: -32011 unsupported at once, no page work" {
+    var fake = FakePagePort.init(gpa);
+    defer fake.deinit();
+    var clock = FakeClock.init(gpa);
+    defer clock.deinit();
+    var e = engine.Engine.init(fake.portWithoutMove(), clock.clock());
+    fake.eval_replies = &.{.{ .json = human_located }};
+    var command = try router.parse(gpa, "dom.click", "{\"selector\":\"css=#b\",\"options\":{\"input\":\"native\",\"humanize\":true}}", .{});
+    defer command.deinit();
+    var outcome = try e.execute(gpa, &command);
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32011, "session_invalid", "\"reason\":\"unsupported\"");
+    try std.testing.expectEqual(@as(usize, 0), fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 0), fake.native_calls.items.len);
+    // Humanized type/press need no motion and still run.
+    var typed = try router.parse(gpa, "dom.press", "{\"key\":\"a\",\"options\":{\"input\":\"native\",\"humanize\":true}}", .{});
+    defer typed.deinit();
+    var pressed = try e.execute(gpa, &typed);
+    defer pressed.deinit(gpa);
+    try expectResult(pressed, "{\"ok\":true}");
 }

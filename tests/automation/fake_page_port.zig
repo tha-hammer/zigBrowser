@@ -117,6 +117,22 @@ pub const FakePagePort = struct {
         .pointer = pointer,
     };
 
+    /// A port with native click/key/text but no pointer motion (v3.1).
+    pub fn portWithoutMove(self: *FakePagePort) page_port.PagePort {
+        return .{ .ptr = self, .vtable = &v31_vtable };
+    }
+
+    const v31_vtable = page_port.PagePort.VTable{
+        .evalJson = evalJson,
+        .navigate = navigate,
+        .reload = reload,
+        .url = url,
+        .title = title,
+        .nativeClick = nativeClick,
+        .nativeKey = nativeKey,
+        .nativeText = nativeText,
+    };
+
     /// A port with the v2 vtable only (no native input), like a non-GTK
     /// backend.
     pub fn portWithoutNative(self: *FakePagePort) page_port.PagePort {
