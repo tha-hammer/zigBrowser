@@ -58,6 +58,10 @@ pub const AutomationApiServer = struct {
     connections: std.ArrayListUnmanaged(*Connection) = .empty,
     /// Serializes commands per page (M8) and cancels them on stop().
     queue: queue_mod.PageCommandQueue,
+    /// Recent redacted spans for telemetry.query (always on, bounded).
+    recent_traces: automation.telemetry.RecentTraceStore,
+    /// Fans spans out to recent_traces and the configured sink.
+    tee: TeeSink = undefined,
     /// social.* state: RateLimiter + pause window (N6).
     social: social_routes.SocialState = undefined,
 
@@ -76,6 +80,7 @@ pub const AutomationApiServer = struct {
             .io = io,
             .clock = .{ .io = io },
             .queue = queue_mod.PageCommandQueue.init(allocator, io),
+            .recent_traces = automation.telemetry.RecentTraceStore.init(allocator, recent_trace_capacity),
             .config = .{
                 .enabled = config.enabled,
                 .socket_path = socket_path,
@@ -93,6 +98,7 @@ pub const AutomationApiServer = struct {
         self.stop();
         self.connections.deinit(self.allocator);
         self.queue.deinit();
+        self.recent_traces.deinit();
         self.allocator.free(self.config.socket_path);
         self.allocator.free(self.config.token);
         self.allocator.free(self.config.token_file_path);
@@ -109,6 +115,7 @@ pub const AutomationApiServer = struct {
         // command answers session_invalid through the engine (ids + span).
         self.engine = engine_mod.Engine.init(self.config.page_port orelse page_port.no_page, self.clock.clock());
         self.social = social_routes.SocialState.init(wallClockMs, self.clock.clock());
+        self.tee = .{ .recent = self.recent_traces.sink(), .configured = self.config.telemetry_sink };
         // A previous stop() shut the queue down for good; give a restarted
         // server a fresh one (every ticket was released when stop() joined
         // the connections).
@@ -285,10 +292,63 @@ pub const AutomationApiServer = struct {
 
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
-        route.telemetry_sink = self.config.telemetry_sink;
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping });
+        route.telemetry_sink = self.tee.sink();
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping }, &self.recent_traces);
     }
 };
+
+const recent_trace_capacity = 128;
+
+/// Sends every span to the recent-trace store and to the configured sink.
+const TeeSink = struct {
+    recent: automation.telemetry.TelemetrySink,
+    configured: ?automation.telemetry.TelemetrySink,
+
+    fn sink(self: *TeeSink) automation.telemetry.TelemetrySink {
+        return .{ .ptr = self, .vtable = &.{ .recordCommandSpan = recordCommand, .recordChildSpan = recordChild } };
+    }
+
+    fn recordCommand(ptr: *anyopaque, attrs: automation.telemetry.CommandSpanAttrs) anyerror!void {
+        const self: *TeeSink = @ptrCast(@alignCast(ptr));
+        self.recent.recordCommandSpan(attrs) catch {};
+        if (self.configured) |configured| try configured.recordCommandSpan(attrs);
+    }
+
+    fn recordChild(ptr: *anyopaque, span: automation.telemetry.ChildSpan) anyerror!void {
+        const self: *TeeSink = @ptrCast(@alignCast(ptr));
+        self.recent.recordChildSpan(span) catch {};
+        if (self.configured) |configured| try configured.recordChildSpan(span);
+    }
+};
+
+const max_trace_id_len = 128;
+
+/// telemetry.query {trace_id} -> {spans:[...]} (redacted spans of a recent
+/// command; empty when unknown or evicted). Runs after the envelope/auth
+/// checks like every other method; records no span itself.
+fn telemetryQuery(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    params_json: []const u8,
+    store: *automation.telemetry.RecentTraceStore,
+) error{OutOfMemory}![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer parsed.deinit();
+    const params = parsed.value.object;
+    if (params.count() != 1) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+    const trace_id = switch (params.get("trace_id") orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null)) {
+        .string => |text| text,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    if (trace_id.len == 0 or trace_id.len > max_trace_id_len) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+
+    const spans_json = try store.queryJson(allocator, trace_id);
+    defer allocator.free(spans_json);
+    return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}", .{ spans_json, id_json });
+}
 
 fn handleRequestWith(
     allocator: std.mem.Allocator,
@@ -300,6 +360,7 @@ fn handleRequestWith(
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
     cookies: CookieContext,
+    recent_traces: *automation.telemetry.RecentTraceStore,
 ) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -339,6 +400,9 @@ fn handleRequestWith(
     };
     defer allocator.free(params_json);
 
+    if (std.mem.eql(u8, method, "telemetry.query")) {
+        return telemetryQuery(allocator, id_json, params_json, recent_traces);
+    }
     if (cookie_routes.verbFromMethod(method)) |verb| {
         return handleCookies(allocator, id_json, method, verb, params_json, engine, cookies, route, build_info);
     }

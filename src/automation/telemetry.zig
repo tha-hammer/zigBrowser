@@ -440,3 +440,156 @@ fn parseUrl(url: []const u8) ParsedUrl {
         .path = url[path_start .. path_start + query_start_rel],
     };
 }
+
+/// Bounded store of the most recent traces, serving `telemetry.query`.
+/// Keeps at most `capacity` traces (oldest evicted first) and
+/// `max_spans_per_trace` spans per trace. It only ever receives spans that
+/// already crossed the TelemetrySink boundary, i.e. redacted ones.
+pub const RecentTraceStore = struct {
+    pub const max_spans_per_trace = 64;
+
+    allocator: std.mem.Allocator,
+    capacity: usize,
+    lock: std.atomic.Mutex = .unlocked,
+    /// Oldest first.
+    traces: std.ArrayListUnmanaged(Trace) = .empty,
+
+    const Trace = struct {
+        trace_id: []u8,
+        /// Serialized spans; the root (automation.command) is kept first.
+        spans: std.ArrayListUnmanaged([]u8) = .empty,
+        has_root: bool = false,
+
+        fn deinit(self: *Trace, allocator: std.mem.Allocator) void {
+            for (self.spans.items) |span| allocator.free(span);
+            self.spans.deinit(allocator);
+            allocator.free(self.trace_id);
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) RecentTraceStore {
+        return .{ .allocator = allocator, .capacity = @max(capacity, 1) };
+    }
+
+    pub fn deinit(self: *RecentTraceStore) void {
+        for (self.traces.items) |*trace| trace.deinit(self.allocator);
+        self.traces.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn sink(self: *RecentTraceStore) TelemetrySink {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable = TelemetrySink.VTable{ .recordCommandSpan = recordCommand, .recordChildSpan = recordChild };
+
+    fn acquire(self: *RecentTraceStore) void {
+        while (!self.lock.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    fn recordCommand(ptr: *anyopaque, attrs: CommandSpanAttrs) anyerror!void {
+        const self: *RecentTraceStore = @ptrCast(@alignCast(ptr));
+        // Reuse the in-memory sink's attribute assembly so both agree.
+        var scratch = InMemoryTelemetrySink.init(self.allocator);
+        defer scratch.deinit();
+        try scratch.recordCommandSpan(attrs);
+        const span = scratch.spanAt(0);
+        const json = try spanJson(self.allocator, span.name, span.trace_id, span.span_id, null, span.command_id, span.attributes.entries.items);
+        errdefer self.allocator.free(json);
+        try self.add(attrs.trace_id, json, true);
+    }
+
+    fn recordChild(ptr: *anyopaque, child: ChildSpan) anyerror!void {
+        const self: *RecentTraceStore = @ptrCast(@alignCast(ptr));
+        const json = try spanJson(self.allocator, child.name, child.trace_id, child.span_id orelse "", child.parent_span_id, child.command_id, child.attributes);
+        errdefer self.allocator.free(json);
+        try self.add(child.trace_id, json, false);
+    }
+
+    fn add(self: *RecentTraceStore, trace_id: []const u8, json: []u8, is_root: bool) !void {
+        self.acquire();
+        defer self.lock.unlock();
+        const trace = try self.traceFor(trace_id);
+        if (trace.spans.items.len >= max_spans_per_trace) {
+            self.allocator.free(json);
+            return;
+        }
+        if (is_root and !trace.has_root) {
+            try trace.spans.insert(self.allocator, 0, json);
+            trace.has_root = true;
+        } else {
+            try trace.spans.append(self.allocator, json);
+        }
+    }
+
+    fn traceFor(self: *RecentTraceStore, trace_id: []const u8) !*Trace {
+        for (self.traces.items) |*trace| {
+            if (std.mem.eql(u8, trace.trace_id, trace_id)) return trace;
+        }
+        if (self.traces.items.len >= self.capacity) {
+            var oldest = self.traces.orderedRemove(0);
+            oldest.deinit(self.allocator);
+        }
+        const owned_id = try self.allocator.dupe(u8, trace_id);
+        errdefer self.allocator.free(owned_id);
+        try self.traces.append(self.allocator, .{ .trace_id = owned_id });
+        return &self.traces.items[self.traces.items.len - 1];
+    }
+
+    /// `{"spans":[...]}` for `trace_id` (empty array when unknown/evicted).
+    pub fn queryJson(self: *RecentTraceStore, gpa: std.mem.Allocator, trace_id: []const u8) ![]u8 {
+        self.acquire();
+        defer self.lock.unlock();
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try out.appendSlice(gpa, "{\"spans\":[");
+        for (self.traces.items) |trace| {
+            if (!std.mem.eql(u8, trace.trace_id, trace_id)) continue;
+            for (trace.spans.items, 0..) |span, i| {
+                if (i > 0) try out.append(gpa, ',');
+                try out.appendSlice(gpa, span);
+            }
+        }
+        try out.appendSlice(gpa, "]}");
+        return out.toOwnedSlice(gpa);
+    }
+};
+
+/// One span in the telemetry.query / CLI `trace` shape:
+/// {name, trace_id, span_id, parent_span_id, command_id, duration_ms,
+///  attributes:{...}}.
+fn spanJson(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    trace_id: []const u8,
+    span_id: []const u8,
+    parent_span_id: ?[]const u8,
+    command_id: []const u8,
+    entries: []const AttrMap.Entry,
+) ![]u8 {
+    var attributes: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    defer attributes.deinit(allocator);
+    var duration_ms: u64 = 0;
+    for (entries) |entry| {
+        try attributes.put(allocator, entry.key, entry.value);
+        if (std.mem.eql(u8, entry.key, "duration_ms")) duration_ms = std.fmt.parseInt(u64, entry.value, 10) catch 0;
+    }
+    const Shape = struct {
+        name: []const u8,
+        trace_id: []const u8,
+        span_id: []const u8,
+        parent_span_id: ?[]const u8,
+        command_id: []const u8,
+        duration_ms: u64,
+        attributes: std.json.ArrayHashMap([]const u8),
+    };
+    return std.json.Stringify.valueAlloc(allocator, Shape{
+        .name = name,
+        .trace_id = trace_id,
+        .span_id = span_id,
+        .parent_span_id = parent_span_id,
+        .command_id = command_id,
+        .duration_ms = duration_ms,
+        .attributes = .{ .map = attributes },
+    }, .{});
+}

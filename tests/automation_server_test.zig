@@ -787,6 +787,59 @@ test "AutomationApiServer.init frees everything when an allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, Init.run, .{});
 }
 
+test "telemetry.query returns the redacted span tree of a recent command" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("tquery", .{
+        .sink = &sink,
+        .eval_reply = "{\"ok\":false,\"error\":\"element_disabled\",\"retryable\":false,\"data\":{\"reason\":\"enabled\"}}",
+    });
+    defer fixture.deinit();
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    const click = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.fill\",\"params\":{\"selector\":\"css=#secret-field\",\"value\":\"hunter2\"},\"id\":1}");
+    defer testing.allocator.free(click);
+    const click_doc = try std.json.parseFromSlice(std.json.Value, testing.allocator, click, .{});
+    defer click_doc.deinit();
+    const trace_id = click_doc.value.object.get("error").?.object.get("data").?.object.get("trace_id").?.string;
+
+    const request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"telemetry.query\",\"params\":{{\"trace_id\":\"{s}\"}},\"id\":2}}", .{trace_id});
+    defer testing.allocator.free(request);
+    const response = try roundTrip(stream, request);
+    defer testing.allocator.free(response);
+    const doc = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+    defer doc.deinit();
+    const spans = doc.value.object.get("result").?.object.get("spans").?.array.items;
+    try testing.expect(spans.len >= 2);
+    try testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
+    const attrs = spans[0].object.get("attributes").?.object;
+    try testing.expectEqualStrings("dom.fill", attrs.get("rpc.method").?.string);
+    try testing.expectEqualStrings("element_disabled", attrs.get("automation.error").?.string);
+    try testing.expect(std.mem.indexOf(u8, response, "hunter2") == null);
+    try testing.expect(std.mem.indexOf(u8, response, "#secret-field") == null);
+
+    // The configured sink still receives everything (tee).
+    var roots: usize = 0;
+    for (sink.spans.items) |span| {
+        if (std.mem.eql(u8, span.name, "automation.command")) roots += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), roots);
+
+    const unknown = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"telemetry.query\",\"params\":{\"trace_id\":\"nope\"},\"id\":3}");
+    defer testing.allocator.free(unknown);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"spans\":[]},\"id\":3}", unknown);
+
+    for ([_][]const u8{ "{}", "{\"trace_id\":1}", "{\"trace_id\":\"\"}", "{\"trace_id\":\"a\",\"x\":1}" }) |params| {
+        const bad_request = try std.fmt.allocPrint(testing.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"telemetry.query\",\"params\":{s},\"id\":4}}", .{params});
+        defer testing.allocator.free(bad_request);
+        const bad = try roundTrip(stream, bad_request);
+        defer testing.allocator.free(bad);
+        try testing.expect(std.mem.indexOf(u8, bad, "\"code\":-32602") != null);
+    }
+}
+
 const FixtureOptions = struct {
     with_port: bool = true,
     eval_reply: []const u8 = "{\"ok\":true,\"value\":null}",

@@ -438,3 +438,77 @@ test "nothing raw crosses the TelemetrySink boundary (spy sink)" {
     try std.testing.expect(std.mem.indexOf(u8, spy.seen.items, "\"target_host\":\"example.com\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, spy.seen.items, "\"typed_class\":\"secret-like\"") != null);
 }
+
+// ---- RecentTraceStore (telemetry.query backing store) ----
+
+fn rootAttrs(trace_id: []const u8, span_id: []const u8) telemetry.CommandSpanAttrs {
+    return .{
+        .trace_id = trace_id,
+        .span_id = span_id,
+        .command_id = "cmd-1",
+        .method = "dom.click",
+        .namespace = "dom",
+        .page_id = "page-1",
+        .window_id = "window-1",
+        .timeout_ms = 30000,
+        .queue_wait_ms = 0,
+        .duration_ms = 42,
+        .retry_count = 0,
+        .result_status = "error",
+        .automation_error = "element_disabled",
+    };
+}
+
+test "RecentTraceStore returns a trace's spans, root first, in the CLI shape" {
+    var store = telemetry.RecentTraceStore.init(gpa, 4);
+    defer store.deinit();
+    const sink = store.sink();
+    try sink.recordChildSpan(.{ .name = "automation.platform.eval", .trace_id = "t1", .span_id = "c1", .parent_span_id = "r1", .command_id = "cmd-1", .attributes = &.{.{ .key = "duration_ms", .value = "7" }} });
+    try sink.recordCommandSpan(rootAttrs("t1", "r1"));
+
+    const json = (try store.queryJson(gpa, "t1"));
+    defer gpa.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    const spans = parsed.value.object.get("spans").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), spans.len);
+    try std.testing.expectEqualStrings("automation.command", spans[0].object.get("name").?.string);
+    try std.testing.expectEqual(@as(i64, 42), spans[0].object.get("duration_ms").?.integer);
+    try std.testing.expectEqualStrings("dom.click", spans[0].object.get("attributes").?.object.get("rpc.method").?.string);
+    try std.testing.expectEqualStrings("element_disabled", spans[0].object.get("attributes").?.object.get("automation.error").?.string);
+    try std.testing.expectEqualStrings("automation.platform.eval", spans[1].object.get("name").?.string);
+    try std.testing.expectEqualStrings("r1", spans[1].object.get("parent_span_id").?.string);
+    try std.testing.expectEqual(@as(i64, 7), spans[1].object.get("duration_ms").?.integer);
+}
+
+test "RecentTraceStore: unknown trace is empty; oldest traces are evicted at capacity" {
+    var store = telemetry.RecentTraceStore.init(gpa, 2);
+    defer store.deinit();
+    const sink = store.sink();
+    try sink.recordCommandSpan(rootAttrs("a", "ra"));
+    try sink.recordCommandSpan(rootAttrs("b", "rb"));
+    try sink.recordCommandSpan(rootAttrs("c", "rc"));
+
+    for ([_][]const u8{ "a", "zzz" }) |missing| {
+        const json = try store.queryJson(gpa, missing);
+        defer gpa.free(json);
+        try std.testing.expectEqualStrings("{\"spans\":[]}", json);
+    }
+    const kept = try store.queryJson(gpa, "c");
+    defer gpa.free(kept);
+    try std.testing.expect(std.mem.indexOf(u8, kept, "\"trace_id\":\"c\"") != null);
+}
+
+test "RecentTraceStore caps spans per trace" {
+    var store = telemetry.RecentTraceStore.init(gpa, 2);
+    defer store.deinit();
+    const sink = store.sink();
+    for (0..telemetry.RecentTraceStore.max_spans_per_trace + 10) |_| {
+        try sink.recordChildSpan(.{ .name = "automation.platform.eval", .trace_id = "t", .parent_span_id = "r", .command_id = "c", .attributes = &.{} });
+    }
+    const json = try store.queryJson(gpa, "t");
+    defer gpa.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(telemetry.RecentTraceStore.max_spans_per_trace, parsed.value.object.get("spans").?.array.items.len);
+}
