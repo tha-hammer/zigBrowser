@@ -25,7 +25,7 @@
   // `doc` identifies this document: input that navigates lands in a new
   // document whose counters start again at zero, which callers must treat as
   // delivered rather than wait for counts that will never come.
-  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0 };
+  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0 };
   function randomDocumentId() {
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
@@ -33,6 +33,12 @@
   }
   globalScope.addEventListener('mouseup', (event) => { if (event.isTrusted) inputAck.mouseup += 1; }, true);
   globalScope.addEventListener('keyup', (event) => { if (event.isTrusted) inputAck.keyup += 1; }, true);
+  // A click is complete once its whole dispatch (every listener and the
+  // default action) has run: count it in a task queued from the capture
+  // phase, which runs after the dispatch returns.
+  globalScope.addEventListener('click', (event) => {
+    if (event.isTrusted) globalScope.setTimeout(() => { inputAck.click += 1; }, 0);
+  }, true);
 
   let nextElementId = 1;
   let nextSpanId = 1;
@@ -152,11 +158,16 @@
       const check = runActionabilityChecks(element, action);
       telemetry.push(actionabilitySpan(command, action, check));
       if (!check.passed) return actionFailure(check.error, check.check, telemetry);
+    } else {
+      telemetry.push(actionabilitySpan(command, action, {
+        check: 'force', passed: true, error: null, bbox: element.getBoundingClientRect()
+      }));
     }
 
     if (command.focus === true) focusForInput(element, action);
     const rect = element.getBoundingClientRect();
-    return success({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, telemetry);
+    // `document` binds the native dispatch to this document (PagePort v3.1).
+    return success({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, document: inputAck.doc }, telemetry);
   }
 
   // Focus as the synthetic action would leave it: for typing, the caret goes
@@ -960,8 +971,9 @@
       version: 'phase1-m4-actionability',
       handle,
       inputAck() {
-        return { doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup };
+        return { doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click };
       },
+      documentToken: inputAck.doc,
       debugOutstandingWaits() {
         return outstandingWaits;
       }

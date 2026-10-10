@@ -61,8 +61,8 @@ const TestLoop = struct {
     }
 };
 
-fn wallMs() i64 {
-    return @divTrunc(gfile.g_get_real_time(), std.time.us_per_ms);
+fn wallUs() i64 {
+    return gfile.g_get_real_time();
 }
 
 fn monotonicMs() i64 {
@@ -323,9 +323,10 @@ const fixture_a =
     \\  document.getElementById('nb').addEventListener(t, function (e) { nativeLog.push(t + ':' + e.isTrusted); }); });
     \\document.getElementById('ni').addEventListener('keydown', function (e) {
     \\  nativeLog.push('keydown:' + e.key + ':' + e.isTrusted + ':' + e.shiftKey); });
-    \\window.lastTrustedMouseUp = 0; window.lastTrustedKeyUp = 0;
-    \\document.addEventListener('mouseup', function (e) { if (e.isTrusted) window.lastTrustedMouseUp = Date.now(); }, true);
-    \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = Date.now(); }, true);</script>
+    \\window.lastTrustedClick = 0; window.lastTrustedKeyUp = 0;
+    \\function nowUs() { return Math.round((performance.timeOrigin + performance.now()) * 1000); }
+    \\document.addEventListener('click', function (e) { if (e.isTrusted) window.lastTrustedClick = nowUs(); });
+    \\document.addEventListener('keyup', function (e) { if (e.isTrusted) window.lastTrustedKeyUp = nowUs(); });</script>
     \\<a id="navlink" href="b.html" style="position:fixed;left:20px;top:240px;width:120px;height:30px;display:block">to B</a>
     \\<form action="b.html"><input id="navq" name="q" style="position:fixed;left:20px;top:290px;width:200px;height:30px"></form>
     \\<script>window.pageMarker = 7; setTimeout(function () {
@@ -841,10 +842,10 @@ const LiveDriver = struct {
         // stamps the wall clock the instant the port call returns. A port that
         // returned before the page handled the input would have a later (or
         // zero) page stamp. Follow-up evals cannot mask an early return.
-        _ = self.eval(null, "window.lastTrustedMouseUp = 0; window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
+        _ = self.eval(null, "window.lastTrustedClick = 0; window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         gtk_port.nativeClick(port.ptr, want[0], want[1], 5000) catch return self.check(false, "port nativeClick on the button succeeds");
-        const click_returned = wallMs();
-        self.check(self.pageStampAtOrBefore("lastTrustedMouseUp", click_returned), "port nativeClick returned only after the page handled the trusted mouseup");
+        const click_returned = wallUs();
+        self.check(self.pageStampBefore("lastTrustedClick", click_returned), "port nativeClick returned only after the page's click handlers ran");
         self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "port nativeClick delivered a trusted click");
 
         const input = self.center("ni") orelse return self.check(false, "input center");
@@ -852,15 +853,15 @@ const LiveDriver = struct {
         _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         var sent: usize = 0;
         gtk_port.nativeText(port.ptr, "ok", 5000, &sent) catch return self.check(false, "port nativeText succeeds");
-        const text_returned = wallMs();
+        const text_returned = wallUs();
         self.check(sent == 2, "port nativeText reports 2 chars sent");
-        self.check(self.pageStampAtOrBefore("lastTrustedKeyUp", text_returned), "port nativeText returned only after the page handled its keyups");
+        self.check(self.pageStampBefore("lastTrustedKeyUp", text_returned), "port nativeText returned only after the page handled its keyups");
         const value = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(value.out, "ok"), "port nativeText typed the text");
         _ = self.eval(null, "window.lastTrustedKeyUp = 0; return 0;", null, null, 5000);
         gtk_port.nativeKey(port.ptr, "a", 1, 5000) catch return self.check(false, "port nativeKey succeeds");
-        const key_returned = wallMs();
-        self.check(self.pageStampAtOrBefore("lastTrustedKeyUp", key_returned), "port nativeKey returned only after the page handled its keyups");
+        const key_returned = wallUs();
+        self.check(self.pageStampBefore("lastTrustedKeyUp", key_returned), "port nativeKey returned only after the page handled its keyups");
         const shifted = self.eval(null, "return document.getElementById('ni').value;", null, null, 5000);
         self.check(eq(shifted.out, "okA"), "port nativeKey(Shift+a) typed A");
 
@@ -930,11 +931,14 @@ const LiveDriver = struct {
 
     var nav_rc_dummy: c_int = 0;
 
-    fn pageStampAtOrBefore(self: *LiveDriver, comptime name: []const u8, returned_ms: i64) bool {
+    /// Page stamps are microseconds (performance.timeOrigin + now()); the
+    /// host stamp is taken right after the port call returned. Strictly
+    /// earlier: an equal coarse stamp could hide an early return.
+    fn pageStampBefore(self: *LiveDriver, comptime name: []const u8, returned_us: i64) bool {
         const r = self.eval(null, "return String(window." ++ name ++ ");", null, null, 5000);
         const out = r.out orelse return false;
         const stamp = std.fmt.parseInt(i64, out, 10) catch return false;
-        return stamp > 0 and stamp <= returned_ms;
+        return stamp > 0 and stamp < returned_us;
     }
 
     // Explicit child windows wait for their own first load, not the primary's.

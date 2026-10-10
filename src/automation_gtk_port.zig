@@ -148,6 +148,7 @@ const Ack = struct {
     doc_len: usize = 0,
     mouseup: i64 = 0,
     keyup: i64 = 0,
+    click: i64 = 0,
 
     fn sameDocument(self: Ack, other: Ack) bool {
         return std.mem.eql(u8, self.doc[0..self.doc_len], other.doc[0..other.doc_len]);
@@ -178,10 +179,10 @@ fn readAck(deadline: i64) PortError!?Ack {
     const out = try evalJson(&port_tag, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     if (std.mem.eql(u8, out, "null")) return null;
-    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64 };
+    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64 = 0 };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
     defer parsed.deinit();
-    var ack: Ack = .{ .mouseup = parsed.value.mouseup, .keyup = parsed.value.keyup };
+    var ack: Ack = .{ .mouseup = parsed.value.mouseup, .keyup = parsed.value.keyup, .click = parsed.value.click };
     ack.doc_len = @min(parsed.value.doc.len, ack.doc.len);
     @memcpy(ack.doc[0..ack.doc_len], parsed.value.doc[0..ack.doc_len]);
     return ack;
@@ -194,13 +195,14 @@ fn readBaseline(deadline: i64) PortError!Ack {
     }
 }
 
-/// Wait until the page acknowledged `mouseups` / `keyups` more trusted
-/// events, or a new document replaced it (the input navigated: delivered).
-fn waitAck(base: Ack, mouseups: i64, keyups: i64, deadline: i64) PortError!void {
+/// Wait until the page acknowledged `clicks` / `keyups` more trusted events
+/// (a click counts once its whole dispatch has run), or a new document
+/// replaced it (the input navigated: delivered).
+fn waitAck(base: Ack, clicks: i64, keyups: i64, deadline: i64) PortError!void {
     while (true) {
         if (try readAck(deadline)) |now| {
             if (!now.sameDocument(base)) return;
-            if (now.mouseup >= base.mouseup + mouseups and now.keyup >= base.keyup + keyups) return;
+            if (now.click >= base.click + clicks and now.keyup >= base.keyup + keyups) return;
         }
         sleepMs(@min(5, try remainingMs(deadline)));
     }
