@@ -314,6 +314,22 @@ def run_native(socket_path: Path, t: float) -> None:
     expect_equal("native click", rpc("dom.click", {"selector": "css=#nativebtn", "options": native}), {"ok": True})
     expect_equal("native click is trusted", trusted("click", "nativebtn"), [True])
 
+    # N8: a humanized click moves the real pointer to the target first. The
+    # page sees trusted mousemoves before the one trusted click, and the
+    # moves end on the button.
+    js("(window.trustLog = [], 0)")
+    expect_equal("humanized native click", rpc("dom.click", {"selector": "css=#nativebtn",
+                 "options": dict(native, humanize=True)}), {"ok": True})
+    log = js("window.trustLog")
+    clicks = [i for i, entry in enumerate(log) if entry.startswith("click:")]
+    moves = [i for i, entry in enumerate(log) if entry.startswith("mousemove:")]
+    expect_equal("humanized click landed once, trusted, on the button", [log[i] for i in clicks], ["click:nativebtn:true"])
+    if not moves or moves[0] > clicks[0]:
+        raise AssertionError(f"humanized click: expected trusted mousemoves before the click, got {log}")
+    if not all(log[i].endswith(":true") for i in moves):
+        raise AssertionError(f"humanized click: untrusted mousemove in {log}")
+    expect_equal("the last move before the click is on the button", log[clicks[0] - 1], "mousemove:nativebtn:true")
+
     # dom.type with real keys: trusted keydowns, text appended at the end.
     js("(function(){var i=document.getElementById('nativein'); i.value='pre'; i.setSelectionRange(0,0); window.trustLog=[]; return 0;})()")
     expect_equal("native type", rpc("dom.type", {"selector": "css=#nativein", "text": "Hi!", "options": native}), {"ok": True})

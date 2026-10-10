@@ -1,4 +1,4 @@
-//! GTK PagePort: implements `page_port.PagePort` (v2) over the blocking
+//! GTK PagePort: implements `page_port.PagePort` (v3.2) over the blocking
 //! `zb_automation_*` C ABI in webkit_shim.c.
 //!
 //! Every call blocks the calling (server) thread while the shim runs the work
@@ -51,6 +51,8 @@ const vtable: PagePort.VTable = .{
     .nativeClick = nativeClick,
     .nativeKey = nativeKey,
     .nativeText = nativeText,
+    .nativeMove = nativeMove,
+    .pointer = pointer,
 };
 
 fn mapCode(rc: c_int) PortError!void {
@@ -341,8 +343,7 @@ fn mapNativeCode(rc: c_int) PortError!void {
     return mapCode(rc);
 }
 
-/// A pointer position in viewport CSS px.
-pub const Point = struct { x: f64, y: f64 };
+const Point = page_port.Point;
 
 /// PagePort v3.2 `pointer`: the last position actually dispatched to the
 /// primary window, or null. The shim keeps it per ZbWindow (written by the
@@ -531,4 +532,11 @@ test "C error codes map onto PortError" {
 test "deadlines beyond 32 bits saturate instead of wrapping" {
     try std.testing.expectEqual(@as(c_uint, 250), clampMs(250));
     try std.testing.expectEqual(@as(c_uint, std.math.maxInt(c_uint)), clampMs(std.math.maxInt(u64)));
+}
+
+test "the GTK vtable implements the v3.2 pointer seam, not the Unsupported defaults" {
+    if (!supported) return error.SkipZigTest;
+    const port = pagePort().?;
+    try std.testing.expect(port.vtable.nativeMove == &nativeMove);
+    try std.testing.expect(port.vtable.pointer == &pointer);
 }

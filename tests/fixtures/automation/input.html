@@ -107,7 +107,7 @@
     <input id="nativein" />
     <script>
       window.trustLog = [];
-      ['click', 'keydown'].forEach(function (type) {
+      ['click', 'keydown', 'mousemove'].forEach(function (type) {
         document.addEventListener(type, function (e) {
           window.trustLog.push(type + ':' + (e.target.id || e.target.tagName) + ':' + e.isTrusted);
         }, true);
