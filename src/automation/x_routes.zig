@@ -6,6 +6,7 @@ const std = @import("std");
 const x = @import("../x.zig");
 const pacing = @import("pacing.zig");
 const engine_mod = @import("engine.zig");
+const script_command = @import("script_command.zig");
 
 pub const Verb = x.Verb;
 
@@ -13,9 +14,10 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
     return x.verbFromMethod(method);
 }
 
-/// One deadline for a whole x.* flow; each step is also bounded by its own
-/// timeout. Checked before every step, so a flow holds the page queue for at
-/// most this plus one step.
+/// One hard deadline for a whole x.* flow. src/x.zig clamps every step's
+/// timeout to what is left (waitFor also leaves room for its 1 s native
+/// grace), and no step starts once it is spent, so a flow holds the page
+/// queue for at most this long (plus the last native call's own rounding).
 pub const flow_budget_ms: u64 = 120_000;
 
 /// X actions (posts and scheduled posts) allowed per UTC day.
@@ -49,9 +51,11 @@ pub const XState = struct {
     }
 };
 
-/// Runner for src/x.zig: one command per call, keeping the last result
-/// (borrowed by the flow until the next call) and the first failure.
-const Runner = struct {
+/// Runner for src/x.zig (see the runner contract there): one command per
+/// call, keeping the last result (borrowed by the flow until the next call)
+/// and the failure of the latest step. Every failure it hands out carries
+/// the x.* command's trace_id/command_id.
+pub const Runner = struct {
     gpa: std.mem.Allocator,
     ext: *engine_mod.External,
     deadline_ms: u64,
@@ -59,25 +63,61 @@ const Runner = struct {
     failure: ?engine_mod.Outcome = null,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
-        if (self.ext.nowMs() >= self.deadline_ms) {
-            const timed_out = try engine_mod.automationFailure(self.gpa, .action_timeout, "x_flow_deadline", self.ext.ids());
-            if (self.failure) |*old| old.deinit(self.gpa);
-            self.failure = timed_out;
+        if (self.remainingMs() == 0) {
+            self.setFailure(try engine_mod.automationFailure(self.gpa, .action_timeout, "x_flow_deadline", self.ext.ids()));
             return null;
         }
         const outcome = try self.ext.runCommand(self.gpa, method, params_json);
         switch (outcome) {
             .result => |json| {
+                // A step that succeeded supersedes any earlier failure.
+                self.clearFailure();
                 self.dropResult();
                 self.last_result = outcome;
                 return json;
             },
             .failure => {
-                if (self.failure) |*old| old.deinit(self.gpa);
-                self.failure = outcome;
+                self.setFailure(outcome);
                 return null;
             },
         }
+    }
+
+    pub fn nowMs(self: *const Runner) u64 {
+        return self.ext.nowMs();
+    }
+
+    pub fn remainingMs(self: *const Runner) u64 {
+        return self.deadline_ms -| self.ext.nowMs();
+    }
+
+    pub fn pause(self: *Runner, ms: u64) bool {
+        if (self.ext.pause(ms)) return true;
+        const cancelled = engine_mod.automationFailure(self.gpa, .cancelled, null, self.ext.ids()) catch {
+            self.clearFailure();
+            return false;
+        };
+        self.setFailure(cancelled);
+        return false;
+    }
+
+    /// The latest step succeeded but its answer was unusable.
+    pub fn malformed(self: *Runner) error{OutOfMemory}!void {
+        self.setFailure(try internalFailure(self.gpa, self.ext.ids()));
+    }
+
+    pub fn notFound(self: *Runner, reason: []const u8) error{OutOfMemory}!void {
+        self.setFailure(try engine_mod.automationFailure(self.gpa, .element_not_found, reason, self.ext.ids()));
+    }
+
+    fn setFailure(self: *Runner, outcome: engine_mod.Outcome) void {
+        self.clearFailure();
+        self.failure = outcome;
+    }
+
+    fn clearFailure(self: *Runner) void {
+        if (self.failure) |*old| old.deinit(self.gpa);
+        self.failure = null;
     }
 
     fn dropResult(self: *Runner) void {
@@ -90,15 +130,25 @@ const Runner = struct {
         if (self.failure) |*f| f.deinit(self.gpa);
     }
 
-    /// Hands the recorded failure to the caller. A flow can also stop on a
-    /// successful step whose answer it could not use (e.g. a query result
-    /// without "elements"); that is an internal error.
-    fn takeFailure(self: *Runner) engine_mod.Outcome {
-        const f = self.failure orelse return .{ .failure = .{ .code = engine_mod.internal_error_code, .message = "Unexpected page answer" } };
+    /// Hands the recorded failure to the caller. src/x.zig records one for
+    /// every null it returns; if a flow ever stops without one, that is an
+    /// internal error (still with ids), never a stale or missing failure.
+    pub fn takeFailure(self: *Runner) error{OutOfMemory}!engine_mod.Outcome {
+        const f = self.failure orelse return internalFailure(self.gpa, self.ext.ids());
         self.failure = null;
         return f;
     }
 };
+
+/// -32603 "Unexpected page answer" with `data.{trace_id, command_id}`.
+fn internalFailure(gpa: std.mem.Allocator, ids: script_command.Ids) error{OutOfMemory}!engine_mod.Outcome {
+    const Data = struct { trace_id: []const u8, command_id: []const u8 };
+    return .{ .failure = .{
+        .code = engine_mod.internal_error_code,
+        .message = "Unexpected page answer",
+        .data_json = try std.json.Stringify.valueAlloc(gpa, Data{ .trace_id = ids.trace_id, .command_id = ids.command_id }, .{}),
+    } };
+}
 
 pub fn handle(
     gpa: std.mem.Allocator,

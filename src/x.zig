@@ -2,9 +2,16 @@
 //! fixed sequence of ordinary automation commands (page.navigate, dom.*),
 //! so it gets the engine's retries, actionability checks and telemetry.
 //!
-//! The runner is duck-typed: `runner.run(method, params_json)` executes one
-//! command and returns its JSON-RPC result, or null when the command failed
-//! (the runner keeps that failure for the caller).
+//! The runner is duck-typed:
+//! - `run(method, params_json)` executes one command and returns its
+//!   JSON-RPC result, or null when the command failed (the runner keeps that
+//!   failure for the caller; a later successful step clears it).
+//! - `nowMs()` and `remainingMs()`: the clock and what is left of the whole
+//!   flow's budget. Every step's timeout is clamped to the budget.
+//! - `pause(ms)`: waits (cancellable); false if the flow was cancelled.
+//! - `malformed()`: records "a step succeeded but its answer was unusable".
+//! - `notFound(reason)`: records element_not_found with `reason`.
+//! Whenever a flow returns null, the runner holds the failure for it.
 const std = @import("std");
 
 /// Every X selector, in one place. X changes its markup often; update here.
@@ -47,17 +54,23 @@ const navigate_timeout_ms = 30_000;
 const composer_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;
+/// Typing up to 280 characters, one event sequence per character.
+const type_timeout_ms = 30_000;
 /// dom.query answers at once (an empty list is a valid answer, never
 /// retried); its timeout only bounds the native page call, so it must be a
 /// real duration, not 0.
 const query_timeout_ms = 5_000;
 /// One trial-click probe of a Post button copy.
 const probe_timeout_ms = 1_000;
-/// Probe rounds over all candidates before giving up (each round waits up
-/// to probe_timeout_ms per copy, so a button that appears late is found).
-pub const max_post_probe_rounds = 5;
-/// Copies of one testid probed per round.
-const max_copies_per_testid = 4;
+/// How long to look for an actionable Post button: rounds over every copy
+/// of every Post testid, pausing between rounds, so a button that appears
+/// (or becomes enabled) late is found.
+pub const post_button_wait_ms = 10_000;
+/// Pause between two Post-button rounds.
+pub const post_button_poll_ms = 250;
+/// The engine gives a waitFor's native call this much on top of its JS
+/// timeout; budget clamping leaves room for it.
+const wait_for_grace_ms = 1_000;
 
 pub const Verb = enum { post, schedule_post, login_check };
 
@@ -110,8 +123,8 @@ pub fn schedulePost(gpa: std.mem.Allocator, runner: anytype, params: SchedulePar
     if (!(try openComposer(gpa, runner, params.compose_url))) return null;
     if (!(try typeText(gpa, runner, params.text))) return null;
 
-    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.schedule_option, .options = .{ .timeout_ms = click_timeout_ms } }))) return null;
-    if (!(try step(gpa, runner, "dom.waitFor", .{ .selector = selectors.schedule_month, .state = "visible", .timeout_ms = composer_timeout_ms }))) return null;
+    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.schedule_option, .options = .{ .timeout_ms = budget(runner, click_timeout_ms) } }))) return null;
+    if (!(try step(gpa, runner, "dom.waitFor", .{ .selector = selectors.schedule_month, .state = "visible", .timeout_ms = waitBudget(runner, composer_timeout_ms) }))) return null;
 
     var bufs: [6][8]u8 = undefined;
     const choices = [_]struct { selector: []const u8, value: []const u8 }{
@@ -123,9 +136,9 @@ pub fn schedulePost(gpa: std.mem.Allocator, runner: anytype, params: SchedulePar
         .{ .selector = selectors.schedule_ampm, .value = if (when.pm) "PM" else "AM" },
     };
     for (choices) |choice| {
-        if (!(try step(gpa, runner, "dom.selectOption", .{ .selector = choice.selector, .value = choice.value, .timeout_ms = click_timeout_ms }))) return null;
+        if (!(try step(gpa, runner, "dom.selectOption", .{ .selector = choice.selector, .value = choice.value, .timeout_ms = budget(runner, click_timeout_ms) }))) return null;
     }
-    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.schedule_confirm, .options = .{ .timeout_ms = click_timeout_ms } }))) return null;
+    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.schedule_confirm, .options = .{ .timeout_ms = budget(runner, click_timeout_ms) } }))) return null;
     if (!(try submit(gpa, runner))) return null;
     return try std.fmt.allocPrint(gpa, "{{\"ok\":true,\"scheduledFor\":\"{s}T{s}\"}}", .{ params.date, params.time });
 }
@@ -146,8 +159,8 @@ fn validateText(text: []const u8) Error!void {
 /// Navigate to the composer and wait for it. If it never shows up and the
 /// page offers a login link instead, the account is logged out.
 fn openComposer(gpa: std.mem.Allocator, runner: anytype, url: []const u8) Error!bool {
-    if (!(try step(gpa, runner, "page.navigate", .{ .url = url, .timeout_ms = navigate_timeout_ms }))) return false;
-    if (try step(gpa, runner, "dom.waitFor", .{ .selector = selectors.composer, .state = "visible", .timeout_ms = composer_timeout_ms })) return true;
+    if (!(try step(gpa, runner, "page.navigate", .{ .url = url, .timeout_ms = budget(runner, navigate_timeout_ms) }))) return false;
+    if (try step(gpa, runner, "dom.waitFor", .{ .selector = selectors.composer, .state = "visible", .timeout_ms = waitBudget(runner, composer_timeout_ms) })) return true;
     const login_links = (try countMatches(gpa, runner, selectors.login_link)) orelse return false;
     if (login_links > 0) return error.LoggedOut;
     return false;
@@ -156,9 +169,9 @@ fn openComposer(gpa: std.mem.Allocator, runner: anytype, url: []const u8) Error!
 /// X may restore an unsent draft into the composer, so clear it first
 /// (dom.fill "" replaces the content in one edit), then type the text.
 fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8) Error!bool {
-    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.composer, .options = .{ .timeout_ms = click_timeout_ms } }))) return false;
-    if (!(try step(gpa, runner, "dom.fill", .{ .selector = selectors.composer, .value = "" }))) return false;
-    return step(gpa, runner, "dom.type", .{ .selector = selectors.composer, .text = text });
+    if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.composer, .options = .{ .timeout_ms = budget(runner, click_timeout_ms) } }))) return false;
+    if (!(try step(gpa, runner, "dom.fill", .{ .selector = selectors.composer, .value = "", .options = .{ .timeout_ms = budget(runner, click_timeout_ms) } }))) return false;
+    return step(gpa, runner, "dom.type", .{ .selector = selectors.composer, .text = text, .options = .{ .timeout_ms = budget(runner, type_timeout_ms) } });
 }
 
 /// Click Post (it stays disabled until there is text) and wait for X's
@@ -166,28 +179,49 @@ fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8) Error!boo
 fn submit(gpa: std.mem.Allocator, runner: anytype) Error!bool {
     var selector_buf: [128]u8 = undefined;
     const button = (try findPostButton(gpa, runner, &selector_buf)) orelse return false;
-    if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = .{ .timeout_ms = click_timeout_ms } }))) return false;
-    return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "attached", .timeout_ms = confirm_timeout_ms });
+    if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = .{ .timeout_ms = budget(runner, click_timeout_ms) } }))) return false;
+    return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "attached", .timeout_ms = waitBudget(runner, confirm_timeout_ms) });
 }
 
 /// The first Post button copy that passes a trial click, as an exact
-/// single-element selector written into `buf`; null if none became
-/// actionable within the probe rounds (the last probe's failure is kept by
-/// the runner) or a query failed.
+/// single-element selector written into `buf`. Each round queries every
+/// Post testid and probes every copy found; rounds repeat (pausing
+/// post_button_poll_ms) for post_button_wait_ms, so a button that is
+/// missing or disabled at first is still found. Null when none became
+/// actionable (the runner holds the last probe's failure, or
+/// element_not_found "x_post_button_missing" when no copy ever existed),
+/// a query failed, or the flow was cancelled.
 fn findPostButton(gpa: std.mem.Allocator, runner: anytype, buf: []u8) Error!?[]const u8 {
-    var round: usize = 0;
-    while (round < max_post_probe_rounds) : (round += 1) {
+    const give_up_at = runner.nowMs() +| post_button_wait_ms;
+    var probed_any = false;
+    while (true) {
         for (selectors.post_button_testids) |testid| {
             var testid_buf: [64]u8 = undefined;
             const all = std.fmt.bufPrint(&testid_buf, "testid={s}", .{testid}) catch unreachable;
             const copies = (try countMatches(gpa, runner, all)) orelse return null;
-            for (1..@min(copies, max_copies_per_testid) + 1) |n| {
+            for (1..copies + 1) |n| {
                 const copy = std.fmt.bufPrint(buf, selectors.post_button_copy, .{ testid, n }) catch unreachable;
-                if (try step(gpa, runner, "dom.click", .{ .selector = copy, .options = .{ .trial = true, .timeout_ms = probe_timeout_ms } })) return copy;
+                probed_any = true;
+                if (try step(gpa, runner, "dom.click", .{ .selector = copy, .options = .{ .trial = true, .timeout_ms = budget(runner, probe_timeout_ms) } })) return copy;
             }
         }
+        if (runner.nowMs() +| post_button_poll_ms >= give_up_at or runner.remainingMs() <= post_button_poll_ms) break;
+        if (!runner.pause(post_button_poll_ms)) return null;
     }
+    // The last probe's failure is the evidence; with no copy ever found,
+    // say so explicitly (the queries themselves succeeded).
+    if (!probed_any) try runner.notFound("x_post_button_missing");
     return null;
+}
+
+/// `ms`, clamped to what is left of the flow's budget.
+fn budget(runner: anytype, ms: u64) u64 {
+    return @min(ms, runner.remainingMs());
+}
+
+/// Like `budget`, leaving room for the engine's waitFor native grace.
+fn waitBudget(runner: anytype, ms: u64) u64 {
+    return @min(ms, runner.remainingMs() -| wait_for_grace_ms);
 }
 
 /// Runs one command; true if it succeeded.
@@ -199,23 +233,30 @@ fn step(gpa: std.mem.Allocator, runner: anytype, method: []const u8, params: any
 
 /// Number of elements matching `selector` right now (one attempt), or null
 /// when the query itself failed.
+/// A successful answer that cannot be used is recorded as malformed, so the
+/// caller never sees a stale failure from an earlier step.
 fn countMatches(gpa: std.mem.Allocator, runner: anytype, selector: []const u8) Error!?usize {
-    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = query_timeout_ms }, .{});
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = budget(runner, query_timeout_ms) }, .{});
     defer gpa.free(params);
     const result = (try runner.run("dom.query", params)) orelse return null;
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, result, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
+        else => return try malformed(runner),
     };
     defer parsed.deinit();
     const elements = switch (parsed.value) {
-        .object => |o| o.get("elements") orelse return null,
-        else => return null,
+        .object => |o| o.get("elements") orelse return try malformed(runner),
+        else => return try malformed(runner),
     };
     return switch (elements) {
         .array => |a| a.items.len,
-        else => null,
+        else => try malformed(runner),
     };
+}
+
+fn malformed(runner: anytype) Error!?usize {
+    try runner.malformed();
+    return null;
 }
 
 const When = struct { year: u32, month: u32, day: u32, hour12: u32, minute: u32, pm: bool };

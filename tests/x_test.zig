@@ -12,6 +12,34 @@ const FakeRunner = struct {
     /// method -> result JSON (null = the step fails).
     answers: []const struct { method: []const u8, result: ?[]const u8 } = &.{},
     fail_at: ?usize = null,
+    now_ms: u64 = 0,
+    /// Flow budget left at now_ms = 0.
+    budget_ms: u64 = 120_000,
+    pauses: usize = 0,
+    malformed_calls: usize = 0,
+    not_found: ?[]const u8 = null,
+
+    pub fn nowMs(self: *const FakeRunner) u64 {
+        return self.now_ms;
+    }
+
+    pub fn remainingMs(self: *const FakeRunner) u64 {
+        return self.budget_ms -| self.now_ms;
+    }
+
+    pub fn pause(self: *FakeRunner, ms: u64) bool {
+        self.pauses += 1;
+        self.now_ms += ms;
+        return true;
+    }
+
+    pub fn malformed(self: *FakeRunner) error{OutOfMemory}!void {
+        self.malformed_calls += 1;
+    }
+
+    pub fn notFound(self: *FakeRunner, reason: []const u8) error{OutOfMemory}!void {
+        self.not_found = reason;
+    }
 
     fn deinit(self: *FakeRunner) void {
         for (self.steps.items) |s| {
@@ -65,16 +93,19 @@ const ProbeRunner = struct {
     inner: FakeRunner = .{},
     dialog_copies: usize = 1,
     inline_copies: usize = 0,
+    /// No copy of any Post button exists before this time.
+    buttons_appear_at_ms: u64 = 0,
     actionable: ?[]const u8 = "xpath=(//*[@data-testid=\"tweetButton\"])[1]",
     /// Trial probes that fail before `actionable` starts passing.
     fail_probes_before: usize = 0,
     probes: usize = 0,
-    buf: [256]u8 = undefined,
+    buf: [1024]u8 = undefined,
 
     pub fn run(self: *ProbeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         _ = try self.inner.run(method, params_json);
         if (std.mem.eql(u8, method, "dom.query")) {
-            const n = if (std.mem.indexOf(u8, params_json, "tweetButtonInline") != null) self.inline_copies else self.dialog_copies;
+            const present = self.inner.now_ms >= self.buttons_appear_at_ms;
+            const n = if (!present) 0 else if (std.mem.indexOf(u8, params_json, "tweetButtonInline") != null) self.inline_copies else self.dialog_copies;
             var out: std.Io.Writer = .fixed(&self.buf);
             out.writeAll("{\"elements\":[") catch unreachable;
             for (0..n) |i| {
@@ -93,6 +124,22 @@ const ProbeRunner = struct {
             return if (std.mem.indexOf(u8, params_json, quoted) != null) "{\"ok\":true}" else null;
         }
         return "{\"ok\":true}";
+    }
+
+    pub fn nowMs(self: *const ProbeRunner) u64 {
+        return self.inner.nowMs();
+    }
+    pub fn remainingMs(self: *const ProbeRunner) u64 {
+        return self.inner.remainingMs();
+    }
+    pub fn pause(self: *ProbeRunner, ms: u64) bool {
+        return self.inner.pause(ms);
+    }
+    pub fn malformed(self: *ProbeRunner) error{OutOfMemory}!void {
+        return self.inner.malformed();
+    }
+    pub fn notFound(self: *ProbeRunner, reason: []const u8) error{OutOfMemory}!void {
+        return self.inner.notFound(reason);
     }
 };
 
@@ -167,11 +214,74 @@ test "x.post keeps probing until a late Post button becomes actionable" {
     try std.testing.expect(runner.probes > 6);
 }
 
-test "x.post fails (null) when no Post button ever becomes actionable" {
+test "x.post fails (null) when no Post button ever becomes actionable; the last probe failure stands" {
     var runner = ProbeRunner{ .inline_copies = 1, .actionable = null };
     defer runner.inner.deinit();
     try std.testing.expect((try x.post(gpa, &runner, .{ .text = "hi" })) == null);
-    try std.testing.expect(runner.probes <= x.max_post_probe_rounds * 2);
+    // Rounds every post_button_poll_ms for post_button_wait_ms, 2 copies each.
+    const rounds = x.post_button_wait_ms / x.post_button_poll_ms;
+    try std.testing.expect(runner.probes >= rounds and runner.probes <= (rounds + 1) * 2);
+    try std.testing.expect(runner.inner.not_found == null);
+}
+
+test "x.post waits for a Post button that does not exist yet (zero copies, then a late one)" {
+    var runner = ProbeRunner{ .buttons_appear_at_ms = 3_000 };
+    defer runner.inner.deinit();
+    const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
+    defer gpa.free(result);
+    try std.testing.expect(runner.inner.pauses >= 3_000 / x.post_button_poll_ms);
+    const clicked = try lastClickSelector(&runner.inner);
+    defer gpa.free(clicked);
+    try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButton\"])[1]", clicked);
+}
+
+test "x.post with no Post button at all: element_not_found x_post_button_missing, bounded by the wait" {
+    var runner = ProbeRunner{ .dialog_copies = 0 };
+    defer runner.inner.deinit();
+    try std.testing.expect((try x.post(gpa, &runner, .{ .text = "hi" })) == null);
+    try std.testing.expectEqualStrings("x_post_button_missing", runner.inner.not_found.?);
+    try std.testing.expect(runner.inner.now_ms <= x.post_button_wait_ms);
+    try std.testing.expectEqual(@as(usize, 0), runner.probes);
+}
+
+test "x.post probes every copy, not only the first few (6 copies, the 5th is actionable)" {
+    var runner = ProbeRunner{ .dialog_copies = 6, .actionable = "xpath=(//*[@data-testid=\"tweetButton\"])[5]" };
+    defer runner.inner.deinit();
+    const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
+    defer gpa.free(result);
+    const clicked = try lastClickSelector(&runner.inner);
+    defer gpa.free(clicked);
+    try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButton\"])[5]", clicked);
+    try std.testing.expectEqual(@as(usize, 5), runner.probes);
+}
+
+test "a successful query with an unusable answer is reported as malformed" {
+    var runner = FakeRunner{};
+    runner.answers = &.{.{ .method = "dom.query", .result = "{\"elements\":\"nope\"}" }};
+    defer runner.deinit();
+    try std.testing.expect((try x.loginCheck(gpa, &runner)) == null);
+    try std.testing.expectEqual(@as(usize, 1), runner.malformed_calls);
+}
+
+test "every step's timeout is clamped to what is left of the flow budget" {
+    var runner = ProbeRunner{};
+    runner.inner.budget_ms = 5_000;
+    defer runner.inner.deinit();
+    const result = (try x.post(gpa, &runner, .{ .text = "hi" })).?;
+    defer gpa.free(result);
+    for (runner.inner.steps.items) |step_item| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, step_item.params, .{});
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        const top = if (obj.get("timeout_ms")) |t| t.integer else null;
+        const nested = if (obj.get("options")) |o| if (o.object.get("timeout_ms")) |t| t.integer else null else null;
+        const ms = top orelse nested orelse {
+            std.debug.print("step without a timeout: {s}\n", .{step_item.method});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(ms <= 5_000);
+        if (std.mem.eql(u8, step_item.method, "dom.waitFor")) try std.testing.expect(ms <= 4_000);
+    }
 }
 
 test "x.post defaults to the real compose URL" {

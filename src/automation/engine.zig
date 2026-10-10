@@ -149,6 +149,11 @@ pub const External = struct {
         return self.run.cancelled();
     }
 
+    /// Sleeps `ms` in poll-interval slices; false if cancelled meanwhile.
+    pub fn pause(self: *External, ms: u64) bool {
+        return self.engine.sleepUnlessCancelled(ms, self.run);
+    }
+
     pub fn route(self: *const External) router.RouteContext {
         return self.run.route;
     }

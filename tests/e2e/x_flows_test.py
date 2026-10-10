@@ -7,7 +7,8 @@ Asserts what the fixture recorded (window.__xResult): the exact text (the
 restored stale draft is replaced, not appended to), the schedule dialog's
 selected values, the Draft editor's event record, which Post button was
 clicked (hidden copies are skipped, a late button is waited for), that a
-racing page command waits for the whole flow (server handshake), and the
+racing page command waits for the whole flow (the server rejects it as
+queued_past_deadline), and the
 logged-out gate. Exit 77 (skip) without a binary/display."""
 
 from __future__ import annotations
@@ -39,7 +40,9 @@ class HoldServer:
     sent the racing command, then answers; every request is logged in
     order so the test can check the racing page load came after /hold."""
 
-    GRACE_SEC = 1.0
+    # Longer than the racer's 300 ms timeout, so a queued racer has waited
+    # past its deadline by the time the flow ends.
+    GRACE_SEC = 1.5
 
     def __init__(self) -> None:
         self.clicked = threading.Event()
@@ -139,15 +142,15 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("decoys skipped", recorded()["button"], "tweetButtonInline")
     passed.append("hidden-decoys+late-button")
 
-    # One queue turn per flow, proven by a server handshake (no timestamps):
-    # after the Post click, the fixture's toast waits for GET /hold. The
-    # server answers /hold only after the racing client has sent
-    # page.navigate to /composer.html?marker=raced (plus a grace that is
-    # ample for an unqueued navigation to reach the server).
-    # Serialized, the server must see /hold answered before the raced page
-    # is requested, x.post succeeds, and the final URL is the raced one. A
-    # navigation inside the flow would request the raced page while /hold is
-    # still pending (and the toast would never appear).
+    # One queue turn per flow. After the Post click the fixture's toast
+    # waits for GET /hold; the server answers /hold only once a second
+    # client has sent page.navigate (timeout_ms 300) plus a grace longer
+    # than that timeout. The oracle is the server's own answer, not timing:
+    # a correctly queued navigate waits behind the whole flow and is then
+    # rejected before it runs with navigation_timeout reason
+    # "queued_past_deadline" (only a queued command can get that reason).
+    # A navigate that bypassed the queue would run mid-flow: it would load
+    # the raced page (seen by the server) and the toast would never appear.
     raced_url = f"{server.base}/composer.html?mode=compose&marker=raced"
     racer_result: dict[str, object] = {}
 
@@ -158,7 +161,7 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
                 racer_result["error"] = "the flow never reached the held step"
                 return
             # Send without waiting, then let the server answer /hold.
-            request = {"jsonrpc": "2.0", "method": "page.navigate", "id": 1, "params": {"url": raced_url}}
+            request = {"jsonrpc": "2.0", "method": "page.navigate", "id": 1, "params": {"url": raced_url, "timeout_ms": 300}}
             if other.token:
                 request["auth"] = other.token
             payload = json.dumps(request).encode("utf-8")
@@ -166,7 +169,7 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
             server.release.set()
             length = struct.unpack(">I", other._recv_exact(4))[0]
             response = json.loads(other._recv_exact(length).decode("utf-8"))
-            racer_result["navigate"] = response.get("result", response.get("error"))
+            racer_result["response"] = response
         finally:
             server.release.set()
             other.close()
@@ -177,9 +180,11 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     outcome = rpc.call("x.post", {"text": "no interleaving", "compose_url": compose})
     t.join(timeout=timeout_sec + 30)
     expect_equal("x.post racing", outcome, {"ok": True})
-    expect_equal("racer", racer_result, {"navigate": {"ok": True}})
-    expect_equal("server order", server.order(), ["hold:answered", "raced:requested"])
-    expect_equal("navigation ran after the flow", rpc.call("page.url")["url"], raced_url)
+    error = (racer_result.get("response") or {}).get("error") or {}
+    expect_equal("racer code", error.get("code"), -32007)
+    expect_equal("racer reason", (error.get("data") or {}).get("reason"), "queued_past_deadline")
+    expect_equal("server order", server.order(), ["hold:answered"])
+    expect_equal("page after the flow", rpc.call("page.url")["url"], compose)
     passed.append("single-queue-turn")
 
     # Logged-out page: login link, no composer -> -32011 logged_out, nothing posted.

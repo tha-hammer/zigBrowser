@@ -221,8 +221,12 @@ test "a successful but malformed query answer is an internal error, not a crash"
     defer h.deinit();
     var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
     defer outcome.deinit(gpa);
-    // The recorded waitFor failure is reported.
-    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    // The earlier waitFor failure is stale: the malformed answer is what
+    // stopped the flow, reported as -32603 with the x.* command's ids.
+    try std.testing.expectEqual(@as(i64, -32603), outcome.failure.code);
+    try std.testing.expectEqualStrings("Unexpected page answer", outcome.failure.message);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"trace_id\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "\"command_id\"") != null);
 
     var h2: Harness = undefined;
     h2.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"elements\":\"nope\"}}" }});
@@ -230,6 +234,7 @@ test "a successful but malformed query answer is an internal error, not a crash"
     var login = try h2.call("x.login_check", "{}");
     defer login.deinit(gpa);
     try std.testing.expectEqual(@as(i64, -32603), login.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, login.failure.data_json.?, "\"trace_id\"") != null);
 }
 
 test "an x.* flow has one overall deadline across its steps" {
@@ -244,4 +249,25 @@ test "an x.* flow has one overall deadline across its steps" {
     try std.testing.expectEqual(@as(i64, -32009), outcome.failure.code);
     try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "x_flow_deadline") != null);
     try std.testing.expect(h.fake.eval_calls.items.len <= 4);
+}
+
+test "no Post button ever: element_not_found x_post_button_missing with the x.* ids, after a bounded wait" {
+    var h: Harness = undefined;
+    h.init(&.{
+        ok_reply, // composer waitFor
+        ok_reply, // click composer
+        ok_reply, // fill ""
+        ok_reply, // type
+        .{ .json = "{\"ok\":true,\"value\":{\"elements\":[]}}" }, // every Post query from here on
+    });
+    defer h.deinit();
+    var outcome = try h.call("x.post", "{\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    const data = outcome.failure.data_json.?;
+    try std.testing.expect(std.mem.indexOf(u8, data, "x_post_button_missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"trace_id\"") != null);
+    var slept: u64 = 0;
+    for (h.clock.sleeps.items) |ms| slept += ms;
+    try std.testing.expect(slept >= 9_000 and slept <= 10_000);
 }
