@@ -494,6 +494,25 @@ const LiveDriver = struct {
     }
 };
 
+/// Turns a hung live test into a fast, visible failure. On expiry it writes
+/// with raw write(2) and _exit()s: Zig's panic/print path takes locks that a
+/// wedged thread may hold, which is how an earlier hang became permanent.
+const Watchdog = struct {
+    done: std.atomic.Value(bool) = .{ .raw = false },
+
+    fn run(self: *Watchdog, limit_ms: u64) void {
+        var waited: u64 = 0;
+        while (!self.done.load(.acquire)) : (waited += 50) {
+            if (waited >= limit_ms) {
+                const msg = "live bridge watchdog: test exceeded its time limit; aborting\n";
+                _ = std.c.write(2, msg.ptr, msg.len);
+                std.c._exit(124);
+            }
+            sleepMs(50);
+        }
+    }
+};
+
 test "automation bridge drives a live WebKitGTK page" {
     try skipUnlessGtk();
     if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
@@ -539,9 +558,13 @@ test "automation bridge drives a live WebKitGTK page" {
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_OK), c.zb_app_set_profile_dir(profile_dir.ptr, null));
     defer _ = c.zb_app_set_profile_dir(null, null);
 
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 90_000) });
     const t = try std.Thread.spawn(.{}, LiveDriver.run, .{&driver});
     _ = c.zb_app_run(driver.uri_a.ptr, 0, 0);
     t.join();
+    watchdog.done.store(true, .release);
+    w.join();
 
     for (driver.failures.items) |f| std.debug.print("live bridge check failed: {s}\n", .{f});
     try std.testing.expectEqual(@as(usize, 0), driver.failures.items.len);
