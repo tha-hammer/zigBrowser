@@ -541,6 +541,21 @@ pub fn build(b: *std.Build) void {
     const run_social_tests = b.addRunArtifact(social_tests);
     run_social_tests.skip_foreign_checks = true;
 
+    const x_module = b.createModule(.{
+        .root_source_file = b.path("src/x.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const x_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/x_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    x_tests_module.addImport("x", x_module);
+    const x_tests = b.addTest(.{ .root_module = x_tests_module });
+    const run_x_tests = b.addRunArtifact(x_tests);
+    run_x_tests.skip_foreign_checks = true;
+
     const linkedin_module = b.createModule(.{
         .root_source_file = b.path("src/linkedin.zig"),
         .target = target,
@@ -585,6 +600,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_telemetry_tests.step);
     test_step.dependOn(&run_automation_social_tests.step);
     test_step.dependOn(&run_automation_cookie_tests.step);
+    test_step.dependOn(&run_x_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&automation_api_e2e.step);
     test_step.dependOn(&automation_core_e2e.step);
