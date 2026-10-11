@@ -2058,7 +2058,7 @@ closes the blocked-navigation blocker.
 
 ### SHOULD — make the X-flow cold-start harness robust under extreme host load
 
-**Status: OPEN (cc_2), reclassified from BLOCKER 4948.** The first `x.post`
+**Status: CLOSED by `e7af69d`; APPROVE.** The first `x.post`
 in `x_flows_test.py` returned `-32007 navigation_timeout` only during a clean
 gate that overlapped multiple full gates, two stress loops, gdb, and six CPU
 burners. The flow has a 120-second total budget, but its first `page.navigate`
@@ -2076,9 +2076,19 @@ robustness follow-up may first warm the fixture with a bounded 90-second
 JSON-RPC error on recurrence. Production navigation and flow defaults must
 not change. Read-only audit: mail 4953.
 
+`e7af69d` implements that test-only shape exactly. `warm_up` uses a dedicated
+client with a 150-second socket bound, a 90-second `page.navigate`, and a
+30-second visible composer wait before the first flow. The real `x.post`
+still performs its own production navigation, so the warm-up removes the
+WebKit cold-start cost without bypassing the flow edge. `TimedRpcClient`
+preserves `RpcClient.raw` and adds client name, method, elapsed time, and the
+complete JSON-RPC error only when `call` fails; intentional raw-error checks
+remain unchanged. The author reports a clean-export gate of **87/87 steps,
+675/675 tests**, with a 0.6-second warm-up. Approved in Agent Mail 5016.
+
 ### SHOULD — diagnose a navigating native click timeout seen only under extreme host load
 
-**Status: OPEN (cc_1), reclassified after quiet-host acceptance.** In a loaded direct-root-binary run of exact `bc0bad1`,
+**Status: BLOCKED in review at `51c1954` (cc_1 follow-up required).** In a loaded direct-root-binary run of exact `bc0bad1`,
 `automation bridge drives a live WebKitGTK page` failed only its navigating
 click result and latency checks at `src/webkit.zig:1174-1175`: the 20-second
 `nativeClick` returned an as-yet unprinted error after at least eight seconds.
@@ -2103,6 +2113,37 @@ failed ack read must not be blindly converted to success. A correction would
 still require a deterministic adapter regression for the transient-read /
 replaced-document transition. Mailed as 4940. This is independent of the
 probable test-only null panic.
+
+`51c1954` captures the production root cause: an acknowledgement eval issued
+against the old document can be suspended with WebKit's back/forward-cache
+entry and never answer. One read is therefore bounded to one second and a
+replacement-document observation can complete promptly. The author's loaded
+reproducer measured 7/300 failures with the page cache enabled, 0/500 with it
+disabled, and 0/300 after the fix while eight lost reads were observed. An
+independent clean-export RED/GREEN check filtered the root suite to the exact
+regression: the fixed commit passed **5/5 steps, 3/3 tests** in about one
+second; restoring the pre-fix whole-deadline read failed the named test with
+`error.Timeout` after six seconds (**3/5 steps, 2/3 tests**). The export was
+deleted immediately.
+
+The commit is not yet approvable because the retry encoding regresses another
+production caller. `AckTracker.read` converts an inner slice timeout into
+`null`, while `waitScrollSettled` at `src/automation_gtk_port.zig:751`
+interprets every `null` as `DocumentReplaced`. A suspended/lost eval after an
+already-acknowledged wheel is therefore reported as `document_changed`
+instead of being read again on the same live document. The follow-up must
+preserve the distinction between a reader that actually returns null and an
+inner slice timeout, and add `{moving ack}, lost read, {quiet ack}` coverage
+through `waitScrollSettled`. Blocker and failing-first evidence: Agent Mail
+5015/5017.
+
+The reviewer also ran a bounded clean export of exact `51c1954` on a quiet
+host, with `DISPLAY`, `WAYLAND_DISPLAY`, and `ZIGBROWSER_SOCKET` unset and a
+fresh Xvfb display. It passed **87/87 steps and 677/677 tests**, seed
+`0x358fd7a1`; the X fixture warm-up completed in 0.6 seconds. The disposable
+tree was deleted immediately. This validates the existing suite and the
+approved `e7af69d` production-chain path, but does not waive the untested
+native-scroll caller regression above.
 
 Review thread:
 4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929/4930/4931/4932/4933/4934/4935/4936/4937.
