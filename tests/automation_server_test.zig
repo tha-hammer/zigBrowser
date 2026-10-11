@@ -1609,9 +1609,10 @@ test "N23: page.list, window_id targeting with one queue per window, and page.cl
         "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-01\"},\"id\":4}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-4294967296\"},\"id\":4}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window- 2\"},\"id\":4}",
-        // window_id means nothing to the site flows, social, cookies or telemetry.
-        "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"window_id\":\"window-2\"},\"id\":4}",
-        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.follow\",\"params\":{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"window_id\":\"window-2\"},\"id\":4}",
+        // window_id means nothing to social, cookies or telemetry (the site
+        // flows take it: see the next tests).
+        "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"window_id\":\"2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.follow\",\"params\":{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"window_id\":2},\"id\":4}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"params\":{\"window_id\":\"window-2\"},\"id\":4}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"cookies.getAll\",\"params\":{\"window_id\":\"window-2\"},\"id\":4}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"telemetry.query\",\"params\":{\"trace_id\":\"t\",\"window_id\":\"window-2\"},\"id\":4}",
@@ -2113,6 +2114,122 @@ test "watchdog: a window counts as unresponsive only after WebKit has said so fo
     try testing.expect(!automation_server.healthResponsive(false, debounce * 10));
     // WebKit's own answer wins once it says responsive again.
     try testing.expect(automation_server.healthResponsive(true, debounce * 10));
+}
+
+const flow_reply = "{\"ok\":true,\"value\":{\"ok\":true,\"text\":\"Ada\",\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"Post\",\"bbox\":{}}]}}";
+
+test "site flows take window_id like page.*/dom.*: linkedin.* and x.* drive that window only; a gone window is -32011 no_window, nothing counted; a bad id is -32602" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var store = MemoryCookieStore{};
+    defer store.deinit();
+    var fixture = try Fixture.start("window-flows", .{ .cookies = &store, .eval_reply = flow_reply });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{ .{ .eval_reply = flow_reply }, .{ .eval_reply = flow_reply } } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    try store.port().set("{\"name\":\"li_at\",\"value\":\"v\",\"domain\":\".www.linkedin.com\",\"path\":\"/\",\"expires\":-1,\"httpOnly\":true,\"secure\":true}", 1000);
+    {
+        var paced = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"min_delay_ms\":0,\"max_delay_ms\":0,\"daily_cap\":5},\"id\":1}");
+        defer paced.deinit();
+    }
+
+    // The flow, its scans included, runs in window 2; window 1 is untouched.
+    {
+        var liked = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.like\",\"params\":{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\",\"window_id\":\"window-2\"},\"id\":2}");
+        defer liked.deinit();
+        try testing.expect(errorOf(liked) == null);
+        try testing.expectEqual(@as(u8, 'n'), popups.ports[0].events()[0]);
+        try testing.expect(popups.ports[0].scans.load(.acquire) > 0);
+        var posted = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"compose_url\":\"http://127.0.0.1:9/compose\",\"window_id\":\"window-3\"},\"id\":3}");
+        defer posted.deinit();
+        try testing.expect(errorOf(posted) == null);
+        try testing.expectEqual(@as(u8, 'n'), popups.ports[1].events()[0]);
+        try testing.expectEqual(@as(usize, 0), fixture.fake.events().len);
+        try testing.expectEqual(@as(u32, 0), fixture.fake.evals.load(.acquire));
+    }
+
+    // A window that is not there: -32011 no_window, nothing counted.
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.like\",\"params\":{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\",\"window_id\":\"window-9\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"compose_url\":\"http://127.0.0.1:9/compose\",\"window_id\":\"window-9\"},\"id\":5}",
+    }) |request| {
+        var gone = try rpc(stream, request);
+        defer gone.deinit();
+        const e = errorOf(gone) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i64, -32011), e.code);
+        try testing.expectEqualStrings("no_window", e.reason.?);
+    }
+    {
+        var status = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.rate_status\",\"params\":{},\"id\":6}");
+        defer status.deinit();
+        try testing.expectEqual(@as(i64, 4), status.value.object.get("result").?.object.get("remaining_actions").?.integer);
+    }
+    try testing.expectEqual(@as(usize, 0), fixture.fake.events().len);
+
+    // Malformed ids, as for page.*/dom.*.
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.like\",\"params\":{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\",\"window_id\":\"window-0\"},\"id\":7}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"instagram.follow\",\"params\":{\"profileUrl\":\"https://www.instagram.com/a/\",\"window_id\":\"window-x\"},\"id\":7}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi\",\"window_id\":null},\"id\":7}",
+    }) |request| {
+        var bad = try rpc(stream, request);
+        defer bad.deinit();
+        try testing.expectEqual(@as(i64, -32602), (errorOf(bad) orelse return error.TestUnexpectedResult).code);
+    }
+}
+
+test "x.post in two windows at an X cap of 1 (RoseCat 4785): while window 2's post holds its turn mid-step, window 3's is refused -32010 x_daily_cap with no page work" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // An old day: the config (X cap 1) is restored, the counts are not.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "automation-pacing.json", .data =
+        \\{"version":1,"day":0,"social":{"actions_today":0,"daily_cap":100,"min_delay_ms":0,"max_delay_ms":0},"x":{"actions_today":0,"daily_cap":1,"min_delay_ms":0,"max_delay_ms":0}}
+    });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/automation-pacing.json", .{dir_buf[0..dir_len]});
+    defer testing.allocator.free(path);
+
+    var fixture = try Fixture.start("window-x-cap", .{ .eval_reply = flow_reply, .pacing_state_path = path });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{ .{ .eval_reply = flow_reply }, .{ .eval_reply = flow_reply } } };
+    fixture.fake.popups = &popups;
+
+    // Window 2's post is admitted, then held inside its first page step.
+    popups.ports[0].hold.store(true, .release);
+    defer popups.ports[0].hold.store(false, .release);
+    var first = try fixture.connect();
+    defer first.close(testing.io);
+    try writeFrame(first, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"one\",\"compose_url\":\"http://127.0.0.1:9/compose\",\"window_id\":\"window-2\"},\"id\":1}");
+    try waitUntil(&popups.ports[0].held, 5000);
+
+    // Window 3 has its own queue turn, so it reaches the route's admission
+    // at once: the cap's one post is in flight, so it is refused there.
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    {
+        var refused = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"two\",\"compose_url\":\"http://127.0.0.1:9/compose\",\"window_id\":\"window-3\"},\"id\":2}");
+        defer refused.deinit();
+        const e = errorOf(refused) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i64, -32010), e.code);
+        try testing.expectEqualStrings("x_daily_cap", e.reason.?);
+        try testing.expectEqual(@as(usize, 0), popups.ports[1].events().len);
+        try testing.expectEqual(@as(u32, 0), popups.ports[1].evals.load(.acquire));
+    }
+
+    // Window 2's post finishes and counts; the cap stays spent.
+    popups.ports[0].hold.store(false, .release);
+    const done = try readFrame(first);
+    defer testing.allocator.free(done);
+    try testing.expect(std.mem.indexOf(u8, done, "\"result\":{\"ok\":true}") != null);
+    {
+        var again = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"three\",\"compose_url\":\"http://127.0.0.1:9/compose\",\"window_id\":\"window-3\"},\"id\":3}");
+        defer again.deinit();
+        try testing.expectEqualStrings("x_daily_cap", (errorOf(again) orelse return error.TestUnexpectedResult).reason.?);
+        try testing.expectEqual(@as(usize, 0), popups.ports[1].events().len);
+    }
 }
 
 test "N23: without window support, page.list and window_id are -32011 unsupported (with the command's normal root span)" {

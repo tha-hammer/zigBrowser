@@ -75,6 +75,13 @@
     {"id": "instagram.dm", "method": "instagram.dm", "params": {"username": "ada", "text": "hi"}},
     {"id": "instagram.story_view", "method": "instagram.story_view", "params": {"username": "ada"}},
     {"id": "instagram.story_view.dry_run", "method": "instagram.story_view", "params": {"username": "ada", "options": {"dry_run": true}}},
+    {"id": "x.post.window", "method": "x.post", "params": {"text": "hello", "window_id": "window-2"}},
+    {"id": "x.login_check.window", "method": "x.login_check", "params": {"window_id": "window-2"}},
+    {"id": "linkedin.connect.window", "method": "linkedin.connect", "params": {"profileUrl": "https://www.linkedin.com/in/ada/", "note": "Hi Ada", "options": {"dry_run": true}, "window_id": "window-2"}},
+    {"id": "linkedin.message.window", "method": "linkedin.message", "params": {"text": "hi", "conversationUrl": "https://www.linkedin.com/messaging/thread/1/", "window_id": "window-2"}},
+    {"id": "linkedin.search.window", "method": "linkedin.search", "params": {"query": "zig", "searchType": "companies", "window_id": "window-2"}},
+    {"id": "instagram.story_view.window", "method": "instagram.story_view", "params": {"username": "ada", "window_id": "window-2"}},
+    {"id": "instagram.selfcheck.window", "method": "instagram.selfcheck", "params": {"window_id": "window-2"}},
     {"id": "instagram.selfcheck", "method": "instagram.selfcheck", "params": {}}
   ]
 }

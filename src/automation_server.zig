@@ -510,14 +510,7 @@ fn handleRequestWith(
     // support, or an id it already knows is gone), the command still runs
     // through the engine on a stand-in page that answers the same way, so
     // its root span is the normal one.
-    var window_port: ?page_port.PagePort = null;
-    if (target.id) |window| {
-        window_port = engine.port.forWindow(window) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.NoPage => gone_window,
-            else => unsupported_windows,
-        };
-    }
+    const window_port = try targetPort(engine, target.id);
 
     // A command cancelled while queued still goes through the engine (with
     // the cancel flag already set) so it gets ids and one root span.
@@ -590,6 +583,20 @@ fn splitWindowTarget(allocator: std.mem.Allocator, params_json: []const u8) erro
     };
     const rest = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
     return .{ .id = id, .params = rest };
+}
+
+/// The page a command with `window_id` runs on (null without one: the
+/// primary's). forWindow is a pure handle constructor; when it refuses (no
+/// window support, or an id it already knows is gone), a stand-in page that
+/// answers the same way takes its place, so the command still runs through
+/// the engine with its normal root span.
+fn targetPort(engine: *engine_mod.Engine, id: ?page_port.WindowId) error{OutOfMemory}!?page_port.PagePort {
+    const window = id orelse return null;
+    return engine.port.forWindow(window) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.NoPage => gone_window,
+        else => unsupported_windows,
+    };
 }
 
 fn windowRoute(base: automation.router.RouteContext, id: page_port.WindowId, bufs: *[2][24]u8) automation.router.RouteContext {
@@ -1261,6 +1268,9 @@ fn handleCookies(
 }
 
 /// x.* drive the page, so they hold its queue ticket for the whole flow.
+/// With `window_id` (as for page.*/dom.*) every step runs in that window:
+/// its queue turn, its page; a window that is gone is -32011 no_window. The
+/// X cap stays global (one account).
 fn handleX(
     allocator: std.mem.Allocator,
     id_json: []const u8,
@@ -1273,12 +1283,22 @@ fn handleX(
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
+    const target = splitWindowTarget(allocator, params_json) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidParams => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer if (target.params) |owned| allocator.free(owned);
+    var flow_route = route;
+    var route_bufs: [2][24]u8 = undefined;
+    if (target.id) |window| flow_route = windowRoute(route, window, &route_bufs);
+    const window_port = try targetPort(engine, target.id);
+
     // Cancelled while queued -> no ticket; the flow then starts already
     // cancelled, so the reply still has ids and a root span.
-    const ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+    const ticket: ?queue_mod.Ticket = queue.acquire(flow_route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
-        error.Recovering => return recoveringReply(allocator, id_json, engine, method, route, build_info),
+        error.Recovering => return recoveringReply(allocator, id_json, engine, method, flow_route, build_info),
     };
     defer if (ticket) |t| queue.release(t);
     const already_cancelled = std.atomic.Value(bool).init(true);
@@ -1295,9 +1315,11 @@ fn handleX(
     var outcome = try engine.executeExternal(allocator, method, "x", .{
         .cancel = if (ticket) |t| &t.cancelled else &already_cancelled,
         .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
-        .route = route,
+        .route = flow_route,
         .build = build_info,
-    }, XCall{ .state = x_state, .verb = verb, .params_json = params_json }, XCall.run);
+        .port = window_port,
+        .no_page_reason = if (target.id != null) "no_window" else null,
+    }, XCall{ .state = x_state, .verb = verb, .params_json = target.params orelse params_json }, XCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(
@@ -1310,7 +1332,8 @@ fn handleX(
 }
 
 /// linkedin.* / instagram.* drive the page, so like x.* they hold its queue
-/// ticket for the whole flow.
+/// ticket for the whole flow, and take `window_id` the same way. The session
+/// cookie gate, pacing and the daily cap stay global (one account).
 fn handleSocialFlow(
     allocator: std.mem.Allocator,
     id_json: []const u8,
@@ -1324,12 +1347,22 @@ fn handleSocialFlow(
     route: automation.router.RouteContext,
     build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
+    const target = splitWindowTarget(allocator, params_json) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidParams => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer if (target.params) |owned| allocator.free(owned);
+    var flow_route = route;
+    var route_bufs: [2][24]u8 = undefined;
+    if (target.id) |window| flow_route = windowRoute(route, window, &route_bufs);
+    const window_port = try targetPort(engine, target.id);
+
     // Cancelled while queued -> no ticket; the flow then starts already
     // cancelled, so the reply still has ids and a root span.
-    const ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
+    const ticket: ?queue_mod.Ticket = queue.acquire(flow_route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
-        error.Recovering => return recoveringReply(allocator, id_json, engine, method, route, build_info),
+        error.Recovering => return recoveringReply(allocator, id_json, engine, method, flow_route, build_info),
     };
     defer if (ticket) |t| queue.release(t);
     const already_cancelled = std.atomic.Value(bool).init(true);
@@ -1347,9 +1380,11 @@ fn handleSocialFlow(
     var outcome = try engine.executeExternal(allocator, method, call.namespace(), .{
         .cancel = if (ticket) |t| &t.cancelled else &already_cancelled,
         .queue_wait_ms = if (ticket) |t| t.wait_ms else 0,
-        .route = route,
+        .route = flow_route,
         .build = build_info,
-    }, FlowCall{ .state = social, .env = env, .call = call, .params_json = params_json }, FlowCall.run);
+        .port = window_port,
+        .no_page_reason = if (target.id != null) "no_window" else null,
+    }, FlowCall{ .state = social, .env = env, .call = call, .params_json = target.params orelse params_json }, FlowCall.run);
     defer outcome.deinit(allocator);
     return switch (outcome) {
         .result => |result_json| std.fmt.allocPrint(

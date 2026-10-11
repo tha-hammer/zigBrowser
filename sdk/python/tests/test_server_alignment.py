@@ -97,6 +97,14 @@ INVOCATIONS = {
     "instagram.like.dry_run": lambda zb: zb.instagram.like("https://www.instagram.com/p/C0ffee/", dry_run=True),
     "instagram.comment.dry_run": lambda zb: zb.instagram.comment("https://www.instagram.com/p/C0ffee/", "So good", dry_run=True),
     "instagram.story_view.dry_run": lambda zb: zb.instagram.story_view("ada", dry_run=True),
+    # window_id: the flow runs in that window (page.list).
+    "x.post.window": lambda zb: zb.x.post("hello", window_id="window-2"),
+    "x.login_check.window": lambda zb: zb.x.login_check(window_id="window-2"),
+    "linkedin.connect.window": lambda zb: zb.linkedin.connect("https://www.linkedin.com/in/ada/", note="Hi Ada", dry_run=True, window_id="window-2"),
+    "linkedin.message.window": lambda zb: zb.linkedin.message("hi", conversation_url="https://www.linkedin.com/messaging/thread/1/", window_id="window-2"),
+    "linkedin.search.window": lambda zb: zb.linkedin.search("zig", search_type="companies", window_id="window-2"),
+    "instagram.story_view.window": lambda zb: zb.instagram.story_view("ada", window_id="window-2"),
+    "instagram.selfcheck.window": lambda zb: zb.instagram.selfcheck(window_id="window-2"),
 }
 
 

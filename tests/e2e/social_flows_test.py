@@ -422,6 +422,29 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
         )
     passed.append("failed-step")
 
+    # window_id: a site flow runs in the window it names (a popup here), as
+    # page.*/dom.* do; the primary window is not touched.
+    primary_url = zb.page.url()["url"]
+    zb.page.evaluate("(window.open(location.origin + '/in/blank/', 'flowwin', 'width=900,height=700'), 0)")
+    deadline = time.monotonic() + 10
+    pages = zb.page.list()["pages"]
+    while len(pages) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+        pages = zb.page.list()["pages"]
+    expect_equal("a popup is open", len(pages), 2)
+    popup = pages[1]["window_id"]
+    in_popup = lambda expression: zb.call("page.evaluate", {"expression": expression, "window_id": popup})["result"]  # noqa: E731
+    expect_equal("follow in the popup", zb.linkedin.follow(profile, window_id=popup), {"ok": True})
+    expect_equal("followed in the popup", in_popup("window.__li.result"), {"action": "follow"})
+    more = zb.linkedin.connect(f"{origin}/in/creator.user/", dry_run=True, window_id=popup)
+    expect_equal("a dry run in the popup", (more["dry_run"], more["target"]["label"]), (True, "More"))
+    expect_equal("the popup's page", zb.call("page.url", {"window_id": popup})["url"], f"{origin}/in/creator.user/")
+    expect_equal("the primary window untouched", (zb.page.url()["url"], page_input()), (primary_url, []))
+    err = expect_error("a gone window", lambda: zb.linkedin.follow(profile, window_id="window-99"), -32011, "no_window")
+    expect_equal("the primary window still untouched", zb.page.url()["url"], primary_url)
+    zb.page.close(popup)
+    passed.append("window-id")
+
     # Platform URLs only.
     expect_error("off-platform URL", lambda: zb.linkedin.visit("https://evil.example/in/sam/"), -32602)
     expect_error("other platform's URL", lambda: zb.instagram.follow("https://www.linkedin.com/in/sam/"), -32602)

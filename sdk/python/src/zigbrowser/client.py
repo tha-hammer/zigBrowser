@@ -268,22 +268,27 @@ class LinkedInNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def visit(self, profile_url: str) -> dict:
-        return self._client.call("linkedin.visit", {"profileUrl": profile_url})
+    def visit(self, profile_url: str, window_id: str | None = None) -> dict:
+        return self._client.call("linkedin.visit", _drop_none(profileUrl=profile_url, window_id=window_id))
 
-    def connect(self, profile_url: str, note: str | None = None, dry_run: bool = False) -> dict:
+    def connect(self, profile_url: str, note: str | None = None, dry_run: bool = False, window_id: str | None = None) -> dict:
         """Send an invitation; a note longer than 300 characters is cut to 300.
-        dry_run=True: everything up to the Connect click, which is only tried."""
-        return self._client.call("linkedin.connect", _drop_none(profileUrl=profile_url, note=note, options=_dry_run(dry_run)))
+        Connect may be the owner's own button or the item of their More menu.
+        dry_run=True: everything up to the first click (Connect, or More),
+        which is only tried."""
+        return self._client.call(
+            "linkedin.connect", _drop_none(profileUrl=profile_url, note=note, options=_dry_run(dry_run), window_id=window_id)
+        )
 
-    def follow(self, profile_url: str, dry_run: bool = False) -> dict:
-        return self._client.call("linkedin.follow", _drop_none(profileUrl=profile_url, options=_dry_run(dry_run)))
+    def follow(self, profile_url: str, dry_run: bool = False, window_id: str | None = None) -> dict:
+        return self._client.call("linkedin.follow", _drop_none(profileUrl=profile_url, options=_dry_run(dry_run), window_id=window_id))
 
     def message(
         self,
         text: str,
         conversation_url: str | None = None,
         profile_url: str | None = None,
+        window_id: str | None = None,
     ) -> dict:
         """Send text in a conversation, or from a profile's Message button
         (exactly one of the two URLs)."""
@@ -291,32 +296,36 @@ class LinkedInNamespace:
             raise ValueError("pass exactly one of conversation_url, profile_url")
         return self._client.call(
             "linkedin.message",
-            _drop_none(text=text, conversationUrl=conversation_url, profileUrl=profile_url),
+            _drop_none(text=text, conversationUrl=conversation_url, profileUrl=profile_url, window_id=window_id),
         )
 
-    def like(self, post_url: str, dry_run: bool = False) -> dict:
-        return self._client.call("linkedin.like", _drop_none(postUrl=post_url, options=_dry_run(dry_run)))
+    def like(self, post_url: str, dry_run: bool = False, window_id: str | None = None) -> dict:
+        return self._client.call("linkedin.like", _drop_none(postUrl=post_url, options=_dry_run(dry_run), window_id=window_id))
 
-    def comment(self, post_url: str, text: str, dry_run: bool = False) -> dict:
+    def comment(self, post_url: str, text: str, dry_run: bool = False, window_id: str | None = None) -> dict:
         """dry_run=True: the text is checked, never typed."""
-        return self._client.call("linkedin.comment", _drop_none(postUrl=post_url, text=text, options=_dry_run(dry_run)))
+        return self._client.call(
+            "linkedin.comment", _drop_none(postUrl=post_url, text=text, options=_dry_run(dry_run), window_id=window_id)
+        )
 
-    def search(self, query: str, search_type: str = "people") -> dict:
+    def search(self, query: str, search_type: str = "people", window_id: str | None = None) -> dict:
         """{ok, url, resultCount}: opens LinkedIn's search for query."""
         if search_type not in self.SEARCH_TYPES:
             raise ValueError(f"search_type must be one of {self.SEARCH_TYPES}")
         params = {"query": query}
         if search_type != "people":
             params["searchType"] = search_type
+        if window_id is not None:
+            params["window_id"] = window_id
         return self._client.call("linkedin.search", params)
 
-    def extract(self, profile_url: str) -> dict:
+    def extract(self, profile_url: str, window_id: str | None = None) -> dict:
         """Read-only profile summary: {name, headline, location} (null when absent)."""
-        return self._client.call("linkedin.extract", {"profileUrl": profile_url})
+        return self._client.call("linkedin.extract", _drop_none(profileUrl=profile_url, window_id=window_id))
 
-    def selfcheck(self) -> dict:
+    def selfcheck(self, window_id: str | None = None) -> dict:
         """{selector_name: count} for LinkedIn's selector table on the current page."""
-        return self._client.call("linkedin.selfcheck")
+        return self._client.call("linkedin.selfcheck", _drop_none(window_id=window_id) or None)
 
 
 class InstagramNamespace:
@@ -327,29 +336,31 @@ class InstagramNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def follow(self, profile_url: str, dry_run: bool = False) -> dict:
-        return self._client.call("instagram.follow", _drop_none(profileUrl=profile_url, options=_dry_run(dry_run)))
+    def follow(self, profile_url: str, dry_run: bool = False, window_id: str | None = None) -> dict:
+        return self._client.call("instagram.follow", _drop_none(profileUrl=profile_url, options=_dry_run(dry_run), window_id=window_id))
 
-    def like(self, post_url: str, dry_run: bool = False) -> dict:
-        return self._client.call("instagram.like", _drop_none(postUrl=post_url, options=_dry_run(dry_run)))
+    def like(self, post_url: str, dry_run: bool = False, window_id: str | None = None) -> dict:
+        return self._client.call("instagram.like", _drop_none(postUrl=post_url, options=_dry_run(dry_run), window_id=window_id))
 
-    def comment(self, post_url: str, text: str, dry_run: bool = False) -> dict:
+    def comment(self, post_url: str, text: str, dry_run: bool = False, window_id: str | None = None) -> dict:
         """dry_run=True: the text is checked, never typed."""
-        return self._client.call("instagram.comment", _drop_none(postUrl=post_url, text=text, options=_dry_run(dry_run)))
+        return self._client.call(
+            "instagram.comment", _drop_none(postUrl=post_url, text=text, options=_dry_run(dry_run), window_id=window_id)
+        )
 
-    def dm(self, username: str, text: str) -> dict:
+    def dm(self, username: str, text: str, window_id: str | None = None) -> dict:
         """Open username's profile, press Message, send text."""
-        return self._client.call("instagram.dm", {"username": username, "text": text})
+        return self._client.call("instagram.dm", _drop_none(username=username, text=text, window_id=window_id))
 
-    def story_view(self, username: str, dry_run: bool = False) -> dict:
+    def story_view(self, username: str, dry_run: bool = False, window_id: str | None = None) -> dict:
         """{ok, framesViewed}: views username's stories frame by frame.
         dry_run=True: opens the story URL as the real flow does, then only
         tries Next (no frame is viewed, Next is never clicked)."""
-        return self._client.call("instagram.story_view", _drop_none(username=username, options=_dry_run(dry_run)))
+        return self._client.call("instagram.story_view", _drop_none(username=username, options=_dry_run(dry_run), window_id=window_id))
 
-    def selfcheck(self) -> dict:
+    def selfcheck(self, window_id: str | None = None) -> dict:
         """{selector_name: count} for Instagram's selector table on the current page."""
-        return self._client.call("instagram.selfcheck")
+        return self._client.call("instagram.selfcheck", _drop_none(window_id=window_id) or None)
 
 
 class SocialNamespace:
@@ -433,30 +444,33 @@ class XNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def post(self, text: str, compose_url: str | None = None, dry_run: bool = False) -> dict:
+    def post(self, text: str, compose_url: str | None = None, dry_run: bool = False, window_id: str | None = None) -> dict:
         """Post text (1-280 characters) now. compose_url overrides the page
         the flow opens (default https://x.com/compose/post). dry_run=True:
         the composer is opened and tried, the text never typed."""
-        return self._client.call("x.post", _drop_none(text=text, compose_url=compose_url, options=_dry_run(dry_run)))
+        return self._client.call("x.post", _drop_none(text=text, compose_url=compose_url, options=_dry_run(dry_run), window_id=window_id))
 
-    def schedule_post(self, text: str, date: str, time: str, compose_url: str | None = None, dry_run: bool = False) -> dict:
+    def schedule_post(
+        self, text: str, date: str, time: str, compose_url: str | None = None, dry_run: bool = False, window_id: str | None = None
+    ) -> dict:
         """Schedule text for date ("YYYY-MM-DD") at time ("HH:MM", 24-hour),
         in the X account's local time."""
         return self._client.call(
-            "x.schedule_post", _drop_none(text=text, date=date, time=time, compose_url=compose_url, options=_dry_run(dry_run))
+            "x.schedule_post",
+            _drop_none(text=text, date=date, time=time, compose_url=compose_url, options=_dry_run(dry_run), window_id=window_id),
         )
 
-    def login_check(self) -> dict:
+    def login_check(self, window_id: str | None = None) -> dict:
         """{loggedIn, platform: "x"}: whether the composer is on the current
         page. Does not navigate."""
-        return self._client.call("x.login_check")
+        return self._client.call("x.login_check", _drop_none(window_id=window_id) or None)
 
-    def selfcheck(self) -> dict:
+    def selfcheck(self, window_id: str | None = None) -> dict:
         """{selector_name: count} for every entry of X's selector table on
         the current page. Read-only: no navigation, no input, not paced.
         Run it on a logged-in x.com page to see whether X's markup still
         matches before posting."""
-        return self._client.call("x.selfcheck")
+        return self._client.call("x.selfcheck", _drop_none(window_id=window_id) or None)
 
 
 def _sidecar_token(socket_path: str) -> str | None:

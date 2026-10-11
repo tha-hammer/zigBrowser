@@ -372,6 +372,20 @@ export interface DryRunOption {
   dryRun?: boolean;
 }
 
+/**
+ * `windowId` ("window-<n>" from page.list) on a site flow (x.*, linkedin.*,
+ * instagram.*): the flow runs in that window instead of the primary one, as
+ * page.* and dom.* calls do with `window_id`. A window that is gone is
+ * -32011 "no_window". The cookie gate, pacing and the daily caps are
+ * shared by all windows.
+ */
+export interface WindowOption {
+  windowId?: string;
+}
+
+/** The options of an acting flow. */
+export type FlowOption = DryRunOption & WindowOption;
+
 export interface DryRunCheck {
   name: string;
   /** "pass", "not_reached" (needs the committing action first) or "note". */
@@ -405,6 +419,11 @@ function dryRun(opts: DryRunOption): Record<string, unknown> | undefined {
   return opts.dryRun ? { dry_run: true } : undefined;
 }
 
+/** Params with `window_id` when `opts.windowId` is set. */
+function inWindow(params: Record<string, unknown>, opts: WindowOption): Record<string, unknown> {
+  return wire({ ...params, window_id: opts.windowId });
+}
+
 export interface XLoginCheckResult {
   loggedIn: boolean;
   platform: "x";
@@ -424,25 +443,25 @@ export class XNamespace {
   constructor(private readonly call: Caller) {}
 
   /** Post `text` (1-280 characters) now. `composeUrl` overrides the page the flow opens. */
-  post<O extends { composeUrl?: string } & DryRunOption = {}>(text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    const o: { composeUrl?: string } & DryRunOption = opts ?? {};
-    return this.call("x.post", wire({ text, compose_url: o.composeUrl, options: dryRun(o) })) as Promise<FlowResult<O, OkResult>>;
+  post<O extends { composeUrl?: string } & FlowOption = {}>(text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: { composeUrl?: string } & FlowOption = opts ?? {};
+    return this.call("x.post", inWindow({ text, compose_url: o.composeUrl, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
   /** Schedule `text` for `date` ("YYYY-MM-DD") at `time` ("HH:MM", 24-hour), X account local time. */
-  schedulePost<O extends { composeUrl?: string } & DryRunOption = {}>(text: string, date: string, time: string, opts?: O): Promise<FlowResult<O, SchedulePostResult>> {
-    const o: { composeUrl?: string } & DryRunOption = opts ?? {};
-    return this.call("x.schedule_post", wire({ text, date, time, compose_url: o.composeUrl, options: dryRun(o) })) as Promise<FlowResult<O, SchedulePostResult>>;
+  schedulePost<O extends { composeUrl?: string } & FlowOption = {}>(text: string, date: string, time: string, opts?: O): Promise<FlowResult<O, SchedulePostResult>> {
+    const o: { composeUrl?: string } & FlowOption = opts ?? {};
+    return this.call("x.schedule_post", inWindow({ text, date, time, compose_url: o.composeUrl, options: dryRun(o) }, o)) as Promise<FlowResult<O, SchedulePostResult>>;
   }
   /** Whether the composer is on the current page. Does not navigate. */
-  loginCheck(): Promise<XLoginCheckResult> {
-    return this.call("x.login_check", {}) as Promise<XLoginCheckResult>;
+  loginCheck(opts: WindowOption = {}): Promise<XLoginCheckResult> {
+    return this.call("x.login_check", inWindow({}, opts)) as Promise<XLoginCheckResult>;
   }
   /**
    * `{selector_name: count}` for every entry of X's selector table on the
    * current page. Read-only (no navigation, no input, not paced).
    */
-  selfcheck(): Promise<Record<string, number>> {
-    return this.call("x.selfcheck", {}) as Promise<Record<string, number>>;
+  selfcheck(opts: WindowOption = {}): Promise<Record<string, number>> {
+    return this.call("x.selfcheck", inWindow({}, opts)) as Promise<Record<string, number>>;
   }
 }
 
@@ -473,41 +492,44 @@ export interface StoryViewResult extends OkResult {
 export class LinkedInNamespace {
   constructor(private readonly call: Caller) {}
 
-  visit(profileUrl: string): Promise<OkResult> {
-    return this.call("linkedin.visit", { profileUrl }) as Promise<OkResult>;
+  visit(profileUrl: string, opts: WindowOption = {}): Promise<OkResult> {
+    return this.call("linkedin.visit", inWindow({ profileUrl }, opts)) as Promise<OkResult>;
   }
-  /** A note longer than 300 characters is cut to 300. */
-  connect<O extends { note?: string } & DryRunOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    const o: { note?: string } & DryRunOption = opts ?? {};
-    return this.call("linkedin.connect", wire({ profileUrl, note: o.note, options: dryRun(o) })) as Promise<FlowResult<O, OkResult>>;
+  /** A note longer than 300 characters is cut to 300. Connect is the owner's own button or the item of their More menu. */
+  connect<O extends { note?: string } & FlowOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: { note?: string } & FlowOption = opts ?? {};
+    return this.call("linkedin.connect", inWindow({ profileUrl, note: o.note, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
-  follow<O extends DryRunOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    return this.call("linkedin.follow", wire({ profileUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
+  follow<O extends FlowOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("linkedin.follow", inWindow({ profileUrl, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
   /** Exactly one of conversationUrl / profileUrl. */
-  message(text: string, target: { conversationUrl: string } | { profileUrl: string }): Promise<OkResult> {
+  message(text: string, target: { conversationUrl: string } | { profileUrl: string }, opts: WindowOption = {}): Promise<OkResult> {
     const t = target as { conversationUrl?: string; profileUrl?: string };
     if ((t.conversationUrl === undefined) === (t.profileUrl === undefined)) {
       throw new Error("message needs exactly one of conversationUrl, profileUrl");
     }
-    return this.call("linkedin.message", wire({ text, conversationUrl: t.conversationUrl, profileUrl: t.profileUrl })) as Promise<OkResult>;
+    return this.call("linkedin.message", inWindow({ text, conversationUrl: t.conversationUrl, profileUrl: t.profileUrl }, opts)) as Promise<OkResult>;
   }
-  like<O extends DryRunOption = {}>(postUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    return this.call("linkedin.like", wire({ postUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
+  like<O extends FlowOption = {}>(postUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("linkedin.like", inWindow({ postUrl, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
-  comment<O extends DryRunOption = {}>(postUrl: string, text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    return this.call("linkedin.comment", wire({ postUrl, text, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
+  comment<O extends FlowOption = {}>(postUrl: string, text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("linkedin.comment", inWindow({ postUrl, text, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
-  search(query: string, opts: { searchType?: LinkedInSearchType } = {}): Promise<LinkedInSearchResult> {
-    return this.call("linkedin.search", wire({ query, searchType: opts.searchType })) as Promise<LinkedInSearchResult>;
+  search(query: string, opts: { searchType?: LinkedInSearchType } & WindowOption = {}): Promise<LinkedInSearchResult> {
+    return this.call("linkedin.search", inWindow({ query, searchType: opts.searchType }, opts)) as Promise<LinkedInSearchResult>;
   }
   /** Read-only profile summary. */
-  extract(profileUrl: string): Promise<LinkedInProfileSummary> {
-    return this.call("linkedin.extract", { profileUrl }) as Promise<LinkedInProfileSummary>;
+  extract(profileUrl: string, opts: WindowOption = {}): Promise<LinkedInProfileSummary> {
+    return this.call("linkedin.extract", inWindow({ profileUrl }, opts)) as Promise<LinkedInProfileSummary>;
   }
   /** `{selector_name: count}` for LinkedIn's selector table on the current page. */
-  selfcheck(): Promise<Record<string, number>> {
-    return this.call("linkedin.selfcheck", {}) as Promise<Record<string, number>>;
+  selfcheck(opts: WindowOption = {}): Promise<Record<string, number>> {
+    return this.call("linkedin.selfcheck", inWindow({}, opts)) as Promise<Record<string, number>>;
   }
 }
 
@@ -515,25 +537,29 @@ export class LinkedInNamespace {
 export class InstagramNamespace {
   constructor(private readonly call: Caller) {}
 
-  follow<O extends DryRunOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    return this.call("instagram.follow", wire({ profileUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
+  follow<O extends FlowOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("instagram.follow", inWindow({ profileUrl, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
-  like<O extends DryRunOption = {}>(postUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    return this.call("instagram.like", wire({ postUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
+  like<O extends FlowOption = {}>(postUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("instagram.like", inWindow({ postUrl, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
-  comment<O extends DryRunOption = {}>(postUrl: string, text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
-    return this.call("instagram.comment", wire({ postUrl, text, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
+  comment<O extends FlowOption = {}>(postUrl: string, text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("instagram.comment", inWindow({ postUrl, text, options: dryRun(o) }, o)) as Promise<FlowResult<O, OkResult>>;
   }
   /** Opens username's profile, presses Message, sends text. */
-  dm(username: string, text: string): Promise<OkResult> {
-    return this.call("instagram.dm", { username, text }) as Promise<OkResult>;
+  dm(username: string, text: string, opts: WindowOption = {}): Promise<OkResult> {
+    return this.call("instagram.dm", inWindow({ username, text }, opts)) as Promise<OkResult>;
   }
   /** With `dryRun: true`: opens the story URL as the real flow does, then only tries Next (no frame viewed, Next never clicked). */
-  storyView<O extends DryRunOption = {}>(username: string, opts?: O): Promise<FlowResult<O, StoryViewResult>> {
-    return this.call("instagram.story_view", wire({ username, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, StoryViewResult>>;
+  storyView<O extends FlowOption = {}>(username: string, opts?: O): Promise<FlowResult<O, StoryViewResult>> {
+    const o: FlowOption = opts ?? {};
+    return this.call("instagram.story_view", inWindow({ username, options: dryRun(o) }, o)) as Promise<FlowResult<O, StoryViewResult>>;
   }
   /** `{selector_name: count}` for Instagram's selector table on the current page. */
-  selfcheck(): Promise<Record<string, number>> {
-    return this.call("instagram.selfcheck", {}) as Promise<Record<string, number>>;
+  selfcheck(opts: WindowOption = {}): Promise<Record<string, number>> {
+    return this.call("instagram.selfcheck", inWindow({}, opts)) as Promise<Record<string, number>>;
   }
 }

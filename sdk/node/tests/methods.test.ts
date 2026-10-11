@@ -95,6 +95,14 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "instagram.like.dry_run": (zb) => zb.instagram.like("https://www.instagram.com/p/C0ffee/", { dryRun: true }),
   "instagram.comment.dry_run": (zb) => zb.instagram.comment("https://www.instagram.com/p/C0ffee/", "So good", { dryRun: true }),
   "instagram.story_view.dry_run": (zb) => zb.instagram.storyView("ada", { dryRun: true }),
+  // windowId: the flow runs in that window (page.list).
+  "x.post.window": (zb) => zb.x.post("hello", { windowId: "window-2" }),
+  "x.login_check.window": (zb) => zb.x.loginCheck({ windowId: "window-2" }),
+  "linkedin.connect.window": (zb) => zb.linkedin.connect("https://www.linkedin.com/in/ada/", { note: "Hi Ada", dryRun: true, windowId: "window-2" }),
+  "linkedin.message.window": (zb) => zb.linkedin.message("hi", { conversationUrl: "https://www.linkedin.com/messaging/thread/1/" }, { windowId: "window-2" }),
+  "linkedin.search.window": (zb) => zb.linkedin.search("zig", { searchType: "companies", windowId: "window-2" }),
+  "instagram.story_view.window": (zb) => zb.instagram.storyView("ada", { windowId: "window-2" }),
+  "instagram.selfcheck.window": (zb) => zb.instagram.selfcheck({ windowId: "window-2" }),
 };
 
 describe("dry-run result types", () => {

@@ -235,7 +235,12 @@ primary one, for example a login popup the page opened. Each window has its
 own command queue. A window that is gone answers -32011 with
 `data.reason = "no_window"`; backends without window support answer
 -32011 `unsupported`. The site flows (`x.*`, `linkedin.*`, `instagram.*`)
-always use the primary window.
+take `window_id` the same way: every step of the flow (and its stop-sign
+scans) runs in that window, in that window's queue turn, and other windows
+are not touched. The session-cookie gate, pacing and the daily caps stay
+shared by all windows (one account). Without `window_id` a flow uses the
+primary window, as before. In the SDKs: `window_id=` (Python) and
+`{ windowId }` (Node) on every `x`, `linkedin` and `instagram` call.
 
 Closing a popup, with `page.close` or by the page's own `window.close()`
 (for example when a login popup finishes), leaves its opener's page as it
