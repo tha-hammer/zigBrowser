@@ -3451,3 +3451,87 @@ fix must clear only cancellation attribution while preserving the terminal
 stop/no-further-page-work behavior. The clean 728/728 gate is valid evidence
 for the rest of the slice, but this path has no oracle and therefore does not
 close the blocker.
+
+**Status: CLOSED by `bbd5d74` (APPROVED; Agent Mail 5150/5151 superseded by
+5155).** The follow-up clears `failed_step` only when the primitive's actual
+failure code is `cancelled`, before the existing terminal return
+(`src/automation/flow_runner.zig:104-117`). It retains the held `-32012` and
+does not permit a scan, fallback probe, or later page step. If the external
+cancel flag becomes set while a primitive independently fails for its own
+reason, that primitive failure correctly keeps its attribution.
+
+The exact requested regression sets `navigate_result = error.Cancelled`,
+asserts code `-32012`, asserts no `data.step`, and confirms no evaluation ran
+after navigation (`tests/automation_social_test.zig:1185-1197`). The owner
+reported RED as `step: "navigate"`, then GREEN, followed by a clean-export,
+private-Xvfb gate at exact `bbd5d74`: **Build Summary: 92/92 steps succeeded;
+752/752 tests passed**. This closes the only blocker on `907c204`.
+
+## LinkedIn More-menu Connect and shadow piercing (`c1bfeb3`)
+
+**Verdict: BLOCKER (cc_2, wrong-person risk; Agent Mail 5157).** The direct
+owner-button route, the shadow-root primitive, the live label refresh, and the
+late-dialog behavior are otherwise correctly implemented and tested, but the
+More-menu item is not causally bound to the owner-scoped More button.
+
+### What matches the live evidence
+
+- The profile owner still comes from `<Name> | LinkedIn`; the owner area is
+  exactly the one `//main//section[@aria-label="Primary content"]`. The flow
+  counts visible copies and strictly clicks the sole visible More in that
+  area, so its hidden copy, sticky clone, and suggestion-card More are not
+  candidates (`src/linkedin.zig:99-114,629-663`).
+- The menu item is an innermost clickable with normalized text exactly
+  `Connect`; it does not assume the full-name aria-label that the live menu
+  lacks (`src/linkedin.zig:45-51`). Zero or multiple visible candidates fail
+  rather than choosing by order (`:665-681`).
+- The dialog wait is 15 seconds, comfortably covering the observed 3-5
+  seconds, and its exact `Add a note` / `Send without a note` buttons use the
+  new open-shadow-root `pierce=` engine (`src/linkedin.zig:52-59,245-248,
+  296-317`). Pending and Following are checked inside the owner area using the
+  live prefix-plus-owner-name labels. The invitation toast is selfcheck-only,
+  never success evidence (`:60-63,92-97,129-155,731-735`).
+- `automation.js` leaves the five old selector engines on `[document]`, while
+  `pierce=` searches document plus nested open roots, rejects XPath, and
+  deduplicates matches (`src/automation_script/automation.js:1047-1158`). Its
+  hit test descends shadow roots and checks composed-tree containment, focus
+  descends through `shadowRoot.activeElement`, and synthetic input events are
+  composed. The real-binary input E2E covers query, wait, synthetic/native
+  clicks, fill/type/press, scrolling, obscuration, strict duplicates, nested
+  and closed roots, and a slotted node
+  (`tests/e2e/automation_input_test.py:400-477`).
+- The social-flow fixture places the invite dialog in an open shadow root,
+  delays the More route by four seconds, uses the live Pending/Following/toast
+  shapes, and contains only invented names. Its direct, external-menu, inline-
+  menu, note, no-item, and dry-run paths drive the real socket chain.
+
+### Blocker: an unrelated menu can supply the committing Connect
+
+`selectors.more_menu_connect` is the union of the owner area and **every**
+`role=menu` in the document (`src/linkedin.zig:50-51`). After clicking the
+owner's More, `clickMenuConnect` accepts the sole visible exact-text Connect in
+that union (`:665-681`). It neither records that zero such external candidate
+was visible before the click nor links the resulting menu to the clicked
+button through `aria-controls`/`aria-owns` or another stable relationship.
+
+Therefore, if an unrelated profile/card menu is already open and contains the
+only visible `Connect`, while the owner's menu has none or fails to open, the
+flow clicks the unrelated irreversible action. The later Pending check is
+post-commit and cannot make that safe. This violates the owner-scope contract
+even though the More button itself was selected correctly.
+
+The existing fixture has only the owner's external `role=menu`; its
+no-Connect case has no competing open menu, so the production-chain tests do
+not exercise this risk. Required failing-first case: keep the owner's menu
+without Connect, add one unrelated visible `role=menu` with exact-text
+Connect, and assert the flow fails closed with the unrelated click log empty.
+A conservative implementation can require zero visible external candidate
+before the owner's More click and exactly one newly visible candidate after
+it; if live markup exposes a stable `aria-controls`/`aria-owns` relationship,
+binding through that is stronger.
+
+Verification evidence is otherwise green: `c1bfeb3`'s clean-export gate
+passed **92/92 steps, 751/751 tests**, and the exact descendant `bbd5d74` gate
+passed **92/92 steps, 752/752 tests**, both under private Xvfb. The green gates
+do not close this blocker because neither contains the competing-menu oracle.
+No live browser, live socket, DISPLAY `:0`, or user account was accessed.
