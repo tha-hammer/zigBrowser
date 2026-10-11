@@ -1382,6 +1382,9 @@ const Watchdog = struct {
             }
             sleepMs(50);
         }
+        // The test is over (its defer joins us): the next test starts with
+        // no stage, never this one's last.
+        live_stage.store(0, .release);
     }
 };
 
