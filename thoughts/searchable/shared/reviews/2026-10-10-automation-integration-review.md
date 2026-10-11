@@ -1889,8 +1889,31 @@ intermittent failure did not recur; it does not supply the required stack or
 close the blocker. The throwaway tree was immediately deleted and `/tmp`
 remained 21% used. Mailed as 4920.
 
+`983a179` + `9c8fdb0` make the next recurrence diagnosable without
+changing production behavior. If a live-test watchdog expires, it first names
+the stage with raw writes, then on Linux permits ptrace and runs a bounded
+30-second gdb `thread apply all bt 40` before preserving exit 124. A deliberate
+stall at the failing stage printed all 13 threads, including
+`BlockedDriver.run` and the GTK main loop. The follow-up keeps the Linux-only
+`prctl`, pid, and gdb body out of non-Linux compilation. Both exact diffs are
+approved. The reviewer's full Xvfb gate of the guarded bytes, concurrently with
+another full-build load, passed **85/85 steps, 644/644 tests**; the author's
+frozen clean-export gate did too.
+
+The static audit also narrows, but does not yet prove, the cause. The original
+excerpt continued with `error return context:`, which places the null unwrap
+inside an active error branch. At stage `blocked: typing a, Enter, b`, the only
+such driver branch is the expected `DocumentChanged` diagnostic
+`std.debug.print`. One reachable stdlib unwrap is Zig 0.16
+`Io.Threaded.recancelInner` (`Thread.current.?`) when stderr unlock observes
+`error.Canceled`; a plain `std.Thread.spawn` driver has no `Thread.current`.
+There is not yet evidence for why that writer state would be canceled, so this
+remains a candidate, not a finding. The exact gdb stack is still required
+before classifying and fixing the failure. The owner is looping cold-cache
+clean exports because direct and warm-cache loops have not reproduced it.
+
 Review thread:
-4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918.
+4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929.
 
 ## Deferred scope note
 
