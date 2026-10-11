@@ -151,8 +151,12 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_equal("connect without note", zb.linkedin.connect(profile), {"ok": True})
     expect_equal("connect without note recorded", li(), {"action": "connect", "note": None})
     expect_equal("connect without note: only the own visible copy", (wrong_person(), other_copies()), ([], []))
+    # The invite dialog is in a shadow root and handles composed clicks only.
+    expect_equal("connect: the shadow dialog's own button", zb.page.evaluate("window.__li.events")["result"], ["click:connect", "click:send_without_note"])
     expect_equal("follow", zb.linkedin.follow(profile), {"ok": True})
     expect_equal("follow recorded", li(), {"action": "follow"})
+    # Live label after Follow (2026-10-11): the flow confirmed exactly this.
+    expect_equal("follow: the live Following label", zb.page.evaluate("document.getElementById('follow').getAttribute('aria-label')")["result"], "Following, click to unfollow Sam Example")
     expect_equal("follow: only the own button", wrong_person(), [])
     # Another person with the owner's name, in a card and in <main> outside
     # the owner's area, both rendered before the owner's buttons: never
@@ -192,6 +196,42 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     post_report = zb.linkedin.selfcheck()
     expect_equal("selfcheck on the post", (post_report["liked_button"], post_report["comment_button"], post_report["repost_button"]), (1, 1, 1))
     passed.append("linkedin")
+
+    # Connect through the owner's More menu (the live layout without an own
+    # Connect, 2026-10-11): the owner's visible More (never its hidden copy,
+    # the sticky clone or a card's More), the menu's "Connect", then the
+    # invite dialog 4 s later in a shadow root, then the live Pending label.
+    events = lambda: zb.page.evaluate("window.__li.events")["result"]  # noqa: E731
+    labels = lambda: zb.page.evaluate(  # noqa: E731
+        "[document.querySelector('[data-own-connect]') && document.querySelector('[data-own-connect]').getAttribute('aria-label'),"
+        " document.getElementById('follow').getAttribute('aria-label'),"
+        " Array.from(document.querySelectorAll('[role=alert]')).map(function (e) { return e.textContent; })]")["result"]
+    for path in ("creator.user", "creator.inline"):
+        creator = f"{origin}/in/{path}/"
+        started = time.monotonic()
+        expect_equal(f"{path}: connect via More", zb.linkedin.connect(creator), {"ok": True})
+        if time.monotonic() - started < 4.0:
+            raise AssertionError(f"{path}: the flow did not wait for the late dialog")
+        expect_equal(f"{path}: recorded", li(), {"action": "connect", "note": None})
+        expect_equal(f"{path}: More, its Connect, the dialog's Send", events(), ["click:more", "click:menu_connect", "click:send_without_note"])
+        expect_equal(f"{path}: no other More, no card", (wrong_person(), other_copies()), ([], []))
+        expect_equal(
+            f"{path}: the live labels and toast",
+            labels(),
+            ["Pending, click to withdraw invitation sent to Sam Example", "Following, click to unfollow Sam Example", ["Invitation sent to Sam."]],
+        )
+    creator = f"{origin}/in/creator.user/"
+    expect_equal("More route with a note", zb.linkedin.connect(creator, note="Hi Sam"), {"ok": True})
+    expect_equal("More route with a note: recorded", li(), {"action": "connect", "note": "Hi Sam"})
+    if "keydown:note" not in events():
+        raise AssertionError(f"More route: the note was not typed: {events()}")
+    report = zb.linkedin.selfcheck()
+    expect_equal("selfcheck after the invitation", (report["pending_button"], report["following_button"], report["invite_sent_toast"]), (1, 1, 1))
+    # The owner's menu without Connect (already pending or connected): the
+    # menu is closed again, nothing else clicked.
+    err = expect_error("menu without Connect", lambda: zb.linkedin.connect(f"{origin}/in/creator.pending/"), -32001, "linkedin_profile_connect_not_in_menu")
+    expect_equal("menu without Connect: closed, nothing chosen", (events(), li(), wrong_person(), other_copies()), (["click:more", "menu:escape"], None, [], []))
+    passed.append("more-menu-connect")
 
     # Signed-in marker gate after navigation (stale cookie, signed-out page).
     expect_error("signed-out page", lambda: zb.linkedin.follow(f"{origin}/in/sam/?loggedout=1"), -32011, "logged_out")
@@ -285,8 +325,15 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     dry("li connect", lambda: zb.linkedin.connect(profile, note="Hi Sam", dry_run=True), "connect", ("a", "Invite <owner> to connect"))
     expect_equal(
         "li connect dry run: no Connect click, no invite dialog, no other copy",
-        (li(), zb.page.evaluate("window.__li.events")["result"], wrong_person(), other_copies(), js("document.getElementById('invite').hidden")),
+        (li(), zb.page.evaluate("window.__li.events")["result"], wrong_person(), other_copies(), js("document.getElementById('invite-host').shadowRoot.getElementById('invite').hidden")),
         (None, [], [], [], True),
+    )
+    # The More route: only the owner's More is tried; the menu stays shut.
+    more = dry("li connect via More", lambda: zb.linkedin.connect(f"{origin}/in/creator.user/", dry_run=True), "connect", ("button", "More"))
+    expect_equal(
+        "li connect via More dry run: the menu step is reported, nothing opened",
+        ([c for c in more["checks"] if c["name"] == "more_menu"], li(), zb.page.evaluate("window.__li.events")["result"], js("document.getElementById('menu').hidden")),
+        ([{"name": "more_menu", "result": "not_reached", "reason": "Connect is inside the owner's More menu; opening it needs a click"}], None, [], True),
     )
     dry("li follow", lambda: zb.linkedin.follow(profile, dry_run=True), "follow", ("button", "Follow <owner>"))
     expect_equal("li follow dry run: still Follow", (li(), js("document.getElementById('follow').getAttribute('aria-label')")), (None, "Follow Sam Example"))

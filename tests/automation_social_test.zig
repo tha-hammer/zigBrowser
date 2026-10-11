@@ -1155,6 +1155,36 @@ test "data.step: the story media wait; a navigation timeout; nothing stale when 
     }
 }
 
+test "data.step for the More-menu Connect: the owner's visible More copy (by position) is named by its table entry; a late dialog names its wait" {
+    {
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.fake.navigate_sets_url = true;
+        f.h.fake.current_title = "Sam Example | LinkedIn";
+        const hidden_then_visible = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"More\",\"bbox\":{\"x\":0,\"y\":0,\"width\":0,\"height\":0}},{\"id\":\"zb-2\",\"tag\":\"button\",\"text\":\"More\",\"bbox\":{\"x\":5,\"y\":5,\"width\":80,\"height\":32}}]}}" };
+        const obscured = fakes.EvalReply{ .json = "{\"ok\":false,\"error\":\"element_obscured\",\"retryable\":false,\"data\":{\"reason\":\"receives-events\"}}" };
+        // Signed in; Connect or More appeared; no own Connect; the More
+        // copies; one owner area; the click on the visible More fails.
+        f.h.fake.eval_replies = &.{ flow_ok, flow_ok, no_elements, hidden_then_visible, flow_ok, obscured };
+        var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\"}");
+        defer outcome.deinit(gpa);
+        try expectStep(outcome, "click_owner_more_button");
+    }
+    {
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.fake.navigate_sets_url = true;
+        f.h.fake.current_title = "Sam Example | LinkedIn";
+        // The direct Connect is clicked; the invite dialog never shows.
+        f.h.fake.eval_replies = &.{ flow_ok, flow_ok, flow_ok, flow_ok, flow_ok, wait_timeout };
+        var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\"}");
+        defer outcome.deinit(gpa);
+        try expectStep(outcome, "waitFor_send_without_note_button");
+    }
+}
+
 test "LinkedIn flows give page.navigate 60 s (a cold profile load took more than 30 s live); Instagram keeps 30 s" {
     var f: FlowHarness = undefined;
     f.init();

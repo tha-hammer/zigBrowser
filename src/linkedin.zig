@@ -29,7 +29,8 @@ pub const selectors = struct {
     pub const connect_button = "css=main [aria-label^=\"Invite \"][aria-label$=\" to connect\"]";
     pub const pending_button = "css=main [aria-label^=\"Pending\"]";
     pub const follow_button = "css=main button[aria-label^=\"Follow \"]";
-    pub const following_button = "css=main button[aria-label^=\"Following \"], main button[aria-label^=\"Unfollow \"]";
+    /// Live (2026-10-11): "Following, click to unfollow <Name>".
+    pub const following_button = "css=main button[aria-label^=\"Following\"], main button[aria-label^=\"Unfollow\"]";
     pub const message_button = "css=main a[href*=\"/messaging/compose\"], main button[aria-label^=\"Message \"]";
     /// Suggestion-card actions inside an <aside>, which the profile flows
     /// leave out. UNVERIFIED live: on a profile page this should be about
@@ -37,11 +38,29 @@ pub const selectors = struct {
     /// means the cards are not in an <aside> and the scoping needs a new
     /// anchor.
     pub const suggested_actions = "xpath=//aside//*[starts-with(@aria-label, \"Invite \") or starts-with(@aria-label, \"Follow \")]";
-    /// Connect dialog.
-    pub const add_note_button = "css=button[aria-label=\"Add a note\"]";
-    pub const note_input = "css=textarea[name=\"message\"]";
-    pub const send_invite_button = "css=button[aria-label=\"Send invitation\"], button[aria-label=\"Send now\"]";
-    pub const send_without_note_button = "css=button[aria-label=\"Send without a note\"]";
+    /// The owner's "More" button (in owner_container, under no aria-hidden
+    /// element). Live: two in the owner area, one of them hidden (the
+    /// sticky header's copy). UNVERIFIED live: its label (text "More" seen).
+    pub const owner_more_button = "xpath=" ++ owner_container ++ more_button_path;
+    /// The Connect item of the menu the owner's More opens: the innermost
+    /// clickable whose text is exactly "Connect" (live; its label has only
+    /// the first name), inside the owner area or a role=menu. UNVERIFIED
+    /// live: where the open menu sits (inside the owner area, or a
+    /// role=menu elsewhere); neither -> the flow finds no item and refuses.
+    pub const more_menu_connect = "xpath=(" ++ owner_container ++ " | //*[@role=\"menu\"])" ++
+        "//*[" ++ clickable ++ "][normalize-space(.)=\"Connect\"][not(.//*[" ++ clickable ++ "][normalize-space(.)=\"Connect\"])]" ++ not_hidden;
+    /// Connect dialog. Live (2026-10-11): it opens 3-5 s after the Connect
+    /// click, inside an open shadow root (pierce=), with the buttons
+    /// Dismiss, Add a note and Send without a note. UNVERIFIED live: the
+    /// note box and its Send button.
+    pub const add_note_button = "pierce=role=button[name=\"Add a note\"]";
+    pub const note_input = "pierce=css=textarea[name=\"message\"]";
+    pub const send_invite_button = "pierce=css=button[aria-label=\"Send invitation\"], button[aria-label=\"Send now\"]";
+    pub const send_without_note_button = "pierce=role=button[name=\"Send without a note\"]";
+    /// The toast after an invitation (live: role=alert, "Invitation sent to
+    /// <first name>."). For linkedin.selfcheck only: the owner's Pending
+    /// label decides, since a toast can come from anything.
+    pub const invite_sent_toast = "xpath=//*[@role=\"alert\" or @aria-live][starts-with(normalize-space(.), \"Invitation sent\")]";
     /// Messaging.
     pub const message_input = "css=.msg-form__contenteditable[contenteditable=\"true\"]";
     pub const message_send_button = "css=button.msg-form__send-button";
@@ -71,10 +90,10 @@ pub const selectors = struct {
 pub const site = flow.Site{ .host = "www.linkedin.com", .origin = "https://www.linkedin.com" };
 
 /// The profile's own actions, by their exact labels for the profile
-/// owner's name (see `profileNameFromTitle`). UNVERIFIED live: the pending
-/// and following labels (taken from the earlier markup) and actions that
-/// LinkedIn moves under the profile's "More" menu, which these flows do not
-/// open: they fail closed as linkedin_profile_action_missing.
+/// owner's name (see `profileNameFromTitle`). Live (2026-10-11): "Pending,
+/// click to withdraw invitation sent to <Name>" and "Following, click to
+/// unfollow <Name>". Connect may sit under the owner's "More" menu instead
+/// (see `connect`); follow and message are never looked for there.
 pub const ProfileAction = enum { connect, follow, message, pending, following };
 
 /// The profile's own action area, as an XPath expression that must match
@@ -88,13 +107,18 @@ pub const ProfileAction = enum { connect, follow, message, pending, following };
 /// in another language has no such label: 0 areas, so the flows refuse.)
 pub const owner_container = "//main//section[@aria-label=\"Primary content\"]";
 
+/// Under no aria-hidden element (the sticky toolbar's clone is aria-hidden).
+const not_hidden = "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
+const clickable = "self::button or self::a or @role=\"button\" or @role=\"menuitem\"";
+/// The owner's More button, below an owner area.
+const more_button_path = "//button[normalize-space(.)=\"More\" or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ not_hidden;
+
 /// Whether a profile action may click at all. Connect and follow: on, in
 /// owner_container. Message: OFF, since the profile's own Message was not
 /// on the probed profile; the flow opens and checks the profile, then stops
 /// before any click: element_not_found linkedin_profile_owner_unverified
 /// (tests run it through flow_steps.Site.unverified_actions). UNVERIFIED
-/// live: the labels after the click (pending, following) and the invite
-/// dialog's buttons.
+/// live: the note box of the invite dialog.
 pub fn ownerActionEnabled(action: ProfileAction) bool {
     return switch (action) {
         .connect, .follow => true,
@@ -121,13 +145,13 @@ pub fn profileSelector(gpa: std.mem.Allocator, action: ProfileAction, name: []co
             try out.append(gpa, ')');
         },
         .following => {
-            try labelEquals(gpa, &out, "Following ", name, "");
-            try out.appendSlice(gpa, " or ");
-            try labelEquals(gpa, &out, "Unfollow ", name, "");
+            try out.appendSlice(gpa, "(starts-with(@aria-label, \"Following\") or starts-with(@aria-label, \"Unfollow\")) and contains(@aria-label, ");
+            try xpathLiteral(gpa, &out, &.{name});
+            try out.append(gpa, ')');
         },
     }
     try out.append(gpa, ']');
-    if (container != null) try out.appendSlice(gpa, "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]");
+    if (container != null) try out.appendSlice(gpa, not_hidden);
     return try out.toOwnedSlice(gpa);
 }
 
@@ -218,6 +242,10 @@ const navigate_timeout_ms = 60_000;
 const page_ready_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;
+/// The invite dialog took 3-5 s to open live (2026-10-11).
+const dialog_timeout_ms = 15_000;
+/// A menu opens at once; its items render with it.
+const menu_timeout_ms = 5_000;
 const read_timeout_ms = 10_000;
 
 pub const Verb = enum { visit, connect, message, like, comment, follow, search, extract, selfcheck };
@@ -261,6 +289,10 @@ pub fn visit(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url:
 
 /// Sends a connection invitation, with an optional note (typed; truncated
 /// to 300 characters), and waits until the profile shows it as pending.
+/// Connect is the owner's own button, or (when the owner area has none, a
+/// standard live layout) the "Connect" item of the owner's "More" menu
+/// (see `resolveConnect`). Either opens the invite dialog, late and inside
+/// a shadow root: its button is awaited.
 pub fn connect(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url: []const u8, note: ?[]const u8) Error!?[]u8 {
     if (!s.allows(profile_url)) return error.InvalidParams;
     if (note) |text| try validateText(text, std.math.maxInt(usize));
@@ -268,7 +300,12 @@ pub fn connect(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_ur
     const name = (try profileName(gpa, runner, s)) orelse return null;
     defer gpa.free(name);
     const area = (try ownerArea(runner, s, .connect)) orelse return null;
-    if (!(try clickProfileAction(gpa, runner, area, .connect, name))) return null;
+    const target = (try resolveConnect(gpa, runner, area, name)) orelse return null;
+    defer gpa.free(target.selector);
+    if (!(try click(gpa, runner, target.selector, true))) return null;
+    if (target.route == .more_menu and !(try clickMenuConnect(gpa, runner))) return null;
+    const first = if (note != null) selectors.add_note_button else selectors.send_without_note_button;
+    if (!(try flow.step(gpa, runner, "dom.waitFor", .{ .selector = first, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, dialog_timeout_ms) }))) return null;
     if (note) |text| {
         if (!(try click(gpa, runner, selectors.add_note_button, true))) return null;
         if (!(try typeInto(gpa, runner, selectors.note_input, truncateNote(text)))) return null;
@@ -407,22 +444,32 @@ pub fn dryRun(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, verb: DryVe
             const name = (try profileName(gpa, runner, s)) orelse return null;
             defer gpa.free(name);
             const area = (try ownerArea(runner, s, action)) orelse return null;
-            const target = (try resolveProfileAction(gpa, runner, area, action, name)) orelse return null;
-            defer gpa.free(target);
-            const element = (try flow.trialTarget(gpa, runner, target, true, click_timeout_ms)) orelse return null;
+            const target: ConnectTarget = if (verb == .connect)
+                (try resolveConnect(gpa, runner, area, name)) orelse return null
+            else
+                .{ .route = .own_button, .selector = (try resolveProfileAction(gpa, runner, area, action, name)) orelse return null };
+            defer gpa.free(target.selector);
+            const element = (try flow.trialTarget(gpa, runner, target.selector, true, click_timeout_ms)) orelse return null;
             defer gpa.free(element.tag);
-            const label = if (verb == .connect) "Invite <owner> to connect" else "Follow <owner>";
-            return try flow.dryRunResult(gpa, @tagName(verb), .{ .tag = element.tag, .label = label, .box = element.box }, &.{
+            const label = if (verb == .follow) "Follow <owner>" else switch (target.route) {
+                .own_button => "Invite <owner> to connect",
+                .more_menu => "More",
+            };
+            const checks = [_]flow.Check{
                 flow.pass("signed_in"),
                 flow.pass("profile_owner"),
                 flow.counted("owner_area", 1),
                 flow.counted("visible_copies", 1),
                 flow.pass("actionable"),
+                // Opening the menu is a click: a dry run never makes it.
+                flow.notReached("more_menu", "Connect is inside the owner's More menu; opening it needs a click"),
                 if (verb == .connect)
                     flow.notReached("invite_dialog", "opens only after the Connect click")
                 else
                     flow.notReached("following_state", "appears only after the Follow click"),
-            });
+            };
+            const shown_checks: []const flow.Check = if (target.route == .more_menu) &checks else &.{ checks[0], checks[1], checks[2], checks[3], checks[4], checks[6] };
+            return try flow.dryRunResult(gpa, @tagName(verb), .{ .tag = element.tag, .label = label, .box = element.box }, shown_checks);
         },
         .like => {
             const element = (try flow.trialTarget(gpa, runner, selectors.like_button, true, click_timeout_ms)) orelse return null;
@@ -545,6 +592,17 @@ fn resolveProfileAction(gpa: std.mem.Allocator, runner: anytype, container: []co
         try runner.notFound("linkedin_profile_action_missing");
         return null;
     }
+    return pickVisibleCopy(gpa, runner, container, own, copies, appeared);
+}
+
+/// `selector`'s one visible copy in the one owner area `container` (owned;
+/// itself when it matches once, else by position), given its `copies` (at
+/// least one) and whether the wait for it succeeded. Null, the runner
+/// holding why: the wait failed (its own failure: e.g. cancelled), the
+/// area is not there exactly once or two copies are visible
+/// (linkedin_profile_action_ambiguous), or none is
+/// (linkedin_profile_action_missing).
+fn pickVisibleCopy(gpa: std.mem.Allocator, runner: anytype, container: []const u8, selector: []const u8, copies: Copies, appeared: bool) Error!?[]u8 {
     // A failed wait with the target present (e.g. cancelled) keeps its failure.
     if (!appeared) return null;
     const area = try std.fmt.allocPrint(gpa, "xpath={s}", .{container});
@@ -558,8 +616,77 @@ fn resolveProfileAction(gpa: std.mem.Allocator, runner: anytype, container: []co
         try runner.notFound("linkedin_profile_action_missing");
         return null;
     }
-    if (copies.total == 1) return try gpa.dupe(u8, own);
-    return try std.fmt.allocPrint(gpa, "xpath=({s})[{d}]", .{ own["xpath=".len..], copies.first_visible });
+    return try indexedCopy(gpa, selector, copies);
+}
+
+/// `selector` itself when it matches once, else its first visible copy by
+/// position (owned).
+fn indexedCopy(gpa: std.mem.Allocator, selector: []const u8, copies: Copies) Error![]u8 {
+    if (copies.total == 1) return try gpa.dupe(u8, selector);
+    return try std.fmt.allocPrint(gpa, "xpath=({s})[{d}]", .{ selector["xpath=".len..], copies.first_visible });
+}
+
+/// How a Connect starts: the owner's own Connect button, or their More
+/// button, whose menu holds Connect.
+pub const ConnectRoute = enum { own_button, more_menu };
+pub const ConnectTarget = struct { route: ConnectRoute, selector: []u8 };
+
+/// What `connect` clicks first (selector owned), or null (the runner holds
+/// why). Profile buttons render late, so it first waits for a visible copy
+/// of either the owner's own Connect (the exact label for `name`) or the
+/// owner's More button, both inside the owner area. When the own Connect
+/// is there at all, it is the target exactly as in clickProfileAction.
+/// Otherwise the target is the owner's one visible More button, by the
+/// same rules (live: the area holds two, one of them hidden): no More
+/// either -> linkedin_profile_action_missing; two visible ->
+/// linkedin_profile_action_ambiguous.
+pub fn resolveConnect(gpa: std.mem.Allocator, runner: anytype, container: []const u8, name: []const u8) Error!?ConnectTarget {
+    const own = try profileSelector(gpa, .connect, name, container);
+    defer gpa.free(own);
+    const more = try std.fmt.allocPrint(gpa, "xpath={s}{s}", .{ container, more_button_path });
+    defer gpa.free(more);
+    const either = try std.fmt.allocPrint(gpa, "{s} | {s}", .{ own, more["xpath=".len..] });
+    defer gpa.free(either);
+    const appeared = try flow.step(gpa, runner, "dom.waitFor", .{ .selector = either, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, page_ready_timeout_ms) });
+    const own_copies = (try visibleCopies(gpa, runner, own)) orelse return null;
+    if (own_copies.total > 0) {
+        const selector = (try pickVisibleCopy(gpa, runner, container, own, own_copies, appeared)) orelse return null;
+        return .{ .route = .own_button, .selector = selector };
+    }
+    const more_copies = (try visibleCopies(gpa, runner, more)) orelse return null;
+    if (more_copies.total == 0) {
+        try runner.notFound("linkedin_profile_action_missing");
+        return null;
+    }
+    const selector = (try pickVisibleCopy(gpa, runner, container, more, more_copies, appeared)) orelse return null;
+    return .{ .route = .more_menu, .selector = selector };
+}
+
+/// After the owner's More click: clicks the one visible "Connect" item of
+/// the menu it opened (selectors.more_menu_connect). No item (already
+/// connected or pending, or Follow-only) -> Escape closes the menu, then
+/// linkedin_profile_connect_not_in_menu; two visible -> Escape, then
+/// linkedin_profile_action_ambiguous. A failed wait with an item there
+/// (e.g. cancelled) keeps its own failure.
+fn clickMenuConnect(gpa: std.mem.Allocator, runner: anytype) Error!bool {
+    const item = selectors.more_menu_connect;
+    const appeared = try flow.step(gpa, runner, "dom.waitFor", .{ .selector = item, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, menu_timeout_ms) });
+    const copies = (try visibleCopies(gpa, runner, item)) orelse return false;
+    if (copies.visible == 0 and copies.total == 0) return closeMenu(gpa, runner, "linkedin_profile_connect_not_in_menu");
+    if (!appeared) return false;
+    if (copies.visible > 1) return closeMenu(gpa, runner, "linkedin_profile_action_ambiguous");
+    if (copies.visible == 0) return closeMenu(gpa, runner, "linkedin_profile_connect_not_in_menu");
+    const target = try indexedCopy(gpa, item, copies);
+    defer gpa.free(target);
+    return click(gpa, runner, target, true);
+}
+
+/// Escape (to the focused element: the menu closes), then fails as
+/// `reason`. A failed Escape keeps its own failure.
+fn closeMenu(gpa: std.mem.Allocator, runner: anytype, reason: []const u8) Error!bool {
+    if (!(try flow.step(gpa, runner, "dom.press", .{ .key = "Escape", .options = .{ .timeout_ms = flow.budget(runner, click_timeout_ms) } }))) return false;
+    try runner.notFound(reason);
+    return false;
 }
 
 const Copies = struct { total: usize, visible: usize, first_visible: usize };

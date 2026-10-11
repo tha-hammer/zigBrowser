@@ -397,6 +397,86 @@ def run_native(socket_path: Path, t: float) -> None:
         raise AssertionError(f"prefix duplicated or lost: sent {sent}, value length {len(value)}, ends {value[-3:]!r}")
 
 
+def run_shadow(socket_path: Path, t: float) -> None:
+    """pierce=<css|role|text|testid selector> also searches open shadow roots
+    (live: LinkedIn's invite dialog); every other engine is unchanged."""
+    ids = iter(range(800, 900))
+
+    def rpc(method: str, params: dict):
+        return call_rpc(socket_path, method, params, next(ids), t)
+
+    def js(expression: str):
+        return evaluate(socket_path, expression, next(ids), t)
+
+    def count(selector: str) -> int:
+        return len(rpc("dom.query", {"selector": selector})["elements"])
+
+    def log() -> list[str]:
+        return js("window.shadowLog.splice(0)")
+
+    # Only pierce= enters shadow roots, open ones only (nested ones too).
+    expect_equal("css= stays out of shadow roots", count("css=#sbtn"), 0)
+    expect_equal("role= stays out of shadow roots", count('role=button[name="Send without a note"]'), 0)
+    expect_equal("pierce=css=", count("pierce=css=#sbtn"), 1)
+    expect_equal("pierce=role= by text", rpc("dom.query", {"selector": 'pierce=role=button[name="Send without a note"]'})["elements"][0]["text"], "Send without a note")
+    expect_equal("pierce=text= in a nested root", count("pierce=text=Nested"), 1)
+    expect_equal("pierce= never enters a closed root", count("pierce=text=Closed"), 0)
+    expect_equal("pierce= sees the light DOM too", count("pierce=css=#nativebtn"), 1)
+    # A slotted light button is one element: found once, not again through
+    # the slot.
+    expect_equal("a slotted button counts once (css)", count("pierce=css=.slotted"), 1)
+    expect_equal("a slotted button counts once (role)", count('pierce=role=button[name="Slotted"]'), 1)
+    expect_equal("pierce=xpath= is malformed", rpc_error(socket_path, "dom.query", {"selector": "pierce=xpath=//button"}, next(ids), t)["data"]["reason"], "malformed_selector")
+
+    # waitFor sees a button added to a shadow root later.
+    js("(window.armShadow(300), 0)")
+    expect_equal("waitFor in a shadow root", rpc("dom.waitFor", {"selector": "pierce=css=#slate", "state": "visible", "timeout_ms": 5000}), {"ok": True})
+
+    # A synthetic click is composed (as a real one is): the host's listener,
+    # outside the shadow tree, sees it.
+    log()
+    expect_equal("click in a shadow root", rpc("dom.click", {"selector": 'pierce=role=button[name="Send without a note"]'}), {"ok": True})
+    expect_equal("the click reached the host", log(), ["click:sbtn:false"])
+    expect_equal("native click in a shadow root", rpc("dom.click", {"selector": "pierce=css=#sbtn", "options": {"input": "native"}}), {"ok": True})
+    expect_equal("the native click landed on the button", log(), ["click:sbtn:true"])
+    expect_equal("fill in a shadow root", rpc("dom.fill", {"selector": "pierce=css=#snote", "value": "Hi"}), {"ok": True})
+    expect_equal("type in a shadow root", rpc("dom.type", {"selector": "pierce=css=#snote", "text": "!"}), {"ok": True})
+    expect_equal("textarea value", js("document.getElementById('shadowhost').shadowRoot.getElementById('snote').value"), "Hi!")
+    expect_equal("fill and type events reached the host", log(), ["input:snote:false", "keydown:snote:false", "input:snote:false", "keyup:snote:false"])
+    # Focus inside a shadow root: the document's activeElement is the host,
+    # so the key goes to the focused element inside it, keyup included.
+    expect_equal("press in a shadow root", rpc("dom.press", {"selector": "pierce=css=#snote", "key": "a"}), {"ok": True})
+    expect_equal("press without a selector goes to the focused element inside the root", rpc("dom.press", {"key": "b"}), {"ok": True})
+    expect_equal("pressed keys typed", js("document.getElementById('shadowhost').shadowRoot.getElementById('snote').value"), "Hi!ab")
+    expect_equal("press events on the textarea", log(), ["keydown:snote:false", "input:snote:false", "keyup:snote:false"] * 2)
+    # A button at the bottom of a scrolled box inside the root is scrolled
+    # into view first, for a synthetic and a native click.
+    hidden = "(function(){var r=document.getElementById('shadowhost').shadowRoot; var b=r.getElementById('sbox'); b.scrollTop=0;" \
+        " return r.getElementById('sdeep').getBoundingClientRect().top > b.getBoundingClientRect().bottom;})()"
+    expect_equal("precondition: the deep button starts out of its box's view", js(hidden), True)
+    expect_equal("click on a scrolled-away shadow button", rpc("dom.click", {"selector": "pierce=css=#sdeep"}), {"ok": True})
+    expect_equal("precondition again", js(hidden), True)
+    expect_equal("native click on a scrolled-away shadow button", rpc("dom.click", {"selector": "pierce=css=#sdeep", "options": {"input": "native"}}), {"ok": True})
+    expect_equal("both deep clicks landed", log(), ["click:sdeep:false", "click:sdeep:true"])
+
+    # The checks still hold inside a shadow root.
+    # (A check that never passes ends as action_timeout with data.last_error.)
+    def last_error(error: dict):
+        data = error.get("data") or {}
+        return data.get("last_error") or data.get("reason") or error.get("message")
+
+    error = rpc_error(socket_path, "dom.click", {"selector": "pierce=css=#scovered", "options": {"timeout_ms": 500}}, next(ids), t)
+    expect_equal("covered in a shadow root", last_error(error), "element_obscured")
+    error = rpc_error(socket_path, "dom.click", {"selector": 'pierce=role=button[name="Twin"]', "options": {"timeout_ms": 500}}, next(ids), t)
+    expect_equal("two matches in a shadow root (strict)", last_error(error), "strict_multiple")
+    expect_equal("nothing clicked by the failed clicks", log(), [])
+
+    # A light button whose icon has its own shadow root still receives the
+    # click (the hit test lands inside the icon's root).
+    expect_equal("light button with a shadow icon", rpc("dom.click", {"selector": "css=#iconbtn"}), {"ok": True})
+    expect_equal("icon button clicked", js("window.iconClicks"), 1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -449,6 +529,9 @@ def main() -> int:
             scenario = "native input"
             run_native(socket_path, args.timeout_sec)
             print("PASS\tnative (trusted) input over the socket")
+            scenario = "shadow roots"
+            run_shadow(socket_path, args.timeout_sec)
+            print("PASS\tpierce= reaches open shadow roots")
         except Exception as exc:
             print(f"FAIL\t{scenario}")
             eprint(f"error={exc}")

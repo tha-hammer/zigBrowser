@@ -389,7 +389,7 @@ pub const InMemoryTelemetrySink = struct {
     }
 };
 
-const selector_kinds = [_][]const u8{ "role", "testid", "text", "css", "xpath" };
+const selector_kinds = [_][]const u8{ "role", "testid", "text", "css", "xpath", "pierce" };
 
 /// One of the supported selector engines, or "invalid"; never the raw
 /// client-supplied prefix.

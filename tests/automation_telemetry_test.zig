@@ -396,6 +396,17 @@ test "selector.kind is a bounded enum, never a raw client prefix" {
     try std.testing.expect(!h.sink.containsRaw("token_secret"));
 }
 
+test "selector.kind: a pierce= selector (open shadow roots too) is \"pierce\"" {
+    var h: Harness = undefined;
+    h.init(&.{.{ .json = "{\"ok\":true,\"value\":{\"ok\":true},\"telemetry\":[]}" }});
+    defer h.deinit();
+
+    var outcome = try h.run("dom.click", "{\"selector\":\"pierce=role=button[name=\\\"Send without a note\\\"]\"}", 0);
+    defer outcome.deinit(gpa);
+    const root = try h.root();
+    try std.testing.expectEqualStrings("pierce", root.attr("selector.kind").?);
+}
+
 /// Records the JSON of every value that crosses the TelemetrySink vtable, so
 /// redaction is checked at the boundary rather than inside one sink.
 const SpySink = struct {

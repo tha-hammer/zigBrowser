@@ -463,8 +463,23 @@ fn sha256Hex(out: *Hex64, value: []const u8) []const u8 {
     return out;
 }
 
-/// A selector-table name for a selector value, if it is one.
+/// A selector-table name for a selector value, if it is one, or for one
+/// copy of a table XPath by its position, `xpath=(<table XPath>)[n]` (a
+/// LinkedIn profile action's visible copy).
 fn selectorName(call: Call, selector: []const u8) ?[]const u8 {
+    if (tableName(call, selector)) |name| return name;
+    const prefix = "xpath=(";
+    if (!std.mem.startsWith(u8, selector, prefix) or selector.len == 0 or selector[selector.len - 1] != ']') return null;
+    const open = std.mem.lastIndexOf(u8, selector, ")[") orelse return null;
+    const position = selector[open + 2 .. selector.len - 1];
+    if (position.len == 0) return null;
+    for (position) |c| if (!std.ascii.isDigit(c)) return null;
+    var buf: [1024]u8 = undefined;
+    const inner = std.fmt.bufPrint(&buf, "xpath={s}", .{selector[prefix.len..open]}) catch return null;
+    return tableName(call, inner);
+}
+
+fn tableName(call: Call, selector: []const u8) ?[]const u8 {
     switch (call) {
         .linkedin => inline for (@typeInfo(linkedin.selectors).@"struct".decls) |decl| {
             if (std.mem.eql(u8, @field(linkedin.selectors, decl.name), selector)) return decl.name;

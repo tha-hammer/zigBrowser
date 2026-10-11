@@ -145,6 +145,23 @@ Every `dom.*` selector has an engine prefix:
 | `testid=tweetButton` | `[data-testid="tweetButton"]` |
 | `role=button[name="Send"]` | ARIA role (explicit or implicit) plus accessible name |
 | `xpath=//main//button[1]` | XPath |
+| `pierce=role=button[name="Send"]` | A `css=`, `role=`, `text=` or `testid=` selector that also searches open shadow roots |
+
+The other engines never look inside a shadow root (a web component's own
+DOM). `pierce=` searches the page, then every open shadow root, nested ones
+included, and counts each element once. Closed shadow roots stay out of
+reach, and `xpath=` cannot be pierced (`pierce=xpath=...` is malformed).
+Each root is matched on its own, so a CSS combinator never crosses a shadow
+boundary: `pierce=css=#host button` does not match a button inside
+`#host`'s shadow root (use `pierce=css=button` or a name). `pierce=` walks
+every element of the page and of each root on every try, so it is slower
+than the other engines on large pages: use it only where a shadow root is
+in the way.
+Actions on an element inside a shadow root run the same checks as anywhere
+else; an element covered inside the shadow tree still fails
+`element_obscured`. Synthetic clicks, key presses and typed text are
+composed events, as real input is, so listeners outside the shadow root see
+them too.
 
 A selector without a prefix is malformed (`element_not_found`,
 `data.reason = "malformed_selector"`). Most commands are **strict**: exactly
@@ -385,7 +402,9 @@ delete the file.
   Examples: `navigate` (opening the page), `waitFor_signed_in` (the page
   never showed a signed-in account), `url` (reading where the page
   landed), `waitFor_story_media` (the story's video or picture never
-  appeared), `query_story_next`, `click_follow_button`. An error the flow
+  appeared), `query_story_next`, `click_follow_button`,
+  `click_owner_more_button`, `waitFor_send_without_note_button` (the
+  invite dialog never opened). An error the flow
   raises itself (such as `linkedin_profile_action_missing`), a platform
   stop sign (-32010), the flow deadline and a cancellation have no `step`.
 - Logged in means the site's session cookie is in the profile (`li_at` for
@@ -416,10 +435,28 @@ delete the file.
   a hidden copy of Connect there, and a copy outside `<main>`, which are
   never clicked). A card for another person, even one with the same name,
   is never looked at. Otherwise they fail with
-  `linkedin_profile_action_missing` (never shown; LinkedIn sometimes puts
-  Connect under the profile's "More" menu, which these flows do not open)
-  or `linkedin_profile_action_ambiguous` (shown more than once, or the area
+  `linkedin_profile_action_missing` (never shown) or
+  `linkedin_profile_action_ambiguous` (shown more than once, or the area
   more than once). Nothing is clicked in either case.
+- **`linkedin.connect` also works when Connect is under the owner's "More"
+  menu.** Many profiles show only Follow and More, with Connect inside the
+  menu. When the owner's area has no Connect of its own, the call clicks
+  the owner's one shown More button (the same rules as above: never a
+  hidden copy, never a card's More), then the menu item whose text is
+  exactly "Connect". The menu must be inside the owner's area or be a
+  `role=menu`. If the menu has no Connect (already connected or pending, or
+  Follow only), Escape closes it and the call fails with -32001
+  `linkedin_profile_connect_not_in_menu`; two Connect items fail with
+  `linkedin_profile_action_ambiguous`. Not yet run live: where LinkedIn
+  puts the open menu.
+- **The invite dialog is awaited.** On the live site it opens 3 to 5 s
+  after the Connect click, inside a shadow root (found with `pierce=`). The
+  call waits up to 15 s for its "Send without a note" button (or "Add a
+  note" with a note), then waits for the owner's own label "Pending, click
+  to withdraw invitation sent to <Name>". `linkedin.follow` waits for
+  "Following, click to unfollow <Name>" (both labels seen live on
+  2026-10-11). The toast "Invitation sent to <first name>." is counted by
+  `linkedin.selfcheck` (`invite_sent_toast`) but decides nothing.
 - **`linkedin.message` with `profileUrl` is switched off for now.** The
   profile's own Message button has not been seen on a live profile yet,
   so it opens the profile, checks it as above, then stops before any click
@@ -549,7 +586,7 @@ What each one stops at:
 
 | Call | `target` | Not reached |
 |---|---|---|
-| `linkedin.connect` | the owner's Connect | the invite dialog (Send without a note, Add a note, Send) |
+| `linkedin.connect` | the owner's Connect, or the owner's More when Connect is in its menu (`more_menu` is reported `not_reached`: opening the menu needs a click) | the menu, the invite dialog (Send without a note, Add a note, Send) |
 | `linkedin.follow` | the owner's Follow | the Following state |
 | `linkedin.like` | the first reaction button | the liked state |
 | `linkedin.comment` | the Comment button (the comment box is counted) | typing and the submit button |
@@ -716,7 +753,7 @@ channel sends one notification, `automation.ready`.
 | -32602 | Invalid params | Missing, unknown or wrong-typed params; `data.reason` explains file problems for `cookies.import` |
 | -32603 | Internal error | Page script exception, malformed page answer, unsupported method |
 | -32000 | Authentication failed | Missing or wrong `auth` token |
-| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
+| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `linkedin_profile_connect_not_in_menu`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
 | -32002 | element_not_visible | Matched but hidden or zero-size |
 | -32003 | element_not_stable | Matched but still moving |
 | -32004 | element_obscured | Another element covers the click point |

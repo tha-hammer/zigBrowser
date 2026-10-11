@@ -96,7 +96,17 @@ const own_connect_2 = "xpath=(" ++ area ++ "//*[@aria-label=\"Invite Sam Example
 const own_follow = "xpath=" ++ area ++ "//*[@aria-label=\"Follow Sam Example\"]" ++ shown;
 const own_message = "xpath=" ++ area ++ "//*[@aria-label=\"Message Sam Example\"]" ++ shown;
 const own_pending = "xpath=" ++ area ++ "//*[starts-with(@aria-label, \"Pending\") and contains(@aria-label, \"Sam Example\")]" ++ shown;
-const own_following = "xpath=" ++ area ++ "//*[@aria-label=\"Following Sam Example\" or @aria-label=\"Unfollow Sam Example\"]" ++ shown;
+/// Live (the orchestrator's real Connect, 2026-10-11): "Following, click to
+/// unfollow <Name>".
+const own_following = "xpath=" ++ area ++ "//*[(starts-with(@aria-label, \"Following\") or starts-with(@aria-label, \"Unfollow\")) and contains(@aria-label, \"Sam Example\")]" ++ shown;
+/// The owner's More button (live: two in the owner area, one of them hidden)
+/// and the Connect item of the menu it opens.
+const more_path = "//button[normalize-space(.)=\"More\" or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ shown;
+const own_more = "xpath=" ++ area ++ more_path;
+const own_more_2 = "xpath=(" ++ area ++ more_path ++ ")[2]";
+/// What a Connect waits for first: the owner's own Connect, or their More.
+const connect_or_more = "xpath=" ++ area ++ "//*[@aria-label=\"Invite Sam Example to connect\"]" ++ shown ++ " | " ++ area ++ more_path;
+const menu_connect = linkedin.selectors.more_menu_connect;
 const visible_box = "{\"x\":56,\"y\":513,\"width\":97,\"height\":48}";
 const hidden_box = "{\"x\":0,\"y\":0,\"width\":0,\"height\":0}";
 const one_element = "{\"elements\":[{\"id\":\"a\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ visible_box ++ "}]}";
@@ -352,20 +362,24 @@ test "the scoped flows: connect with a typed note and follow (on), profile messa
     var c = FakeRunner{};
     defer c.deinit();
     gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, "Hi Sam, loved your notes on the engine.")).?);
-    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.click", "dom.click", "dom.click", "dom.fill", "dom.type", "dom.click", "dom.waitFor" });
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.click", "dom.waitFor", "dom.click", "dom.click", "dom.fill", "dom.type", "dom.click", "dom.waitFor" });
+    try expectSelector(&c, 4, connect_or_more);
     try expectSelector(&c, 7, own_connect);
+    // The invite dialog comes late (live: 3-5 s): its button is awaited.
     try expectSelector(&c, 8, linkedin.selectors.add_note_button);
-    try expectSelector(&c, 9, linkedin.selectors.note_input);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[8].params, "\"state\":\"visible\"") != null);
+    try expectSelector(&c, 9, linkedin.selectors.add_note_button);
+    try expectSelector(&c, 10, linkedin.selectors.note_input);
     // fill only clears; the note text goes through dom.type.
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[10].params, "\"value\":\"\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "loved your notes") != null);
-    try expectSelector(&c, 12, linkedin.selectors.send_invite_button);
-    try expectSelector(&c, 13, own_pending);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "\"value\":\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[12].params, "loved your notes") != null);
+    try expectSelector(&c, 13, linkedin.selectors.send_invite_button);
+    try expectSelector(&c, 14, own_pending);
 
     var long = FakeRunner{};
     defer long.deinit();
     gpa.free((try linkedin.connect(gpa, &long, linkedin.site, profile, "é" ** 301)).?);
-    const typed = try std.json.parseFromSlice(std.json.Value, gpa, long.steps.items[11].params, .{});
+    const typed = try std.json.parseFromSlice(std.json.Value, gpa, long.steps.items[12].params, .{});
     defer typed.deinit();
     try std.testing.expectEqual(@as(usize, 300), try std.unicode.utf8CountCodepoints(typed.value.object.get("text").?.string));
 
@@ -589,9 +603,11 @@ test "dry run connect/follow fail closed exactly like the real flow: ambiguous, 
     try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", two.not_found.?);
     for (two.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
 
+    // No own Connect and no More in the owner area.
     var none = FakeRunner{ .rules = &.{
         .{ .method = "dom.waitFor", .contains = "Invite Sam Example", .result = null },
         .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
+        .{ .method = "dom.query", .contains = "More actions", .result = no_elements },
     } };
     defer none.deinit();
     try std.testing.expect((try linkedin.dryRun(gpa, &none, linkedin.site, .connect, profile)) == null);
@@ -643,4 +659,185 @@ test "dry run comment: trial on the Comment button (as the flow clicks it: not s
     try expectNoInput(&r);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"would_act\":\"comment\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"comment_box\",\"result\":\"pass\",\"count\":1}") != null);
+}
+
+// ---- Connect through the owner's More menu (live, 2026-10-11) ----
+
+// Live: the invite dialog sits in an open shadow root, so its buttons are
+// found with pierce=, and it appears 3-5 s after the Connect click.
+test "the invite dialog's buttons are found inside shadow roots (pierce=), by role and name" {
+    try std.testing.expectEqualStrings("pierce=role=button[name=\"Send without a note\"]", linkedin.selectors.send_without_note_button);
+    try std.testing.expectEqualStrings("pierce=role=button[name=\"Add a note\"]", linkedin.selectors.add_note_button);
+    try std.testing.expect(std.mem.startsWith(u8, linkedin.selectors.note_input, "pierce=css="));
+    try std.testing.expect(std.mem.startsWith(u8, linkedin.selectors.send_invite_button, "pierce=css="));
+}
+
+test "live post-click labels: \"Following, click to unfollow <Name>\" is the Following state (it was missed before)" {
+    try std.testing.expectEqualStrings("css=main button[aria-label^=\"Following\"], main button[aria-label^=\"Unfollow\"]", linkedin.selectors.following_button);
+    try std.testing.expectEqualStrings("xpath=//*[@role=\"alert\" or @aria-live][starts-with(normalize-space(.), \"Invitation sent\")]", linkedin.selectors.invite_sent_toast);
+}
+
+test "connect, direct route: the owner's own Connect, then the late dialog's Send without a note (awaited), then Pending" {
+    var c = FakeRunner{};
+    defer c.deinit();
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.click", "dom.waitFor", "dom.click", "dom.waitFor" });
+    try expectSelector(&c, 4, connect_or_more);
+    try expectSelector(&c, 5, own_connect);
+    try expectSelector(&c, 6, owner_area);
+    try expectSelector(&c, 7, own_connect);
+    try expectSelector(&c, 8, linkedin.selectors.send_without_note_button);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[8].params, "\"state\":\"visible\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[8].params, "\"timeout_ms\":15000") != null);
+    try expectSelector(&c, 9, linkedin.selectors.send_without_note_button);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[9].params, "\"strict\":true") != null);
+    try expectSelector(&c, 10, own_pending);
+}
+
+/// The live layout: no own Connect; the owner's visible More (a hidden copy
+/// first) opens a menu whose item "Connect" carries no full name.
+const more_menu_rules = [_]Rule{
+    .{ .method = "dom.query", .contains = ")[2]", .result = one_element },
+    .{ .method = "dom.query", .contains = "More actions", .result = hidden_then_visible },
+    .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
+};
+
+test "connect, More route: no own Connect -> the owner's visible More, the menu's one Connect item, the late dialog, then Pending" {
+    var c = FakeRunner{ .rules = &more_menu_rules };
+    defer c.deinit();
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.click", "dom.waitFor", "dom.query", "dom.click", "dom.waitFor", "dom.click", "dom.waitFor" });
+    try expectSelector(&c, 5, own_connect);
+    try expectSelector(&c, 6, own_more);
+    try expectSelector(&c, 7, owner_area);
+    // The visible copy, strictly by its position.
+    try expectSelector(&c, 8, own_more_2);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[8].params, "\"strict\":true") != null);
+    try expectSelector(&c, 9, menu_connect);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[9].params, "\"state\":\"visible\"") != null);
+    try expectSelector(&c, 10, menu_connect);
+    try expectSelector(&c, 11, menu_connect);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "\"strict\":true") != null);
+    try expectSelector(&c, 12, linkedin.selectors.send_without_note_button);
+    try expectSelector(&c, 13, linkedin.selectors.send_without_note_button);
+    try expectSelector(&c, 14, own_pending);
+    try std.testing.expect(c.not_found == null);
+}
+
+test "the menu's Connect item: text exactly \"Connect\", the innermost clickable, inside the owner area or a role=menu, never aria-hidden" {
+    try std.testing.expectEqualStrings(
+        "xpath=(" ++ area ++ " | //*[@role=\"menu\"])//*[self::button or self::a or @role=\"button\" or @role=\"menuitem\"][normalize-space(.)=\"Connect\"]" ++
+            "[not(.//*[self::button or self::a or @role=\"button\" or @role=\"menuitem\"][normalize-space(.)=\"Connect\"])]" ++ shown,
+        menu_connect,
+    );
+    try std.testing.expectEqualStrings(own_more, linkedin.selectors.owner_more_button);
+}
+
+test "connect, More route with a note: Add a note, the note, Send; all in the dialog" {
+    var c = FakeRunner{ .rules = &more_menu_rules };
+    defer c.deinit();
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, "Hi Sam")).?);
+    try expectSelector(&c, 11, menu_connect);
+    try expectSelector(&c, 12, linkedin.selectors.add_note_button);
+    try expectSelector(&c, 13, linkedin.selectors.add_note_button);
+    try expectSelector(&c, 14, linkedin.selectors.note_input);
+    try expectSelector(&c, 17, linkedin.selectors.send_invite_button);
+    try expectSelector(&c, 18, own_pending);
+}
+
+fn expectNoMenuItemClick(runner: *const FakeRunner) !void {
+    for (runner.steps.items, 0..) |st, i| {
+        if (!std.mem.eql(u8, st.method, "dom.click")) continue;
+        const sel = try runner.selectorOf(i);
+        defer gpa.free(sel);
+        try std.testing.expect(std.mem.indexOf(u8, sel, "Connect") == null);
+    }
+}
+
+test "connect, More route: no Connect in the owner's menu (connected, pending, Follow-only) -> Escape closes it, linkedin_profile_connect_not_in_menu" {
+    var c = FakeRunner{ .rules = &([_]Rule{
+        .{ .method = "dom.waitFor", .contains = "menuitem", .result = null },
+        .{ .method = "dom.query", .contains = "menuitem", .result = no_elements },
+    } ++ more_menu_rules) };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_connect_not_in_menu", c.not_found.?);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.click", "dom.waitFor", "dom.query", "dom.press" });
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "\"key\":\"Escape\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "selector") == null);
+    try expectNoMenuItemClick(&c);
+}
+
+test "connect, More route: two visible Connect items -> Escape, linkedin_profile_action_ambiguous, neither clicked" {
+    var c = FakeRunner{ .rules = &([_]Rule{
+        .{ .method = "dom.query", .contains = "menuitem", .result = two_elements },
+    } ++ more_menu_rules) };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", c.not_found.?);
+    try std.testing.expectEqualStrings("dom.press", c.steps.items[c.steps.items.len - 1].method);
+    try expectNoMenuItemClick(&c);
+}
+
+test "connect, More route: a failed menu wait with an item there keeps its own failure (e.g. cancelled); nothing clicked" {
+    var c = FakeRunner{ .rules = &([_]Rule{
+        .{ .method = "dom.waitFor", .contains = "menuitem", .result = null },
+    } ++ more_menu_rules) };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expect(c.not_found == null);
+    try expectNoMenuItemClick(&c);
+}
+
+test "connect: neither the own Connect nor a More in the owner area -> linkedin_profile_action_missing, nothing clicked" {
+    var c = FakeRunner{ .rules = &.{
+        .{ .method = "dom.waitFor", .contains = "More actions", .result = null },
+        .{ .method = "dom.query", .contains = "More actions", .result = no_elements },
+        .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
+    } };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_action_missing", c.not_found.?);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query" });
+}
+
+test "connect, More route: two visible More buttons in the owner area -> linkedin_profile_action_ambiguous, nothing clicked" {
+    var c = FakeRunner{ .rules = &.{
+        .{ .method = "dom.query", .contains = "More actions", .result = two_elements },
+        .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
+    } };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", c.not_found.?);
+    for (c.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
+}
+
+test "connect, More route: only the owner area is looked in for More (never a suggestion card's More)" {
+    var c = FakeRunner{ .rules = &more_menu_rules };
+    defer c.deinit();
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
+    for (4..9) |i| {
+        const sel = try c.selectorOf(i);
+        defer gpa.free(sel);
+        try std.testing.expect(std.mem.startsWith(u8, sel, owner_area) or std.mem.startsWith(u8, sel, "xpath=(" ++ area));
+    }
+}
+
+test "dry run connect, More route: a trial on the owner's visible More only (the menu is never opened); more_menu not reached" {
+    var r = FakeRunner{ .rules = &more_menu_rules };
+    defer r.deinit();
+    const result = (try linkedin.dryRun(gpa, &r, linkedin.site, .connect, profile)).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.click", "dom.query" });
+    try expectSelector(&r, 8, own_more_2);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Sam") == null);
+    try std.testing.expectEqualStrings(
+        "{\"dry_run\":true,\"would_act\":\"connect\",\"target\":{\"tag\":\"a\",\"label\":\"More\",\"box\":{\"x\":56,\"y\":513,\"width\":97,\"height\":48}}," ++
+            "\"checks\":[{\"name\":\"signed_in\",\"result\":\"pass\"},{\"name\":\"profile_owner\",\"result\":\"pass\"},{\"name\":\"owner_area\",\"result\":\"pass\",\"count\":1}," ++
+            "{\"name\":\"visible_copies\",\"result\":\"pass\",\"count\":1},{\"name\":\"actionable\",\"result\":\"pass\"}," ++
+            "{\"name\":\"more_menu\",\"result\":\"not_reached\",\"reason\":\"Connect is inside the owner's More menu; opening it needs a click\"}," ++
+            "{\"name\":\"invite_dialog\",\"result\":\"not_reached\",\"reason\":\"opens only after the Connect click\"}]}",
+        result,
+    );
 }

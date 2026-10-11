@@ -118,6 +118,49 @@
       });
     </script>
 
+    <!-- Open shadow roots (pierce=): a dialog-like root (a button named by its
+         text only, two buttons with one name, a textarea, a covered button,
+         a nested root, a button at the bottom of a scrolled box), a closed
+         root, a root that slots a light button, and a light button whose icon
+         has its own root. Listeners on the host sit outside the shadow tree:
+         only composed events reach them. -->
+    <div id="shadowhost"></div>
+    <div id="closedhost"></div>
+    <div id="slothost"><button class="slotted" type="button">Slotted</button></div>
+    <button id="iconbtn" onclick="window.iconClicks = (window.iconClicks || 0) + 1"><span id="iconhost"></span> Icon</button>
+    <script>
+      (function () {
+        var host = document.getElementById('shadowhost');
+        var root = host.attachShadow({ mode: 'open' });
+        root.innerHTML =
+          '<div role="dialog">' +
+          '<button id="sbtn" type="button">Send without a note</button>' +
+          '<button type="button" aria-label="Twin">One</button><button type="button" aria-label="Twin">Two</button>' +
+          '<textarea id="snote" name="message"></textarea>' +
+          '<span style="position: relative; display: inline-block"><button id="scovered" type="button">Covered</button>' +
+          '<span style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.1)"></span></span>' +
+          '<div id="nestedhost"></div><div id="latebox"></div>' +
+          '<div id="sbox" style="height: 40px; overflow: auto"><div style="height: 400px"></div>' +
+          '<button id="sdeep" type="button">Deep</button></div></div>';
+        document.getElementById('slothost').attachShadow({ mode: 'open' }).innerHTML = '<div><slot></slot></div>';
+        root.getElementById('nestedhost').attachShadow({ mode: 'open' }).innerHTML = '<button id="snested" type="button">Nested</button>';
+        document.getElementById('closedhost').attachShadow({ mode: 'closed' }).innerHTML = '<button type="button">Closed</button>';
+        // The icon covers its button's centre from inside its own root.
+        document.getElementById('iconhost').attachShadow({ mode: 'open' }).innerHTML =
+          '<span style="display: inline-block; width: 40px; height: 20px; background: #ccc"></span>';
+        window.shadowLog = [];
+        ['click', 'keydown', 'input', 'keyup'].forEach(function (type) {
+          host.addEventListener(type, function (e) {
+            var t = e.composedPath()[0];
+            window.shadowLog.push(type + ':' + (t.id || t.textContent) + ':' + e.isTrusted);
+          });
+        });
+        window.armShadow = function (ms) {
+          setTimeout(function () { root.getElementById('latebox').innerHTML = '<button id="slate" type="button">Late in shadow</button>'; }, ms);
+        };
+      })();
+    </script>
+
     <!-- Room to scroll any control out of the viewport. -->
     <div id="spacer" style="height: 3000px"></div>
 

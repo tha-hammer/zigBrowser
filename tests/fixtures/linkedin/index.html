@@ -14,14 +14,24 @@
            /in/limit-reached/          Connect opens the weekly invitation-limit
                                        modal instead of the invite dialog (N20)
            /in/twice/                  the profile's own Follow rendered twice
-           /in/more-menu/              no own Connect on the page (live, it can sit
-                                       under "More")
+           /in/creator.user/           no own Connect: it is the "Connect" item of
+                                       the menu the owner's More opens, a
+                                       role=menu outside the owner area (live
+                                       layout, 2026-10-11); the owner area also
+                                       holds a hidden More copy, the sticky
+                                       toolbar a clone, and a "People you may
+                                       know" card its own More
+           /in/creator.inline/         the same, but the menu opens inside the
+                                       owner area and has no role=menu
+           /in/creator.pending/        the owner's menu has no Connect (Escape
+                                       closes it)
            /in/same-name/              the suggestion card, and a "More profiles"
                                        section in <main> outside the owner's area,
                                        are for another person with the profile's own
                                        name, present before the profile's own
                                        actions render
-           /in/same-name-missing/      those, and no own actions at all
+           /in/same-name-missing/      those, and no own actions at all (no More
+                                       either)
          (the test server redirects /in/gone/ to /feed/: not a profile)
          Live profile (owner probe v2 of 2026-10-11, names redacted): <main> has one
          section, aria-label "Primary content", holding the owner's visible Connect
@@ -30,6 +40,14 @@
          role=toolbar; the "People you may know" cards sit in <aside
          aria-label="Aside"> inside <main>. Clicks on the clone or the hidden copy
          are recorded in window.__li.otherCopies.
+         Live invite dialog (the orchestrator's real Connect, 2026-10-11): it opens
+         3-5 s after the Connect click (4 s here after the menu's Connect, 1 s after
+         a direct one) inside an OPEN SHADOW ROOT, with Dismiss, Add a note and
+         Send without a note; its clicks are handled on the shadow host, outside
+         the shadow tree, so only composed events count. Afterwards the owner area
+         shows "Pending, click to withdraw invitation sent to <Name>" and
+         "Following, click to unfollow <Name>", and a role=alert toast says
+         "Invitation sent to <first name>.".
          Live markup (probed 2026-10-11): hashed class names; the nav's "Me" is a
          <button> whose text is "Me" (no aria-label); nav links carry counts in
          their aria-labels. A profile's title is "<Name> | LinkedIn" and it has no
@@ -120,12 +138,6 @@
             '<span class="text-body-small inline t-black--light break-words">Springfield</span>' +
             '<div id="actions"></div></section>' +
             '</div></div></div></section></div></div>' +
-            '<div id="invite" role="dialog" hidden>' +
-            '  <button aria-label="Add a note">Add a note</button>' +
-            '  <button aria-label="Send without a note">Send without a note</button>' +
-            '  <div id="note-box" hidden><textarea name="message"></textarea>' +
-            '  <button aria-label="Send invitation">Send</button></div>' +
-            '</div>' +
             '<section id="composer" hidden><div class="msg-form__contenteditable" contenteditable="true"></div>' +
             '<button class="msg-form__send-button">Send</button></section>' +
             // "People you may know", inside <main> as live: same kinds of
@@ -134,6 +146,7 @@
             '  <button aria-label="Invite ' + other + ' to connect">Connect</button>' +
             '  <button aria-label="Follow ' + other + '">Follow</button>' +
             '  <a aria-label="Message ' + other + '" href="/messaging/compose/?recipient=other">Message</a>' +
+            '  <button aria-label="More actions">More</button>' +
             '</aside></div></div>' +
             // Another person with the owner's name elsewhere in <main>, outside
             // the owner's area and before the owner's own buttons render.
@@ -143,11 +156,42 @@
           Array.prototype.forEach.call(main.querySelectorAll('aside [aria-label], section[aria-label="More profiles for you"] [aria-label]'), function (el) {
             el.addEventListener('click', function (e) { e.preventDefault(); li.wrongPerson.push(el.getAttribute('aria-label')); });
           });
-          var invite = document.getElementById('invite');
+          var inviteHost = document.createElement('div');
+          inviteHost.id = 'invite-host';
+          document.body.appendChild(inviteHost);
+          var inviteRoot = inviteHost.attachShadow({ mode: 'open' });
+          inviteRoot.innerHTML = '<div id="invite" role="dialog" hidden>' +
+            '  <button type="button" data-act="dismiss" aria-label="Dismiss">\u2715</button>' +
+            '  <button type="button" data-act="add_note">Add a note</button>' +
+            '  <button type="button" data-act="send_without_note">Send without a note</button>' +
+            '  <div id="note-box" hidden><textarea name="message"></textarea>' +
+            '  <button type="button" data-act="send" aria-label="Send invitation">Send</button></div>' +
+            '</div>';
+          var invite = inviteRoot.getElementById('invite');
+          var noteInput = inviteRoot.querySelector('textarea');
+          function openInvite(ms) { setTimeout(function () { invite.hidden = false; }, ms); }
           var limited = m[1] === 'limit-reached';
-          var hasConnect = m[1] !== 'more-menu' && m[1] !== 'same-name-missing';
+          var creator = m[1].indexOf('creator.') === 0;
+          var inlineMenu = m[1] === 'creator.inline';
+          var menuHasConnect = m[1] !== 'creator.pending';
+          var hasConnect = !creator && m[1] !== 'same-name-missing';
           var connectLink = function (extra) { return '<a ' + extra + ' class="_6b0f3e" data-own-connect aria-label="Invite ' + name + ' to connect" href="/preload/custom-invite/">Connect</a>'; };
-          var own = m[1] === 'same-name-missing' ? '  <button aria-label="More actions">More</button>' :
+          var first = name.split(' ')[0];
+          // The owner's More menu (live items, in order; first names only).
+          var itemRole = inlineMenu ? 'button' : 'menuitem';
+          function menuItem(key, html, label) {
+            return '<div role="' + itemRole + '" tabindex="0" data-item="' + key + '"' + (label ? ' aria-label="' + label + '"' : '') + '>' + html + '</div>';
+          }
+          var menuHtml = menuItem('sales_navigator', 'View in Sales Navigator') + menuItem('send_profile', 'Send profile in a message') +
+            menuItem('pdf', 'Save to PDF') + menuItem('message', 'Message ' + first) +
+            (menuHasConnect ? menuItem('connect', '<svg aria-hidden="true" width="16" height="16"></svg><span>Connect</span>', 'Invite ' + first + ' to connect') : '') +
+            menuItem('report', 'Report ' + first) + menuItem('block', 'Block ' + first) + menuItem('about', 'About this member');
+          var own = m[1] === 'same-name-missing' ? '' : creator ?
+            '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
+            '  <span><button id="more" type="button">More</button>' +
+            (inlineMenu ? '<div id="menu" hidden>' + menuHtml + '</div>' : '') + '</span>' +
+            // The display:none copy of More, as live.
+            '<div class="_2f8a1c" style="display:none"><button id="more-hidden" type="button">More</button></div>' :
             (hasConnect ? '  ' + connectLink('id="connect"') : '') +
             '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
             (m[1] === 'twice' ? '  <button aria-label="Follow ' + name + '">Follow</button>' : '') +
@@ -155,21 +199,38 @@
             '  <button aria-label="More actions">More</button>' +
             // The display:none copy of Connect and More, as live.
             (hasConnect ? '<div class="_2f8a1c" style="display:none">' + connectLink('id="connect-hidden"') + '<button>More</button></div>' : '');
+          // The live labels after an invitation, and the toast.
           function pending(note) {
             invite.hidden = true;
             li.result = { action: 'connect', note: note };
+            var owned = document.querySelectorAll('[data-own-connect]');
+            if (owned.length === 0) document.getElementById('actions').insertAdjacentHTML('afterbegin', '<button data-own-connect>Pending</button>');
             Array.prototype.forEach.call(document.querySelectorAll('[data-own-connect]'), function (b) {
               b.setAttribute('aria-label', 'Pending, click to withdraw invitation sent to ' + name);
               b.textContent = 'Pending';
             });
+            following();
+            document.body.insertAdjacentHTML('beforeend', '<div role="alert" aria-live="polite">Invitation sent to ' + first + '.</div>');
           }
-          invite.querySelector('[aria-label="Add a note"]').addEventListener('click', function () {
-            record('click:add_note'); document.getElementById('note-box').hidden = false;
+          function following() {
+            var b = document.getElementById('follow');
+            if (!b) return;
+            b.setAttribute('aria-label', 'Following, click to unfollow ' + name);
+            b.textContent = 'Following';
+          }
+          // Handled on the host, outside the shadow tree: only a composed
+          // click or key event gets here (a real one is composed).
+          inviteHost.addEventListener('click', function (e) {
+            var t = e.composedPath()[0];
+            var act = t && t.closest ? t.closest('[data-act]') : null;
+            if (!act || invite.hidden) return;
+            var what = act.getAttribute('data-act');
+            if (what === 'add_note') { record('click:add_note'); inviteRoot.getElementById('note-box').hidden = false; }
+            else if (what === 'send_without_note') { record('click:send_without_note'); pending(null); }
+            else if (what === 'send') pending(noteInput.value);
+            else if (what === 'dismiss') { record('click:dismiss'); invite.hidden = true; }
           });
-          var noteInput = invite.querySelector('textarea');
-          noteInput.addEventListener('keydown', function () { record('keydown:note'); });
-          invite.querySelector('[aria-label="Send invitation"]').addEventListener('click', function () { pending(noteInput.value); });
-          invite.querySelector('[aria-label="Send without a note"]').addEventListener('click', function () { record('click:send_without_note'); pending(null); });
+          inviteHost.addEventListener('keydown', function (e) { if (e.composedPath()[0] === noteInput) record('keydown:note'); });
           var composer = document.getElementById('composer');
           var text = editor(composer.querySelector('[contenteditable]'));
           composer.querySelector('button').addEventListener('click', function () {
@@ -180,7 +241,8 @@
             document.getElementById('actions').innerHTML = own;
             // The aria-hidden toolbar clone, outside <main>.
             if (hasConnect) document.getElementById('sticky').innerHTML = connectLink('id="connect-clone"') + '<button type="button">More</button>';
-            ['connect-clone', 'connect-hidden'].forEach(function (id) {
+            if (creator) document.getElementById('sticky').innerHTML = '<button id="more-clone" type="button">More</button>';
+            ['connect-clone', 'connect-hidden', 'more-clone', 'more-hidden'].forEach(function (id) {
               var copy = document.getElementById(id);
               if (copy) copy.addEventListener('click', function (e) { e.preventDefault(); li.otherCopies.push(id); });
             });
@@ -195,15 +257,35 @@
                 document.getElementById('got-it').addEventListener('click', function () { record('click:got_it'); });
                 return;
               }
-              invite.hidden = false;
+              openInvite(1000);
             });
-            document.getElementById('follow').addEventListener('click', function () {
-              var b = document.getElementById('follow');
-              b.setAttribute('aria-label', 'Following ' + name);
-              b.textContent = 'Following';
+            if (creator) {
+              var menu = document.getElementById('menu');
+              if (!menu) {
+                // A menu outside the owner area, as a role=menu.
+                document.body.insertAdjacentHTML('beforeend', '<div id="menu" role="menu" hidden>' + menuHtml + '</div>');
+                menu = document.getElementById('menu');
+              }
+              document.getElementById('more').addEventListener('click', function () { record('click:more'); menu.hidden = false; });
+              document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && !menu.hidden) { record('menu:escape'); menu.hidden = true; }
+              });
+              menu.addEventListener('click', function (e) {
+                var item = e.target.closest('[data-item]');
+                if (!item) return;
+                var key = item.getAttribute('data-item');
+                record('click:menu_' + key);
+                menu.hidden = true;
+                if (key === 'connect') openInvite(4000);
+              });
+            }
+            var followButton = document.getElementById('follow');
+            if (followButton) followButton.addEventListener('click', function () {
+              following();
               li.result = { action: 'follow' };
             });
-            document.getElementById('message').addEventListener('click', function (e) {
+            var messageLink = document.getElementById('message');
+            if (messageLink) messageLink.addEventListener('click', function (e) {
               e.preventDefault(); record('click:message'); composer.hidden = false;
             });
           }, 800);

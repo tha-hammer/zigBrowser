@@ -292,7 +292,7 @@
       return runAction(command, 'press');
     }
     const doc = globalScope.document;
-    const target = doc.activeElement || doc.body || doc.documentElement;
+    const target = deepActiveElement(doc) || doc.body || doc.documentElement;
     synthesizePress(target, command.key, command.modifiers || []);
     return success({ ok: true }, []);
   }
@@ -554,9 +554,17 @@
     return event;
   }
 
+  // The focused element, inside open shadow roots too (the document's
+  // activeElement is then the host).
+  function deepActiveElement(doc) {
+    let active = doc.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return active;
+  }
+
   function synthesizePress(target, key, modifiers) {
     // Focus first, so every key event (modifiers included) reaches a focused target.
-    if (target !== target.ownerDocument.activeElement && typeof target.focus === 'function') target.focus();
+    if (target !== deepActiveElement(target.ownerDocument) && typeof target.focus === 'function') target.focus();
 
     const flags = { shiftKey: false, ctrlKey: false, altKey: false, metaKey: false };
     const held = [];
@@ -582,7 +590,7 @@
       runKeyDefault(target, key, flags);
     }
     // keyup goes to whatever holds focus now (Tab may have moved it).
-    const upTarget = target.ownerDocument.activeElement || target;
+    const upTarget = deepActiveElement(target.ownerDocument) || target;
     upTarget.dispatchEvent(keyboardEvent('keyup', key, descriptor, Object.assign({}, flags), true));
 
     for (const name of held.reverse()) {
@@ -873,10 +881,27 @@
     };
   }
 
+  // The topmost element at the centre must be the element or inside it. In
+  // an open shadow root the document answers with the host, so the hit test
+  // descends through shadow roots, and "inside" is the composed tree.
   function receivesEvents(element) {
     const rect = element.getBoundingClientRect();
-    const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    return top === element || (top && element.contains(top));
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    let top = document.elementFromPoint(x, y);
+    while (top && top !== element && top.shadowRoot) {
+      const inner = top.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === top) break;
+      top = inner;
+    }
+    return composedContains(element, top);
+  }
+
+  function composedContains(element, node) {
+    for (let current = node; current; current = current instanceof ShadowRoot ? current.host : current.parentNode) {
+      if (current === element) return true;
+    }
+    return false;
   }
 
   function isDisabled(element) {
@@ -893,7 +918,7 @@
 
   function synthesizeClick(element) {
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: globalScope }));
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: globalScope }));
     }
   }
 
@@ -906,7 +931,7 @@
     }
     element.focus();
     element.value = value;
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: value }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
@@ -915,18 +940,18 @@
       element.focus();
       selectContents(element, true);
       for (const char of text) {
-        element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: char }));
+        element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, composed: true, key: char }));
         editableInsert(element, char, 'insertText');
-        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: char }));
+        element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, composed: true, key: char }));
       }
       return;
     }
     element.focus();
     for (const char of text) {
-      element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: char }));
+      element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, composed: true, key: char }));
       element.value = (element.value || '') + char;
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
-      element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: char }));
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: char }));
+      element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, composed: true, key: char }));
     }
   }
 
@@ -1019,41 +1044,92 @@
     return { ok: true, elements, telemetry };
   }
 
+  // `pierce=<selector>` is an ordinary css=, role=, text= or testid= selector
+  // that also searches open shadow roots (XPath cannot enter them; closed
+  // roots stay out of reach).
+  const PIERCING_KINDS = ['role', 'testid', 'text', 'css'];
+
   function parseSelector(selector) {
     if (typeof selector !== 'string') return { ok: false };
     const index = selector.indexOf('=');
     if (index <= 0) return { ok: false };
     const kind = selector.slice(0, index);
     const body = selector.slice(index + 1);
-    if (!['role', 'testid', 'text', 'css', 'xpath'].includes(kind) || body.length === 0) {
+    if (!['role', 'testid', 'text', 'css', 'xpath', 'pierce'].includes(kind) || body.length === 0) {
       return { ok: false };
+    }
+    if (kind === 'pierce') {
+      const inner = parseSelector(body);
+      if (!inner.ok || !PIERCING_KINDS.includes(inner.kind)) return { ok: false };
     }
     return { ok: true, kind, body };
   }
 
   function resolveSelector(kind, body) {
     switch (kind) {
-      case 'role':
-        return resolveRole(body);
-      case 'testid':
-        return Array.from(document.querySelectorAll('[data-testid="' + cssEscape(body) + '"]'));
-      case 'text':
-        return allCandidateElements().filter((element) => elementText(element) === body);
-      case 'css':
-        return Array.from(document.querySelectorAll(body));
       case 'xpath':
         return resolveXPath(body);
+      case 'pierce': {
+        const inner = parseSelector(body);
+        return resolveIn(inner.kind, inner.body, searchRoots());
+      }
+      default:
+        return resolveIn(kind, body, [document]);
+    }
+  }
+
+  function resolveIn(kind, body, roots) {
+    switch (kind) {
+      case 'role':
+        return resolveRole(body, roots);
+      case 'testid':
+        return queryAll(roots, '[data-testid="' + cssEscape(body) + '"]');
+      case 'text':
+        return candidateElements(roots).filter((element) => elementText(element) === body);
+      case 'css':
+        return queryAll(roots, body);
       default:
         return [];
     }
   }
 
-  function resolveRole(body) {
+  // The document, then every open shadow root, in the order found (a root
+  // inside a root comes after it).
+  function searchRoots() {
+    const roots = [document];
+    for (let i = 0; i < roots.length; i += 1) {
+      for (const element of roots[i].querySelectorAll('*')) {
+        if (element.shadowRoot) roots.push(element.shadowRoot);
+      }
+    }
+    return roots;
+  }
+
+  function queryAll(roots, selector) {
+    return unique(roots.map((root) => root.querySelectorAll(selector)));
+  }
+
+  // Each element once, in order (a slotted node is a child of its host only,
+  // but a match is never counted twice).
+  function unique(lists) {
+    const seen = new Set();
+    const results = [];
+    for (const list of lists) {
+      for (const element of list) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+        results.push(element);
+      }
+    }
+    return results;
+  }
+
+  function resolveRole(body, roots) {
     const match = body.match(/^([a-zA-Z0-9_-]+)(?:\[name=(?:"([^"]*)"|'([^']*)'|([^\]]+))\])?$/);
     if (!match) throw new Error('malformed role selector');
     const role = match[1];
     const name = match[2] || match[3] || match[4] || null;
-    return allCandidateElements().filter((element) => {
+    return candidateElements(roots).filter((element) => {
       if (elementRole(element) !== role) return false;
       if (name == null) return true;
       return accessibleName(element) === name;
@@ -1076,8 +1152,9 @@
     return results;
   }
 
-  function allCandidateElements() {
-    return Array.from(document.querySelectorAll('body *'));
+  // Elements in the document's body, then in each given shadow root.
+  function candidateElements(roots) {
+    return unique(roots.map((root) => root.querySelectorAll(root === document ? 'body *' : '*')));
   }
 
   function elementRole(element) {
