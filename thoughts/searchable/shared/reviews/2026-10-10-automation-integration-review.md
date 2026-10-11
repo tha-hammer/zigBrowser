@@ -2413,3 +2413,58 @@ production-chain regression, popup-close survival, the HTTP/2 GOAWAY control
 and default cases, selector/social flows, and the live WebKit input tests. The
 throwaway export was deleted by its `find -delete` exit trap. No live browser,
 DISPLAY `:0`, or `zb-live.sock` was used.
+
+## Test-hygiene audit at fc4ebfa
+
+### BLOCKER-for-tests — killing `xvfb-run` leaks its X server and browser
+
+**Status: OPEN (cc_1, shared E2E harness).** PIDs 3116183 and 3147132 are
+still-live 16-hour-old `zigBrowser ... --automation-api` processes. Their
+PPID is the user systemd (1368), and each retains its WebKit network/web
+children. Xvfb PIDs 3116172 (`:105`) and 3147127 (`:106`) began in the same
+second as the matching browser, share its now-dead session and process group,
+and are also reparented to 1368. The retained
+`/tmp/xvfb-run.zjLLe2/Xauthority` and
+`/tmp/xvfb-run.XfV748/Xauthority`, live X105/X106 sockets, and lock files prove
+that `xvfb-run`'s EXIT cleanup did not execute. The processes were inspected
+only and deliberately left alive for the orchestrator.
+
+The boundary error is concrete. `tests/e2e/slice2_common.py:97-112` returns
+`[xvfb-run, -a]` as a command prefix, so every caller's `Popen` object denotes
+the wrapper shell, not zigBrowser. `tests/e2e/automation_core_test.py:196-204`
+and `tests/e2e/automation_api_lifecycle_test.py:97-105` signal that one PID and
+fall back to `proc.kill()` on that PID. `slice2_common.run_interactive_until`
+does the same at lines 175-213, while `sdk_python_live_test.py:86-110`,
+`social_flows_test.py:276-301`, `automation_scroll_test.py:158-183`, and
+`automation_native_ports_test.py:246-271` carry local copies. On this host,
+`/usr/bin/xvfb-run:79-92,158-165,198-205` cleans its auth directory and Xvfb
+only from an EXIT trap. SIGKILL of the wrapper cannot run that trap and never
+targets the separately running browser; both descendants survive.
+
+Exact attribution is narrower than the systemic defect. Both leaked browsers
+belong to BlackRobin's systemd/Claude scope, and both environments contain
+`XDG_DATA_HOME`/`XDG_CACHE_HOME` values made by
+`slice2_common.isolate_profile_env`. However, their bare fixture URL `/` and
+unprefixed `TemporaryDirectory()/a.sock` shape occur in no committed E2E at
+HEAD or in branch history (`git log -S'a.sock'` is empty). They came from an
+ad-hoc cc_1 native/E2E probe, not `x_flows_test.py`. The committed tests remain
+vulnerable to the same teardown failure. `automation_dialogs_test.py:274-307`
+already shows the minimum internal-cleanup shape: a new session followed by
+bounded signals to the whole process group, not one wrapper PID.
+
+Required failing-first coverage: put browser/Xvfb ownership in one shared
+helper, launch an INT/TERM-resistant harmless client through the real
+`xvfb-run` with a unique marker, force the current escalation path, and assert
+that the wrapper, Xvfb, and client PIDs all disappear and its X lock/socket and
+auth directory are removed. The current PID-only fallback must fail this
+test. Then migrate every `detect_runner` consumer to the helper and remove
+direct error-path `proc.kill()` calls. The helper should start a distinct
+session, signal the full group (INT, then bounded TERM/KILL), wait, and verify
+the tracked descendants. A second regression should terminate the Python
+driver with catchable TERM to prove its signal handler also tears down the
+group. Uncatchable SIGKILL cannot be repaired by `finally`; if that case is a
+required contract, the outer timeout must kill a dedicated process group or
+cgroup rather than only the driver.
+
+Finding mailed to BlackRobin, with BlueBeaver copied because the flow E2Es use
+the vulnerable shared launch pattern, as Agent Mail 5011.
