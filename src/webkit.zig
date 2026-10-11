@@ -12,11 +12,42 @@ pub fn versionLine(buffer: []u8) []const u8 {
 }
 
 pub fn runOpen(uri_z: [:0]const u8, print_title: bool) i32 {
+    preferHttp1();
     return c.zb_run_open(uri_z.ptr, if (print_title) 1 else 0);
 }
 
 pub fn runScreenshot(uri_z: [:0]const u8, out_z: [:0]const u8, print_title: bool) i32 {
+    preferHttp1();
     return c.zb_run_screenshot(uri_z.ptr, out_z.ptr, if (print_title) 1 else 0);
+}
+
+// libsoup 3.6.5 (WebKitGTK 2.52.6) fails a completed HTTP/2 response that GOAWAY(NO_ERROR) follows ("TypeError: Load failed").
+pub fn shouldForceHttp1(soup_force_http1: ?[]const u8, zigbrowser_http2: ?[]const u8) bool {
+    if (soup_force_http1 != null) return false;
+    const opt_out = zigbrowser_http2 orelse return true;
+    return !std.mem.eql(u8, opt_out, "1");
+}
+
+/// Sets SOUP_FORCE_HTTP1=1 unless the user set it or ZIGBROWSER_HTTP2=1. Call it before
+/// WebKit starts its network process, which inherits this environment.
+pub fn preferHttp1() void {
+    if (comptime builtin.os.tag != .linux) return;
+    const user = if (std.c.getenv("SOUP_FORCE_HTTP1")) |v| std.mem.span(v) else null;
+    const opt_out = if (std.c.getenv("ZIGBROWSER_HTTP2")) |v| std.mem.span(v) else null;
+    if (shouldForceHttp1(user, opt_out)) _ = setenv("SOUP_FORCE_HTTP1", "1", 0);
+}
+
+test "HTTP/1.1 is forced only when the user set neither SOUP_FORCE_HTTP1 nor ZIGBROWSER_HTTP2=1" {
+    try std.testing.expect(shouldForceHttp1(null, null));
+    // A value the user exported is kept as it is, whatever it says.
+    try std.testing.expect(!shouldForceHttp1("1", null));
+    try std.testing.expect(!shouldForceHttp1("0", null));
+    try std.testing.expect(!shouldForceHttp1("", null));
+    // ZIGBROWSER_HTTP2=1 is the opt-out; any other value is not.
+    try std.testing.expect(!shouldForceHttp1(null, "1"));
+    try std.testing.expect(shouldForceHttp1(null, "0"));
+    try std.testing.expect(shouldForceHttp1(null, ""));
+    try std.testing.expect(!shouldForceHttp1("0", "1"));
 }
 
 // --- Main-thread hand-off tests (GTK backend only) ---

@@ -36,6 +36,8 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     const valid_uri = uri.validate(arena, spec.url) catch |err| {
         return mapUriErr(err);
     };
+    // Before the automation server's threads and before WebKit starts its network process.
+    webkit.preferHttp1();
     const profile_dir = try applyProfileDir(arena, spec);
 
     if (spec.automation_api) {

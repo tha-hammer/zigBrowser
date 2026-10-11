@@ -76,6 +76,16 @@ error codes). Build notes for other platforms: `docs/how-to-build.md`.
    any `dom.*` call to one of them, and `page.close` closes a popup.
    Closing a popup, by `page.close` or by its own `window.close()`, leaves
    its opener's page loaded and working, with its page state (`1088651`).
+7. **HTTP/1.1 by default on Linux.** At startup, before WebKit's network
+   process starts, the browser sets `SOUP_FORCE_HTTP1=1`. The reason is a bug
+   in libsoup 3.6.5 (WebKitGTK 2.52.6): when a server sends a complete
+   HTTP/2 response followed by GOAWAY(NO_ERROR), libsoup fails it, and the
+   page's fetch rejects with "TypeError: Load failed". On the live site this
+   broke X login: the call to `edge.prelude.dev` failed, and X showed
+   "Something went wrong". A `SOUP_FORCE_HTTP1` value the user exported is
+   kept as it is. `ZIGBROWSER_HTTP2=1` turns the default off. This is tested
+   by `tests/e2e/http2_goaway_test.py`, which uses a local HTTP/2 server
+   that sends GOAWAY.
 
 ## Every method and how it is verified
 

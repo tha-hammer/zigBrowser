@@ -533,6 +533,16 @@ pub fn build(b: *std.Build) void {
     });
     automation_pacing_e2e.addArtifactArg(exe);
 
+    // libsoup 3.6.5 HTTP/2 GOAWAY workaround: a local TLS HTTP/2 server ends each response
+    // with GOAWAY(NO_ERROR); the page's fetch must succeed (SOUP_FORCE_HTTP1=1 by default).
+    const http2_goaway_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/http2_goaway_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "http2-goaway-e2e",
+    });
+    http2_goaway_e2e.addArtifactArg(exe);
+
     // N23: popup window targeting through the socket (page.list, window_id,
     // page.close, then no_window for the closed popup).
     const automation_windows_e2e = b.addSystemCommand(&.{
@@ -739,6 +749,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_pacing_e2e.step);
     test_step.dependOn(&automation_profile_e2e.step);
     test_step.dependOn(&automation_cookies_e2e.step);
+    test_step.dependOn(&http2_goaway_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
     test_step.dependOn(&cross_self_test.step);

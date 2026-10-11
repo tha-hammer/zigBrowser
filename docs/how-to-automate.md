@@ -34,6 +34,18 @@ same directory and you are still logged in. Without the flag the profile is
 `$XDG_DATA_HOME/zigbrowser/profile`, or `~/.local/share/zigbrowser/profile`.
 Use one directory per account you automate.
 
+### HTTP/1.1 by default (Linux): `ZIGBROWSER_HTTP2`
+
+On Linux the browser sets `SOUP_FORCE_HTTP1=1` when it starts, so WebKit's
+network process uses HTTP/1.1. The reason is a bug in libsoup 3.6.5
+(WebKitGTK 2.52.6). Some servers send a complete HTTP/2 response and then
+GOAWAY(NO_ERROR). libsoup fails that response, and the page's `fetch()`
+rejects with "TypeError: Load failed". On X this breaks login with
+"Something went wrong".
+
+- To keep HTTP/2, start the browser with `ZIGBROWSER_HTTP2=1`.
+- A `SOUP_FORCE_HTTP1` value you export yourself is never changed.
+
 ## Connect: socket, framing and token
 
 - **Transport:** a Unix socket, mode 0600 (only your user can connect).
