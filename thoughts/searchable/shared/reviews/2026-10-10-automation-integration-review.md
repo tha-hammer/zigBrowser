@@ -2112,3 +2112,57 @@ Historical note: M6 included `page.screenshot` outside the task's original ten-
 method priority list. That deferral is now closed by the N19 PagePort/GTK/socket
 implementation and production-chain PNG oracle; the remaining screenshot
 finding above concerns exact deadline classification, not feature absence.
+
+## HTTP/2 GOAWAY workaround review at 06ebee8
+
+**Status: APPROVED. No blockers.** Commit `06ebee8d60da6c306539e141269dd47f01077d32`
+implements the Linux-only HTTP/1.1 default early enough and preserves both
+forms of user control. `src/app.zig:35-45` calls `preferHttp1` before profile C
+work, automation threads, script installation, or `zb_app_run`; the direct
+WebKit entry points call it immediately before the C boundary for both open
+and screenshot at `src/webkit.zig:14-21`. The decision helper and application
+at `src/webkit.zig:25-38` preserve any existing `SOUP_FORCE_HTTP1` value and
+use `setenv(..., overwrite=0)`; exact `ZIGBROWSER_HTTP2=1` opts out. This
+covers the main-window and screenshot startup paths before a WebKit network
+process can be created.
+
+The helper test at `src/webkit.zig:40-51` covers the unset default, user-set
+values including empty and `0`, the exact opt-out, non-opt-out values, and the
+combined user-value/opt-out case. The regression is wired into the full gate
+at `build.zig:536-544` and `build.zig:752`.
+
+`tests/e2e/http2_goaway_test.py` is a faithful wire-level reproducer, not only
+a WebKitNetworkProcess environment check. Its local TLS server negotiates ALPN
+and sends complete HTTP/2 HEADERS, DATA with END_STREAM, and
+GOAWAY(NO_ERROR) in one `sendall` (`:80-147`). A real page `fetch` supplies the
+behavioral oracle (`:198-211`). The opt-out control must negotiate HTTP/2 and
+observe `TypeError: Load failed`; the default must negotiate HTTP/1.1 and
+observe `ok opaque`; it separately checks the inherited environment and the
+screenshot path (`:316-375`). The self-signed trust override is confined to
+the browser processes created by the test, and every browser is launched
+under its own Xvfb display.
+
+Independent failing-first proof used a disposable clean export of parent
+`f1cab4a`, overlaid only the new regression script, and ran it against the
+parent binary. It exited 1 with five failed checks: the HTTP/2 control still
+reproduced the TypeError, while default open used HTTP/2, returned the
+TypeError, lacked the forced environment value, and the screenshot path also
+used HTTP/2 and failed its title oracle. The user-supplied value was preserved.
+The export was deleted immediately afterward.
+
+`docs/how-to-automate.md:37-47` matches the implementation: Linux defaults to
+HTTP/1.1 for the named libsoup/WebKitGTK failure, exact
+`ZIGBROWSER_HTTP2=1` opts out, and a user-exported `SOUP_FORCE_HTTP1` value is
+not overwritten.
+
+An independent quiet clean-export gate at exact `06ebee8`, with fresh cache,
+ran under `timeout 1500 xvfb-run -a` on display `:111`; `DISPLAY`,
+`WAYLAND_DISPLAY`, and `ZIGBROWSER_SOCKET` were removed from the parent
+environment. It exited 0 with seed `0x533dc7a5`:
+
+`Build Summary: 86/86 steps succeeded; 645/645 tests passed`
+
+The GOAWAY e2e reported all ten checks green. The disposable export was
+deleted immediately, and the live browser on display `:0` and its live socket
+were never touched. BlackRobin independently reported the same 86/86,
+645/645 result in Agent Mail 4964.
