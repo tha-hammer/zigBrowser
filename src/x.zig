@@ -69,6 +69,8 @@ const navigate_timeout_ms = 30_000;
 const composer_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;
+/// X's toasts go after a few seconds.
+const toast_clear_timeout_ms = 10_000;
 /// One trial-click probe of a Post button copy.
 const probe_timeout_ms = 1_000;
 /// How long to look for an actionable Post button: rounds over every copy
@@ -286,12 +288,25 @@ fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8, input: In
 }
 
 /// Click Post (it stays disabled until there is text) and wait for X's
-/// confirmation toast.
+/// confirmation toast. A toast already showing would "confirm" a click that
+/// did nothing (RoseCat's audit 7c9d68a), so none may be visible when Post
+/// is clicked: an old one gets toast_clear_timeout_ms to go, else
+/// element_not_found x_toast_already_shown and Post is never clicked. The
+/// toast that then shows is new. (X's error toasts are caught by the
+/// rate-limit scan after the click. UNVERIFIED live: the success toast's
+/// wording, so it is not checked yet.)
 fn submit(gpa: std.mem.Allocator, runner: anytype, input: Input) Error!bool {
     var selector_buf: [128]u8 = undefined;
     const button = (try findPostButton(gpa, runner, &selector_buf)) orelse return false;
+    if (!(try step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "hidden", .strict = false, .timeout_ms = waitBudget(runner, toast_clear_timeout_ms) }))) {
+        // A wait that failed for another reason (e.g. cancelled) keeps its
+        // own failure.
+        const toasts = (try countMatches(gpa, runner, selectors.post_success)) orelse return false;
+        if (toasts > 0) try runner.notFound("x_toast_already_shown");
+        return false;
+    }
     if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = act(input, budget(runner, click_timeout_ms)) }))) return false;
-    return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "attached", .timeout_ms = waitBudget(runner, confirm_timeout_ms) });
+    return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "visible", .strict = false, .timeout_ms = waitBudget(runner, confirm_timeout_ms) });
 }
 
 /// The first Post button copy that passes a trial click, as an exact

@@ -1053,11 +1053,11 @@ test "x.* is routed: x.post runs its steps on the page and returns the flow resu
     const response = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"hi from the socket\",\"compose_url\":\"http://127.0.0.1:9/compose\"},\"id\":1}");
     defer testing.allocator.free(response);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":1}", response);
-    // 8 flow steps plus the N20 scans: after the navigation, before the
-    // fill, the type, the trial probe and the Post click, and before
-    // reporting success.
+    // 9 flow steps (no toast showing before the Post click is one) plus
+    // the N20 scans: after the navigation, before the fill, the type, the
+    // trial probe and the Post click, and before reporting success.
     try testing.expectEqual(@as(u32, 6), fixture.fake.scans.load(.acquire));
-    try testing.expectEqual(@as(u32, 8 + 6), fixture.fake.evals.load(.acquire));
+    try testing.expectEqual(@as(u32, 9 + 6), fixture.fake.evals.load(.acquire));
 
     const bad = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"x.post\",\"params\":{\"text\":\"\"},\"id\":2}");
     defer testing.allocator.free(bad);

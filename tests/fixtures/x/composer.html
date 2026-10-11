@@ -21,6 +21,10 @@
          &captcha=1: an Arkose-style challenge frame over the composer (N20)
          &limit=1: Post is refused with X's daily-limit toast; nothing is
                    posted (N20)
+         &stale=1: an earlier "Your post was sent." toast is still shown when the
+                   page opens, and Post does nothing (no post, no new toast): an
+                   old toast must not count as this post's confirmation
+         &stale=fade: the same old toast goes after 1.5 s; Post works
          The schedule dialog's selects mirror x.com: generated ids (SELECTOR_1..6), no
          aria-label, each aria-labelledby a label naming it; option counts 13, 32, 4,
          13, 61, 2 (a blank placeholder first, except AM/PM).
@@ -44,6 +48,7 @@
         var all = params.get('all') === '1';
         var captcha = params.get('captcha') === '1';
         var limit = params.get('limit') === '1';
+        var stale = params.get('stale');
         var app = document.getElementById('app');
         window.__xResult = null;
         window.__xPosts = 0;
@@ -97,7 +102,8 @@
           '<div id="schedule-dialog" role="dialog" aria-label="Schedule" hidden>' + scheduleFields +
           '  <button data-testid="scheduledConfirmationPrimaryAction">Confirm</button>' +
           '</div>' +
-          '<div id="toasts">' + (all ? '<div data-testid="toast" role="alert">Shown for selfcheck</div>' : '') + '</div>' +
+          '<div id="toasts">' + (all ? '<div data-testid="toast" role="alert">Shown for selfcheck</div>' : '') +
+          (stale ? '<div id="old-toast" data-testid="toast" role="alert">Your post was sent.</div>' : '') + '</div>' +
           (all ? '<button data-testid="tweetButtonInline" disabled>Post</button><button data-testid="app-bar-close">X</button><a href="/login">Log in</a>' : '') +
           (captcha ? '<iframe id="arkose-challenge" title="arkose challenge" srcdoc="<p>Verify you are human</p>"></iframe>' : '');
 
@@ -190,6 +196,7 @@
         function wire(button) {
           button.addEventListener('click', function () {
             if (button.disabled) return;
+            if (stale === '1') return;
             if (limit) {
               var refused = document.createElement('div');
               refused.setAttribute('data-testid', 'toast');
@@ -216,6 +223,7 @@
           });
         }
         buttons.forEach(wire);
+        if (stale === 'fade') setTimeout(function () { var old = document.getElementById('old-toast'); if (old) old.remove(); }, 1500);
         if (mode === 'home') {
           setTimeout(function () {
             var inline = document.createElement('button');

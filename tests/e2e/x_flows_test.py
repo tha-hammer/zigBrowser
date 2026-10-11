@@ -159,6 +159,18 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("toast", rpc.call("dom.getText", {"selector": "testid=toast"})["text"], "Your post was sent.")
     passed.append("x.post")
 
+    # An old toast still on screen must not confirm this post (RoseCat's
+    # audit 7c9d68a): here Post does nothing, so before the fix the flow
+    # reported success. Now Post is never clicked and nothing is posted.
+    response = rpc.raw("x.post", {"text": "stale toast", "compose_url": f"{base}?mode=compose&stale=1"})
+    error = response.get("error") or {}
+    expect_equal("old toast still shown", (error.get("code"), (error.get("data") or {}).get("reason")), (-32001, "x_toast_already_shown"))
+    expect_equal("old toast: nothing posted, Post never clicked", (recorded(), rpc.call("page.evaluate", {"expression": "window.__xPosts"})["result"]), (None, 0))
+    # An old toast that goes away in time: the post goes through.
+    expect_equal("old toast that fades", rpc.call("x.post", {"text": "after the toast", "compose_url": f"{base}?mode=compose&stale=fade"}), {"ok": True})
+    expect_equal("old toast that fades: posted", recorded()["text"], "after the toast")
+    passed.append("x.post-old-toast")
+
     expect_equal("x.login_check", rpc.call("x.login_check", {}), {"loggedIn": True, "platform": "x"})
     passed.append("x.login_check")
 

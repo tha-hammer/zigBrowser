@@ -545,8 +545,15 @@ delete the file.
 - Each flow is one command: it opens the composer (`https://x.com/compose/post`
   unless `compose_url` names another page, e.g. a test fixture), clears any
   restored draft, types the text, picks the Post button that is actually
-  clickable, clicks it and waits for X's confirmation. Other page commands
-  wait until the whole flow has finished.
+  clickable, clicks it and waits for X's confirmation toast. Other page
+  commands wait until the whole flow has finished.
+- An old toast still on screen would confirm a click that did nothing, so
+  no toast may be showing when Post is clicked: an old one gets 10 s to
+  go, otherwise the call fails with -32001 `x_toast_already_shown` and Post
+  is never clicked. The toast that shows after the click is then new.
+  X's error toasts (daily limit, "something went wrong") are reported as
+  -32010 by the stop-sign scan. Not yet checked: the success toast's
+  wording (it has not been recorded from the live site).
 - Use a logged-in profile (`--profile-dir`, or import cookies). On a
   logged-out page the flow stops with -32011 and `data.reason =
   "logged_out"`, and nothing is typed.
@@ -798,7 +805,7 @@ channel sends one notification, `automation.ready`.
 | -32602 | Invalid params | Missing, unknown or wrong-typed params; `data.reason` explains file problems for `cookies.import` |
 | -32603 | Internal error | Page script exception, malformed page answer, unsupported method |
 | -32000 | Authentication failed | Missing or wrong `auth` token |
-| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `linkedin_profile_connect_not_in_menu`, `linkedin_profile_menu_already_open`, `linkedin_profile_menu_unbound`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
+| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `x_toast_already_shown`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `linkedin_profile_connect_not_in_menu`, `linkedin_profile_menu_already_open`, `linkedin_profile_menu_unbound`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
 | -32002 | element_not_visible | Matched but hidden or zero-size |
 | -32003 | element_not_stable | Matched but still moving |
 | -32004 | element_obscured | Another element covers the click point |

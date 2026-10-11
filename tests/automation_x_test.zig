@@ -89,7 +89,8 @@ test "x.post runs each flow step through the engine and records one x root span"
     try std.testing.expectEqualStrings("http://127.0.0.1:9/compose", h.fake.navigate_calls.items[0]);
     var buf: [32][]const u8 = undefined;
     const ops = try h.ops(&buf);
-    const expected_ops = [_][]const u8{ "waitFor", "click", "fill", "type", "query", "click", "click", "waitFor" };
+    // ... the Post probe, no toast showing, the Post click, the new toast.
+    const expected_ops = [_][]const u8{ "waitFor", "click", "fill", "type", "query", "click", "waitFor", "click", "waitFor" };
     try std.testing.expectEqual(expected_ops.len, ops.len);
     for (expected_ops, ops) |e, a| try std.testing.expectEqualStrings(e, a);
 
@@ -121,7 +122,7 @@ test "x.post runs each flow step through the engine and records one x root span"
     // reporting success (the Post click was not scanned after).
     try std.testing.expectEqual(@as(usize, 6), h.fake.scan_calls);
     try std.testing.expectEqual(@as(usize, 6), scans);
-    try std.testing.expectEqual(@as(usize, 9 + 6), children); // navigate + 8 step evals + 6 scans
+    try std.testing.expectEqual(@as(usize, 10 + 6), children); // navigate + 9 step evals + 6 scans
     try std.testing.expect(!h.sink.containsRaw("hello"));
 }
 
