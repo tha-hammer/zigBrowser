@@ -3301,3 +3301,69 @@ Verification: a quiet clean-export gate at exact HEAD `907c204`, under a
 private Xvfb with the live display, socket, and token variables removed, was
 green: **Build Summary: 91/91 steps succeeded; 728/728 tests passed** (seed
 `0x8759c85c`). The throwaway export was deleted when the gate completed.
+
+## Media Source opt-out review (`c0c1c18`)
+
+**Verdict: APPROVED as an opt-in mitigation; it removes the reproduced MSE
+path, but it is not a general cure for GStreamer media hangs.** The upstream
+WebKit/GStreamer blocker remains open, and Instagram's behavior with the
+switch is not live-qualified.
+
+The production chain is complete and fail-closed at startup:
+
+- `src/media_config.zig:16-42` accepts exactly `on` or `off`, keeps the default
+  `on`, and resolves flag over environment over default. An invalid
+  `ZIGBROWSER_MEDIA_SOURCE` value is reported and falls back to `on`.
+- `src/cli.zig:54-99,102-186` accepts the option once for normal and screenshot
+  modes and rejects missing, duplicate, or non-exact values. `src/app.zig:36-67`
+  applies it before `zb_app_run` creates the first WebView; the screenshot
+  path applies it before its load (`src/app.zig:111-119`).
+- Every `zb_window_new`, including views created through
+  `webkit_web_view_new_with_related_view`, applies the effective setting
+  before loading (`src/webkit_shim.c:1128-1144`). The screenshot view does the
+  same at `src/webkit_shim.c:5285-5290`.
+- WebKitGTK 2.54.0 ignores `enable-mediasource=false` by itself, so
+  `src/webkit_shim.c:4596-4627` also installs a page-world, all-frame,
+  document-start script that removes the MSE constructors. The per-content-
+  manager marker prevents duplicate installation in related views. The switch
+  does not alter the automation isolated world.
+
+The new production-binary E2E does not stop at an internal setting getter. It
+checks page-visible constructors in the primary view, a same-origin related
+popup, a cross-origin noopener popup running in another WebProcess, and a
+dynamically created `about:blank` iframe. It also checks screenshot mode,
+default `on`, explicit `on`/`off`, environment precedence, and invalid values
+(`tests/e2e/media_source_test.py:47-204`). It passed independently. Thus popup
+inheritance is exercised through the real creation and page-script chain.
+
+### Private-Xvfb behavioral matrix
+
+The same six-player fixture used for the `d87ca04` investigation served local
+H.264/AAC and VP9/Opus files, scrolled, sought, paused/played, and replaced a
+player every 40 ms. The MSE variant used fragmented H.264/AAC. Each launch had
+its own Xvfb, socket, profile, and process guardian. Liveness came from an
+external `page.title` call, not an in-page watchdog.
+
+| Fixture / configuration | Bound | Result | Interpretation |
+| --- | --- | --- | --- |
+| MSE-only, `--media-source off` | 2 x 15 s, 4 s response bound | **2/2 responsive**; page reported `mse-unavailable`; maximum post-readiness response 0.94 ms | The MSE constructors and therefore the reproduced MSE seek/flush path are absent. |
+| MSE-only, `--media-source off` | 1 x 30 s, 12 s response bound | **1/1 responsive**; maximum post-readiness response 0.96 ms | No main-thread MSE hang occurred under the stricter bound. |
+| Feature-detecting page, `--media-source off` | 1 x 15 s, 4 s response bound | **PASS**: chose `progressive`, `readyState=4`, remained unpaused, emitted two `playing` events, zero errors, and advanced through/looped the 12 s MP4 | A site that implements progressive fallback can still play ordinary `<video>`. |
+| Pathological plain URL, `--media-source off` | 4 x 15 s, 4 s response bound | **0/4 met the bound** | The switch does not prevent a separate regular-media seek/event lockup under extreme churn. |
+| Same pathological plain URL, `--media-source on` control | 4 x 15 s, 4 s response bound | **0/4 met the bound** | Matched control: the plain failure is not introduced by the opt-out. |
+| Pathological plain URL, `--media-source off`, supplemental strict probe | 12 s response bound | Two launches remained unresponsive past 12 s; one WebProcess crashed before readiness with `g_mutex_clear() called on uninitialised or locked mutex` | A captured off-stack waits in `pthread_mutex_lock <- gst_element_send_event <- WebKit`; it has no `MediaPlayerPrivateGStreamerMSE::doSeek` or `webKitMediaSrcStreamFlush` frame. The same stack occurred with `on`. |
+
+The exact live MSE deadlock is therefore removed when the option is off, and a
+normal feature-detecting fallback plays progressive MP4. The adversarial plain
+fixture establishes an important limit: regular playbin media can still hang
+or crash when six videos are seeked and replaced every 40 ms. This is an
+upstream residual, not a regression caused by `c0c1c18`, but the documentation
+should say sites *that implement* a progressive fallback can use it rather
+than implying that every video site necessarily does.
+
+Neither `DISPLAY :0`, the live socket/browser/profile, nor a live site was
+accessed. All evidence came from local fixtures under private Xvfb.
+
+Verification at exact `c0c1c18`, from a clean archive export under private
+Xvfb: **Build Summary: 92/92 steps succeeded; 736/736 tests passed** (seed
+`0x396004d4`). The gate included the production-binary media-source E2E.
