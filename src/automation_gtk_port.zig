@@ -424,18 +424,21 @@ const AckTracker = struct {
     debt: ?Ack = null,
     debt_mutex: SpinLock = .{},
 
-    /// One read, bounded by `ack_read_slice_ms`. A read can be lost: an
-    /// eval that reaches the old document just as a navigation puts it in
-    /// WebKit's back/forward cache is suspended with it and never answers.
-    /// A read that timed out before the caller's deadline answered nothing
-    /// (null, as while no script answers); the next read goes to whatever
-    /// document is current. Only the deadline ends the wait in Timeout.
+    /// One read, each attempt bounded by `ack_read_slice_ms`. A read can
+    /// be lost: an eval that reaches the old document just as a navigation
+    /// puts it in WebKit's back/forward cache is suspended with it and
+    /// never answers. An attempt that timed out before the caller's
+    /// deadline is sent again, to whatever document is current; callers
+    /// only ever see an answer, null (no script answers) or, at the
+    /// deadline, Timeout.
     fn read(self: *AckTracker, deadline: i64) PortError!?Ack {
-        const slice = @min(deadline, monotonicMs() + ack_read_slice_ms);
-        return self.reader(self.ctx, slice) catch |e| switch (e) {
-            error.Timeout => if (monotonicMs() < deadline) null else e,
-            else => e,
-        };
+        while (true) {
+            const slice = @min(deadline, monotonicMs() + ack_read_slice_ms);
+            return self.reader(self.ctx, slice) catch |e| switch (e) {
+                error.Timeout => if (monotonicMs() < deadline) continue else e,
+                else => e,
+            };
+        }
     }
 
     fn readBaseline(self: *AckTracker, deadline: i64) PortError!Ack {
@@ -984,6 +987,21 @@ test "a scroll returns only once its scrolling went quiet" {
     var page: FakeAcks = .{ .steps = &.{ .{ .ack = moving }, .{ .ack = moving }, .{ .ack = quiet } } };
     var acks = page.tracker();
     try waitScrollSettled(&acks, testAck(5), deadlineAfter(1000));
+    try std.testing.expectEqual(@as(usize, 3), page.index);
+}
+
+test "a lost read while a scroll settles is read again, not taken for a replaced document" {
+    var acked = testAck(5);
+    acked.wheel = 1;
+    var moving = acked;
+    moving.scrolls = 3;
+    moving.scroll_quiet_ms = 5;
+    var quiet = moving;
+    quiet.scrolls = 6;
+    quiet.scroll_quiet_ms = 120;
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = moving }, .lost, .{ .ack = quiet } } };
+    var acks = page.tracker();
+    try waitScrollSettled(&acks, testAck(5), deadlineAfter(6000));
     try std.testing.expectEqual(@as(usize, 3), page.index);
 }
 
