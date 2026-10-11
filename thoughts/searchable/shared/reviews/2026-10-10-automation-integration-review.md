@@ -1693,11 +1693,16 @@ Mailed before and after commit as 4859/4865/4868/4870/4873.
 
 ### BLOCKER — policy-blocked-navigation live test can exceed its watchdog
 
-**Status: OPEN (cc_1).** The latest reproduced failure is the null-unwrap
-panic at `blocked: typing a, Enter, b` described below. Final/N23 remains red
-until the exact origin is captured and fixed, 30 loaded target iterations are
-clean, and two consecutive clean-export gates at the final commit pass
-644/644.
+**Status: CLOSED by `2dc67b6`; root cause PROBABLE (test-only), not captured.**
+The reproduced symptom was the null-unwrap panic at `blocked: typing a,
+Enter, b` described below. The compiled-xref audit found no reachable unwrap
+in the production adapter and narrowed the candidates to the test driver's
+`pagePort().?` and `std.debug.print` reaching the stdlib stderr cancellation
+unwrap. `2dc67b6` removes both paths without changing production behavior.
+Post-fix evidence is 30/30 clean loaded **server-runner** iterations plus two
+sequential quiet clean-export gates at exact `2dc67b6`, both 85/85 steps and
+644/644 tests. If a later captured stack enters production code, reopen this
+classification and blocker.
 
 The orchestrator's clean gate at `92ea230` ended **640/641** when
 `native text: a navigation blocked by policy does not refuse later typing`
@@ -1952,7 +1957,8 @@ deadline helpers). Immediately after the normal `DocumentChanged` result, the
 driver calls the diagnostic at `src/webkit.zig:2052`; its compiled unlock path
 does reach the stdlib `recancelInner` unwrap. JSON parsing and deeper library
 invariants prevent this from being a complete call-graph proof, so the blocker
-remains OPEN pending the captured stack. Mailed as 4937.
+remained open at that checkpoint pending the orchestrator's defensive-fix
+decision. Mailed as 4937.
 
 A warm-cache worktree gate of exact `4f2de62`, deliberately overlapping
 cc_1's six-CPU target stress and cc_2's full-build/gdb load, passed **85/85
@@ -1961,6 +1967,131 @@ steps, 644/644 tests** with seed `0xb59213c8`. The strict case again returned
 This supplies another loaded server-runner sample and the pre-commit gate for
 the review note, but it is neither a clean-export gate nor a reproduction and
 does not change the OPEN status.
+
+The defensive-fix decision does not reinterpret the stack as captured: the
+two reachable test unwraps remain `pagePort().?` and the expected-error
+`std.debug.print` stderr-unlock path; the production adapter audit found none.
+The fix must therefore change only test drivers, retain the gdb watchdog, and
+preserve production behavior. Mailed as 4941.
+
+Commit `2dc67b6` is the accepted defensive implementation for the two
+reachable candidate paths.
+Its eight `pagePort()` uses now fail explicitly through the drivers' named
+check path, `CountingJob` returns on a missing context, all executable
+`std.debug.print` calls in `src/webkit.zig` use the lock-free `rawPrint`
+helper, the gdb watchdog remains, and the commit changes no production code.
+However, guarded optional unwrap operators remain in live driver code at
+`src/webkit.zig:535`, 592, 595, 609, 631, 648, 696, 904-914, 956, 1054,
+1073, 1104, 1119, 1280, and 2992. Short-circuit guards make these unlikely to
+execute with null values. The orchestrator accepted the candidate-path fix at
+`2dc67b6`; removing these guarded sites remains a separate test-only defensive
+hardening follow-up. Mailed as 4946/4947.
+
+Exact-diff confirmation requested by the orchestrator: **both candidate
+paths are removed by `2dc67b6`**. The parent's `BlockedDriver.run`
+`gtk_port.pagePort().?` (reported at `src/webkit.zig:2037`, line 2038 in the
+parent object) becomes an `orelse return d.check(false, "the page port is
+installed")` at committed line 2052. The parent's expected-error
+`std.debug.print` at line 2052 becomes `rawPrint` at committed line 2066;
+`rawPrint` formats into a fixed stack buffer and calls `write(2)` directly,
+so it does not enter `Io.Threaded` or its `Thread.current.?` cancellation
+path. **No production behavior changes:** the only changed file is
+`src/webkit.zig`; every modified call site belongs to the main-thread test
+scaffolding, a live test driver, or a `test` oracle/diagnostic. `rawPrint` and
+the defensive `CountingJob` change are likewise test helpers, and the
+production entry points at lines 8-20 and all production adapter/shim files
+are unchanged.
+
+Clean-export closure evidence at exact `2dc67b6` is not consecutive GREEN:
+
+- Orchestrator gate #1: `timeout 1500 xvfb-run -a zig build test --summary
+  all`, fresh clean archive/cache: **85/85 steps succeeded; 644/644 tests
+  passed**.
+- Independent RoseCat gate #2: same command shape and a fresh archive/cache,
+  seed `0x217d74fa`: **83/85 steps succeeded (1 failed); 644/644 tests
+  passed**. The sole failed step was `x-flows`: its first `x.post` command
+  returned `-32007 navigation_timeout`. Later native X flow cases passed.
+  The disposable tree `/tmp/zb-review-gate-8H2h67` was deleted by its EXIT
+  trap. Therefore the required two consecutive clean-export gates have not
+  been achieved.
+
+The orchestrator subsequently established a **quiet-host acceptance
+protocol** because those two gates overlapped cc_1's six-CPU stress, cc_2's
+gdb/load loop, and other builds. Loaded gate #2 remains an observed timeout,
+but it is not one of the two quiet acceptance gates. It was initially mailed
+as BLOCKER 4948 and is reclassified below as a harness-robustness SHOULD after
+both quiet gates passed.
+
+cc_1's required post-`2dc67b6` loaded server-runner tally is **30/30 clean**:
+zero failures, panics, or watchdog fires. Every iteration ran both the
+blocked-navigation and live-bridge/navigating-click cases under the Zig build
+server runner with six CPU burners; the first used the formerly failing seed
+`0x23dcdd56`. Each reported 5/5 steps and 4/4 filtered tests, and every log
+contained the blocked-submit oracle. The trap killed the burners and deleted
+the export. A separate scratch-instrumented navigating-click loop was stopped
+at 26/26 clean, with click completion in 9-12 ms; this is diagnostic support,
+not a substitute for the production regression still required by BLOCKER
+4940. Evidence: mails 4949/4950.
+
+Quiet-host acceptance gate A at exact
+`2dc67b6b52e63aed28e31c7f481a0d6f1d85a5dc` is **GREEN**. Both owners had
+explicitly stopped their load, and a preflight process check found no Zig
+build/test, gdb, CPU burner, or reproduction loop. A fresh clean archive and
+cache ran under `timeout 1500 xvfb-run -a zig build test --summary all`, seed
+`0xa9b885cd`, exit 0:
+
+`Build Summary: 85/85 steps succeeded; 644/644 tests passed`
+
+The formerly loaded-only `x-flows` failure passed, as did both native X flow
+cases, the blocked-navigation oracle, and the popup-close e2e. The export
+`/tmp/zb-review-quiet-a-KDaGvA` was deleted immediately by the EXIT trap, and
+the postflight check again found no competing Zig/gdb/load process. This is
+quiet gate A. The orchestrator's immediately sequential quiet gate B also
+passed **85/85 steps and 644/644 tests** at exact `2dc67b6`. Together with the
+30/30 loaded server-runner tally, this meets the acceptance protocol and
+closes the blocked-navigation blocker.
+
+### SHOULD — make the X-flow cold-start harness robust under extreme host load
+
+**Status: OPEN (cc_2), reclassified from BLOCKER 4948.** The first `x.post`
+in `x_flows_test.py` returned `-32007 navigation_timeout` only during a clean
+gate that overlapped multiple full gates, two stress loops, gdb, and six CPU
+burners. The flow has a 120-second total budget, but its first `page.navigate`
+is capped at 30 seconds and is sent as soon as the socket accepts, so that
+single step includes the browser's cold startup and same-URL reload. The
+client itself waits 50 seconds and did not expire. No elapsed-time or
+`error.data` diagnostic was captured, so heavy-load exhaustion is plausible
+but not proven.
+
+Both quiet clean-export gates at exact `2dc67b6` passed `x-flows`, and quiet
+gate A also passed the native X cases. Treat the failure as observed only
+under heavy concurrent load, not reproduced on a quiet host. A test-only
+robustness follow-up may first warm the fixture with a bounded 90-second
+`page.navigate` plus composer wait, and should print elapsed time and the full
+JSON-RPC error on recurrence. Production navigation and flow defaults must
+not change. Read-only audit: mail 4953.
+
+### BLOCKER — a navigating native click can reach the new page but time out its acknowledgement
+
+**Status: OPEN (cc_1).** In a loaded direct-root-binary run of exact `bc0bad1`,
+`automation bridge drives a live WebKitGTK page` failed only its navigating
+click result and latency checks at `src/webkit.zig:1174-1175`: the 20-second
+`nativeClick` returned an as-yet unprinted error after at least eight seconds.
+The immediately following URL oracle passed on `b.html`, proving that the
+trusted click was dispatched and its default navigation completed. This is
+production-path evidence despite the terminal-mode runner: the PagePort did
+not recognize replacement as delivery promptly, contrary to
+`src/automation_gtk_port.zig:665-666`.
+
+The failure is downstream of dispatch in `acks.settle` at
+`src/automation_gtk_port.zig:679` / `waitAck` at lines 355-364. A likely seam
+is an acknowledgement eval canceled by the old document's unload and
+propagated instead of observing the replacement, but the exact PagePort error
+must be recorded before choosing the correction. Pre-dispatch cancellation
+and timeout must remain failures, and an ordinary failed ack read must not be
+blindly converted to success. Require a deterministic adapter regression for
+the transient-read/replaced-document transition and loaded live coverage.
+Mailed as 4940. This is independent of the probable test-only null panic.
 
 Review thread:
 4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929/4930/4931/4932/4933/4934/4935/4936/4937.
