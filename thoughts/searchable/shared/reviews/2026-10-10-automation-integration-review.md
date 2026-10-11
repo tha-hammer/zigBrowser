@@ -3535,3 +3535,74 @@ passed **92/92 steps, 751/751 tests**, and the exact descendant `bbd5d74` gate
 passed **92/92 steps, 752/752 tests**, both under private Xvfb. The green gates
 do not close this blocker because neither contains the competing-menu oracle.
 No live browser, live socket, DISPLAY `:0`, or user account was accessed.
+
+## Advisory: descendant-icon text and post-commit state audit at `ab90775`
+
+This is a read-only audit prompted by the live Instagram result in which the
+owner's Follow action succeeded, but its confirmation timed out: the rendered
+button label was `Following`, while its DOM `textContent` was
+`FollowingDown chevron icon` because a descendant SVG contributed its
+`<title>`. **This section is advisory, not a new release blocker.** The
+previous `c1bfeb3` More-menu provenance BLOCKER remains independently open.
+
+There are three distinct selector facts:
+
+- XPath `normalize-space(.)` collapses whitespace but uses the entire
+  descendant string value, including an SVG `<title>`, hidden text and counts.
+- `text=` and named `role=` are exact matches, but their implementation is
+  only `normalizeText(aria-label || textContent)`
+  (`src/automation_script/automation.js:1081-1089,1127-1136,1170-1175,
+  1349-1351`). An `aria-label` on the target is therefore safe from descendant
+  text; without one, SVG titles/counts contaminate the name. A descendant
+  icon's own `aria-label` does not itself enter its parent's `textContent`,
+  though the icon's `<title>` does. `aria-labelledby` is not implemented.
+- Changing exact matching to prefix matching globally would trade these false
+  negatives for wrong-control matches. Keep exact public semantics. Prefer a
+  stable exact attribute; otherwise use a live-probed structural selector for
+  an exact non-SVG label token, scoped to the owning container, with an
+  exactly-one check.
+
+### Every post-click/completion check
+
+| Flow/check | Current matcher and location | Risk | Proposed matcher/oracle |
+|---|---|---:|---|
+| X schedule dialog opened | After schedule-option click, waits for Month via `//select[@aria-labelledby = //*[normalize-space(.)="Month"]/@id]` (`src/x.zig:36,58-60,166-167`) | LOW: an icon/title or supplemental label text causes a safe false-negative; a second `Month` label can broaden the ID set. | Resolve the select from its own `aria-labelledby` target and require that label's exact semantic/visible token, or pin a stable select/test id when available; require one visible select. |
+| X post sent | Any attached `data-testid=toast` after Post (`src/x.zig:26-27,288-295`) | **HIGH false-success:** an old or unrelated toast confirms the post. The fixture itself can pre-create such a toast. | Before clicking, fail closed if a matching success toast is already present; afterwards require a newly appearing toast with the post-success semantic text/state, scoped to `data-testid=toast`. Do not use a document-global prefix alone. |
+| X post scheduled | The same generic toast after schedule Confirm and the final Post click (`src/x.zig:156-183,288-295`) | **HIGH false-success:** it does not distinguish scheduled success, an unrelated toast, or a stale post toast. | Use a pre-click baseline plus the schedule-specific success message/state (for example the live “will be sent” semantic token), exactly within the toast. |
+| LinkedIn owner More opened | Waits for exact descendant text `Connect` anywhere in the owner area or any `role=menu` (`src/linkedin.zig:45-51,665-681`) | **HIGH:** an SVG title can hide the intended item; an unrelated menu can supply the sole candidate and be clicked. The latter is existing BLOCKER 5157, not downgraded by this advisory. | Bind/baseline the external menu to the owner's More click as required by 5157, then require one exact non-SVG `Connect` label token in that menu. |
+| LinkedIn invite dialog opened | Named `pierce=role=button` exact `Add a note` or `Send without a note` (`src/linkedin.zig:52-59,296-308`) | MED: text-only buttons acquire contaminated names if an SVG `<title>` or count is added; this fails before the confirming click rather than choosing a prefix match. | Prefer a stable exact target `aria-label`; otherwise use a shadow-piercing structural selector for one button with an exact non-SVG label token. Do not loosen it to `starts-with("Send")`. |
+| LinkedIn invitation sent | Owner-area state is `starts-with(@aria-label,"Pending") and contains(@aria-label,<owner name>)`; the wait is non-strict (`src/linkedin.zig:129-155,290-317,731-743`) | LOW: attribute matching is icon-proof and owner-scoped, but arbitrary Pending variants and substring names are accepted; multiple matches also satisfy the wait. | Accept the known full label `Pending, click to withdraw invitation sent to <Name>` (or a small explicit set of full live labels), inside the sole owner area, and require exactly one visible state. |
+| LinkedIn follow completed | Owner-area label starts `Following` or `Unfollow` and contains the title-derived owner name; non-strict wait (`src/linkedin.zig:129-155,320-329,731-743`) | LOW: icon-proof and owner-scoped, but a future unrelated state with the same prefix/name or duplicate passes. | Match the full known owner label `Following, click to unfollow <Name>` plus explicitly enumerated legacy form if still supported; require exactly one visible match. |
+| LinkedIn like completed | First reaction-state button whose label is no longer exact `Reaction button state: no reaction` (`src/linkedin.zig:67-73,354-360`) | MED: icon/count-proof, and still restricted to the reaction-state family, but any unknown/malformed non-`no reaction` state is treated as success. | Enumerate accepted positive reaction labels (at least exact `Reaction button state: like`) or use a stable pressed/selected attribute if live markup exposes one; keep it on the same first post control. |
+| LinkedIn message sent | No post-click state check; success follows the strict send-button click (`src/linkedin.zig:334-351`) | MED false-success: dispatch is not evidence that LinkedIn accepted or rendered the message. | Wait for one scoped outgoing message carrying the submitted text or an explicit sent status; a composer-clear check alone is weaker but still better than no oracle. |
+| LinkedIn comment sent | No post-click state check; success follows a non-strict global class click (`src/linkedin.zig:363-371`) | MED: no acceptance proof, and a multi-post page can make “first match” the wrong form. | Scope input and submit to the target post's same form, require one submit, then wait for the new own-comment node or explicit success state. |
+| Instagram follow completed | Exact descendant string `Following` or `Requested` in any header button; non-strict wait (`src/instagram.zig:23-24,104-111,403-405`) | **HIGH, observed live:** `FollowingDown chevron icon` misses after the irreversible Follow has succeeded. A broad `starts-with("Following")` would risk a different header control and still permits duplicates. | In the profile-owner header, match a descendant non-SVG label token exactly `Following` or `Requested`, exclude hidden/aria-hidden copies, and require exactly one visible state. |
+| Instagram like completed | First section SVG with exact `aria-label="Unlike"` (`src/instagram.zig:26-29,114-120`) | LOW: exact attribute is not contaminated by its `<title>`; the first-section assumption remains the only site-shape risk. | Keep the exact icon state, but scope the section structurally to the opened post article and require exactly one visible marker. |
+| Instagram comment sent | No post-click check after an exact-descendant-text `Post` control in any form (`src/instagram.zig:30-31,123-132`) | MED: SVG title/count can cause a safe miss, while another form could become the sole strict target; a dispatched click is not acceptance proof. | Scope to the form containing the exact comment textarea, match an exact non-SVG `Post` token, require one, then wait for the new comment or explicit submitted state. |
+| Instagram DM sent | No post-click check after a document-global exact-descendant-text `Send` (`src/instagram.zig:32-34,135-145`) | **HIGH wrong-action risk:** contamination can remove the intended candidate while one unrelated Send remains and is clicked; success then has no acceptance oracle. | Scope Send to the conversation composer containing `dm_input`, require one exact non-SVG `Send` token, then wait for an outgoing message/status tied to the submitted text. |
+| Instagram story may require View-story commit | Counts exact descendant string `View story`; zero permits viewing to proceed (`src/instagram.zig:47-51,151-173`) | **HIGH safety false-negative:** an SVG title can hide this stop gate, after which the flow may wait/view/click Next. | In the verified viewer overlay, conservatively detect exactly labelled non-SVG `View story` and any live-probed equivalent commit gate; ambiguity or an unknown clickable overlay must fail closed. |
+| Instagram story Next completed | Before and after each click, compares the URL's exact story username; Next itself is one SVG with exact `aria-label="Next"` outside `main` (`src/instagram.zig:35-46,176-215,222-248`) | LOW: attribute and URL checks are icon-proof; count >1 and owner change both stop before another click. | Keep this design. If markup changes, preserve exact `aria-label`, outside-`main` viewer scope, exactly-one count and both pre/post URL-owner checks. |
+
+### Other text/state selectors that gate actions or diagnostics
+
+| Selector | Current matcher and location | Risk | Proposed matcher |
+|---|---|---:|---|
+| Instagram Follow action | Header button with exact descendant string `Follow` (`src/instagram.zig:19-24,106-110`) | MED false-negative; exact/strict prevents a prefix-based wrong click, but SVG title text can remove the owner button. | Owner-header structural scope plus one exact non-SVG `Follow` token or stable exact target attribute. |
+| Instagram Message action | Header clickable with exact descendant string `Message` (`src/instagram.zig:19-25,135-142`) | MED false-negative for the same reason. | Owner-header structural scope plus one exact non-SVG token/stable exact attribute. |
+| Instagram story Next | Exact SVG `aria-label="Next"`, outside `main`, then exactly-one count (`src/instagram.zig:35-46,190-201`) | LOW; this is the strongest pattern in the three selector tables for icon controls. | Keep. Never replace it with text prefix `Next`, which would admit highlight/carousel controls. |
+| LinkedIn signed-in gate | Nav/header button exact descendant string `Me` (`src/linkedin.zig:17-23,515-520`) | LOW/MED availability: icon title/badge text can make a signed-in page look indeterminate, but it does not select a person or commit. | Prefer the live nav control's stable exact attribute/relationship; otherwise exact non-SVG `Me` within the nav, not prefix `Me`. |
+| LinkedIn owner More | Exact descendant string `More` or exact target aria-label (`src/linkedin.zig:41-44,110-114`) | LOW/MED: aria-label branches are safe; the text-only live branch is SVG-title-sensitive. Owner-area and one-visible-copy logic prevent sidebar selection. | Preserve owner scope and exactly-one logic; use an exact target aria-label if live provides one, else exact non-SVG `More` token. |
+| LinkedIn selfcheck Pending/Following and invitation toast | Broad state prefixes in `main`, and toast prefix `Invitation sent` (`src/linkedin.zig:24-40,60-63`) | LOW because these are diagnostics only; they may count suggestion/other-profile controls or unrelated invitation alerts. | Report owner-scoped and global counts separately, or label these fields explicitly as broad diagnostics. Never promote them to action-success oracles. |
+| Custom `role=` / `text=` engines | Exact normalized `aria-label || textContent`; no `aria-labelledby`, no exclusion of SVG/hidden descendants (`src/automation_script/automation.js:1081-1089,1127-1175`) | MED ecosystem-wide false-negative; changing to prefix would create broad false positives. | Keep exact match semantics. Implement a tested accessible-name subset (`aria-label`, `aria-labelledby`, then rendered/semantic descendant text excluding `aria-hidden` and SVG titles), or add an explicit structural visible-text primitive rather than silently changing existing selectors. |
+
+Tests should mutate every text-only fixture control by adding
+`<svg><title>…</title></svg>` and, separately, add an unrelated prefix-sharing
+control. The intended exact owner-scoped action/state must still match once;
+the unrelated control must remain untouched. Existing fixtures currently make
+the vulnerable Instagram Follow state plain `textContent = "Following"`
+(`tests/fixtures/instagram/index.html:181-185`) and the LinkedIn menu icon is
+an empty SVG (`tests/fixtures/linkedin/index.html:180-188`), so neither catches
+the live class of regression. Agent Mail 5160 sent the HIGH items to cc_2.
+
+No live browser, live socket, live site, DISPLAY `:0`, or user account was
+accessed for this audit.
