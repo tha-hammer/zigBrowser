@@ -124,6 +124,11 @@ one element must match, otherwise they fail with `strict_zero` or
 `strict_multiple`. Pass `"strict": false` to use the first match. `dom.query`
 is non-strict by default.
 
+Strictness also applies to `dom.waitFor`, which is strict by default: if
+the selector matches more than one element, it fails at once with -32001
+`strict_multiple` instead of waiting. To wait for "at least one", pass
+`"strict": false`.
+
 ## Waiting, retries and timeouts
 
 - Every `page.*` and `dom.*` command has a deadline, `timeout_ms`, which
@@ -184,9 +189,11 @@ Page dialogs are `alert`, `confirm`, `prompt`, and the `beforeunload` "Leave sit
 
 zigBrowser never answers a dialog for you. It stays open, as a normal window a
 person can answer, until that person or `dialog.respond` answers it. While it is
-open the page's script is blocked, so commands on that window end at once with
--32013 `dialog_open` instead of waiting for their deadline. That includes the
-command that made the dialog open, if the dialog opened first.
+open the page's script is blocked, so commands end at once with -32013
+`dialog_open` instead of waiting for their deadline. This applies to commands on
+that window, and on every window that shares its page process: a popup and the
+page that opened it block each other. It also includes the command that made
+the dialog open, if the dialog opened first.
 
 | Method | Params | Result |
 |---|---|---|
@@ -205,10 +212,17 @@ command is blocked by the dialog.
 - `"dismiss"`: stay on the page. You get -32008 `navigation_failed` with
   `data.reason = "beforeunload_dismissed"`.
 
+With `"accept"` or `"dismiss"`, the navigation answers the prompt itself, at
+once. The prompt is never shown, `dialog.get` does not list it, and
+`dialog.respond` cannot answer it, so nothing can race that answer.
+
 A window that already shows a dialog refuses any navigation with -32013, and
-nothing loads. Closing a window dismisses its dialog. Python: `zb.dialog.get()`,
-`zb.dialog.respond(accept, text=None, window_id=None)`,
-`zb.page.navigate(url, on_before_unload="accept")`.
+nothing loads. Closing a window dismisses its dialog.
+
+- Python: `zb.dialog.get()`, `zb.dialog.respond(accept, text=None, window_id=None)`,
+  `zb.page.navigate(url, on_before_unload="accept")`.
+- Node: `zb.dialog.get({windowId})`, `zb.dialog.respond(accept, {text, windowId})`,
+  `zb.page.navigate(url, {onBeforeUnload: "accept"})`.
 
 ### DOM
 
@@ -293,20 +307,20 @@ delete the file.
 | Method | Params | Result |
 |---|---|---|
 | `linkedin.visit` | `profileUrl` | `{ok:true}` |
-| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?` | `{ok:true}` once the profile shows the invitation as pending |
-| `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following |
-| `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl`, `timeout_ms?` | `{ok:true}` |
-| `linkedin.like` | `postUrl` | `{ok:true}` once the Like is pressed |
+| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?` | `{ok:true}` once the profile shows the invitation as pending (switched off for now, see below) |
+| `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following (switched off for now, see below) |
+| `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl`, `timeout_ms?` | `{ok:true}` (from a profile: switched off for now, see below) |
+| `linkedin.like` | `postUrl` | `{ok:true}` once the post's reaction button no longer says "no reaction" |
 | `linkedin.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
 | `linkedin.search` | `query`, `searchType?` (`people`, `companies`, `jobs`, `content`, `all`) | `{ok:true, url, resultCount}` |
-| `linkedin.extract` | `profileUrl` | `{name, headline, location}` (read-only; null when absent) |
+| `linkedin.extract` | `profileUrl` | `{name, headline, location}` (read-only; the name is from the page title; null when absent) |
 | `linkedin.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
 | `instagram.follow` | `profileUrl` | `{ok:true}` once it shows Following or Requested |
 | `instagram.like` | `postUrl` | `{ok:true}` once it shows Unlike |
 | `instagram.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
 | `instagram.dm` | `username`, `text`, `timeout_ms?` | `{ok:true}` (profile, Message, send) |
-| `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes) |
-| `instagram.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
+| `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes; switched off for now, see below) |
+| `instagram.selfcheck` | — | `{<selector name>: count, ...}` on the current page (`story_media` and `story_next` are 0 unless the page is a story) |
 
 - Each call is one command, like `x.*`: other page commands wait until it
   has finished, and the whole flow has 120 s
@@ -322,6 +336,35 @@ delete the file.
   (exactly that host; no other host, port or user info): otherwise -32602.
 - Typed text (notes, messages, comments) goes in character by character,
   like `dom.type`.
+- **LinkedIn profile actions are switched off for now.** A profile page
+  also lists "People you may know", with buttons labelled the same way for
+  other people ("Invite <Name> to connect", "Follow <Name>"), and which part
+  of the live page holds the profile's own buttons is not yet verified. So
+  `linkedin.connect`, `linkedin.follow` and `linkedin.message` with
+  `profileUrl` open the profile and check it, then stop before any click
+  with -32001 `linkedin_profile_owner_unverified`. `linkedin.message` with
+  `conversationUrl` works as before. The checks, in order, each a -32001
+  `data.reason` when it fails:
+  - `linkedin_not_a_profile`: the page is not a profile (`/in/...`) on
+    LinkedIn, e.g. LinkedIn redirected elsewhere;
+  - `linkedin_profile_name_missing`: the title ("<Name> | LinkedIn") names
+    nobody.
+
+  Once the owner's area is verified, the actions click only the button
+  with exactly the owner's label, outside any `<aside>`, and only if it is
+  there exactly once and nowhere else on the page. Otherwise they fail with
+  `linkedin_profile_action_missing` (never appeared; LinkedIn sometimes
+  puts Connect under the profile's "More" menu, which these flows do not
+  open) or `linkedin_profile_action_ambiguous`.
+- **`instagram.story_view` is switched off for now.** A profile's
+  highlights carousel also has a "Next" button and images, and the live
+  story viewer's own markup is not yet verified. So the call opens
+  `/stories/<username>/`, checks the page is a story on Instagram, and
+  stops before waiting for media or clicking anything with -32001
+  `instagram_story_viewer_unverified`. Without active stories Instagram
+  shows the profile instead: -32001 `instagram_no_story_viewer`. Once the
+  viewer is verified, Next must also be there exactly once, else -32001
+  `instagram_story_next_ambiguous`.
 - Actions share the social pacing: a random 3-8 s pause before each and at
   most 100 a day (`social.set_pacing`, `social.rate_status`; only
   successful actions count, actions in progress hold their place). At the
@@ -364,6 +407,13 @@ delete the file.
   humanized post fits. When the budget runs out the flow stops with -32009
   and `data.reason = "x_flow_deadline"`. With no Post button at all after 10 s:
   -32001 and `data.reason = "x_post_button_missing"`.
+- When `/compose/post` opens as a dialog over the home timeline, the page
+  has two composers and two schedule buttons. The flows use the dialog's.
+- Leaving a compose page that holds an unsent draft makes X ask "Leave
+  site?". The flow's `page.navigate` uses the default `onBeforeUnload:
+  "fail"`, so the flow stops at once with -32013 `dialog_open` and the
+  prompt stays open (see [Dialogs](#dialogs)). Answer it with
+  `dialog.respond`, or post or discard the draft before the flow.
 - Selectors live in one table at the top of `src/x.zig`; update it when X
   changes its markup. `x.selfcheck` on a logged-in x.com page shows which
   entries still match (a 0 for `composer` or both `post_button.*` means the
@@ -513,7 +563,7 @@ channel sends one notification, `automation.ready`.
 | -32602 | Invalid params | Missing, unknown or wrong-typed params; `data.reason` explains file problems for `cookies.import` |
 | -32603 | Internal error | Page script exception, malformed page answer, unsupported method |
 | -32000 | Authentication failed | Missing or wrong `auth` token |
-| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`) |
+| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
 | -32002 | element_not_visible | Matched but hidden or zero-size |
 | -32003 | element_not_stable | Matched but still moving |
 | -32004 | element_obscured | Another element covers the click point |

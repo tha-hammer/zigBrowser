@@ -271,8 +271,10 @@ The running review log is
 `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
 (RoseCat). Updated for N22 (after RoseCat's mails up to 4785):
 
-- **Open:** the joint N23 commit `3528d84` awaits RoseCat's final review
-  (its WIP findings 4791-4846 were addressed before the commit). The
+- **Closed (was open):** the joint N23 commit `3528d84` is APPROVED: its
+  WIP findings 4791-4846 were addressed before the commit, and the
+  follow-ups below closed what remained, under the final acceptance
+  (quiet gates at `2dc67b6`; RoseCat's final quiet gate at `d282373`). The
   popup-close fix (`1088651`, oracles `d689f72`: the shared web process
   ends only with its last window) is approved; its last review item
   (RoseCat 4859, the tracker sweep's test) is CLOSED by `7059814`. The
