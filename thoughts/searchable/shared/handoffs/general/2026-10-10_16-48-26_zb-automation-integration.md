@@ -3,8 +3,8 @@ date: 2026-10-10T16:48:26-04:00
 author: BlueBeaver (cc_2), with BlackRobin (cc_1) and RoseCat (cod_1, review)
 branch: zb-automation-integration-2026-10-10-11-59
 topic: zigBrowser automation integration - handoff for the human
-status: ready for human review; live sites NOT exercised
-updated: 2026-10-10T21:45-04:00 (final acceptance: two quiet clean gates at 2dc67b6; heavy load can fail live e2e timing)
+status: ready for human review; no test touches a live site (the orchestrator ran read-only live probes on 2026-10-11)
+updated: 2026-10-11T12:40-04:00 (follow-up since 2026-10-11 02:00 added: live selector refresh, dry_run, WebKitGTK 2.54.0, rendering default, launcher)
 ---
 
 # zigBrowser automation integration: handoff
@@ -234,18 +234,11 @@ Never start with a personal or production account.
    A 0 where you expect the element means the selector table needs
    updating; duplicates (> 1) on strict entries mean a strict click would
    fail. Do not expect any single page to show all entries.
-5. **Dry run with `options.trial`.** Before any real action, check that the
-   flow's targets are actionable without clicking them. On the page the
-   flow would open:
-   ```python
-   zb.dom.click("testid=tweetTextarea_0", trial=True)                       # X composer
-   zb.dom.click('xpath=(//*[@data-testid="tweetButton"])[1]', trial=True)   # X Post (after typing a draft by hand)
-   zb.dom.click('css=main button[aria-label^="Follow "]', trial=True)       # LinkedIn Follow
-   zb.dom.click('xpath=//header//button[normalize-space(.)="Follow"]', trial=True)  # Instagram Follow
-   ```
-   `trial` runs every actionability check and sends no input. (The x.*,
-   linkedin.* and instagram.* flows themselves have no dry-run mode; they
-   act.)
+5. **Dry run each flow first.** Since `7d0fa8a` the acting flows have a
+   dry run (`options: {dry_run: true}`): it opens the page, finds the exact
+   control the flow would click and only tries it. Follow the checklist in
+   "Safe first live run with dry_run" below; it replaces the hand-written
+   `dom.click(..., trial=True)` probes this step used to list.
 6. **Read-only calls next:** `zb.x.login_check()`, `zb.social.login_check()`,
    `zb.linkedin.extract(profile_url)`.
 7. **One low-impact action, one platform at a time**, on content you
@@ -288,6 +281,247 @@ All commits gated before commit; none amended.
   `page.close`, a stable window registry, and the popup e2e.
 - **X admission (`4497fbd`):** X posts reserve their slot like social
   actions, so concurrent windows cannot overshoot the X cap.
+
+## Follow-up since 2026-10-11 02:00
+
+Everything below is committed on this branch (no amend, nothing pushed).
+Each change was gated from a clean export and reviewed by RoseCat. The
+review log, `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`,
+has a section for each; the section names are quoted below.
+
+### What changed for the user
+
+- **HTTP/1.1 by default on Linux (`06ebee8`).** libsoup 3.6.5 failed an
+  HTTP/2 response that was followed by GOAWAY, and that broke X login on
+  the live site. The browser now starts WebKit with `SOUP_FORCE_HTTP1=1`
+  unless the user set it; `ZIGBROWSER_HTTP2=1` turns this off. Behaviour
+  change 7 above has the details. Review: "HTTP/2 GOAWAY workaround review
+  at 06ebee8".
+- **Page dialogs and -32013 (`a8678c1`, then `a3dcca8`, `ca8d84b`,
+  `fd961a8`).** On the live compose page, X's "Leave site?" prompt made
+  `page.navigate` wait 30 s for a person. Now `dialog.get` lists an open
+  alert, confirm, prompt or leave prompt, and `dialog.respond` answers it.
+  `page.navigate` takes `onBeforeUnload: "fail"` (the default), `"accept"`
+  or `"dismiss"`. While a dialog is open, commands on that window, and on
+  every window sharing its web process, fail at once with -32013
+  `dialog_open` instead of waiting out their deadline; `page.url`,
+  `page.list` and `dialog.*` keep working. Nothing answers a dialog for
+  the user, except the leave prompt when `onBeforeUnload` says so. Both
+  SDKs have it. Reviews: "Page-dialog review at a8678c1" and "Page-dialog
+  follow-up review at a3dcca8".
+- **Rendering default on Linux, case J (`1c4d0d8`, `ee00876`).** See
+  "The NVIDIA YouTube blank window" below and behaviour change 8 above.
+- **A dead web process is reported (`1c4d0d8`).** When a window's web
+  process dies, stderr says `zigBrowser: window <n>: web process
+  terminated (<reason>)`, and `page.list` shows `"crashed": "<reason>"`
+  for that window until it loads a new page. Before, the window just went
+  blank with no sign. Closing a window with `page.close` is not reported.
+  A normal quit (Ctrl+C or SIGINT) still prints this line, with
+  `terminated_by_api`, for every open window; that is harmless noise, and a
+  fix is a known follow-up (RoseCat's SHOULD on `20e0265`). Tested by
+  `tests/e2e/web_process_crash_test.py`. Review: "Web-process diagnostics
+  and rendering startup review (`1c4d0d8`)".
+- **The 15-second load timer (`20e0265`).** It no longer kills a page that
+  has started to show, nor a web process that other windows share.
+  Behaviour change 9 above has the details.
+- **`options.dry_run` on the acting flows (`7d0fa8a`, `ede6dbf`,
+  `14676f3`).** See "dry_run" below.
+
+### Live selector refresh (the orchestrator's read-only probes)
+
+The orchestrator ran read-only probe scripts on the live sites, in the
+user's signed-in browser; they read the page and clicked nothing. The
+selector tables now follow what the probes showed. The names in the
+fixtures are invented; no real person's data is in the repository.
+
+- **X (`f8c1f14`).** The schedule dialog's six selects have generated ids
+  and no aria-label. They are now found by the text of the label each one
+  points to (Month, Day, Year, Hour, Minute, AM/PM). When `/compose/post`
+  opens as a dialog over the home timeline, the page has two composers and
+  two schedule buttons; the flows use the dialog's, never the timeline's.
+  Review: "X selector refresh review at f8c1f14".
+- **LinkedIn signed-in marker and reactions (`d9fc82b`).** LinkedIn now
+  uses hashed class names. The signed-in marker is the top bar's "Me"
+  button (a button whose text is exactly "Me", inside a header or nav).
+  Like is the first "Reaction button state: ..." button, and it must still
+  say "no reaction"; after the click, the same button no longer says it.
+  The profile name comes from the page title ("<Name> | LinkedIn").
+  Review: "LinkedIn/Instagram selector refresh review at d9fc82b".
+- **LinkedIn owner area (`61a62ea`).** A profile page also shows "People
+  you may know" cards, with buttons labelled the same way for other people
+  ("Invite <Name> to connect", "Follow <Name>"). The second probe showed
+  where the owner's own buttons are: in the one section of `<main>`
+  labelled "Primary content". LinkedIn also keeps a hidden copy of Connect
+  there and an aria-hidden copy outside `<main>`. Connect and Follow now
+  look only inside that section, at the exact label for the owner's name,
+  and click only when exactly one copy is shown. Anything else fails closed
+  with nothing clicked: `linkedin_profile_action_missing` or
+  `linkedin_profile_action_ambiguous`.
+- **Instagram story viewer (`61a62ea`).** The story viewer sits on top of
+  another page. That page is inside `<main>` and has its own zero-size
+  "Next" button, and a profile's highlights carousel has one too. The
+  flow now uses only the viewer's own Next (outside `<main>`) and the
+  viewer's video or picture, and it requires exactly one Next; two give
+  `instagram_story_next_ambiguous`.
+- **Whose story it is, before every Next (`d91eba9`).** Instagram moves on
+  to the next person's stories by itself when a frame ends. `story_view`
+  now checks the URL is still `/stories/<username>/` before it counts or
+  clicks each Next, not only after. If the viewer has moved on, it stops
+  there. So it never clicks Next on someone else's story. Review: "Social
+  owner-scope, launcher ownership, and acknowledgement follow-ups"
+  (BLOCKER "story ownership is checked after, not before, the next click",
+  closed).
+
+### What is on and what is off, and why
+
+- **On:** `x.post` and `x.schedule_post`; `linkedin.connect` and
+  `linkedin.follow` (inside the owner area, since `61a62ea`);
+  `linkedin.like`, `linkedin.comment` and `linkedin.message` with
+  `conversationUrl`; `instagram.follow`, `instagram.like`,
+  `instagram.comment`, `instagram.dm`; `instagram.story_view` (since
+  `61a62ea`, with the viewer scoping above).
+- **Off: `linkedin.message` with `profileUrl`.** The probed profile had no
+  Message button of the owner's own, so nobody has seen where it lives.
+  The flow opens the profile, checks it, then stops before any click with
+  -32001 `linkedin_profile_owner_unverified`. It stays off until a probe
+  shows the owner's Message button.
+- Connect and Follow were off from `d9fc82b` until `61a62ea`, for the same
+  reason (the owner's area was unknown); `story_view` was off over the same
+  span (its selectors also matched the highlights carousel).
+
+### Still not verified live
+
+These are the labels after an action, or inside a dialog that only an
+action opens. No probe has shown them, and a dry run cannot reach them,
+because each one needs the real click first:
+
+- LinkedIn's invite dialog: "Send without a note" (and "Add a note",
+  "Send invitation").
+- LinkedIn's "Pending" label after Connect, and "Following" (or
+  "Unfollow") after Follow. The flows wait for these to confirm the action.
+- The LinkedIn reaction button's label after a Like.
+- Instagram: a story frame that is a picture, not a video (the probe saw
+  only video); and a "View story" button in front of the viewer, which the
+  dry run stops at but which no probe has shown.
+
+### dry_run
+
+`linkedin.connect`, `linkedin.follow`, `linkedin.like`, `linkedin.comment`,
+`instagram.follow`, `instagram.like`, `instagram.comment`,
+`instagram.story_view`, `x.post` and `x.schedule_post` take
+`options: {dry_run: true}` (Python `dry_run=True`, Node `{ dryRun: true }`).
+A dry run does what the real call does up to the click that would act:
+
+- It checks the params (a comment or post text must still be valid), the
+  session cookie, the signed-in page and the platform's challenge and limit
+  pages.
+- It finds exactly the control the real flow would click, with the same
+  checks (the owner area for LinkedIn profiles), and runs a trial click on
+  it. A trial checks that a click would land and sends no event.
+- It sends no input at all: no click, no typing, no key. It does not count
+  toward the daily caps, does not pause, saves no pacing state, and is not
+  refused at the cap.
+- It fails where the real call would, with the same error.
+- It returns `{dry_run: true, would_act, target: {tag, label, box},
+  checks: [...]}`. The label is the one the selector requires, with the
+  profile owner's name written `<owner>`. `checks` also counts the clean
+  challenge checks and says how many actions are left today.
+- For X and Instagram comments the target is the composer: Post stays
+  disabled until there is text, so it is only counted. For a story the
+  target is the viewer's Next. Opening the story URL is the real flow's own
+  first step, and Instagram may count that first frame as seen; the result
+  says so.
+
+The full description is in `docs/how-to-automate.md` ("Dry run"). Proof:
+the fixture pages record every pointer, key and edit event before any page
+handler runs, and each dry run leaves that record empty. When the trial was
+deliberately turned into a real click, both browser tests failed.
+
+### Safe first live run with dry_run
+
+A test account is safest. A dry run is also meant for the user's real
+accounts, because it acts on nothing; the one exception is noted in step 6.
+One platform at a time:
+
+1. Set tight pacing: `zb.social.set_pacing(min_delay_ms=8000,
+   max_delay_ms=15000, daily_cap=3)`.
+2. Dry run the call you plan to make, with the real URL:
+   `zb.linkedin.follow(url, dry_run=True)`,
+   `zb.x.post("text", dry_run=True)`, and so on.
+3. Read the result. `target.label` must be the control you expect (for
+   LinkedIn, `Follow <owner>` or `Invite <owner> to connect`), and
+   `target.box` must have a width and height above 0. In `checks`,
+   `daily_cap` says how many actions are left today, and each
+   `not_reached` entry names what the real click would lead to next. If
+   the call failed instead, stop: the error says why, and nothing was
+   clicked.
+4. Look at the visible window. Nothing should have changed: no dialog
+   opened, no button state changed, the composer is as it was.
+5. Check `zb.social.rate_status()`: the dry run did not use an action.
+6. For `instagram.story_view`, dry run only on a story you do not mind
+   having seen, because opening it may count as a view.
+7. Only then make the real call, once, and confirm the result in the
+   window. Its confirmation labels ("Pending", "Following") are still
+   unverified live, so a real Connect or Follow can act and still time out
+   waiting for them. Check the window before you retry: never retry
+   blindly.
+8. Stop on any -32010 (a checkpoint, CAPTCHA or limit), any error you did
+   not expect, or a target that is not the control you meant.
+
+### WebKitGTK 2.54.0 and its fallout
+
+The host moved from WebKitGTK 2.52.6 to 2.54.0 on 2026-10-11. After that,
+the `automation-scroll` test failed every time ("hover moved away").
+WebKit 2.54 delivers a mouse move to the page later than before, so a
+native hover answered before the page had the final move. `53b5c66` makes
+a native hover wait until the page has received its final move.
+`6f90a1a` makes a hover whose page is replaced during that wait fail with
+`document_changed` instead of succeeding. Both are approved; the reviewer's
+gate passed with `automation-scroll`. Reviews: "WebKitGTK 2.54.0
+qualification on Xvfb" (under the YouTube investigation) and "Social
+owner-scope, launcher ownership, and acknowledgement follow-ups".
+
+Separately, not caused by the upgrade: `51c1954` and `e112995` make a
+lost acknowledgement read of native input be read again, instead of
+waiting out the whole deadline (seen under heavy host load). `docs/how-to-test.md` lists the known issues.
+
+### The NVIDIA YouTube blank window
+
+On the user's desktop (NVIDIA RTX 3080, driver 550.163.01, X11, WebKitGTK
+2.54.0), a YouTube watch page showed its thumbnail and then went blank. Its
+web process had died. The browser forced the hardware-acceleration policy
+to "never", and that was the cause. The orchestrator measured the options
+on the real screen, and the user watched them:
+
+- C, policy "never" (the old default): blank, web process dead.
+- J, WebKit's own policy with `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`: the
+  video played in real time.
+- L, WebKit's own policy with Mesa EGL: it drew, but the video time jumped.
+
+The user chose J. Since `ee00876` it is the Linux default for windows,
+popups and `--screenshot`. To opt out, use `--hardware-acceleration never`
+and/or `--renderer default` (or `mesa-egl`); a value the user set in the
+environment always wins. `docs/how-to-run.md` ("Rendering") has the
+measurements. The gates run on Xvfb, which has no NVIDIA GPU, so the
+real-screen check of the committed default is done by hand by the
+orchestrator. Reviews: "Live YouTube blank-window investigation at
+`8e80655`", "Web-process diagnostics and rendering startup review
+(`1c4d0d8`)" and "Linux case-J rendering default (`ee00876`)".
+
+### Test harness: one launcher for every E2E browser
+
+Tests used to start the browser as `xvfb-run -a browser` and stop only
+`xvfb-run`. That leaked Xvfb, the browser and its helpers whenever a test
+was killed. Since `38a1e78`, `tests/e2e/xsession.py` is the only launcher.
+It runs the browser on its own private Xvfb. A guardian process ends the
+browser's whole process group and removes the display when the test dies,
+even by SIGKILL. `tests/e2e/harness_group_test.py` checks that and is a
+gate step. The Node SDK's live test uses the same launcher since
+`5c7d5dd`. Its own kill check, and that check's own display, are tested by
+`node_live_group_test.py` and `node_live_group_kill_test.py` (`34238a3`;
+both opt-in). Before a cold first flow, `x_flows_test.py` warms the
+fixture (`e7af69d`). Reviews: "Test-hygiene audit at fc4ebfa", "`38a1e78`
+launcher ownership" and "Node live-test launcher follow-up (`5c7d5dd`)".
 
 ## Open review items at handoff
 
@@ -358,10 +592,11 @@ Known, not fixed in this branch, and deliberately left for later:
 - **`session.id_hash` is not implemented.** The compound social span has
   no session id hash because there is no session concept yet.
 - ~~Pacing state is in memory only~~: done in N21.
-- **SDK `x` wrappers lack `options` and `timeout_ms`.** The Python and
-  Node `x.post` / `x.schedule_post` wrappers send only the default call
-  shape; native input, humanize and `timeout_ms` need a raw socket call
-  until the wrappers grow those parameters (RoseCat SHOULD, mail 4731).
+- **SDK `x` wrappers lack `input`, `humanize` and `timeout_ms`.** The
+  Python and Node `x.post` / `x.schedule_post` wrappers take `dry_run`
+  (since `7d0fa8a`) but not native input, humanize or `timeout_ms`; those
+  need a raw socket call until the wrappers grow them (RoseCat SHOULD,
+  mail 4731).
 
 ## Where things are
 
