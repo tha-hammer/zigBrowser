@@ -149,16 +149,41 @@ test "dm opens the profile, presses Message, types and sends" {
 
 const story_page = "{\"url\":\"http://127.0.0.1:9/stories/sam.example/\"}";
 
-test "story_view opens /stories/<username>/, checks it is a story on the site, then stops until the viewer is verified" {
-    try std.testing.expect(!instagram.story_viewer_verified);
+test "live story viewer (probe of 2026-10-11): Next is the role=button around an svg labelled Next outside <main>; media is the viewer's video or unlinked image" {
+    // The page behind the viewer (inside <main>) has a zero-size
+    // <button aria-label="Next">; the viewer's own Next is an <svg> in a
+    // div[role=button], outside <main>. Previews and avatars are links.
+    try std.testing.expectEqualStrings(
+        "xpath=//*[name()=\"svg\" and @aria-label=\"Next\"][not(ancestor::main)]/ancestor::*[@role=\"button\"][1]",
+        instagram.selectors.story_next,
+    );
+    try std.testing.expectEqualStrings(
+        "xpath=//section[not(ancestor::main)]//video | //section[not(ancestor::main)]//img[not(ancestor::a)]",
+        instagram.selectors.story_media,
+    );
+}
+
+test "story_view (on): opens /stories/<username>/, checks it is that user's story on the site, then views the frames" {
+    try std.testing.expect(instagram.story_viewer_verified);
     var fixture_site = instagram.site;
     fixture_site.fixture_origin = "http://127.0.0.1:9";
-    var runner = FakeRunner{ .start_url = story_page };
+    // One Next, after which the viewer closes (back on the profile).
+    var runner = FakeRunner{ .start_url = story_page, .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/sam.example/\"}" }} };
     defer runner.deinit();
-    try std.testing.expect((try instagram.storyView(gpa, &runner, fixture_site, "sam.example")) == null);
-    try std.testing.expectEqualStrings("instagram_story_viewer_unverified", runner.not_found.?);
-    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "page.url" });
+    const result = (try instagram.storyView(gpa, &runner, fixture_site, "sam.example")).?;
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", result);
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "page.url", "dom.waitFor", "dom.query", "dom.click", "page.url" });
     try expectSelector(&runner, 0, "http://127.0.0.1:9/stories/sam.example/");
+    try expectSelector(&runner, 3, instagram.selectors.story_media);
+    try expectSelector(&runner, 5, instagram.selectors.story_next);
+
+    // Another user's stories (a redirect) are not the requested viewer.
+    var other = FakeRunner{ .start_url = "{\"url\":\"http://127.0.0.1:9/stories/riley.sample/\"}" };
+    defer other.deinit();
+    try std.testing.expect((try instagram.storyView(gpa, &other, fixture_site, "sam.example")) == null);
+    try std.testing.expectEqualStrings("instagram_no_story_viewer", other.not_found.?);
+    try expectMethods(&other, &.{ "page.navigate", "dom.waitFor", "page.url" });
 
     // A story path on another site (a cross-origin redirect) is no viewer.
     var evil = FakeRunner{ .start_url = "{\"url\":\"https://evil.example/stories/sam.example/\"}" };
@@ -167,13 +192,13 @@ test "story_view opens /stories/<username>/, checks it is a story on the site, t
     try std.testing.expectEqualStrings("instagram_no_story_viewer", evil.not_found.?);
 }
 
-test "viewStoryFrames (once verified): waits for media, and clicks Next frame by frame until none is left" {
+test "viewStoryFrames: waits for media, and clicks Next frame by frame until none is left" {
     var fixture_site = instagram.site;
     fixture_site.fixture_origin = "http://127.0.0.1:9";
     // No Next: one frame.
     var single = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Next", .result = "{\"elements\":[]}" }} };
     defer single.deinit();
-    const one = (try instagram.viewStoryFrames(gpa, &single, fixture_site)).?;
+    const one = (try instagram.viewStoryFrames(gpa, &single, fixture_site, "sam.example")).?;
     defer gpa.free(one);
     try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", one);
     try expectMethods(&single, &.{ "dom.waitFor", "dom.query" });
@@ -182,7 +207,7 @@ test "viewStoryFrames (once verified): waits for media, and clicks Next frame by
     // Next closes the viewer (the page leaves /stories/): done after that frame.
     var leaving = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/sam.example/\"}" }} };
     defer leaving.deinit();
-    const left = (try instagram.viewStoryFrames(gpa, &leaving, fixture_site)).?;
+    const left = (try instagram.viewStoryFrames(gpa, &leaving, fixture_site, "sam.example")).?;
     defer gpa.free(left);
     try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", left);
     // First frame viewed, Next, then the frame time in which the viewer closed.
@@ -195,7 +220,7 @@ test "viewStoryFrames (once verified): waits for media, and clicks Next frame by
         .{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/sam.example/\"}" },
     } };
     defer cut.deinit();
-    const done = (try instagram.viewStoryFrames(gpa, &cut, fixture_site)).?;
+    const done = (try instagram.viewStoryFrames(gpa, &cut, fixture_site, "sam.example")).?;
     defer gpa.free(done);
     try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", done);
 
@@ -203,16 +228,16 @@ test "viewStoryFrames (once verified): waits for media, and clicks Next frame by
     // even if no story media is visible (no media is not evidence).
     var still_open = FakeRunner{ .rules = &.{
         .{ .method = "dom.click", .contains = "Next", .result = null },
-        .{ .method = "dom.query", .contains = "section video", .result = "{\"elements\":[]}" },
+        .{ .method = "dom.query", .contains = "video", .result = "{\"elements\":[]}" },
         .{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/stories/sam.example/2/\"}" },
     } };
     defer still_open.deinit();
-    try std.testing.expect((try instagram.viewStoryFrames(gpa, &still_open, fixture_site)) == null);
+    try std.testing.expect((try instagram.viewStoryFrames(gpa, &still_open, fixture_site, "sam.example")) == null);
 
     // Next forever: frames until the flow budget would not cover another.
     var endless = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/stories/sam.example/9/\"}" }} };
     defer endless.deinit();
-    const many = (try instagram.viewStoryFrames(gpa, &endless, fixture_site)).?;
+    const many = (try instagram.viewStoryFrames(gpa, &endless, fixture_site, "sam.example")).?;
     defer gpa.free(many);
     const parsed = try std.json.parseFromSlice(struct { ok: bool, framesViewed: u64 }, gpa, many, .{});
     defer parsed.deinit();
@@ -230,7 +255,7 @@ test "viewStoryFrames (once verified): waits for media, and clicks Next frame by
     // A failed page.url step fails the flow.
     var broken = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = null }} };
     defer broken.deinit();
-    try std.testing.expect((try instagram.viewStoryFrames(gpa, &broken, fixture_site)) == null);
+    try std.testing.expect((try instagram.viewStoryFrames(gpa, &broken, fixture_site, "sam.example")) == null);
 }
 
 test "story_view off the story viewer (no active stories: Instagram shows the profile) fails closed, nothing waited for or clicked" {
@@ -256,12 +281,30 @@ test "story_view checks the URL's path, not a substring (?next=/stories/... is a
     try std.testing.expect(!instagram.isStoryUrl("https://www.instagram.com/sam.example/#/stories/x/"));
 }
 
+test "viewStoryFrames stops when Instagram moves on to another person's stories: only the requested user's frames are viewed" {
+    var fixture_site = instagram.site;
+    fixture_site.fixture_origin = "http://127.0.0.1:9";
+    var runner = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/stories/riley.sample/3141/\"}" }} };
+    defer runner.deinit();
+    const result = (try instagram.viewStoryFrames(gpa, &runner, fixture_site, "sam.example")).?;
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", result);
+    try expectMethods(&runner, &.{ "dom.waitFor", "dom.query", "dom.click", "page.url" });
+    // The owner's own later frames (/stories/<user>/<id>/) keep going; the
+    // match ignores case, as Instagram's paths do.
+    try std.testing.expect(instagram.isStoryOf("https://www.instagram.com/stories/sam.example/3141/", "sam.example"));
+    try std.testing.expect(instagram.isStoryOf("https://www.instagram.com/stories/Sam.Example/", "sam.example"));
+    try std.testing.expect(!instagram.isStoryOf("https://www.instagram.com/stories/sam.example.two/", "sam.example"));
+    try std.testing.expect(!instagram.isStoryOf("https://www.instagram.com/stories/sam/", "sam.example"));
+    try std.testing.expect(!instagram.isStoryOf("https://www.instagram.com/sam.example/", "sam.example"));
+}
+
 test "story_view never picks one of several Next buttons (a carousel's Next beside the viewer's): fails closed" {
     var fixture_site = instagram.site;
     fixture_site.fixture_origin = "http://127.0.0.1:9";
     var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Next", .result = "{\"elements\":[{\"id\":\"a\",\"tag\":\"button\",\"text\":\"\",\"bbox\":{}},{\"id\":\"b\",\"tag\":\"button\",\"text\":\"\",\"bbox\":{}}]}" }} };
     defer runner.deinit();
-    try std.testing.expect((try instagram.viewStoryFrames(gpa, &runner, fixture_site)) == null);
+    try std.testing.expect((try instagram.viewStoryFrames(gpa, &runner, fixture_site, "sam.example")) == null);
     try std.testing.expectEqualStrings("instagram_story_next_ambiguous", runner.not_found.?);
     for (runner.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
 }
@@ -271,7 +314,7 @@ test "story_view clicks Next strictly (exactly one)" {
     fixture_site.fixture_origin = "http://127.0.0.1:9";
     var runner = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"http://127.0.0.1:9/sam.example/\"}" }} };
     defer runner.deinit();
-    gpa.free((try instagram.viewStoryFrames(gpa, &runner, fixture_site)).?);
+    gpa.free((try instagram.viewStoryFrames(gpa, &runner, fixture_site, "sam.example")).?);
     for (runner.steps.items) |st| {
         if (std.mem.eql(u8, st.method, "dom.click")) try std.testing.expect(std.mem.indexOf(u8, st.params, "\"strict\":true") != null);
     }

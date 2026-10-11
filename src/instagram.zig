@@ -32,26 +32,27 @@ pub const selectors = struct {
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
     pub const dm_send = "xpath=//*[self::button or @role=\"button\"][normalize-space(.)=\"Send\"]";
-    /// Story viewer media, and its Next control. A profile's highlights
-    /// carousel has a "Next" button and avatar images too, so these only
-    /// count on a /stories/ page: story_view checks the URL's path before
-    /// using them, and selfcheck reports them as 0 anywhere else. On a story
-    /// page, Next must match exactly once: another "Next" (a carousel)
-    /// fails the flow closed instead of being clicked. UNVERIFIED: the live
-    /// viewer's own markup (not probed), which would allow a real scope.
-    pub const story_media = "css=section video, section img";
-    pub const story_next = "css=button[aria-label=\"Next\"]";
+    /// Story viewer media, and its Next control, from the live viewer
+    /// (probe of 2026-10-11): the page behind the viewer is in <main> and
+    /// has a zero-size <button aria-label="Next">; the viewer is outside
+    /// <main>, its controls are <svg aria-label="Next|Previous|Close|Pause">
+    /// inside a div[role=button], its frame a <video> (story previews and
+    /// avatars are images inside links). A profile's highlights carousel has
+    /// a "Next" and avatars too, so these only count on a /stories/ page:
+    /// story_view checks the URL's path before using them, and selfcheck
+    /// reports them as 0 anywhere else. Next must match exactly once: a
+    /// second one fails the flow closed instead of being clicked.
+    pub const story_media = "xpath=//section[not(ancestor::main)]//video | //section[not(ancestor::main)]//img[not(ancestor::a)]";
+    pub const story_next = "xpath=//*[name()=\"svg\" and @aria-label=\"Next\"][not(ancestor::main)]/ancestor::*[@role=\"button\"][1]";
 };
 
-/// Whether story_view may wait for story media and click Next at all.
-/// DELIBERATELY OFF until the live story viewer's own markup is verified
-/// (review 4975): story_media and story_next are page-wide, so a highlights
-/// carousel that renders before the viewer could be the only "Next" and be
-/// clicked. While off, story_view opens the story URL, checks the page is a
-/// story on the site, then stops: element_not_found
-/// instagram_story_viewer_unverified. Tests run the frames through
-/// flow_steps.Site.unverified_actions.
-pub const story_viewer_verified = false;
+/// Whether story_view may wait for story media and click Next at all. On
+/// since the live viewer was probed (2026-10-11): story_media and story_next
+/// are scoped to the viewer, outside the page behind it (review 4975). While
+/// off, story_view would open the story URL, check it, then stop:
+/// element_not_found instagram_story_viewer_unverified (tests could still
+/// run the frames through flow_steps.Site.unverified_actions).
+pub const story_viewer_verified = true;
 
 /// The real site. The automation server may swap in a fixture origin for
 /// tests (flow_steps.Site); requests cannot.
@@ -138,16 +139,17 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
     return try gpa.dupe(u8, ok_json);
 }
 
-/// Opens `username`'s stories and views them (viewStoryFrames) once
-/// story_viewer_verified; until then it stops after checking the page.
+/// Opens `username`'s stories and views them (viewStoryFrames) while
+/// story_viewer_verified; otherwise it stops after checking the page.
 /// Returns `{"ok":true,"framesViewed":n}`.
 pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
     const url = try userUrl(gpa, s.base(), "stories/", username);
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
     // Without active stories Instagram shows the profile instead; its
-    // highlights would match the story selectors, so fail closed.
-    const in_viewer = (try onStories(gpa, runner, s)) orelse return null;
+    // highlights would match the story selectors, so fail closed. Another
+    // person's stories are not the requested viewer either.
+    const in_viewer = (try onStories(gpa, runner, s, username)) orelse return null;
     if (!in_viewer) {
         try runner.notFound("instagram_no_story_viewer");
         return null;
@@ -156,15 +158,16 @@ pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username
         try runner.notFound("instagram_story_viewer_unverified");
         return null;
     }
-    return viewStoryFrames(gpa, runner, s);
+    return viewStoryFrames(gpa, runner, s, username);
 }
 
-/// On an open story viewer: views the frames in order, each for
-/// story_frame_ms, then Next, until there is no Next, the viewer closes (the
-/// page leaves its /stories/ URL), max_story_frames, or the flow budget
-/// would not cover another frame. Every step is clamped to the flow budget.
-/// More than one Next fails closed (instagram_story_next_ambiguous).
-pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site) Error!?[]u8 {
+/// On `username`'s open story viewer: views the frames in order, each for
+/// story_frame_ms, then Next, until there is no Next, the viewer closes or
+/// moves on to someone else's stories (the page leaves
+/// /stories/<username>/), max_story_frames, or the flow budget would not
+/// cover another frame. Every step is clamped to the flow budget. More than
+/// one Next fails closed (instagram_story_next_ambiguous).
+pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
     if (!(try waitAttached(gpa, runner, selectors.story_media))) return null;
     // View the first frame, then Next + view until the viewer closes.
     if (!runner.pause(@min(story_frame_ms, runner.remainingMs() -| reserve_ms))) return null;
@@ -180,10 +183,11 @@ pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site) Er
         const clicked = try click(gpa, runner, selectors.story_next, true);
         // The frame's viewing time also lets a closing viewer leave.
         if (!runner.pause(story_frame_ms)) return null;
-        // Positive evidence only: the viewer closed when the page left
-        // /stories/ (the last Next does that). A failed click on a viewer
-        // that is still open keeps its own failure.
-        const on_stories = (try onStories(gpa, runner, s)) orelse return null;
+        // Positive evidence only: the viewer closed (or went on to another
+        // person) when the page left /stories/<username>/ (the last Next does
+        // that). A failed click on a viewer that is still open keeps its own
+        // failure.
+        const on_stories = (try onStories(gpa, runner, s, username)) orelse return null;
         if (!on_stories) break;
         // (The runner still holds the click's failure: a successful URL
         // check does not replace it.)
@@ -193,11 +197,11 @@ pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site) Er
     return try std.json.Stringify.valueAlloc(gpa, .{ .ok = true, .framesViewed = frames }, .{});
 }
 
-/// Still in the story viewer: the URL is a story (/stories/<x>) on `s`
-/// (any origin when null: selfcheck only reports), with the page call
-/// clamped to the flow budget; null when the step failed or answered
-/// something unusable.
-fn onStories(gpa: std.mem.Allocator, runner: anytype, s: ?flow.Site) Error!?bool {
+/// Still in the story viewer: the URL is a story (/stories/<x>) on `s`, and
+/// `username`'s when given (any origin and user when null: selfcheck only
+/// reports), with the page call clamped to the flow budget; null when the
+/// step failed or answered something unusable.
+fn onStories(gpa: std.mem.Allocator, runner: anytype, s: ?flow.Site, username: ?[]const u8) Error!?bool {
     const params = try std.json.Stringify.valueAlloc(gpa, .{ .timeout_ms = flow.budget(runner, flow.query_timeout_ms) }, .{});
     defer gpa.free(params);
     const result = (try runner.run("page.url", params)) orelse return null;
@@ -210,7 +214,20 @@ fn onStories(gpa: std.mem.Allocator, runner: anytype, s: ?flow.Site) Error!?bool
     };
     defer parsed.deinit();
     if (s) |site_| if (!site_.allows(parsed.value.url)) return false;
+    if (username) |user| return isStoryOf(parsed.value.url, user);
     return isStoryUrl(parsed.value.url);
+}
+
+/// `url`'s path is `username`'s story: /stories/<username>[/...], the name
+/// compared ignoring ASCII case.
+pub fn isStoryOf(url: []const u8, username: []const u8) bool {
+    if (!isStoryUrl(url)) return false;
+    const scheme_end = std.mem.indexOf(u8, url, "://").?;
+    const after = url[scheme_end + 3 ..];
+    const path = after[std.mem.indexOfAny(u8, after, "/?#").?..];
+    const rest = path["/stories/".len..];
+    const end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
+    return std.ascii.eqlIgnoreCase(rest[0..end], username);
 }
 
 /// `url`'s path is a story: /stories/<something>.
@@ -227,7 +244,7 @@ pub fn isStoryUrl(url: []const u8) bool {
 /// `{"<selector name>":count,...}` for the whole table on the current page;
 /// the story entries are 0 off a /stories/ URL (not queried).
 pub fn selfCheck(gpa: std.mem.Allocator, runner: anytype) Error!?[]u8 {
-    const in_viewer = (try onStories(gpa, runner, null)) orelse return null;
+    const in_viewer = (try onStories(gpa, runner, null, null)) orelse return null;
     const story_entries = [_][]const u8{ "story_media", "story_next" };
     return flow.selectorReportExcept(gpa, runner, selectors, if (in_viewer) &.{} else &story_entries);
 }

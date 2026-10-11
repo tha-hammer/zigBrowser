@@ -16,11 +16,20 @@
            /in/twice/                  the profile's own Follow rendered twice
            /in/more-menu/              no own Connect on the page (live, it can sit
                                        under "More")
-           /in/same-name/              the suggestion card is for another person
-                                       with the profile's own name, present before
-                                       the profile's own actions render
-           /in/same-name-missing/      that card, and no own actions at all
+           /in/same-name/              the suggestion card, and a "More profiles"
+                                       section in <main> outside the owner's area,
+                                       are for another person with the profile's own
+                                       name, present before the profile's own
+                                       actions render
+           /in/same-name-missing/      those, and no own actions at all
          (the test server redirects /in/gone/ to /feed/: not a profile)
+         Live profile (owner probe v2 of 2026-10-11, names redacted): <main> has one
+         section, aria-label "Primary content", holding the owner's visible Connect
+         (an <a>), Follow and More, plus a display:none copy of Connect and More; a
+         clone of Connect and More sits outside <main> in an aria-hidden
+         role=toolbar; the "People you may know" cards sit in <aside
+         aria-label="Aside"> inside <main>. Clicks on the clone or the hidden copy
+         are recorded in window.__li.otherCopies.
          Live markup (probed 2026-10-11): hashed class names; the nav's "Me" is a
          <button> whose text is "Me" (no aria-label); nav links carry counts in
          their aria-labels. A profile's title is "<Name> | LinkedIn" and it has no
@@ -40,12 +49,13 @@
   </head>
   <body>
     <header id="nav"></header>
+    <div><div id="sticky" class="_5e1d70" role="toolbar" aria-hidden="true"></div></div>
     <main id="main"></main>
     <script>
       (function () {
         var params = new URLSearchParams(location.search);
         var path = location.pathname;
-        var li = window.__li = { page: '', events: [], sent: [], result: null, wrongPerson: [] };
+        var li = window.__li = { page: '', events: [], sent: [], result: null, wrongPerson: [], otherCopies: [] };
         var nav = document.getElementById('nav');
         var main = document.getElementById('main');
         function record(event) { li.events.push(event); }
@@ -92,10 +102,13 @@
           var other = sameName ? name : 'Riley Sample';
           document.title = '(2) ' + name + ' | LinkedIn';
           main.innerHTML =
+            '<div><div><section aria-label="Primary content"><div>' +
+            '<div data-testid="lazy-column" data-component-type="LazyColumn"><div>' +
             '<section class="_3a9e01"><div class="_77b2c4">' + name + '</div>' +
             '<div class="text-body-medium break-words">Engineer at Example Co</div>' +
             '<span class="text-body-small inline t-black--light break-words">Springfield</span>' +
             '<div id="actions"></div></section>' +
+            '</div></div></div></section></div></div>' +
             '<div id="invite" role="dialog" hidden>' +
             '  <button aria-label="Add a note">Add a note</button>' +
             '  <button aria-label="Send without a note">Send without a note</button>' +
@@ -106,28 +119,38 @@
             '<button class="msg-form__send-button">Send</button></section>' +
             // "People you may know", inside <main> as live: same kinds of
             // labels for another person. Clicking any of them is a bug.
-            '<aside class="_9c11f0"><h2>People you may know</h2>' +
+            '<div><div><aside class="_9c11f0" aria-label="Aside"><h2>People you may know</h2>' +
             '  <button aria-label="Invite ' + other + ' to connect">Connect</button>' +
             '  <button aria-label="Follow ' + other + '">Follow</button>' +
             '  <a aria-label="Message ' + other + '" href="/messaging/compose/?recipient=other">Message</a>' +
-            '</aside>';
-          Array.prototype.forEach.call(main.querySelectorAll('aside [aria-label]'), function (el) {
+            '</aside></div></div>' +
+            // Another person with the owner's name elsewhere in <main>, outside
+            // the owner's area and before the owner's own buttons render.
+            (sameName ? '<section aria-label="More profiles for you"><span>' + name + '</span>' +
+              '  <button aria-label="Invite ' + name + ' to connect">Connect</button>' +
+              '  <button aria-label="Follow ' + name + '">Follow</button></section>' : '');
+          Array.prototype.forEach.call(main.querySelectorAll('aside [aria-label], section[aria-label="More profiles for you"] [aria-label]'), function (el) {
             el.addEventListener('click', function (e) { e.preventDefault(); li.wrongPerson.push(el.getAttribute('aria-label')); });
           });
           var invite = document.getElementById('invite');
           var limited = m[1] === 'limit-reached';
+          var hasConnect = m[1] !== 'more-menu' && m[1] !== 'same-name-missing';
+          var connectLink = function (extra) { return '<a ' + extra + ' class="_6b0f3e" data-own-connect aria-label="Invite ' + name + ' to connect" href="/preload/custom-invite/">Connect</a>'; };
           var own = m[1] === 'same-name-missing' ? '  <button aria-label="More actions">More</button>' :
-            (m[1] === 'more-menu' ? '' : '  <button id="connect" aria-label="Invite ' + name + ' to connect">Connect</button>') +
+            (hasConnect ? '  ' + connectLink('id="connect"') : '') +
             '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
             (m[1] === 'twice' ? '  <button aria-label="Follow ' + name + '">Follow</button>' : '') +
             '  <a id="message" aria-label="Message ' + name + '" href="/messaging/compose/?recipient=' + m[1] + '">Message</a>' +
-            '  <button aria-label="More actions">More</button>';
+            '  <button aria-label="More actions">More</button>' +
+            // The display:none copy of Connect and More, as live.
+            (hasConnect ? '<div class="_2f8a1c" style="display:none">' + connectLink('id="connect-hidden"') + '<button>More</button></div>' : '');
           function pending(note) {
             invite.hidden = true;
             li.result = { action: 'connect', note: note };
-            var b = document.getElementById('connect');
-            b.setAttribute('aria-label', 'Pending, click to withdraw invitation sent to ' + name);
-            b.textContent = 'Pending';
+            Array.prototype.forEach.call(document.querySelectorAll('[data-own-connect]'), function (b) {
+              b.setAttribute('aria-label', 'Pending, click to withdraw invitation sent to ' + name);
+              b.textContent = 'Pending';
+            });
           }
           invite.querySelector('[aria-label="Add a note"]').addEventListener('click', function () {
             record('click:add_note'); document.getElementById('note-box').hidden = false;
@@ -144,8 +167,15 @@
           // The profile's own actions render late, as live.
           setTimeout(function () {
             document.getElementById('actions').innerHTML = own;
+            // The aria-hidden toolbar clone, outside <main>.
+            if (hasConnect) document.getElementById('sticky').innerHTML = connectLink('id="connect-clone"') + '<button type="button">More</button>';
+            ['connect-clone', 'connect-hidden'].forEach(function (id) {
+              var copy = document.getElementById(id);
+              if (copy) copy.addEventListener('click', function (e) { e.preventDefault(); li.otherCopies.push(id); });
+            });
             var connect = document.getElementById('connect');
-            if (connect) connect.addEventListener('click', function () {
+            if (connect) connect.addEventListener('click', function (e) {
+              e.preventDefault();
               record('click:connect');
               if (limited) {
                 document.body.insertAdjacentHTML('beforeend',

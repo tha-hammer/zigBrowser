@@ -14,10 +14,22 @@
                                      is recorded in window.__ig.highlightNext)
            /p/<id>/                  post (Like, comment)
            /stories/<username>/      three story frames; Next on the last one
-                                     leaves the viewer for the profile
-           /stories/decoy.user/      the same viewer, after a highlights-style
-                                     carousel with its own Next and image
-                                     (clicks recorded in window.__ig.decoyNext)
+                                     leaves the viewer for the profile. As live
+                                     (probe of 2026-10-11): the page behind the
+                                     viewer is in <main> and has a zero-size
+                                     <button aria-label="Next">; the viewer sits
+                                     outside <main>, its controls are
+                                     <svg aria-label="..."> inside a
+                                     div[role=button], its frame a <video>, and
+                                     story previews and avatars are images in
+                                     links. Clicks on the zero-size Next or a
+                                     preview are recorded in window.__ig.decoyNext
+                                     (kept across the viewer's own navigation).
+           /stories/decoy.user/      the same viewer plus a second viewer-shaped
+                                     Next outside <main> (a carousel); clicks
+                                     recorded in window.__ig.decoyNext
+           /stories/next.user/       the same viewer; its last Next goes on to
+                                     /stories/riley.sample/ (another person)
            /p/blocked/               Like is refused with Instagram's
                                      "Try Again Later" dialog (N20)
          ?loggedout=1 renders a logged-out page (login form).
@@ -33,6 +45,7 @@
   <body>
     <nav id="nav"></nav>
     <main id="main"></main>
+    <div id="overlay"></div>
     <script>
       (function () {
         var params = new URLSearchParams(location.search);
@@ -56,21 +69,36 @@
           ig.page = 'stories:' + m[1];
           var user = m[1];
           var frame = 1;
-          ig.decoyNext = 0;
+          var gif = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
+          var control = function (id, label) { return '<div role="button" tabindex="0" id="' + id + '"><div>' + icon(label) + '</div></div>'; };
+          // The page behind the viewer: its menu's zero-size "Next".
           main.innerHTML =
-            (user === 'decoy.user'
-              ? '<section class="highlights"><img alt="highlight" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="56" height="56">' +
-                '<button aria-label="Next" id="decoy-next">Next</button></section>'
-              : '') +
-            '<section><img alt="story" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="200" height="300"><button aria-label="Next" id="story-next">Next</button></section>';
-          var decoy = document.getElementById('decoy-next');
-          if (decoy) decoy.addEventListener('click', function () { ig.decoyNext += 1; });
+            '<div><header><section><div role="menu"><div>' +
+            '<button aria-label="Next" class="behind-next" style="width:0;height:0;padding:0;margin:0;border:0;overflow:hidden"></button>' +
+            '</div></div></section></header></div>';
+          // The viewer, outside <main>.
+          document.getElementById('overlay').innerHTML =
+            '<div><section class="viewer">' +
+            '<a role="link" class="preview" href="/stories/riley.sample/"><img alt="" src="' + gif + '" width="71" height="126"></a>' +
+            '<a role="link" class="preview" href="/' + user + '/"><img alt="" src="' + gif + '" width="32" height="32"></a>' +
+            control('story-close', 'Close') + control('story-pause', 'Pause') + control('story-previous', 'Previous') +
+            '<video width="180" height="320" muted playsinline></video>' +
+            control('story-next', 'Next') + '</section>' +
+            (user === 'decoy.user' ? '<section class="carousel">' + control('decoy-next', 'Next') + '</section>' : '') +
+            '</div>';
+          ig.decoyNext = 0;
+          var decoy = function (e) {
+            e.preventDefault();
+            ig.decoyNext += 1;
+            try { sessionStorage.setItem('ig_decoy_next', String(ig.decoyNext)); } catch (err) {}
+          };
+          Array.prototype.forEach.call(document.querySelectorAll('.behind-next, .preview, #decoy-next'), function (el) { el.addEventListener('click', decoy); });
           ig.frames.push(frame);
           document.getElementById('story-next').addEventListener('click', function () {
             if (frame === 3) {
               ig.result = { action: 'story_view', frames: ig.frames.slice() };
               try { sessionStorage.setItem('ig_story_frames', JSON.stringify(ig.frames)); } catch (e) {}
-              location.href = '/' + user + '/';
+              location.href = user === 'next.user' ? '/stories/riley.sample/' : '/' + user + '/';
               return;
             }
             frame += 1;
@@ -101,6 +129,7 @@
         } else if ((m = path.match(/^\/([A-Za-z0-9._]+)\/$/))) {
           ig.page = 'profile:' + m[1];
           try { ig.storyFrames = JSON.parse(sessionStorage.getItem('ig_story_frames') || 'null'); } catch (e) {}
+          try { ig.storyDecoyNext = Number(sessionStorage.getItem('ig_decoy_next') || '0'); } catch (e) {}
           ig.highlightNext = 0;
           main.innerHTML =
             '<header><h2>' + m[1] + '</h2><span id="header-actions"></span></header>' +

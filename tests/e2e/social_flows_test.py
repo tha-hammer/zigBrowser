@@ -137,17 +137,38 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     # LinkedIn.
     expect_equal("visit", zb.linkedin.visit(profile), {"ok": True})
     expect_equal("visit page", zb.page.evaluate("window.__li.page")["result"], "profile:sam")
-    # Until the profile owner's area is verified live
-    # (linkedin.owner_actions_enabled in src/linkedin.zig), connect, follow and
-    # message on a profile open and check the profile, then stop before any
-    # click: a "People you may know" card must never be clicked.
-    for label, call in (
-        ("connect", lambda: zb.linkedin.connect(profile, note="Hi Sam, loved your notes on the engine.")),
-        ("follow", lambda: zb.linkedin.follow(profile)),
-        ("message from profile", lambda: zb.linkedin.message("Hello Sam", profile_url=profile)),
-    ):
-        expect_error(label, call, -32001, "linkedin_profile_owner_unverified")
-        expect_equal(f"{label}: nothing done", (li(), wrong_person(), zb.page.evaluate("window.__li.events")["result"]), (None, [], []))
+    # Connect and follow click only the profile's own control, inside the
+    # owner's area (<main>'s "Primary content" section, live probe v2): the
+    # visible copy, never the display:none copy, the aria-hidden toolbar
+    # clone outside <main> or a "People you may know" card.
+    other_copies = lambda: zb.page.evaluate("window.__li.otherCopies")["result"]  # noqa: E731
+    expect_equal("connect", zb.linkedin.connect(profile, note="Hi Sam, loved your notes on the engine."), {"ok": True})
+    expect_equal("connect recorded", li(), {"action": "connect", "note": "Hi Sam, loved your notes on the engine."})
+    events = zb.page.evaluate("window.__li.events")["result"]
+    if "keydown:note" not in events:
+        raise AssertionError(f"the note was not typed: {events}")
+    expect_equal("connect: only the own visible copy", (wrong_person(), other_copies(), events.count("click:connect")), ([], [], 1))
+    expect_equal("connect without note", zb.linkedin.connect(profile), {"ok": True})
+    expect_equal("connect without note recorded", li(), {"action": "connect", "note": None})
+    expect_equal("connect without note: only the own visible copy", (wrong_person(), other_copies()), ([], []))
+    expect_equal("follow", zb.linkedin.follow(profile), {"ok": True})
+    expect_equal("follow recorded", li(), {"action": "follow"})
+    expect_equal("follow: only the own button", wrong_person(), [])
+    # Another person with the owner's name, in a card and in <main> outside
+    # the owner's area, both rendered before the owner's buttons: never
+    # looked at; the owner's own control is clicked.
+    same = f"{origin}/in/same-name/"
+    expect_equal("same-name decoys", zb.linkedin.connect(same), {"ok": True})
+    expect_equal("same-name decoys: only the owner", (li(), wrong_person(), other_copies()), ({"action": "connect", "note": None}, [], []))
+    expect_equal("same-name decoys follow", zb.linkedin.follow(same), {"ok": True})
+    expect_equal("same-name decoys follow: only the owner", (li(), wrong_person()), ({"action": "follow"}, []))
+    # Two visible own Follow buttons in the owner's area: fail closed.
+    expect_error("own Follow twice", lambda: zb.linkedin.follow(f"{origin}/in/twice/"), -32001, "linkedin_profile_action_ambiguous")
+    expect_equal("own Follow twice: nothing done", (li(), wrong_person()), (None, []))
+    # The profile's own Message has not been seen live: open, check, then
+    # stop before any click.
+    expect_error("message from profile", lambda: zb.linkedin.message("Hello Sam", profile_url=profile), -32001, "linkedin_profile_owner_unverified")
+    expect_equal("message from profile: nothing done", (li(), wrong_person(), zb.page.evaluate("window.__li.events")["result"]), (None, [], []))
     # The page checks run first: redirected away from the profile.
     expect_error("not a profile", lambda: zb.linkedin.follow(f"{origin}/in/gone/"), -32001, "linkedin_not_a_profile")
     expect_equal("not a profile: on the feed, nothing done", (zb.page.evaluate("window.__li.page")["result"], li()), ("other", None))
@@ -189,11 +210,22 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
         raise AssertionError("the comment was not typed")
     expect_equal("ig dm", zb.instagram.dm("sam.example", "hi Sam"), {"ok": True})
     expect_equal("ig dm recorded", ig(), {"action": "dm", "text": "hi Sam"})
-    # Until the live story viewer's markup is verified
-    # (instagram.story_viewer_verified in src/instagram.zig), story_view opens
-    # the story, checks it is one, then stops: nothing advances.
-    expect_error("ig stories", lambda: zb.instagram.story_view("sam.example"), -32001, "instagram_story_viewer_unverified")
-    expect_equal("ig stories: nothing advanced", (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.frames")["result"]), ("stories:sam.example", [1]))
+    # The viewer as live (probe of 2026-10-11): its own Next (an svg in a
+    # div[role=button], outside <main>) frame by frame; the zero-size "Next"
+    # of the page behind it and the story previews are never clicked. The
+    # last Next leaves for the profile.
+    expect_equal("ig stories", zb.instagram.story_view("sam.example"), {"ok": True, "framesViewed": 3})
+    expect_equal(
+        "ig stories seen, nothing else clicked",
+        (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.storyFrames")["result"], zb.page.evaluate("window.__ig.storyDecoyNext")["result"]),
+        ("profile:sam.example", [1, 2, 3], 0),
+    )
+    # Instagram can go on to the next person's stories: the flow stops at the
+    # end of the requested user's, and the other person's are not advanced.
+    expect_equal("ig stories then another person", zb.instagram.story_view("next.user"), {"ok": True, "framesViewed": 3})
+    expect_equal("ig another person's stories untouched", (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.frames")["result"]), ("stories:riley.sample", [1]))
+    story_report = zb.instagram.selfcheck()
+    expect_equal("ig selfcheck in the viewer", (story_report["story_next"], story_report["story_media"] >= 1), (1, True))
     # No active stories: the profile, whose highlights carousel has its own
     # Next and avatars, is not a story viewer. Fail closed, click nothing.
     expect_error("ig no stories", lambda: zb.instagram.story_view("no.stories"), -32001, "instagram_no_story_viewer")
@@ -205,8 +237,9 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
         (ig_report["signed_in"] >= 1, ig_report["follow_button"], ig_report["message_button"], ig_report["story_media"], ig_report["story_next"]),
         (True, 1, 1, 0, 0),
     )
-    # A story page with a carousel's Next before the viewer's: nothing clicked.
-    expect_error("ig two Next buttons", lambda: zb.instagram.story_view("decoy.user"), -32001, "instagram_story_viewer_unverified")
+    # A second viewer-shaped Next outside <main> (a carousel): fail closed,
+    # nothing clicked.
+    expect_error("ig two Next buttons", lambda: zb.instagram.story_view("decoy.user"), -32001, "instagram_story_next_ambiguous")
     expect_equal(
         "ig two Next buttons: nothing advanced",
         (zb.page.evaluate("window.__ig.decoyNext")["result"], zb.page.evaluate("window.__ig.frames")["result"]),
@@ -225,8 +258,10 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_equal("checkpoint signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("challenge", "linkedin"))
     expect_equal("checkpoint page reached", zb.page.evaluate("window.__li.page")["result"], "checkpoint")
     expect_equal("checkpoint: nothing clicked", zb.page.evaluate("window.__li.events")["result"], [])
-    # (The invitation-limit modal after a Connect click returns with
-    # linkedin.owner_actions_enabled; until then connect never clicks.)
+    err = expect_error("linkedin invitation limit", lambda: zb.linkedin.connect(f"{origin}/in/limit-reached/"), -32010)
+    expect_equal("limit signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("invitation_limit", "linkedin"))
+    expect_equal("limit: only the Connect click", zb.page.evaluate("window.__li.events")["result"], ["click:connect"])
+    expect_equal("limit: no invitation", li(), None)
     err = expect_error("instagram blocked like", lambda: zb.instagram.like(f"{origin}/p/blocked/"), -32010)
     expect_equal("blocked signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("action_blocked", "instagram"))
     expect_equal("blocked: one Like click", zb.page.evaluate("window.__ig.events")["result"], ["click:like"])

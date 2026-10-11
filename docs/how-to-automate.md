@@ -316,8 +316,8 @@ delete the file.
 | Method | Params | Result |
 |---|---|---|
 | `linkedin.visit` | `profileUrl` | `{ok:true}` |
-| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?` | `{ok:true}` once the profile shows the invitation as pending (switched off for now, see below) |
-| `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following (switched off for now, see below) |
+| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?` | `{ok:true}` once the profile shows the invitation as pending (see below) |
+| `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following (see below) |
 | `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl`, `timeout_ms?` | `{ok:true}` (from a profile: switched off for now, see below) |
 | `linkedin.like` | `postUrl` | `{ok:true}` once the post's reaction button no longer says "no reaction" |
 | `linkedin.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
@@ -328,7 +328,7 @@ delete the file.
 | `instagram.like` | `postUrl` | `{ok:true}` once it shows Unlike |
 | `instagram.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
 | `instagram.dm` | `username`, `text`, `timeout_ms?` | `{ok:true}` (profile, Message, send) |
-| `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes; switched off for now, see below) |
+| `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes or moves on to someone else; see below) |
 | `instagram.selfcheck` | — | `{<selector name>: count, ...}` on the current page (`story_media` and `story_next` are 0 unless the page is a story) |
 
 - Each call is one command, like `x.*`: other page commands wait until it
@@ -345,35 +345,43 @@ delete the file.
   (exactly that host; no other host, port or user info): otherwise -32602.
 - Typed text (notes, messages, comments) goes in character by character,
   like `dom.type`.
-- **LinkedIn profile actions are switched off for now.** A profile page
-  also lists "People you may know", with buttons labelled the same way for
-  other people ("Invite <Name> to connect", "Follow <Name>"), and which part
-  of the live page holds the profile's own buttons is not yet verified. So
-  `linkedin.connect`, `linkedin.follow` and `linkedin.message` with
-  `profileUrl` open the profile and check it, then stop before any click
-  with -32001 `linkedin_profile_owner_unverified`. `linkedin.message` with
-  `conversationUrl` works as before. The checks, in order, each a -32001
-  `data.reason` when it fails:
+- **LinkedIn profile actions click only the profile's own button.** A
+  profile page also lists "People you may know", with buttons labelled the
+  same way for other people ("Invite <Name> to connect", "Follow <Name>").
+  So `linkedin.connect` and `linkedin.follow` first check the page, each
+  check a -32001 `data.reason` when it fails:
   - `linkedin_not_a_profile`: the page is not a profile (`/in/...`) on
     LinkedIn, e.g. LinkedIn redirected elsewhere;
   - `linkedin_profile_name_missing`: the title ("<Name> | LinkedIn") names
     nobody.
 
-  Once the owner's area is verified, the actions click only the button
-  with exactly the owner's label, outside any `<aside>`, and only if it is
-  there exactly once and nowhere else on the page. Otherwise they fail with
-  `linkedin_profile_action_missing` (never appeared; LinkedIn sometimes
-  puts Connect under the profile's "More" menu, which these flows do not
-  open) or `linkedin_profile_action_ambiguous`.
-- **`instagram.story_view` is switched off for now.** A profile's
-  highlights carousel also has a "Next" button and images, and the live
-  story viewer's own markup is not yet verified. So the call opens
-  `/stories/<username>/`, checks the page is a story on Instagram, and
-  stops before waiting for media or clicking anything with -32001
-  `instagram_story_viewer_unverified`. Without active stories Instagram
-  shows the profile instead: -32001 `instagram_no_story_viewer`. Once the
-  viewer is verified, Next must also be there exactly once, else -32001
-  `instagram_story_next_ambiguous`.
+  Then they look only inside the profile's own area, the one section of
+  the page's `<main>` labelled "Primary content", which must be there
+  exactly once (a page in another language has no such section, so the
+  action stops). In it they click the control labelled exactly for that
+  name, and only if exactly one such control is shown (LinkedIn also keeps
+  a hidden copy of Connect there, and a copy outside `<main>`, which are
+  never clicked). A card for another person, even one with the same name,
+  is never looked at. Otherwise they fail with
+  `linkedin_profile_action_missing` (never shown; LinkedIn sometimes puts
+  Connect under the profile's "More" menu, which these flows do not open)
+  or `linkedin_profile_action_ambiguous` (shown more than once, or the area
+  more than once). Nothing is clicked in either case.
+- **`linkedin.message` with `profileUrl` is switched off for now.** The
+  profile's own Message button has not been seen on a live profile yet,
+  so it opens the profile, checks it as above, then stops before any click
+  with -32001 `linkedin_profile_owner_unverified`. `linkedin.message` with
+  `conversationUrl` works as before.
+- **`instagram.story_view` uses only the story viewer's own controls.**
+  It opens `/stories/<username>/` and checks the page is that user's story
+  on Instagram. Without active stories Instagram shows the profile
+  instead: -32001 `instagram_no_story_viewer`. The viewer sits on top of
+  another page, which has a "Next" of its own (as does a profile's
+  highlights carousel); the call leaves everything inside that page's
+  `<main>` alone and uses the viewer's Next button and its video or
+  picture. That Next must be there exactly once, else -32001
+  `instagram_story_next_ambiguous` and nothing is clicked. Viewing stops
+  when the viewer closes or moves on to another person's stories.
 - Actions share the social pacing: a random 3-8 s pause before each and at
   most 100 a day (`social.set_pacing`, `social.rate_status`; only
   successful actions count, actions in progress hold their place). At the

@@ -258,7 +258,9 @@ const telemetry = automation.telemetry;
 
 /// Answers every page step with a success that also reads as a one-element
 /// dom.query result.
-const flow_ok = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true,\"text\":\"Ada\",\"elements\":[{\"id\":\"zb-1\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}}" };
+// One element with a box, like a real dom.query answer (the LinkedIn
+// profile click counts only matches with a box).
+const flow_ok = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"ok\":true,\"text\":\"Ada\",\"elements\":[{\"id\":\"zb-1\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{\"x\":0,\"y\":0,\"width\":80,\"height\":32}}]}}" };
 
 /// Cookie store holding the given cookie names (values are placeholders).
 const SessionCookies = struct {
@@ -536,15 +538,13 @@ test "telemetry: one compound span and one action event per step; no URL, userna
     f.init();
     defer f.deinit();
     const note = "Hi Ada, a private note";
-    // Connect opens and checks the profile, then stops before any click
-    // while the owner area is unverified (linkedin.owner_actions_enabled).
+    // The owner's name (from the title) is in the click's selector: it must
+    // not reach telemetry either.
     f.h.fake.navigate_sets_url = true;
     f.h.fake.current_title = "Ada Secret | LinkedIn";
     var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada-secret/\",\"note\":\"" ++ note ++ "\"}");
     defer outcome.deinit(gpa);
-    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
-    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "linkedin_profile_owner_unverified") != null);
-    try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "click"));
+    try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
     var compound: ?*const telemetry.Span = null;
     var actions: usize = 0;
     for (f.sink.spans.items) |*span| {
@@ -559,11 +559,11 @@ test "telemetry: one compound span and one action event per step; no URL, userna
     try std.testing.expectEqualStrings("22", c.attr("note.length").?);
     try std.testing.expectEqualStrings("false", c.attr("note.truncated").?);
     try std.testing.expectEqualStrings("true", c.attr("platform.login_verified").?);
-    try std.testing.expectEqualStrings("error", c.attr("result.status").?);
+    try std.testing.expectEqualStrings("ok", c.attr("result.status").?);
     try std.testing.expectEqual(@as(usize, 64), c.attr("profile.id_hash").?.len);
     const steps = try std.fmt.parseInt(usize, c.attr("social.step_count").?, 10);
     try std.testing.expectEqual(steps, actions);
-    try std.testing.expect(steps >= 4);
+    try std.testing.expect(steps >= 8);
     for (f.sink.spans.items) |*span| {
         if (!std.mem.eql(u8, span.name, "automation.social.action")) continue;
         try std.testing.expectEqualStrings(c.span_id, span.parent_span_id.?);
@@ -878,28 +878,34 @@ test "N20: a LinkedIn checkpoint right after navigating stops the flow: -32010 {
     try std.testing.expectEqualStrings("platform_rate_limited", compound.?.attr("automation.error").?);
 }
 
-test "connect, follow and profile message stop before any click while the profile owner's area is unverified; nothing counted" {
-    // (The invitation-limit modal after a Connect click, N20, cannot happen
-    // until linkedin.owner_actions_enabled is on; tests/linkedin_test.zig
-    // covers the scoped flow.)
-    for ([_][2][]const u8{
-        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}" },
-        .{ "linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}" },
-        .{ "linkedin.message", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\",\"text\":\"hi\"}" },
-    }) |case| {
-        var f: FlowHarness = undefined;
-        f.init();
-        defer f.deinit();
-        f.h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
-        f.h.fake.navigate_sets_url = true;
-        f.h.fake.current_title = "Ada | LinkedIn";
-        var outcome = try f.call(case[0], case[1]);
-        defer outcome.deinit(gpa);
-        try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
-        try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "linkedin_profile_owner_unverified") != null);
-        try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "click"));
-        try std.testing.expectEqual(@as(u32, 5), f.h.state.remaining());
-    }
+test "profile message stops before any click while the profile's own Message is unverified live; nothing counted" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+    f.h.fake.navigate_sets_url = true;
+    f.h.fake.current_title = "Sam Example | LinkedIn";
+    var outcome = try f.call("linkedin.message", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\",\"text\":\"hi\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "linkedin_profile_owner_unverified") != null);
+    try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "click"));
+    try std.testing.expectEqual(@as(u32, 5), f.h.state.remaining());
+}
+
+test "N20: an invitation-limit modal after the Connect click: the next click never happens" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.navigate_sets_url = true;
+    f.h.fake.current_title = "Sam Example | LinkedIn";
+    // Clean after the navigation; the Connect click opens the limit modal.
+    f.h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("invitation_limit", "linkedin") } };
+    var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\"}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "invitation_limit", "linkedin");
+    try std.testing.expectEqual(@as(usize, 1), countOps(&f.h.fake, "click"));
+    try std.testing.expectEqual(@as(usize, 2), f.h.fake.scan_calls);
 }
 
 test "N20: Instagram flows scan for their own platform; a blocked-action dialog stops a comment before typing" {

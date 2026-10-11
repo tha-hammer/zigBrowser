@@ -31,7 +31,7 @@ const FakeRunner = struct {
         for (self.rules) |rule| {
             if (std.mem.eql(u8, rule.method, method) and std.mem.indexOf(u8, params_json, rule.contains) != null) return rule.result;
         }
-        if (std.mem.eql(u8, method, "dom.query")) return "{\"elements\":[{\"id\":\"e\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}";
+        if (std.mem.eql(u8, method, "dom.query")) return one_element;
         if (std.mem.eql(u8, method, "page.title")) return "{\"title\":\"Sam Example | LinkedIn\"}";
         if (std.mem.eql(u8, method, "page.url")) return "{\"url\":\"https://www.linkedin.com/in/sam-example/\"}";
         return "{\"ok\":true}";
@@ -85,17 +85,26 @@ fn expectSelector(runner: *const FakeRunner, index: usize, expected: []const u8)
 
 const profile = "https://www.linkedin.com/in/sam-example/";
 
-/// The profile's own actions, by their exact labels for "Sam Example", outside
-/// any <aside> (suggestion cards); and the same labels anywhere on the page.
-const own_connect = "xpath=//*[@aria-label=\"Invite Sam Example to connect\"][not(ancestor::aside)]";
-const any_connect = "xpath=//*[@aria-label=\"Invite Sam Example to connect\"]";
-const own_follow = "xpath=//*[@aria-label=\"Follow Sam Example\"][not(ancestor::aside)]";
-const any_follow = "xpath=//*[@aria-label=\"Follow Sam Example\"]";
-const own_message = "xpath=//*[@aria-label=\"Message Sam Example\"][not(ancestor::aside)]";
-const own_pending = "xpath=//*[starts-with(@aria-label, \"Pending\") and contains(@aria-label, \"Sam Example\")][not(ancestor::aside)]";
-const own_following = "xpath=//*[@aria-label=\"Following Sam Example\" or @aria-label=\"Unfollow Sam Example\"][not(ancestor::aside)]";
+/// The profile's own actions, by their exact labels for "Sam Example", inside
+/// the profile's own action area (linkedin.owner_container, pinned from the
+/// live probe v2) and under no aria-hidden element.
+const area = linkedin.owner_container;
+const owner_area = "xpath=" ++ area;
+const shown = "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
+const own_connect = "xpath=" ++ area ++ "//*[@aria-label=\"Invite Sam Example to connect\"]" ++ shown;
+const own_connect_2 = "xpath=(" ++ area ++ "//*[@aria-label=\"Invite Sam Example to connect\"]" ++ shown ++ ")[2]";
+const own_follow = "xpath=" ++ area ++ "//*[@aria-label=\"Follow Sam Example\"]" ++ shown;
+const own_message = "xpath=" ++ area ++ "//*[@aria-label=\"Message Sam Example\"]" ++ shown;
+const own_pending = "xpath=" ++ area ++ "//*[starts-with(@aria-label, \"Pending\") and contains(@aria-label, \"Sam Example\")]" ++ shown;
+const own_following = "xpath=" ++ area ++ "//*[@aria-label=\"Following Sam Example\" or @aria-label=\"Unfollow Sam Example\"]" ++ shown;
+const visible_box = "{\"x\":56,\"y\":513,\"width\":97,\"height\":48}";
+const hidden_box = "{\"x\":0,\"y\":0,\"width\":0,\"height\":0}";
+const one_element = "{\"elements\":[{\"id\":\"a\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ visible_box ++ "}]}";
+/// Live (probe v2): a display:none copy, then the visible one.
+const hidden_then_visible = "{\"elements\":[{\"id\":\"a\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ hidden_box ++ "},{\"id\":\"b\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ visible_box ++ "}]}";
+const all_hidden = "{\"elements\":[{\"id\":\"a\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ hidden_box ++ "},{\"id\":\"b\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ hidden_box ++ "}]}";
 const no_elements = "{\"elements\":[]}";
-const two_elements = "{\"elements\":[{\"id\":\"a\",\"tag\":\"button\",\"text\":\"\",\"bbox\":{}},{\"id\":\"b\",\"tag\":\"button\",\"text\":\"\",\"bbox\":{}}]}";
+const two_elements = "{\"elements\":[{\"id\":\"a\",\"tag\":\"button\",\"text\":\"\",\"bbox\":" ++ visible_box ++ "},{\"id\":\"b\",\"tag\":\"button\",\"text\":\"\",\"bbox\":" ++ visible_box ++ "}]}";
 
 test "live markup (2026-10-11): hashed classes, so the signed-in marker is the nav's \"Me\" button" {
     // The top nav's (a "Me" button in page content must not count).
@@ -135,15 +144,15 @@ test "the profile's own name comes from the title \"<Name> | LinkedIn\" (a notif
 }
 
 test "a name with quotes becomes a valid XPath literal (XPath 1.0 has no escapes)" {
-    const plain = try linkedin.profileSelector(gpa, .follow, "Sam O'Example", .document);
+    const plain = try linkedin.profileSelector(gpa, .follow, "Sam O'Example", null);
     defer gpa.free(plain);
     try std.testing.expectEqualStrings("xpath=//*[@aria-label=\"Follow Sam O'Example\"]", plain);
-    const double = try linkedin.profileSelector(gpa, .follow, "Sam \"Q\" Example", .document);
+    const double = try linkedin.profileSelector(gpa, .follow, "Sam \"Q\" Example", null);
     defer gpa.free(double);
     try std.testing.expectEqualStrings("xpath=//*[@aria-label='Follow Sam \"Q\" Example']", double);
-    const both = try linkedin.profileSelector(gpa, .follow, "Sam \"Q\" O'E", .owner);
+    const both = try linkedin.profileSelector(gpa, .follow, "Sam \"Q\" O'E", area);
     defer gpa.free(both);
-    try std.testing.expectEqualStrings("xpath=//*[@aria-label=concat('Follow Sam ', '\"', 'Q', '\"', ' O', \"'\", 'E')][not(ancestor::aside)]", both);
+    try std.testing.expectEqualStrings("xpath=" ++ area ++ "//*[@aria-label=concat('Follow Sam ', '\"', 'Q', '\"', ' O', \"'\", 'E')]" ++ shown, both);
 }
 
 test "profile actions refuse a page that is not a profile (e.g. redirected to the feed): linkedin_not_a_profile, nothing clicked" {
@@ -175,89 +184,114 @@ test "profile actions refuse a page whose title names nobody: element_not_found 
     try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title" });
 }
 
-// The scoped click itself (src/linkedin.zig clickProfileAction); the flows
-// call it only once linkedin.owner_actions_enabled is on.
+// The scoped click itself (src/linkedin.zig clickProfileAction).
 
-test "scoped click: own label outside any <aside>, exactly once, and nowhere else on the page -> strict click" {
+test "live owner area (probe v2, 2026-10-11): the one <main> section labelled \"Primary content\"" {
+    // Not the role=toolbar clone outside <main> (aria-hidden), not the
+    // "People you may know" cards (<aside aria-label="Aside"> in <main>).
+    try std.testing.expectEqualStrings("//main//section[@aria-label=\"Primary content\"]", linkedin.owner_container);
+}
+
+test "scoped click: the exact label exactly once inside the one owner area -> strict click" {
     var runner = FakeRunner{};
     defer runner.deinit();
-    try std.testing.expect(try linkedin.clickProfileAction(gpa, &runner, .connect, "Sam Example"));
+    try std.testing.expect(try linkedin.clickProfileAction(gpa, &runner, area, .connect, "Sam Example"));
     try expectMethods(&runner, &.{ "dom.waitFor", "dom.query", "dom.query", "dom.click" });
+    // Waits until a copy is visible (the profile's buttons render late).
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[0].params, "\"state\":\"visible\"") != null);
     try expectSelector(&runner, 0, own_connect);
     try expectSelector(&runner, 1, own_connect);
-    try expectSelector(&runner, 2, any_connect);
+    try expectSelector(&runner, 2, owner_area);
     try expectSelector(&runner, 3, own_connect);
     try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[3].params, "\"strict\":true") != null);
     try std.testing.expect(runner.not_found == null);
 }
 
-test "scoped click: the exact target never appears -> linkedin_profile_action_missing, nothing clicked" {
+test "scoped click: the exact target never appears in the owner area -> linkedin_profile_action_missing, nothing clicked" {
     var runner = FakeRunner{ .rules = &.{
         .{ .method = "dom.waitFor", .contains = "Invite Sam Example", .result = null },
         .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
     } };
     defer runner.deinit();
-    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, .connect, "Sam Example")));
+    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, area, .connect, "Sam Example")));
     try std.testing.expectEqualStrings("linkedin_profile_action_missing", runner.not_found.?);
     try expectMethods(&runner, &.{ "dom.waitFor", "dom.query" });
 }
 
-test "scoped click: the own label twice -> linkedin_profile_action_ambiguous, nothing clicked" {
-    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Follow Sam Example", .result = two_elements }} };
+test "scoped click: a display:none copy beside the visible one (live): only the visible copy, clicked strictly by its position" {
+    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Invite Sam Example", .result = hidden_then_visible }} };
     defer runner.deinit();
-    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, .follow, "Sam Example")));
-    try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", runner.not_found.?);
-    try expectMethods(&runner, &.{ "dom.waitFor", "dom.query", "dom.query" });
+    try std.testing.expect(try linkedin.clickProfileAction(gpa, &runner, area, .connect, "Sam Example"));
+    try expectMethods(&runner, &.{ "dom.waitFor", "dom.query", "dom.query", "dom.click" });
+    try expectSelector(&runner, 3, own_connect_2);
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[3].params, "\"strict\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[3].params, "trial") == null);
+    try std.testing.expect(runner.not_found == null);
 }
 
-test "scoped click: a same-name card elsewhere on the page -> linkedin_profile_action_ambiguous, nothing clicked" {
-    // Own region: one match; the whole page: two (a card for another person
-    // with the same name).
+test "scoped click: every copy hidden (no box) -> linkedin_profile_action_missing, nothing clicked" {
+    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Invite Sam Example", .result = all_hidden }} };
+    defer runner.deinit();
+    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, area, .connect, "Sam Example")));
+    try std.testing.expectEqualStrings("linkedin_profile_action_missing", runner.not_found.?);
+    for (runner.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
+}
+
+test "scoped click: the own label visible twice in the owner area -> linkedin_profile_action_ambiguous, nothing clicked (never picks one)" {
+    var runner = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Follow Sam Example", .result = two_elements }} };
+    defer runner.deinit();
+    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, area, .follow, "Sam Example")));
+    try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", runner.not_found.?);
+    for (runner.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
+}
+
+test "scoped click: an owner area that matches twice is no owner area -> linkedin_profile_action_ambiguous, nothing clicked" {
     var runner = FakeRunner{ .rules = &.{
-        .{ .method = "dom.query", .contains = "not(ancestor::aside)", .result = "{\"elements\":[{\"id\":\"a\",\"tag\":\"button\",\"text\":\"\",\"bbox\":{}}]}" },
-        .{ .method = "dom.query", .contains = "Follow Sam Example", .result = two_elements },
+        .{ .method = "dom.query", .contains = "Sam Example", .result = one_element },
+        .{ .method = "dom.query", .result = two_elements },
     } };
     defer runner.deinit();
-    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, .follow, "Sam Example")));
+    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, area, .follow, "Sam Example")));
     try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", runner.not_found.?);
-    try expectSelector(&runner, 1, own_follow);
-    try expectSelector(&runner, 2, any_follow);
+    try expectSelector(&runner, 2, owner_area);
     for (runner.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
+}
+
+test "scoped click: nothing outside the owner area is waited for, counted or clicked (a same-name card there cannot match, even if it renders first)" {
+    var runner = FakeRunner{};
+    defer runner.deinit();
+    try std.testing.expect(try linkedin.clickProfileAction(gpa, &runner, area, .follow, "Sam Example"));
+    for (runner.steps.items, 0..) |_, i| {
+        const sel = try runner.selectorOf(i);
+        defer gpa.free(sel);
+        try std.testing.expect(std.mem.startsWith(u8, sel, owner_area));
+    }
 }
 
 test "scoped click: a failed wait keeps its own failure when the target is there (e.g. cancelled); only a 0 count says missing" {
     var runner = FakeRunner{ .rules = &.{.{ .method = "dom.waitFor", .contains = "Follow Sam Example", .result = null }} };
     defer runner.deinit();
-    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, .follow, "Sam Example")));
+    try std.testing.expect(!(try linkedin.clickProfileAction(gpa, &runner, area, .follow, "Sam Example")));
     try std.testing.expect(runner.not_found == null);
     try expectMethods(&runner, &.{ "dom.waitFor", "dom.query" });
 }
 
 test "the profile's own state labels (after the click) are owner-scoped too" {
-    const pending = try linkedin.profileSelector(gpa, .pending, "Sam Example", .owner);
+    const pending = try linkedin.profileSelector(gpa, .pending, "Sam Example", area);
     defer gpa.free(pending);
     try std.testing.expectEqualStrings(own_pending, pending);
-    const following = try linkedin.profileSelector(gpa, .following, "Sam Example", .owner);
+    const following = try linkedin.profileSelector(gpa, .following, "Sam Example", area);
     defer gpa.free(following);
     try std.testing.expectEqualStrings(own_following, following);
-    const message = try linkedin.profileSelector(gpa, .message, "Sam Example", .owner);
+    const message = try linkedin.profileSelector(gpa, .message, "Sam Example", area);
     defer gpa.free(message);
     try std.testing.expectEqualStrings(own_message, message);
 }
 
-test "until the owner area is verified live, connect/follow/message on a profile check the page, then refuse before any click" {
-    try std.testing.expect(!linkedin.owner_actions_enabled);
-    var c = FakeRunner{};
-    defer c.deinit();
-    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, "hi")) == null);
-    try std.testing.expectEqualStrings("linkedin_profile_owner_unverified", c.not_found.?);
-    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title" });
-
-    var f = FakeRunner{};
-    defer f.deinit();
-    try std.testing.expect((try linkedin.follow(gpa, &f, linkedin.site, profile)) == null);
-    try std.testing.expectEqualStrings("linkedin_profile_owner_unverified", f.not_found.?);
-    try expectMethods(&f, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title" });
+test "connect and follow are on (owner area pinned live); profile message checks the page, then refuses before any click (no live Message seen)" {
+    try std.testing.expect(linkedin.ownerActionEnabled(.connect));
+    try std.testing.expect(linkedin.ownerActionEnabled(.follow));
+    try std.testing.expect(!linkedin.ownerActionEnabled(.message));
 
     var m = FakeRunner{};
     defer m.deinit();
@@ -311,13 +345,13 @@ test "no signed-in marker and no sign-in link: the wait failure stands (null)" {
     try std.testing.expect((try linkedin.follow(gpa, &runner, linkedin.site, profile)) == null);
 }
 
-test "the scoped flows as they will run once verified (tests: Site.unverified_actions): connect with a typed note, follow, profile message" {
+test "the scoped flows: connect with a typed note and follow (on), profile message (tests: Site.unverified_actions)" {
     var verified = linkedin.site;
     verified.unverified_actions = true;
 
     var c = FakeRunner{};
     defer c.deinit();
-    gpa.free((try linkedin.connect(gpa, &c, verified, profile, "Hi Sam, loved your notes on the engine.")).?);
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, "Hi Sam, loved your notes on the engine.")).?);
     try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.click", "dom.click", "dom.click", "dom.fill", "dom.type", "dom.click", "dom.waitFor" });
     try expectSelector(&c, 7, own_connect);
     try expectSelector(&c, 8, linkedin.selectors.add_note_button);
@@ -330,14 +364,14 @@ test "the scoped flows as they will run once verified (tests: Site.unverified_ac
 
     var long = FakeRunner{};
     defer long.deinit();
-    gpa.free((try linkedin.connect(gpa, &long, verified, profile, "é" ** 301)).?);
+    gpa.free((try linkedin.connect(gpa, &long, linkedin.site, profile, "é" ** 301)).?);
     const typed = try std.json.parseFromSlice(std.json.Value, gpa, long.steps.items[11].params, .{});
     defer typed.deinit();
     try std.testing.expectEqual(@as(usize, 300), try std.unicode.utf8CountCodepoints(typed.value.object.get("text").?.string));
 
     var f = FakeRunner{};
     defer f.deinit();
-    gpa.free((try linkedin.follow(gpa, &f, verified, profile)).?);
+    gpa.free((try linkedin.follow(gpa, &f, linkedin.site, profile)).?);
     try expectSelector(&f, 7, own_follow);
     try expectSelector(&f, 8, own_following);
 
@@ -483,7 +517,7 @@ test "every step's timeout is clamped to the flow budget" {
     defer runner.deinit();
     gpa.free((try linkedin.comment(gpa, &runner, linkedin.site, "https://www.linkedin.com/feed/update/urn:li:activity:1/", "note")).?);
     // The scoped click and the profile reads too.
-    _ = try linkedin.clickProfileAction(gpa, &runner, .follow, "Sam Example");
+    _ = try linkedin.clickProfileAction(gpa, &runner, area, .follow, "Sam Example");
     if (try linkedin.extract(gpa, &runner, linkedin.site, profile)) |result| gpa.free(result);
     for (runner.steps.items) |s| {
         const parsed = try std.json.parseFromSlice(std.json.Value, gpa, s.params, .{});

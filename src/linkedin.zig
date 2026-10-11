@@ -24,9 +24,10 @@ pub const selectors = struct {
     /// Profile actions, for x.selfcheck-style counts only. Live, these also
     /// match the "People you may know" cards ("Invite <Name> to connect",
     /// "Follow <Name>"), so the flows never click them: they click the exact
-    /// label for the profile's own person (`profileSelector`).
-    pub const connect_button = "css=main button[aria-label^=\"Invite \"][aria-label$=\" to connect\"]";
-    pub const pending_button = "css=main button[aria-label^=\"Pending\"]";
+    /// label for the profile's own person (`profileSelector`). Live, Connect
+    /// is an <a>, so connect and pending take any element.
+    pub const connect_button = "css=main [aria-label^=\"Invite \"][aria-label$=\" to connect\"]";
+    pub const pending_button = "css=main [aria-label^=\"Pending\"]";
     pub const follow_button = "css=main button[aria-label^=\"Follow \"]";
     pub const following_button = "css=main button[aria-label^=\"Following \"], main button[aria-label^=\"Unfollow \"]";
     pub const message_button = "css=main a[href*=\"/messaging/compose\"], main button[aria-label^=\"Message \"]";
@@ -76,27 +77,40 @@ pub const site = flow.Site{ .host = "www.linkedin.com", .origin = "https://www.l
 /// open: they fail closed as linkedin_profile_action_missing.
 pub const ProfileAction = enum { connect, follow, message, pending, following };
 
-/// Whether connect, follow and message (on a profile) may click at all.
-/// DELIBERATELY OFF until the live profile's own-action area is verified
-/// (review 4971): the owner scope below leaves out <aside> suggestion
-/// cards, but whether LinkedIn's "People you may know" cards really sit in
-/// an <aside> is unverified, and a card for someone with the owner's name
-/// could otherwise be clicked. While off, those flows open and check the
-/// profile, then stop before any click: element_not_found
-/// linkedin_profile_owner_unverified. Tests run the scoped flow through
-/// flow_steps.Site.unverified_actions.
-pub const owner_actions_enabled = false;
+/// The profile's own action area, as an XPath expression that must match
+/// exactly one element: profile actions click only inside it. Pinned from
+/// the live owner probe v2 (2026-10-11, names redacted; reviews 4971,
+/// 5019/5020): <main> has one section, labelled "Primary content", holding
+/// the owner's visible Connect and Follow and a display:none copy of
+/// Connect; a clone of the owner's Connect sits outside <main> under an
+/// aria-hidden role=toolbar; the "People you may know" cards sit in
+/// <aside aria-label="Aside"> inside <main>, outside that section. (A page
+/// in another language has no such label: 0 areas, so the flows refuse.)
+pub const owner_container = "//main//section[@aria-label=\"Primary content\"]";
 
-/// Where a profile action's label is looked for: `owner` leaves out
-/// anything inside an <aside> (suggestion cards such as "People you may
-/// know"); `document` is the whole page.
-pub const ProfileScope = enum { owner, document };
+/// Whether a profile action may click at all. Connect and follow: on, in
+/// owner_container. Message: OFF, since the profile's own Message was not
+/// on the probed profile; the flow opens and checks the profile, then stops
+/// before any click: element_not_found linkedin_profile_owner_unverified
+/// (tests run it through flow_steps.Site.unverified_actions). UNVERIFIED
+/// live: the labels after the click (pending, following) and the invite
+/// dialog's buttons.
+pub fn ownerActionEnabled(action: ProfileAction) bool {
+    return switch (action) {
+        .connect, .follow => true,
+        .message, .pending, .following => false,
+    };
+}
 
-/// `action`'s exact selector for `name` in `scope` (owned).
-pub fn profileSelector(gpa: std.mem.Allocator, action: ProfileAction, name: []const u8, scope: ProfileScope) Error![]u8 {
+/// `action`'s exact selector for `name`, inside `container` (an XPath
+/// expression for the owner's area) and under no aria-hidden element, or
+/// anywhere when `container` is null (owned).
+pub fn profileSelector(gpa: std.mem.Allocator, action: ProfileAction, name: []const u8, container: ?[]const u8) Error![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
-    try out.appendSlice(gpa, "xpath=//*[");
+    try out.appendSlice(gpa, "xpath=");
+    if (container) |c| try out.appendSlice(gpa, c);
+    try out.appendSlice(gpa, "//*[");
     switch (action) {
         .connect => try labelEquals(gpa, &out, "Invite ", name, " to connect"),
         .follow => try labelEquals(gpa, &out, "Follow ", name, ""),
@@ -113,7 +127,7 @@ pub fn profileSelector(gpa: std.mem.Allocator, action: ProfileAction, name: []co
         },
     }
     try out.append(gpa, ']');
-    if (scope == .owner) try out.appendSlice(gpa, "[not(ancestor::aside)]");
+    if (container != null) try out.appendSlice(gpa, "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]");
     return try out.toOwnedSlice(gpa);
 }
 
@@ -251,8 +265,8 @@ pub fn connect(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_ur
     if (!(try openPage(gpa, runner, profile_url))) return null;
     const name = (try profileName(gpa, runner, s)) orelse return null;
     defer gpa.free(name);
-    if (!(try ownerActionsAllowed(runner, s))) return null;
-    if (!(try clickProfileAction(gpa, runner, .connect, name))) return null;
+    const area = (try ownerArea(runner, s, .connect)) orelse return null;
+    if (!(try clickProfileAction(gpa, runner, area, .connect, name))) return null;
     if (note) |text| {
         if (!(try click(gpa, runner, selectors.add_note_button, true))) return null;
         if (!(try typeInto(gpa, runner, selectors.note_input, truncateNote(text)))) return null;
@@ -260,7 +274,7 @@ pub fn connect(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_ur
     } else {
         if (!(try click(gpa, runner, selectors.send_without_note_button, true))) return null;
     }
-    if (!(try waitProfileState(gpa, runner, .pending, name))) return null;
+    if (!(try waitProfileState(gpa, runner, area, .pending, name))) return null;
     return try gpa.dupe(u8, ok_json);
 }
 
@@ -270,9 +284,9 @@ pub fn follow(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url
     if (!(try openPage(gpa, runner, profile_url))) return null;
     const name = (try profileName(gpa, runner, s)) orelse return null;
     defer gpa.free(name);
-    if (!(try ownerActionsAllowed(runner, s))) return null;
-    if (!(try clickProfileAction(gpa, runner, .follow, name))) return null;
-    if (!(try waitProfileState(gpa, runner, .following, name))) return null;
+    const area = (try ownerArea(runner, s, .follow)) orelse return null;
+    if (!(try clickProfileAction(gpa, runner, area, .follow, name))) return null;
+    if (!(try waitProfileState(gpa, runner, area, .following, name))) return null;
     return try gpa.dupe(u8, ok_json);
 }
 
@@ -290,8 +304,8 @@ pub fn message(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, target: Me
     if (target == .profile_url) {
         const name = (try profileName(gpa, runner, s)) orelse return null;
         defer gpa.free(name);
-        if (!(try ownerActionsAllowed(runner, s))) return null;
-        if (!(try clickProfileAction(gpa, runner, .message, name))) return null;
+        const area = (try ownerArea(runner, s, .message)) orelse return null;
+        if (!(try clickProfileAction(gpa, runner, area, .message, name))) return null;
     }
     if (!(try typeInto(gpa, runner, selectors.message_input, text))) return null;
     if (!(try click(gpa, runner, selectors.message_send_button, true))) return null;
@@ -437,46 +451,90 @@ fn profileName(gpa: std.mem.Allocator, runner: anytype, s: flow.Site) Error!?[]u
     return try gpa.dupe(u8, name);
 }
 
-/// Clicks the profile's own `action` button and nothing else (the flows
-/// call it only when owner_actions_enabled). Profile
-/// buttons render late, so it first waits for the exact label outside any
-/// <aside>; that must then match exactly once, and the same label must not
-/// be anywhere else on the page (a suggestion card for someone with the
-/// same name). Fails closed: never there -> linkedin_profile_action_missing;
-/// more than one -> linkedin_profile_action_ambiguous.
-pub fn clickProfileAction(gpa: std.mem.Allocator, runner: anytype, action: ProfileAction, name: []const u8) Error!bool {
-    const own = try profileSelector(gpa, action, name, .owner);
+/// Clicks the profile's own `action` control and nothing else (the flows
+/// pass owner_container). Profile buttons render late, so it first waits
+/// for a visible copy of the exact label inside the owner area (under no
+/// aria-hidden element). The area must be on the page exactly once, and
+/// exactly one copy there may have a box: live, the area also holds a
+/// display:none copy of Connect, which has none (XPath cannot see
+/// display:none; dom.query reports each match's box). That copy is clicked
+/// strictly by its position among the matches; every match is the owner's
+/// own label inside the owner's area, and the click's own visibility check
+/// refuses a hidden one. Nothing outside the area is looked at, so a
+/// suggestion card for someone with the same name cannot match, even if it
+/// renders first. Fails closed: no visible copy ->
+/// linkedin_profile_action_missing; two visible copies, or the area twice
+/// -> linkedin_profile_action_ambiguous.
+pub fn clickProfileAction(gpa: std.mem.Allocator, runner: anytype, container: []const u8, action: ProfileAction, name: []const u8) Error!bool {
+    const own = try profileSelector(gpa, action, name, container);
     defer gpa.free(own);
-    const appeared = try flow.step(gpa, runner, "dom.waitFor", .{ .selector = own, .state = "attached", .strict = false, .timeout_ms = flow.waitBudget(runner, page_ready_timeout_ms) });
-    const own_count = (try flow.countMatches(gpa, runner, own)) orelse return false;
-    if (own_count == 0) {
+    const appeared = try flow.step(gpa, runner, "dom.waitFor", .{ .selector = own, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, page_ready_timeout_ms) });
+    const copies = (try visibleCopies(gpa, runner, own)) orelse return false;
+    if (copies.total == 0) {
         try runner.notFound("linkedin_profile_action_missing");
         return false;
     }
     // A failed wait with the target present (e.g. cancelled) keeps its failure.
     if (!appeared) return false;
-    const anywhere = try profileSelector(gpa, action, name, .document);
-    defer gpa.free(anywhere);
-    const page_count = (try flow.countMatches(gpa, runner, anywhere)) orelse return false;
-    if (own_count > 1 or page_count > own_count) {
+    const area = try std.fmt.allocPrint(gpa, "xpath={s}", .{container});
+    defer gpa.free(area);
+    const areas = (try flow.countMatches(gpa, runner, area)) orelse return false;
+    if (copies.visible > 1 or areas != 1) {
         try runner.notFound("linkedin_profile_action_ambiguous");
         return false;
     }
-    return click(gpa, runner, own, true);
+    if (copies.visible == 0) {
+        try runner.notFound("linkedin_profile_action_missing");
+        return false;
+    }
+    if (copies.total == 1) return click(gpa, runner, own, true);
+    const copy = try std.fmt.allocPrint(gpa, "xpath=({s})[{d}]", .{ own["xpath=".len..], copies.first_visible });
+    defer gpa.free(copy);
+    return click(gpa, runner, copy, true);
 }
 
-/// Stops a profile action before any click while owner_actions_enabled is
-/// off (element_not_found linkedin_profile_owner_unverified), unless a test
-/// set `s.unverified_actions`.
-fn ownerActionsAllowed(runner: anytype, s: flow.Site) Error!bool {
-    if (owner_actions_enabled or s.unverified_actions) return true;
+const Copies = struct { total: usize, visible: usize, first_visible: usize };
+
+/// How many elements `selector` matches, how many of them have a box
+/// (width and height above 0; a display:none element has none), and the
+/// 1-based position of the first that does. Null when the query failed or
+/// answered something unusable.
+fn visibleCopies(gpa: std.mem.Allocator, runner: anytype, selector: []const u8) Error!?Copies {
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = flow.budget(runner, flow.query_timeout_ms) }, .{});
+    defer gpa.free(params);
+    const result = (try runner.run("dom.query", params)) orelse return null;
+    const Box = struct { width: f64 = 0, height: f64 = 0 };
+    const Element = struct { bbox: Box = .{} };
+    const parsed = std.json.parseFromSlice(struct { elements: []const Element }, gpa, result, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try runner.malformed();
+            return null;
+        },
+    };
+    defer parsed.deinit();
+    var copies = Copies{ .total = parsed.value.elements.len, .visible = 0, .first_visible = 0 };
+    for (parsed.value.elements, 1..) |element, n| {
+        if (!(element.bbox.width > 0 and element.bbox.height > 0)) continue;
+        if (copies.visible == 0) copies.first_visible = n;
+        copies.visible += 1;
+    }
+    return copies;
+}
+
+/// The owner area `action` may click in (owner_container), or null after
+/// element_not_found linkedin_profile_owner_unverified while the action is
+/// not ownerActionEnabled and no test set `s.unverified_actions`: the flow
+/// stops before any click.
+fn ownerArea(runner: anytype, s: flow.Site, action: ProfileAction) Error!?[]const u8 {
+    if (ownerActionEnabled(action) or s.unverified_actions) return owner_container;
     try runner.notFound("linkedin_profile_owner_unverified");
-    return false;
+    return null;
 }
 
-/// Waits for the profile's own `state` (pending, following).
-fn waitProfileState(gpa: std.mem.Allocator, runner: anytype, state: ProfileAction, name: []const u8) Error!bool {
-    const selector = try profileSelector(gpa, state, name, .owner);
+/// Waits for the profile's own `state` (pending, following) in `container`.
+fn waitProfileState(gpa: std.mem.Allocator, runner: anytype, container: []const u8, state: ProfileAction, name: []const u8) Error!bool {
+    const selector = try profileSelector(gpa, state, name, container);
     defer gpa.free(selector);
     return waitAttached(gpa, runner, selector);
 }
