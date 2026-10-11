@@ -6,10 +6,18 @@
     <!-- Imitates the parts of instagram.com that src/instagram.zig drives,
          served for every Instagram-shaped path by
          tests/e2e/social_flows_test.py:
-           /<username>/              profile (Follow, Message -> DM composer)
+           /<username>/              profile (Follow, Message -> DM composer). As
+                                     live (2026-10-11), Follow and Message render
+                                     1.5 s after the page loads, and a highlights
+                                     carousel has its own "Next" button and avatar
+                                     images (story selectors match it; clicking it
+                                     is recorded in window.__ig.highlightNext)
            /p/<id>/                  post (Like, comment)
            /stories/<username>/      three story frames; Next on the last one
                                      leaves the viewer for the profile
+           /stories/decoy.user/      the same viewer, after a highlights-style
+                                     carousel with its own Next and image
+                                     (clicks recorded in window.__ig.decoyNext)
            /p/blocked/               Like is refused with Instagram's
                                      "Try Again Later" dialog (N20)
          ?loggedout=1 renders a logged-out page (login form).
@@ -48,9 +56,17 @@
           ig.page = 'stories:' + m[1];
           var user = m[1];
           var frame = 1;
-          main.innerHTML = '<section><img alt="story" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="200" height="300"><button aria-label="Next">Next</button></section>';
+          ig.decoyNext = 0;
+          main.innerHTML =
+            (user === 'decoy.user'
+              ? '<section class="highlights"><img alt="highlight" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="56" height="56">' +
+                '<button aria-label="Next" id="decoy-next">Next</button></section>'
+              : '') +
+            '<section><img alt="story" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="200" height="300"><button aria-label="Next" id="story-next">Next</button></section>';
+          var decoy = document.getElementById('decoy-next');
+          if (decoy) decoy.addEventListener('click', function () { ig.decoyNext += 1; });
           ig.frames.push(frame);
-          main.querySelector('[aria-label="Next"]').addEventListener('click', function () {
+          document.getElementById('story-next').addEventListener('click', function () {
             if (frame === 3) {
               ig.result = { action: 'story_view', frames: ig.frames.slice() };
               try { sessionStorage.setItem('ig_story_frames', JSON.stringify(ig.frames)); } catch (e) {}
@@ -85,19 +101,27 @@
         } else if ((m = path.match(/^\/([A-Za-z0-9._]+)\/$/))) {
           ig.page = 'profile:' + m[1];
           try { ig.storyFrames = JSON.parse(sessionStorage.getItem('ig_story_frames') || 'null'); } catch (e) {}
+          ig.highlightNext = 0;
           main.innerHTML =
-            '<header><h2>' + m[1] + '</h2><button id="follow">Follow</button><div role="button" id="message">Message</div></header>' +
+            '<header><h2>' + m[1] + '</h2><span id="header-actions"></span></header>' +
+            // Highlights: avatars in a section and a carousel "Next".
+            '<section class="highlights"><img alt="highlight" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="56" height="56">' +
+            '<button aria-label="Next" id="highlight-next">Next</button></section>' +
             // Suggested accounts have Follow buttons outside the header.
             '<aside><button>Follow</button></aside>' +
             // The profile grid: images in a section, like a story frame's.
             '<section class="grid"><img alt="post" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="100" height="100"></section>' +
             '<div id="dm" hidden><div aria-label="Message" contenteditable="true"></div><div role="button" id="send">Send</div></div>';
-          var follow = document.getElementById('follow');
-          follow.addEventListener('click', function () { follow.textContent = 'Following'; ig.result = { action: 'follow' }; });
+          document.getElementById('highlight-next').addEventListener('click', function () { ig.highlightNext += 1; });
           var dm = document.getElementById('dm');
-          document.getElementById('message').addEventListener('click', function () { dm.hidden = false; });
           var box = dm.querySelector('[contenteditable]');
           document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: box.textContent }; });
+          setTimeout(function () {
+            document.getElementById('header-actions').innerHTML = '<button id="follow">Follow</button><div role="button" id="message">Message</div>';
+            var follow = document.getElementById('follow');
+            follow.addEventListener('click', function () { follow.textContent = 'Following'; ig.result = { action: 'follow' }; });
+            document.getElementById('message').addEventListener('click', function () { dm.hidden = false; });
+          }, 1500);
         } else {
           ig.page = 'other';
         }

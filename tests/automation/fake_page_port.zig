@@ -53,6 +53,9 @@ pub const FakePagePort = struct {
     reload_result: page_port.PortError!void = {},
     current_url: []const u8 = "about:blank",
     current_title: []const u8 = "",
+    /// When set, a navigate makes its URL the current one (flows that check
+    /// where they landed, e.g. a LinkedIn profile).
+    navigate_sets_url: bool = false,
     url_result: ?page_port.PortError = null,
     last_read_timeout_ms: u64 = 0,
     /// When set, every eval advances this clock (simulates work taking time).
@@ -381,6 +384,7 @@ pub const FakePagePort = struct {
         const self = from(ptr);
         self.navigate_calls.append(self.gpa, self.gpa.dupe(u8, url_text) catch return error.OutOfMemory) catch return error.OutOfMemory;
         self.navigate_timeouts.append(self.gpa, timeout_ms) catch return error.OutOfMemory;
+        if (self.navigate_sets_url) self.current_url = self.navigate_calls.items[self.navigate_calls.items.len - 1];
         return self.navigate_result;
     }
 

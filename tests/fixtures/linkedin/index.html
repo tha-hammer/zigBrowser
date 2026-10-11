@@ -13,6 +13,22 @@
                                        redirects /in/checkpoint-me/ here; N20)
            /in/limit-reached/          Connect opens the weekly invitation-limit
                                        modal instead of the invite dialog (N20)
+           /in/twice/                  the profile's own Follow rendered twice
+           /in/more-menu/              no own Connect on the page (live, it can sit
+                                       under "More")
+           /in/same-name/              the suggestion card is for another person
+                                       with the profile's own name, present before
+                                       the profile's own actions render
+           /in/same-name-missing/      that card, and no own actions at all
+         (the test server redirects /in/gone/ to /feed/: not a profile)
+         Live markup (probed 2026-10-11): hashed class names; the nav's "Me" is a
+         <button> whose text is "Me" (no aria-label); nav links carry counts in
+         their aria-labels. A profile's title is "<Name> | LinkedIn" and it has no
+         <h1>; its own actions render late (800 ms here) and the "People you may
+         know" cards beside them carry the same kinds of labels for other people
+         ("Invite <Name> to connect", "Follow <Name>"). Reaction buttons are
+         labelled "Reaction button state: <reaction>" with the count as text.
+         Every name here is invented.
          ?loggedout=1 renders a signed-out page (sign-in link, no nav "Me").
          Everything the flows did is recorded in window.__li. -->
     <style>
@@ -29,7 +45,7 @@
       (function () {
         var params = new URLSearchParams(location.search);
         var path = location.pathname;
-        var li = window.__li = { page: '', events: [], sent: [], result: null };
+        var li = window.__li = { page: '', events: [], sent: [], result: null, wrongPerson: [] };
         var nav = document.getElementById('nav');
         var main = document.getElementById('main');
         function record(event) { li.events.push(event); }
@@ -37,10 +53,15 @@
         if (params.get('loggedout') === '1') {
           li.page = 'loggedout';
           nav.innerHTML = '<a href="/login">Sign in</a> <a href="/signup">Join now</a>';
-          main.innerHTML = '<h1>Welcome to your professional community</h1>';
+          // A "Me" button in page content is not the nav's: still signed out.
+          main.innerHTML = '<h1>Welcome to your professional community</h1><button type="button">Me</button>';
           return;
         }
-        nav.innerHTML = '<div class="global-nav__me"><img class="global-nav__me-photo" alt="Ada Lovelace" src="data:,"></div>';
+        document.title = 'Feed | LinkedIn';
+        nav.innerHTML =
+          '<nav class="_8f2c1a"><a class="_c03e9b" href="/feed/" aria-label="Home, 1 new notification">Home</a>' +
+          '<a class="_c03e9b" href="/messaging/" aria-label="Messaging, 0 new notifications">Messaging</a>' +
+          '<button class="_51d0aa" type="button"><img class="_e4a7f2" alt="Sam Example" src="data:,"> Me </button></nav>';
 
         // A Draft-like editor: cancels beforeinput and keeps its own text.
         function editor(el) {
@@ -66,16 +87,15 @@
           document.getElementById('verify').addEventListener('click', function () { record('click:verify'); });
         } else if ((m = path.match(/^\/in\/([^/]+)\/$/))) {
           li.page = 'profile:' + m[1];
-          var name = 'Ada Lovelace';
+          var name = 'Sam Example';
+          var sameName = m[1] === 'same-name' || m[1] === 'same-name-missing';
+          var other = sameName ? name : 'Riley Sample';
+          document.title = '(2) ' + name + ' | LinkedIn';
           main.innerHTML =
-            '<h1>' + name + '</h1>' +
-            '<div class="text-body-medium break-words">Analyst of the Analytical Engine</div>' +
-            '<span class="text-body-small inline t-black--light break-words">London, England</span>' +
-            '<div id="actions">' +
-            '  <button id="connect" aria-label="Invite ' + name + ' to connect">Connect</button>' +
-            '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
-            '  <a id="message" href="/messaging/compose/?recipient=' + m[1] + '">Message</a>' +
-            '</div>' +
+            '<section class="_3a9e01"><div class="_77b2c4">' + name + '</div>' +
+            '<div class="text-body-medium break-words">Engineer at Example Co</div>' +
+            '<span class="text-body-small inline t-black--light break-words">Springfield</span>' +
+            '<div id="actions"></div></section>' +
             '<div id="invite" role="dialog" hidden>' +
             '  <button aria-label="Add a note">Add a note</button>' +
             '  <button aria-label="Send without a note">Send without a note</button>' +
@@ -84,22 +104,24 @@
             '</div>' +
             '<section id="composer" hidden><div class="msg-form__contenteditable" contenteditable="true"></div>' +
             '<button class="msg-form__send-button">Send</button></section>' +
-            // A suggestion card outside <main> must not match the main actions.
-            '';
-          document.body.insertAdjacentHTML('beforeend', '<aside><button aria-label="Follow Charles Babbage">Follow</button></aside>');
+            // "People you may know", inside <main> as live: same kinds of
+            // labels for another person. Clicking any of them is a bug.
+            '<aside class="_9c11f0"><h2>People you may know</h2>' +
+            '  <button aria-label="Invite ' + other + ' to connect">Connect</button>' +
+            '  <button aria-label="Follow ' + other + '">Follow</button>' +
+            '  <a aria-label="Message ' + other + '" href="/messaging/compose/?recipient=other">Message</a>' +
+            '</aside>';
+          Array.prototype.forEach.call(main.querySelectorAll('aside [aria-label]'), function (el) {
+            el.addEventListener('click', function (e) { e.preventDefault(); li.wrongPerson.push(el.getAttribute('aria-label')); });
+          });
           var invite = document.getElementById('invite');
           var limited = m[1] === 'limit-reached';
-          document.getElementById('connect').addEventListener('click', function () {
-            record('click:connect');
-            if (limited) {
-              document.body.insertAdjacentHTML('beforeend',
-                '<div class="artdeco-modal" role="dialog" aria-modal="true"><h2>You\u2019ve reached the weekly invitation limit</h2>' +
-                '<button id="got-it">Got it</button></div>');
-              document.getElementById('got-it').addEventListener('click', function () { record('click:got_it'); });
-              return;
-            }
-            invite.hidden = false;
-          });
+          var own = m[1] === 'same-name-missing' ? '  <button aria-label="More actions">More</button>' :
+            (m[1] === 'more-menu' ? '' : '  <button id="connect" aria-label="Invite ' + name + ' to connect">Connect</button>') +
+            '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
+            (m[1] === 'twice' ? '  <button aria-label="Follow ' + name + '">Follow</button>' : '') +
+            '  <a id="message" aria-label="Message ' + name + '" href="/messaging/compose/?recipient=' + m[1] + '">Message</a>' +
+            '  <button aria-label="More actions">More</button>';
           function pending(note) {
             invite.hidden = true;
             li.result = { action: 'connect', note: note };
@@ -114,20 +136,36 @@
           noteInput.addEventListener('keydown', function () { record('keydown:note'); });
           invite.querySelector('[aria-label="Send invitation"]').addEventListener('click', function () { pending(noteInput.value); });
           invite.querySelector('[aria-label="Send without a note"]').addEventListener('click', function () { record('click:send_without_note'); pending(null); });
-          document.getElementById('follow').addEventListener('click', function () {
-            var b = document.getElementById('follow');
-            b.setAttribute('aria-label', 'Following ' + name);
-            b.textContent = 'Following';
-            li.result = { action: 'follow' };
-          });
           var composer = document.getElementById('composer');
           var text = editor(composer.querySelector('[contenteditable]'));
-          document.getElementById('message').addEventListener('click', function (e) {
-            e.preventDefault(); record('click:message'); composer.hidden = false;
-          });
           composer.querySelector('button').addEventListener('click', function () {
             li.sent.push(text()); li.result = { action: 'message', text: text() };
           });
+          // The profile's own actions render late, as live.
+          setTimeout(function () {
+            document.getElementById('actions').innerHTML = own;
+            var connect = document.getElementById('connect');
+            if (connect) connect.addEventListener('click', function () {
+              record('click:connect');
+              if (limited) {
+                document.body.insertAdjacentHTML('beforeend',
+                  '<div class="artdeco-modal" role="dialog" aria-modal="true"><h2>You\u2019ve reached the weekly invitation limit</h2>' +
+                  '<button id="got-it">Got it</button></div>');
+                document.getElementById('got-it').addEventListener('click', function () { record('click:got_it'); });
+                return;
+              }
+              invite.hidden = false;
+            });
+            document.getElementById('follow').addEventListener('click', function () {
+              var b = document.getElementById('follow');
+              b.setAttribute('aria-label', 'Following ' + name);
+              b.textContent = 'Following';
+              li.result = { action: 'follow' };
+            });
+            document.getElementById('message').addEventListener('click', function (e) {
+              e.preventDefault(); record('click:message'); composer.hidden = false;
+            });
+          }, 800);
         } else if ((m = path.match(/^\/messaging\/thread\/([^/]+)\/$/))) {
           li.page = 'conversation:' + m[1];
           main.innerHTML = '<div class="msg-form__contenteditable" contenteditable="true"></div><button class="msg-form__send-button">Send</button>';
@@ -139,14 +177,20 @@
           li.page = 'post:' + m[1];
           main.innerHTML =
             '<article><p>Post body</p>' +
-            '<button class="react-button__trigger" aria-pressed="false">Like</button>' +
+            '<button class="_2b7d10" aria-label="Reaction button state: no reaction"><span>12</span></button>' +
+            '<button class="_2b7d11" aria-label="Open reactions menu"></button>' +
             '<button aria-label="Comment">Comment</button>' +
+            '<button aria-label="Repost">Repost</button>' +
             '<div class="comments-comment-box__form" hidden><div contenteditable="true"></div>' +
             '<button class="comments-comment-box__submit-button">Post</button></div></article>' +
             // Another post's reaction button further down the feed.
-            '<article><button class="react-button__trigger" aria-pressed="false">Like</button></article>';
-          var likeButton = main.querySelector('.react-button__trigger');
-          likeButton.addEventListener('click', function () { likeButton.setAttribute('aria-pressed', 'true'); li.result = { action: 'like' }; });
+            '<article><button class="_2b7d10" aria-label="Reaction button state: no reaction"><span>3</span></button></article>';
+          var likeButton = main.querySelector('[aria-label^="Reaction button state: "]');
+          likeButton.addEventListener('click', function () {
+            likeButton.setAttribute('aria-label', 'Reaction button state: like');
+            likeButton.querySelector('span').textContent = '13';
+            li.result = { action: 'like' };
+          });
           var form = main.querySelector('.comments-comment-box__form');
           main.querySelector('[aria-label="Comment"]').addEventListener('click', function () { form.hidden = false; });
           var commentText = editor(form.querySelector('[contenteditable]'));

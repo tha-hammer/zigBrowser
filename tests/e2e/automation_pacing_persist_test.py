@@ -2,7 +2,7 @@
 """N21 E2E: the social pacing state survives a restart of the REAL binary on
 the same --profile-dir (<profile>/automation-pacing.json, mode 0600).
 
-1. Start, set pacing (no delay, cap 100), do 2 linkedin.follow actions on
+1. Start, set pacing (no delay, cap 100), do 2 linkedin.like actions on
    the local LinkedIn fixture: social.rate_status shows 98 left.
 2. Stop and restart on the same profile: still 98 left, cap 100, and the
    file is 0600. A browser on a second profile starts at the defaults.
@@ -94,8 +94,8 @@ def main() -> int:
             with ZigBrowser(socket_path=str(browser.socket_path)) as zb:
                 zb.social.set_pacing(min_delay_ms=0, max_delay_ms=0, daily_cap=100)
                 zb.cookies.set("li_at", "fixture-session", domain="127.0.0.1")
-                for name in ("ada", "grace"):
-                    expect_equal(f"follow {name}", zb.linkedin.follow(f"{server.origin}/in/{name}/"), {"ok": True})
+                for post in ("1", "2"):
+                    expect_equal(f"like {post}", zb.linkedin.like(f"{server.origin}/feed/update/urn:li:activity:{post}/"), {"ok": True})
                 expect_equal("remaining after 2 actions", zb.social.rate_status()["remaining_actions"], 98)
             browser.stop()
             mode = stat.S_IMODE(os.stat(state_file).st_mode)

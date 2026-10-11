@@ -82,6 +82,14 @@ test "login_check combines page url (platform) with the in-page login probe" {
     try std.testing.expectEqualStrings(social_routes.login_check_body, h.fake.eval_calls.items[0].body);
 }
 
+test "login_check's LinkedIn probe anchors on the nav's \"Me\" button (hashed classes since 2026-10)" {
+    const body = social_routes.login_check_body;
+    try std.testing.expect(std.mem.indexOf(u8, body, "global-nav") == null);
+    // Only the top nav's buttons: a "Me" button in page content must not count.
+    try std.testing.expect(std.mem.indexOf(u8, body, "document.querySelectorAll('header button, nav button')") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "=== 'Me'") != null);
+}
+
 test "login_check on an unknown site reports not logged in with null username" {
     var h: Harness = undefined;
     h.init();
@@ -349,7 +357,7 @@ test "an action pauses within the pacing range, runs, and counts one action" {
     f.init();
     defer f.deinit();
     const before = f.h.state.remaining();
-    var outcome = try f.call("linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
+    var outcome = try f.call("linkedin.like", "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\"}");
     defer outcome.deinit(gpa);
     try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
     try std.testing.expectEqual(before - 1, f.h.state.remaining());
@@ -357,7 +365,7 @@ test "an action pauses within the pacing range, runs, and counts one action" {
     for (f.h.clock.sleeps.items) |ms| slept += ms;
     const config = f.h.state.pacingConfig();
     try std.testing.expect(slept >= config.min_delay_ms and slept <= config.max_delay_ms);
-    try std.testing.expectEqualStrings("https://www.linkedin.com/in/ada/", f.h.fake.navigate_calls.items[0]);
+    try std.testing.expectEqualStrings("https://www.linkedin.com/feed/update/1/", f.h.fake.navigate_calls.items[0]);
 }
 
 test "login gate before navigation (C31): no session cookie -> -32011 logged_out, no page step, no pacing" {
@@ -499,6 +507,9 @@ test "search navigates to the built URL (fixture origin from server config); ext
     defer search.deinit(gpa);
     try std.testing.expectEqualStrings("http://127.0.0.1:9/search/results/companies/?keywords=zig%20%26%20c", f.h.fake.navigate_calls.items[0]);
     const remaining = f.h.state.remaining();
+    // The name comes from the profile's title, on the profile's own URL.
+    f.h.fake.navigate_sets_url = true;
+    f.h.fake.current_title = "Ada | LinkedIn";
     var extract = try f.call("linkedin.extract", "{\"profileUrl\":\"http://127.0.0.1:9/in/ada/\"}");
     defer extract.deinit(gpa);
     try std.testing.expectEqualStrings("{\"name\":\"Ada\",\"headline\":\"Ada\",\"location\":\"Ada\"}", extract.result);
@@ -510,9 +521,15 @@ test "telemetry: one compound span and one action event per step; no URL, userna
     f.init();
     defer f.deinit();
     const note = "Hi Ada, a private note";
+    // Connect opens and checks the profile, then stops before any click
+    // while the owner area is unverified (linkedin.owner_actions_enabled).
+    f.h.fake.navigate_sets_url = true;
+    f.h.fake.current_title = "Ada Secret | LinkedIn";
     var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada-secret/\",\"note\":\"" ++ note ++ "\"}");
     defer outcome.deinit(gpa);
-    try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "linkedin_profile_owner_unverified") != null);
+    try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "click"));
     var compound: ?*const telemetry.Span = null;
     var actions: usize = 0;
     for (f.sink.spans.items) |*span| {
@@ -527,17 +544,17 @@ test "telemetry: one compound span and one action event per step; no URL, userna
     try std.testing.expectEqualStrings("22", c.attr("note.length").?);
     try std.testing.expectEqualStrings("false", c.attr("note.truncated").?);
     try std.testing.expectEqualStrings("true", c.attr("platform.login_verified").?);
-    try std.testing.expectEqualStrings("ok", c.attr("result.status").?);
+    try std.testing.expectEqualStrings("error", c.attr("result.status").?);
     try std.testing.expectEqual(@as(usize, 64), c.attr("profile.id_hash").?.len);
     const steps = try std.fmt.parseInt(usize, c.attr("social.step_count").?, 10);
     try std.testing.expectEqual(steps, actions);
-    try std.testing.expect(steps >= 8);
+    try std.testing.expect(steps >= 4);
     for (f.sink.spans.items) |*span| {
         if (!std.mem.eql(u8, span.name, "automation.social.action")) continue;
         try std.testing.expectEqualStrings(c.span_id, span.parent_span_id.?);
         try std.testing.expect(span.attr("social.step") != null);
     }
-    for ([_][]const u8{ "ada-secret", note, "private note", "secret-session-value", "linkedin.com/in" }) |raw| {
+    for ([_][]const u8{ "ada-secret", "Ada Secret", note, "private note", "secret-session-value", "linkedin.com/in" }) |raw| {
         if (f.sink.containsRaw(raw)) {
             std.debug.print("leaked into telemetry: {s}\n", .{raw});
             return error.TestLeak;
@@ -583,7 +600,9 @@ test "a long flow (story_view, hundreds of step spans) keeps its compound span a
     };
     var outcome = try h.engine.executeExternal(gpa, "instagram.story_view", "instagram", .{ .route = .{ .telemetry_sink = store.sink() } }, Call{
         .state = &h.state,
-        .env = .{ .cookies = cookies.port() },
+        // The frames loop is the long flow; it runs only where the story
+        // viewer is verified (tests: unverified_actions).
+        .env = .{ .cookies = cookies.port(), .unverified_actions = true },
     }, Call.run);
     defer outcome.deinit(gpa);
     try std.testing.expect(std.mem.startsWith(u8, outcome.result, "{\"ok\":true,\"framesViewed\":"));
@@ -628,10 +647,10 @@ test "cap=1 across two pages: while page A's admitted flow is in its page step, 
                 state: *social_routes.SocialState,
                 env: social_flow_routes.Env,
                 fn run(c: @This(), alloc: std.mem.Allocator, ext: *engine.External) error{OutOfMemory}!engine.Outcome {
-                    return social_flow_routes.handle(alloc, c.state, c.env, ext, .{ .linkedin = .follow }, "{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"}");
+                    return social_flow_routes.handle(alloc, c.state, c.env, ext, .{ .linkedin = .like }, "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\"}");
                 }
             };
-            out.* = h.engine.executeExternal(gpa, "linkedin.follow", "linkedin", .{}, Call{ .state = state, .env = .{ .cookies = cookies.port() } }, Call.run) catch null;
+            out.* = h.engine.executeExternal(gpa, "linkedin.like", "linkedin", .{}, Call{ .state = state, .env = .{ .cookies = cookies.port() } }, Call.run) catch null;
         }
     };
     var outcome_a: ?engine.Outcome = null;
@@ -731,7 +750,7 @@ test "one absolute flow deadline covers the cookie gate and every later step" {
     f.h.fake.clock = &f.h.clock;
     f.cookies.clock = &f.h.clock;
     f.cookies.cost_ms = 9_000;
-    var outcome = try f.call("linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"}");
+    var outcome = try f.call("linkedin.like", "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\"}");
     defer outcome.deinit(gpa);
     try std.testing.expectEqualStrings("{\"ok\":true}", outcome.result);
     try std.testing.expect(f.h.fake.navigate_timeouts.items[0] <= 11_000);
@@ -844,17 +863,28 @@ test "N20: a LinkedIn checkpoint right after navigating stops the flow: -32010 {
     try std.testing.expectEqualStrings("platform_rate_limited", compound.?.attr("automation.error").?);
 }
 
-test "N20: an invitation-limit modal after the Connect click: the next click never happens" {
-    var f: FlowHarness = undefined;
-    f.init();
-    defer f.deinit();
-    // Clean after the navigation; the Connect click opens the limit modal.
-    f.h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("invitation_limit", "linkedin") } };
-    var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}");
-    defer outcome.deinit(gpa);
-    try expectRateLimited(outcome, "invitation_limit", "linkedin");
-    try std.testing.expectEqual(@as(usize, 1), countOps(&f.h.fake, "click"));
-    try std.testing.expectEqual(@as(usize, 2), f.h.fake.scan_calls);
+test "connect, follow and profile message stop before any click while the profile owner's area is unverified; nothing counted" {
+    // (The invitation-limit modal after a Connect click, N20, cannot happen
+    // until linkedin.owner_actions_enabled is on; tests/linkedin_test.zig
+    // covers the scoped flow.)
+    for ([_][2][]const u8{
+        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}" },
+        .{ "linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\"}" },
+        .{ "linkedin.message", "{\"profileUrl\":\"https://www.linkedin.com/in/ada/\",\"text\":\"hi\"}" },
+    }) |case| {
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
+        f.h.fake.navigate_sets_url = true;
+        f.h.fake.current_title = "Ada | LinkedIn";
+        var outcome = try f.call(case[0], case[1]);
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+        try std.testing.expect(std.mem.indexOf(u8, outcome.failure.data_json.?, "linkedin_profile_owner_unverified") != null);
+        try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, "click"));
+        try std.testing.expectEqual(@as(u32, 5), f.h.state.remaining());
+    }
 }
 
 test "N20: Instagram flows scan for their own platform; a blocked-action dialog stops a comment before typing" {

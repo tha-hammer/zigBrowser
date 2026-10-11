@@ -26,18 +26,22 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
     return social.socialVerb(method);
 }
 
-/// Heuristic login probe. LinkedIn: global nav "Me" control present and not
-/// on a login/checkpoint path. Instagram: ds_user_id cookie. Anything else:
-/// not logged in. Returns {ok,value:{logged_in,username}}.
+/// Heuristic login probe. LinkedIn: the top nav's "Me" button (in a
+/// <header> or <nav>, text exactly "Me"; LinkedIn's classes are hashed
+/// since 2026-10) present and not on a login/checkpoint path; the username
+/// is its photo's alt text, if any. Instagram: ds_user_id cookie. Anything
+/// else: not logged in. Returns {ok,value:{logged_in,username}}.
 pub const login_check_body =
     \\try {
     \\  const host = location.hostname;
     \\  let loggedIn = false;
     \\  let username = null;
     \\  if (/(^|\.)linkedin\.com$/.test(host)) {
-    \\    const nav = document.querySelector('.global-nav__me, .global-nav__me-photo');
-    \\    loggedIn = !!nav && !/^\/(login|checkpoint|uas|authwall)/.test(location.pathname);
-    \\    const photo = document.querySelector('img.global-nav__me-photo');
+    \\    const me = Array.from(document.querySelectorAll('header button, nav button')).find(function (b) {
+    \\      return (b.textContent || '').replace(/\s+/g, ' ').trim() === 'Me';
+    \\    });
+    \\    loggedIn = !!me && !/^\/(login|checkpoint|uas|authwall)/.test(location.pathname);
+    \\    const photo = me ? me.querySelector('img[alt]') : null;
     \\    const alt = photo ? (photo.getAttribute('alt') || '').trim() : '';
     \\    username = loggedIn && alt ? alt.slice(0, 128) : null;
     \\  } else if (/(^|\.)instagram\.com$/.test(host)) {

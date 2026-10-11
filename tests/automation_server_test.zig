@@ -796,7 +796,7 @@ test "N16: linkedin.* and instagram.* are routed through the real socket, queue 
     try store.port().set("{\"name\":\"li_at\",\"value\":\"v\",\"domain\":\".www.linkedin.com\",\"path\":\"/\",\"expires\":-1,\"httpOnly\":true,\"secure\":true}", 1000);
     const paced = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"social.set_pacing\",\"params\":{\"min_delay_ms\":0,\"max_delay_ms\":0,\"daily_cap\":2},\"id\":2}");
     defer testing.allocator.free(paced);
-    const followed = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.follow\",\"params\":{\"profileUrl\":\"https://www.linkedin.com/in/zed/\"},\"id\":3}");
+    const followed = try roundTrip(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"linkedin.like\",\"params\":{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\"},\"id\":3}");
     defer testing.allocator.free(followed);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true},\"id\":3}", followed);
     try testing.expectEqual(@as(u8, 'n'), fixture.fake.events()[0]);

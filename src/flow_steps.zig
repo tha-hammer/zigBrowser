@@ -104,6 +104,12 @@ pub fn getText(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, ti
 /// selector table `Table`, in declaration order; null if a query failed or
 /// answered something unusable. Read-only: only dom.query steps.
 pub fn selectorReport(gpa: std.mem.Allocator, runner: anytype, comptime Table: type) Error!?[]u8 {
+    return selectorReportExcept(gpa, runner, Table, &.{});
+}
+
+/// selectorReport, with the entries named in `zero` reported as 0 without
+/// a query (selectors that only mean something on another page).
+pub fn selectorReportExcept(gpa: std.mem.Allocator, runner: anytype, comptime Table: type, zero: []const []const u8) Error!?[]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(gpa);
     try out.append(gpa, '{');
@@ -111,7 +117,10 @@ pub fn selectorReport(gpa: std.mem.Allocator, runner: anytype, comptime Table: t
     inline for (@typeInfo(Table).@"struct".decls) |decl| {
         const value = @field(Table, decl.name);
         if (@TypeOf(value) != *const [value.len:0]u8) continue;
-        const count = (try countMatches(gpa, runner, value)) orelse return null;
+        const skipped = for (zero) |name| {
+            if (std.mem.eql(u8, name, decl.name)) break true;
+        } else false;
+        const count = if (skipped) 0 else (try countMatches(gpa, runner, value)) orelse return null;
         if (!first) try out.append(gpa, ',');
         first = false;
         try out.print(gpa, "\"{s}\":{d}", .{ decl.name, count });
@@ -152,6 +161,10 @@ pub const Site = struct {
     origin: []const u8,
     /// e.g. "http://127.0.0.1:41234" (no trailing slash).
     fixture_origin: ?[]const u8 = null,
+    /// Tests only, like fixture_origin: run the steps whose live markup is
+    /// not yet verified (LinkedIn profile actions, Instagram story frames)
+    /// instead of failing closed. Never set in production.
+    unverified_actions: bool = false,
 
     /// The origin URLs are built from (search, profile and story URLs).
     pub fn base(self: Site) []const u8 {

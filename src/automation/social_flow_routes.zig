@@ -83,6 +83,7 @@ pub const Call = union(enum) {
             .instagram => instagram.site,
         };
         s.fixture_origin = env.fixture_origin;
+        s.unverified_actions = env.unverified_actions;
         return s;
     }
 };
@@ -101,6 +102,9 @@ pub const Env = struct {
     /// Test-only stand-in origin for both sites, from the server's
     /// configuration (never from a request). Null in production.
     fixture_origin: ?[]const u8 = null,
+    /// Tests only: see flow_steps.Site.unverified_actions. The server never
+    /// sets it.
+    unverified_actions: bool = false,
 };
 
 /// The default hard deadline for a whole flow, like x.*. The flows that

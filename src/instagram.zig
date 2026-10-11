@@ -16,7 +16,10 @@ pub const selectors = struct {
     pub const signed_in = "css=svg[aria-label=\"Home\"], a[href=\"/direct/inbox/\"]";
     /// Signs of a logged-out page.
     pub const login_link = "css=a[href^=\"/accounts/login\"], input[name=\"username\"]";
-    /// Profile header actions.
+    /// Profile header actions (live, 2026-10-11: Follow is a <button>,
+    /// Message a div[role=button]). They render a few seconds after the
+    /// page loads; the flows' clicks wait for them (missing elements are
+    /// retried until the step's deadline).
     pub const follow_button = "xpath=//header//button[normalize-space(.)=\"Follow\"]";
     pub const following_button = "xpath=//header//button[normalize-space(.)=\"Following\" or normalize-space(.)=\"Requested\"]";
     pub const message_button = "xpath=//header//*[self::button or @role=\"button\"][normalize-space(.)=\"Message\"]";
@@ -29,10 +32,26 @@ pub const selectors = struct {
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
     pub const dm_send = "xpath=//*[self::button or @role=\"button\"][normalize-space(.)=\"Send\"]";
-    /// Story viewer media, and its Next control.
+    /// Story viewer media, and its Next control. A profile's highlights
+    /// carousel has a "Next" button and avatar images too, so these only
+    /// count on a /stories/ page: story_view checks the URL's path before
+    /// using them, and selfcheck reports them as 0 anywhere else. On a story
+    /// page, Next must match exactly once: another "Next" (a carousel)
+    /// fails the flow closed instead of being clicked. UNVERIFIED: the live
+    /// viewer's own markup (not probed), which would allow a real scope.
     pub const story_media = "css=section video, section img";
     pub const story_next = "css=button[aria-label=\"Next\"]";
 };
+
+/// Whether story_view may wait for story media and click Next at all.
+/// DELIBERATELY OFF until the live story viewer's own markup is verified
+/// (review 4975): story_media and story_next are page-wide, so a highlights
+/// carousel that renders before the viewer could be the only "Next" and be
+/// clicked. While off, story_view opens the story URL, checks the page is a
+/// story on the site, then stops: element_not_found
+/// instagram_story_viewer_unverified. Tests run the frames through
+/// flow_steps.Site.unverified_actions.
+pub const story_viewer_verified = false;
 
 /// The real site. The automation server may swap in a fixture origin for
 /// tests (flow_steps.Site); requests cannot.
@@ -119,15 +138,33 @@ pub fn dm(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []con
     return try gpa.dupe(u8, ok_json);
 }
 
-/// Opens `username`'s stories and views them in order: each frame for
-/// story_frame_ms, then Next, until there is no Next, the viewer closes (no
-/// story media left), max_story_frames, or the flow budget would not cover
-/// another frame. Every step is clamped to the flow budget. Returns
-/// `{"ok":true,"framesViewed":n}`.
+/// Opens `username`'s stories and views them (viewStoryFrames) once
+/// story_viewer_verified; until then it stops after checking the page.
+/// Returns `{"ok":true,"framesViewed":n}`.
 pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
     const url = try userUrl(gpa, s.base(), "stories/", username);
     defer gpa.free(url);
     if (!(try openPage(gpa, runner, url))) return null;
+    // Without active stories Instagram shows the profile instead; its
+    // highlights would match the story selectors, so fail closed.
+    const in_viewer = (try onStories(gpa, runner, s)) orelse return null;
+    if (!in_viewer) {
+        try runner.notFound("instagram_no_story_viewer");
+        return null;
+    }
+    if (!story_viewer_verified and !s.unverified_actions) {
+        try runner.notFound("instagram_story_viewer_unverified");
+        return null;
+    }
+    return viewStoryFrames(gpa, runner, s);
+}
+
+/// On an open story viewer: views the frames in order, each for
+/// story_frame_ms, then Next, until there is no Next, the viewer closes (the
+/// page leaves its /stories/ URL), max_story_frames, or the flow budget
+/// would not cover another frame. Every step is clamped to the flow budget.
+/// More than one Next fails closed (instagram_story_next_ambiguous).
+pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site) Error!?[]u8 {
     if (!(try waitAttached(gpa, runner, selectors.story_media))) return null;
     // View the first frame, then Next + view until the viewer closes.
     if (!runner.pause(@min(story_frame_ms, runner.remainingMs() -| reserve_ms))) return null;
@@ -136,13 +173,17 @@ pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username
         if (runner.remainingMs() <= story_frame_ms + reserve_ms) break;
         const next = (try flow.countMatches(gpa, runner, selectors.story_next)) orelse return null;
         if (next == 0) break;
-        const clicked = try click(gpa, runner, selectors.story_next, false);
+        if (next > 1) {
+            try runner.notFound("instagram_story_next_ambiguous");
+            return null;
+        }
+        const clicked = try click(gpa, runner, selectors.story_next, true);
         // The frame's viewing time also lets a closing viewer leave.
         if (!runner.pause(story_frame_ms)) return null;
         // Positive evidence only: the viewer closed when the page left
         // /stories/ (the last Next does that). A failed click on a viewer
         // that is still open keeps its own failure.
-        const on_stories = (try onStories(gpa, runner)) orelse return null;
+        const on_stories = (try onStories(gpa, runner, s)) orelse return null;
         if (!on_stories) break;
         // (The runner still holds the click's failure: a successful URL
         // check does not replace it.)
@@ -152,10 +193,11 @@ pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username
     return try std.json.Stringify.valueAlloc(gpa, .{ .ok = true, .framesViewed = frames }, .{});
 }
 
-/// Still in the story viewer (the URL is on /stories/), with the page call
+/// Still in the story viewer: the URL is a story (/stories/<x>) on `s`
+/// (any origin when null: selfcheck only reports), with the page call
 /// clamped to the flow budget; null when the step failed or answered
 /// something unusable.
-fn onStories(gpa: std.mem.Allocator, runner: anytype) Error!?bool {
+fn onStories(gpa: std.mem.Allocator, runner: anytype, s: ?flow.Site) Error!?bool {
     const params = try std.json.Stringify.valueAlloc(gpa, .{ .timeout_ms = flow.budget(runner, flow.query_timeout_ms) }, .{});
     defer gpa.free(params);
     const result = (try runner.run("page.url", params)) orelse return null;
@@ -167,12 +209,27 @@ fn onStories(gpa: std.mem.Allocator, runner: anytype) Error!?bool {
         },
     };
     defer parsed.deinit();
-    return std.mem.indexOf(u8, parsed.value.url, "/stories/") != null;
+    if (s) |site_| if (!site_.allows(parsed.value.url)) return false;
+    return isStoryUrl(parsed.value.url);
 }
 
-/// `{"<selector name>":count,...}` for the whole table on the current page.
+/// `url`'s path is a story: /stories/<something>.
+pub fn isStoryUrl(url: []const u8) bool {
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return false;
+    const after = url[scheme_end + 3 ..];
+    const path_start = std.mem.indexOfAny(u8, after, "/?#") orelse return false;
+    const path = after[path_start..];
+    const prefix = "/stories/";
+    if (!std.mem.startsWith(u8, path, prefix)) return false;
+    return path.len > prefix.len and std.mem.indexOfScalar(u8, "/?#", path[prefix.len]) == null;
+}
+
+/// `{"<selector name>":count,...}` for the whole table on the current page;
+/// the story entries are 0 off a /stories/ URL (not queried).
 pub fn selfCheck(gpa: std.mem.Allocator, runner: anytype) Error!?[]u8 {
-    return flow.selectorReport(gpa, runner, selectors);
+    const in_viewer = (try onStories(gpa, runner, null)) orelse return null;
+    const story_entries = [_][]const u8{ "story_media", "story_next" };
+    return flow.selectorReportExcept(gpa, runner, selectors, if (in_viewer) &.{} else &story_entries);
 }
 
 /// Instagram usernames: 1-30 of letters, digits, '.' and '_'.

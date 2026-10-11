@@ -34,7 +34,9 @@ LINKEDIN = REPO / "tests/fixtures/linkedin/index.html"
 INSTAGRAM = REPO / "tests/fixtures/instagram/index.html"
 LINKEDIN_PREFIXES = ("/in/", "/feed/", "/messaging/", "/search/", "/checkpoint/")
 # N20: LinkedIn sends a challenged session to its checkpoint by redirect.
-CHECKPOINT_REDIRECTS = {"/in/checkpoint-me/": "/checkpoint/challenge/ab12/"}
+CHECKPOINT_REDIRECTS = {"/in/checkpoint-me/": "/checkpoint/challenge/ab12/", "/in/gone/": "/feed/"}
+# Without active stories Instagram shows the profile instead of the viewer.
+STORY_REDIRECTS = {"/stories/no.stories/": "/no.stories/"}
 
 
 class FixtureServer:
@@ -53,9 +55,10 @@ class FixtureServer:
             def do_GET(self) -> None:  # noqa: N802
                 with outer._lock:
                     outer.paths.append(self.path)
-                if self.path in CHECKPOINT_REDIRECTS:
+                redirect = CHECKPOINT_REDIRECTS.get(self.path) or STORY_REDIRECTS.get(self.path)
+                if redirect:
                     self.send_response(302)
-                    self.send_header("Location", CHECKPOINT_REDIRECTS[self.path])
+                    self.send_header("Location", redirect)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
@@ -116,14 +119,15 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     passed: list[str] = []
     li = lambda: zb.page.evaluate("window.__li.result")["result"]  # noqa: E731
     ig = lambda: zb.page.evaluate("window.__ig.result")["result"]  # noqa: E731
-    profile = f"{origin}/in/ada/"
+    profile = f"{origin}/in/sam/"
+    wrong_person = lambda: zb.page.evaluate("window.__li.wrongPerson")["result"]  # noqa: E731
 
     zb.social.set_pacing(min_delay_ms=0, max_delay_ms=0, daily_cap=100)
 
     # Session-cookie gate before navigation: no request reaches the site.
     expect_error("logged out (no li_at)", lambda: zb.linkedin.visit(profile), -32011, "logged_out")
-    expect_error("logged out (no sessionid)", lambda: zb.instagram.story_view("ada.lovelace"), -32011, "logged_out")
-    if server.requested("/in/ada/") or server.requested("/stories/"):
+    expect_error("logged out (no sessionid)", lambda: zb.instagram.story_view("sam.example"), -32011, "logged_out")
+    if server.requested("/in/sam/") or server.requested("/stories/"):
         raise AssertionError(f"a gated flow reached the site: {server.paths}")
     passed.append("session-cookie-gate")
 
@@ -132,18 +136,21 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
 
     # LinkedIn.
     expect_equal("visit", zb.linkedin.visit(profile), {"ok": True})
-    expect_equal("visit page", zb.page.evaluate("window.__li.page")["result"], "profile:ada")
-    expect_equal("connect", zb.linkedin.connect(profile, note="Hi Ada, loved your notes on the Engine."), {"ok": True})
-    expect_equal("connect recorded", li(), {"action": "connect", "note": "Hi Ada, loved your notes on the Engine."})
-    events = zb.page.evaluate("window.__li.events")["result"]
-    if "keydown:note" not in events:
-        raise AssertionError(f"the note was not typed: {events}")
-    expect_equal("connect without note", zb.linkedin.connect(profile), {"ok": True})
-    expect_equal("connect without note recorded", li(), {"action": "connect", "note": None})
-    expect_equal("follow", zb.linkedin.follow(profile), {"ok": True})
-    expect_equal("follow recorded", li(), {"action": "follow"})
-    expect_equal("message from profile", zb.linkedin.message("Hello Ada", profile_url=profile), {"ok": True})
-    expect_equal("message recorded", li(), {"action": "message", "text": "Hello Ada"})
+    expect_equal("visit page", zb.page.evaluate("window.__li.page")["result"], "profile:sam")
+    # Until the profile owner's area is verified live
+    # (linkedin.owner_actions_enabled in src/linkedin.zig), connect, follow and
+    # message on a profile open and check the profile, then stop before any
+    # click: a "People you may know" card must never be clicked.
+    for label, call in (
+        ("connect", lambda: zb.linkedin.connect(profile, note="Hi Sam, loved your notes on the engine.")),
+        ("follow", lambda: zb.linkedin.follow(profile)),
+        ("message from profile", lambda: zb.linkedin.message("Hello Sam", profile_url=profile)),
+    ):
+        expect_error(label, call, -32001, "linkedin_profile_owner_unverified")
+        expect_equal(f"{label}: nothing done", (li(), wrong_person(), zb.page.evaluate("window.__li.events")["result"]), (None, [], []))
+    # The page checks run first: redirected away from the profile.
+    expect_error("not a profile", lambda: zb.linkedin.follow(f"{origin}/in/gone/"), -32001, "linkedin_not_a_profile")
+    expect_equal("not a profile: on the feed, nothing done", (zb.page.evaluate("window.__li.page")["result"], li()), ("other", None))
     expect_equal("message in thread", zb.linkedin.message("Again, café ✓", conversation_url=f"{origin}/messaging/thread/7/"), {"ok": True})
     expect_equal("thread message recorded", li(), {"action": "message", "text": "Again, café ✓"})
     post = f"{origin}/feed/update/urn:li:activity:1/"
@@ -154,19 +161,23 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     search = zb.linkedin.search("zig dev & café", search_type="companies")
     expect_equal("search", search, {"ok": True, "url": f"{origin}/search/results/companies/?keywords=zig%20dev%20%26%20caf%C3%A9", "resultCount": 3})
     expect_equal("search recorded", li(), {"action": "search", "type": "companies", "keywords": "zig dev & café"})
-    expect_equal("extract", zb.linkedin.extract(profile), {"name": "Ada Lovelace", "headline": "Analyst of the Analytical Engine", "location": "London, England"})
+    expect_equal("extract", zb.linkedin.extract(profile), {"name": "Sam Example", "headline": "Engineer at Example Co", "location": "Springfield"})
+    zb.call("dom.waitFor", {"selector": 'css=[aria-label="Follow Sam Example"]', "state": "attached"})
     report = zb.linkedin.selfcheck()
-    for key in ("signed_in", "connect_button", "follow_button", "profile_name"):
+    for key in ("signed_in", "connect_button", "follow_button"):
         if report.get(key, 0) < 1:
             raise AssertionError(f"selfcheck {key} on the profile: {report}")
+    zb.linkedin.like(post)
+    post_report = zb.linkedin.selfcheck()
+    expect_equal("selfcheck on the post", (post_report["liked_button"], post_report["comment_button"], post_report["repost_button"]), (1, 1, 1))
     passed.append("linkedin")
 
     # Signed-in marker gate after navigation (stale cookie, signed-out page).
-    expect_error("signed-out page", lambda: zb.linkedin.follow(f"{origin}/in/ada/?loggedout=1"), -32011, "logged_out")
+    expect_error("signed-out page", lambda: zb.linkedin.follow(f"{origin}/in/sam/?loggedout=1"), -32011, "logged_out")
     passed.append("signed-in-marker-gate")
 
     # Instagram.
-    ig_profile = f"{origin}/ada.lovelace/"
+    ig_profile = f"{origin}/sam.example/"
     expect_equal("ig follow", zb.instagram.follow(ig_profile), {"ok": True})
     expect_equal("ig follow recorded", ig(), {"action": "follow"})
     ig_post = f"{origin}/p/C0ffee/"
@@ -176,17 +187,36 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_equal("ig comment recorded", ig(), {"action": "comment", "text": "So good"})
     if "keydown:comment" not in zb.page.evaluate("window.__ig.events")["result"]:
         raise AssertionError("the comment was not typed")
-    expect_equal("ig dm", zb.instagram.dm("ada.lovelace", "hi Ada"), {"ok": True})
-    expect_equal("ig dm recorded", ig(), {"action": "dm", "text": "hi Ada"})
-    expect_equal("ig stories", zb.instagram.story_view("ada.lovelace"), {"ok": True, "framesViewed": 3})
-    expect_equal("ig stories seen", zb.page.evaluate("window.__ig.storyFrames")["result"], [1, 2, 3])
+    expect_equal("ig dm", zb.instagram.dm("sam.example", "hi Sam"), {"ok": True})
+    expect_equal("ig dm recorded", ig(), {"action": "dm", "text": "hi Sam"})
+    # Until the live story viewer's markup is verified
+    # (instagram.story_viewer_verified in src/instagram.zig), story_view opens
+    # the story, checks it is one, then stops: nothing advances.
+    expect_error("ig stories", lambda: zb.instagram.story_view("sam.example"), -32001, "instagram_story_viewer_unverified")
+    expect_equal("ig stories: nothing advanced", (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.frames")["result"]), ("stories:sam.example", [1]))
+    # No active stories: the profile, whose highlights carousel has its own
+    # Next and avatars, is not a story viewer. Fail closed, click nothing.
+    expect_error("ig no stories", lambda: zb.instagram.story_view("no.stories"), -32001, "instagram_no_story_viewer")
+    expect_equal("ig no stories: highlights untouched", zb.page.evaluate("window.__ig.highlightNext")["result"], 0)
+    zb.call("dom.waitFor", {"selector": "css=#follow", "state": "attached"})
     ig_report = zb.instagram.selfcheck()
-    expect_equal("ig selfcheck on the profile", (ig_report["signed_in"] >= 1, ig_report["follow_button"] + ig_report["following_button"] >= 1), (True, True))
+    expect_equal(
+        "ig selfcheck on the profile",
+        (ig_report["signed_in"] >= 1, ig_report["follow_button"], ig_report["message_button"], ig_report["story_media"], ig_report["story_next"]),
+        (True, 1, 1, 0, 0),
+    )
+    # A story page with a carousel's Next before the viewer's: nothing clicked.
+    expect_error("ig two Next buttons", lambda: zb.instagram.story_view("decoy.user"), -32001, "instagram_story_viewer_unverified")
+    expect_equal(
+        "ig two Next buttons: nothing advanced",
+        (zb.page.evaluate("window.__ig.decoyNext")["result"], zb.page.evaluate("window.__ig.frames")["result"]),
+        (0, [1]),
+    )
     passed.append("instagram")
 
     # Platform URLs only.
-    expect_error("off-platform URL", lambda: zb.linkedin.visit("https://evil.example/in/ada/"), -32602)
-    expect_error("other platform's URL", lambda: zb.instagram.follow("https://www.linkedin.com/in/ada/"), -32602)
+    expect_error("off-platform URL", lambda: zb.linkedin.visit("https://evil.example/in/sam/"), -32602)
+    expect_error("other platform's URL", lambda: zb.instagram.follow("https://www.linkedin.com/in/sam/"), -32602)
     passed.append("platform-urls")
 
     # N20: checkpoint, limit modal and blocked-action pages stop the flow with
@@ -195,10 +225,8 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_equal("checkpoint signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("challenge", "linkedin"))
     expect_equal("checkpoint page reached", zb.page.evaluate("window.__li.page")["result"], "checkpoint")
     expect_equal("checkpoint: nothing clicked", zb.page.evaluate("window.__li.events")["result"], [])
-    err = expect_error("linkedin invitation limit", lambda: zb.linkedin.connect(f"{origin}/in/limit-reached/"), -32010)
-    expect_equal("limit signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("invitation_limit", "linkedin"))
-    expect_equal("limit: only the Connect click", zb.page.evaluate("window.__li.events")["result"], ["click:connect"])
-    expect_equal("limit: no invitation", li(), None)
+    # (The invitation-limit modal after a Connect click returns with
+    # linkedin.owner_actions_enabled; until then connect never clicks.)
     err = expect_error("instagram blocked like", lambda: zb.instagram.like(f"{origin}/p/blocked/"), -32010)
     expect_equal("blocked signal", (err.diagnostics.get("signal"), err.diagnostics.get("platform")), ("action_blocked", "instagram"))
     expect_equal("blocked: one Like click", zb.page.evaluate("window.__ig.events")["result"], ["click:like"])
@@ -209,7 +237,7 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     status = zb.social.rate_status()
     zb.social.set_pacing(daily_cap=100 - status["remaining_actions"])
     before = len(server.paths)
-    err = expect_error("daily cap", lambda: zb.instagram.follow(f"{origin}/grace.hopper/"), -32010, "social_daily_cap")
+    err = expect_error("daily cap", lambda: zb.instagram.follow(f"{origin}/riley.sample/"), -32010, "social_daily_cap")
     expect_equal("no request at the cap", len(server.paths), before)
     passed.append("daily-cap")
 
