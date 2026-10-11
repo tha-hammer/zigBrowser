@@ -3367,3 +3367,87 @@ accessed. All evidence came from local fixtures under private Xvfb.
 Verification at exact `c0c1c18`, from a clean archive export under private
 Xvfb: **Build Summary: 92/92 steps succeeded; 736/736 tests passed** (seed
 `0x396004d4`). The gate included the production-binary media-source E2E.
+
+## Deferred formal reviews through `907c204`
+
+These reviews use the exact committed snapshots, not the later shared-worktree
+WIP. The three commits are a linear series (`0a211b0` -> `2609d04` ->
+`907c204`). The already-recorded quiet clean-export gate at exact `907c204`
+therefore covers the code and tests from all three: **Build Summary: 91/91
+steps succeeded; 728/728 tests passed** (seed `0x8759c85c`). No reviewed
+production or test blob was changed between its introduction and that gate.
+
+### `0a211b0` handoff follow-up
+
+**Verdict: APPROVED.** This is documentation only. The handoff accurately
+distinguishes local-fixture tests from the orchestrator's read-only live probes
+(`handoff:6,26-27,330-335`), documents the Linux HTTP/1.1 and case-J rendering
+defaults and their opt-outs (`:79-101`), and replaces the obsolete dry-run
+limitation with the committed `options.dry_run` behavior. It also keeps the
+remaining SDK wrapper limitation narrow: the X wrappers have `dry_run` but not
+`input`, `humanize`, or `timeout_ms` (`:595-599`).
+
+The statement at `:318-323` that normal quit still emitted
+`terminated_by_api` was true at this exact snapshot and explicitly named as a
+follow-up; it is not stale within the commit. The immediately following
+`2609d04` resolves it and updates the same handoff text. The selector and
+wrong-person warnings remain fail-closed and the fixture names are identified
+as invented (`:330-405`).
+
+### `2609d04` quiet normal shutdown
+
+**Verdict: APPROVED.** `window_stop_reporting_termination` disconnects only
+the `web-process-terminated` signal and zeros its handler id
+(`src/webkit_shim.c:271-286`). It is called before browser-owned termination
+from `page.close`/window destruction (`:860-875`), signal-driven shutdown
+(`:1272-1301`), and post-`gtk_main` teardown (`:4810-4825`). Real crashes and
+the lone never-committed load watchdog do not call this helper, so their
+diagnostics and `page.list.crashed` state remain intact. Disconnecting every
+window before terminating the first view is necessary because related views
+may share the web process; it also prevents a sibling callback from racing the
+shutdown diagnostic.
+
+The production-binary regression creates three windows in two web processes,
+sends SIGTERM and SIGINT in separate runs, waits for browser exit, and asserts
+that stderr has no termination report
+(`tests/e2e/web_process_crash_test.py:195-248`). The same test file retains the
+real SIGKILL crash and related-window attribution phases (`:91-190,274-323`),
+so it does not obtain quietness by globally disabling the signal. The owner's
+failing-first evidence reported that the pre-change binary printed all three
+windows for both signals; the exact-`907c204` gate exercises the fixed E2E.
+
+### `907c204` failed-step attribution, LinkedIn timeout, and story gate
+
+**Verdict: BLOCKER (cc_2; Agent Mail 5149).** Most of the slice is correct:
+
+- LinkedIn alone receives a 60-second navigation allowance, still clamped by
+  the flow deadline (`src/linkedin.zig:215-218`); Instagram remains at 30
+  seconds. The unit oracle checks both values
+  (`tests/automation_social_test.zig:1158-1170`).
+- The real `instagram.story_view`, not only its dry run, counts the
+  `story_view_gate` after verifying the requested viewer and returns
+  `instagram_story_view_needs_click` before any frame wait, pause, or click
+  (`src/instagram.zig:151-173`). Unit and real-socket fixture tests assert that
+  the gate is never clicked (`tests/instagram_test.zig:559-571`,
+  `tests/e2e/social_flows_test.py:319-342`).
+- Runner and trace step indexes advance on the same actually-executed command,
+  and route-level refusals/platform detections clear attribution before
+  `withFailedStep` can expose it (`src/automation/flow_runner.zig:79-121,
+  250-258`; `src/automation/social_flow_routes.zig:255-262,543-561`).
+
+The cancellation branch is the exception. A primitive returning JSON-RPC
+`-32012 cancelled` first records its index at
+`src/automation/flow_runner.zig:104-106`, then returns through the
+`cancelled_step` branch at `:110-115` without clearing `failed_step`.
+`social_flow_routes.takeFailure` sees the same trace index and appends the step
+at `src/automation/social_flow_routes.zig:258-262`. This produces, for example,
+`data.step = "navigate"` when the PagePort returns `error.Cancelled`, contrary
+to both the commit contract and the public documentation that cancellation has
+no step (`docs/how-to-automate.md:372-380`).
+
+Required regression: make a `FlowHarness` navigation return
+`error.Cancelled`, assert `-32012`, and assert that `data.step` is absent. The
+fix must clear only cancellation attribution while preserving the terminal
+stop/no-further-page-work behavior. The clean 728/728 gate is valid evidence
+for the rest of the slice, but this path has no oracle and therefore does not
+close the blocker.
