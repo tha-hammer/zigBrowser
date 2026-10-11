@@ -1693,6 +1693,12 @@ Mailed before and after commit as 4859/4865/4868/4870/4873.
 
 ### BLOCKER — policy-blocked-navigation live test can exceed its watchdog
 
+**Status: OPEN (cc_1).** The latest reproduced failure is the null-unwrap
+panic at `blocked: typing a, Enter, b` described below. Final/N23 remains red
+until the exact origin is captured and fixed, 30 loaded target iterations are
+clean, and two consecutive clean-export gates at the final commit pass
+644/644.
+
 The orchestrator's clean gate at `92ea230` ended **640/641** when
 `native text: a navigation blocked by policy does not refuse later typing`
 hit the live-test watchdog and exited 124. Independent green gates do not
@@ -1889,6 +1895,21 @@ intermittent failure did not recur; it does not supply the required stack or
 close the blocker. The throwaway tree was immediately deleted and `/tmp`
 remained 21% used. Mailed as 4920.
 
+That 60-run result is weaker than a build-step reproduction for one additional
+reason: direct invocation selects Zig's `mainTerminal` test runner, whereas
+`zig build test` launches the binary with `--listen=-` and selects
+`mainServer`. The owner was asked in 4931 to keep the server-runner path while
+filtering the root test step for a faster faithful loop; the cold full gates
+already preserve it.
+
+A reviewer clean-export gate of `d7a64d3` then preserved the exact failing
+server-runner seed under the active parallel build/stress load:
+`timeout 900 xvfb-run -a zig build test --seed 0x23dcdd56 --summary all`.
+It passed **85/85 steps, 644/644 tests** (root 98/98 in 53 seconds); the blocked
+case again returned `DocumentChanged after 2`, value `ac`, and prevented submit
+after two. The tree was deleted immediately and `/tmp` remained 24% used.
+This is another non-reproduction, not closure. Mailed as 4935.
+
 `983a179` + `9c8fdb0` make the next recurrence diagnosable without
 changing production behavior. If a live-test watchdog expires, it first names
 the stage with raw writes, then on Linux permits ptrace and runs a bounded
@@ -1911,6 +1932,15 @@ There is not yet evidence for why that writer state would be canceled, so this
 remains a candidate, not a finding. The exact gdb stack is still required
 before classifying and fixing the failure. The owner is looping cold-cache
 clean exports because direct and warm-cache loops have not reproduced it.
+
+History strengthens that candidate without proving it: `git blame` attributes
+the normal expected-error `std.debug.print("blocked: typing ended...")` to
+`b0994ad`, the hardening follow-up after the earlier `92ea230` timeout. The
+later `bc0bad1` failure is the one that added a null panic while remaining at
+that stage. If the stack confirms `unlockStderr -> recancelInner ->
+Thread.current.?`, this is a test-driver/Zig-Io defect, not a production shim,
+adapter, or engine defect; the narrow correction is to avoid the high-level
+stderr path in that expected branch. Mailed as 4932.
 
 Review thread:
 4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929.
