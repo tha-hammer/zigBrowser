@@ -3168,3 +3168,136 @@ healthy exit prints `terminated_by_api` for ordinary windows. It is harmless
 to state and does not weaken the watchdog or crash-attribution regressions, but
 the diagnostic is misleading and should be suppressed just as normal
 `page.close` already suppresses it.
+
+## Instagram media deadlock investigation (`ac7450d`, WebKitGTK 2.54.0)
+
+**Status: BLOCKER (cc_1 / upstream WebKit); high-confidence root cause; mailed
+as Agent Mail 5135.** The affected WebProcess did not stall in rendering,
+NVIDIA, networking, or zigBrowser's GTK hand-off. Its main thread was wedged in
+WebKit's MSE seek flush, in a two-thread GStreamer lock cycle. The frozen
+884-line stack was symbolized against the exact installed WebKitGTK 2.54.0 and
+GStreamer 1.26.2 binaries:
+
+1. WebProcess main TID 3500107 entered
+   `MediaPlayerPrivateGStreamerMSE::doSeek`, held the pipeline state lock, and
+   called `gst_element_seek` (`MediaPlayerPrivateGStreamerMSE.cpp:282-297`).
+2. `WebKitMediaSrc` handled that seek synchronously on the main thread and
+   pushed `FLUSH_START` downstream from `webKitMediaSrcStreamFlush`
+   (`WebKitMediaSourceGStreamer.cpp:649-690`).
+3. `gst_multi_queue_sink_event` forwarded/flushed the queue and called
+   `gst_pad_pause_task` (`gstmultiqueue.c:2683-2690`). That call waits for the
+   pad task by acquiring its stream lock (`gstpad.c:6477-6512`).
+4. TID 3500391 owned that multiqueue source-task stream lock but was asleep in
+   `do_probe_callbacks` / `GST_PAD_BLOCK_WAIT` while pushing a queued sticky
+   event (`gstpad.c:3850-3935`, `gstmultiqueue.c:2067-2072`).
+
+The exact lock endpoints and MSE seek/flush chain are proven. The downstream
+blocking probe is very likely playsink reconfiguration, but its pad name was
+not captured, so that subtype remains an inference. The observed sequence is
+consistent with a page `currentTime` change or equivalent seek while the MSE
+pipeline was being reconfigured; it does not require a GPU-present path and
+explains why scrolling could still expose redraw while page script, title,
+and input stopped answering.
+
+The closest upstream match is open WebKit bug
+[#320336](https://bugs.webkit.org/show_bug.cgi?id=320336) and its still-open,
+unmerged [PR #70222](https://github.com/WebKit/WebKit/pull/70222). That change
+moves MSE flush events from the main thread to streaming threads specifically
+to break the main-thread/multiqueue/playsink cycle. Its reported trigger is
+encrypted video plus clear audio waiting for a DRM response; this capture has
+no identifiable EME/decrypt frame, so the DRM trigger is not proven even
+though the deadlock mechanism matches. Open bug
+[#272975](https://bugs.webkit.org/show_bug.cgi?id=272975) is the strongest
+unencrypted/early-link variant: `FLUSH_START` is lost at an unlinked
+multiqueue source, then a sticky `STREAM_START` blocks at a pad probe. Its WIP
+[PR #27517](https://github.com/WebKit/WebKit/pull/27517) is also unmerged.
+GStreamer [MR 6763](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/6763)
+fixed one streamsynchronizer ordering case, but the WebKit report explicitly
+records that the relevant MSE test still hangs after it. WebKit bug 320329 is
+only analogous: its other side is a WebKit repaint/ParkingLot wait, absent
+from this capture.
+
+### Private-Xvfb reproducer and env matrix
+
+A throwaway clean export of exact `ac7450d` served local H.264/AAC and VP9/Opus
+clips. Six muted autoplay players were scrolled, sought, paused/played, and
+removed/recreated every 40 ms. The fragmented-H.264/AAC variant used
+`MediaSource`; an external socket client polled `page.title` and a monotonic
+page counter. On a failed run, out-of-band `page.list` still returned the
+cached title and URL while the isolated-world title call failed to answer.
+`eu-stack` of the throwaway WebKitWebProcess captured the same
+`doSeek -> webKitMediaSrcStreamFlush -> gst_pad_pause_task` main-thread chain
+and the same pad blocking-probe streaming thread as the live incident.
+
+The deliberately aggressive fixture is a statistical race, not a claim about
+normal failure frequency. Its bounded results were:
+
+| Fixture / environment | Result | Interpretation |
+| --- | --- | --- |
+| Plain URL, default | 2/4 responsive, 2/4 exceeded 4 s | Short responsiveness misses occurred; this oracle alone does not prove a permanent deadlock. |
+| Plain URL, `WEBKIT_GST_USE_PLAYBIN3=0` | 3/4 responsive, 1/4 exceeded 4 s | This is the default choice for ordinary media, not an MSE switch. |
+| Plain URL, `WEBKIT_GST_USE_PLAYBIN3=1` | 0/4 responsive | Forcing ordinary media onto playbin3 made short misses deterministic in this sample. |
+| MSE, default / `=0` / `=1` | Every setting produced a failed run with the 4 s oracle | WebKit's MSE path always uses playbin3; the later exact-stack captures distinguish permanent hangs. |
+| MSE, `=1`, 12 s liveness bound | 1/1 wedged with the exact live stack | `=1` is redundant for MSE and is not a mitigation. |
+| MSE, `WEBKIT_GST_DMABUF_SINK_DISABLED=1` | 1/2 wedged with the exact stack | Disabling the DMABUF sink does not break the lock cycle. |
+| MSE, `WEBKIT_GST_DISABLE_GL_SINK=1` | 2/2 wedged with the exact stack | Disabling the GL sink does not break the lock cycle. |
+
+WebKitGTK 2.54.0's production selection explicitly makes MSE, Blob, and
+MediaStream use playbin3; `WEBKIT_GST_USE_PLAYBIN3=1` only opts ordinary media
+into it (`MediaPlayerPrivateGStreamer.cpp:3548-3563`). Therefore setting that
+variable to `0` cannot force MSE to legacy playbin and is not a workaround.
+The two sink variables are presentation/transport switches, while the captured
+cycle occurs upstream in MSE flush, multiqueue, and a pad probe. No tested
+environment variable stopped the defect. All private Xvfb instances, browser
+processes, profiles, caches, and the throwaway export were deleted immediately.
+Neither `DISPLAY :0` nor the live socket/process/profile was accessed.
+
+### Required failing test and watchdog direction
+
+The useful failing-first test is an external-watchdog MSE fixture with audio
+and video SourceBuffers. It should append init/video while delaying or
+withholding audio, seek during early construction/reconfiguration, and assert
+from outside the WebProcess that the page main loop continues answering. It
+should loop with bounded duration and retain `GST_DEBUG` pad/event names on
+failure. A second variant can delay an EME response to exercise PR 70222's
+published trigger. PR 70222 currently adds no regression test.
+
+Recovery should be a user-confirmed safety mechanism, not an automatic kill:
+
+- Subscribe on the GTK thread to WebKitGTK's
+  `notify::is-web-process-responsive`, debounce continuous `false`, and expose
+  an out-of-band `page.health` route that cannot sit behind the affected
+  page's FIFO. A return to `true` cancels the incident.
+- Report `dialog_open` and `loading` separately. A script dialog blocks related
+  views by design, and finite CPU-heavy JavaScript is indistinguishable from a
+  deadlock for part of its run, so `false` is only
+  `suspected_unresponsive` and never triggers termination itself.
+- Make `page.recover` two-phase: require the current incident token and an
+  explicit acknowledgement of every window at risk. Related views can share a
+  WebProcess, while WebKit exposes no public OS-process PID mapping and the
+  app's creation-time `process_group` is only an approximation after process
+  swaps. The safest default is to refuse recovery while another live window
+  exists unless the caller explicitly accepts the multi-window blast radius.
+- On confirmation, install a recovery gate, cancel/complete affected tracked
+  jobs exactly once, call `webkit_web_view_terminate_web_process`, wait for
+  `TERMINATED_BY_API`, invalidate document/input/pointer state, and only then
+  offer reload from captured URLs. Do not imply preservation of in-memory page
+  state. Commands arriving during recovery must fail as recovering rather than
+  run against an empty replacement document.
+
+Current production already provides the pieces but not the health layer:
+normal page methods acquire a per-window FIFO (`src/automation_server.zig:482-533`),
+while `page.list` bypasses it (`:657-744`); native work is abandoned/cancelled
+at its deadline (`src/webkit_shim.c:1552-1609,2122-2147`). The shim connects
+`web-process-terminated` but not responsiveness
+(`src/webkit_shim.c:1141-1169,4150-4174`). WebKitGTK 2.54 exposes both
+`webkit_web_view_get_is_web_process_responsive` and
+`webkit_web_view_terminate_web_process`; no public getter exposes the actual
+WebProcess PID. Existing crash E2E covers an external kill followed by an
+explicit navigation, but not responsiveness, recovery consent, shared-process
+blast radius, queued-job cancellation, or terminate-plus-reload.
+
+Verification: a quiet clean-export gate at exact HEAD `907c204`, under a
+private Xvfb with the live display, socket, and token variables removed, was
+green: **Build Summary: 91/91 steps succeeded; 728/728 tests passed** (seed
+`0x8759c85c`). The throwaway export was deleted when the gate completed.
