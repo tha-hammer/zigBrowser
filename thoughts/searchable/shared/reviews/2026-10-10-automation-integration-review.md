@@ -2942,3 +2942,90 @@ Zig caches, a private Xvfb, unset `DISPLAY`, `WAYLAND_DISPLAY`, and
 `ZIGBROWSER_SOCKET`, and a 1500-second bound. It reported **90/90 steps
 succeeded; 700/700 tests passed**. Both new production-chain e2es passed. The
 export and caches were deleted immediately by the `find -delete` trap.
+
+## Node live-test launcher follow-up (`5c7d5dd`)
+
+The production-representative Node live test now launches its browser through
+`xsession.py --xvfb`, strips the caller's display variables, and uses the
+browser/session-leader PID for bounded SIGINT then process-group SIGKILL
+(`sdk/node/tests/live.test.ts:42-67,76-114`). This correctly closes the direct
+spawn gap left by BLOCKER 5011. The launcher's guardian watches the Vitest
+worker (the launcher's parent) and the browser; killing that worker therefore
+drains the browser group and private Xvfb. The opt-in regression passed locally,
+the plain Node live test passed 1/1, and neither left a browser, helper, Xvfb,
+display lock, or socket on their successful paths.
+
+### BLOCKER — the kill regression's own outer Xvfb can be orphaned
+
+**Status: OPEN (cc_2); mailed as Agent Mail 5078.** The regression creates a
+second Xvfb directly with `subprocess.Popen` to provide Vitest's caller display
+(`tests/e2e/node_live_group_test.py:97-115,143-150`). That Xvfb has neither the
+`xsession.py` guardian nor a parent-death signal. If the Python regression is
+itself SIGKILLed, or its required outer `timeout` expires and sends SIGTERM,
+Python's `finally` does not run; the Xvfb and its lock/socket can outlive the
+test. This recreates the test-hygiene failure class the regression is supposed
+to catch. Its caught-exception path also calls `kill_marked` before cleanup
+(`tests/e2e/node_live_group_test.py:190-206`), which can SIGKILL the marked
+inner Xvfb and guardian together before the guardian removes its display
+files.
+
+Add a failing-first meta-regression: start `node_live_group_test.py` with a
+unique inherited marker, wait for its outer Xvfb and display files, SIGKILL the
+Python test process (not Xvfb), and require all marked processes and display
+files to disappear. Prefer giving the outer Vitest/Xvfb pair to
+`xsession.py --xvfb`; alternatively give Xvfb a parent-death signal and an
+independent lock-owner cleanup path. On caught failure, let the guardians clean
+before any last-resort direct Xvfb kill. This blocker is isolated to the new
+opt-in regression; the Node live-test launcher itself is correct.
+
+The claimed failing-first behavior is independently confirmed. In a clean
+`5c7d5dd` export, changing only `startBrowser` back to direct binary spawn while
+retaining the new hold hook made the regression fail after 30 seconds with the
+browser, WebKit network process, and WebKit web process still alive. The fixed
+launcher passed the same regression, and the ordinary Node live test passed
+1/1. Each run's marked processes were gone afterward and the export was deleted
+immediately. Thus the test catches the production leak, but its separately
+owned outer Xvfb still makes the test process itself unsafe under a hard kill.
+
+**SHOULD (cc_2), mailed as Agent Mail 5079:** `docs/how-to-test.md` says the
+Node Vitest live test and the Python regression both exit 77 when prerequisites
+are missing. The Python entry point does; Vitest uses `describe.skip`, so it
+exits successfully with a skipped suite. The WebKitGTK 2.54 known-issues text
+is otherwise accurate after `ee00876`: the hover closure needs both `53b5c66`
+and `6f90a1a`, and case J is now the documented Linux default.
+
+## Linux case-J rendering default (`ee00876`)
+
+**Status: APPROVED; mailed to cc_1 as Agent Mail 5081.** The exact diff makes
+the Linux built-in choice WebKit's own hardware-acceleration policy plus
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`. Each command-line half resolves
+independently, an existing environment value (including `0` or empty) wins,
+and `setenv` uses `overwrite=0`. Invalid, missing, and duplicate rendering
+flags still fail as usage. The shared C policy helper leaves WebKit untouched
+for `ZB_HW_POLICY_WEBKIT` and is used by main views, related popups, and the
+screenshot view. The screenshot path applies HTTP and rendering configuration
+before constructing WebKit state.
+
+The tests drive production seams rather than fakes: the live test compares a
+real window's policy with a fresh `WebKitSettings` default, and
+`render_config_test.py` inspects the spawned WebKitWebProcess environment for
+the default, user override, both opt-outs, and Mesa path. It also exercises the
+real screenshot process and checks that a PNG is written. The failing-first run
+reported 10 failed assertions against the `74af56c` binary; the new binary
+passed all 18 assertions. cc_1's bounded clean-export gate at the exact commit
+reported **90/90 steps succeeded; 704/704 tests passed**.
+
+An independent quiet clean-export gate at exact `ee00876`, with the live
+display/socket variables unset and a private Xvfb, produced the same result:
+**90/90 steps succeeded; 704/704 tests passed**. Its export and caches were
+deleted immediately by the `find -delete` exit trap.
+
+The supplied `rerun_JL.json` evidence matches the documentation. Case J
+advanced video time from 4.6 to 29.9 to 54.6 seconds at the three samples and
+had no GBM-buffer failures, while retaining two DRM-dumb and two NVIDIA-GBM
+startup lines. Case L rendered but video time moved 2.9, 5.4, then backward to
+3.8 seconds. The docs therefore accurately explain why the user chose J, and
+the previously overbroad non-DMABUF statement is now limited to policy NEVER
+and the tested `WEBKIT_DISABLE_DMABUF_RENDERER=1` combinations. No live display
+or live browser was accessed during this review. The popup-specific crash-
+diagnostic e2e remains the non-blocking SHOULD recorded under `1c4d0d8`.
