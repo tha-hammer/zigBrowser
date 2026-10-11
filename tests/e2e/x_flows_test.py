@@ -9,7 +9,9 @@ selected values, the Draft editor's event record, which Post button was
 clicked (hidden copies are skipped, a late button is waited for), that a
 racing page command waits for the whole flow (the server rejects it as
 queued_past_deadline), and the
-logged-out gate. Exit 77 (skip) without a binary/display."""
+logged-out gate. The page is warmed first with a bounded 90 s navigate, and a
+failed call reports its elapsed time and full error. Exit 77 (skip) without a
+binary/display."""
 
 from __future__ import annotations
 
@@ -98,10 +100,49 @@ class HoldServer:
         self._server.server_close()
 
 
+class TimedRpcClient(RpcClient):
+    """RpcClient whose failed calls say which client, which method, how long
+    it took and the whole JSON-RPC error, so a load-only failure in a gate log
+    can be told apart from a real one."""
+
+    def __init__(self, socket_path: Path, timeout_sec: float, name: str) -> None:
+        super().__init__(socket_path, timeout_sec)
+        self.name = name
+
+    def call(self, method: str, params: dict | None = None):
+        started = time.monotonic()
+        response = self.raw(method, params)
+        if "error" in response:
+            elapsed = time.monotonic() - started
+            raise AssertionError(f"{self.name} {method} failed after {elapsed:.1f} s: {json.dumps(response['error'])}")
+        return response["result"]
+
+
+# The browser's cold start can take most of a flow's 30 s navigate step on a
+# heavily loaded host (the first x.post once failed that way only during
+# overlapping gates). Warm the page with a longer, still bounded, navigate so
+# the flows measure the flows, not process startup. Test only: the flows'
+# own timeouts are unchanged.
+WARM_NAVIGATE_MS = 90_000
+WARM_COMPOSER_MS = 30_000
+
+
+def warm_up(socket_path: Path, compose_url: str) -> None:
+    warm = TimedRpcClient(socket_path, (WARM_NAVIGATE_MS + WARM_COMPOSER_MS) / 1000 + 30, "warm-up")
+    started = time.monotonic()
+    try:
+        warm.call("page.navigate", {"url": compose_url, "timeout_ms": WARM_NAVIGATE_MS})
+        warm.call("dom.waitFor", {"selector": "testid=tweetTextarea_0", "state": "visible", "timeout_ms": WARM_COMPOSER_MS})
+    finally:
+        warm.close()
+    eprint(f"warm-up: {time.monotonic() - started:.1f} s")
+
+
 def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> list[str]:
     passed: list[str] = []
     base = f"{server.base}/composer.html"
-    rpc = RpcClient(socket_path, timeout_sec + 30)
+    warm_up(socket_path, f"{base}?mode=compose")
+    rpc = TimedRpcClient(socket_path, timeout_sec + 30, "rpc")
 
     def recorded():
         return rpc.call("page.evaluate", {"expression": "window.__xResult"})["result"]
@@ -232,7 +273,7 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     # (about 60-90 s; it also fits the 120 s default, so the route's budget
     # sizing is proven by the route-level test in automation_x_test.zig).
     long_text = "Zig " * 70
-    slow = RpcClient(socket_path, 650)
+    slow = TimedRpcClient(socket_path, 650, "slow")
     started = time.monotonic()
     humanized = slow.call("x.post", {"text": long_text, "compose_url": f"{base}?mode=compose", "options": {"input": "native", "humanize": True}})
     elapsed = time.monotonic() - started
