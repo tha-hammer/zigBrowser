@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +19,43 @@ from typing import Any, Callable, Iterable
 
 SKIP_EXIT = 77
 HARNESS_EXIT_PREFIX = "ZB_HARNESS_EXIT"
+# The one launcher for E2E browsers (see its docstring): the browser keeps
+# its own PID, and a guardian ends it and its private Xvfb if the test dies.
+XSESSION = Path(__file__).resolve().parent / "xsession.py"
+
+
+def xsession_prefix(xvfb: bool, screen: str | None = None) -> list[str]:
+    """Command prefix that runs a browser under xsession.py (--xvfb: on its
+    own Xvfb display, never the caller's)."""
+    prefix = [sys.executable, str(XSESSION)]
+    if xvfb:
+        prefix.append("--xvfb")
+    if screen is not None:
+        prefix += ["--screen", screen]
+    return prefix + ["--"]
+
+
+def stop_browser(proc: subprocess.Popen, grace_sec: float = 8.0) -> int | None:
+    """Shared teardown for a browser started with an xsession prefix: SIGINT
+    (a clean shutdown); a browser still running after `grace_sec` gets
+    SIGKILL with its whole process group (browser and WebKit helpers). After
+    a clean exit the helpers are left to exit on their own (tests assert
+    that); the guardian ends any that linger, then removes the private
+    display. Safe to call more than once. Returns the browser's exit status."""
+    if proc.poll() is None:
+        try:
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=grace_sec)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+    return proc.returncode
 
 
 def eprint(msg: str) -> None:
@@ -95,30 +133,32 @@ def automation_auth(socket_path: Path) -> str | None:
 
 
 def detect_runner(prefer_xvfb: bool) -> tuple[list[str], dict[str, str], str] | None:
+    """(command prefix, env, note) for launching the browser. Every prefix
+    is an xsession.py one, so the browser never outlives the test."""
     env = isolate_profile_env(dict(os.environ))
-    xvfb = shutil.which("xvfb-run")
+    xvfb = shutil.which("Xvfb") is not None and shutil.which("xauth") is not None
     display = env.get("DISPLAY")
 
-    # Local default: live display first (xvfb-run is absent on this workstation).
+    # Local default: live display first.
     if not prefer_xvfb:
         if display:
-            return [], env, f"DISPLAY={display}"
+            return xsession_prefix(False), env, f"DISPLAY={display}"
         if Path("/tmp/.X11-unix/X1").exists():
             env["DISPLAY"] = ":1"
-            return [], env, "DISPLAY=:1"
+            return xsession_prefix(False), env, "DISPLAY=:1"
 
-    # CI / explicit xvfb preference.
+    # CI / explicit xvfb preference: a private Xvfb owned by xsession.py.
     if xvfb:
-        return [xvfb, "-a"], env, "xvfb-run"
+        return xsession_prefix(True), env, "xvfb"
 
     # Fallback to live display when xvfb is requested but unavailable.
     if display:
-        return [], env, f"DISPLAY={display}"
+        return xsession_prefix(False), env, f"DISPLAY={display}"
     if Path("/tmp/.X11-unix/X1").exists():
         env["DISPLAY"] = ":1"
-        return [], env, "DISPLAY=:1"
+        return xsession_prefix(False), env, "DISPLAY=:1"
 
-    eprint("SKIP: no DISPLAY and no xvfb-run; install xvfb or export DISPLAY")
+    eprint("SKIP: no DISPLAY and no Xvfb/xauth; install xvfb or export DISPLAY")
     return None
 
 
@@ -209,8 +249,8 @@ def run_interactive_until(
         try:
             proc.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+            pass
+    stop_browser(proc, grace_sec=0)
 
     out_thread.join(timeout=1)
     err_thread.join(timeout=1)

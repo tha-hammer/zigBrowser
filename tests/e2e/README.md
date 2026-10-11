@@ -32,6 +32,12 @@ Protocol:
 
 Runtime behavior:
 - Uses display-first local runs (`DISPLAY`, fallback `:1`).
-- Uses `xvfb-run` when requested/available for CI.
+- Every browser starts through `xsession.py` (the prefix from
+  `slice2_common.detect_runner` / `xsession_prefix`): `--prefer-xvfb` gives it
+  a private Xvfb (its own display, lock and auth cookie). The browser keeps its
+  own PID; a detached guardian ends its process group and removes the private
+  display when the test driver dies, however it died. Tear down with
+  `slice2_common.stop_browser` (SIGINT, then SIGKILL to the whole group).
+  `harness_group_test.py` is the regression for this.
 - Tracks helper child PIDs while alive, then asserts those exact PIDs exit.
 - Exits `77` with a loud skip when required runtime tools are missing or HW-gated tests are off-platform.

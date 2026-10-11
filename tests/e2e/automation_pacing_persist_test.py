@@ -24,7 +24,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "sdk/python/src"))
 
-from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file  # noqa: E402
+from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file, stop_browser  # noqa: E402
 from social_flows_test import LINKEDIN, FixtureServer, expect_equal, wait_for_socket  # noqa: E402
 from zigbrowser import ZigBrowser  # noqa: E402
 
@@ -53,13 +53,7 @@ class Browser:
             raise
 
     def stop(self) -> None:
-        if self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGINT)
-            try:
-                self.proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=5)
+        stop_browser(self.proc)
         self._stderr.close()
 
     def log(self) -> str:

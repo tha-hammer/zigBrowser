@@ -543,6 +543,16 @@ pub fn build(b: *std.Build) void {
     });
     http2_goaway_e2e.addArtifactArg(exe);
 
+    // E2E harness hygiene: a browser started through the shared launcher
+    // (tests/e2e/xsession.py) never outlives a test driver that dies mid-test.
+    const harness_group_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/harness_group_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "harness-group-e2e",
+    });
+    harness_group_e2e.addArtifactArg(exe);
+
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
     const automation_dialogs_e2e = b.addSystemCommand(&.{
@@ -760,6 +770,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_profile_e2e.step);
     test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&http2_goaway_e2e.step);
+    test_step.dependOn(&harness_group_e2e.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);

@@ -18,6 +18,7 @@ from slice2_common import (
     detect_runner,
     eprint,
     require_file,
+    stop_browser,
 )
 
 
@@ -112,8 +113,8 @@ def main() -> int:
             try:
                 proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+                pass
+        stop_browser(proc, grace_sec=0)
 
         if exit_at is None:
             exit_at = time.monotonic()

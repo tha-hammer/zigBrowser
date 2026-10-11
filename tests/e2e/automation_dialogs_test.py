@@ -10,14 +10,13 @@ dialog_open within about a second and leaves the prompt open; "accept"
 leaves the page; "dismiss" stays (-32008 beforeunload_dismissed).
 
 Every browser runs on its own Xvfb display, never the user's. Exit 77
-(skip) without the binary or xvfb-run."""
+(skip) without the binary, Xvfb or xauth."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -28,7 +27,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "sdk/python/src"))
 
-from slice2_common import SKIP_EXIT, eprint, isolate_profile_env, require_file  # noqa: E402
+from slice2_common import SKIP_EXIT, eprint, isolate_profile_env, require_file, stop_browser, xsession_prefix  # noqa: E402
 from zigbrowser import AutomationError, ZigBrowser  # noqa: E402
 from zigbrowser.errors import ProtocolError  # noqa: E402
 
@@ -260,9 +259,8 @@ def main() -> int:
     browser = Path(args.binary)
     if not require_file(browser, "binary"):
         return SKIP_EXIT
-    xvfb = shutil.which("xvfb-run")
-    if xvfb is None:
-        eprint("SKIP: needs xvfb-run (the browser must run on its own display)")
+    if shutil.which("Xvfb") is None or shutil.which("xauth") is None:
+        eprint("SKIP: needs Xvfb and xauth (the browser must run on its own display)")
         return SKIP_EXIT
 
     env = isolate_profile_env(dict(os.environ))
@@ -272,9 +270,9 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         proc = subprocess.Popen(
-            [xvfb, "-a", "-s", "-screen 0 1280x1024x24", str(browser.resolve()), (FIXTURES / "index.html").as_uri(),
-             "--automation-api", "--profile-dir", str(Path(tmp) / "profile")],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
+            xsession_prefix(True) + [str(browser.resolve()), (FIXTURES / "index.html").as_uri(),
+                                     "--automation-api", "--profile-dir", str(Path(tmp) / "profile")],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env,
         )
         stderr_lines: list[str] = []
         threading.Thread(target=lambda: stderr_lines.extend(proc.stderr), daemon=True).start()  # type: ignore[arg-type]
@@ -293,18 +291,7 @@ def main() -> int:
             eprint("browser stderr (last 30 lines):\n" + "".join(stderr_lines[-80:]))
             return 1
         finally:
-            if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGINT)
-                try:
-                    proc.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    pass
-            # Whatever of the group outlived xvfb-run (browser, Xvfb).
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait(timeout=5)
+            stop_browser(proc)
     print("PASS\tdialogs")
     return 0
 

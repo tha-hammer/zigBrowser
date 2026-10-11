@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from automation_fixture_server import AutomationFixtureServer
-from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file
+from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file, stop_browser
 
 
 def _read_lines(stream, sink: list[str]) -> None:
@@ -194,14 +194,7 @@ def run_scenarios(rpc: RpcClient, fixture: AutomationFixtureServer) -> list[str]
 
 
 def terminate(proc: subprocess.Popen[str]) -> int:
-    if proc.poll() is None:
-        proc.send_signal(signal.SIGINT)
-        try:
-            proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
-    return proc.returncode
+    return stop_browser(proc)
 
 
 def main() -> int:

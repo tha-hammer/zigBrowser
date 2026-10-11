@@ -35,7 +35,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from slice2_common import SKIP_EXIT, eprint, isolate_profile_env, require_file
+from slice2_common import SKIP_EXIT, eprint, isolate_profile_env, require_file, stop_browser, xsession_prefix
 
 PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 DATA, HEADERS, SETTINGS, PING, GOAWAY = 0x0, 0x1, 0x4, 0x6, 0x7
@@ -266,12 +266,7 @@ def run_open(cmd: list[str], env: dict[str, str], timeout: float) -> tuple[str |
             os.kill(child, 15)
         except OSError:
             pass
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+    stop_browser(proc, grace_sec=10)
     reader.join(timeout=2)
     return title, net_env, "".join(lines[-30:])
 
@@ -288,7 +283,7 @@ def main() -> int:
     binary = Path(args.binary).resolve()
     if not require_file(binary, "zigBrowser binary"):
         return SKIP_EXIT
-    tools = {name: shutil.which(name) for name in ("xvfb-run", "gcc", "openssl")}
+    tools = {name: shutil.which(name) for name in ("Xvfb", "xauth", "gcc", "openssl")}
     missing = [name for name, path in tools.items() if path is None]
     if missing:
         eprint(f"SKIP: needs {', '.join(missing)} (the browser must run on its own Xvfb display)")
@@ -318,7 +313,7 @@ def main() -> int:
             base_env.pop(name, None)
         base_env["LD_PRELOAD"] = str(preload)
         base_env["ZB_TEST_CA_FILE"] = str(cert)
-        xvfb = [tools["xvfb-run"], "-a", "-s", "-screen 0 1280x1024x24"]
+        xvfb = xsession_prefix(True)
 
         failures: list[str] = []
 

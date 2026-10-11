@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from slice2_common import stop_browser, xsession_prefix
+
 SKIP_EXIT = 77
 
 
@@ -79,25 +81,26 @@ def _assert_children_exit(children: Iterable[int], timeout_sec: float) -> tuple[
 
 
 def _detect_runner(prefer_xvfb: bool) -> tuple[list[str], dict[str, str], str] | None:
+    # Every browser runs under the shared xsession.py launcher (see slice2_common).
     env = dict(os.environ)
-    xvfb = shutil.which("xvfb-run")
+    xvfb = shutil.which("Xvfb") is not None and shutil.which("xauth") is not None
     display = env.get("DISPLAY")
 
     if prefer_xvfb and xvfb:
-        return [xvfb, "-a"], env, "xvfb-run"
+        return xsession_prefix(True), env, "xvfb"
 
     if display:
-        return [], env, f"DISPLAY={display}"
+        return xsession_prefix(False), env, f"DISPLAY={display}"
 
-    # Coordinator-provided local fallback when xvfb-run is absent.
+    # Coordinator-provided local fallback when Xvfb is absent.
     if Path("/tmp/.X11-unix/X1").exists():
         env["DISPLAY"] = ":1"
-        return [], env, "DISPLAY=:1"
+        return xsession_prefix(False), env, "DISPLAY=:1"
 
     if xvfb:
-        return [xvfb, "-a"], env, "xvfb-run"
+        return xsession_prefix(True), env, "xvfb"
 
-    _eprint("SKIP: no DISPLAY and no xvfb-run; install xvfb or export DISPLAY")
+    _eprint("SKIP: no DISPLAY and no Xvfb/xauth; install xvfb or export DISPLAY")
     return None
 
 
@@ -148,8 +151,8 @@ def _run_with_tracking(
     try:
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        pass
+    stop_browser(proc, grace_sec=0)
 
     out_thread.join(timeout=1)
     err_thread.join(timeout=1)

@@ -26,7 +26,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "sdk/python/src"))
 
-from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file  # noqa: E402
+from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file, stop_browser  # noqa: E402
 from zigbrowser import AutomationError, ZigBrowser  # noqa: E402
 from zigbrowser.errors import ZigBrowserError  # noqa: E402
 
@@ -288,17 +288,10 @@ def main() -> int:
             print("FAIL\tsocial-flows")
             eprint(f"error={exc!r}")
             eprint(f"requests={server.paths[-12:]}")
-            proc.kill()
-            proc.wait(timeout=5)
+            stop_browser(proc, grace_sec=0)
             return 1
         finally:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
-                try:
-                    proc.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5)
+            stop_browser(proc)
 
     for name in passed:
         print(f"PASS\t{name}")

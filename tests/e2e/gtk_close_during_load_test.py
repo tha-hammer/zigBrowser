@@ -23,6 +23,7 @@ from slice2_common import (
     eprint,
     protocol_rows,
     require_file,
+    stop_browser,
 )
 
 
@@ -396,13 +397,14 @@ def main() -> int:
         server_thread.join(timeout=1)
         if x11 is not None:
             x11.close()
-        if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=3)
+        if proc is not None:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+            stop_browser(proc, grace_sec=0)
 
 
 if __name__ == "__main__":

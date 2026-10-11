@@ -32,7 +32,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "sdk/python/src"))
 
-from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file  # noqa: E402
+from slice2_common import SKIP_EXIT, detect_runner, eprint, require_file, stop_browser  # noqa: E402
 from zigbrowser import ZigBrowser  # noqa: E402
 from zigbrowser.errors import ProtocolError  # noqa: E402
 
@@ -258,17 +258,10 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             print("FAIL\tautomation-native-ports")
             eprint(f"error={exc!r}")
-            proc.kill()
-            proc.wait(timeout=5)
+            stop_browser(proc, grace_sec=0)
             return 1
         finally:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
-                try:
-                    proc.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5)
+            stop_browser(proc)
 
     for name in passed:
         print(f"PASS\t{name}")

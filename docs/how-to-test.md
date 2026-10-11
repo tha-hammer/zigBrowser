@@ -6,7 +6,8 @@
 - WebKitGTK/GTK3 dev deps (see `docs/how-to-build.md`)
 - `python3` + `python3-pil`
 - Display for runtime checks:
-  - `xvfb-run` for CI
+  - `Xvfb` + `xauth` (package `xvfb`) for CI: `--prefer-xvfb` runs each
+    browser on a private display owned by `tests/e2e/xsession.py`
   - or local `DISPLAY` (for example `:1`)
 
 ## Unit/integration suite
