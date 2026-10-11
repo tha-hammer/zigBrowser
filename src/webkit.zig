@@ -1361,13 +1361,16 @@ const LiveDriver = struct {
 /// panic handler: in a test build the root module is the test runner.)
 /// Best effort and bounded (30 s): no gdb, no dump.
 fn dumpThreads() void {
-    const banner = "live bridge watchdog: thread stacks (gdb):\n";
-    _ = std.c.write(2, banner.ptr, banner.len);
-    // Linux Yama: let a non-ancestor (gdb, our child) attach to us.
-    _ = std.c.prctl(0x59616d61, @as(c_ulong, std.math.maxInt(c_ulong)));
-    var cmd: [192]u8 = undefined;
-    const line = std.fmt.bufPrintZ(&cmd, "timeout -s KILL 30 gdb -p {d} -batch -nx -ex 'thread apply all bt 40' 1>&2 2>/dev/null", .{std.c.getpid()}) catch return;
-    _ = system(line.ptr);
+    // prctl and the gdb command line are Linux-only.
+    if (builtin.os.tag == .linux) {
+        const banner = "live bridge watchdog: thread stacks (gdb):\n";
+        _ = std.c.write(2, banner.ptr, banner.len);
+        // Linux Yama: let a non-ancestor (gdb, our child) attach to us.
+        _ = std.c.prctl(0x59616d61, @as(c_ulong, std.math.maxInt(c_ulong)));
+        var cmd: [192]u8 = undefined;
+        const line = std.fmt.bufPrintZ(&cmd, "timeout -s KILL 30 gdb -p {d} -batch -nx -ex 'thread apply all bt 40' 1>&2 2>/dev/null", .{std.c.getpid()}) catch return;
+        _ = system(line.ptr);
+    }
 }
 
 /// The live-test step a driver last started, named by the watchdog when it
