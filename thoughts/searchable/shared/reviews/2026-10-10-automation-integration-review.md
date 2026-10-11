@@ -820,13 +820,12 @@ finish with a real pointer move and the live oracle must assert a
 `:hover`-dependent effect, or the API must explicitly document a weaker
 event-only synthetic contract.
 
-Status: **OPEN for production-chain evidence (cc_1 / BlackRobin, cc_2 /
-BlueBeaver seam)**. `9ab165f` explicitly defines synthetic hover as event-only
-and adds pointerover/enter/move, which resolves the synthetic contract choice.
-Its native primitive is a real pointer move. Closure still requires the routed
-native-hover implementation and a socket E2E whose oracle is a CSS
-`:hover`-dependent effect, not only listener events. Native-slice approval was
-mailed as 4738.
+Status: **CLOSED by `9ab165f` + `ee19e40` + `e6cb03e`.** `9ab165f`
+explicitly defines synthetic hover as event-only and makes the native primitive
+a real pointer move. `ee19e40` routes that primitive through PagePort/engine,
+and `e6cb03e` drives the real socket and proves synthetic hover does not
+establish CSS `:hover` while plain and humanized native hover do, with trusted
+moves, then clear after moving away. Mailed as 4738/4749/4764.
 
 ### BLOCKER — N18 wheel acknowledgement is not scroll completion
 
@@ -988,11 +987,12 @@ process, so closing the primary also kills the child page that becomes the new
 primary. The `04fee3a` pointer-identity regression consequently needs its own
 `zb_app_run` and proves ownership only before that replacement page is used.
 
-Status: **DEFERRED by orchestrator to a follow-up**. This behavior predates N8
-and changing shutdown semantics is outside the pointer-cache fix, so it does
-not block N8. The follow-up must decide whether single-window close should
-preserve related live pages. Reported by cc_1 in message 4636 and classified
-in review response 4637.
+Status: **CLOSED by `1088651` + `d689f72` after the orchestrator reversed the
+deferral.** Related windows now share a process-group id and destruction
+terminates the web process only for its last live member; the single-window
+timeout/teardown behavior remains. The real socket E2E covers both client
+`page.close` and popup-owned `window.close()`, then requires the opener's exact
+URL and `got:user=alice` DOM state to remain. See the N23 closure section below.
 
 ### BLOCKER — Node SDK type-check is not reproducible from a clean checkout
 
@@ -1804,8 +1804,8 @@ and approved in mail 4901.
 
 An intermediate navigation-marker WIP expanded beyond the surgical form-submit
 ACK fix and was not safe to land. `automation.js:103-148` pre-marked capture-time
-submit and click destinations as real pending navigations, posts them to the
-shell, then clears them only when `defaultPrevented` is later true. A page
+submit and click destinations as real pending navigations, posted them to the
+shell, then cleared them only when `defaultPrevented` was later true. A page
 handler can instead change the action/href or target (including a final
 `_blank`/`<base target>` destination) without preventing default. That leaves
 this document permanently `leaving`, because it receives no matching
@@ -1819,8 +1819,8 @@ intermediate version and failed the exact policy test, **83/85 steps and
 after Enter, but later fresh typing into the unchanged document failed. This
 directly validates the objection. cc_1 reverted while that already-compiled
 test was running; the current source is the approved one-line trusted-submit
-counter only, with no pending/shell/click pre-marker. It still awaits the
-author's mutant/gate result and a committed clean review gate. Mailed as
+counter only, with no pending/shell/click pre-marker. It landed in `b0994ad`;
+the mutant and clean-gate evidence is recorded below. Mailed as
 4898/4902/4904/4905.
 
 The accepted-connection timeout is the right production-shaped test-server
@@ -1831,11 +1831,66 @@ accepted count, waits for that accepted fd, applies a two-second receive/send
 bound before publishing the count, and releases an unbounded mutant only after
 six seconds; the three-second close ceiling therefore distinguishes the
 mutant. `idleClient` also closes its fd on connect failure. Code shape approved;
-mutation result and clean committed gate remain pending. Mailed as
-4900/4902/4905.
+the mutation and clean-gate results below close the evidence requirement.
+Mailed as 4900/4902/4905.
 
-Status: **OPEN (cc_1 / BlackRobin).** Mailed as
-4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905.
+`b0994ad` lands the approved surgical submit counter and accepted-socket
+timeout/oracle. cc_1's frozen-files gate passed **85/85 steps, 643/643 tests**;
+removing the submit counter makes both strict submit cases send three
+characters, and removing the socket bounds makes the idle-close oracle observe
+6000 ms and fail. Those two production/test changes are approved. Exact commit
+review found two remaining deadline blockers in its harness, however. First,
+`NavEndDriver.run` declares a 45-second aggregate deadline but all eight native
+click/text calls still receive raw 5/10-second limits; text failures continue,
+so their chain can exceed the 60-second watchdog. Second, `waitNotLeaving` and
+`pendingId` pass `end - monotonicMs()` from a second clock read into `left`;
+after a scheduler pause it can be negative, and `std.math.clamp(value, 0, cap)`
+asserts on the reversed bounds. Saturate non-positive caps, route every native
+call through `left`, and advance the NavEnd stage labels. Mailed as
+4906/4907/4909.
+
+Status: **OPEN (cc_1 / BlackRobin); final/N23 is RED at `bc0bad1`.**
+`5c15e0b` replaces the unsafe clamp with a saturating `remainingMs` helper and
+mutation-sensitive boundary cases, passes all eight NavEnd native operations
+through the 45-second aggregate budget, and advances the four phase labels.
+`55d5463` closes the last non-gating diagnostic SHOULD by clearing the global
+stage before each completed watchdog join can hand off to the next test.
+
+The reviewer had run a bounded fresh `git archive` gate twice. Exact `5c15e0b`
+passed **85/85 steps, 644/644 tests**; the strict policy case printed
+`DocumentChanged after 2`, `stopped after Enter, sent 2, value ac`, and the
+prevented submit after two. After the stage-reset and handoff commits, exact
+branch tip `bc0bad1` again passed **85/85 steps, 644/644 tests**, including the
+popup/opener survival E2E. Both `/tmp/gate-*` exports were deleted immediately
+by their traps; `/tmp` remained 19% used. Those successes do **not** close the
+intermittent failure: the orchestrator subsequently ran an independent clean
+export of the same `bc0bad1` and got **83/85 steps, 643/644 tests**, with this
+test exiting 124 after `thread ... panic: attempt to use null value`; the raw
+watchdog identified `blocked: typing a, Enter, b` as the active stage and then
+timed out. Therefore `bc0bad1`'s handoff green claim is stale.
+
+Closure now requires the exact null unwrap and stack, a surgical correction
+(plus regression if production), at least 30 loaded iterations of this test,
+and **two consecutive** bounded clean-export gates at **85/85, 644/644**. My
+initial static trace found no explicit unwrap in `automation_gtk_port.nativeText`;
+the driver's `gtk_port.pagePort().?` at `src/webkit.zig:2018` executes before the
+recorded typing stage and is not yet a credible attribution. The owner must use
+a raw-write test panic handler or repeated gdb panic/ABRT catch rather than let
+the ordinary panic handler deadlock and lose the stack. Earlier green messages
+4914/4917 were retracted in urgent mail 4918.
+
+Reviewer reproduction at exact `bc0bad1`: a clean export compiled the root
+binary with only module reachability and this blocked-navigation case, then ran
+that three-test binary **60 times under six CPU burners**. Every invocation ran
+under gdb with a breakpoint on `FullPanic.unwrapNull`; all **60/60 passed**, no
+breakpoint fired, and the strict output remained `DocumentChanged after 2`,
+value `ac`, and prevented submit after two. This confirms only that the
+intermittent failure did not recur; it does not supply the required stack or
+close the blocker. The throwaway tree was immediately deleted and `/tmp`
+remained 21% used. Mailed as 4920.
+
+Review thread:
+4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918.
 
 ## Deferred scope note
 
