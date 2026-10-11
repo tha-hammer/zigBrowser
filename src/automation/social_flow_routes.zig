@@ -238,11 +238,11 @@ fn execute(
         error.InvalidParams => return invalidParams(),
         error.LoggedOut => return engine_mod.automationFailure(gpa, .session_invalid, "logged_out", ids),
     };
-    const json = result orelse return runner.takeFailure();
+    const json = result orelse return takeFailure(gpa, &runner, trace);
     // N20: a limit dialog or toast after the last click is not a success.
     if (!(try runner.finish())) {
         gpa.free(json);
-        return runner.takeFailure();
+        return takeFailure(gpa, &runner, trace);
     }
     if (dry_run) {
         defer gpa.free(json);
@@ -250,6 +250,16 @@ fn execute(
     }
     if (reservation) |*r| r.commit();
     return .{ .result = json };
+}
+
+/// The runner's failure; when it is a step's own failure, its data names
+/// that step (`step`, the telemetry name: e.g. "navigate",
+/// "waitFor_signed_in", "waitFor_story_media").
+fn takeFailure(gpa: std.mem.Allocator, runner: *flow_runner.Runner, trace: *const Trace) error{OutOfMemory}!engine_mod.Outcome {
+    const failed = runner.failed_step;
+    const outcome = try runner.takeFailure();
+    if (failed == null or failed != trace.error_step_index) return outcome;
+    return flow_runner.withFailedStep(gpa, outcome, trace.error_step_buf[0..trace.error_step_len]);
 }
 
 /// `options` of a flow request: absent -> false; `{"dry_run": bool}` (no

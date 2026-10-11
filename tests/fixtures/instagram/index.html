@@ -28,6 +28,9 @@
            /stories/decoy.user/      the same viewer plus a second viewer-shaped
                                      Next outside <main> (a carousel); clicks
                                      recorded in window.__ig.decoyNext
+           /stories/nonav.user/      the viewer, but the page has no navigation
+                                     (no Home icon, no inbox link), as a story
+                                     opened directly may have (unverified)
            /stories/gate.user/       no viewer yet: a "View story" button (a
                                      click that would mark the story seen;
                                      shape UNVERIFIED live), its click recorded
@@ -80,7 +83,9 @@
           main.innerHTML = '<form><input name="username"><input name="password" type="password"></form><a href="/accounts/login/">Log in</a>';
           return;
         }
-        nav.innerHTML = '<a href="/">' + icon('Home') + '</a> <a href="/direct/inbox/">Messages</a>';
+        // A story opened directly may have no navigation (no Home icon, no
+        // inbox link): suspected live, 2026-10-11 dry run.
+        if (path !== '/stories/nonav.user/') nav.innerHTML = '<a href="/">' + icon('Home') + '</a> <a href="/direct/inbox/">Messages</a>';
 
         var m;
         if ((m = path.match(/^\/stories\/([A-Za-z0-9._]+)\/$/))) {

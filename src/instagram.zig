@@ -164,6 +164,12 @@ pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username
         try runner.notFound("instagram_story_viewer_unverified");
         return null;
     }
+    // Viewing would need a click that marks the story seen: never click it.
+    const gates = (try flow.countMatches(gpa, runner, selectors.story_view_gate)) orelse return null;
+    if (gates > 0) {
+        try runner.notFound("instagram_story_view_needs_click");
+        return null;
+    }
     return viewStoryFrames(gpa, runner, s, username);
 }
 

@@ -365,7 +365,19 @@ delete the file.
 - Each call is one command, like `x.*`: other page commands wait until it
   has finished, and the whole flow has 120 s
   (`linkedin_flow_deadline` / `instagram_flow_deadline`). The flows that
-  type text take `timeout_ms` (1 to 600000) for long texts.
+  type text take `timeout_ms` (1 to 600000) for long texts. Opening the
+  page may take up to 60 s on LinkedIn (a cold profile load took longer
+  than 30 s on the live site) and 30 s on Instagram; past that the call
+  fails with -32007 `navigation_timeout`.
+- **Which step failed.** When a call fails on one of its own steps, the
+  error's `data.step` names that step, with the same name the trace uses:
+  the command, then the selector table entry it waited for or acted on.
+  Examples: `navigate` (opening the page), `waitFor_signed_in` (the page
+  never showed a signed-in account), `url` (reading where the page
+  landed), `waitFor_story_media` (the story's video or picture never
+  appeared), `query_story_next`, `click_follow_button`. An error the flow
+  raises itself (such as `linkedin_profile_action_missing`), a platform
+  stop sign (-32010), the flow deadline and a cancellation have no `step`.
 - Logged in means the site's session cookie is in the profile (`li_at` for
   LinkedIn, `sessionid` for Instagram). Without it the call fails with
   -32011 `logged_out` before anything is opened. After opening the page the
@@ -403,6 +415,10 @@ delete the file.
   so it opens the profile, checks it as above, then stops before any click
   with -32001 `linkedin_profile_owner_unverified`. `linkedin.message` with
   `conversationUrl` works as before.
+- **`instagram.story_view` never clicks "View story".** If a "View story"
+  button stands in front of the viewer (viewing would need a click that
+  marks the story seen), the call stops before it with -32001
+  `instagram_story_view_needs_click`. That button has not been seen live.
 - **`instagram.story_view` uses only the story viewer's own controls.**
   It opens `/stories/<username>/` and checks the page is that user's story
   on Instagram. Without active stories Instagram shows the profile

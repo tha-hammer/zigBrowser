@@ -51,6 +51,12 @@ pub const Runner = struct {
     /// An action or navigation ran since the last clean scan.
     scan_due: bool = false,
     clean_scans: u32 = 0,
+    /// Steps run so far (the observer sees each one, in the same order).
+    steps: u32 = 0,
+    /// The index of the step whose own failure the runner holds; null when
+    /// the held failure came from elsewhere (the flow's own refusal, an
+    /// unusable answer, a platform signal, the budget, a cancellation).
+    failed_step: ?u32 = null,
 
     pub fn run(self: *Runner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         // No step starts without budget; a waitFor also needs room for the
@@ -71,6 +77,8 @@ pub const Runner = struct {
             clamped = try clampTimeouts(self.gpa, params_json, self.remainingMs());
         }
         const started = self.ext.nowMs();
+        const index = self.steps;
+        self.steps += 1;
         const outcome = try self.ext.runCommand(self.gpa, method, clamped orelse params_json);
         if (self.observer) |o| o.on_step(o.ctx, method, params_json, outcome == .result, self.ext.nowMs() -| started);
         switch (outcome) {
@@ -95,6 +103,7 @@ pub const Runner = struct {
             },
             .failure => {
                 self.setFailure(outcome);
+                self.failed_step = index;
                 // A step that failed on a challenge or limit page: report that
                 // (otherwise the step's own failure stands). Never after a
                 // cancellation: no page work once the command is cancelled.
@@ -241,6 +250,7 @@ pub const Runner = struct {
     fn setFailure(self: *Runner, outcome: engine_mod.Outcome) void {
         self.clearFailure();
         self.failure = outcome;
+        self.failed_step = null;
     }
 
     fn clearFailure(self: *Runner) void {
@@ -309,6 +319,29 @@ pub fn withRouteChecks(gpa: std.mem.Allocator, result_json: []const u8, clean_sc
         else => return gpa.dupe(u8, result_json),
     }
     return std.json.Stringify.valueAlloc(gpa, parsed.value, .{});
+}
+
+/// `outcome` with `"step": step` added to its failure data (a JSON object;
+/// anything else is left as it is).
+pub fn withFailedStep(gpa: std.mem.Allocator, outcome: engine_mod.Outcome, step: []const u8) error{OutOfMemory}!engine_mod.Outcome {
+    var failure = switch (outcome) {
+        .failure => |f| f,
+        .result => return outcome,
+    };
+    const data_json = failure.data_json orelse return outcome;
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, data_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return outcome,
+    };
+    defer parsed.deinit();
+    switch (parsed.value) {
+        .object => |*o| try o.put(parsed.arena.allocator(), "step", .{ .string = step }),
+        else => return outcome,
+    }
+    const updated = try std.json.Stringify.valueAlloc(gpa, parsed.value, .{});
+    gpa.free(data_json);
+    failure.data_json = updated;
+    return .{ .failure = failure };
 }
 
 /// `params_json` with its `timeout_ms` and `options.timeout_ms` lowered to

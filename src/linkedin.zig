@@ -212,7 +212,9 @@ pub const max_query_chars = 200;
 /// `searchType` values and their /search/results/<path>/ segment.
 pub const search_types = [_][]const u8{ "people", "companies", "jobs", "content", "all" };
 
-const navigate_timeout_ms = 30_000;
+/// A cold profile load on the live site took more than 30 s (live dry run,
+/// 2026-10-11); the flow's budget still bounds it.
+const navigate_timeout_ms = 60_000;
 const page_ready_timeout_ms = 15_000;
 const click_timeout_ms = 10_000;
 const confirm_timeout_ms = 15_000;

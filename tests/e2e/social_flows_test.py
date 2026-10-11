@@ -319,7 +319,25 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
         raise AssertionError(f"ig story gate: no stop reason: {gate['checks']}")
     expect_equal("ig story gate: View story never clicked", zb.page.evaluate("window.__ig.events")["result"], [])
     expect_equal("dry runs count nothing", zb.social.rate_status()["remaining_actions"], remaining)
+    # The real story_view refuses the "View story" button too.
+    expect_error("ig story behind a View story button (real)", lambda: zb.instagram.story_view("gate.user"), -32001, "instagram_story_view_needs_click")
+    expect_equal("ig story gate (real): View story never clicked", zb.page.evaluate("window.__ig.events")["result"], [])
     passed.append("dry-run")
+
+    # A failed flow says which step failed (data.step). A story page with no
+    # navigation has no signed-in marker: the wait for it times out.
+    for label, call in (
+        ("dry run", lambda: zb.instagram.story_view("nonav.user", dry_run=True)),
+        ("real", lambda: zb.instagram.story_view("nonav.user")),
+    ):
+        err = expect_error(f"ig story without the nav ({label})", call, -32001, "timeout")
+        expect_equal(f"ig story without the nav ({label}): step", err.diagnostics.get("step"), "waitFor_signed_in")
+        expect_equal(
+            f"ig story without the nav ({label}): nothing clicked",
+            (page_input(), zb.page.evaluate("window.__ig.frames")["result"]),
+            ([], [1]),
+        )
+    passed.append("failed-step")
 
     # Platform URLs only.
     expect_error("off-platform URL", lambda: zb.linkedin.visit("https://evil.example/in/sam/"), -32602)

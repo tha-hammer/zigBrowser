@@ -172,16 +172,21 @@ test "story_view (on): opens /stories/<username>/, checks it is that user's stor
     var fixture_site = instagram.site;
     fixture_site.fixture_origin = "http://127.0.0.1:9";
     // One Next, after which the viewer closes (back on the profile).
-    var runner = FakeRunner{ .urls = &.{ story_page, story_page, "{\"url\":\"http://127.0.0.1:9/sam.example/\"}" } };
+    var runner = FakeRunner{
+        .urls = &.{ story_page, story_page, "{\"url\":\"http://127.0.0.1:9/sam.example/\"}" },
+        .rules = &.{.{ .method = "dom.query", .contains = "View story", .result = "{\"elements\":[]}" }},
+    };
     defer runner.deinit();
     const result = (try instagram.storyView(gpa, &runner, fixture_site, "sam.example")).?;
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"ok\":true,\"framesViewed\":1}", result);
-    // Whose story it is is checked before Next is counted and clicked.
-    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "page.url", "dom.waitFor", "page.url", "dom.query", "dom.click", "page.url" });
+    // No "View story" button in front; whose story it is is checked before
+    // Next is counted and clicked.
+    try expectMethods(&runner, &.{ "page.navigate", "dom.waitFor", "page.url", "dom.query", "dom.waitFor", "page.url", "dom.query", "dom.click", "page.url" });
     try expectSelector(&runner, 0, "http://127.0.0.1:9/stories/sam.example/");
-    try expectSelector(&runner, 3, instagram.selectors.story_media);
-    try expectSelector(&runner, 6, instagram.selectors.story_next);
+    try expectSelector(&runner, 3, instagram.selectors.story_view_gate);
+    try expectSelector(&runner, 4, instagram.selectors.story_media);
+    try expectSelector(&runner, 7, instagram.selectors.story_next);
 
     // Another user's stories (a redirect) are not the requested viewer.
     var other = FakeRunner{ .start_url = "{\"url\":\"http://127.0.0.1:9/stories/riley.sample/\"}" };
@@ -553,4 +558,16 @@ test "dry run story_view fails closed like the real flow: not the user's story, 
     try std.testing.expect(std.mem.indexOf(u8, result, "\"target\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"next\",\"result\":\"pass\",\"count\":0,\"reason\":\"no Next: the real flow views one frame and stops\"}") != null);
     try expectNoInput(&single);
+}
+
+test "story_view (real) stops before a \"View story\" button too: instagram_story_view_needs_click, nothing clicked, no frame viewed" {
+    var fixture_site = instagram.site;
+    fixture_site.fixture_origin = "http://127.0.0.1:9";
+    var r = FakeRunner{ .urls = &.{story_page}, .rules = &.{.{ .method = "dom.query", .contains = "View story", .result = button_box }} };
+    defer r.deinit();
+    try std.testing.expect((try instagram.storyView(gpa, &r, fixture_site, "sam.example")) == null);
+    try std.testing.expectEqualStrings("instagram_story_view_needs_click", r.not_found.?);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "dom.query" });
+    try expectSelector(&r, 3, instagram.selectors.story_view_gate);
+    try std.testing.expectEqual(@as(u64, 0), r.now_ms);
 }

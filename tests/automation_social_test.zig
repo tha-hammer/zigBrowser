@@ -599,7 +599,8 @@ test "a long flow (story_view, hundreds of step spans) keeps its compound span a
     var h: Harness = undefined;
     h.init();
     defer h.deinit();
-    h.fake.eval_replies = &.{flow_ok};
+    // Signed in; no "View story" button; then every answer is one element.
+    h.fake.eval_replies = &.{ flow_ok, no_elements, flow_ok };
     // The viewer never closes: frames until the budget runs low.
     h.fake.current_url = "https://www.instagram.com/stories/ada/1/";
     h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 5 });
@@ -1064,6 +1065,109 @@ test "options: only {dry_run: bool} and only on the ten acting flows; anything e
     var real = try f.call("instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"options\":{\"dry_run\":false}}");
     defer real.deinit(gpa);
     try std.testing.expectEqualStrings("{\"ok\":true}", real.result);
+}
+
+// ---- Which step failed (live dry runs, 2026-10-11) ----
+
+const wait_timeout = fakes.EvalReply{ .json = "{\"ok\":false,\"error\":\"element_not_found\",\"retryable\":false,\"data\":{\"reason\":\"timeout\"}}" };
+const no_elements = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"elements\":[]}}" };
+
+fn dataField(outcome: engine.Outcome, key: []const u8) !?[]u8 {
+    const data = try std.json.parseFromSlice(std.json.Value, gpa, outcome.failure.data_json.?, .{});
+    defer data.deinit();
+    const value = data.value.object.get(key) orelse return null;
+    return try gpa.dupe(u8, value.string);
+}
+
+fn expectStep(outcome: engine.Outcome, step: ?[]const u8) !void {
+    if (outcome != .failure) return error.TestUnexpectedResult;
+    const got = try dataField(outcome, "step");
+    defer if (got) |g| gpa.free(g);
+    if (step) |want| {
+        try std.testing.expectEqualStrings(want, got orelse return error.TestExpectedStep);
+    } else try std.testing.expect(got == null);
+}
+
+test "a failed flow names the step that failed in data.step: the signed-in wait (a story page without the nav, live dry run)" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.navigate_sets_url = true;
+    // The signed-in marker never appears and there is no login link either.
+    f.h.fake.eval_replies = &.{ wait_timeout, no_elements };
+    var outcome = try f.call("instagram.story_view", "{\"username\":\"sam\",\"options\":{\"dry_run\":true}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32001), outcome.failure.code);
+    const reason = (try dataField(outcome, "reason")).?;
+    defer gpa.free(reason);
+    try std.testing.expectEqualStrings("timeout", reason);
+    try expectStep(outcome, "waitFor_signed_in");
+}
+
+test "data.step: the story media wait; a navigation timeout; nothing stale when the flow itself refuses" {
+    {
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.fake.navigate_sets_url = true;
+        // Signed in; no "View story" button; the media never appears.
+        f.h.fake.eval_replies = &.{ flow_ok, no_elements, wait_timeout };
+        var outcome = try f.call("instagram.story_view", "{\"username\":\"sam\",\"options\":{\"dry_run\":true}}");
+        defer outcome.deinit(gpa);
+        try expectStep(outcome, "waitFor_story_media");
+    }
+    {
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.fake.navigate_result = error.Timeout;
+        var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\",\"options\":{\"dry_run\":true}}");
+        defer outcome.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32007), outcome.failure.code);
+        try expectStep(outcome, "navigate");
+    }
+    {
+        // A failed step, then the flow's own refusal: the refusal has no step.
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.fake.navigate_sets_url = true;
+        f.h.fake.current_title = "Sam Example | LinkedIn";
+        f.h.fake.eval_replies = &.{ flow_ok, wait_timeout, no_elements };
+        var outcome = try f.call("linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\"}");
+        defer outcome.deinit(gpa);
+        const reason = (try dataField(outcome, "reason")).?;
+        defer gpa.free(reason);
+        try std.testing.expectEqualStrings("linkedin_profile_action_missing", reason);
+        try expectStep(outcome, null);
+    }
+    {
+        // A platform signal found after a failed step: no step either.
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        f.h.fake.scan_replies = &.{ .{ .json = fakes.clean_scan }, .{ .json = fakes.detectedScan("challenge", "instagram") } };
+        f.h.fake.eval_replies = &.{wait_timeout};
+        var outcome = try f.call("instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\"}");
+        defer outcome.deinit(gpa);
+        try expectRateLimited(outcome, "challenge", "instagram");
+        try expectStep(outcome, null);
+    }
+}
+
+test "LinkedIn flows give page.navigate 60 s (a cold profile load took more than 30 s live); Instagram keeps 30 s" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.navigate_sets_url = true;
+    f.h.fake.current_title = "Sam Example | LinkedIn";
+    var li = try f.call("linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\",\"options\":{\"dry_run\":true}}");
+    defer li.deinit(gpa);
+    try std.testing.expect(li == .result);
+    try std.testing.expectEqual(@as(u64, 60_000), f.h.fake.navigate_timeouts.items[0]);
+    var ig = try f.call("instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"options\":{\"dry_run\":true}}");
+    defer ig.deinit(gpa);
+    try std.testing.expectEqual(@as(u64, 30_000), f.h.fake.navigate_timeouts.items[1]);
 }
 
 // ---- N21: pacing state persists across restarts ----
