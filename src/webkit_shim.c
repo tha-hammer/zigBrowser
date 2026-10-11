@@ -119,6 +119,7 @@ struct ZbWindow {
    * shown, listed or answerable by anyone else; only its answer (or the
    * window closing) closes it. */
   WebKitScriptDialog *policy_dialog;
+  struct ZbAutoJob *policy_job; /* the navigate that owns it (ref) */
 };
 
 struct ZbApp {
@@ -3976,28 +3977,30 @@ static int auto_window_blocked(ZbWindow *win) {
   return 0;
 }
 
-/* Answers and closes `win`'s policy-owned prompt; a DISMISS load ends once
- * it is closed (an ACCEPT load goes on to its load events). */
+/* Answers and closes `win`'s policy-owned prompt. It leaves only for an
+ * ACCEPT whose navigate is still waiting: once that caller gave up (or the
+ * window is closing) the page stays, so nothing navigates after a timeout.
+ * The owning load then either goes on to its load events (it left) or ends
+ * now, DIALOG_DISMISSED when its caller still waits. */
 static void auto_policy_dialog_close(ZbWindow *win, int accept) {
   if (win == NULL || win->policy_dialog == NULL) {
     return;
   }
   WebKitScriptDialog *dialog = win->policy_dialog;
+  ZbAutoJob *owner = win->policy_job;
   win->policy_dialog = NULL;
-  webkit_script_dialog_confirm_set_confirmed(dialog, accept != 0);
+  win->policy_job = NULL;
+  int leave = accept && owner != NULL && auto_job_running(owner);
+  webkit_script_dialog_confirm_set_confirmed(dialog, leave);
   webkit_script_dialog_close(dialog);
   webkit_script_dialog_unref(dialog);
-  GList *link = zb_auto_inflight;
-  while (!accept && link != NULL) {
-    GList *next = link->next;
-    ZbAutoJob *job = (ZbAutoJob *)link->data;
-    if (job->target == win && auto_is_load(job) && job->before_unload == ZB_BEFORE_UNLOAD_DISMISS) {
-      job->target = NULL;
-      auto_job_complete(job, ZB_AUTO_ERR_DIALOG_DISMISSED, NULL, g_strdup("the page asked and stayed"));
-      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
-      auto_job_unref(job);
-    }
-    link = next;
+  if (owner != NULL && !leave && owner->target == win) {
+    owner->target = NULL;
+    auto_job_complete(owner, ZB_AUTO_ERR_DIALOG_DISMISSED, NULL, g_strdup("the page asked and stayed"));
+    auto_untrack(owner);
+  }
+  if (owner != NULL) {
+    auto_job_unref(owner);
   }
 }
 
@@ -4011,11 +4014,11 @@ typedef struct {
   int accept;
 } ZbDialogAnswer;
 
-static guint zb_auto_debug_policy_hold_ms;
+static gint zb_auto_debug_policy_hold_ms;
 static gint zb_auto_debug_policy_scheduled;
 
 void zb_automation_debug_dialog_policy_hold(unsigned int ms) {
-  g_atomic_int_set((gint *)&zb_auto_debug_policy_hold_ms, (gint)ms);
+  g_atomic_int_set(&zb_auto_debug_policy_hold_ms, (gint)ms);
 }
 
 int zb_automation_debug_dialog_policy_scheduled(void) {
@@ -4033,16 +4036,15 @@ static gboolean auto_dialog_answer_later(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
-/* The beforeunload policy of the load the automation is waiting for on
- * `win` (FAIL when there is none). */
-static int auto_load_policy(ZbWindow *win) {
+/* The load the automation is waiting for on `win`, if any. */
+static ZbAutoJob *auto_load_job(ZbWindow *win) {
   for (GList *link = zb_auto_inflight; link != NULL; link = link->next) {
     ZbAutoJob *job = (ZbAutoJob *)link->data;
     if (job->target == win && auto_is_load(job)) {
-      return job->before_unload;
+      return job;
     }
   }
-  return ZB_BEFORE_UNLOAD_FAIL;
+  return NULL;
 }
 
 static int auto_is_native(const ZbAutoJob *job) {
@@ -4077,7 +4079,7 @@ static void auto_dialog_opened(ZbWindow *win) {
     }
     int blocked = related && (job->op == ZB_OP_EVAL || auto_is_load(job) ||
                               job->op == ZB_OP_SCREENSHOT || auto_is_native(job));
-    int owned = target == win && auto_is_load(job) && win->policy_dialog != NULL;
+    int owned = job == win->policy_job;
     if (blocked && !owned) {
       job->target = NULL;
       auto_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, g_strdup("a page dialog opened"));
@@ -4095,19 +4097,21 @@ static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog 
   if (win == NULL || win->gtk_window == NULL || win->dialog != NULL || win->policy_dialog != NULL) {
     return FALSE; /* not expected (one blocked page shows one dialog): WebKit's own */
   }
-  int policy = webkit_script_dialog_get_dialog_type(dialog) == WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM
-                   ? auto_load_policy(win)
-                   : ZB_BEFORE_UNLOAD_FAIL;
+  ZbAutoJob *load = webkit_script_dialog_get_dialog_type(dialog) == WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM
+                        ? auto_load_job(win)
+                        : NULL;
+  int policy = load != NULL ? load->before_unload : ZB_BEFORE_UNLOAD_FAIL;
   if (policy != ZB_BEFORE_UNLOAD_FAIL) {
     /* The navigate's policy owns it: answered from the main loop, never
-     * exposed in between. */
+     * exposed in between, and bound to that navigate. */
     win->policy_dialog = webkit_script_dialog_ref(dialog);
+    win->policy_job = auto_job_ref(load);
     auto_dialog_opened(win);
     ZbDialogAnswer *later = g_new0(ZbDialogAnswer, 1);
     later->window = win->auto_id;
     later->dialog = webkit_script_dialog_ref(dialog);
     later->accept = policy == ZB_BEFORE_UNLOAD_ACCEPT;
-    guint hold = (guint)g_atomic_int_get((gint *)&zb_auto_debug_policy_hold_ms);
+    guint hold = (guint)g_atomic_int_get(&zb_auto_debug_policy_hold_ms);
     if (hold > 0) {
       g_timeout_add(hold, auto_dialog_answer_later, later);
     } else {

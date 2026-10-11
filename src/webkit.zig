@@ -3254,6 +3254,7 @@ const dialog_page_a =
 const dialog_page_b =
     \\<!doctype html><html><head><title>B</title></head><body>
     \\<button id="b" style="position:fixed;left:20px;top:20px;width:100px;height:60px">b</button>
+    \\<input type="file" id="f" style="position:fixed;left:20px;top:120px">
     \\<script>window.trusted = 0;
     \\document.getElementById('b').addEventListener('click', (e) => { if (e.isTrusted) window.trusted += 1; });</script>
     \\</body></html>
@@ -3262,7 +3263,35 @@ const dialog_page_b =
 const DialogPolicyDriver = struct {
     uri_a: [:0]const u8,
     uri_b: [:0]const u8,
+    /// A readable file for set-files.
+    path_a: [:0]const u8,
     failures: u32 = 0,
+
+    const files_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
+
+    fn hasDialog(self: *DialogPolicyDriver, needle: []const u8) bool {
+        _ = self;
+        var out: [*c]u8 = null;
+        defer c.zb_automation_free(out);
+        if (c.zb_automation_list_dialogs(5000, &out) != c.ZB_AUTO_OK or out == null) return false;
+        const text = std.mem.span(out);
+        return if (needle.len == 0) std.mem.eql(u8, text, "[]") else std.mem.indexOf(u8, text, needle) != null;
+    }
+
+    /// Every job started since `before` was released (none lingers).
+    fn drained(self: *DialogPolicyDriver, before: c_int) bool {
+        _ = self;
+        var waited: u32 = 0;
+        while (c.zb_automation_debug_live_jobs() > before and waited < 3000) : (waited += 10) sleepMs(10);
+        return c.zb_automation_debug_live_jobs() <= before;
+    }
+
+    fn pageString(self: *DialogPolicyDriver, body: [*:0]const u8, want: []const u8) bool {
+        _ = self;
+        var out: [*c]u8 = null;
+        defer c.zb_automation_free(out);
+        return c.zb_automation_eval_json(0, body, null, null, 5000, &out, null) == c.ZB_AUTO_OK and out != null and std.mem.eql(u8, std.mem.span(out), want);
+    }
 
     fn check(self: *DialogPolicyDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
@@ -3328,6 +3357,21 @@ const DialogPolicyDriver = struct {
         self.check(self.raced(c.ZB_BEFORE_UNLOAD_DISMISS, 1) == c.ZB_AUTO_ERR_DIALOG_DISMISSED, "dismiss ends DIALOG_DISMISSED even though someone tried Leave");
         self.check(self.titleIs("A"), "dismiss stayed on A");
 
+        // A navigate whose caller gives up before its held "accept": the page
+        // stays (nothing navigates after the timeout), no prompt remains and
+        // every job drains.
+        const late_jobs = c.zb_automation_debug_live_jobs();
+        const late_scheduled = c.zb_automation_debug_dialog_policy_scheduled();
+        var late_err: [*c]u8 = null;
+        const late_rc = c.zb_automation_navigate_guarded(0, self.uri_b.ptr, c.ZB_BEFORE_UNLOAD_ACCEPT, 150, &late_err);
+        c.zb_automation_free(late_err);
+        self.check(late_rc == c.ZB_AUTO_ERR_TIMEOUT, "a navigate that gives up before its held accept times out");
+        self.check(c.zb_automation_debug_dialog_policy_scheduled() == late_scheduled + 1, "the policy had taken that prompt");
+        sleepMs(800);
+        self.check(self.titleIs("A"), "the held accept did not leave after its caller gave up");
+        self.check(self.hasDialog(""), "no prompt remains after the held answer");
+        self.check(self.drained(late_jobs), "the abandoned navigate's job drains");
+
         self.check(self.raced(c.ZB_BEFORE_UNLOAD_ACCEPT, 0) == c.ZB_AUTO_OK, "accept leaves even though someone tried Stay");
         self.check(self.titleIs("B"), "accept reached B");
 
@@ -3351,6 +3395,44 @@ const DialogPolicyDriver = struct {
         var trusted: [*c]u8 = null;
         self.check(c.zb_automation_eval_json(0, "return String(window.trusted);", null, null, 5000, &trusted, null) == c.ZB_AUTO_OK and trusted != null and std.mem.eql(u8, std.mem.span(trusted), "0"), "no trusted click reached the page");
         c.zb_automation_free(trusted);
+
+        // A dialog that opens between a full-page capture's measure and its
+        // capture: DIALOG_OPEN with no PNG, and the capture never resumes.
+        const shot_jobs = c.zb_automation_debug_live_jobs();
+        c.zb_automation_debug_shot_after_measure("alert('mid-capture')");
+        var png: [*c]u8 = null;
+        var png_len: usize = 0;
+        var png_w: c_int = 0;
+        var png_h: c_int = 0;
+        var shot_err: [*c]u8 = null;
+        const shot_rc = c.zb_screenshot_png(0, 1, 16 * 1024 * 1024, 5000, &png, &png_len, &png_w, &png_h, &shot_err);
+        c.zb_automation_free(shot_err);
+        c.zb_automation_debug_shot_after_measure(null);
+        self.check(shot_rc == c.ZB_AUTO_ERR_DIALOG_OPEN and png == null, "a capture interrupted by a dialog is DIALOG_OPEN with no PNG");
+        if (png != null) c.zb_automation_free(png);
+        self.check(self.hasDialog("mid-capture"), "the capture's alert is listed");
+        self.check(c.zb_automation_respond_dialog(0, 1, null, 5000) == c.ZB_AUTO_OK, "answer the capture's alert");
+        self.check(self.drained(shot_jobs), "the interrupted capture's job drains");
+
+        // A dialog that opens after a set-files job is tracked and before its
+        // op: DIALOG_OPEN; once answered, the op's click opens a chooser that
+        // is cancelled (the job is no longer running): no file is applied.
+        const late_cancels = c.zb_automation_debug_files_late_cancels();
+        c.zb_automation_debug_files_preclick("alert('mid-choose')");
+        const paths = [_][*:0]const u8{self.path_a.ptr};
+        var files_out: [*c]u8 = null;
+        var files_err: [*c]u8 = null;
+        const files_rc = c.zb_set_input_files(0, files_body, "{\"op\":\"chooseFiles\",\"selector\":\"css=#f\",\"count\":1}", @ptrCast(&paths), 1, 5000, &files_out, &files_err);
+        c.zb_automation_free(files_out);
+        c.zb_automation_free(files_err);
+        c.zb_automation_debug_files_preclick(null);
+        self.check(files_rc == c.ZB_AUTO_ERR_DIALOG_OPEN, "set-files interrupted by a dialog is DIALOG_OPEN");
+        self.check(self.hasDialog("mid-choose"), "the set-files alert is listed");
+        self.check(c.zb_automation_respond_dialog(0, 1, null, 5000) == c.ZB_AUTO_OK, "answer the set-files alert");
+        var waited: u32 = 0;
+        while (c.zb_automation_debug_files_late_cancels() == late_cancels and waited < 5000) : (waited += 10) sleepMs(10);
+        self.check(c.zb_automation_debug_files_late_cancels() == late_cancels + 1, "the late chooser was cancelled");
+        self.check(self.pageString("return String(document.getElementById('f').files.length);", "0"), "no file was applied");
     }
 };
 
@@ -3372,7 +3454,7 @@ test "a navigate's beforeunload policy owns the prompt: no other answer can race
     const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
     defer gfile.g_free(raw_b);
     const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
-    var driver: DialogPolicyDriver = .{ .uri_a = uri_a, .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+    var driver: DialogPolicyDriver = .{ .uri_a = uri_a, .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)), .path_a = path_a };
 
     gtk_port.installScript();
     defer c.zb_automation_set_script(null, 0);
