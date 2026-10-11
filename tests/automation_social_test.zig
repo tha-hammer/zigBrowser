@@ -1185,6 +1185,19 @@ test "data.step for the More-menu Connect: the owner's visible More copy (by pos
     }
 }
 
+test "data.step: a step that was cancelled is -32012 with no step (RoseCat 5149); the flow stops there" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.navigate_result = error.Cancelled;
+    var outcome = try f.call("linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+    try expectStep(outcome, null);
+    // Nothing ran after the cancelled step.
+    try std.testing.expectEqual(@as(usize, 0), f.h.fake.eval_calls.items.len);
+}
+
 test "LinkedIn flows give page.navigate 60 s (a cold profile load took more than 30 s live); Instagram keeps 30 s" {
     var f: FlowHarness = undefined;
     f.init();

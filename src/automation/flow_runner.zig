@@ -109,6 +109,8 @@ pub const Runner = struct {
                 // cancellation: no page work once the command is cancelled.
                 const cancelled_step = outcome.failure.code == errors.downstreamCode(.cancelled);
                 // A cancelled step stops the flow: no fallback probe either.
+                // A cancellation is not the step's own failure: no step.
+                if (cancelled_step) self.failed_step = null;
                 if (cancelled_step or self.ext.cancelled()) {
                     self.expired = true;
                     return null;
