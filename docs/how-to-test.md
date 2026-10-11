@@ -58,3 +58,58 @@ Slice 2 protocol checks:
 - helper-PID tracking while process is alive, then exact-PID exit assertion on shutdown
 
 If required tools are missing (binary, Pillow, display/xvfb), the harness exits with code `77` and a loud skip reason on stderr.
+
+## Node SDK live test (opt-in)
+
+`sdk/node/tests/live.test.ts` drives the real binary through the Node SDK.
+It runs only when `ZB_BINARY` is set and `python3`, `Xvfb` and `xauth` are
+installed (after `npm ci` in `sdk/node`):
+
+```bash
+cd sdk/node && ZB_BINARY=../../zig-out/bin/zigBrowser npx vitest run tests/live.test.ts
+```
+
+It starts the browser through `tests/e2e/xsession.py` on a private Xvfb
+display, never your `DISPLAY`, and tears down the browser's whole process
+group. If the vitest run is killed, the launcher's guardian ends the browser
+and removes the display. `tests/e2e/node_live_group_test.py --binary
+zig-out/bin/zigBrowser` checks that: while the browser is up, it SIGKILLs
+the whole vitest run (the main process and its workers, not the browser) and
+expects no zigBrowser, WebKit helper or Xvfb from it to remain, and no
+display lock or socket. The old live test, which started the browser
+directly, left the browser and its helpers running. Neither runs in `zig build test`; both exit `77` (skip)
+when a tool is missing.
+
+## Known issues with WebKitGTK 2.54.0
+
+The host moved from WebKitGTK 2.52.6 to 2.54.0 (`2.54.0-1~deb13u2`) on
+2026-10-11. Gates run on 2.54.0 from then on; treat a new failure as possible
+upgrade fallout.
+
+- **Native hover and the `automation-scroll` e2e: fixed in `53b5c66`.** On
+  2.54.0, `automation-scroll` failed every time with "hover moved away:
+  expected False, got True". A native mouse move was reported done before the
+  page had received it, and 2.54.0 delivers moves later, so the page's next
+  evaluation could run first. `53b5c66` makes a native hover wait until the
+  page has the final move (PagePort `settlePointer`). The reviewer's clean
+  gate at `53b5c66` passed 88/88 steps, including `automation-scroll` and
+  `native-hover`. Its follow-up `6f90a1a` makes a page that is replaced while
+  the hover waits fail with `document_changed` instead of succeeding (review
+  5052, closed).
+- **YouTube watch page goes blank (open, cc_1).** On the live NVIDIA/X11
+  desktop, a YouTube watch page opened as a popup showed its poster, then the
+  window went blank, while the page itself still loaded and answered. The live
+  log shows NVIDIA buffer-allocation errors (`nv_gbm_create_device`,
+  `DRM_IOCTL_MODE_CREATE_DUMB ... Permission denied`) even though every view
+  uses hardware-acceleration policy `NEVER`. 2.54.0 no longer crashes the
+  browser there, but on Xvfb the popup's web process is lost: the window
+  stays black and `page.evaluate` there fails with -32603. Since `1c4d0d8`
+  that loss is reported: stderr says `zigBrowser: window <n>: web process
+  terminated (<reason>)` and `page.list` shows `"crashed": "<reason>"` for
+  the window. The same commit adds `--hardware-acceleration` and
+  `--renderer` (see `docs/how-to-run.md`) to try other rendering settings;
+  the default is unchanged. The diagnosis, and the opt-in qualification test
+  to add, are in
+  `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
+  ("Live YouTube blank-window investigation"). Do not change the default
+  without testing on the real NVIDIA display.
