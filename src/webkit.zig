@@ -16,9 +16,10 @@ pub fn runOpen(uri_z: [:0]const u8, print_title: bool) i32 {
     return c.zb_run_open(uri_z.ptr, if (print_title) 1 else 0);
 }
 
-pub fn runScreenshot(uri_z: [:0]const u8, out_z: [:0]const u8, print_title: bool, render: render_config.RenderConfig) i32 {
+pub fn runScreenshot(uri_z: [:0]const u8, out_z: [:0]const u8, print_title: bool, render: render_config.RenderConfig, media_source: ?media_config.MediaSource) i32 {
     preferHttp1();
     applyRender(render);
+    applyMediaSource(media_source);
     return c.zb_run_screenshot(uri_z.ptr, out_z.ptr, if (print_title) 1 else 0);
 }
 
@@ -60,12 +61,37 @@ pub fn applyRender(cfg: render_config.RenderConfig) void {
     }
 }
 
+/// Applies the startup media setting (media_config.zig): `flag`
+/// (--media-source), else ZIGBROWSER_MEDIA_SOURCE, else on. Every window
+/// created from now on, popups and the screenshot view included, gets it
+/// (off: "enable-mediasource" false plus a script that hides the MSE
+/// constructors, see zb_app_set_media_source). Call before zb_app_run.
+/// Prints the effective choice when it is not the default, and a variable
+/// that is not on or off.
+pub fn applyMediaSource(flag: ?media_config.MediaSource) void {
+    if (comptime builtin.os.tag != .linux) return;
+    const env = if (std.c.getenv(media_config.env_name)) |v| std.mem.span(v) else null;
+    const resolved = media_config.resolve(flag, env);
+    if (resolved.bad_env) |text| {
+        std.debug.print("zigBrowser: {s}={s} is not on or off; using {s}\n", .{ media_config.env_name, text, @tagName(resolved.value) });
+    }
+    c.zb_app_set_media_source(if (resolved.value == .on) 1 else 0);
+    if (resolved.value != media_config.default_media_source) {
+        std.debug.print("zigBrowser: media-source={s}\n", .{@tagName(resolved.value)});
+    }
+}
+
 fn policyCode(policy: render_config.HwPolicy) c_int {
     return switch (policy) {
         .never => c.ZB_HW_POLICY_NEVER,
         .always => c.ZB_HW_POLICY_ALWAYS,
         .webkit => c.ZB_HW_POLICY_WEBKIT,
     };
+}
+
+test "the shim's media setting before any startup setting is the built-in default (MSE on)" {
+    try std.testing.expectEqual(media_config.MediaSource.on, media_config.default_media_source);
+    try std.testing.expectEqual(@as(c_int, 1), c.zb_app_get_media_source());
 }
 
 test "the shim's policy before any startup setting is the built-in default" {
@@ -381,6 +407,7 @@ const StderrCapture = struct {
 
 const gtk_port = @import("automation_gtk_port.zig");
 const page_port_mod = @import("automation/page_port.zig");
+const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
 
 test {
@@ -1787,6 +1814,69 @@ test "the startup hardware-acceleration policy reaches the main window and its p
     t.join();
     try std.testing.expectEqual(@as(c_int, c.ZB_HW_POLICY_ALWAYS), driver.main_policy);
     try std.testing.expectEqual(@as(c_int, c.ZB_HW_POLICY_ALWAYS), driver.popup_policy);
+    c.zb_automation_loop_mark(1);
+}
+
+const MediaSourceDriver = struct {
+    uri_b: [:0]const u8,
+    main_enabled: c_int = -1,
+    popup_enabled: c_int = -1,
+
+    fn run(self: *MediaSourceDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
+        c.zb_automation_free(err);
+        err = null;
+        var buf: [1024]u8 = undefined;
+        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return;
+        _ = c.zb_automation_eval_json(0, open_body.ptr, null, null, 5000, null, &err);
+        c.zb_automation_free(err);
+        var waited: u32 = 0;
+        while (c.zb_automation_window_id_at(1) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        const child = c.zb_automation_window_id_at(1);
+        self.main_enabled = c.zb_automation_debug_media_source(c.zb_automation_window_id_at(0), 5000);
+        if (child != 0) self.popup_enabled = c.zb_automation_debug_media_source(child, 5000);
+    }
+};
+
+test "the startup media-source setting (off) reaches the main window and its popups" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-media-source-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    defer removeTree(dir);
+    const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_b, fixture_b.ptr, fixture_b.len, null) != 0);
+    const raw_a = gfile.g_filename_to_uri(path_a, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_a);
+    const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_b);
+    const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
+    var driver: MediaSourceDriver = .{ .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    const previous = c.zb_app_get_media_source();
+    c.zb_app_set_media_source(0);
+    defer c.zb_app_set_media_source(previous);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, MediaSourceDriver.run, .{&driver});
+    _ = c.zb_app_run(uri_a.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(c_int, 0), driver.main_enabled);
+    try std.testing.expectEqual(@as(c_int, 0), driver.popup_enabled);
     c.zb_automation_loop_mark(1);
 }
 

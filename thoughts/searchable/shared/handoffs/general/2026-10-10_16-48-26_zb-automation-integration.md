@@ -328,6 +328,8 @@ has a section for each; the section names are quoted below.
   Behaviour change 9 above has the details.
 - **`options.dry_run` on the acting flows (`7d0fa8a`, `ede6dbf`,
   `14676f3`).** See "dry_run" below.
+- **`--media-source on|off` (the Instagram media freeze follow-up).** See
+  "The Instagram media freeze" below. The default is still `on`.
 
 ### Live selector refresh (the orchestrator's read-only probes)
 
@@ -509,6 +511,26 @@ real-screen check of the committed default is done by hand by the
 orchestrator. Reviews: "Live YouTube blank-window investigation at
 `8e80655`", "Web-process diagnostics and rendering startup review
 (`1c4d0d8`)" and "Linux case-J rendering default (`ee00876`)".
+
+### The Instagram media freeze
+
+The live Instagram window froze twice. Its web process was stuck in
+WebKit's Media Source (MSE) seek, in a lock cycle with a GStreamer thread
+(WebKit bugs 320336 and 272975; no environment variable avoided it).
+Review: "Instagram media deadlock investigation" (`d87ca04`).
+
+The follow-up adds `--media-source on|off`, and `ZIGBROWSER_MEDIA_SOURCE`
+for when the flag is not given. With `off`, no page in any window, popup or
+`--screenshot` sees `MediaSource`, so sites should use plain video. The
+default stays `on` until the user decides from evidence.
+
+WebKitGTK 2.54.0 ignores its own `enable-mediasource` setting: a bare
+WebKit view with it off still runs MSE. So `off` sets the setting and also
+adds a script that runs in every frame before the page's scripts and
+deletes the MSE names. `tests/e2e/media_source_test.py` checks what pages
+see, not the setting. Whether `off` stops the freeze is for RoseCat's
+Xvfb repro to show. Whether Instagram plays video with MSE off is not
+checked live yet.
 
 ### Test harness: one launcher for every E2E browser
 

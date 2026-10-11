@@ -33,8 +33,10 @@ pub fn main(init: std.process.Init) !void {
                 "usage: zigBrowser --version\n" ++
                     "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
+                    "                  [--media-source on|off]\n" ++
                     "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n" ++
-                    "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n",
+                    "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
+                    "                  [--media-source on|off]\n",
             );
             std.process.exit(errors.exitCode(error.Usage));
         },
@@ -60,8 +62,8 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(errors.exitCode(error.WriteFailed));
             };
 
-            // The same rendering as an open window (applied before WebKit starts).
-            const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer));
+            // The same rendering and media settings as an open window (applied before WebKit starts).
+            const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer), spec.media_source);
             std.process.exit(@intCast(code));
         },
     }

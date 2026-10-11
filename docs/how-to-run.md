@@ -106,3 +106,31 @@ screen:
 Shared memory copies each frame through the CPU instead of handing GPU
 buffers over, which costs some CPU on large, fast-changing pages. The
 default lives in `default_render` in `src/render_config.zig`.
+
+## Media Source Extensions (video pages that freeze)
+
+| Switch | Values | Effect |
+|---|---|---|
+| `--media-source` | `on` (default), `off` | `off`: pages in every window, popups included, and `--screenshot` get no Media Source Extensions (`window.MediaSource`, `ManagedMediaSource` and `SourceBuffer` are undefined) |
+| `ZIGBROWSER_MEDIA_SOURCE` | `on`, `off` | Used when the flag is not given |
+
+The flag wins over the variable, and the variable wins over the default. A
+variable that is not exactly `on` or `off` is ignored, with
+`zigBrowser: ZIGBROWSER_MEDIA_SOURCE=<value> is not on or off; using on`
+on stderr. With `off`, the browser prints `zigBrowser: media-source=off`.
+
+Why: on 2026-10-11 an Instagram window froze twice. Its web process was
+stuck in WebKitGTK 2.54.0's Media Source seek, in a lock cycle with
+GStreamer (WebKit bugs 320336 and 272975; review log, "Instagram media
+deadlock investigation"). No environment variable avoided it. Sites
+that find no `MediaSource` usually play plain video files instead. The
+default stays `on` until the user decides from evidence.
+
+How: `off` sets WebKit's `enable-mediasource` setting to false. WebKitGTK
+2.54.0 ignores that setting: a bare WebKit view still runs Media Source
+with it off. So the browser also adds a script that runs in every frame
+before the page's own scripts and deletes `MediaSource`,
+`ManagedMediaSource`, `SourceBuffer`, `SourceBufferList` and
+`ManagedSourceBuffer`. A page cannot reach Media Source through an empty iframe
+either; workers have no Media Source in this WebKit. The values live in
+`src/media_config.zig`.

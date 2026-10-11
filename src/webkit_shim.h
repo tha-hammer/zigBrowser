@@ -99,6 +99,20 @@ int zb_automation_debug_hw_policy(unsigned int id, unsigned int timeout_ms);
  * default), in the same codes; -1 without the loop. */
 int zb_automation_debug_webkit_default_hw_policy(unsigned int timeout_ms);
 
+/* Media Source Extensions for every window, popups included, and the
+ * screenshot view created from now on: 1 on (the default), 0 off. Off sets
+ * WebKitSettings "enable-mediasource" FALSE and, because WebKitGTK 2.54
+ * ignores that setting, hides the MSE constructors from page script in
+ * every frame. Call before zb_app_run or zb_run_screenshot. The getter
+ * returns the current setting. */
+void zb_app_set_media_source(int enabled);
+int zb_app_get_media_source(void);
+
+/* Test hook: window `id`'s media source: 1 on (setting on, no hiding
+ * script), 0 off (setting off and the hiding script installed), 2 when the
+ * two disagree, -1 without that window or loop. */
+int zb_automation_debug_media_source(unsigned int id, unsigned int timeout_ms);
+
 /* Isolated script world shared by the injected automation script and evals. */
 #define ZB_AUTOMATION_WORLD "zigbrowser-automation"
 

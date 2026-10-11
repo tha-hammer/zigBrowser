@@ -581,6 +581,16 @@ pub fn build(b: *std.Build) void {
     });
     slow_load_watchdog_e2e.addArtifactArg(exe);
 
+    // --media-source off / ZIGBROWSER_MEDIA_SOURCE=off: pages in every window,
+    // popups and the screenshot see no MediaSource.
+    const media_source_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/media_source_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "media-source-e2e",
+    });
+    media_source_e2e.addArtifactArg(exe);
+
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
     const automation_dialogs_e2e = b.addSystemCommand(&.{
@@ -802,6 +812,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&web_process_crash_e2e.step);
     test_step.dependOn(&render_config_e2e.step);
     test_step.dependOn(&slow_load_watchdog_e2e.step);
+    test_step.dependOn(&media_source_e2e.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);

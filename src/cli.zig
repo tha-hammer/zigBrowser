@@ -1,5 +1,6 @@
 const std = @import("std");
 const config = @import("config.zig");
+const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
 
 pub const Command = union(enum) {
@@ -17,6 +18,8 @@ pub const Command = union(enum) {
         hw_policy: ?render_config.HwPolicy = null,
         /// --renderer <default|shm|mesa-egl>; null = built-in default.
         renderer: ?render_config.Renderer = null,
+        /// --media-source <on|off>; null = ZIGBROWSER_MEDIA_SOURCE, else on.
+        media_source: ?media_config.MediaSource = null,
     },
     screenshot: struct {
         url: []const u8,
@@ -27,6 +30,7 @@ pub const Command = union(enum) {
         /// Same as `open`: null = built-in default.
         hw_policy: ?render_config.HwPolicy = null,
         renderer: ?render_config.Renderer = null,
+        media_source: ?media_config.MediaSource = null,
     },
     usage,
 };
@@ -55,6 +59,7 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
     var print_title = false;
     var hw_policy: ?render_config.HwPolicy = null;
     var renderer: ?render_config.Renderer = null;
+    var media_source: ?media_config.MediaSource = null;
     var i: usize = 3;
     while (i < tokens.len) : (i += 1) {
         const token = tokens[i];
@@ -75,6 +80,12 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
             renderer = render_config.parseRenderer(tokens[i]) orelse return .usage;
             continue;
         }
+        if (std.mem.eql(u8, token, "--media-source")) {
+            i += 1;
+            if (i >= tokens.len or media_source != null) return .usage;
+            media_source = media_config.parse(tokens[i]) orelse return .usage;
+            continue;
+        }
         return .usage;
     }
 
@@ -84,6 +95,7 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
         .print_title = print_title,
         .hw_policy = hw_policy,
         .renderer = renderer,
+        .media_source = media_source,
     } };
 }
 
@@ -96,6 +108,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     var profile_dir: ?[]const u8 = null;
     var hw_policy: ?render_config.HwPolicy = null;
     var renderer: ?render_config.Renderer = null;
+    var media_source: ?media_config.MediaSource = null;
 
     var i: usize = 0;
     while (i < tokens.len) : (i += 1) {
@@ -142,6 +155,12 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
             renderer = render_config.parseRenderer(tokens[i]) orelse return .usage;
             continue;
         }
+        if (std.mem.eql(u8, token, "--media-source")) {
+            i += 1;
+            if (i >= tokens.len or media_source != null) return .usage;
+            media_source = media_config.parse(tokens[i]) orelse return .usage;
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "-")) {
             return .usage;
         }
@@ -163,6 +182,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
         .profile_dir = profile_dir,
         .hw_policy = hw_policy,
         .renderer = renderer,
+        .media_source = media_source,
     } };
 }
 
@@ -368,4 +388,24 @@ test "parseArgs --screenshot takes the same rendering flags after the URL" {
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--renderer", "shm", "--renderer", "shm" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--print-title", "--print-title" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "https://two.example" }) == .usage);
+}
+
+test "parseArgs --media-source on|off, for an open window and a screenshot; no flag leaves it to the variable and the default" {
+    const off = parseArgs(&.{ "zigBrowser", "https://example.com", "--media-source", "off" });
+    try std.testing.expectEqual(media_config.MediaSource.off, off.open.media_source.?);
+    const on = parseArgs(&.{ "zigBrowser", "--media-source", "on", "https://example.com", "--automation-api" });
+    try std.testing.expectEqual(media_config.MediaSource.on, on.open.media_source.?);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com" }).open.media_source == null);
+    const shot = parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--media-source", "off", "--print-title" });
+    try std.testing.expectEqual(media_config.MediaSource.off, shot.screenshot.media_source.?);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com" }).screenshot.media_source == null);
+}
+
+test "parseArgs --media-source errors are usage" {
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--media-source" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--media-source", "0" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--media-source", "OFF" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--media-source", "off", "--media-source", "off" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--media-source" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--media-source", "no" }) == .usage);
 }

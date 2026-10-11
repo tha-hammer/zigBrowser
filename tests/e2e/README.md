@@ -24,6 +24,11 @@ Slice 3/4 (Linux GTK now):
   the timer releases it, at 16 s at once); the never-committing related
   popup gets LOAD_FAIL without ending the shared process; a lone window
   whose load never commits still has its web process ended)
+- `media_source_test.py` (gate step: `--media-source off` and
+  `ZIGBROWSER_MEDIA_SOURCE=off` hide `MediaSource` from window 1, a
+  same-origin popup, a cross-origin noopener popup, an about:blank iframe
+  and `--screenshot`; the default and `on` keep it; the flag wins over the
+  variable; a bad variable value is reported and ignored)
 - `lifecycle_test.py` (M7 SIGINT->130<=3s)
 - `reload_test.py` (M7 GTK-only SIGHUP reload)
 

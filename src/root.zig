@@ -1,5 +1,6 @@
 const std = @import("std");
 const cli = @import("cli.zig");
+const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
 const automation_rpc = @import("automation_rpc.zig");
 const automation_transport = @import("automation_transport.zig");
@@ -13,6 +14,7 @@ const webkit = @import("webkit.zig");
 
 test "module reachability" {
     _ = cli;
+    _ = media_config;
     _ = render_config;
     _ = automation_rpc;
     _ = automation_transport;

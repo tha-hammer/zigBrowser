@@ -41,6 +41,8 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     webkit.preferHttp1();
     // Before WebKit, EGL and the web processes start (they read the environment once).
     webkit.applyRender(render_config.resolve(spec.hw_policy, spec.renderer));
+    // Before zb_app_run builds the first window (every window reads it when created).
+    webkit.applyMediaSource(spec.media_source);
     const profile_dir = try applyProfileDir(arena, spec);
 
     if (spec.automation_api) {
@@ -112,8 +114,8 @@ fn runScreenshot(arena: std.mem.Allocator, spec: ScreenshotSpec) errors.BrowserE
     };
 
     const out_z = arena.dupeZ(u8, spec.out) catch return error.WriteFailed;
-    // The same rendering as an open window (applied before WebKit starts).
-    const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer));
+    // The same rendering and media settings as an open window (applied before WebKit starts).
+    const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer), spec.media_source);
     return @intCast(code);
 }
 

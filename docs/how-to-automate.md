@@ -64,6 +64,16 @@ played the same video in real time.
   changed.
 - The details and measurements are in `docs/how-to-run.md` ("Rendering").
 
+### Media Source Extensions: `--media-source on|off`
+
+`--media-source off` (or `ZIGBROWSER_MEDIA_SOURCE=off`) hides
+`window.MediaSource` from every page in every window, popups included.
+It is a mitigation for a WebKitGTK 2.54.0 deadlock that froze an
+Instagram window's web process. The default is `on`. While it is off,
+`page.evaluate("typeof MediaSource")` answers `"undefined"`, and video
+sites fall back to plain media. Details: `docs/how-to-run.md` ("Media
+Source Extensions").
+
 ## Connect: socket, framing and token
 
 - **Transport:** a Unix socket, mode 0600 (only your user can connect).

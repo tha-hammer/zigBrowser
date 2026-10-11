@@ -170,6 +170,9 @@ static guint64 zb_auto_next_id;
 /* ZB_HW_POLICY_*: see zb_app_set_hw_policy. */
 static gint zb_app_hw_policy = ZB_HW_POLICY_WEBKIT;
 static void zb_apply_hw_policy(WebKitSettings *settings);
+/* 1: Media Source Extensions on (WebKit's default); see zb_app_set_media_source. */
+static gint zb_app_media_source = 1;
+static void zb_apply_media_source(WebKitWebView *view);
 static int auto_pub_index_locked(guint32 requested);
 
 /* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
@@ -1137,6 +1140,8 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
     webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
     zb_apply_hw_policy(settings);
   }
+  /* Popups share their opener's settings and scripts; applied again, it is the same. */
+  zb_apply_media_source(view);
 
   win->sig_load_changed =
       g_signal_connect_data(view, "load-changed", G_CALLBACK(on_window_load_changed),
@@ -4584,6 +4589,70 @@ void zb_app_set_hw_policy(int policy) {
 
 int zb_app_get_hw_policy(void) { return g_atomic_int_get(&zb_app_hw_policy); }
 
+void zb_app_set_media_source(int enabled) { g_atomic_int_set(&zb_app_media_source, enabled != 0); }
+
+int zb_app_get_media_source(void) { return g_atomic_int_get(&zb_app_media_source); }
+
+#define ZB_MEDIA_SOURCE_HIDDEN_KEY "zb-media-source-hidden"
+
+/* Runs in the page's own world, in every frame, before any page script:
+ * the MSE constructors are gone, so pages that feature-detect
+ * window.MediaSource use plain media instead. */
+static const char zb_media_source_hide_js[] =
+    "for (const name of ['MediaSource', 'ManagedMediaSource', 'SourceBuffer', "
+    "'SourceBufferList', 'ManagedSourceBuffer']) { try { delete globalThis[name]; } catch (e) {} }";
+
+/* MSE off for `view`'s pages. WebKitGTK 2.54.0 still exposes and runs MSE
+ * with "enable-mediasource" FALSE (its MediaSourceEnabled preference is
+ * gone; checked on a bare WebKitWebView), so the setting is backed by the
+ * script above, added once per user-content manager. MSE on leaves both
+ * as WebKit has them. */
+static void zb_apply_media_source(WebKitWebView *view) {
+  if (g_atomic_int_get(&zb_app_media_source) != 0) {
+    return;
+  }
+  WebKitSettings *settings = webkit_web_view_get_settings(view);
+  if (settings != NULL) {
+    webkit_settings_set_enable_mediasource(settings, FALSE);
+  }
+  WebKitUserContentManager *ucm = webkit_web_view_get_user_content_manager(view);
+  if (ucm == NULL || g_object_get_data(G_OBJECT(ucm), ZB_MEDIA_SOURCE_HIDDEN_KEY) != NULL) {
+    return;
+  }
+  WebKitUserScript *script = webkit_user_script_new(
+      zb_media_source_hide_js, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+      WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+  webkit_user_content_manager_add_script(ucm, script);
+  webkit_user_script_unref(script);
+  g_object_set_data(G_OBJECT(ucm), ZB_MEDIA_SOURCE_HIDDEN_KEY, GINT_TO_POINTER(1));
+}
+
+typedef struct {
+  guint32 id;
+  int enabled;
+} ZbMediaSourceCall;
+
+static void auto_debug_media_source(void *ctx) {
+  ZbMediaSourceCall *call = (ZbMediaSourceCall *)ctx;
+  ZbWindow *win = auto_resolve_window(call->id);
+  WebKitSettings *settings = win != NULL ? webkit_web_view_get_settings(win->view) : NULL;
+  if (settings == NULL || win->ucm == NULL) {
+    call->enabled = -1;
+    return;
+  }
+  int setting_on = webkit_settings_get_enable_mediasource(settings) ? 1 : 0;
+  int script_on = g_object_get_data(G_OBJECT(win->ucm), ZB_MEDIA_SOURCE_HIDDEN_KEY) == NULL;
+  call->enabled = setting_on == script_on ? setting_on : 2;
+}
+
+int zb_automation_debug_media_source(unsigned int id, unsigned int timeout_ms) {
+  ZbMediaSourceCall call = {.id = id, .enabled = -1};
+  if (zb_main_invoke_sync(auto_debug_media_source, &call, timeout_ms) != ZB_AUTO_OK) {
+    return -1;
+  }
+  return call.enabled;
+}
+
 /* Every window's view and the screenshot view: the startup policy, or
  * nothing for ZB_HW_POLICY_WEBKIT (WebKit keeps its own default). */
 static void zb_apply_hw_policy(WebKitSettings *settings) {
@@ -5218,6 +5287,7 @@ static int run_screenshot_internal(const char *uri, const char *out_path,
   if (shot_settings != NULL) {
     zb_apply_hw_policy(shot_settings);
   }
+  zb_apply_media_source(shot.view);
 
   shot.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_default_size(GTK_WINDOW(shot.window), 1024, 768);
