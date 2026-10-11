@@ -90,7 +90,7 @@ test "x.post runs each flow step through the engine and records one x root span"
     var buf: [32][]const u8 = undefined;
     const ops = try h.ops(&buf);
     // ... the Post probe, no toast showing, the Post click, the new toast.
-    const expected_ops = [_][]const u8{ "waitFor", "click", "fill", "type", "query", "click", "waitFor", "click", "waitFor" };
+    const expected_ops = [_][]const u8{ "waitFor", "click", "fill", "type", "waitFor", "query", "click", "click", "waitFor" };
     try std.testing.expectEqual(expected_ops.len, ops.len);
     for (expected_ops, ops) |e, a| try std.testing.expectEqualStrings(e, a);
 

@@ -169,6 +169,12 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     # An old toast that goes away in time: the post goes through.
     expect_equal("old toast that fades", rpc.call("x.post", {"text": "after the toast", "compose_url": f"{base}?mode=compose&stale=fade"}), {"ok": True})
     expect_equal("old toast that fades: posted", recorded()["text"], "after the toast")
+    # The Post copies move while the old toast fades (another composer's
+    # disabled Post is inserted first): Post is looked for only after the
+    # toast is gone, so this composer's own Post is the one clicked
+    # (RoseCat 5185).
+    expect_equal("Post copies move as the toast fades", rpc.call("x.post", {"text": "after the move", "compose_url": f"{base}?mode=compose&stale=reorder"}), {"ok": True})
+    expect_equal("Post copies move: this composer posted, the other untouched", (recorded()["text"], rpc.call("page.evaluate", {"expression": "window.__xOtherPost"})["result"]), ("after the move", 0))
     passed.append("x.post-old-toast")
 
     expect_equal("x.login_check", rpc.call("x.login_check", {}), {"loggedIn": True, "platform": "x"})

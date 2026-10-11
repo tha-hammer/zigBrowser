@@ -296,15 +296,19 @@ fn typeText(gpa: std.mem.Allocator, runner: anytype, text: []const u8, input: In
 /// rate-limit scan after the click. UNVERIFIED live: the success toast's
 /// wording, so it is not checked yet.)
 fn submit(gpa: std.mem.Allocator, runner: anytype, input: Input) Error!bool {
-    var selector_buf: [128]u8 = undefined;
-    const button = (try findPostButton(gpa, runner, &selector_buf)) orelse return false;
+    // The toast check comes first, so the Post copy found next is clicked
+    // right after its probe: X's DOM can reorder the copies during a wait,
+    // and a positional selector kept across it could name another
+    // composer's Post (RoseCat 5185).
     if (!(try step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "hidden", .strict = false, .timeout_ms = waitBudget(runner, toast_clear_timeout_ms) }))) {
-        // A wait that failed for another reason (e.g. cancelled) keeps its
-        // own failure.
+        // A cancellation or the flow deadline keeps its own failure (the
+        // runner then refuses the count below).
         const toasts = (try countMatches(gpa, runner, selectors.post_success)) orelse return false;
         if (toasts > 0) try runner.notFound("x_toast_already_shown");
         return false;
     }
+    var selector_buf: [128]u8 = undefined;
+    const button = (try findPostButton(gpa, runner, &selector_buf)) orelse return false;
     if (!(try step(gpa, runner, "dom.click", .{ .selector = button, .options = act(input, budget(runner, click_timeout_ms)) }))) return false;
     return step(gpa, runner, "dom.waitFor", .{ .selector = selectors.post_success, .state = "visible", .strict = false, .timeout_ms = waitBudget(runner, confirm_timeout_ms) });
 }

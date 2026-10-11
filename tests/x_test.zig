@@ -208,7 +208,9 @@ test "x.post: navigate, gate, clear any stale draft, type, probe Post, click it,
     const result = (try x.post(gpa, &runner, .{ .text = "hello from zigBrowser", .compose_url = "http://127.0.0.1:9/compose" })).?;
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"ok\":true}", result);
-    try expectMethods(&runner.inner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.query", "dom.click", "dom.waitFor", "dom.click", "dom.waitFor" });
+    // The old toast must be gone BEFORE the Post copies are probed, so the
+    // probed copy is clicked right after its probe (RoseCat 5185).
+    try expectMethods(&runner.inner, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.fill", "dom.type", "dom.waitFor", "dom.query", "dom.click", "dom.click", "dom.waitFor" });
 
     const nav = try stepParams(&runner.inner, 0);
     defer nav.deinit();
@@ -220,7 +222,7 @@ test "x.post: navigate, gate, clear any stale draft, type, probe Post, click it,
     const typed = try stepParams(&runner.inner, 4);
     defer typed.deinit();
     try std.testing.expectEqualStrings("hello from zigBrowser", typed.value.object.get("text").?.string);
-    const probe = try stepParams(&runner.inner, 6);
+    const probe = try stepParams(&runner.inner, 7);
     defer probe.deinit();
     try std.testing.expectEqual(true, probe.value.object.get("options").?.object.get("trial").?.bool);
     const clicked = try lastClickSelector(&runner.inner);
@@ -228,7 +230,7 @@ test "x.post: navigate, gate, clear any stale draft, type, probe Post, click it,
     try std.testing.expectEqualStrings("xpath=(//*[@data-testid=\"tweetButton\"])[1]", clicked);
     // No toast may be showing when Post is clicked (an old one would
     // "confirm" anything): wait up to 10 s for it to go (RoseCat 7c9d68a).
-    const quiet = try stepParams(&runner.inner, 7);
+    const quiet = try stepParams(&runner.inner, 5);
     defer quiet.deinit();
     try std.testing.expectEqualStrings(x.selectors.post_success, quiet.value.object.get("selector").?.string);
     try std.testing.expectEqualStrings("hidden", quiet.value.object.get("state").?.string);
@@ -246,11 +248,8 @@ test "x.post: a toast still showing before Post is clicked (it would confirm any
     defer runner.inner.deinit();
     try std.testing.expect((try x.post(gpa, &runner, .{ .text = "hi" })) == null);
     try std.testing.expectEqualStrings("x_toast_already_shown", runner.inner.not_found.?);
-    for (runner.inner.steps.items) |st| {
-        if (std.mem.eql(u8, st.method, "dom.click") and std.mem.indexOf(u8, st.params, "tweetButton") != null) {
-            try std.testing.expect(std.mem.indexOf(u8, st.params, "\"trial\":true") != null);
-        }
-    }
+    // Post is never even looked for while the old toast shows.
+    for (runner.inner.steps.items) |st| try std.testing.expect(std.mem.indexOf(u8, st.params, "tweetButton") == null);
 }
 
 test "x.post skips a non-actionable dialog button and clicks the actionable inline one" {
@@ -401,8 +400,8 @@ test "x.schedule_post converts 24h time and selects month/day/year/hour/minute/A
         "page.navigate",     "dom.waitFor",       "dom.click",         "dom.fill",
         "dom.type",          "dom.click",         "dom.waitFor",       "dom.selectOption",
         "dom.selectOption",  "dom.selectOption",  "dom.selectOption",  "dom.selectOption",
-        "dom.selectOption",  "dom.click",         "dom.query",         "dom.click",
-        "dom.waitFor",       "dom.click",         "dom.waitFor",
+        "dom.selectOption",  "dom.click",         "dom.waitFor",       "dom.query",
+        "dom.click",         "dom.click",         "dom.waitFor",
     });
     const expected = [_]struct { selector: []const u8, value: []const u8 }{
         .{ .selector = x.selectors.schedule_month, .value = "11" },
@@ -425,7 +424,7 @@ test "x.schedule_post converts 24h time and selects month/day/year/hour/minute/A
     defer confirm.deinit();
     try std.testing.expectEqualStrings(x.selectors.schedule_confirm, confirm.value.object.get("selector").?.string);
     // The probed copy is clicked by its exact (strict) selector.
-    const quiet = try stepParams(runner, 16);
+    const quiet = try stepParams(runner, 14);
     defer quiet.deinit();
     try std.testing.expectEqualStrings("hidden", quiet.value.object.get("state").?.string);
     const submit = try stepParams(runner, 17);

@@ -25,6 +25,10 @@
                    page opens, and Post does nothing (no post, no new toast): an
                    old toast must not count as this post's confirmation
          &stale=fade: the same old toast goes after 1.5 s; Post works
+         &stale=reorder: as fade, and when the old toast goes another composer's
+                   Post (disabled: it has no text) is inserted before this one,
+                   so the Post copies' positions change; clicks on it are
+                   counted in window.__xOtherPost
          The schedule dialog's selects mirror x.com: generated ids (SELECTOR_1..6), no
          aria-label, each aria-labelledby a label naming it; option counts 13, 32, 4,
          13, 61, 2 (a blank placeholder first, except AM/PM).
@@ -223,7 +227,18 @@
           });
         }
         buttons.forEach(wire);
-        if (stale === 'fade') setTimeout(function () { var old = document.getElementById('old-toast'); if (old) old.remove(); }, 1500);
+        window.__xOtherPost = 0;
+        if (stale === 'fade' || stale === 'reorder') setTimeout(function () {
+          var old = document.getElementById('old-toast');
+          if (old) old.remove();
+          if (stale !== 'reorder') return;
+          var other = document.createElement('div');
+          other.id = 'other-composer';
+          other.innerHTML = '<button data-testid="tweetButton" disabled>Post</button>';
+          other.querySelector('button').addEventListener('click', function () { window.__xOtherPost += 1; });
+          var app = document.getElementById('app');
+          app.insertBefore(other, app.firstChild);
+        }, 1500);
         if (mode === 'home') {
           setTimeout(function () {
             var inline = document.createElement('button');
