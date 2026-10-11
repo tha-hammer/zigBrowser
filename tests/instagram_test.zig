@@ -585,3 +585,29 @@ test "story_view (real) stops before a \"View story\" button too: instagram_stor
     try expectSelector(&r, 3, instagram.selectors.story_view_gate);
     try std.testing.expectEqual(@as(u64, 0), r.now_ms);
 }
+
+// RoseCat's audit 7c9d68a: an icon's <title> is text too, so text-only
+// controls match by their visible text (svg titles left out), exactly.
+fn visibleIs(comptime text: []const u8) []const u8 {
+    const v = ".//text()[not(ancestor::*[name()=\"svg\"])]";
+    return "(" ++ v ++ "[normalize-space(.)=\"" ++ text ++ "\"] and not(" ++ v ++ "[normalize-space(.)!=\"\" and normalize-space(.)!=\"" ++ text ++ "\"]))";
+}
+
+const vis_send = visibleIs("Send");
+const vis_view_story = visibleIs("View story");
+
+test "DM Send (audit HIGH): only in the composer holding the DM box, by its visible text \"Send\" (never another Send on the page)" {
+    const clickable = "*[self::button or @role=\"button\"]";
+    const input = "//div[@aria-label=\"Message\"][@contenteditable=\"true\"]";
+    try std.testing.expectEqualStrings(
+        "xpath=(" ++ input ++ ")/ancestor::*[.//" ++ clickable ++ "[" ++ vis_send ++ "]][1]//" ++ clickable ++ "[" ++ vis_send ++ "][not(ancestor-or-self::*[@aria-hidden=\"true\"])]",
+        instagram.selectors.dm_send,
+    );
+}
+
+test "the View story stop gate (audit HIGH) matches its visible text anywhere (svg titles left out): a stop check may over-detect, never under-detect" {
+    try std.testing.expectEqualStrings(
+        "xpath=//*[self::button or @role=\"button\"][" ++ vis_view_story ++ "]",
+        instagram.selectors.story_view_gate,
+    );
+}

@@ -112,7 +112,7 @@
           if (user === 'gate.user') {
             document.getElementById('overlay').innerHTML =
               '<div><section class="gate"><img alt="" src="' + gif + '" width="56" height="56">' +
-              '<div role="button" tabindex="0" id="view-story">View story</div></section></div>';
+              '<div role="button" tabindex="0" id="view-story"><svg width="12" height="12"><title>Play icon</title></svg>View story</div></section></div>';
             document.getElementById('view-story').addEventListener('click', function () { ig.events.push('click:view_story'); });
             return;
           }
@@ -181,11 +181,16 @@
             '<aside><button>Follow</button></aside>' +
             // The profile grid: images in a section, like a story frame's.
             '<section class="grid"><img alt="post" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="100" height="100"></section>' +
-            '<div id="dm" hidden><div aria-label="Message" contenteditable="true"></div><div role="button" id="send">Send</div></div>';
+            '<div id="dm" hidden><div aria-label="Message" contenteditable="true"></div><div role="button" id="send"><svg width="12" height="12"><title>Paper plane icon</title></svg>Send</div></div>' +
+            // A share sheet with its own Send, outside the DM composer: never
+            // the DM's (audit 7c9d68a).
+            '<div id="share-sheet"><span>Share this profile</span><div role="button" id="share-send">Send</div></div>';
           document.getElementById('highlight-next').addEventListener('click', function () { ig.highlightNext += 1; });
           var dm = document.getElementById('dm');
           var box = dm.querySelector('[contenteditable]');
           document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: box.textContent }; });
+          ig.shareSends = 0;
+          document.getElementById('share-send').addEventListener('click', function () { ig.shareSends += 1; });
           setTimeout(function () {
             document.getElementById('header-actions').innerHTML = '<button id="follow">Follow</button><div role="button" id="message">Message</div>';
             var follow = document.getElementById('follow');

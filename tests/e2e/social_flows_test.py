@@ -270,6 +270,9 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
         raise AssertionError("the comment was not typed")
     expect_equal("ig dm", zb.instagram.dm("sam.example", "hi Sam"), {"ok": True})
     expect_equal("ig dm recorded", ig(), {"action": "dm", "text": "hi Sam"})
+    # The DM's Send has an icon <title> (text too), and a share sheet on the
+    # page has its own "Send": only the composer's is clicked (audit 7c9d68a).
+    expect_equal("ig dm: the share sheet's Send untouched", zb.page.evaluate("window.__ig.shareSends")["result"], 0)
     # The viewer as live (probe of 2026-10-11): its own Next (an svg in a
     # div[role=button], outside <main>) frame by frame; the zero-size "Next"
     # of the page behind it and the story previews are never clicked. The

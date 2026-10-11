@@ -38,7 +38,13 @@ pub const selectors = struct {
     pub const comment_submit = "xpath=//form//*[self::button or @role=\"button\"][normalize-space(.)=\"Post\"]";
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
-    pub const dm_send = "xpath=//*[self::button or @role=\"button\"][normalize-space(.)=\"Send\"]";
+    /// Send, only inside the composer that holds dm_input (the nearest
+    /// ancestor of the box that has a Send), by its visible text: an icon's
+    /// <title> is text too, and another "Send" on the page (a share sheet)
+    /// must never be the one clicked (RoseCat's audit 7c9d68a). UNVERIFIED
+    /// live: no check that the message arrived (not probed yet).
+    pub const dm_send = "xpath=(//div[@aria-label=\"Message\"][@contenteditable=\"true\"])/ancestor::*[.//" ++ dm_send_button ++ "][1]//" ++
+        dm_send_button ++ "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
     /// Story viewer media, and its Next control, from the live viewer
     /// (probe of 2026-10-11): the page behind the viewer is in <main> and
     /// has a zero-size <button aria-label="Next">; the viewer is outside
@@ -55,7 +61,10 @@ pub const selectors = struct {
     /// click that marks the story seen, so a dry run stops before it.
     /// UNVERIFIED live (not seen in the 2026-10-11 probe, whose viewer was
     /// already playing); used only to stop, never clicked.
-    pub const story_view_gate = "xpath=//*[self::button or @role=\"button\"][normalize-space(.)=\"View story\"]";
+    /// Matched by its visible text anywhere on the page (an icon <title>
+    /// must not hide it): a stop check may stop too often, never too
+    /// seldom (audit 7c9d68a).
+    pub const story_view_gate = "xpath=//*[self::button or @role=\"button\"][" ++ flow.visibleTextIs("View story") ++ "]";
 };
 
 /// Whether story_view may wait for story media and click Next at all. On
@@ -65,6 +74,9 @@ pub const selectors = struct {
 /// element_not_found instagram_story_viewer_unverified (tests could still
 /// run the frames through flow_steps.Site.unverified_actions).
 pub const story_viewer_verified = true;
+
+/// A clickable whose visible text is exactly "Send".
+const dm_send_button = "*[self::button or @role=\"button\"][" ++ flow.visibleTextIs("Send") ++ "]";
 
 /// The real site. The automation server may swap in a fixture origin for
 /// tests (flow_steps.Site); requests cannot.
