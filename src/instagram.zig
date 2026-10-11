@@ -21,7 +21,14 @@ pub const selectors = struct {
     /// page loads; the flows' clicks wait for them (missing elements are
     /// retried until the step's deadline).
     pub const follow_button = "xpath=//header//button[normalize-space(.)=\"Follow\"]";
-    pub const following_button = "xpath=//header//button[normalize-space(.)=\"Following\" or normalize-space(.)=\"Requested\"]";
+    /// After Follow (live, 2026-10-11: a real follow): the same header
+    /// button reads "Following" (or "Requested" for a private account)
+    /// plus a chevron <svg> whose <title> "Down chevron icon" is text too,
+    /// so its textContent is "FollowingDown chevron icon". It matches when
+    /// its visible text, svg titles left out, is exactly that, under no
+    /// aria-hidden element; the flow requires exactly one visible copy. The
+    /// suggested accounts' Follow buttons below the header never match.
+    pub const following_button = "xpath=//header//button[" ++ flow.visibleTextIs("Following") ++ " or " ++ flow.visibleTextIs("Requested") ++ "][not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
     pub const message_button = "xpath=//header//*[self::button or @role=\"button\"][normalize-space(.)=\"Message\"]";
     /// Post page: the post's own action bar (the first <section>); comment
     /// likes sit in lists, not in it.
@@ -107,7 +114,8 @@ pub fn follow(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_url
     if (!s.allows(profile_url)) return error.InvalidParams;
     if (!(try openPage(gpa, runner, profile_url))) return null;
     if (!(try click(gpa, runner, selectors.follow_button, true))) return null;
-    if (!(try waitAttached(gpa, runner, selectors.following_button))) return null;
+    // Exactly one visible Following/Requested state (RoseCat 7c9d68a).
+    if (!(try flow.step(gpa, runner, "dom.waitFor", .{ .selector = selectors.following_button, .state = "visible", .strict = true, .timeout_ms = flow.waitBudget(runner, confirm_timeout_ms) }))) return null;
     return try gpa.dupe(u8, ok_json);
 }
 

@@ -12,6 +12,14 @@
                                      carousel has its own "Next" button and avatar
                                      images (story selectors match it; clicking it
                                      is recorded in window.__ig.highlightNext)
+                                     After Follow (live, 2026-10-11) the header
+                                     button reads "Following" plus a chevron
+                                     <svg><title>Down chevron icon</title>, so
+                                     its textContent is "FollowingDown chevron
+                                     icon", beside div[role=button] "Message" and
+                                     "Similar accounts"; nine suggested accounts'
+                                     Follow buttons appear below the header
+           /private.user/            the same, but Follow turns into "Requested"
            /p/<id>/                  post (Like, comment)
            /stories/<username>/      three story frames; Next on the last one
                                      leaves the viewer for the profile. As live
@@ -181,7 +189,21 @@
           setTimeout(function () {
             document.getElementById('header-actions').innerHTML = '<button id="follow">Follow</button><div role="button" id="message">Message</div>';
             var follow = document.getElementById('follow');
-            follow.addEventListener('click', function () { follow.textContent = 'Following'; ig.result = { action: 'follow' }; });
+            follow.addEventListener('click', function () {
+              var state = m[1] === 'private.user' ? 'Requested' : 'Following';
+              // The live markup after the click: visible text plus a chevron
+              // svg whose <title> is text too.
+              follow.innerHTML = '<div class="_ap3a"><div dir="auto"> ' + state + ' </div>' +
+                '<svg aria-label="" height="12" width="12" role="img"><title>Down chevron icon</title><path d="M0 0h12v12z"></path></svg></div>';
+              var similar = document.createElement('div');
+              similar.setAttribute('role', 'button');
+              similar.textContent = 'Similar accounts';
+              document.getElementById('header-actions').appendChild(similar);
+              var suggested = '';
+              for (var i = 0; i < 9; i += 1) suggested += '<div><span>suggested.' + i + '</span><button>Follow</button></div>';
+              document.querySelector('header').insertAdjacentHTML('afterend', '<section class="suggested">' + suggested + '</section>');
+              ig.result = { action: 'follow', state: state };
+            });
             document.getElementById('message').addEventListener('click', function () { dm.hidden = false; });
           }, 1500);
         } else {

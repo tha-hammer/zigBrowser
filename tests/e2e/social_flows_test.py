@@ -255,7 +255,12 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     # Instagram.
     ig_profile = f"{origin}/sam.example/"
     expect_equal("ig follow", zb.instagram.follow(ig_profile), {"ok": True})
-    expect_equal("ig follow recorded", ig(), {"action": "follow"})
+    expect_equal("ig follow recorded", ig(), {"action": "follow", "state": "Following"})
+    # Live (2026-10-11): the Following button's text includes its chevron
+    # svg's <title>; nine suggested accounts' Follow buttons appear below.
+    expect_equal("ig follow: the live Following button", zb.page.evaluate("document.getElementById('follow').textContent")["result"], " Following Down chevron icon")
+    expect_equal("ig follow a private account", zb.instagram.follow(f"{origin}/private.user/"), {"ok": True})
+    expect_equal("ig follow a private account recorded", ig(), {"action": "follow", "state": "Requested"})
     ig_post = f"{origin}/p/C0ffee/"
     expect_equal("ig like", zb.instagram.like(ig_post), {"ok": True})
     expect_equal("ig like recorded", ig(), {"action": "like"})

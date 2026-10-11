@@ -112,6 +112,20 @@ test "follow: login gate, Follow in the profile header, wait for Following/Reque
     try expectSelector(&runner, 1, instagram.selectors.signed_in);
     try expectSelector(&runner, 2, instagram.selectors.follow_button);
     try expectSelector(&runner, 3, instagram.selectors.following_button);
+    // Exactly one visible state (RoseCat 7c9d68a).
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[3].params, "\"state\":\"visible\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runner.steps.items[3].params, "\"strict\":true") != null);
+}
+
+test "Following/Requested: a header button whose visible text (svg titles left out) is exactly that (live: \"Following\" plus a chevron svg titled \"Down chevron icon\")" {
+    const visible = "[not(ancestor::*[name()=\"svg\"])]";
+    try std.testing.expectEqualStrings(
+        "xpath=//header//button[" ++
+            "(.//text()" ++ visible ++ "[normalize-space(.)=\"Following\"] and not(.//text()" ++ visible ++ "[normalize-space(.)!=\"\" and normalize-space(.)!=\"Following\"]))" ++
+            " or (.//text()" ++ visible ++ "[normalize-space(.)=\"Requested\"] and not(.//text()" ++ visible ++ "[normalize-space(.)!=\"\" and normalize-space(.)!=\"Requested\"]))]" ++
+            "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]",
+        instagram.selectors.following_button,
+    );
 }
 
 test "logged out: LoggedOut, nothing clicked" {
