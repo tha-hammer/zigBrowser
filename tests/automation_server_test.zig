@@ -1277,7 +1277,8 @@ const FakePort = struct {
         try list.append(gpa, .{ .id = 1, .url = try gpa.dupe(u8, "file:///fixture/index.html"), .title = try gpa.dupe(u8, "Fixture"), .primary = true });
         for (popups.open, 0..) |open, i| {
             if (!open) continue;
-            try list.append(gpa, .{ .id = @intCast(i + 2), .url = try std.fmt.allocPrint(gpa, "https://login.example/popup-{d}", .{i + 2}), .title = try gpa.dupe(u8, "Sign in"), .primary = false, .opener = 1 });
+            // The second popup's web process crashed (v3.8 terminated).
+            try list.append(gpa, .{ .id = @intCast(i + 2), .url = try std.fmt.allocPrint(gpa, "https://login.example/popup-{d}", .{i + 2}), .title = try gpa.dupe(u8, "Sign in"), .primary = false, .opener = 1, .terminated = if (i == 1) .crashed else null });
         }
         return list.toOwnedSlice(gpa);
     }
@@ -1529,6 +1530,10 @@ test "N23: page.list, window_id targeting with one queue per window, and page.cl
         try testing.expectEqualStrings("https://login.example/popup-2", pages[1].object.get("url").?.string);
         try testing.expectEqualStrings("window-1", pages[1].object.get("opener_window_id").?.string);
         try testing.expect(pages[0].object.get("opener_window_id") == null);
+        // A window whose web process died says why; the others say nothing.
+        try testing.expectEqualStrings("crashed", pages[2].object.get("crashed").?.string);
+        try testing.expect(pages[0].object.get("crashed") == null);
+        try testing.expect(pages[1].object.get("crashed") == null);
     }
 
     // window_id sends page.* and dom.* to that window only.

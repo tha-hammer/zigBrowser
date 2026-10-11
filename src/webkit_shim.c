@@ -111,6 +111,11 @@ struct ZbWindow {
   gulong sig_file_chooser;
   gulong sig_close;
   gulong sig_script_dialog;
+  gulong sig_web_process_terminated;
+  /* Why this window's web process ended since its last committed load
+   * ("crashed", "memory_limit", "terminated_by_api"; NULL: alive). A
+   * static string, GTK thread only; page.list reports it. */
+  const char *terminated;
   /* The page dialog open on this window, if any (GTK thread only): our ref,
    * and the native dialog a person can answer it with. */
   WebKitScriptDialog *dialog;
@@ -153,11 +158,16 @@ static void request_app_shutdown(ZbApp *app, int with_deadline);
 static void terminate_window_web_process(ZbWindow *win);
 static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog *dialog,
                                         gpointer user_data);
+static void on_window_web_process_terminated(WebKitWebView *view,
+                                             WebKitWebProcessTerminationReason reason,
+                                             gpointer user_data);
 static int auto_dialog_close(ZbWindow *win, int accept, const char *text);
 static int auto_window_blocked(ZbWindow *win);
 static void auto_policy_dialog_close(ZbWindow *win, int accept);
 
 static guint64 zb_auto_next_id;
+/* ZB_HW_POLICY_*: see zb_app_set_hw_policy. */
+static gint zb_app_hw_policy = ZB_HW_POLICY_NEVER;
 static int auto_pub_index_locked(guint32 requested);
 
 /* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
@@ -823,6 +833,11 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     }
     /* Only the last window of a process family ends the web process; a
      * popup closing must leave its opener's page alive. */
+    /* Our own termination at close is not a death to report. */
+    if (win->sig_web_process_terminated != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_web_process_terminated);
+      win->sig_web_process_terminated = 0;
+    }
     if (!window_shares_process(win)) {
       terminate_window_web_process(win);
     }
@@ -925,6 +940,9 @@ static void on_window_load_changed(WebKitWebView *view,
   }
 
   auto_load_event(win, load_event, webkit_web_view_get_uri(view));
+  if (load_event == WEBKIT_LOAD_COMMITTED) {
+    win->terminated = NULL; /* a new page in a live web process */
+  }
   if (load_event == WEBKIT_LOAD_FINISHED) {
     auto_first_load_done(win);
   }
@@ -1085,8 +1103,12 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   WebKitSettings *settings = webkit_web_view_get_settings(view);
   if (settings != NULL) {
     webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
-    webkit_settings_set_hardware_acceleration_policy(
-        settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    int policy = g_atomic_int_get(&zb_app_hw_policy);
+    if (policy != ZB_HW_POLICY_WEBKIT) {
+      webkit_settings_set_hardware_acceleration_policy(
+          settings, policy == ZB_HW_POLICY_ALWAYS ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
+                                                  : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    }
   }
 
   win->sig_load_changed =
@@ -1113,6 +1135,8 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
       g_signal_connect_data(view, "close", G_CALLBACK(on_window_close), win, NULL, 0);
   win->sig_script_dialog = g_signal_connect_data(
       view, "script-dialog", G_CALLBACK(on_window_script_dialog), win, NULL, 0);
+  win->sig_web_process_terminated = g_signal_connect_data(
+      view, "web-process-terminated", G_CALLBACK(on_window_web_process_terminated), win, NULL, 0);
   win->sig_destroy = g_signal_connect_data(win->gtk_window, "destroy",
                                            G_CALLBACK(on_window_destroy), win,
                                            NULL, 0);
@@ -3800,8 +3824,13 @@ static void auto_list_windows(void *ctx) {
       auto_json_string(out, webkit_web_view_get_uri(win->view));
       g_string_append(out, ",\"title\":");
       auto_json_string(out, webkit_web_view_get_title(win->view));
-      g_string_append_printf(out, ",\"primary\":%s,\"opener\":%u}", win->auto_id == 1 ? "true" : "false",
+      g_string_append_printf(out, ",\"primary\":%s,\"opener\":%u,\"crashed\":", win->auto_id == 1 ? "true" : "false",
                              win->auto_opener_id);
+      if (win->terminated != NULL) {
+        g_string_append_printf(out, "\"%s\"}", win->terminated);
+      } else {
+        g_string_append(out, "null}");
+      }
       first = 0;
     }
   }
@@ -4088,6 +4117,32 @@ static void auto_dialog_opened(ZbWindow *win) {
     }
     link = next;
   }
+}
+
+/* A window's web process ended (crash, memory limit, or terminated): its
+ * page is gone and the window shows nothing until it loads again. Record
+ * why for page.list and say so on stderr, so a blank window is
+ * diagnosable. Every view in a process family gets this. */
+static void on_window_web_process_terminated(WebKitWebView *view,
+                                             WebKitWebProcessTerminationReason reason,
+                                             gpointer user_data) {
+  (void)view;
+  ZbWindow *win = (ZbWindow *)user_data;
+  switch (reason) {
+    case WEBKIT_WEB_PROCESS_CRASHED:
+      win->terminated = "crashed";
+      break;
+    case WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT:
+      win->terminated = "memory_limit";
+      break;
+    case WEBKIT_WEB_PROCESS_TERMINATED_BY_API:
+      win->terminated = "terminated_by_api";
+      break;
+    default: /* a reason newer than this code: an unexpected end */
+      win->terminated = "crashed";
+      break;
+  }
+  g_printerr("zigBrowser: window %u: web process terminated (%s)\n", win->auto_id, win->terminated);
 }
 
 static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog *dialog,
@@ -4491,6 +4546,47 @@ int zb_cookies_delete(uint32_t win, const char *name, const char *domain,
 }
 
 static char *zb_profile_dir; /* set before zb_app_run */
+
+void zb_app_set_hw_policy(int policy) {
+  if (policy != ZB_HW_POLICY_ALWAYS && policy != ZB_HW_POLICY_WEBKIT) {
+    policy = ZB_HW_POLICY_NEVER;
+  }
+  g_atomic_int_set(&zb_app_hw_policy, policy);
+}
+
+typedef struct {
+  guint32 id;
+  int policy;
+} ZbHwPolicyCall;
+
+static void auto_debug_hw_policy(void *ctx) {
+  ZbHwPolicyCall *call = (ZbHwPolicyCall *)ctx;
+  ZbWindow *win = auto_resolve_window(call->id);
+  WebKitSettings *settings = win != NULL ? webkit_web_view_get_settings(win->view) : NULL;
+  if (settings == NULL) {
+    call->policy = -1;
+    return;
+  }
+  switch (webkit_settings_get_hardware_acceleration_policy(settings)) {
+    case WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER:
+      call->policy = ZB_HW_POLICY_NEVER;
+      break;
+    case WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS:
+      call->policy = ZB_HW_POLICY_ALWAYS;
+      break;
+    default:
+      call->policy = ZB_HW_POLICY_ON_DEMAND;
+      break;
+  }
+}
+
+int zb_automation_debug_hw_policy(unsigned int id, unsigned int timeout_ms) {
+  ZbHwPolicyCall call = {.id = id, .policy = -1};
+  if (zb_main_invoke_sync(auto_debug_hw_policy, &call, timeout_ms) != ZB_AUTO_OK) {
+    return -1;
+  }
+  return call.policy;
+}
 
 int zb_app_set_profile_dir(const char *dir, char **out_err) {
   if (out_err != NULL) {

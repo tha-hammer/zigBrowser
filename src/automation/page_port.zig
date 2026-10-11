@@ -98,7 +98,13 @@ pub const WindowInfo = struct {
     primary: bool,
     /// The window whose page opened this one (a popup), if any.
     opener: ?WindowId = null,
+    /// v3.8: the window's web process died since its last page load (its
+    /// page is gone; the window shows nothing until it loads again).
+    terminated: ?Termination = null,
 };
+
+/// v3.8: why a window's web process ended (WebKit's reasons).
+pub const Termination = enum { crashed, memory_limit, terminated_by_api };
 
 /// v3.6: the kinds of page dialog.
 pub const DialogType = enum { alert, confirm, prompt, beforeunload };

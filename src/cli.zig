@@ -1,5 +1,6 @@
 const std = @import("std");
 const config = @import("config.zig");
+const render_config = @import("render_config.zig");
 
 pub const Command = union(enum) {
     version,
@@ -12,6 +13,10 @@ pub const Command = union(enum) {
         /// --profile-dir <path>: persistent cookies/storage. null = caller
         /// uses `defaultProfileDir`.
         profile_dir: ?[]const u8 = null,
+        /// --hardware-acceleration <never|always|webkit>; null = built-in default.
+        hw_policy: ?render_config.HwPolicy = null,
+        /// --renderer <default|shm|mesa-egl>; null = built-in default.
+        renderer: ?render_config.Renderer = null,
     },
     screenshot: struct {
         url: []const u8,
@@ -64,6 +69,8 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     var automation_api = false;
     var automation_token_file: ?[]const u8 = null;
     var profile_dir: ?[]const u8 = null;
+    var hw_policy: ?render_config.HwPolicy = null;
+    var renderer: ?render_config.Renderer = null;
 
     var i: usize = 0;
     while (i < tokens.len) : (i += 1) {
@@ -98,6 +105,18 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
             profile_dir = path;
             continue;
         }
+        if (std.mem.eql(u8, token, "--hardware-acceleration")) {
+            i += 1;
+            if (i >= tokens.len or hw_policy != null) return .usage;
+            hw_policy = render_config.parseHwPolicy(tokens[i]) orelse return .usage;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--renderer")) {
+            i += 1;
+            if (i >= tokens.len or renderer != null) return .usage;
+            renderer = render_config.parseRenderer(tokens[i]) orelse return .usage;
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "-")) {
             return .usage;
         }
@@ -117,6 +136,8 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
         .automation_api = automation_api,
         .automation_token_file = automation_token_file,
         .profile_dir = profile_dir,
+        .hw_policy = hw_policy,
+        .renderer = renderer,
     } };
 }
 
@@ -285,4 +306,25 @@ test "defaultProfileDir prefers XDG_DATA_HOME, then HOME/.local/share" {
 
     try std.testing.expect((try defaultProfileDir(allocator, null, null)) == null);
     try std.testing.expect((try defaultProfileDir(allocator, null, "")) == null);
+}
+
+test "parseArgs --hardware-acceleration and --renderer set the rendering config; no flag leaves it to the default" {
+    const cmd = parseArgs(&.{ "zigBrowser", "--hardware-acceleration", "webkit", "https://example.com", "--renderer", "mesa-egl" });
+    try std.testing.expect(cmd == .open);
+    try std.testing.expectEqual(render_config.HwPolicy.webkit, cmd.open.hw_policy.?);
+    try std.testing.expectEqual(render_config.Renderer.mesa_egl, cmd.open.renderer.?);
+    const shm = parseArgs(&.{ "zigBrowser", "https://example.com", "--renderer", "shm" });
+    try std.testing.expectEqual(render_config.Renderer.shm, shm.open.renderer.?);
+    try std.testing.expect(shm.open.hw_policy == null);
+    const plain = parseArgs(&.{ "zigBrowser", "https://example.com" });
+    try std.testing.expect(plain.open.hw_policy == null);
+    try std.testing.expect(plain.open.renderer == null);
+}
+
+test "parseArgs rendering flag errors are usage" {
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--hardware-acceleration" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--hardware-acceleration", "on-demand" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--renderer", "gbm" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--renderer", "shm", "--renderer", "shm" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--hardware-acceleration", "never", "--hardware-acceleration", "always" }) == .usage);
 }

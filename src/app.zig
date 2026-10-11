@@ -6,6 +6,7 @@ const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
+const render_config = @import("render_config.zig");
 const errors = @import("errors.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
@@ -38,6 +39,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     };
     // Before the automation server's threads and before WebKit starts its network process.
     webkit.preferHttp1();
+    // Before WebKit, EGL and the web processes start (they read the environment once).
+    webkit.applyRender(.{
+        .hw_policy = spec.hw_policy orelse render_config.default_render.hw_policy,
+        .renderer = spec.renderer orelse render_config.default_render.renderer,
+    });
     const profile_dir = try applyProfileDir(arena, spec);
 
     if (spec.automation_api) {

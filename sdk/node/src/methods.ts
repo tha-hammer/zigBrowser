@@ -87,6 +87,9 @@ export interface PageInfo {
   primary: boolean;
   /** The window whose page opened this one (a popup). */
   opener_window_id?: string;
+  /** Present when the window's web process died since its last page load:
+   *  its page is gone and the window shows nothing until it loads again. */
+  crashed?: "crashed" | "memory_limit" | "terminated_by_api";
 }
 
 export interface ActionOptions {

@@ -31,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
                 init,
                 "usage: zigBrowser --version\n" ++
                     "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
+                    "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
                     "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n",
             );
             std.process.exit(errors.exitCode(error.Usage));

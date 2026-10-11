@@ -112,6 +112,25 @@ fn parseDialogs(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
     return dialogs;
 }
 
+test "shim window JSON becomes WindowInfo with the web-process termination reason; an unknown reason is EvalFailed" {
+    const gpa = std.testing.allocator;
+    const windows = try parseWindows(gpa,
+        \\[{"id":1,"url":"https://a.example/","title":"A","primary":true,"opener":0,"crashed":null},
+        \\ {"id":2,"url":"https://b.example/","title":"B","primary":false,"opener":1,"crashed":"crashed"},
+        \\ {"id":3,"url":"","title":"","primary":false,"opener":1,"crashed":"memory_limit"},
+        \\ {"id":4,"url":"","title":"","primary":false,"opener":0,"crashed":"terminated_by_api"}]
+    );
+    defer page_port.freeWindows(gpa, windows);
+    try std.testing.expectEqual(@as(usize, 4), windows.len);
+    try std.testing.expect(windows[0].terminated == null);
+    try std.testing.expect(windows[0].opener == null);
+    try std.testing.expectEqual(page_port.Termination.crashed, windows[1].terminated.?);
+    try std.testing.expectEqual(@as(?page_port.WindowId, 1), windows[1].opener);
+    try std.testing.expectEqual(page_port.Termination.memory_limit, windows[2].terminated.?);
+    try std.testing.expectEqual(page_port.Termination.terminated_by_api, windows[3].terminated.?);
+    try std.testing.expectError(error.EvalFailed, parseWindows(gpa, "[{\"id\":1,\"url\":\"\",\"title\":\"\",\"primary\":true,\"opener\":0,\"crashed\":\"melted\"}]"));
+}
+
 test "shim dialog JSON becomes DialogInfo, and malformed JSON is EvalFailed" {
     const gpa = std.testing.allocator;
     const dialogs = try parseDialogs(gpa,
@@ -152,8 +171,14 @@ fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
     defer c.zb_automation_free(out);
     try mapCode(rc);
     if (out == null) return error.EvalFailed;
-    const Wire = struct { id: u32, url: []const u8, title: []const u8, primary: bool, opener: u32 };
-    const parsed = std.json.parseFromSlice([]const Wire, gpa, std.mem.span(out), .{}) catch |e| switch (e) {
+    return parseWindows(gpa, std.mem.span(out));
+}
+
+/// The shim's window list JSON as WindowInfo (owned by `gpa`). Malformed
+/// JSON or an unknown termination reason is EvalFailed.
+fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.WindowInfo {
+    const Wire = struct { id: u32, url: []const u8, title: []const u8, primary: bool, opener: u32, crashed: ?[]const u8 = null };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.EvalFailed, // malformed shim JSON
     };
@@ -173,7 +198,15 @@ fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
             gpa.free(url_copy);
             return e;
         };
-        info.* = .{ .id = wire.id, .url = url_copy, .title = title_copy, .primary = wire.primary, .opener = if (wire.opener == 0) null else wire.opener };
+        const terminated: ?page_port.Termination = if (wire.crashed) |reason|
+            std.meta.stringToEnum(page_port.Termination, reason) orelse {
+                gpa.free(url_copy);
+                gpa.free(title_copy);
+                return error.EvalFailed;
+            }
+        else
+            null;
+        info.* = .{ .id = wire.id, .url = url_copy, .title = title_copy, .primary = wire.primary, .opener = if (wire.opener == 0) null else wire.opener, .terminated = terminated };
         filled += 1;
     }
     return windows;

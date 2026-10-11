@@ -37,6 +37,33 @@ pub fn preferHttp1() void {
     if (shouldForceHttp1(user, opt_out)) _ = setenv("SOUP_FORCE_HTTP1", "1", 0);
 }
 
+/// Applies the startup rendering config (render_config.zig): the
+/// renderer's environment variable, unless the user set it, and the
+/// hardware-acceleration policy for every window. Call before zb_app_run
+/// (WebKit, EGL and the web processes read the environment at start).
+/// Prints the effective choice when it is not the built-in default.
+pub fn applyRender(cfg: render_config.RenderConfig) void {
+    if (comptime builtin.os.tag != .linux) return;
+    if (render_config.rendererEnv(cfg.renderer)) |env| {
+        const existing = if (std.c.getenv(env.name.ptr)) |v| std.mem.span(v) else null;
+        if (cfg.renderer == .mesa_egl and existing == null) {
+            if (std.c.access(render_config.mesa_egl_vendor, std.c.F_OK) != 0) {
+                std.debug.print("zigBrowser: --renderer mesa-egl: {s} is missing; not set\n", .{render_config.mesa_egl_vendor});
+            } else _ = setenv(env.name.ptr, env.value.ptr, 0);
+        } else if (render_config.shouldSetEnv(existing)) {
+            _ = setenv(env.name.ptr, env.value.ptr, 0);
+        }
+    }
+    c.zb_app_set_hw_policy(switch (cfg.hw_policy) {
+        .never => c.ZB_HW_POLICY_NEVER,
+        .always => c.ZB_HW_POLICY_ALWAYS,
+        .webkit => c.ZB_HW_POLICY_WEBKIT,
+    });
+    if (cfg.hw_policy != render_config.default_render.hw_policy or cfg.renderer != render_config.default_render.renderer) {
+        std.debug.print("zigBrowser: rendering: hardware-acceleration={s} renderer={s}\n", .{ @tagName(cfg.hw_policy), render_config.rendererName(cfg.renderer) });
+    }
+}
+
 test "HTTP/1.1 is forced only when the user set neither SOUP_FORCE_HTTP1 nor ZIGBROWSER_HTTP2=1" {
     try std.testing.expect(shouldForceHttp1(null, null));
     // A value the user exported is kept as it is, whatever it says.
@@ -344,6 +371,7 @@ const StderrCapture = struct {
 
 const gtk_port = @import("automation_gtk_port.zig");
 const page_port_mod = @import("automation/page_port.zig");
+const render_config = @import("render_config.zig");
 
 test {
     _ = gtk_port;
@@ -615,6 +643,7 @@ const LiveDriver = struct {
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "navigate to fixture A returns OK");
         self.check(c.zb_automation_window_id_at(0) == 1, "primary window is registered as id 1");
+        self.check(c.zb_automation_debug_hw_policy(1, 5000) == c.ZB_HW_POLICY_NEVER, "the default hardware-acceleration policy is NEVER");
 
         self.check(std.mem.eql(u8, self.str(&rc, .url), self.uri_a), "page.url is fixture A");
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture A"), "page.title is Fixture A");
@@ -1685,6 +1714,70 @@ test "the native pointer cache belongs to its window" {
 // cache write after dispatch must find the window gone instead of writing
 // through the stale pointer, and a click sends nothing after the motion that
 // closed its window.
+/// Live: the startup hardware-acceleration policy reaches every window
+/// (render_config.zig, PagePort-independent).
+const PolicyDriver = struct {
+    uri_b: [:0]const u8,
+    main_policy: c_int = -1,
+    popup_policy: c_int = -1,
+
+    fn run(self: *PolicyDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
+        c.zb_automation_free(err);
+        err = null;
+        var buf: [1024]u8 = undefined;
+        const open_body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return;
+        _ = c.zb_automation_eval_json(0, open_body.ptr, null, null, 5000, null, &err);
+        c.zb_automation_free(err);
+        var waited: u32 = 0;
+        while (c.zb_automation_window_id_at(1) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        const child = c.zb_automation_window_id_at(1);
+        self.main_policy = c.zb_automation_debug_hw_policy(c.zb_automation_window_id_at(0), 5000);
+        if (child != 0) self.popup_policy = c.zb_automation_debug_hw_policy(child, 5000);
+    }
+};
+
+test "the startup hardware-acceleration policy reaches the main window and its popups" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-policy-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    defer removeTree(dir);
+    const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_b, fixture_b.ptr, fixture_b.len, null) != 0);
+    const raw_a = gfile.g_filename_to_uri(path_a, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_a);
+    const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_b);
+    const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
+    var driver: PolicyDriver = .{ .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_app_set_hw_policy(c.ZB_HW_POLICY_ALWAYS);
+    defer c.zb_app_set_hw_policy(c.ZB_HW_POLICY_NEVER);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, PolicyDriver.run, .{&driver});
+    _ = c.zb_app_run(uri_a.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(c_int, c.ZB_HW_POLICY_ALWAYS), driver.main_policy);
+    try std.testing.expectEqual(@as(c_int, c.ZB_HW_POLICY_ALWAYS), driver.popup_policy);
+    c.zb_automation_loop_mark(1);
+}
+
 const SelfCloseDriver = struct {
     uri_b: [:0]const u8,
     failures: u32 = 0,

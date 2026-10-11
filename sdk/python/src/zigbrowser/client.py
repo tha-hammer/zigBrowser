@@ -189,8 +189,11 @@ class PageNamespace:
 
     def list(self) -> dict:
         """Every open window, primary first: {pages: [{window_id, url, title,
-        primary, opener_window_id?}]}. Send "window_id" with a page.* or
-        dom.* call (zb.call) to act on another window, e.g. a login popup."""
+        primary, opener_window_id?, crashed?}]}. "crashed" ("crashed",
+        "memory_limit" or "terminated_by_api") means the window's web
+        process died since its last page load. Send "window_id" with a
+        page.* or dom.* call (zb.call) to act on another window, e.g. a
+        login popup."""
         return self._client.call("page.list", {})
 
     def close(self, window_id: str) -> dict:

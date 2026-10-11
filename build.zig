@@ -553,6 +553,24 @@ pub fn build(b: *std.Build) void {
     });
     harness_group_e2e.addArtifactArg(exe);
 
+    // A window whose web process died says so in page.list and on stderr.
+    const web_process_crash_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/web_process_crash_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "web-process-crash-e2e",
+    });
+    web_process_crash_e2e.addArtifactArg(exe);
+
+    // --hardware-acceleration / --renderer reach WebKit's web process.
+    const render_config_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/render_config_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "render-config-e2e",
+    });
+    render_config_e2e.addArtifactArg(exe);
+
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
     const automation_dialogs_e2e = b.addSystemCommand(&.{
@@ -771,6 +789,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_cookies_e2e.step);
     test_step.dependOn(&http2_goaway_e2e.step);
     test_step.dependOn(&harness_group_e2e.step);
+    test_step.dependOn(&web_process_crash_e2e.step);
+    test_step.dependOn(&render_config_e2e.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);

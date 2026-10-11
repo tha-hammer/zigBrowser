@@ -168,7 +168,7 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | `page.title` | — | `{title}` |
 | `page.evaluate` | `expression` (JavaScript expression, may be a Promise) | `{result}`; a thrown error gives -32603 with `data.name` |
 | `page.screenshot` | `fullPage?`, `timeout_ms?` | `{data, width, height}`: `data` is a base64 PNG; a backend without screenshots answers -32603, a PNG over 16 MiB -32603 with `data.reason = "screenshot_too_large"`; a capture that ends past `timeout_ms` -32009 `screenshot_deadline` |
-| `page.list` | — | `{pages:[{window_id, url, title, primary, opener_window_id?}]}`: every open window, primary first |
+| `page.list` | — | `{pages:[{window_id, url, title, primary, opener_window_id?, crashed?}]}`: every open window, primary first. `crashed` (`"crashed"`, `"memory_limit"`, `"terminated_by_api"`): that window's web process died since its last page load; its page is gone (calls on it fail) until it loads a page again. The browser also prints `zigBrowser: window <n>: web process terminated (<reason>)` on stderr |
 | `page.close` | `window_id` | `{ok:true}`; the primary window cannot be closed (-32602 `primary_window`) |
 
 Other `page.*` calls and every `dom.*` call take an optional `window_id` (from
