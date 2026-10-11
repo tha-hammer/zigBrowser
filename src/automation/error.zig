@@ -19,6 +19,9 @@ pub const AutomationError = enum {
     /// "Leave site?" prompt) is open and blocks the command; dialog.get shows
     /// it, dialog.respond answers it.
     dialog_open,
+    /// -32014: page.recover is ending and reloading this window's web
+    /// process; the command was not run.
+    recovering,
 };
 
 pub const error_count = @typeInfo(AutomationError).@"enum".fields.len;
@@ -53,6 +56,7 @@ pub fn isRetryable(err: AutomationError) bool {
         .session_invalid,
         .cancelled,
         .dialog_open,
+        .recovering,
         => false,
     };
 }

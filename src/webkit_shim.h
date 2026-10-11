@@ -150,6 +150,16 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json);
  * process, so closing the popup leaves the opener's page as it was. A
  * page's own window.close() closes a window a script opened, the same way. */
 int zb_automation_close_window(uint32_t id, unsigned int timeout_ms);
+/* page.recover (watchdog slice 2): end window ids[0]'s web process, wait
+ * until WebKit reports it ended, forget the native pointer of each listed
+ * window whose page it ran, and load each of those again from the URL it
+ * showed. `ids` (1..ZB_MAX_WINDOWS) are the windows at risk, ids[0] first.
+ * On success *out_json is [{"id":n,"url":"...","ended":bool,
+ * "reloaded":bool}, ...] in `ids` order (free with zb_automation_free).
+ * NO_WINDOW if ids[0] is gone; TIMEOUT if the process did not end in time
+ * (nothing is reloaded then). stderr says "web process ended by
+ * page.recover" for each window it ended. */
+int zb_automation_recover_windows(const uint32_t *ids, int n, unsigned int timeout_ms, char **out_json);
 
 /* Ops below: win is a window id (0 = the original primary, waited for until
  * the deadline before it exists, ZB_AUTO_ERR_NO_WINDOW once it closed); any

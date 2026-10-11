@@ -68,6 +68,7 @@ const vtable: PagePort.VTable = .{
     .nativeScroll = nativeScroll,
     .screenshot = screenshot,
     .listWindows = listWindows,
+    .recoverWindows = recoverWindows,
     .forWindow = forWindow,
     .closeWindow = closeWindow,
     .navigateWithPolicy = navigateWithPolicy,
@@ -134,7 +135,7 @@ test "shim window JSON becomes WindowInfo with the web-process termination reaso
 test "shim window JSON carries each window's health (page.health); without it a window counts as healthy" {
     const gpa = std.testing.allocator;
     const windows = try parseWindows(gpa,
-        \\[{"id":1,"url":"","title":"","primary":true,"opener":0,"responsive":false,"unresponsive_ms":4200,"loading":true,"dialog_open":false,"crashed":null},
+        \\[{"id":1,"url":"","title":"","primary":true,"opener":0,"responsive":false,"unresponsive_ms":4200,"incident":3,"process_group":1,"loading":true,"dialog_open":false,"crashed":null},
         \\ {"id":2,"url":"","title":"","primary":false,"opener":1,"responsive":true,"unresponsive_ms":0,"loading":false,"dialog_open":true,"crashed":null},
         \\ {"id":3,"url":"","title":"","primary":false,"opener":1,"crashed":null}]
     );
@@ -142,6 +143,9 @@ test "shim window JSON carries each window's health (page.health); without it a 
     try std.testing.expect(!windows[0].web_process_responsive);
     try std.testing.expectEqual(@as(u64, 4200), windows[0].unresponsive_ms);
     try std.testing.expect(windows[0].loading and !windows[0].dialog_open);
+    try std.testing.expectEqual(@as(u32, 3), windows[0].incident);
+    try std.testing.expectEqual(@as(page_port.WindowId, 1), windows[0].process_group);
+    try std.testing.expectEqual(@as(page_port.WindowId, 0), windows[2].process_group);
     try std.testing.expect(windows[1].web_process_responsive and windows[1].dialog_open and !windows[1].loading);
     try std.testing.expect(windows[2].web_process_responsive and windows[2].unresponsive_ms == 0);
 }
@@ -203,6 +207,8 @@ fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
         unresponsive_ms: u64 = 0,
         loading: bool = false,
         dialog_open: bool = false,
+        incident: u32 = 0,
+        process_group: u32 = 0,
     };
     const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -243,10 +249,69 @@ fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
             .unresponsive_ms = wire.unresponsive_ms,
             .loading = wire.loading,
             .dialog_open = wire.dialog_open,
+            .incident = wire.incident,
+            .process_group = wire.process_group,
         };
         filled += 1;
     }
     return windows;
+}
+
+/// page.recover: the shim ends ids[0]'s web process, waits for it, clears
+/// the pointer of each window it ended and reloads them. Then their native
+/// acknowledgement state goes too (the old document owes nothing); a
+/// command still finishing on the old page holds txn_lock until it ends,
+/// and a tracker left behind is harmless (its document is gone).
+fn recoverWindows(_: *anyopaque, gpa: std.mem.Allocator, ids: []const page_port.WindowId, timeout_ms: u64) PortError![]page_port.RecoveredWindow {
+    if (ids.len == 0) return error.NoPage;
+    const deadline = deadlineAfter(timeout_ms);
+    var out: [*c]u8 = null;
+    const rc = c.zb_automation_recover_windows(ids.ptr, @intCast(ids.len), clampMs(timeout_ms), &out);
+    defer c.zb_automation_free(out);
+    try mapCode(rc);
+    if (out == null) return error.EvalFailed;
+    const recovered = try parseRecovered(gpa, std.mem.span(out));
+    errdefer page_port.freeRecovered(gpa, recovered);
+    if (txn_lock.lockUntil(@min(deadline, deadlineAfter(5000)))) {
+        defer txn_lock.unlock();
+        for (recovered) |w| if (w.ended) dropAcks(w.id);
+    } else |_| {}
+    return recovered;
+}
+
+fn parseRecovered(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.RecoveredWindow {
+    const Wire = struct { id: u32, url: []const u8, ended: bool, reloaded: bool };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EvalFailed,
+    };
+    defer parsed.deinit();
+    const windows = try gpa.alloc(page_port.RecoveredWindow, parsed.value.len);
+    var filled: usize = 0;
+    errdefer {
+        for (windows[0..filled]) |w| gpa.free(w.url);
+        gpa.free(windows);
+    }
+    for (parsed.value, windows) |wire, *w| {
+        w.* = .{ .id = wire.id, .url = try gpa.dupe(u8, wire.url), .ended = wire.ended, .reloaded = wire.reloaded };
+        filled += 1;
+    }
+    return windows;
+}
+
+test "shim recovery JSON becomes RecoveredWindow; malformed JSON is EvalFailed" {
+    const g = std.testing.allocator;
+    const recovered = try parseRecovered(g,
+        \\[{"id":1,"url":"https://a.example/","ended":true,"reloaded":true},
+        \\ {"id":3,"url":"https://b.example/","ended":false,"reloaded":false}]
+    );
+    defer page_port.freeRecovered(g, recovered);
+    try std.testing.expectEqual(@as(usize, 2), recovered.len);
+    try std.testing.expectEqualStrings("https://a.example/", recovered[0].url);
+    try std.testing.expect(recovered[0].ended and recovered[0].reloaded);
+    try std.testing.expectEqual(@as(page_port.WindowId, 3), recovered[1].id);
+    try std.testing.expect(!recovered[1].ended and !recovered[1].reloaded);
+    try std.testing.expectError(error.EvalFailed, parseRecovered(g, "[{\"id\":1}]"));
 }
 
 /// A pure handle for window `id`: no page work, no allocation. A handle

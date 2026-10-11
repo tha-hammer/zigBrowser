@@ -25,6 +25,8 @@
     {"id": "page.evaluate", "method": "page.evaluate", "params": {"expression": "1+1"}},
     {"id": "page.list", "method": "page.list", "params": {}},
     {"id": "page.health", "method": "page.health", "params": {}},
+    {"id": "page.recover", "method": "page.recover", "params": {"window_id": "window-1"}},
+    {"id": "page.recover.confirm", "method": "page.recover", "params": {"window_id": "window-1", "incident": "0123456789abcdef0123456789abcdef", "acknowledge": ["window-1", "window-2"]}},
     {"id": "page.close", "method": "page.close", "params": {"window_id": "window-2"}},
     {"id": "page.navigate.onBeforeUnload", "method": "page.navigate", "params": {"url": "https://example.com/", "onBeforeUnload": "accept"}},
     {"id": "dialog.get", "method": "dialog.get", "params": {}},

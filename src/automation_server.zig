@@ -96,6 +96,8 @@ pub const AutomationApiServer = struct {
     social: social_routes.SocialState = undefined,
     /// N21: saves `social` and `x_state` to config.pacing_state_path.
     persister: automation.pacing_store.Persister = undefined,
+    /// page.recover's outstanding incident tokens.
+    recover: RecoverState,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -116,6 +118,7 @@ pub const AutomationApiServer = struct {
             .io = io,
             .clock = .{ .io = io },
             .queue = queue_mod.PageCommandQueue.init(allocator, io),
+            .recover = .{ .allocator = allocator, .io = io },
             .recent_traces = automation.telemetry.RecentTraceStore.init(allocator, recent_trace_capacity),
             .config = .{
                 .enabled = config.enabled,
@@ -136,6 +139,7 @@ pub const AutomationApiServer = struct {
         self.stop();
         self.connections.deinit(self.allocator);
         self.queue.deinit();
+        self.recover.deinit();
         self.recent_traces.deinit();
         self.allocator.free(self.config.socket_path);
         self.allocator.free(self.config.token);
@@ -348,7 +352,7 @@ pub const AutomationApiServer = struct {
     fn handleRequest(self: *AutomationApiServer, allocator: std.mem.Allocator, payload: []const u8) error{OutOfMemory}![]u8 {
         var route = primary_route;
         route.telemetry_sink = self.tee.sink();
-        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping, .fixture_origin = self.config.social_fixture_origin }, &self.recent_traces, &self.x_state);
+        return handleRequestWith(allocator, payload, self.config.token, &self.engine, &self.queue, &self.social, route, self.config.build_info, .{ .io = self.io, .port = self.config.cookie_port, .stopping = &self.stopping, .fixture_origin = self.config.social_fixture_origin }, &self.recent_traces, &self.x_state, &self.recover);
     }
 };
 
@@ -417,6 +421,7 @@ fn handleRequestWith(
     cookies: CookieContext,
     recent_traces: *automation.telemetry.RecentTraceStore,
     x_state: *x_routes.XState,
+    recover: *RecoverState,
 ) error{OutOfMemory}![]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -475,6 +480,9 @@ fn handleRequestWith(
     if (std.mem.eql(u8, method, "page.list") or std.mem.eql(u8, method, "page.close") or std.mem.eql(u8, method, "page.health")) {
         return handleWindows(allocator, id_json, method, params_json, engine, queue, route, build_info);
     }
+    if (std.mem.eql(u8, method, "page.recover")) {
+        return handleRecover(allocator, id_json, params_json, engine, queue, recover, route, build_info);
+    }
     if (std.mem.eql(u8, method, "dialog.get") or std.mem.eql(u8, method, "dialog.respond")) {
         return handleDialogs(allocator, id_json, method, params_json, engine, route, build_info);
     }
@@ -517,6 +525,7 @@ fn handleRequestWith(
     const maybe_ticket: ?queue_mod.Ticket = queue.acquire(window_route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
+        error.Recovering => return recoveringReply(allocator, id_json, engine, method, window_route, build_info),
     };
     defer if (maybe_ticket) |ticket| queue.release(ticket);
 
@@ -774,6 +783,7 @@ fn handleWindows(
     const ticket: ?queue_mod.Ticket = if (closing) (queue.acquire(close_route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
+        error.Recovering => return recoveringReply(allocator, id_json, engine, method, close_route, build_info),
     }) else null;
     defer if (ticket) |t| queue.release(t);
     var outcome = try engine.executeExternal(allocator, method, "page", .{
@@ -783,6 +793,311 @@ fn handleWindows(
         .build = build_info,
         .no_page_reason = "no_window",
     }, Call{ .target = target, .closing = closing, .health = health }, Call.run);
+    defer outcome.deinit(allocator);
+    return outcomeJson(allocator, id_json, outcome);
+}
+
+// ---- Watchdog slice 2: page.recover ----
+
+/// How long a page.recover incident token stays valid.
+pub const recover_incident_ttl_ms: u64 = 60_000;
+/// Bound for one confirmed recovery (the process ending, reloads started).
+const recover_timeout_ms: u64 = 15_000;
+const recover_list_timeout_ms: u64 = 10_000;
+const incident_token_len = 32;
+
+/// page.recover's outstanding incidents: at most one per window (a newer
+/// first call replaces it). Each token is used once.
+pub const RecoverState = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+    pending: std.ArrayListUnmanaged(Pending) = .empty,
+
+    const Pending = struct {
+        window: page_port.WindowId,
+        token: [incident_token_len]u8,
+        incident: u32,
+        /// Owned; the target first.
+        at_risk: []page_port.WindowId,
+        issued_ms: u64,
+    };
+
+    fn deinit(self: *RecoverState) void {
+        for (self.pending.items) |p| self.allocator.free(p.at_risk);
+        self.pending.deinit(self.allocator);
+    }
+
+    fn indexOf(self: *RecoverState, window: page_port.WindowId) ?usize {
+        for (self.pending.items, 0..) |p, i| if (p.window == window) return i;
+        return null;
+    }
+
+    fn drop(self: *RecoverState, i: usize) void {
+        self.allocator.free(self.pending.items[i].at_risk);
+        _ = self.pending.swapRemove(i);
+    }
+
+    /// A new token for `window`'s incident, replacing any older one.
+    fn issue(self: *RecoverState, window: page_port.WindowId, incident: u32, at_risk: []const page_port.WindowId, now_ms: u64) error{ OutOfMemory, NoEntropy }![incident_token_len]u8 {
+        var bytes: [incident_token_len / 2]u8 = undefined;
+        self.io.randomSecure(&bytes) catch return error.NoEntropy;
+        const token = std.fmt.bytesToHex(bytes, .lower);
+        const owned = try self.allocator.dupe(page_port.WindowId, at_risk);
+        errdefer self.allocator.free(owned);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.indexOf(window)) |i| self.drop(i);
+        try self.pending.append(self.allocator, .{ .window = window, .token = token, .incident = incident, .at_risk = owned, .issued_ms = now_ms });
+        return token;
+    }
+
+    const Check = enum { ok, unknown, over, mismatch };
+
+    /// Phase 2: the token must be `window`'s current one and unexpired, the
+    /// window still `frozen` in the same incident, and `at_risk_now` and
+    /// `acknowledged` both equal to the windows it listed. On .ok the token
+    /// is used up, and so is every other token for a window of that family
+    /// (one confirmation per incident: a sibling's token must not end the
+    /// reloaded process again); an unknown, over or changed incident drops
+    /// it; a wrong acknowledgement keeps it. Confirmations are serialized
+    /// by `mutex`.
+    fn consume(self: *RecoverState, window: page_port.WindowId, token: []const u8, incident: u32, frozen: bool, at_risk_now: []const page_port.WindowId, acknowledged: []const page_port.WindowId, now_ms: u64) Check {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const i = self.indexOf(window) orelse return .unknown;
+        const p = self.pending.items[i];
+        if (!std.mem.eql(u8, &p.token, token)) return .unknown;
+        if (now_ms -| p.issued_ms >= recover_incident_ttl_ms) {
+            self.drop(i);
+            return .unknown;
+        }
+        if (!frozen or p.incident != incident) {
+            self.drop(i);
+            return .over;
+        }
+        if (!sameWindows(p.at_risk, at_risk_now)) {
+            self.drop(i);
+            return .mismatch;
+        }
+        if (!sameWindows(p.at_risk, acknowledged)) return .mismatch;
+        var j: usize = self.pending.items.len;
+        while (j > 0) {
+            j -= 1;
+            const other = self.pending.items[j];
+            const same_family = std.mem.indexOfScalar(page_port.WindowId, at_risk_now, other.window) != null or
+                for (other.at_risk) |id| {
+                    if (std.mem.indexOfScalar(page_port.WindowId, at_risk_now, id) != null) break true;
+                } else false;
+            if (same_family) self.drop(j);
+        }
+        return .ok;
+    }
+};
+
+/// The same windows, each once, in any order.
+fn sameWindows(a: []const page_port.WindowId, b: []const page_port.WindowId) bool {
+    if (a.len != b.len) return false;
+    for (b, 0..) |id, i| {
+        if (std.mem.indexOfScalar(page_port.WindowId, b[0..i], id) != null) return false;
+        if (std.mem.indexOfScalar(page_port.WindowId, a, id) == null) return false;
+    }
+    return true;
+}
+
+/// -32014 recovering for a command whose window page.recover is working on
+/// (with ids and a root span, like any refused command).
+fn recoveringReply(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    engine: *engine_mod.Engine,
+    method: []const u8,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    const Refuse = struct {
+        fn run(_: void, gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            return engine_mod.automationFailure(gpa, .recovering, "recovering", ext.ids());
+        }
+    };
+    const dot = std.mem.indexOfScalar(u8, method, '.') orelse method.len;
+    var outcome = try engine.executeExternal(allocator, method, method[0..dot], .{ .route = route, .build = build_info }, {}, Refuse.run);
+    defer outcome.deinit(allocator);
+    return outcomeJson(allocator, id_json, outcome);
+}
+
+/// page.recover {window_id} -> {incident, window_id, unresponsive_ms,
+/// at_risk:[{window_id, url}], expires_in_ms}: phase 1, nothing ended.
+/// page.recover {window_id, incident, acknowledge:[window_id...]} ->
+/// {recovered:[{window_id, url, ended, reloaded}]}: phase 2. Out of band
+/// (no queue turn: the frozen window's turn is held by the command it
+/// froze on). See docs/how-to-automate.md "Recovering a frozen page".
+fn handleRecover(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    queue: *queue_mod.PageCommandQueue,
+    recover: *RecoverState,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer parsed.deinit();
+    const params = switch (parsed.value) {
+        .object => |o| o,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    const window: page_port.WindowId = switch (params.get("window_id") orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null)) {
+        .string => |text| parseWindowId(text) orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    const incident_value = params.get("incident");
+    const ack_value = params.get("acknowledge");
+    const confirming = incident_value != null;
+    if ((incident_value == null) != (ack_value == null)) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+    if (params.count() != @as(usize, if (confirming) 3 else 1)) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+    var incident_token: []const u8 = "";
+    var acknowledged: std.ArrayListUnmanaged(page_port.WindowId) = .empty;
+    defer acknowledged.deinit(allocator);
+    if (confirming) {
+        incident_token = switch (incident_value.?) {
+            .string => |text| text,
+            else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+        };
+        if (incident_token.len != incident_token_len) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+        for (incident_token) |ch| if (!std.ascii.isHex(ch)) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+        const items = switch (ack_value.?) {
+            .array => |a| a.items,
+            else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+        };
+        for (items) |item| {
+            const id = switch (item) {
+                .string => |text| parseWindowId(text) orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+                else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+            };
+            try acknowledged.append(allocator, id);
+        }
+    }
+
+    const Call = struct {
+        window: page_port.WindowId,
+        confirming: bool,
+        token: []const u8,
+        acknowledged: []const page_port.WindowId,
+        queue: *queue_mod.PageCommandQueue,
+        recover: *RecoverState,
+
+        fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+            const windows = ext.listWindows(gpa, recover_list_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+            defer page_port.freeWindows(gpa, windows);
+            const target = for (windows) |w| {
+                if (w.id == self.window) break w;
+            } else return engine_mod.portFailure(gpa, error.NoPage, .action, ext.ids());
+            // Every window of the target's process family, primary first.
+            const family = groupOf(target);
+            var at_risk: std.ArrayListUnmanaged(page_port.WindowId) = .empty;
+            defer at_risk.deinit(gpa);
+            try at_risk.append(gpa, target.id);
+            for (windows) |w| if (w.id != target.id and groupOf(w) == family) try at_risk.append(gpa, w.id);
+            const frozen = !healthResponsive(target.web_process_responsive, target.unresponsive_ms);
+            const now_ms = ext.engine.clock.nowMs();
+            if (!self.confirming) {
+                if (!frozen) return engine_mod.failureWithReason(gpa, engine_mod.invalid_params_code, "Invalid params", "not_unresponsive", ext.ids());
+                const issued = self.recover.issue(target.id, target.incident, at_risk.items, now_ms) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.NoEntropy => return .{ .failure = .{ .code = engine_mod.internal_error_code, .message = "No entropy for the incident token" } },
+                };
+                return incidentJson(gpa, &issued, target, at_risk.items, windows);
+            }
+            switch (self.recover.consume(target.id, self.token, target.incident, frozen, at_risk.items, self.acknowledged, now_ms)) {
+                .ok => {},
+                .unknown => return engine_mod.failureWithReason(gpa, engine_mod.invalid_params_code, "Invalid params", "incident_unknown", ext.ids()),
+                .over => return engine_mod.failureWithReason(gpa, engine_mod.invalid_params_code, "Invalid params", "incident_over", ext.ids()),
+                .mismatch => return mismatchFailure(gpa, at_risk.items, ext.ids()),
+            }
+
+            // Confirmed: the windows' queues refuse new commands and cancel
+            // the ones they hold, until the process ended and reloads began.
+            var page_bufs: [64][24]u8 = undefined;
+            var page_ids: [64][]const u8 = undefined;
+            const n = @min(at_risk.items.len, page_ids.len);
+            for (at_risk.items[0..n], 0..) |id, i| page_ids[i] = std.fmt.bufPrint(&page_bufs[i], "page-{d}", .{id}) catch unreachable;
+            self.queue.beginRecovery(page_ids[0..n]) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.Recovering => return engine_mod.automationFailure(gpa, .recovering, "recovering", ext.ids()),
+            };
+            defer self.queue.endRecovery(page_ids[0..n]);
+            const recovered = ext.recoverWindows(gpa, at_risk.items, recover_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+            defer page_port.freeRecovered(gpa, recovered);
+            return recoveredJson(gpa, recovered);
+        }
+
+        fn groupOf(w: page_port.WindowInfo) page_port.WindowId {
+            return if (w.process_group != 0) w.process_group else w.id;
+        }
+
+        fn incidentJson(gpa: std.mem.Allocator, issued: []const u8, target: page_port.WindowInfo, at_risk: []const page_port.WindowId, windows: []const page_port.WindowInfo) error{OutOfMemory}!engine_mod.Outcome {
+            var out: std.Io.Writer.Allocating = .init(gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            w.print("{{\"incident\":\"{s}\",\"window_id\":\"" ++ window_prefix ++ "{d}\",\"unresponsive_ms\":{d},\"at_risk\":[", .{ issued, target.id, target.unresponsive_ms }) catch return error.OutOfMemory;
+            for (at_risk, 0..) |id, i| {
+                if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+                const url = for (windows) |win| {
+                    if (win.id == id) break win.url;
+                } else "";
+                w.print("{{\"window_id\":\"" ++ window_prefix ++ "{d}\",\"url\":{f}}}", .{ id, std.json.fmt(url, .{}) }) catch return error.OutOfMemory;
+            }
+            w.print("],\"expires_in_ms\":{d}}}", .{recover_incident_ttl_ms}) catch return error.OutOfMemory;
+            return .{ .result = try out.toOwnedSlice() };
+        }
+
+        fn mismatchFailure(gpa: std.mem.Allocator, at_risk: []const page_port.WindowId, ids: anytype) error{OutOfMemory}!engine_mod.Outcome {
+            var out: std.Io.Writer.Allocating = .init(gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            w.writeAll("{\"reason\":\"acknowledge_mismatch\",\"at_risk\":[") catch return error.OutOfMemory;
+            for (at_risk, 0..) |id, i| {
+                if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+                w.print("\"" ++ window_prefix ++ "{d}\"", .{id}) catch return error.OutOfMemory;
+            }
+            w.print("],\"trace_id\":{f},\"command_id\":{f}}}", .{ std.json.fmt(ids.trace_id, .{}), std.json.fmt(ids.command_id, .{}) }) catch return error.OutOfMemory;
+            return .{ .failure = .{ .code = engine_mod.invalid_params_code, .message = "Invalid params", .data_json = try out.toOwnedSlice() } };
+        }
+
+        fn recoveredJson(gpa: std.mem.Allocator, recovered: []const page_port.RecoveredWindow) error{OutOfMemory}!engine_mod.Outcome {
+            var out: std.Io.Writer.Allocating = .init(gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            w.writeAll("{\"recovered\":[") catch return error.OutOfMemory;
+            for (recovered, 0..) |r, i| {
+                if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+                w.print("{{\"window_id\":\"" ++ window_prefix ++ "{d}\",\"url\":{f},\"ended\":{},\"reloaded\":{}}}", .{ r.id, std.json.fmt(r.url, .{}), r.ended, r.reloaded }) catch return error.OutOfMemory;
+            }
+            w.writeAll("]}") catch return error.OutOfMemory;
+            return .{ .result = try out.toOwnedSlice() };
+        }
+    };
+
+    // Telemetry names the window asked about, as page.close does.
+    var route_bufs: [2][24]u8 = undefined;
+    const recover_route = windowRoute(route, window, &route_bufs);
+    var outcome = try engine.executeExternal(allocator, "page.recover", "page", .{
+        .route = recover_route,
+        .build = build_info,
+        .no_page_reason = "no_window",
+    }, Call{
+        .window = window,
+        .confirming = confirming,
+        .token = incident_token,
+        .acknowledged = acknowledged.items,
+        .queue = queue,
+        .recover = recover,
+    }, Call.run);
     defer outcome.deinit(allocator);
     return outcomeJson(allocator, id_json, outcome);
 }
@@ -963,6 +1278,7 @@ fn handleX(
     const ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
+        error.Recovering => return recoveringReply(allocator, id_json, engine, method, route, build_info),
     };
     defer if (ticket) |t| queue.release(t);
     const already_cancelled = std.atomic.Value(bool).init(true);
@@ -1013,6 +1329,7 @@ fn handleSocialFlow(
     const ticket: ?queue_mod.Ticket = queue.acquire(route.page_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Cancelled => null,
+        error.Recovering => return recoveringReply(allocator, id_json, engine, method, route, build_info),
     };
     defer if (ticket) |t| queue.release(t);
     const already_cancelled = std.atomic.Value(bool).init(true);
@@ -1066,6 +1383,7 @@ fn handleSocial(
     if (needs_page) {
         ticket = queue.acquire(route.page_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
+            error.Recovering => return recoveringReply(allocator, id_json, engine, method, route, build_info),
             error.Cancelled => blk: {
                 queued_cancelled = true;
                 break :blk null;

@@ -31,6 +31,15 @@ Slice 3/4 (Linux GTK now):
   process stays responsive and answers. A 9 s busy loop turns false, then
   true again. An open alert shows `dialog_open` and stays responsive. Only
   a loading window shows `loading`)
+- `page_recover_test.py` (gate step: `page.recover`. A native click
+  freezes window 1, whose same-origin popup shares its web process; a
+  noopener popup has its own. Phase 1 refuses a responsive window and
+  lists all three windows at risk. A wrong token or an incomplete or
+  padded acknowledgement ends nothing. Confirmed, windows 1 and 2 are ended
+  and reloaded from their URLs, the noopener popup is not ended and keeps
+  its state, the frozen process is gone, the held click and a queued
+  command each end -32012, and afterwards everything is responsive, a
+  native click works and the used token is refused)
 - `media_source_test.py` (gate step: `--media-source off` and
   `ZIGBROWSER_MEDIA_SOURCE=off` hide `MediaSource` from window 1, a
   same-origin popup, a cross-origin noopener popup, an about:blank iframe

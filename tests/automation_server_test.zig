@@ -1225,6 +1225,7 @@ const FakePort = struct {
         .url = url,
         .title = title,
         .listWindows = listWindows,
+        .recoverWindows = recoverWindows,
         .forWindow = forWindow,
         .closeWindow = closeWindow,
         .nativeClick = nativeClick,
@@ -1265,6 +1266,19 @@ const FakePort = struct {
         list_error: ?page_port.PortError = null,
         /// The handle for ids that never existed.
         ghost: FakePort = .{ .eval_reply = "{}", .gone = true },
+        /// Watchdog: window 1 is unresponsive for this long (0: responsive),
+        /// in this incident. Windows 1 and 2 share a process family; 3 has
+        /// its own.
+        primary_unresponsive_ms: u64 = 0,
+        primary_incident: u32 = 1,
+        /// Window 2's unresponsive time (inside the debounce by default).
+        second_unresponsive_ms: u64 = 500,
+        /// recoverWindows: calls, the ids of the last one, and a hold.
+        recover_calls: std.atomic.Value(u32) = .init(0),
+        recover_ids: [4]page_port.WindowId = .{ 0, 0, 0, 0 },
+        recover_len: usize = 0,
+        recover_hold: std.atomic.Value(bool) = .init(false),
+        recover_entered: std.atomic.Value(bool) = .init(false),
     };
 
     fn listWindows(ptr: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]page_port.WindowInfo {
@@ -1274,7 +1288,16 @@ const FakePort = struct {
         if (popups.list_error) |err| return err;
         var list: std.ArrayListUnmanaged(page_port.WindowInfo) = .empty;
         errdefer list.deinit(gpa);
-        try list.append(gpa, .{ .id = 1, .url = try gpa.dupe(u8, "file:///fixture/index.html"), .title = try gpa.dupe(u8, "Fixture"), .primary = true });
+        try list.append(gpa, .{
+            .id = 1,
+            .url = try gpa.dupe(u8, "file:///fixture/index.html"),
+            .title = try gpa.dupe(u8, "Fixture"),
+            .primary = true,
+            .web_process_responsive = popups.primary_unresponsive_ms == 0,
+            .unresponsive_ms = popups.primary_unresponsive_ms,
+            .incident = popups.primary_incident,
+            .process_group = 1,
+        });
         for (popups.open, 0..) |open, i| {
             if (!open) continue;
             // The second popup's web process crashed (v3.8 terminated).
@@ -1289,12 +1312,28 @@ const FakePort = struct {
                 .opener = 1,
                 .terminated = if (i == 1) .crashed else null,
                 .web_process_responsive = false,
-                .unresponsive_ms = if (i == 0) 500 else 9000,
+                .unresponsive_ms = if (i == 0) popups.second_unresponsive_ms else 9000,
                 .loading = i == 0,
                 .dialog_open = i == 1,
+                .incident = if (i == 0) 7 else 9,
+                .process_group = if (i == 0) 1 else 3,
             });
         }
         return list.toOwnedSlice(gpa);
+    }
+    fn recoverWindows(ptr: *anyopaque, gpa: std.mem.Allocator, ids: []const page_port.WindowId, _: u64) page_port.PortError![]page_port.RecoveredWindow {
+        const self: *FakePort = @ptrCast(@alignCast(ptr));
+        const popups = self.popups orelse return error.Unsupported;
+        _ = popups.recover_calls.fetchAdd(1, .acq_rel);
+        popups.recover_len = @min(ids.len, popups.recover_ids.len);
+        @memcpy(popups.recover_ids[0..popups.recover_len], ids[0..popups.recover_len]);
+        popups.recover_entered.store(true, .release);
+        while (popups.recover_hold.load(.acquire)) testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
+        const out = try gpa.alloc(page_port.RecoveredWindow, ids.len);
+        for (ids, out) |id, *w| w.* = .{ .id = id, .url = try std.fmt.allocPrint(gpa, "https://fixture.example/{d}", .{id}), .ended = true, .reloaded = true };
+        // Its process ended: window 1 answers again.
+        popups.primary_unresponsive_ms = 0;
+        return out;
     }
     fn forWindow(ptr: *anyopaque, id: page_port.WindowId) page_port.PortError!page_port.PagePort {
         const self: *FakePort = @ptrCast(@alignCast(ptr));
@@ -1697,6 +1736,372 @@ test "watchdog: page.health reports each window's health, debounced, out of band
     const released = try readFrame(held_stream);
     defer testing.allocator.free(released);
     try testing.expect(std.mem.indexOf(u8, released, "\"result\"") != null);
+}
+
+fn recoverRpc(stream: net.Stream, comptime params: []const u8) !std.json.Parsed(std.json.Value) {
+    return rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.recover\",\"params\":" ++ params ++ ",\"id\":1}");
+}
+
+fn recoverRpcFmt(stream: net.Stream, buf: []u8, comptime fmt: []const u8, args: anytype) !std.json.Parsed(std.json.Value) {
+    const request = try std.fmt.bufPrint(buf, "{{\"jsonrpc\":\"2.0\",\"method\":\"page.recover\",\"params\":" ++ fmt ++ ",\"id\":1}}", args);
+    return rpc(stream, request);
+}
+
+test "watchdog: page.recover phase 1 issues an incident token and lists every window at risk; it refuses a responsive or unknown window and ends nothing" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("recover1", .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    // Malformed: -32602 with no reason.
+    inline for (.{
+        "{}",
+        "{\"window_id\":1}",
+        "{\"window_id\":\"window-0\"}",
+        "{\"window_id\":\"window-1\",\"x\":1}",
+        "{\"window_id\":\"window-1\",\"incident\":\"abc\"}",
+        "{\"window_id\":\"window-1\",\"acknowledge\":[\"window-1\"]}",
+        "{\"window_id\":\"window-1\",\"incident\":\"abc\",\"acknowledge\":\"window-1\"}",
+        "{\"window_id\":\"window-1\",\"incident\":\"abc\",\"acknowledge\":[1]}",
+    }) |params| {
+        var bad = try recoverRpc(stream, params);
+        defer bad.deinit();
+        try testing.expectEqual(@as(i64, -32602), errorOf(bad).?.code);
+    }
+    // Window 1 answers; window 2 has been unresponsive for less than the
+    // debounce: nothing to recover.
+    inline for (.{ "{\"window_id\":\"window-1\"}", "{\"window_id\":\"window-2\"}" }) |params| {
+        var responsive = try recoverRpc(stream, params);
+        defer responsive.deinit();
+        const e = errorOf(responsive).?;
+        try testing.expectEqual(@as(i64, -32602), e.code);
+        try testing.expectEqualStrings("not_unresponsive", e.reason.?);
+    }
+    {
+        var gone = try recoverRpc(stream, "{\"window_id\":\"window-9\"}");
+        defer gone.deinit();
+        const e = errorOf(gone).?;
+        try testing.expectEqual(@as(i64, -32011), e.code);
+        try testing.expectEqualStrings("no_window", e.reason.?);
+    }
+
+    // Window 1 frozen: a token, and windows 1 and 2 (one process family)
+    // at risk, primary first; window 3 has a family of its own.
+    popups.primary_unresponsive_ms = 4000;
+    var first = try recoverRpc(stream, "{\"window_id\":\"window-1\"}");
+    defer first.deinit();
+    const result = first.value.object.get("result").?.object;
+    const token = result.get("incident").?.string;
+    try testing.expectEqual(@as(usize, 32), token.len);
+    for (token) |ch| try testing.expect(std.ascii.isHex(ch) and !std.ascii.isUpper(ch));
+    try testing.expectEqualStrings("window-1", result.get("window_id").?.string);
+    try testing.expectEqual(@as(i64, 4000), result.get("unresponsive_ms").?.integer);
+    try testing.expectEqual(@as(i64, automation_server.recover_incident_ttl_ms), result.get("expires_in_ms").?.integer);
+    const at_risk = result.get("at_risk").?.array.items;
+    try testing.expectEqual(@as(usize, 2), at_risk.len);
+    try testing.expectEqualStrings("window-1", at_risk[0].object.get("window_id").?.string);
+    try testing.expectEqualStrings("file:///fixture/index.html", at_risk[0].object.get("url").?.string);
+    try testing.expectEqualStrings("window-2", at_risk[1].object.get("window_id").?.string);
+    try testing.expectEqualStrings("https://login.example/popup-2", at_risk[1].object.get("url").?.string);
+
+    // Window 3 is frozen too (9 s): its own incident, only itself at risk.
+    var third = try recoverRpc(stream, "{\"window_id\":\"window-3\"}");
+    defer third.deinit();
+    const third_risk = third.value.object.get("result").?.object.get("at_risk").?.array.items;
+    try testing.expectEqual(@as(usize, 1), third_risk.len);
+    try testing.expectEqualStrings("window-3", third_risk[0].object.get("window_id").?.string);
+    try testing.expect(!std.mem.eql(u8, token, third.value.object.get("result").?.object.get("incident").?.string));
+
+    // Phase 1 ends nothing.
+    try testing.expectEqual(@as(u32, 0), popups.recover_calls.load(.acquire));
+}
+
+test "watchdog: page.recover phase 2 needs the current token and an acknowledgement of exactly the windows at risk" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("recover2", .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    popups.primary_unresponsive_ms = 4000;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    var buf: [512]u8 = undefined;
+
+    var first = try recoverRpc(stream, "{\"window_id\":\"window-1\"}");
+    defer first.deinit();
+    const token = first.value.object.get("result").?.object.get("incident").?.string;
+
+    const Refusal = struct { params: []const u8, reason: []const u8 };
+    var wrong_window: [160]u8 = undefined;
+    var short_ack: [160]u8 = undefined;
+    var extra_ack: [200]u8 = undefined;
+    var dup_ack: [200]u8 = undefined;
+    const refusals = [_]Refusal{
+        .{ .params = "{\"window_id\":\"window-1\",\"incident\":\"00000000000000000000000000000000\",\"acknowledge\":[\"window-1\",\"window-2\"]}", .reason = "incident_unknown" },
+        // The token belongs to window 1.
+        .{ .params = try std.fmt.bufPrint(&wrong_window, "{{\"window_id\":\"window-3\",\"incident\":\"{s}\",\"acknowledge\":[\"window-3\"]}}", .{token}), .reason = "incident_unknown" },
+        .{ .params = try std.fmt.bufPrint(&short_ack, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\"]}}", .{token}), .reason = "acknowledge_mismatch" },
+        .{ .params = try std.fmt.bufPrint(&extra_ack, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\",\"window-3\"]}}", .{token}), .reason = "acknowledge_mismatch" },
+        .{ .params = try std.fmt.bufPrint(&dup_ack, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-1\"]}}", .{token}), .reason = "acknowledge_mismatch" },
+    };
+    for (refusals) |refusal| {
+        var refused = try recoverRpcFmt(stream, &buf, "{s}", .{refusal.params});
+        defer refused.deinit();
+        const e = errorOf(refused) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i64, -32602), e.code);
+        try testing.expectEqualStrings(refusal.reason, e.reason.?);
+        if (std.mem.eql(u8, refusal.reason, "acknowledge_mismatch")) {
+            // It says which windows must be acknowledged.
+            const data = refused.value.object.get("error").?.object.get("data").?.object;
+            try testing.expectEqual(@as(usize, 2), data.get("at_risk").?.array.items.len);
+        }
+    }
+    try testing.expectEqual(@as(u32, 0), popups.recover_calls.load(.acquire));
+
+    // The window's incident changed (it answered, then froze again): the
+    // token is over, and so is any later use of it.
+    popups.primary_incident = 2;
+    {
+        var over = try recoverRpcFmt(stream, &buf, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}}", .{token});
+        defer over.deinit();
+        try testing.expectEqualStrings("incident_over", errorOf(over).?.reason.?);
+        var again = try recoverRpcFmt(stream, &buf, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}}", .{token});
+        defer again.deinit();
+        try testing.expectEqualStrings("incident_unknown", errorOf(again).?.reason.?);
+    }
+    // A new phase 1 gives a new token, which works once (any order).
+    var renewed = try recoverRpc(stream, "{\"window_id\":\"window-1\"}");
+    defer renewed.deinit();
+    const fresh = renewed.value.object.get("result").?.object.get("incident").?.string;
+    var done = try recoverRpcFmt(stream, &buf, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-2\",\"window-1\"]}}", .{fresh});
+    defer done.deinit();
+    const recovered = done.value.object.get("result").?.object.get("recovered").?.array.items;
+    try testing.expectEqual(@as(usize, 2), recovered.len);
+    try testing.expectEqualStrings("window-1", recovered[0].object.get("window_id").?.string);
+    try testing.expectEqualStrings("https://fixture.example/1", recovered[0].object.get("url").?.string);
+    try testing.expect(recovered[0].object.get("ended").?.bool and recovered[0].object.get("reloaded").?.bool);
+    try testing.expectEqualStrings("window-2", recovered[1].object.get("window_id").?.string);
+    try testing.expectEqual(@as(u32, 1), popups.recover_calls.load(.acquire));
+    try testing.expectEqualSlices(page_port.WindowId, &.{ 1, 2 }, popups.recover_ids[0..popups.recover_len]);
+    var reused = try recoverRpcFmt(stream, &buf, "{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}}", .{fresh});
+    defer reused.deinit();
+    try testing.expectEqualStrings("incident_unknown", errorOf(reused).?.reason.?);
+}
+
+test "watchdog: page.recover's telemetry names the window asked about, with a recoverWindows child span and no URL" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var sink = automation_server.automation.telemetry.InMemoryTelemetrySink.init(testing.allocator);
+    defer sink.deinit();
+    var fixture = try Fixture.start("recover-telemetry", .{ .sink = &sink });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":null}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":null}" },
+    } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    var buf: [512]u8 = undefined;
+
+    var ask = try recoverRpc(stream, "{\"window_id\":\"window-3\"}");
+    defer ask.deinit();
+    const token = ask.value.object.get("result").?.object.get("incident").?.string;
+    var done = try recoverRpcFmt(stream, &buf, "{{\"window_id\":\"window-3\",\"incident\":\"{s}\",\"acknowledge\":[\"window-3\"]}}", .{token});
+    defer done.deinit();
+    try testing.expect(errorOf(done) == null);
+
+    var roots: usize = 0;
+    var recover_children: usize = 0;
+    for (sink.spans.items) |span| {
+        if (std.mem.eql(u8, span.name, "automation.command")) {
+            try testing.expectEqualStrings("window-3", span.attr("window.id").?);
+            roots += 1;
+        } else if (std.mem.eql(u8, span.attr("page_port.op") orelse "", "recoverWindows")) {
+            recover_children += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), roots);
+    try testing.expectEqual(@as(usize, 1), recover_children);
+    for ([_][]const u8{ "login.example", "fixture.example", token }) |raw| {
+        if (sink.containsRaw(raw)) {
+            std.debug.print("leaked into telemetry: {s}\n", .{raw});
+            return error.TestLeak;
+        }
+    }
+}
+
+test "watchdog: one confirmation per incident: confirming one window's token voids its family's other tokens, even while the first recovery runs (RoseCat 5196)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("recover4", .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    // Windows 1 and 2 share a process family and both are frozen.
+    popups.primary_unresponsive_ms = 4000;
+    popups.second_unresponsive_ms = 4000;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    var buf: [512]u8 = undefined;
+
+    var ask_one = try recoverRpc(stream, "{\"window_id\":\"window-1\"}");
+    defer ask_one.deinit();
+    const token_one = ask_one.value.object.get("result").?.object.get("incident").?.string;
+    var ask_two = try recoverRpc(stream, "{\"window_id\":\"window-2\"}");
+    defer ask_two.deinit();
+    const token_two = ask_two.value.object.get("result").?.object.get("incident").?.string;
+    try testing.expectEqual(@as(usize, 2), ask_two.value.object.get("result").?.object.get("at_risk").?.array.items.len);
+
+    // Confirm window 1's incident; hold its recovery inside the port.
+    popups.recover_hold.store(true, .release);
+    defer popups.recover_hold.store(false, .release);
+    var first_stream = try fixture.connect();
+    defer first_stream.close(testing.io);
+    const confirm_one = try std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"method\":\"page.recover\",\"params\":{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}},\"id\":3}}", .{token_one});
+    try writeFrame(first_stream, confirm_one);
+    var waited: u32 = 0;
+    while (!popups.recover_entered.load(.acquire)) : (waited += 1) {
+        if (waited > 5000) return error.NeverRecovering;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    // Window 2's token died with that confirmation, during the recovery...
+    var buf2: [512]u8 = undefined;
+    {
+        var sibling = try recoverRpcFmt(stream, &buf2, "{{\"window_id\":\"window-2\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}}", .{token_two});
+        defer sibling.deinit();
+        const e = errorOf(sibling) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i64, -32602), e.code);
+        try testing.expectEqualStrings("incident_unknown", e.reason.?);
+    }
+    popups.recover_hold.store(false, .release);
+    const first_reply = try readFrame(first_stream);
+    defer testing.allocator.free(first_reply);
+    try testing.expect(std.mem.indexOf(u8, first_reply, "\"recovered\"") != null);
+    // ...and after it.
+    {
+        var sibling = try recoverRpcFmt(stream, &buf2, "{{\"window_id\":\"window-2\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}}", .{token_two});
+        defer sibling.deinit();
+        try testing.expectEqualStrings("incident_unknown", errorOf(sibling).?.reason.?);
+    }
+    // The process was ended once.
+    try testing.expectEqual(@as(u32, 1), popups.recover_calls.load(.acquire));
+}
+
+test "watchdog: during page.recover the windows at risk refuse new commands (-32014 recovering), their queued and running commands end cancelled once, and other windows and page.health keep working" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("recover3", .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    popups.primary_unresponsive_ms = 4000;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+    var buf: [512]u8 = undefined;
+
+    // A command the frozen page holds, and one queued behind it.
+    fixture.fake.hold.store(true, .release);
+    defer fixture.fake.hold.store(false, .release);
+    var held_stream = try fixture.connect();
+    defer held_stream.close(testing.io);
+    try writeFrame(held_stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\"},\"id\":1}");
+    var waited: u32 = 0;
+    while (!fixture.fake.held.load(.acquire)) : (waited += 1) {
+        if (waited > 5000) return error.NeverHeld;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    var queued_stream = try fixture.connect();
+    defer queued_stream.close(testing.io);
+    try writeFrame(queued_stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.title\",\"params\":{\"window_id\":\"window-1\"},\"id\":2}");
+    waited = 0;
+    while (fixture.server.queue.pendingCount("page-1") != 1) : (waited += 1) {
+        if (waited > 5000) return error.NeverQueued;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+
+    var first = try recoverRpc(stream, "{\"window_id\":\"window-1\"}");
+    defer first.deinit();
+    const token = first.value.object.get("result").?.object.get("incident").?.string;
+
+    // Phase 2 runs on its own connection and is held inside the port.
+    popups.recover_hold.store(true, .release);
+    defer popups.recover_hold.store(false, .release);
+    var recover_stream = try fixture.connect();
+    defer recover_stream.close(testing.io);
+    const confirm = try std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"method\":\"page.recover\",\"params\":{{\"window_id\":\"window-1\",\"incident\":\"{s}\",\"acknowledge\":[\"window-1\",\"window-2\"]}},\"id\":3}}", .{token});
+    try writeFrame(recover_stream, confirm);
+    waited = 0;
+    while (!popups.recover_entered.load(.acquire)) : (waited += 1) {
+        if (waited > 5000) return error.NeverRecovering;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+
+    // The queued command ended at once, cancelled, without running.
+    const queued_reply = try readFrame(queued_stream);
+    defer testing.allocator.free(queued_reply);
+    try testing.expect(std.mem.indexOf(u8, queued_reply, "-32012") != null);
+
+    // New commands for windows 1 and 2 are refused while it runs.
+    inline for (.{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.title\",\"params\":{},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-2\"},\"id\":4}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"page.close\",\"params\":{\"window_id\":\"window-2\"},\"id\":4}",
+    }) |request| {
+        var refused = try rpc(stream, request);
+        defer refused.deinit();
+        const e = errorOf(refused) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i64, -32014), e.code);
+        try testing.expectEqualStrings("recovering", refused.value.object.get("error").?.object.get("message").?.string);
+    }
+    // A second confirmation of the same recovery is refused too.
+    {
+        var twice = try rpc(stream, confirm);
+        defer twice.deinit();
+        try testing.expect(errorOf(twice) != null);
+    }
+    // Window 3 and the out-of-band methods keep working.
+    {
+        var other = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\",\"window_id\":\"window-3\"},\"id\":5}");
+        defer other.deinit();
+        try testing.expect(errorOf(other) == null);
+        var health = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.health\",\"params\":{},\"id\":6}");
+        defer health.deinit();
+        try testing.expect(errorOf(health) == null);
+        var listed = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"params\":{},\"id\":7}");
+        defer listed.deinit();
+        try testing.expect(errorOf(listed) == null);
+    }
+
+    popups.recover_hold.store(false, .release);
+    const recovered = try readFrame(recover_stream);
+    defer testing.allocator.free(recovered);
+    try testing.expect(std.mem.indexOf(u8, recovered, "\"recovered\"") != null);
+    try testing.expectEqual(@as(u32, 1), popups.recover_calls.load(.acquire));
+
+    // The command the frozen page held gets its one reply when its call
+    // returns: cancelled (the real page call fails once its process ends).
+    fixture.fake.hold.store(false, .release);
+    const held_reply = try readFrame(held_stream);
+    defer testing.allocator.free(held_reply);
+    try testing.expect(std.mem.indexOf(u8, held_reply, "\"id\":1") != null);
+
+    // Afterwards window 1 takes commands again.
+    var after = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.title\",\"params\":{},\"id\":8}");
+    defer after.deinit();
+    try testing.expect(errorOf(after) == null);
 }
 
 test "watchdog: a window counts as unresponsive only after WebKit has said so for the whole debounce" {

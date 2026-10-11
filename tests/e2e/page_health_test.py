@@ -226,8 +226,8 @@ def checks(zb: ZigBrowser, socket_path: Path, origin: str, other: str, check) ->
         except Exception as exc:  # noqa: BLE001 - reported below if the loop never ran
             busy_result.append((round(time.monotonic() - busy_at, 1), exc, getattr(exc, "diagnostics", None)))
 
-    threading.Thread(target=busy, daemon=True).start()
     busy_at = time.monotonic()
+    threading.Thread(target=busy, daemon=True).start()
     went_false = came_back = None
     while time.monotonic() - busy_at < 9 + bound + 4:
         pages, _ = health("busy")

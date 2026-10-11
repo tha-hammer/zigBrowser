@@ -43,6 +43,8 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "page.evaluate": (zb) => zb.page.evaluate("1+1"),
   "page.list": (zb) => zb.page.list(),
   "page.health": (zb) => zb.page.health(),
+  "page.recover": (zb) => zb.page.recover("window-1"),
+  "page.recover.confirm": (zb) => zb.page.recover("window-1", { incident: "0123456789abcdef0123456789abcdef", acknowledge: ["window-1", "window-2"] }),
   "page.close": (zb) => zb.page.close("window-2"),
   "page.navigate.onBeforeUnload": (zb) => zb.page.navigate("https://example.com/", { onBeforeUnload: "accept" }),
   "dialog.get": (zb) => zb.dialog.get(),

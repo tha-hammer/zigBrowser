@@ -110,7 +110,29 @@ pub const WindowInfo = struct {
     loading: bool = false,
     /// A page dialog is open on the window (dialog.get lists it).
     dialog_open: bool = false,
+    /// Watchdog (page.recover): which unbroken unresponsive stretch this
+    /// is (it changes each time the window freezes anew), and the window's
+    /// process family: windows created from one another share it and may
+    /// share a web process (0: unknown, the window is on its own).
+    incident: u32 = 0,
+    process_group: WindowId = 0,
 };
+
+/// Watchdog: what recoverWindows did to one window. `url` (owned by the
+/// `gpa` passed to recoverWindows; see freeRecovered) is the page it
+/// showed; `ended`: its page ran in the ended process; `reloaded`: it is
+/// loading `url` again.
+pub const RecoveredWindow = struct {
+    id: WindowId,
+    url: []u8,
+    ended: bool,
+    reloaded: bool,
+};
+
+pub fn freeRecovered(gpa: std.mem.Allocator, windows: []RecoveredWindow) void {
+    for (windows) |w| gpa.free(w.url);
+    gpa.free(windows);
+}
 
 /// v3.8: why a window's web process ended (WebKit's reasons).
 pub const Termination = enum { crashed, memory_limit, terminated_by_api };
@@ -262,6 +284,14 @@ pub const PagePort = struct {
         /// Closes window `id`; returns once it is destroyed. NoPage if
         /// there is no such window.
         closeWindow: *const fn (ptr: *anyopaque, id: WindowId, timeout_ms: u64) PortError!void = unsupportedClose,
+        /// Watchdog (page.recover): ends the web process of window
+        /// `ids[0]`, waits until WebKit reports it ended, forgets the
+        /// native input state of every window it ended, and loads each of
+        /// them again from the URL it showed. `ids` are the windows at risk
+        /// (ids[0] first); one entry per id, in order. NoPage if ids[0] is
+        /// gone; Timeout if the process did not end in time (nothing is
+        /// reloaded then).
+        recoverWindows: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, ids: []const WindowId, timeout_ms: u64) PortError![]RecoveredWindow = unsupportedRecover,
 
         // --- v3.6 page dialogs ---
 
@@ -395,6 +425,10 @@ pub const PagePort = struct {
     pub fn closeWindow(self: PagePort, id: WindowId, timeout_ms: u64) PortError!void {
         return self.vtable.closeWindow(self.ptr, id, timeout_ms);
     }
+
+    pub fn recoverWindows(self: PagePort, gpa: std.mem.Allocator, ids: []const WindowId, timeout_ms: u64) PortError![]RecoveredWindow {
+        return self.vtable.recoverWindows(self.ptr, gpa, ids, timeout_ms);
+    }
 };
 
 fn unsupportedClick(_: *anyopaque, _: f64, _: f64, _: ?[]const u8, _: u64) PortError!void {
@@ -426,6 +460,9 @@ fn unsupportedList(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]Wind
     return error.Unsupported;
 }
 fn unsupportedFor(_: *anyopaque, _: WindowId) PortError!PagePort {
+    return error.Unsupported;
+}
+fn unsupportedRecover(_: *anyopaque, _: std.mem.Allocator, _: []const WindowId, _: u64) PortError![]RecoveredWindow {
     return error.Unsupported;
 }
 fn unsupportedClose(_: *anyopaque, _: WindowId, _: u64) PortError!void {

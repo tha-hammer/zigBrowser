@@ -15,7 +15,7 @@ class ProtocolError(ZigBrowserError):
 
 
 class AutomationError(ZigBrowserError):
-    AUTOMATION_RANGE = range(-32013, -32000)
+    AUTOMATION_RANGE = range(-32014, -32000)
 
     def __init__(
         self,

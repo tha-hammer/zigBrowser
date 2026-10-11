@@ -60,6 +60,7 @@ ERROR_CODE_MAP = {
     -32011: "session_invalid",
     -32012: "cancelled",
     -32013: "dialog_open",
+    -32014: "recovering",
 }
 
 

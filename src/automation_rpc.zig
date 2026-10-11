@@ -446,6 +446,7 @@ test "P2.3 maps AutomationError variants to JSON-RPC reserved application codes 
         .{ .err = .session_invalid, .code = -32011, .name = "session_invalid" },
         .{ .err = .cancelled, .code = -32012, .name = "cancelled" },
         .{ .err = .dialog_open, .code = -32013, .name = "dialog_open" },
+        .{ .err = .recovering, .code = -32014, .name = "recovering" },
     };
 
     for (cases) |case| {

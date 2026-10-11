@@ -601,6 +601,16 @@ pub fn build(b: *std.Build) void {
     });
     page_health_e2e.addArtifactArg(exe);
 
+    // page.recover: a confirmed recovery ends a frozen web process and
+    // reloads its windows; refusals end nothing (watchdog slice 2).
+    const page_recover_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/page_recover_test.py --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "page-recover-e2e",
+    });
+    page_recover_e2e.addArtifactArg(exe);
+
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
     const automation_dialogs_e2e = b.addSystemCommand(&.{
@@ -824,6 +834,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&slow_load_watchdog_e2e.step);
     test_step.dependOn(&media_source_e2e.step);
     test_step.dependOn(&page_health_e2e.step);
+    test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);

@@ -214,6 +214,21 @@ class PageNamespace:
         how long so far. Nothing is killed or reloaded."""
         return self._client.call("page.health", {})
 
+    def recover(self, window_id: str, incident: str | None = None, acknowledge: list[str] | None = None) -> dict:
+        """End a frozen window's web process and reload its windows, in two
+        calls. Without `incident`: asks, ends nothing, and returns
+        {incident, window_id, unresponsive_ms, at_risk: [{window_id, url}],
+        expires_in_ms} (only while page.health reports the window frozen).
+        With the `incident` token and `acknowledge` = every at_risk window
+        id: ends that web process and reloads each window it ran, returning
+        {recovered: [{window_id, url, ended, reloaded}]}. Everything in
+        memory in those pages is lost; their pending commands end -32012."""
+        params: dict = {"window_id": window_id}
+        if incident is not None or acknowledge is not None:
+            params["incident"] = incident
+            params["acknowledge"] = list(acknowledge or [])
+        return self._client.call("page.recover", params)
+
     def close(self, window_id: str) -> dict:
         """Close a window from page.list (not the primary one)."""
         return self._client.call("page.close", {"window_id": window_id})

@@ -118,6 +118,11 @@ struct ZbWindow {
    * time (microseconds) and has stayed false since; 0 while responsive.
    * GTK thread only; page.health reports it (it debounces). */
   gint64 unresponsive_since_us;
+  /* Counts unresponsive stretches: page.recover's incident identity. */
+  guint incident;
+  /* page.recover is ending this window's web process (GTK thread). */
+  int recovering;
+  int recover_ended; /* its web process ended during that recovery */
   /* Why this window's web process ended since its last committed load
    * ("crashed", "memory_limit", "terminated_by_api"; NULL: alive). A
    * static string, GTK thread only; page.list reports it. */
@@ -3879,8 +3884,10 @@ static void auto_list_windows(void *ctx) {
           win->unresponsive_since_us != 0 ? (g_get_monotonic_time() - win->unresponsive_since_us) / 1000 : 0;
       g_string_append_printf(out,
                              ",\"responsive\":%s,\"unresponsive_ms\":%" G_GINT64_FORMAT
+                             ",\"incident\":%u,\"process_group\":%u"
                              ",\"loading\":%s,\"dialog_open\":%s,\"crashed\":",
                              win->unresponsive_since_us == 0 ? "true" : "false", unresponsive_ms,
+                             win->incident, win->process_group,
                              webkit_web_view_is_loading(win->view) ? "true" : "false",
                              (win->dialog != NULL || win->policy_dialog != NULL) ? "true" : "false");
       if (win->terminated != NULL) {
@@ -3932,6 +3939,135 @@ static void auto_debug_next_id(void *ctx) {
 int zb_automation_debug_next_window_id(uint64_t next, unsigned int timeout_ms) {
   guint64 value = next;
   return zb_main_invoke_sync(auto_debug_next_id, &value, timeout_ms);
+}
+
+/* ---- page.recover (watchdog slice 2) ----
+ * Ends ids[0]'s web process, waits until WebKit reports it ended, forgets
+ * the native pointer of every window it ended and loads each of those again
+ * from the URL it showed. The caller polls between the GTK-thread steps, so
+ * the GTK loop keeps running while the process ends. */
+
+#define ZB_RECOVER_MAX ZB_MAX_WINDOWS
+
+typedef struct {
+  guint32 ids[ZB_RECOVER_MAX];
+  int n;
+  char *urls[ZB_RECOVER_MAX];
+  int ended[ZB_RECOVER_MAX];
+  int reloaded[ZB_RECOVER_MAX];
+  int code;
+  int done; /* the target's process ended */
+} ZbRecoverCall;
+
+static void auto_recover_set_flag(ZbRecoverCall *call, int on) {
+  for (int i = 0; i < call->n; i++) {
+    ZbWindow *win = auto_resolve_window(call->ids[i]);
+    if (win != NULL) {
+      win->recovering = on;
+      if (on) {
+        win->recover_ended = 0;
+      }
+    }
+  }
+}
+
+static void auto_recover_begin(void *ctx) {
+  ZbRecoverCall *call = (ZbRecoverCall *)ctx;
+  ZbWindow *target = auto_resolve_window(call->ids[0]);
+  if (target == NULL || target->view == NULL || target->gtk_window == NULL) {
+    call->code = ZB_AUTO_ERR_NO_WINDOW;
+    return;
+  }
+  for (int i = 0; i < call->n; i++) {
+    ZbWindow *win = auto_resolve_window(call->ids[i]);
+    const char *uri = win != NULL && win->view != NULL ? webkit_web_view_get_uri(win->view) : NULL;
+    call->urls[i] = g_strdup(uri != NULL ? uri : "");
+  }
+  auto_recover_set_flag(call, 1);
+  call->code = ZB_AUTO_OK;
+  webkit_web_view_terminate_web_process(target->view);
+}
+
+static void auto_recover_poll(void *ctx) {
+  ZbRecoverCall *call = (ZbRecoverCall *)ctx;
+  ZbWindow *target = auto_resolve_window(call->ids[0]);
+  call->done = target == NULL || target->recover_ended;
+}
+
+/* Reload what ended; without `reload`, only clear the flags (timeout). */
+static void auto_recover_finish(ZbRecoverCall *call, int reload) {
+  for (int i = 0; i < call->n; i++) {
+    ZbWindow *win = auto_resolve_window(call->ids[i]);
+    if (win == NULL || win->view == NULL) {
+      continue;
+    }
+    call->ended[i] = win->recover_ended;
+    if (reload && win->recover_ended) {
+      g_mutex_lock(&zb_auto_mutex);
+      win->auto_pointer_valid = 0;
+      g_mutex_unlock(&zb_auto_mutex);
+      if (call->urls[i][0] != '\0') {
+        webkit_web_view_load_uri(win->view, call->urls[i]);
+        call->reloaded[i] = 1;
+      }
+    }
+  }
+  auto_recover_set_flag(call, 0);
+}
+
+static void auto_recover_reload(void *ctx) { auto_recover_finish((ZbRecoverCall *)ctx, 1); }
+
+static void auto_recover_abandon(void *ctx) { auto_recover_finish((ZbRecoverCall *)ctx, 0); }
+
+int zb_automation_recover_windows(const uint32_t *ids, int n, unsigned int timeout_ms, char **out_json) {
+  if (ids == NULL || n <= 0 || n > ZB_RECOVER_MAX || out_json == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  *out_json = NULL;
+  ZbRecoverCall *call = g_new0(ZbRecoverCall, 1);
+  memcpy(call->ids, ids, sizeof(uint32_t) * (size_t)n);
+  call->n = n;
+  call->code = ZB_AUTO_ERR_INTERNAL;
+  gint64 deadline = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
+  int code = zb_main_invoke_sync(auto_recover_begin, call, timeout_ms);
+  if (code == ZB_AUTO_OK) {
+    code = call->code;
+  }
+  while (code == ZB_AUTO_OK && !call->done) {
+    gint64 left_ms = (deadline - g_get_monotonic_time()) / 1000;
+    if (left_ms <= 0) {
+      code = ZB_AUTO_ERR_TIMEOUT;
+      break;
+    }
+    code = zb_main_invoke_sync(auto_recover_poll, call, (unsigned int)left_ms);
+    if (code == ZB_AUTO_OK && !call->done) {
+      g_usleep(20 * 1000);
+    }
+  }
+  if (code == ZB_AUTO_OK) {
+    /* Related views end with it (WebKit tells each one); give their
+     * notifications a moment before deciding what ended. */
+    g_usleep(200 * 1000);
+    code = zb_main_invoke_sync(auto_recover_reload, call, 5000);
+  } else if (call->urls[0] != NULL) {
+    (void)zb_main_invoke_sync(auto_recover_abandon, call, 5000);
+  }
+  if (code == ZB_AUTO_OK) {
+    GString *out = g_string_new("[");
+    for (int i = 0; i < n; i++) {
+      g_string_append_printf(out, "%s{\"id\":%u,\"url\":", i > 0 ? "," : "", call->ids[i]);
+      auto_json_string(out, call->urls[i]);
+      g_string_append_printf(out, ",\"ended\":%s,\"reloaded\":%s}", call->ended[i] ? "true" : "false",
+                             call->reloaded[i] ? "true" : "false");
+    }
+    g_string_append_c(out, ']');
+    *out_json = g_string_free(out, FALSE);
+  }
+  for (int i = 0; i < n; i++) {
+    g_free(call->urls[i]);
+  }
+  g_free(call);
+  return code;
 }
 
 int zb_automation_close_window(uint32_t id, unsigned int timeout_ms) {
@@ -4191,6 +4327,7 @@ static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
     win->unresponsive_since_us = 0;
   } else if (win->unresponsive_since_us == 0) {
     win->unresponsive_since_us = g_get_monotonic_time();
+    win->incident++;
   }
 }
 
@@ -4212,6 +4349,11 @@ static void on_window_web_process_terminated(WebKitWebView *view,
     default: /* a reason newer than this code: an unexpected end */
       win->terminated = "crashed";
       break;
+  }
+  if (win->recovering) {
+    win->recover_ended = 1;
+    g_printerr("zigBrowser: window %u: web process ended by page.recover\n", win->auto_id);
+    return;
   }
   g_printerr("zigBrowser: window %u: web process terminated (%s)\n", win->auto_id, win->terminated);
 }

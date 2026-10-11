@@ -243,3 +243,128 @@ test "N23: an acquire that runs out of memory leaves no empty queue line behind 
         try std.testing.expectEqual(@as(usize, 0), queue.lineCount());
     }
 }
+
+test "watchdog: recovery ends a page's queued commands as cancelled at once, flags the running one, and refuses new ones until it ends" {
+    var queue = queue_mod.PageCommandQueue.init(gpa, io);
+    defer queue.deinit();
+    var log: Log = .{};
+
+    const holder = try queue.acquire("window-1");
+    const other = try queue.acquire("window-3");
+    var result: ?anyerror = null;
+    const t = try std.Thread.spawn(.{}, worker, .{ &queue, "window-1", 'q', &log, &result });
+    try waitForPending(&queue, "window-1", 1);
+
+    try queue.beginRecovery(&.{ "window-1", "window-2" });
+    t.join();
+    // The queued command never ran; the running one is flagged; the page
+    // that is not recovering is untouched.
+    try std.testing.expectEqual(@as(?anyerror, error.Cancelled), result);
+    try std.testing.expectEqual(@as(usize, 0), log.len);
+    try std.testing.expect(holder.cancelled.load(.acquire));
+    try std.testing.expect(!other.cancelled.load(.acquire));
+    // New commands for a recovering page are refused, other pages work.
+    try std.testing.expectError(error.Recovering, queue.acquire("window-1"));
+    try std.testing.expectError(error.Recovering, queue.acquire("window-2"));
+    const third = try queue.acquire("window-4");
+    queue.release(third);
+    // One recovery at a time per page.
+    try std.testing.expectError(error.Recovering, queue.beginRecovery(&.{"window-2"}));
+    try std.testing.expect(queue.isRecovering("window-1"));
+
+    queue.endRecovery(&.{ "window-1", "window-2" });
+    try std.testing.expect(!queue.isRecovering("window-1"));
+    queue.release(holder);
+    queue.release(other);
+    // After it: a fresh command runs and is not cancelled.
+    const fresh = try queue.acquire("window-1");
+    try std.testing.expect(!fresh.cancelled.load(.acquire));
+    queue.release(fresh);
+}
+
+test "watchdog: a command whose page call fails after it was cancelled reports -32012 cancelled, not the call's own error" {
+    // page.recover cancels the command a frozen page holds; ending the web
+    // process then makes its page call fail. Its one reply says cancelled.
+    const page_port = automation.page_port;
+    const Cut = struct {
+        flag: *std.atomic.Value(bool),
+
+        fn port(self: *@This()) page_port.PagePort {
+            return .{ .ptr = self, .vtable = &.{ .evalJson = evalJson, .navigate = navigate, .reload = reload, .url = url, .title = title } };
+        }
+        fn evalJson(_: *anyopaque, _: std.mem.Allocator, _: page_port.World, _: []const u8, _: []const u8, _: u64) page_port.PortError![]u8 {
+            return error.EvalFailed;
+        }
+        fn navigate(_: *anyopaque, _: []const u8, _: u64) page_port.PortError!void {
+            return error.EvalFailed;
+        }
+        fn reload(_: *anyopaque, _: u64) page_port.PortError!void {
+            return error.EvalFailed;
+        }
+        fn url(ptr: *anyopaque, _: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.flag.store(true, .release); // cancelled while the call runs
+            return error.EvalFailed;
+        }
+        fn title(_: *anyopaque, _: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
+            return error.Timeout;
+        }
+    };
+    var flag = std.atomic.Value(bool).init(false);
+    var cut = Cut{ .flag = &flag };
+    var clock = fakes.FakeClock.init(gpa);
+    defer clock.deinit();
+    var eng = engine.Engine.init(cut.port(), clock.clock());
+
+    var command = try router.parse(gpa, "page.url", "{}", .{});
+    defer command.deinit();
+    var outcome = try eng.executeWith(gpa, &command, .{ .cancel = &flag });
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32012), outcome.failure.code);
+
+    // Without a cancellation the call's own error is reported as before.
+    var calm = std.atomic.Value(bool).init(false);
+    var title_command = try router.parse(gpa, "page.title", "{}", .{});
+    defer title_command.deinit();
+    var timed_out = try eng.executeWith(gpa, &title_command, .{ .cancel = &calm });
+    defer timed_out.deinit(gpa);
+    try std.testing.expect(timed_out.failure.code != -32012);
+}
+
+test "watchdog: a recovery that runs out of memory changes nothing (RoseCat 5187)" {
+    var failing = std.testing.FailingAllocator.init(gpa, .{});
+    var queue = queue_mod.PageCommandQueue.init(failing.allocator(), io);
+    defer queue.deinit();
+    var log: Log = .{};
+
+    const holder = try queue.acquire("window-1");
+    var result: ?anyerror = null;
+    const t = try std.Thread.spawn(.{}, worker, .{ &queue, "window-1", 'q', &log, &result });
+    try waitForPending(&queue, "window-1", 1);
+
+    // Each allocation of a recovery in turn fails: the key list, the first
+    // key, the second key, the map's room.
+    var nth: usize = 0;
+    while (nth < 4) : (nth += 1) {
+        failing.fail_index = failing.alloc_index + nth;
+        try std.testing.expectError(error.OutOfMemory, queue.beginRecovery(&.{ "window-1", "window-2" }));
+        failing.fail_index = std.math.maxInt(usize);
+        try std.testing.expect(!queue.isRecovering("window-1"));
+        try std.testing.expect(!queue.isRecovering("window-2"));
+        try std.testing.expect(!holder.cancelled.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 1), queue.pendingCount("window-1"));
+    }
+
+    // Nothing was cancelled: the queued command runs as usual, and every
+    // page still takes commands.
+    queue.release(holder);
+    t.join();
+    try std.testing.expect(result == null);
+    try std.testing.expectEqualStrings("q", log.slice());
+    const other = try queue.acquire("window-2");
+    queue.release(other);
+    // Once memory is there, the same recovery works.
+    try queue.beginRecovery(&.{ "window-1", "window-2" });
+    try std.testing.expect(queue.isRecovering("window-2"));
+    queue.endRecovery(&.{ "window-1", "window-2" });
+}

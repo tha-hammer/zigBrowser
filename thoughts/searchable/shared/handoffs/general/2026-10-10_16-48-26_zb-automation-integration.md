@@ -342,6 +342,16 @@ has a section for each; the section names are quoted below.
   reloading a frozen page (`page.recover`) is a later slice that needs a
   design the user confirms. `docs/how-to-automate.md` ("A frozen page")
   has the details.
+- **`page.recover` (watchdog slice 2).** Two calls, never automatic. The
+  first, for a window `page.health` reports frozen, ends nothing and
+  returns a one-time incident token (60 s) and every window at risk (its
+  process family) with its URL. The second must echo the token and
+  acknowledge exactly those windows. It then refuses new commands for them
+  (-32014 `recovering`), ends their pending ones (-32012), ends the frozen
+  web process, forgets their native input state and reloads each ended
+  window from its URL. A window in a process of its own is not ended.
+  Live use is per incident, with the user's approval. `docs/how-to-automate.md`
+  ("Recovering a frozen page") has the details.
 
 ### Live selector refresh (the orchestrator's read-only probes)
 

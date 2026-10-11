@@ -227,6 +227,7 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | `page.list` | — | `{pages:[{window_id, url, title, primary, opener_window_id?, crashed?}]}`: every open window, primary first. `crashed` (`"crashed"`, `"memory_limit"`, `"terminated_by_api"`): that window's web process died since its last page load; its page is gone (calls on it fail) until it loads a page again. The browser also prints `zigBrowser: window <n>: web process terminated (<reason>)` on stderr. The browser's own endings print nothing: `page.close` and a normal quit (SIGINT or SIGTERM) |
 | `page.close` | `window_id` | `{ok:true}`; the primary window cannot be closed (-32602 `primary_window`) |
 | `page.health` | — | `{debounce_ms, pages:[{window_id, url, responsive, unresponsive_ms, loading, dialog_open, crashed?}]}`: every open window's health, primary first. It never waits behind a window's commands. See [A frozen page](#a-frozen-page-pagehealth) |
+| `page.recover` | `window_id`; to confirm also `incident`, `acknowledge` | Two calls. The first: `{incident, window_id, unresponsive_ms, at_risk:[{window_id, url}], expires_in_ms}`, nothing ended. The second, with that `incident` and `acknowledge` = every `at_risk` window: `{recovered:[{window_id, url, ended, reloaded}]}`. See [Recovering a frozen page](#recovering-a-frozen-page-pagerecover) |
 
 Other `page.*` calls and every `dom.*` call take an optional `window_id` (from
 `page.list`, e.g. `"window-2"`) to act on that window instead of the
@@ -246,7 +247,9 @@ A page whose web process stops answering (a script stuck in a loop, or the
 WebKitGTK 2.54.0 media deadlock that froze an Instagram window) makes every
 command on that window wait until its deadline. `page.health` answers at
 once anyway, like `page.list`: it never waits in a window's command queue,
-and the browser's own thread answers it, not the page.
+and the browser's own thread answers it, not the page. The SDK clients
+send one request at a time per connection, so to poll `page.health`
+while another call is blocked, use a second client (a second connection).
 
 For each window:
 - `responsive`: false once WebKit has said the window's web process is
@@ -274,8 +277,62 @@ input to other windows until its deadline.
 `responsive: false` is a suspicion, not a verdict: a script that is busy
 for a long time and then finishes looks the same until it finishes. Windows
 that share a web process (a popup and its opener) freeze together.
-Nothing is killed or reloaded: ending a frozen web process is a later,
-separate step that a person confirms.
+`page.health` never ends or reloads anything; `page.recover` (below) does,
+only when a caller confirms it.
+
+### Recovering a frozen page: `page.recover`
+
+`page.recover` ends a frozen window's web process and reloads its page.
+Nothing does this automatically: only an explicit caller, in two calls,
+and live use is for a person to approve per incident.
+
+Ending a web process loses everything in memory in every page it runs: form
+input not yet sent, the place in a video or a feed, a page's script state.
+Windows created from one another (a popup and the page that opened it)
+can share one web process, and WebKit does not say which do. So the
+browser counts every window of the same family as at risk.
+
+1. **Ask.** `page.recover {window_id}` works only while `page.health`
+   reports that window `responsive: false` (otherwise -32602
+   `not_unresponsive`; a window that is gone: -32011 `no_window`). It ends
+   nothing. It answers:
+   - `incident`: a token for this freeze, valid once, for
+     `expires_in_ms` (60000), and only while the window stays frozen
+     without a break;
+   - `at_risk`: every window that may lose its page, with its URL, the
+     frozen window included.
+2. **Confirm.** `page.recover {window_id, incident, acknowledge}`, where
+   `acknowledge` lists exactly the `at_risk` windows (any order). It is
+   refused, with nothing ended, as -32602 with `data.reason`:
+   - `incident_unknown`: not the current token for that window (wrong,
+     expired, already used, or replaced by a newer first call);
+   - `incident_over`: the window answered again, or froze anew, since;
+     ask again;
+   - `acknowledge_mismatch`: the list is not exactly the windows at risk
+     now (`data.at_risk` lists them; a window may have opened or closed
+     since).
+
+   Confirmed, the browser:
+   - refuses new commands for the windows at risk with -32014
+     `recovering` until it is done (`page.health`, `page.list` and
+     `dialog.*` keep working, and other windows are not affected);
+   - ends their queued and running commands with -32012 `cancelled`, one
+     reply each (a running one as soon as its call to the page returns);
+   - ends the frozen window's web process and waits until WebKit reports it
+     ended (stderr: `zigBrowser: window <n>: web process ended by
+     page.recover` for each window whose page it ran);
+   - forgets the native input state of those windows (no input is owed to
+     the old page);
+   - loads each ended window again from the URL it showed.
+
+   It answers `recovered`: for each window at risk, `ended` (its page ran
+   in that process) and `reloaded` (it is loading its URL again). A window
+   in a process of its own is `ended: false` and keeps its page.
+
+Not covered: the reloaded page starts fresh (a popup's `window.opener`
+link to its opener is not restored), and a window frozen without input
+pending (see above) is not reported frozen, so it cannot be recovered
+this way.
 
 ### Dialogs
 
@@ -816,10 +873,11 @@ channel sends one notification, `automation.ready`.
 | -32009 | action_timeout | Deadline passed (`data.last_error` names the last actionability failure) |
 | -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`, `social_daily_cap` for `linkedin.*`/`instagram.*`), or the platform showed a challenge, CAPTCHA or limit page (`data.signal`, `data.platform`) |
 | -32011 | session_invalid | No page or cookie store is available; `logged_out` for `x.*`, `linkedin.*`, `instagram.*`; `unsupported` when the build has no native input |
-| -32012 | cancelled | The browser stopped while the command was queued or running |
+| -32012 | cancelled | The browser stopped, or `page.recover` ended the window's web process, while the command was queued or running |
 | -32013 | dialog_open | A page dialog (alert, confirm, prompt, or beforeunload "Leave site?") is open on the window and blocks the command; see [Dialogs](#dialogs) |
+| -32014 | recovering | `page.recover` is ending and reloading this window's web process; try again when it answers. See [Recovering a frozen page](#recovering-a-frozen-page-pagerecover) |
 
-Errors -32001 to -32013 carry `data.trace_id` and `data.command_id`; the SDKs
+Errors -32001 to -32014 carry `data.trace_id` and `data.command_id`; the SDKs
 raise them as `AutomationError` with those fields.
 
 ## Result

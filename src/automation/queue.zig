@@ -12,7 +12,8 @@ pub const Ticket = *Waiter;
 /// until `release`.
 pub const Waiter = struct {
     page: *PageLine,
-    /// Set by `shutdown`; the engine checks it between attempts.
+    /// Set by `shutdown` and `beginRecovery`; the engine checks it between
+    /// attempts. A queued waiter that is cancelled leaves the line at once.
     cancelled: std.atomic.Value(bool) = .init(false),
     /// Milliseconds spent waiting for earlier same-page commands.
     wait_ms: u64 = 0,
@@ -32,6 +33,9 @@ pub const PageCommandQueue = struct {
     cond: std.Io.Condition = .init,
     pages: std.StringHashMapUnmanaged(*PageLine) = .empty,
     shutting_down: bool = false,
+    /// Page ids page.recover is working on (owned keys): their acquires
+    /// fail with error.Recovering.
+    recovering: std.StringHashMapUnmanaged(void) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) PageCommandQueue {
         return .{ .allocator = allocator, .io = io };
@@ -47,16 +51,22 @@ pub const PageCommandQueue = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.pages.deinit(self.allocator);
+        var keys = self.recovering.keyIterator();
+        while (keys.next()) |key| self.allocator.free(key.*);
+        self.recovering.deinit(self.allocator);
         self.* = undefined;
     }
 
     /// Blocks until every earlier command for `page_id` has released.
-    /// Returns error.Cancelled if the queue shuts down while waiting.
-    pub fn acquire(self: *PageCommandQueue, page_id: []const u8) error{ OutOfMemory, Cancelled }!Ticket {
+    /// Returns error.Cancelled if the queue shuts down, or the page's
+    /// recovery begins, while waiting; error.Recovering while the page is
+    /// being recovered.
+    pub fn acquire(self: *PageCommandQueue, page_id: []const u8) error{ OutOfMemory, Cancelled, Recovering }!Ticket {
         const started = self.nowMs();
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         if (self.shutting_down) return error.Cancelled;
+        if (self.recovering.contains(page_id)) return error.Recovering;
 
         const line = try self.pageLine(page_id);
         // Out of memory below: a line this call just created (still empty)
@@ -71,7 +81,7 @@ pub const PageCommandQueue = struct {
         // noise); only real waits are measured.
         if (line.waiters.items[0] == waiter) return waiter;
         while (line.waiters.items[0] != waiter) {
-            if (self.shutting_down) {
+            if (self.shutting_down or waiter.cancelled.load(.acquire)) {
                 // `waiter` is freed by the errdefer above.
                 removeWaiter(line, waiter);
                 self.cond.broadcast(self.io);
@@ -122,6 +132,53 @@ pub const PageCommandQueue = struct {
             for (line.*.waiters.items) |waiter| waiter.cancelled.store(true, .release);
         }
         self.cond.broadcast(self.io);
+    }
+
+    /// page.recover: from now until `endRecovery`, acquires for `page_ids`
+    /// fail with error.Recovering; their queued commands leave with
+    /// error.Cancelled and their running ones are flagged cancelled.
+    /// error.Recovering if one of them is already being recovered (nothing
+    /// changes then).
+    pub fn beginRecovery(self: *PageCommandQueue, page_ids: []const []const u8) error{ OutOfMemory, Recovering }!void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (page_ids) |page_id| if (self.recovering.contains(page_id)) return error.Recovering;
+        // All or nothing: every allocation happens before any page is
+        // marked or any command cancelled.
+        const keys = try self.allocator.alloc([]u8, page_ids.len);
+        defer self.allocator.free(keys);
+        var owned: usize = 0;
+        errdefer for (keys[0..owned]) |key| self.allocator.free(key);
+        for (page_ids) |page_id| {
+            const listed_twice = for (keys[0..owned]) |key| {
+                if (std.mem.eql(u8, key, page_id)) break true;
+            } else false;
+            if (listed_twice) continue;
+            keys[owned] = try self.allocator.dupe(u8, page_id);
+            owned += 1;
+        }
+        try self.recovering.ensureUnusedCapacity(self.allocator, @intCast(owned));
+        for (keys[0..owned]) |key| {
+            self.recovering.putAssumeCapacity(key, {});
+            if (self.pages.get(key)) |line| {
+                for (line.waiters.items) |waiter| waiter.cancelled.store(true, .release);
+            }
+        }
+        self.cond.broadcast(self.io);
+    }
+
+    pub fn endRecovery(self: *PageCommandQueue, page_ids: []const []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        for (page_ids) |page_id| {
+            if (self.recovering.fetchRemove(page_id)) |entry| self.allocator.free(entry.key);
+        }
+    }
+
+    pub fn isRecovering(self: *PageCommandQueue, page_id: []const u8) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.recovering.contains(page_id);
     }
 
     /// Commands waiting behind the running one for `page_id` (test hook).

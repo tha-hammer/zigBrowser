@@ -179,6 +179,8 @@ def popups(browser: Path, base_env: dict[str, str], check) -> None:
                 marks = crashed_after_kill(shared, {"window-1", sibling})
                 check(marks == {"window-1": "crashed", sibling: "crashed", solo: "crashed"},
                       f"popups: killing the shared process marks windows 1 and {sibling} too (got {marks})")
+                health = {p["window_id"]: p.get("crashed") for p in zb.call("page.health", {})["pages"]}
+                check(health == marks, f"popups: page.health reports the same crashed windows (got {health})")
                 logged = sorted(line.strip() for line in stderr_lines if "web process terminated" in line)
                 sib_n = sibling.split("-")[1]
                 want = sorted(f"zigBrowser: window {n}: web process terminated (crashed)" for n in ("1", sib_n, solo_n))
@@ -304,6 +306,8 @@ def main() -> int:
                     time.sleep(0.1)
                     info = window_one(zb)
                 check(info.get("crashed") == "crashed", f"page.list says the window's web process crashed (got {info})")
+                health = next(p for p in zb.call("page.health", {})["pages"] if p["window_id"] == "window-1")
+                check(health.get("crashed") == "crashed", f"page.health says so too (got {health})")
                 time.sleep(0.3)
                 logged = [line for line in stderr_lines if "web process terminated" in line]
                 check(any("window 1" in line and "crashed" in line for line in logged),

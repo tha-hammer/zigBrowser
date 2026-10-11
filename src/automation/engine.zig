@@ -217,6 +217,19 @@ pub const External = struct {
         self.engine.platformSpan(self.run, "closeWindow", null, 0, 0, started, "ok");
     }
 
+    /// Watchdog: PagePort.recoverWindows with an automation.platform.eval
+    /// child span (op "recoverWindows"; counts only, never URLs).
+    pub fn recoverWindows(self: *External, gpa: std.mem.Allocator, windows: []const page_port.WindowId, timeout_ms: u64) page_port.PortError![]page_port.RecoveredWindow {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        const recovered = self.run.port.recoverWindows(gpa, windows, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "recoverWindows", null, windows.len, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "recoverWindows", null, windows.len, recovered.len, started, "ok");
+        return recovered;
+    }
+
     /// v3.6: PagePort.listDialogs with an automation.platform.eval child
     /// span (op "listDialogs"; counts only, never messages).
     pub fn listDialogs(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]page_port.DialogInfo {
@@ -334,7 +347,14 @@ pub const Engine = struct {
             .build = options.build,
         };
         const started = self.clock.nowMs();
-        const outcome = try self.executeRun(gpa, command, options, &run);
+        var outcome = try self.executeRun(gpa, command, options, &run);
+        // Cancelled while a page call ran (page.recover ended the page's web
+        // process, or the browser stopped): that call's own failure is a
+        // consequence, so the one reply says cancelled.
+        if (outcome == .failure and run.cancelled() and outcome.failure.code != errors.downstreamCode(.cancelled)) {
+            outcome.deinit(gpa);
+            outcome = try automationFailure(gpa, .cancelled, null, run.ids);
+        }
         // duration_ms covers enqueue -> completion (queue wait included).
         recordRootSpan(command, options, &run, &outcome, options.queue_wait_ms +| (self.clock.nowMs() -| started));
         return outcome;

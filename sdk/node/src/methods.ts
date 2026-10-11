@@ -92,6 +92,25 @@ export interface PageInfo {
   crashed?: "crashed" | "memory_limit" | "terminated_by_api";
 }
 
+export interface RecoverIncident {
+  /** Token for the confirming call; valid once, for expires_in_ms. */
+  incident: string;
+  window_id: string;
+  unresponsive_ms: number;
+  /** Every window that may lose its page, the frozen one included. */
+  at_risk: { window_id: string; url: string }[];
+  expires_in_ms: number;
+}
+
+export interface RecoveredWindow {
+  window_id: string;
+  url: string;
+  /** Its page ran in the ended web process. */
+  ended: boolean;
+  /** It is loading `url` again. */
+  reloaded: boolean;
+}
+
 export interface PageHealth {
   /** "window-<n>" */
   window_id: string;
@@ -250,6 +269,25 @@ export class PageNamespace {
    */
   health(): Promise<{ debounce_ms: number; pages: PageHealth[] }> {
     return this.call("page.health", {}) as Promise<{ debounce_ms: number; pages: PageHealth[] }>;
+  }
+  /**
+   * End a frozen window's web process and reload its windows, in two calls.
+   * Without `incident`: asks, ends nothing, and lists the windows at risk
+   * (only while page.health reports the window frozen). With the
+   * `incident` token and `acknowledge` = every at_risk window id: ends that
+   * web process and reloads each window it ran. Everything in memory in
+   * those pages is lost; their pending commands end -32012.
+   */
+  recover(
+    windowId: string,
+    confirm?: { incident: string; acknowledge: string[] },
+  ): Promise<RecoverIncident | { recovered: RecoveredWindow[] }> {
+    const params: Record<string, unknown> = { window_id: windowId };
+    if (confirm) {
+      params.incident = confirm.incident;
+      params.acknowledge = confirm.acknowledge;
+    }
+    return this.call("page.recover", params) as Promise<RecoverIncident | { recovered: RecoveredWindow[] }>;
   }
   /** Close a window from page.list (not the primary one). */
   close(windowId: string): Promise<OkResult> {
