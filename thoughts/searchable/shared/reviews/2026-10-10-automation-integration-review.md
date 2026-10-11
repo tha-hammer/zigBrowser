@@ -2315,3 +2315,89 @@ The selector production-chain cases reported `linkedin`, `instagram`,
 `social-flows`, and `x-flows` PASS. The disposable export was deleted
 immediately. Preliminary review was mailed to BlueBeaver as Agent Mail 4992;
 the final APPROVE follows this review-log commit.
+
+## Page-dialog follow-up review at a3dcca8
+
+**Historical status at `a3dcca8`: BLOCKED pending a new follow-up commit.** The
+exact diff closes the known production-code gaps from the `a8678c1` review:
+dispatch-time dialog checks cover the full related-view `process_group`;
+`auto_dialog_opened`
+completes tracked eval/load/screenshot/native work and preserves the
+set-input-files tombstone; a policy-owned beforeunload prompt is not shown,
+listed, or answerable through `dialog.respond`; native input still in its
+document guard cannot dispatch; and the canonical `isAutomationCode` bound is
+used by root and social compound telemetry. Node, Python, the legacy Zig enum,
+and the documentation agree on `-32013 dialog_open`. C dialog refs, copied
+strings, tracked-job refs, and late callback ownership are sound. The exact
+diff passes `git diff --check`.
+
+Three in-flight lifecycle branches are not yet protected by tests:
+
+- `tests/e2e/automation_dialogs_test.py:196-210` opens the popup alert before
+  starting any opener command. It proves `auto_window_blocked` but does not
+  drive `src/webkit_shim.c:4062-4086` when an opener eval/DOM job is already
+  tracked and the related popup opens a dialog. A two-connection production
+  chain regression must prove prompt `-32013`, retain the popup dialog for
+  response, and drop the opener's late eval result.
+- The E2E's screenshot and setInputFiles checks at
+  `tests/e2e/automation_dialogs_test.py:129-147` are likewise dispatch-time
+  checks. The live test covers native input in flight, but no test opens a
+  dialog after full-page measurement or after set-files tracking. Regressions
+  must exercise the existing screenshot/set-files seams, prove `-32013`, and
+  then prove no snapshot/file application and cancellation of the late file
+  chooser.
+- `ZbDialogAnswer` stores only the window, dialog, and desired response
+  (`src/webkit_shim.c:4008-4030`), not the navigation job that owns the
+  prompt. A held ACCEPT callback therefore has no proof that its navigation
+  is still RUNNING after the waiter times out. A short-timeout regression must
+  prove the held callback cannot navigate after abandonment; if it can, the
+  answer must be bound to a held ref on the exact owner job and stale answers
+  must dismiss rather than leave.
+
+Small SHOULD: declare `zb_auto_debug_policy_hold_ms` as `gint` instead of
+casting a `guint *` through the `g_atomic_int_*` API.
+
+The author reports a quiet exact-tree gate of `87/87 steps, 675/675 tests` and
+six killed mutants, but those mutants do not exercise the three branches
+above. Formal findings were mailed to BlackRobin as Agent Mail 5000. An
+independent final gate is deferred until the follow-up lands.
+
+### Resolution at `fd961a8`
+
+**Status: CLOSED by `ca8d84b` + `fd961a8`; APPROVE.** `ca8d84b` binds a
+policy-owned beforeunload prompt to a held ref on its exact navigation job
+(`src/webkit_shim.c:3985-4004`, `4100-4120`). A delayed ACCEPT now leaves only
+while that owner is still RUNNING, stale answers stay on the page, and window
+teardown releases the tracked and policy-held refs without using a freed
+window or job. The debug atomic is the matching `gint` type. The author
+reported honestly that removing this defense-in-depth owner check survives:
+the existing abandonment path already stops and untracks the pending load.
+The regression still proves the required externally observable invariant
+after the delayed callback actually runs: timeout, no later navigation, no
+prompt, and no leaked job (`src/webkit.zig:3360-3376`).
+
+The other missing in-flight branches now have direct oracles. A dialog ends
+related-view eval/load/screenshot/native jobs and preserves a set-files
+tombstone at `src/webkit_shim.c:4055-4090`. The live policy test opens an alert
+between full-page measurement and capture, requiring `DIALOG_OPEN`, no PNG,
+and a drained job (`src/webkit.zig:3402-3418`); it also opens one after
+set-files tracking, requiring the late chooser cancellation counter to advance
+and `files.length` to remain zero (`src/webkit.zig:3420-3438`). The author
+reports that deleting each of those in-flight handlers kills its new test.
+
+`fd961a8` makes the production-chain related-popup test deterministic. The
+worker evaluation first sets the opener's title, and the main client observes
+that native title through queue-free `page.list` before opening the popup alert
+(`tests/e2e/automation_dialogs_test.py:212-240`). Thus the expected `-32013`
+must come from ending already-tracked work, not the dispatch-time guard; the
+popup's alert remains open and answerable. The abandoned-ACCEPT test likewise
+uses a 900 ms deadline, an 1800 ms hold, and waits 2200 ms after the call
+returns, so its postconditions cannot run before the delayed answer.
+
+Both follow-up diffs pass `git diff --check`. BlackRobin's quiet frozen-files
+gate passed **87/87 steps, 675/675 tests**. The independent reviewer gate used
+a fresh `git archive fd961a8`, unset `DISPLAY`, `WAYLAND_DISPLAY`, and
+`ZIGBROWSER_SOCKET`, and Xvfb; it passed **87/87 steps, 675/675 tests**, seed
+`0x2c33c323`. The disposable tree was deleted immediately. Findings and the
+test-validity follow-ups were mailed as Agent Mail 5000-5007; final approval
+follows this log commit.
