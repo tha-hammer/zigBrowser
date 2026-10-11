@@ -3606,3 +3606,70 @@ the live class of regression. Agent Mail 5160 sent the HIGH items to cc_2.
 
 No live browser, live socket, live site, DISPLAY `:0`, or user account was
 accessed for this audit.
+
+## Out-of-band page health (`fe17bd9`)
+
+**Verdict: APPROVED.** Reviewer clean-export gate at exact `fe17bd9`, under a
+private Xvfb with no live socket: **Build Summary: 93/93 steps succeeded;
+755/755 tests passed**. The throwaway export was deleted immediately. No live
+browser, DISPLAY `:0`, or user account was accessed.
+
+The production path is genuinely out of band from the affected page's FIFO.
+`handleRequestWith` sends `page.health` to `handleWindows` before router
+parsing/window targeting (`src/automation_server.zig:475-480`). Only
+`page.close` acquires `PageCommandQueue`; list and health pass a null cancel
+flag and no ticket into `executeExternal` (`:687-705,770-785`). Their platform
+operation is `listWindows`, which queues one synchronous, page-independent
+snapshot on GTK and reads cached WebView/window state
+(`src/webkit_shim.c:3857-3914`). It does not evaluate page JavaScript or take
+the global native-input transaction lock.
+
+Responsiveness is stored per `ZbWindow`, updated only on GTK's
+`notify::is-web-process-responsive`, initialized immediately for a popup born
+into an already-unresponsive process, and reset on the first responsive
+notification (`src/webkit_shim.c:113-120,1180-1185,4183-4195`). The server's
+2,000 ms debounce has the correct inclusive boundary: raw false remains API
+true below 2,000 ms and becomes false at 2,000 ms; raw true wins immediately
+(`src/automation_server.zig:657-668`). A related view can correctly share the
+same underlying failure, while each unrelated window retains independent
+state.
+
+The same consistent snapshot supplies `loading` from
+`webkit_web_view_is_loading`, `dialog_open` from the ordinary or
+policy-owned dialog, and the existing termination reason (`crashed`,
+`memory_limit`, or `terminated_by_api`) (`src/webkit_shim.c:3876-3890`). The
+Zig adapter owns copied URL/title strings, parses all four health fields, and
+preserves backward compatibility for a snapshot without them
+(`src/automation_gtk_port.zig:194-249`). `page.health` reports the termination
+reason without changing the established `page.list` wire shape
+(`src/automation_server.zig:728-766`).
+
+The socket unit holds window 1's real queue turn while health returns all
+three windows; it pins the debounce boundary and all health fields, including
+the optional crash reason (`tests/automation_server_test.zig:1632-1710`). The
+production-chain E2E kills no process: a trusted click enters an infinite
+loop, and health still returns immediately while that command holds its turn.
+In the reviewer run it changed to false at 5.01 s, every health call took
+under 0.01 s, another web process stayed responsive and evaluable, a 9-second
+busy loop recovered to true/0, the never-finishing load alone reported
+`loading`, and an alert alone reported `dialog_open`
+(`tests/e2e/page_health_test.py:157-265`). These assertions kill queueing,
+missing debounce/reset, global-state, loading, and dialog regressions without
+bypassing the socket/server/GTK chain. The existing crash E2E in the same
+green gate separately proves the native termination state and per-process
+window attribution.
+
+Non-blocking follow-ups mailed to cc_1:
+
+- **SHOULD (documentation):** a blocked synchronous SDK call occupies its
+  connection; polling `page.health` concurrently requires another SDK client
+  / socket connection. State that explicitly in “A frozen page” so “answers
+  at once” is not read as transport multiplexing.
+- **SHOULD (test completeness):** extend the real web-process-crash E2E to
+  assert the same reason through `page.health`, not only `page.list`. The
+  server unit already pins health serialization, so this is production-chain
+  hardening rather than a code blocker.
+- **NIT (test diagnostics):** assign `busy_at` before starting the busy-click
+  thread (`tests/e2e/page_health_test.py:222-230`); an immediate error can
+  otherwise make the thread's exception reporter raise `NameError` and hide
+  the original failure.
