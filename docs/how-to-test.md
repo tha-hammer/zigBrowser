@@ -77,8 +77,19 @@ zig-out/bin/zigBrowser` checks that: while the browser is up, it SIGKILLs
 the whole vitest run (the main process and its workers, not the browser) and
 expects no zigBrowser, WebKit helper or Xvfb from it to remain, and no
 display lock or socket. The old live test, which started the browser
-directly, left the browser and its helpers running. Neither runs in `zig build test`; both exit `77` (skip)
-when a tool is missing.
+directly, left the browser and its helpers running.
+
+That check runs vitest on a display of its own (an Xvfb it starts), and that
+Xvfb and the vitest run die with the check however it ends: the kernel
+signals them when it exits (`PR_SET_PDEATHSIG`), and Xvfb removes its own
+lock and socket. `tests/e2e/node_live_group_kill_test.py --binary
+zig-out/bin/zigBrowser` checks that: it SIGKILLs `node_live_group_test.py`
+once its Xvfb is up and expects that Xvfb, its lock and its socket to be
+gone within 10 s. Before this, they stayed.
+
+None of the three runs in `zig build test`. When a tool is missing, the two
+Python checks exit `77` (skip); the vitest live test is skipped
+(`describe.skip`) and vitest exits `0`.
 
 ## Known issues with WebKitGTK 2.54.0
 

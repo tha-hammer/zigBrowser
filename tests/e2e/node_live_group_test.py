@@ -18,8 +18,15 @@ carries the marker.
 
 This test provides a display of its own (an unmarked Xvfb, DISPLAY for vitest)
 so that a live test which draws on the caller's DISPLAY also runs: the old
-direct-spawn live test leaked its browser on it (RED). It never uses :0 or
-:1, and it only signals processes that carry its marker, plus its own Xvfb.
+direct-spawn live test leaked its browser on it (RED). That Xvfb and the
+vitest run die with this test, however it ends (SIGKILL included): the
+kernel sends them SIGTERM and SIGKILL when it exits (PR_SET_PDEATHSIG), and
+Xvfb removes its own lock and socket on SIGTERM
+(node_live_group_kill_test.py checks that). On a failure, the vitest run is
+ended first and the browser's launcher gets time to clean its own display;
+only then is anything left SIGKILLed, and a killed Xvfb's lock and socket
+removed when the lock names it. It never uses :0 or :1, and it only signals
+processes that carry its marker, plus its own Xvfb.
 
 Opt-in, like the live test itself: exit 77 (skip) without the binary, Node,
 sdk/node/node_modules (npm ci), Xvfb or xauth."""
@@ -27,6 +34,7 @@ sdk/node/node_modules (npm ci), Xvfb or xauth."""
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import secrets
 import shutil
@@ -43,6 +51,10 @@ VITEST = NODE_SDK / "node_modules/.bin/vitest"
 SKIP_EXIT = 77
 START_SEC = 60.0
 GONE_SEC = 30.0
+# On a failure: how long the launchers get to end the browser and clean their
+# displays before anything left is SIGKILLed.
+SETTLE_SEC = 30.0
+PR_SET_PDEATHSIG = 1
 # Display numbers for this test's own Xvfb: clear of xvfb-run -a (99 up) and
 # the launcher's private range (200-399).
 OWN_DISPLAYS = range(450, 500)
@@ -94,6 +106,19 @@ def xvfb_display(pid: int) -> str | None:
     return None
 
 
+def dies_with_this_test(sig: int):
+    """preexec_fn: the kernel sends the child `sig` when this test exits,
+    however it exits; a child whose parent is already gone exits at once."""
+    parent = os.getpid()
+
+    def arm() -> None:
+        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, sig, 0, 0, 0)
+        if os.getppid() != parent:
+            os._exit(1)
+
+    return arm
+
+
 def start_own_xvfb(tmp: Path) -> tuple[subprocess.Popen, str]:
     for number in OWN_DISPLAYS:
         if Path(f"/tmp/.X{number}-lock").exists() or Path(f"/tmp/.X11-unix/X{number}").exists():
@@ -101,8 +126,10 @@ def start_own_xvfb(tmp: Path) -> tuple[subprocess.Popen, str]:
         auth = tmp / "Xauthority"
         auth.touch()
         subprocess.run(["xauth", "-q", "-f", str(auth), "add", f":{number}", ".", secrets.token_hex(16)], check=True)
+        # SIGTERM: Xvfb removes its own lock and socket.
         proc = subprocess.Popen(["Xvfb", f":{number}", "-nolisten", "tcp", "-auth", str(auth)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                preexec_fn=dies_with_this_test(signal.SIGTERM))
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and proc.poll() is None:
             if Path(f"/tmp/.X11-unix/X{number}").exists():
@@ -115,13 +142,52 @@ def start_own_xvfb(tmp: Path) -> tuple[subprocess.Popen, str]:
     raise RuntimeError("no free display for the test's own Xvfb")
 
 
-def kill_marked(marker: str) -> None:
-    """Last-resort cleanup after a failure: only processes with our marker."""
-    for pid in marked(marker):
+def lock_owner(display: str) -> int | None:
+    try:
+        return int(Path(f"/tmp/.X{display}-lock").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def end_runner(vitest: subprocess.Popen, marker: str) -> None:
+    """SIGKILLs the vitest run: its process group, then any marked node
+    worker outside it. The browser's launcher then ends the browser and
+    cleans its display (it watches the worker that started it)."""
+    try:
+        os.killpg(vitest.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    for pid, name in marked(marker).items():
+        if name.startswith("node"):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def clean_up(marker: str) -> list[str]:
+    """After a failure or at the end: gives every marked process SETTLE_SEC
+    to end on its own (launchers clean their displays), then SIGKILLs what
+    is left (only processes with our marker) and removes the lock and socket
+    of each killed Xvfb whose lock names it. Returns what had to be killed."""
+    deadline = time.monotonic() + SETTLE_SEC
+    while marked(marker) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    left = marked(marker)
+    displays = {pid: d for pid, name in left.items() if name == "Xvfb" and (d := xvfb_display(pid))}
+    for pid in left:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+    for pid, display in displays.items():
+        deadline = time.monotonic() + 5
+        while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if lock_owner(display) == pid:
+            for path in (f"/tmp/.X{display}-lock", f"/tmp/.X11-unix/X{display}"):
+                Path(path).unlink(missing_ok=True)
+    return sorted(set(left.values()))
 
 
 def main() -> int:
@@ -147,7 +213,8 @@ def main() -> int:
         # ZB_LIVE_HOLD_MS keeps the browser up long enough to kill the run.
         env.update({"DISPLAY": own_display, "ZB_BINARY": str(binary), "ZB_LIVE_MARKER": marker, "ZB_LIVE_HOLD_MS": "20000"})
         vitest = subprocess.Popen([str(VITEST), "run", "tests/live.test.ts"], cwd=NODE_SDK, env=env,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                  preexec_fn=dies_with_this_test(signal.SIGKILL))
         displays: set[str] = set()
         try:
             deadline = time.monotonic() + START_SEC
@@ -190,14 +257,14 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print("FAIL\tnode-live-group")
             eprint(f"error={exc}")
-            kill_marked(marker)
-            try:
-                os.killpg(vitest.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            end_runner(vitest, marker)
+            killed = clean_up(marker)
+            if killed:
+                eprint(f"SIGKILLed after the failure: {killed}")
             return 1
         finally:
-            kill_marked(marker)
+            end_runner(vitest, marker)
+            clean_up(marker)
             own_xvfb.terminate()
             try:
                 own_xvfb.wait(timeout=5)
