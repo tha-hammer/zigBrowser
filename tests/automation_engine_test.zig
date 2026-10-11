@@ -1447,6 +1447,38 @@ test "a native hover whose move the page never confirms fails as action_timeout"
     try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
 }
 
+test "a native hover whose document changed after the move stops with document_changed, never success or relocate" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.settle_error = error.DocumentChanged;
+    var outcome = try h.run("dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    // No relocate: one locate, one move, one settle.
+    try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
+    try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
+}
+
+test "a humanized hover whose document changed after its moves stops with document_changed; the pointer stays at the last move" {
+    var hh: HumanHarness = undefined;
+    hh.init(11);
+    defer hh.deinit();
+    const h = &hh.h;
+    h.fake.settle_error = error.DocumentChanged;
+    var outcome = try h.run("dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\",\"humanize\":true}}");
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32001, "element_not_found", "\"reason\":\"document_changed\"");
+    var buf: [256]NativeCall = undefined;
+    const moves = h.fake.nativeOf(.move, &buf);
+    try std.testing.expect(moves.len >= 10);
+    const last = moves[moves.len - 1];
+    try std.testing.expectEqual(last.x, h.fake.pointer_pos.?.x);
+    try std.testing.expectEqual(last.y, h.fake.pointer_pos.?.y);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.nativeOf(.settle, &buf).len);
+}
+
 test "humanized native hover: a curved path that ends on the target, and no click" {
     var hh: HumanHarness = undefined;
     hh.init(11);

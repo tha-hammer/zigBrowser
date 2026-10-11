@@ -807,12 +807,14 @@ pub const Engine = struct {
     /// A native hover answers only once the page has the pointer's final
     /// move (v3.7 settlePointer): the backend may hold a move behind
     /// earlier mouse events while the caller's next page evaluation (a
-    /// :hover check) overtakes it. The move was sent: no re-locate.
+    /// :hover check) overtakes it. The move was sent: a document change
+    /// now is terminal document_changed (no re-locate, never success).
     fn settleHover(self: *Engine, gpa: std.mem.Allocator, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
         const remaining = deadline -| self.clock.nowMs(); // 0: the port times out at once
         const started = self.clock.nowMs();
         run.port.settlePointer(target.document(), remaining) catch |err| {
             self.platformSpan(run, "settlePointer", null, 0, 0, started, @errorName(err));
+            if (err == error.DocumentChanged) return .{ .done = try automationFailure(gpa, .element_not_found, "document_changed", run.ids) };
             return .{ .done = try portFailure(gpa, err, .action, run.ids) };
         };
         self.platformSpan(run, "settlePointer", null, 0, 0, started, "ok");

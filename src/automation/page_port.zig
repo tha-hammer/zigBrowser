@@ -266,8 +266,10 @@ pub const PagePort = struct {
 
         // --- v3.7 pointer settle ---
 
-        /// Returns once the page has received the last nativeMove (or its
-        /// document changed): a move answers when dispatched, and a backend
+        /// Returns once the page has received the last nativeMove;
+        /// DocumentChanged when its document was replaced since (the move
+        /// was sent, so this is never success). A move answers when
+        /// dispatched, and a backend
         /// may hold it behind earlier mouse events while page evaluations
         /// overtake it. A command that ends with a move (a native hover)
         /// calls this before answering. `document` as in nativeMove. Null:

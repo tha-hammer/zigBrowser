@@ -482,16 +482,18 @@ const AckTracker = struct {
     }
 
     /// Wait until the page's last trusted mousemove is at the last move's
-    /// position, or another document replaced the one it went to.
-    /// Positions, not counts: WebKit coalesces held moves, and an earlier
-    /// move of the same path may arrive first. Timeout at the deadline;
-    /// either way the move is no longer waited for.
+    /// position. Positions, not counts: WebKit coalesces held moves, and an
+    /// earlier move of the same path may arrive first. DocumentChanged when
+    /// another document replaced the one the move went to (it was sent:
+    /// never success), Timeout at the deadline; either way the move is no
+    /// longer waited for.
     fn settleMove(self: *AckTracker, deadline: i64) PortError!void {
         const target = self.move_target orelse return;
         defer self.move_target = null;
         while (true) {
             if (try self.read(deadline)) |now| {
-                if (!now.isDocument(&target.doc) or target.reachedBy(now)) return;
+                if (!now.isDocument(&target.doc)) return error.DocumentChanged;
+                if (target.reachedBy(now)) return;
             }
             sleepMs(@min(5, try remainingMs(deadline)));
         }
@@ -662,7 +664,8 @@ pub fn nativeMove(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeou
 
 /// PagePort v3.7: returns once the page's last trusted mousemove is at the
 /// last nativeMove's position (a move onto an element always fires one,
-/// also at the same position), or another document replaced it. `document` is
+/// also at the same position); DocumentChanged when another document
+/// replaced the one it went to. `document` is
 /// the move's own guard and needs no check here.
 fn settlePointer(ptr: *anyopaque, document: ?[]const u8, timeout_ms: u64) PortError!void {
     _ = document;
@@ -1026,14 +1029,16 @@ test "a settled move is not satisfied by an earlier move of the same path" {
     try std.testing.expectEqual(@as(usize, 4), page.index);
 }
 
-test "a settled move counts a new document as delivered, re-reads a lost read, and times out otherwise" {
+test "a settled move whose document was replaced is DocumentChanged; a lost read is re-read; otherwise Timeout" {
+    // The move was dispatched; the page then navigated: never success.
     var other = moveAck(-1, -1);
     @memcpy(&other.doc, "fedcba9876543210");
     var moved: FakeAcks = .{ .steps = &.{ .{ .ack = moveAck(10, 10) }, .lost, .{ .ack = other } } };
     var acks = moved.tracker();
     acks.move_target = .{ .doc = testAck(5).doc, .x = 80, .y = 60 };
-    try acks.settleMove(deadlineAfter(6000));
+    try std.testing.expectError(error.DocumentChanged, acks.settleMove(deadlineAfter(6000)));
     try std.testing.expectEqual(@as(usize, 3), moved.index);
+    try std.testing.expect(acks.move_target == null);
 
     var stuck: FakeAcks = .{ .steps = &.{.{ .ack = moveAck(10, 10) }} };
     var acks2 = stuck.tracker();

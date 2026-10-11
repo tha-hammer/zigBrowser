@@ -74,6 +74,8 @@ pub const FakePagePort = struct {
     native_error: page_port.PortError = error.Timeout,
     /// Every native call from `native_fail_at` on fails (not just that one).
     native_fail_onwards: bool = false,
+    /// v3.7: every settlePointer call fails with this (moves succeed).
+    settle_error: ?page_port.PortError = null,
     native_failed_sent: usize = 0,
     native_cost_ms: u64 = 0,
     /// When set, a successful text call reports this many code points
@@ -245,6 +247,7 @@ pub const FakePagePort = struct {
         const self = from(ptr);
         const doc = try self.dupeDocument(document);
         if (try self.recordNative(.{ .kind = .settle, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
+        if (self.settle_error) |err| return err;
     }
 
     fn pointer(ptr: *anyopaque) ?page_port.Point {
