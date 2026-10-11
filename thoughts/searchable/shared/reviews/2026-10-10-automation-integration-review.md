@@ -1985,7 +1985,11 @@ However, guarded optional unwrap operators remain in live driver code at
 1073, 1104, 1119, 1280, and 2992. Short-circuit guards make these unlikely to
 execute with null values. The orchestrator accepted the candidate-path fix at
 `2dc67b6`; removing these guarded sites remains a separate test-only defensive
-hardening follow-up. Mailed as 4946/4947.
+hardening follow-up. **CLOSED by `ffd3725`:** exact review confirms that its
+optional captures/helpers preserve the predicates, it changes only live test
+drivers/oracles, `rg` finds no executable `.?` or `std.debug.print` in
+`src/webkit.zig`, and its quiet clean export passed 85/85 steps and 644/644
+tests. Mailed as 4946/4947/4959.
 
 Exact-diff confirmation requested by the orchestrator: **both candidate
 paths are removed by `2dc67b6`**. The parent's `BlockedDriver.run`
@@ -2071,9 +2075,9 @@ robustness follow-up may first warm the fixture with a bounded 90-second
 JSON-RPC error on recurrence. Production navigation and flow defaults must
 not change. Read-only audit: mail 4953.
 
-### BLOCKER — a navigating native click can reach the new page but time out its acknowledgement
+### SHOULD — diagnose a navigating native click timeout seen only under extreme host load
 
-**Status: OPEN (cc_1).** In a loaded direct-root-binary run of exact `bc0bad1`,
+**Status: OPEN (cc_1), reclassified after quiet-host acceptance.** In a loaded direct-root-binary run of exact `bc0bad1`,
 `automation bridge drives a live WebKitGTK page` failed only its navigating
 click result and latency checks at `src/webkit.zig:1174-1175`: the 20-second
 `nativeClick` returned an as-yet unprinted error after at least eight seconds.
@@ -2087,11 +2091,17 @@ The failure is downstream of dispatch in `acks.settle` at
 `src/automation_gtk_port.zig:679` / `waitAck` at lines 355-364. A likely seam
 is an acknowledgement eval canceled by the old document's unload and
 propagated instead of observing the replacement, but the exact PagePort error
-must be recorded before choosing the correction. Pre-dispatch cancellation
-and timeout must remain failures, and an ordinary failed ack read must not be
-blindly converted to success. Require a deterministic adapter regression for
-the transient-read/replaced-document transition and loaded live coverage.
-Mailed as 4940. This is independent of the probable test-only null panic.
+was not captured. The post-`2dc67b6` server-runner tally passed 30/30 under
+load, a scratch-instrumented loop passed 26/26 with 9-12 ms click completion,
+and both quiet acceptance gates passed this live test. The orchestrator's
+quiet-host protocol therefore removes this from acceptance blocking, while
+retaining the observed production-path symptom as a follow-up. On any quiet
+or repeatable recurrence, capture the exact error before changing semantics:
+pre-dispatch cancellation and timeout must remain failures, and an ordinary
+failed ack read must not be blindly converted to success. A correction would
+still require a deterministic adapter regression for the transient-read /
+replaced-document transition. Mailed as 4940. This is independent of the
+probable test-only null panic.
 
 Review thread:
 4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929/4930/4931/4932/4933/4934/4935/4936/4937.
