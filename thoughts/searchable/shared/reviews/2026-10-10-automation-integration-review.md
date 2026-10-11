@@ -1752,8 +1752,38 @@ stage. A bounded worktree gate begun at `262f54d` passed 85/85 steps and
 642/642 tests, but cc_1's source WIP appeared while it was running, so this is
 only a checkpoint and not clean-export closure evidence.
 
+The first instrumented WIP stress batch exposed another native-text ordering
+failure on iteration 5. The whole-string `nativeText("a\\nb")` returned
+`DocumentChanged`, but `sent_chars` was not the required two; the subsequent
+page-B no-key oracle still passed. The exact count was not printed, but the
+result is consistent with the isolated-world keyup counter being observable
+before the Enter default action's navigation report, permitting `b` to be
+dispatched before the later settle notices the navigation. Keep the exact
+`sent_chars == 2` oracle and establish a post-default-action acknowledgement
+boundary; an arbitrary delay or weakened assertion is not a fix. Mailed as
+4883/4884. Iteration 12 then resolved the earlier per-code-point ambiguity:
+`nativeText("\\n")` returned success after dispatching its one Enter, rather
+than `DocumentChanged`. This directly confirms that keyup acknowledgement can
+win the race against observing the navigation caused by that key. Mailed as
+4886; this production correctness blocker is separate from the original
+policy-test panic and must also close before final.
+
+The next uncommitted WIP adds unconditional GTK-loop teardown to every live
+driver (including the formerly missed primary driver), caps helper evals by
+their local monotonic deadline as well as the 45-second aggregate driver
+budget, and counts a trusted form `submit` before its later Navigation API
+task. A bounded worktree gate passed 85/85 steps and 642/642 tests under the
+ongoing stress load; the policy case took the new `stopped after Enter` path
+with `sent 2, value ac`. This is useful green evidence, but not closure: the
+submit marker increments the counter without marking the document pending, so
+an immediate second call can baseline the new count and dispatch before the
+later navigation task. The production-chain `b_sent == 0` oracle passed once,
+but the missing invariant remains. Mailed as 4887; loop iteration 16 also
+confirmed the pre-fix whole-string call could return success and over-dispatch
+(4888).
+
 Status: **OPEN (cc_1 / BlackRobin).** Mailed as
-4871/4872/4874/4875/4879/4880/4882.
+4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888.
 
 ## Deferred scope note
 
