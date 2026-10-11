@@ -2459,8 +2459,10 @@ DISPLAY `:0`, or `zb-live.sock` was used.
 
 ### BLOCKER-for-tests — killing `xvfb-run` leaks its X server and browser
 
-**Status: OPEN (cc_1, shared E2E harness).** PIDs 3116183 and 3147132 are
-still-live 16-hour-old `zigBrowser ... --automation-api` processes. Their
+**Status: CLOSED by `34238a3`; approved as Agent Mail 5090.** See the exact
+fix and regression evidence under the later Node live-test launcher section.
+PIDs 3116183 and 3147132 were still-live 16-hour-old
+`zigBrowser ... --automation-api` processes. Their
 PPID is the user systemd (1368), and each retains its WebKit network/web
 children. Xvfb PIDs 3116172 (`:105`) and 3147127 (`:106`) began in the same
 second as the matching browser, share its now-dead session and process group,
@@ -2636,7 +2638,8 @@ a 1500-second bound. It passed **87/87 steps, 677/677 tests**, seed
 
 ### SHOULD — the legacy 15-second human-load watchdog can create the same symptom
 
-**Status: OPEN (cc_1), separately discovered; not the cause of this incident.**
+**Status: CLOSED by `20e0265`; separately discovered and not the cause of this
+incident.**
 Every non-automation `WEBKIT_LOAD_STARTED` arms a fixed timer at
 `src/webkit_shim.c:360-380`; only a tracked automation load suppresses it at
 `src/webkit_shim.c:932-937` and `1942-1951`. If a human navigation commits but
@@ -2653,6 +2656,12 @@ remain usable. A separate test-only termination should assert that the new
 `web-process-terminated` handler records `TERMINATED_BY_API` for the exact
 window. The live YouTube document finished in 1.514 seconds and emitted no
 `LOAD_FAIL`, so this latent defect is deliberately not labeled its root cause.
+
+The fix and production-chain evidence are recorded under “Committed-load
+watchdog and popup crash attribution” below. A committed page now remains
+alive and usable, a never-committed related popup is stopped without ending
+its shared process, and a lone never-committed window retains the prior
+termination recovery.
 
 ### WebKitGTK 2.54.0 qualification on Xvfb
 
@@ -2876,7 +2885,9 @@ does not waive either semantic blocker above.
 
 ## Web-process diagnostics and rendering startup review (`1c4d0d8`)
 
-**Status: APPROVED with two SHOULD follow-ups. No production blocker found.**
+**Status: APPROVED; both SHOULD follow-ups are now closed.** The rendering
+wording was corrected by `ee00876`, and the popup crash-attribution regression
+landed in `20e0265`. No production blocker was found.
 The review used the exact committed blobs, not the later shared-worktree HEAD.
 It did not access DISPLAY `:0`, the live socket, or the live browser.
 
@@ -2901,7 +2912,7 @@ only the snapshot JSON does.
 Unix socket, kills its actual WebKitWebProcess, then proves `page.list` reports
 `window-1` as `crashed`, stderr reports `window 1` plus `crashed`, and a later
 committed navigation clears the field. This does not bypass the C signal,
-PagePort parser, or server serializer. **SHOULD (cc_1):** extend it with a
+PagePort parser, or server serializer. **SHOULD CLOSED by `20e0265`:** extend it with a
 popup/related-view case and assert that the reported field and stderr id belong
 to the affected popup (and that an unaffected window is not marked). The
 production handler is correctly per-window, but the current e2e only exercises
@@ -2931,7 +2942,7 @@ non-uniform pixels and live video state; J still recorded two DRM-dumb and two
 NVIDIA-GBM setup errors, while L recorded none of those three classes. This is
 stronger automated presentation evidence than the earlier 24-bpp samples, but
 the review artifacts contain no record of the watching user's verbal verdict.
-**SHOULD (cc_1):** narrow `src/render_config.zig:6-8` and
+**SHOULD CLOSED by `ee00876`:** narrow `src/render_config.zig:6-8` and
 `docs/how-to-run.md:77-78`. “Every/any other non-DMABUF path died” is broader
 than the data and reads as contradicting the surviving force-SHM case. The
 matrix specifically establishes failure for policy NEVER and for the tested
@@ -2957,7 +2968,7 @@ display lock, or socket on their successful paths.
 
 ### BLOCKER — the kill regression's own outer Xvfb can be orphaned
 
-**Status: OPEN (cc_2); mailed as Agent Mail 5078.** The regression creates a
+**Status: CLOSED by `34238a3`; approved as Agent Mail 5090.** The regression creates a
 second Xvfb directly with `subprocess.Popen` to provide Vitest's caller display
 (`tests/e2e/node_live_group_test.py:97-115,143-150`). That Xvfb has neither the
 `xsession.py` guardian nor a parent-death signal. If the Python regression is
@@ -2994,6 +3005,24 @@ exits successfully with a skipped suite. The WebKitGTK 2.54 known-issues text
 is otherwise accurate after `ee00876`: the hover closure needs both `53b5c66`
 and `6f90a1a`, and case J is now the documented Linux default.
 
+`34238a3` arms the outer Xvfb with Linux `PR_SET_PDEATHSIG(SIGTERM)` and
+vitest with `PR_SET_PDEATHSIG(SIGKILL)`, including the post-`prctl` parent-race
+check. Its caught-failure path now ends vitest and marked workers first, gives
+the launcher's guardian time to drain its browser and private Xvfb, and only
+then applies marker-scoped SIGKILL cleanup; display-file removal additionally
+requires that the lock name the killed Xvfb PID. The new meta-regression kills
+only `node_live_group_test.py` and requires that its direct-child outer Xvfb,
+lock, and socket disappear. The recorded failing-first run left Xvfb plus both
+display files on the old test and passed after the change. Documentation now
+correctly distinguishes the Python checks' exit-77 skips from Vitest's
+successful `describe.skip` result, closing SHOULD 5079 as well.
+
+Independent bounded runs at exact `34238a3` passed both opt-in tests:
+`node_live_group_kill_test.py` and `node_live_group_test.py`. Their private
+displays `:450` and `:201` had no remaining process, lock, or socket. cc_2's
+fresh clean-export gate reported **90/90 steps succeeded; 704/704 tests
+passed**. No live display or live browser was accessed.
+
 ## Linux case-J rendering default (`ee00876`)
 
 **Status: APPROVED; mailed to cc_1 as Agent Mail 5081.** The exact diff makes
@@ -3028,4 +3057,114 @@ startup lines. Case L rendered but video time moved 2.9, 5.4, then backward to
 the previously overbroad non-DMABUF statement is now limited to policy NEVER
 and the tested `WEBKIT_DISABLE_DMABUF_RENDERER=1` combinations. No live display
 or live browser was accessed during this review. The popup-specific crash-
-diagnostic e2e remains the non-blocking SHOULD recorded under `1c4d0d8`.
+diagnostic SHOULD recorded under `1c4d0d8` is closed by `20e0265`.
+
+## Flow-level dry run (`7d0fa8a`)
+
+**Status: APPROVED; mailed to cc_2 as Agent Mail 5097.** The exact committed
+diff implements `options.dry_run` only for the ten acting flows in the brief.
+The social routes branch around admission, reservation, pacing, commit, and
+the persistence hook at `src/automation/social_flow_routes.zig:216-251`; the X
+routes do the same at `src/automation/x_routes.zig:162-217`. The dry paths
+branch before every real input sequence. Their only action-shaped operations
+are `dom.click` trials: there is no real click, fill, type, press,
+`selectOption`, native locate/dispatch, or frame-viewing pause. In particular,
+X branches before draft clearing and typing at `src/x.zig:145-164` and only
+trials the composer and, for scheduling, the schedule option at lines 186-218.
+
+LinkedIn Connect and Follow reuse the real flow's extracted
+`resolveProfileAction` path. The owner area must match exactly once, the
+title-derived owner label must have exactly one visible copy, and ambiguity
+fails closed before the trial (`src/linkedin.zig:399-423,529-571`). Instagram
+story dry run checks the requested user's story before resolving Next, never
+pauses on or advances a frame, rejects multiple Next controls, and stops
+before a View-story gate. Its unavoidable direct navigation may mark the first
+frame seen; the result and documentation disclose that side effect instead of
+claiming otherwise.
+
+The route tests assert unchanged persisted limiter state, hook count,
+`in_flight`, remaining actions, and sleep count, including at the daily cap.
+The real-binary fixture tests install page-level pointer, key, and edit
+recorders before platform handlers and prove all ten paths leave those
+recorders and page state untouched. The recorded mutation replacing the trial
+with a real click is killed by both social and X E2Es, so the tests do not
+bypass the production dispatch boundary. cc_2's clean-export gate reported
+**90/90 steps succeeded; 724/724 tests passed**.
+
+**SHOULD (cc_2), mailed in Agent Mail 5097:**
+`sdk/node/src/methods.ts:331` makes a widened runtime `boolean` return only the
+normal result type. A caller with `const flag: boolean` can receive a
+`DryRunResult` at runtime, but `FlowResult<O, R>` currently exposes only `R`.
+Literal true should remain `DryRunResult`, literal false/absence should remain
+`R`, and widened boolean should be `DryRunResult | R`, with a compile-time
+test. This is an SDK type-safety issue, not a weakness in the zero-event
+runtime contract.
+
+`ede6dbf` improves this by returning the union for a widened `boolean` and an
+optional `dryRun`, and it adds a real `tsc` compile-time suite. Its
+`"dryRun" extends keyof O` extractor is non-distributive. For
+`O = {dryRun:true} | {}`, `keyof O` lacks `dryRun`, so the SDK again exposes
+only the normal result although the runtime can return `DryRunResult`. An
+independent TypeScript equality assertion reproduced the failure. The owner
+gate at `ede6dbf` was otherwise green at **90/90 steps, 724/724 tests**.
+
+**Status: SHOULD CLOSED by `14676f3`; approved in Agent Mail 5111.** The
+extractor now distributes over every union member and the public SDK type suite
+adds both `{dryRun:true}|{}` and false-or-true union calls. The dedicated type
+suite and the whole Node SDK passed. The full Zig gate also reported **90/90
+steps, 724/724 tests**, but overlapped cc_1's bounded WebKit mutation runs; it
+is recorded as green under concurrent load, not as a quiet acceptance gate.
+
+## Committed-load watchdog and popup crash attribution (`20e0265`)
+
+**Status: APPROVED; legacy watchdog and popup-diagnostic SHOULD CLOSED.** The
+committed production diff resets `load_committed` on STARTED, sets it on
+COMMITTED, clears the timer's source id in its own callback, and lets a
+committed document keep loading while releasing first-load readiness
+(`src/webkit_shim.c:372-392,749-795,951-984`). A never-committed related view
+still gets LOAD_FAIL and `stop_loading`, but does not terminate the WebProcess
+shared by live siblings. The retained termination branch still ends a lone
+never-committed window. All of these transitions stay on the GTK main thread;
+the change introduces no new cross-thread object or string lifetime.
+
+The expanded popup crash test uses the real binary and socket, kills the actual
+isolated WebProcess, and requires only that popup's page-list and stderr reason;
+it then kills the shared process and requires both related ids, while checking
+preserved sibling state after the isolated kill
+(`tests/e2e/web_process_crash_test.py:86-187`). It does not bypass the WebKit
+termination signal, GTK snapshot, PagePort parser, or server serialization.
+
+The two early test gaps were resolved in the later working diff (Agent Mail
+5108). The related-window request issued before 15 seconds must not answer
+before 14.8 seconds, so readiness-at-COMMITTED is caught. A new sole
+never-committed-window phase requires one LOAD_FAIL, exact
+`page.list.crashed == "terminated_by_api"`, and exact window-1 stderr, so
+removing the retained last-window `terminate_window_web_process` branch is
+caught. The final committed test is a gate step (`build.zig:574-583,804`). It
+also checks a committed slow page at 14 and 16 seconds, retained process
+identity, absence of LOAD_FAIL/termination, nonblank screenshot pixels, a
+related never-commit popup that answers after being stopped, and the exact
+lone-window termination recovery
+(`tests/e2e/slow_load_watchdog_test.py:184-248,251-390`).
+
+The owner additionally mutation-checked both repaired oracles before the
+formal gate (Agent Mail 5113): releasing readiness at COMMITTED made the
+pre-timer call answer at 14.0 seconds and fail the 14.8-second lower bound;
+removing termination from the lone never-commit branch failed both the
+`terminated_by_api` page-list assertion and the exact stderr assertion.
+
+The pre-change binary failed the 14-second calls at the 15-second boundary and
+marked every related window `terminated_by_api`. The owner's clean gated
+snapshot passed **91/91 steps, 724/724 tests**. An independent quiet clean
+export of exact `20e0265`, with live display/socket variables removed, a fresh
+cache, private Xvfb, and a 1500-second bound, also passed **91/91 steps,
+724/724 tests**, seed `0x9f557033`. The disposable tree was deleted by its
+`find -delete` trap; neither DISPLAY `:0` nor the live browser was accessed.
+
+**SHOULD (cc_1, pre-existing diagnostic noise):** normal SIGINT shutdown and
+post-main teardown terminate views before disconnecting
+`sig_web_process_terminated` (`src/webkit_shim.c:1268-1285,4795-4808`), so a
+healthy exit prints `terminated_by_api` for ordinary windows. It is harmless
+to state and does not weaken the watchdog or crash-attribution regressions, but
+the diagnostic is misleading and should be suppressed just as normal
+`page.close` already suppresses it.
