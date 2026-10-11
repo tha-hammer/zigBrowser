@@ -415,3 +415,142 @@ test "selfcheck off the story viewer reports the story entries as 0 without quer
         }
     }
 }
+
+// ---- Dry run (options.dry_run): everything up to the committing click ----
+
+/// No step of a dry run may act on the page: only dom.click trials, reads
+/// and waits; and no frame is viewed (no pause).
+fn expectNoInput(runner: *const FakeRunner) !void {
+    for (runner.steps.items) |st| {
+        for ([_][]const u8{ "dom.fill", "dom.type", "dom.press", "dom.selectOption", "dom.setInputFiles", "dom.hover", "dom.scroll" }) |m| {
+            try std.testing.expect(!std.mem.eql(u8, st.method, m));
+        }
+        if (std.mem.eql(u8, st.method, "dom.click")) {
+            try std.testing.expect(std.mem.indexOf(u8, st.params, "\"trial\":true") != null);
+        }
+    }
+    try std.testing.expectEqual(@as(u64, 0), runner.now_ms);
+}
+
+const button_box = "{\"elements\":[{\"id\":\"e\",\"tag\":\"button\",\"text\":\"Follow\",\"bbox\":{\"x\":10,\"y\":20,\"width\":80,\"height\":32}}]}";
+
+test "dry run follow: trial on the header's Follow, its tag and box, nothing clicked" {
+    var r = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Follow", .result = button_box }} };
+    defer r.deinit();
+    const result = (try instagram.dryRun(gpa, &r, instagram.site, .follow, profile)).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query" });
+    try expectSelector(&r, 2, instagram.selectors.follow_button);
+    try std.testing.expect(std.mem.indexOf(u8, r.steps.items[2].params, "\"strict\":true") != null);
+    try expectNoInput(&r);
+    try std.testing.expectEqualStrings(
+        "{\"dry_run\":true,\"would_act\":\"follow\",\"target\":{\"tag\":\"button\",\"label\":\"Follow\",\"box\":{\"x\":10,\"y\":20,\"width\":80,\"height\":32}}," ++
+            "\"checks\":[{\"name\":\"signed_in\",\"result\":\"pass\"},{\"name\":\"actionable\",\"result\":\"pass\"}," ++
+            "{\"name\":\"following_state\",\"result\":\"not_reached\",\"reason\":\"appears only after the Follow click\"}]}",
+        result,
+    );
+}
+
+test "dry run like and comment: trials only; comment never focuses, clears or types into the comment box" {
+    var l = FakeRunner{};
+    defer l.deinit();
+    const liked = (try instagram.dryRun(gpa, &l, instagram.site, .like, post)).?;
+    defer gpa.free(liked);
+    try expectMethods(&l, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query" });
+    try expectSelector(&l, 2, instagram.selectors.like_button);
+    try expectNoInput(&l);
+    try std.testing.expect(std.mem.indexOf(u8, liked, "\"would_act\":\"like\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, liked, "\"label\":\"Like\"") != null);
+
+    var c = FakeRunner{};
+    defer c.deinit();
+    const commented = (try instagram.dryRun(gpa, &c, instagram.site, .comment, post)).?;
+    defer gpa.free(commented);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query", "dom.query" });
+    try expectSelector(&c, 2, instagram.selectors.comment_input);
+    try expectSelector(&c, 4, instagram.selectors.comment_submit);
+    try expectNoInput(&c);
+    try std.testing.expect(std.mem.indexOf(u8, commented, "\"would_act\":\"comment\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, commented, "{\"name\":\"post_button\",\"result\":\"pass\",\"count\":1}") != null);
+
+    // Fails closed like the real flow: logged out, a failed trial.
+    var out = FakeRunner{ .rules = &.{.{ .method = "dom.waitFor", .result = null }} };
+    defer out.deinit();
+    try std.testing.expectError(error.LoggedOut, instagram.dryRun(gpa, &out, instagram.site, .like, post));
+    var covered = FakeRunner{ .rules = &.{.{ .method = "dom.click", .result = null }} };
+    defer covered.deinit();
+    try std.testing.expect((try instagram.dryRun(gpa, &covered, instagram.site, .follow, profile)) == null);
+    try expectNoInput(&covered);
+    var off = FakeRunner{};
+    defer off.deinit();
+    try std.testing.expectError(error.InvalidParams, instagram.dryRun(gpa, &off, instagram.site, .like, "https://evil.example/p/C0ffee/"));
+    try std.testing.expectEqual(@as(usize, 0), off.steps.items.len);
+}
+
+test "dry run story_view: the real flow's checks (whose story, media), a trial on the one Next; no frame viewed, Next never clicked" {
+    var fixture_site = instagram.site;
+    fixture_site.fixture_origin = "http://127.0.0.1:9";
+    var r = FakeRunner{
+        .urls = &.{story_page},
+        .rules = &.{.{ .method = "dom.query", .contains = "View story", .result = "{\"elements\":[]}" }},
+    };
+    defer r.deinit();
+    const result = (try instagram.dryRun(gpa, &r, fixture_site, .story_view, "sam.example")).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "dom.query", "dom.waitFor", "dom.query", "dom.click", "dom.query" });
+    try expectSelector(&r, 0, "http://127.0.0.1:9/stories/sam.example/");
+    try expectSelector(&r, 3, instagram.selectors.story_view_gate);
+    try expectSelector(&r, 4, instagram.selectors.story_media);
+    try expectSelector(&r, 5, instagram.selectors.story_next);
+    try expectSelector(&r, 6, instagram.selectors.story_next);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"would_act\":\"story_view\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"label\":\"Next\"") != null);
+    // Opening the story is the real flow's own first step: said, not hidden.
+    try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"first_frame\",\"result\":\"note\",\"reason\":\"opened by the flow's own navigation; Instagram may count it as seen\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "sam.example") == null);
+}
+
+test "dry run story_view: a \"View story\" button (viewing needs a click that marks the story seen) stops the dry run before it, with the reason" {
+    var fixture_site = instagram.site;
+    fixture_site.fixture_origin = "http://127.0.0.1:9";
+    var r = FakeRunner{ .urls = &.{story_page}, .rules = &.{.{ .method = "dom.query", .contains = "View story", .result = button_box }} };
+    defer r.deinit();
+    const result = (try instagram.dryRun(gpa, &r, fixture_site, .story_view, "sam.example")).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "dom.query" });
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"target\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"view_story_click\",\"result\":\"not_reached\",\"reason\":\"instagram_story_view_needs_click: opening the viewer needs a click that marks the story seen\"}") != null);
+}
+
+test "dry run story_view fails closed like the real flow: not the user's story, several Next; no Next = one frame, no target" {
+    var fixture_site = instagram.site;
+    fixture_site.fixture_origin = "http://127.0.0.1:9";
+    var other = FakeRunner{ .urls = &.{"{\"url\":\"http://127.0.0.1:9/stories/riley.sample/\"}"} };
+    defer other.deinit();
+    try std.testing.expect((try instagram.dryRun(gpa, &other, fixture_site, .story_view, "sam.example")) == null);
+    try std.testing.expectEqualStrings("instagram_no_story_viewer", other.not_found.?);
+    try expectMethods(&other, &.{ "page.navigate", "dom.waitFor", "page.url" });
+
+    const two = "{\"elements\":[{\"id\":\"a\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}},{\"id\":\"b\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{}}]}";
+    var many = FakeRunner{ .urls = &.{story_page}, .rules = &.{
+        .{ .method = "dom.query", .contains = "View story", .result = "{\"elements\":[]}" },
+        .{ .method = "dom.query", .contains = "Next", .result = two },
+    } };
+    defer many.deinit();
+    try std.testing.expect((try instagram.dryRun(gpa, &many, fixture_site, .story_view, "sam.example")) == null);
+    try std.testing.expectEqualStrings("instagram_story_next_ambiguous", many.not_found.?);
+    try expectNoInput(&many);
+
+    var single = FakeRunner{ .urls = &.{story_page}, .rules = &.{
+        .{ .method = "dom.query", .contains = "View story", .result = "{\"elements\":[]}" },
+        .{ .method = "dom.query", .contains = "Next", .result = "{\"elements\":[]}" },
+    } };
+    defer single.deinit();
+    const result = (try instagram.dryRun(gpa, &single, fixture_site, .story_view, "sam.example")).?;
+    defer gpa.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"target\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"next\",\"result\":\"pass\",\"count\":0,\"reason\":\"no Next: the real flow views one frame and stops\"}") != null);
+    try expectNoInput(&single);
+}

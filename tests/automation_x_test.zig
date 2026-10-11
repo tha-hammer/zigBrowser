@@ -744,3 +744,74 @@ test "X admission: a failed post releases its slot (nothing counted), and each r
     r.release();
     try std.testing.expectEqual(@as(u32, x_routes.default_daily_cap - 1), h.state.remaining());
 }
+
+// ---- Dry run (options.dry_run) ----
+
+test "x.post / x.schedule_post dry run: trials only, nothing typed, no X action reserved or counted, scans reported" {
+    for ([_][2][]const u8{
+        .{ "x.post", "{\"text\":\"hello\",\"options\":{\"dry_run\":true}}" },
+        .{ "x.post", "{\"text\":\"hello\",\"options\":{\"dry_run\":true,\"input\":\"native\",\"humanize\":true}}" },
+        .{ "x.schedule_post", "{\"text\":\"later\",\"date\":\"2026-11-05\",\"time\":\"14:07\",\"options\":{\"dry_run\":true}}" },
+    }) |case| {
+        var h: Harness = undefined;
+        h.init(&.{ok_reply});
+        defer h.deinit();
+        var changes: usize = 0;
+        const Hook = struct {
+            fn changed(ctx: *anyopaque) void {
+                const n: *usize = @ptrCast(@alignCast(ctx));
+                n.* += 1;
+            }
+        };
+        h.state.on_change = .{ .ctx = &changes, .changed = Hook.changed };
+        const before = h.state.remaining();
+        var outcome = try h.call(case[0], case[1]);
+        defer outcome.deinit(gpa);
+        if (outcome != .result) {
+            std.debug.print("{s}: {d} {s}\n", .{ case[0], outcome.failure.code, outcome.failure.data_json orelse "" });
+            return error.TestUnexpectedResult;
+        }
+        try std.testing.expect(std.mem.startsWith(u8, outcome.result, "{\"dry_run\":true,\"would_act\":\""));
+        try std.testing.expect(std.mem.indexOf(u8, outcome.result, "{\"name\":\"rate_limit_scans\",\"result\":\"pass\",\"count\":") != null);
+        for (h.fake.eval_calls.items) |call_item| {
+            try std.testing.expect(std.mem.indexOf(u8, call_item.arg, "\"op\":\"type\"") == null);
+            try std.testing.expect(std.mem.indexOf(u8, call_item.arg, "\"op\":\"fill\"") == null);
+            try std.testing.expect(std.mem.indexOf(u8, call_item.arg, "\"op\":\"selectOption\"") == null);
+            try std.testing.expect(std.mem.indexOf(u8, call_item.arg, "hello") == null);
+            if (std.mem.indexOf(u8, call_item.arg, "\"op\":\"click\"") != null) {
+                try std.testing.expect(std.mem.indexOf(u8, call_item.arg, "\"trial\":true") != null);
+            }
+            // Native input never runs: no locate, no real event.
+            try std.testing.expect(std.mem.indexOf(u8, call_item.arg, "\"op\":\"locate\"") == null);
+        }
+        try std.testing.expectEqual(@as(usize, 0), h.fake.native_calls.items.len);
+        try std.testing.expectEqual(before, h.state.remaining());
+        try std.testing.expectEqual(@as(u32, 0), h.state.in_flight);
+        try std.testing.expectEqual(@as(usize, 0), changes);
+    }
+}
+
+test "x dry run at the cap: not refused, nothing reserved or changed, the note names x_daily_cap; malformed dry_run is -32602" {
+    var h: Harness = undefined;
+    h.init(&.{ok_reply});
+    defer h.deinit();
+    h.state.limiter.updateConfig(.{ .min_delay_ms = 0, .max_delay_ms = 0, .daily_cap = 0 });
+    const saved = h.state.persisted();
+    var capped = try h.call("x.post", "{\"text\":\"hi\",\"options\":{\"dry_run\":true}}");
+    defer capped.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, capped.result, "{\"name\":\"daily_cap\",\"result\":\"note\",\"count\":0,\"reason\":\"the real call would be refused now: x_daily_cap\"}") != null);
+    try std.testing.expect(std.meta.eql(saved, h.state.persisted()));
+    try std.testing.expectEqual(@as(u32, 0), h.state.in_flight);
+    const navigated = h.fake.navigate_calls.items.len;
+
+    for ([_][2][]const u8{
+        .{ "x.post", "{\"text\":\"hi\",\"options\":{\"dry_run\":1}}" },
+        .{ "x.post", "{\"options\":{\"dry_run\":true}}" },
+        .{ "x.selfcheck", "{\"options\":{\"dry_run\":true}}" },
+    }) |case| {
+        var bad = try h.call(case[0], case[1]);
+        defer bad.deinit(gpa);
+        try std.testing.expectEqual(@as(i64, -32602), bad.failure.code);
+    }
+    try std.testing.expectEqual(navigated, h.fake.navigate_calls.items.len);
+}

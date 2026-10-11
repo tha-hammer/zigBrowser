@@ -120,6 +120,8 @@ pub const PostParams = struct {
     /// param: fixtures, mirrors). Defaults to the real `compose_url`.
     compose_url: []const u8 = compose_url,
     input: Input = .{},
+    /// options.dry_run: stop before the first input (see `dryRun`).
+    dry_run: bool = false,
 };
 
 /// Years the schedule dialog's Year select can plausibly offer. Whether a
@@ -136,6 +138,7 @@ pub const ScheduleParams = struct {
     time: []const u8,
     compose_url: []const u8 = compose_url,
     input: Input = .{},
+    dry_run: bool = false,
 };
 
 /// Posts `text` now. Returns `{"ok":true}` (owned), null if a step failed,
@@ -143,6 +146,7 @@ pub const ScheduleParams = struct {
 pub fn post(gpa: std.mem.Allocator, runner: anytype, params: PostParams) Error!?[]u8 {
     try validateText(params.text);
     if (params.input.humanize and !params.input.native) return error.InvalidParams;
+    if (params.dry_run) return dryRun(gpa, runner, .post, params.compose_url);
     if (!(try openComposer(gpa, runner, params.compose_url))) return null;
     if (!(try typeText(gpa, runner, params.text, params.input))) return null;
     if (!(try submit(gpa, runner, params.input))) return null;
@@ -155,6 +159,7 @@ pub fn schedulePost(gpa: std.mem.Allocator, runner: anytype, params: SchedulePar
     try validateText(params.text);
     const when = try parseWhen(params.date, params.time);
     if (params.input.humanize and !params.input.native) return error.InvalidParams;
+    if (params.dry_run) return dryRun(gpa, runner, .schedule_post, params.compose_url);
     if (!(try openComposer(gpa, runner, params.compose_url))) return null;
     if (!(try typeText(gpa, runner, params.text, params.input))) return null;
 
@@ -176,6 +181,41 @@ pub fn schedulePost(gpa: std.mem.Allocator, runner: anytype, params: SchedulePar
     if (!(try step(gpa, runner, "dom.click", .{ .selector = selectors.schedule_confirm, .options = act(params.input, budget(runner, click_timeout_ms)) }))) return null;
     if (!(try submit(gpa, runner, params.input))) return null;
     return try std.fmt.allocPrint(gpa, "{{\"ok\":true,\"scheduledFor\":\"{s}T{s}\"}}", .{ params.date, params.time });
+}
+
+/// Dry run (options.dry_run; see flow_steps' "Dry runs") of x.post or
+/// x.schedule_post, after the same parameter checks: open the composer
+/// (login gate, rate-limit scans), a trial click on the composer, for a
+/// schedule also on the schedule option, and count the Post buttons. The
+/// text is never typed (no draft is cleared either), so Post stays
+/// disabled and is only counted: no copy at all fails closed as the real
+/// flow would (x_post_button_missing). Plain trials (synthetic): no native
+/// input is located or sent. Returns `{"dry_run":true,...}` (owned).
+fn dryRun(gpa: std.mem.Allocator, runner: anytype, verb: Verb, url: []const u8) Error!?[]u8 {
+    if (!(try openComposer(gpa, runner, url))) return null;
+    const element = (try flow.trialTarget(gpa, runner, selectors.composer, true, click_timeout_ms)) orelse return null;
+    defer gpa.free(element.tag);
+    if (verb == .schedule_post) {
+        if (!(try flow.trial(gpa, runner, selectors.schedule_option, true, click_timeout_ms))) return null;
+    }
+    var buttons: usize = 0;
+    for (selectors.post_button_testids) |testid| {
+        var buf: [64]u8 = undefined;
+        const all = std.fmt.bufPrint(&buf, "testid={s}", .{testid}) catch unreachable;
+        buttons += (try countMatches(gpa, runner, all)) orelse return null;
+    }
+    if (buttons == 0) {
+        try runner.notFound("x_post_button_missing");
+        return null;
+    }
+    const target = flow.Target{ .tag = element.tag, .label = "data-testid=tweetTextarea_0", .box = element.box };
+    const actionable = flow.pass("actionable");
+    const counted = flow.counted("post_button", buttons);
+    const not_reached = flow.notReached("post_click", "Post stays disabled until the text is typed");
+    if (verb == .schedule_post) {
+        return try flow.dryRunResult(gpa, "schedule_post", target, &.{ flow.pass("signed_in"), actionable, flow.pass("schedule_option"), counted, not_reached });
+    }
+    return try flow.dryRunResult(gpa, "post", target, &.{ flow.pass("signed_in"), actionable, counted, not_reached });
 }
 
 /// Logged in when the composer is on the current page. Does not navigate.

@@ -528,3 +528,119 @@ test "every step's timeout is clamped to the flow budget" {
         if (std.mem.eql(u8, s.method, "dom.waitFor")) try std.testing.expect(ms <= 3_000);
     }
 }
+
+// ---- Dry run (options.dry_run): everything up to the committing click ----
+
+/// No step of a dry run may act on the page: only dom.click trials, reads
+/// and waits (no real click, fill, type, press or select).
+fn expectNoInput(runner: *const FakeRunner) !void {
+    for (runner.steps.items) |st| {
+        for ([_][]const u8{ "dom.fill", "dom.type", "dom.press", "dom.selectOption", "dom.setInputFiles", "dom.hover", "dom.scroll" }) |m| {
+            try std.testing.expect(!std.mem.eql(u8, st.method, m));
+        }
+        if (std.mem.eql(u8, st.method, "dom.click")) {
+            try std.testing.expect(std.mem.indexOf(u8, st.params, "\"trial\":true") != null);
+        }
+    }
+}
+
+test "dry run connect: the real flow's own target resolution (owner area, visible copy), a trial click on it, nothing clicked; the name is <owner>" {
+    var r = FakeRunner{ .rules = &.{
+        // The visible copy by its position matches only itself.
+        .{ .method = "dom.query", .contains = ")[2]", .result = one_element },
+        .{ .method = "dom.query", .contains = "Invite Sam Example", .result = hidden_then_visible },
+    } };
+    defer r.deinit();
+    const result = (try linkedin.dryRun(gpa, &r, linkedin.site, .connect, profile)).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.click", "dom.query" });
+    try expectSelector(&r, 5, own_connect);
+    try expectSelector(&r, 6, owner_area);
+    try expectSelector(&r, 7, own_connect_2);
+    try std.testing.expect(std.mem.indexOf(u8, r.steps.items[7].params, "\"strict\":true") != null);
+    try expectSelector(&r, 8, own_connect_2);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Sam") == null);
+    try std.testing.expectEqualStrings(
+        "{\"dry_run\":true,\"would_act\":\"connect\",\"target\":{\"tag\":\"a\",\"label\":\"Invite <owner> to connect\",\"box\":{\"x\":56,\"y\":513,\"width\":97,\"height\":48}}," ++
+            "\"checks\":[{\"name\":\"signed_in\",\"result\":\"pass\"},{\"name\":\"profile_owner\",\"result\":\"pass\"},{\"name\":\"owner_area\",\"result\":\"pass\",\"count\":1}," ++
+            "{\"name\":\"visible_copies\",\"result\":\"pass\",\"count\":1},{\"name\":\"actionable\",\"result\":\"pass\"}," ++
+            "{\"name\":\"invite_dialog\",\"result\":\"not_reached\",\"reason\":\"opens only after the Connect click\"}]}",
+        result,
+    );
+}
+
+test "dry run follow: the owner's Follow, trial only" {
+    var r = FakeRunner{};
+    defer r.deinit();
+    const result = (try linkedin.dryRun(gpa, &r, linkedin.site, .follow, profile)).?;
+    defer gpa.free(result);
+    try expectSelector(&r, 7, own_follow);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"would_act\":\"follow\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"label\":\"Follow <owner>\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Sam") == null);
+}
+
+test "dry run connect/follow fail closed exactly like the real flow: ambiguous, missing, not a profile, logged out" {
+    var two = FakeRunner{ .rules = &.{.{ .method = "dom.query", .contains = "Follow Sam Example", .result = two_elements }} };
+    defer two.deinit();
+    try std.testing.expect((try linkedin.dryRun(gpa, &two, linkedin.site, .follow, profile)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_action_ambiguous", two.not_found.?);
+    for (two.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
+
+    var none = FakeRunner{ .rules = &.{
+        .{ .method = "dom.waitFor", .contains = "Invite Sam Example", .result = null },
+        .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
+    } };
+    defer none.deinit();
+    try std.testing.expect((try linkedin.dryRun(gpa, &none, linkedin.site, .connect, profile)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_action_missing", none.not_found.?);
+
+    var feed = FakeRunner{ .rules = &.{.{ .method = "page.url", .result = "{\"url\":\"https://www.linkedin.com/feed/\"}" }} };
+    defer feed.deinit();
+    try std.testing.expect((try linkedin.dryRun(gpa, &feed, linkedin.site, .connect, profile)) == null);
+    try std.testing.expectEqualStrings("linkedin_not_a_profile", feed.not_found.?);
+
+    var out = FakeRunner{ .rules = &.{.{ .method = "dom.waitFor", .result = null }} };
+    defer out.deinit();
+    try std.testing.expectError(error.LoggedOut, linkedin.dryRun(gpa, &out, linkedin.site, .follow, profile));
+
+    // A trial that fails (e.g. covered) is the real click's failure too.
+    var covered = FakeRunner{ .rules = &.{.{ .method = "dom.click", .result = null }} };
+    defer covered.deinit();
+    try std.testing.expect((try linkedin.dryRun(gpa, &covered, linkedin.site, .connect, profile)) == null);
+    try expectNoInput(&covered);
+
+    // Off-site URLs are refused before any step.
+    var off = FakeRunner{};
+    defer off.deinit();
+    try std.testing.expectError(error.InvalidParams, linkedin.dryRun(gpa, &off, linkedin.site, .like, "https://evil.example/in/x/"));
+    try std.testing.expectEqual(@as(usize, 0), off.steps.items.len);
+}
+
+test "dry run like: trial on the first reaction button (still \"no reaction\"), nothing clicked" {
+    var r = FakeRunner{};
+    defer r.deinit();
+    const result = (try linkedin.dryRun(gpa, &r, linkedin.site, .like, "https://www.linkedin.com/feed/update/urn:li:activity:1/")).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query" });
+    try expectSelector(&r, 2, linkedin.selectors.like_button);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"would_act\":\"like\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"label\":\"Reaction button state: no reaction\"") != null);
+}
+
+test "dry run comment: trial on the Comment button (as the flow clicks it: not strict), the comment box counted, nothing typed" {
+    var r = FakeRunner{};
+    defer r.deinit();
+    const result = (try linkedin.dryRun(gpa, &r, linkedin.site, .comment, "https://www.linkedin.com/feed/update/urn:li:activity:1/")).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query", "dom.query" });
+    try expectSelector(&r, 2, linkedin.selectors.comment_button);
+    try std.testing.expect(std.mem.indexOf(u8, r.steps.items[2].params, "\"strict\":false") != null);
+    try expectSelector(&r, 4, linkedin.selectors.comment_input);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"would_act\":\"comment\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"comment_box\",\"result\":\"pass\",\"count\":1}") != null);
+}

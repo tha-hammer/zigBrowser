@@ -931,6 +931,141 @@ test "N20: Instagram flows scan for their own platform; a blocked-action dialog 
     try std.testing.expectEqual(@as(usize, 0), g.h.fake.scan_calls);
 }
 
+// ---- Dry run (options.dry_run) ----
+
+/// Real (non-trial) clicks the page received.
+fn realClicks(fake: *const fakes.FakePagePort) usize {
+    var n: usize = 0;
+    for (fake.eval_calls.items) |call| {
+        if (std.mem.indexOf(u8, call.arg, "\"op\":\"click\"") != null and std.mem.indexOf(u8, call.arg, "\"trial\":true") == null) n += 1;
+    }
+    return n;
+}
+
+test "dry run: every one of the eight flows runs to its target with trials only; no pacing pause, nothing counted or saved, scans reported" {
+    const cases = [_][2][]const u8{
+        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\",\"note\":\"Hi\",\"options\":{\"dry_run\":true}}" },
+        .{ "linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\",\"options\":{\"dry_run\":true}}" },
+        .{ "linkedin.like", "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\",\"options\":{\"dry_run\":true}}" },
+        .{ "linkedin.comment", "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\",\"text\":\"Great\",\"options\":{\"dry_run\":true}}" },
+        .{ "instagram.follow", "{\"profileUrl\":\"https://www.instagram.com/sam/\",\"options\":{\"dry_run\":true}}" },
+        .{ "instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"options\":{\"dry_run\":true}}" },
+        .{ "instagram.comment", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"text\":\"So good\",\"options\":{\"dry_run\":true}}" },
+    };
+    for (cases) |case| {
+        var f: FlowHarness = undefined;
+        f.init();
+        defer f.deinit();
+        var counter: ChangeCounter = .{};
+        f.h.state.on_change = counter.hook();
+        f.h.fake.navigate_sets_url = true;
+        f.h.fake.current_title = "Sam Example | LinkedIn";
+        const before = f.h.state.remaining();
+        var outcome = try f.call(case[0], case[1]);
+        defer outcome.deinit(gpa);
+        if (outcome != .result) {
+            std.debug.print("{s}: {d} {s}\n", .{ case[0], outcome.failure.code, outcome.failure.data_json orelse "" });
+            return error.TestUnexpectedResult;
+        }
+        try std.testing.expect(std.mem.startsWith(u8, outcome.result, "{\"dry_run\":true,\"would_act\":\""));
+        try std.testing.expect(std.mem.indexOf(u8, outcome.result, "Sam") == null);
+        // The runner's clean rate-limit scans: after navigating, before the trial, at the end.
+        try std.testing.expect(std.mem.indexOf(u8, outcome.result, "{\"name\":\"rate_limit_scans\",\"result\":\"pass\",\"count\":") != null);
+        try std.testing.expect(f.h.fake.scan_calls >= 2);
+        try std.testing.expect(std.mem.indexOf(u8, outcome.result, "{\"name\":\"daily_cap\",\"result\":\"note\",\"count\":100,\"reason\":\"a dry run is not counted\"}") != null);
+        try std.testing.expectEqual(@as(usize, 0), realClicks(&f.h.fake));
+        for ([_][]const u8{ "type", "fill", "press", "selectOption" }) |op| try std.testing.expectEqual(@as(usize, 0), countOps(&f.h.fake, op));
+        try std.testing.expectEqual(before, f.h.state.remaining());
+        try std.testing.expectEqual(@as(usize, 0), counter.count);
+        try std.testing.expectEqual(@as(usize, 0), f.h.clock.sleeps.items.len);
+    }
+}
+
+test "dry run story_view: no Next clicked, no frame viewed, nothing counted" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.navigate_sets_url = true;
+    const before = f.h.state.remaining();
+    // flow_ok answers every query with one element: the "View story" gate
+    // check then finds one, so the dry run stops before that click.
+    var outcome = try f.call("instagram.story_view", "{\"username\":\"sam\",\"options\":{\"dry_run\":true}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.result, "instagram_story_view_needs_click") != null);
+    try std.testing.expectEqual(@as(usize, 0), realClicks(&f.h.fake));
+    try std.testing.expectEqual(before, f.h.state.remaining());
+    try std.testing.expectEqual(@as(usize, 0), f.h.clock.sleeps.items.len);
+}
+
+test "dry run at the daily cap: not refused (no admission at all); pacing state byte for byte unchanged; the note names the real call's error" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.state.limiter.updateConfig(.{ .min_delay_ms = 3000, .max_delay_ms = 8000, .daily_cap = 1 });
+    var counter: ChangeCounter = .{};
+    f.h.state.on_change = counter.hook();
+    var used = f.h.state.reserve().?;
+    used.commit();
+    try std.testing.expectEqual(@as(u32, 0), f.h.state.remaining());
+    const saved = f.h.state.persisted();
+    const changes = counter.count;
+    var outcome = try f.call("instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"options\":{\"dry_run\":true}}");
+    defer outcome.deinit(gpa);
+    try std.testing.expect(std.mem.indexOf(u8, outcome.result, "{\"name\":\"daily_cap\",\"result\":\"note\",\"count\":0,\"reason\":\"the real call would be refused now: social_daily_cap\"}") != null);
+    try std.testing.expectEqual(@as(usize, 1), f.h.fake.navigate_calls.items.len);
+    try std.testing.expect(std.meta.eql(saved, f.h.state.persisted()));
+    try std.testing.expectEqual(changes, counter.count);
+    try std.testing.expectEqual(@as(u32, 0), f.h.state.in_flight);
+    try std.testing.expectEqual(@as(usize, 0), f.h.clock.sleeps.items.len);
+
+    // The real call is refused there.
+    var real = try f.call("instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\"}");
+    defer real.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32010), real.failure.code);
+}
+
+test "dry run: a challenge page after navigating is the real flow's -32010; a failed trial is the real click's failure" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.scan_replies = &.{.{ .json = fakes.detectedScan("challenge", "linkedin") }};
+    var outcome = try f.call("linkedin.like", "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\",\"options\":{\"dry_run\":true}}");
+    defer outcome.deinit(gpa);
+    try expectRateLimited(outcome, "challenge", "linkedin");
+    try std.testing.expectEqual(@as(usize, 0), f.h.fake.eval_calls.items.len);
+}
+
+test "options: only {dry_run: bool} and only on the ten acting flows; anything else is -32602 before any page work" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    for ([_][2][]const u8{
+        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"options\":{\"dry_run\":\"yes\"}}" },
+        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"options\":{\"dry_run\":true,\"x\":1}}" },
+        .{ "linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"options\":true}" },
+        .{ "linkedin.follow", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"options\":[]}" },
+        .{ "linkedin.visit", "{\"profileUrl\":\"https://www.linkedin.com/in/a/\",\"options\":{\"dry_run\":true}}" },
+        .{ "linkedin.message", "{\"text\":\"hi\",\"conversationUrl\":\"https://www.linkedin.com/messaging/1/\",\"options\":{\"dry_run\":true}}" },
+        .{ "linkedin.search", "{\"query\":\"zig\",\"options\":{\"dry_run\":true}}" },
+        .{ "instagram.dm", "{\"username\":\"ada\",\"text\":\"hi\",\"options\":{\"dry_run\":true}}" },
+        .{ "instagram.selfcheck", "{\"options\":{\"dry_run\":true}}" },
+        .{ "instagram.comment", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"options\":{\"dry_run\":true}}" },
+    }) |case| {
+        var outcome = try f.call(case[0], case[1]);
+        defer outcome.deinit(gpa);
+        if (outcome != .failure or outcome.failure.code != -32602) {
+            std.debug.print("accepted {s} {s}\n", .{ case[0], case[1] });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), f.h.fake.navigate_calls.items.len);
+
+    // dry_run false is the real flow.
+    var real = try f.call("instagram.like", "{\"postUrl\":\"https://www.instagram.com/p/1/\",\"options\":{\"dry_run\":false}}");
+    defer real.deinit(gpa);
+    try std.testing.expectEqualStrings("{\"ok\":true}", real.result);
+}
+
 // ---- N21: pacing state persists across restarts ----
 
 const pacing_store = automation.pacing_store;

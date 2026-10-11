@@ -44,6 +44,11 @@ pub const selectors = struct {
     /// second one fails the flow closed instead of being clicked.
     pub const story_media = "xpath=//section[not(ancestor::main)]//video | //section[not(ancestor::main)]//img[not(ancestor::a)]";
     pub const story_next = "xpath=//*[name()=\"svg\" and @aria-label=\"Next\"][not(ancestor::main)]/ancestor::*[@role=\"button\"][1]";
+    /// A "View story" button in front of the viewer: viewing would need a
+    /// click that marks the story seen, so a dry run stops before it.
+    /// UNVERIFIED live (not seen in the 2026-10-11 probe, whose viewer was
+    /// already playing); used only to stop, never clicked.
+    pub const story_view_gate = "xpath=//*[self::button or @role=\"button\"][normalize-space(.)=\"View story\"]";
 };
 
 /// Whether story_view may wait for story media and click Next at all. On
@@ -252,8 +257,109 @@ pub fn isStoryUrl(url: []const u8) bool {
 /// the story entries are 0 off a /stories/ URL (not queried).
 pub fn selfCheck(gpa: std.mem.Allocator, runner: anytype) Error!?[]u8 {
     const in_viewer = (try onStories(gpa, runner, null, null)) orelse return null;
-    const story_entries = [_][]const u8{ "story_media", "story_next" };
+    const story_entries = [_][]const u8{ "story_media", "story_next", "story_view_gate" };
     return flow.selectorReportExcept(gpa, runner, selectors, if (in_viewer) &.{} else &story_entries);
+}
+
+/// The acting flows a dry run (options.dry_run) covers.
+pub const DryVerb = enum { follow, like, comment, story_view };
+
+/// Dry run of `verb` (see flow_steps' "Dry runs"): the real flow's steps up
+/// to its committing click, then a trial click on that click's exact target
+/// instead. `target` is the profile URL (follow), the post URL (like,
+/// comment) or the username (story_view). Returns `{"dry_run":true,...}`
+/// (owned), or null / an error exactly where the real flow fails. Targets:
+/// Follow, the like button, the comment box (its Post button stays
+/// disabled until there is text, so it is only counted), and the viewer's
+/// Next. story_view opens only the story URL the real flow opens (Instagram
+/// may count that first frame as seen: reported as a note), never pauses on
+/// a frame, and stops before a "View story" click.
+pub fn dryRun(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, verb: DryVerb, target: []const u8) Error!?[]u8 {
+    if (verb == .story_view) return dryStoryView(gpa, runner, s, target);
+    if (!s.allows(target)) return error.InvalidParams;
+    if (!(try openPage(gpa, runner, target))) return null;
+    switch (verb) {
+        .follow => {
+            const element = (try flow.trialTarget(gpa, runner, selectors.follow_button, true, click_timeout_ms)) orelse return null;
+            defer gpa.free(element.tag);
+            return try flow.dryRunResult(gpa, "follow", .{ .tag = element.tag, .label = "Follow", .box = element.box }, &.{
+                flow.pass("signed_in"),
+                flow.pass("actionable"),
+                flow.notReached("following_state", "appears only after the Follow click"),
+            });
+        },
+        .like => {
+            const element = (try flow.trialTarget(gpa, runner, selectors.like_button, true, click_timeout_ms)) orelse return null;
+            defer gpa.free(element.tag);
+            return try flow.dryRunResult(gpa, "like", .{ .tag = element.tag, .label = "Like", .box = element.box }, &.{
+                flow.pass("signed_in"),
+                flow.pass("actionable"),
+                flow.notReached("unlike_state", "appears only after the Like click"),
+            });
+        },
+        .comment => {
+            const element = (try flow.trialTarget(gpa, runner, selectors.comment_input, true, click_timeout_ms)) orelse return null;
+            defer gpa.free(element.tag);
+            const posts = (try flow.countMatches(gpa, runner, selectors.comment_submit)) orelse return null;
+            return try flow.dryRunResult(gpa, "comment", .{ .tag = element.tag, .label = "Add a comment\u{2026}", .box = element.box }, &.{
+                flow.pass("signed_in"),
+                flow.pass("actionable"),
+                flow.counted("post_button", posts),
+                flow.notReached("post_click", "Post is used only after the comment is typed"),
+            });
+        },
+        .story_view => unreachable,
+    }
+}
+
+fn dryStoryView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
+    const url = try userUrl(gpa, s.base(), "stories/", username);
+    defer gpa.free(url);
+    if (!(try openPage(gpa, runner, url))) return null;
+    // The real flow's checks, in its order.
+    const in_viewer = (try onStories(gpa, runner, s, username)) orelse return null;
+    if (!in_viewer) {
+        try runner.notFound("instagram_no_story_viewer");
+        return null;
+    }
+    if (!story_viewer_verified and !s.unverified_actions) {
+        try runner.notFound("instagram_story_viewer_unverified");
+        return null;
+    }
+    const first_frame = flow.Check{ .name = "first_frame", .result = "note", .reason = "opened by the flow's own navigation; Instagram may count it as seen" };
+    const gates = (try flow.countMatches(gpa, runner, selectors.story_view_gate)) orelse return null;
+    if (gates > 0) {
+        return try flow.dryRunResult(gpa, "story_view", null, &.{
+            flow.pass("signed_in"),
+            flow.pass("story_url"),
+            flow.notReached("view_story_click", "instagram_story_view_needs_click: opening the viewer needs a click that marks the story seen"),
+        });
+    }
+    if (!(try waitAttached(gpa, runner, selectors.story_media))) return null;
+    const next = (try flow.countMatches(gpa, runner, selectors.story_next)) orelse return null;
+    if (next > 1) {
+        try runner.notFound("instagram_story_next_ambiguous");
+        return null;
+    }
+    if (next == 0) {
+        return try flow.dryRunResult(gpa, "story_view", null, &.{
+            flow.pass("signed_in"),
+            flow.pass("story_url"),
+            flow.pass("story_media"),
+            .{ .name = "next", .count = 0, .reason = "no Next: the real flow views one frame and stops" },
+            first_frame,
+        });
+    }
+    const element = (try flow.trialTarget(gpa, runner, selectors.story_next, true, click_timeout_ms)) orelse return null;
+    defer gpa.free(element.tag);
+    return try flow.dryRunResult(gpa, "story_view", .{ .tag = element.tag, .label = "Next", .box = element.box }, &.{
+        flow.pass("signed_in"),
+        flow.pass("story_url"),
+        flow.pass("story_media"),
+        flow.counted("next", 1),
+        flow.pass("actionable"),
+        first_frame,
+    });
 }
 
 /// Instagram usernames: 1-30 of letters, digits, '.' and '_'.

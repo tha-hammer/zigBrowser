@@ -258,6 +258,69 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     )
     passed.append("instagram")
 
+    # options.dry_run: each acting flow runs up to its committing click, which
+    # is only tried (actionability checks, no event). No handler on the page
+    # sees anything (window.__input records every pointer, key and edit event
+    # before any handler), nothing is typed, sent or counted.
+    remaining = zb.social.rate_status()["remaining_actions"]
+    page_input = lambda: zb.page.evaluate("window.__input")["result"]  # noqa: E731
+    js = lambda expression: zb.page.evaluate(expression)["result"]  # noqa: E731
+
+    def dry(label, call, would_act, target):
+        result = call()
+        expect_equal(f"{label} dry run", (result.get("dry_run"), result.get("would_act")), (True, would_act))
+        got = result.get("target")
+        if target is None:
+            expect_equal(f"{label} target", got, None)
+        else:
+            expect_equal(f"{label} target", (got.get("tag"), got.get("label")), target)
+            box = got.get("box") or {}
+            if not (box.get("width", 0) > 0 and box.get("height", 0) > 0):
+                raise AssertionError(f"{label}: target has no box: {got}")
+        if "rate_limit_scans" not in [c["name"] for c in result["checks"]]:
+            raise AssertionError(f"{label}: no rate-limit scans reported: {result['checks']}")
+        expect_equal(f"{label}: no input event on the page", page_input(), [])
+        return result
+
+    dry("li connect", lambda: zb.linkedin.connect(profile, note="Hi Sam", dry_run=True), "connect", ("a", "Invite <owner> to connect"))
+    expect_equal(
+        "li connect dry run: no Connect click, no invite dialog, no other copy",
+        (li(), zb.page.evaluate("window.__li.events")["result"], wrong_person(), other_copies(), js("document.getElementById('invite').hidden")),
+        (None, [], [], [], True),
+    )
+    dry("li follow", lambda: zb.linkedin.follow(profile, dry_run=True), "follow", ("button", "Follow <owner>"))
+    expect_equal("li follow dry run: still Follow", (li(), js("document.getElementById('follow').getAttribute('aria-label')")), (None, "Follow Sam Example"))
+    expect_error("li follow dry run, own Follow twice", lambda: zb.linkedin.follow(f"{origin}/in/twice/", dry_run=True), -32001, "linkedin_profile_action_ambiguous")
+    dry("li like", lambda: zb.linkedin.like(post, dry_run=True), "like", ("button", "Reaction button state: no reaction"))
+    expect_equal("li like dry run: not liked", (li(), js("document.querySelector('[aria-label^=\"Reaction button state: \"]').getAttribute('aria-label')")), (None, "Reaction button state: no reaction"))
+    dry("li comment", lambda: zb.linkedin.comment(post, "Great post", dry_run=True), "comment", ("button", "Comment"))
+    expect_equal("li comment dry run: box closed and empty", (li(), js("document.querySelector('.comments-comment-box__form').hidden"), js("document.querySelector('.comments-comment-box__form [contenteditable]').textContent")), (None, True, ""))
+    dry("ig follow", lambda: zb.instagram.follow(ig_profile, dry_run=True), "follow", ("button", "Follow"))
+    expect_equal("ig follow dry run: still Follow", (ig(), js("document.getElementById('follow').textContent")), (None, "Follow"))
+    dry("ig like", lambda: zb.instagram.like(ig_post, dry_run=True), "like", ("svg", "Like"))
+    expect_equal("ig like dry run: not liked", (ig(), zb.page.evaluate("window.__ig.events")["result"]), (None, []))
+    dry("ig comment", lambda: zb.instagram.comment(ig_post, "So good", dry_run=True), "comment", ("textarea", "Add a comment\u2026"))
+    expect_equal("ig comment dry run: nothing typed or posted", (ig(), js("document.querySelector('textarea').value")), (None, ""))
+    dry("ig story", lambda: zb.instagram.story_view("sam.example", dry_run=True), "story_view", ("div", "Next"))
+    expect_equal(
+        "ig story dry run: first frame only, Next never clicked",
+        (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.frames")["result"], zb.page.evaluate("window.__ig.decoyNext")["result"]),
+        ("stories:sam.example", [1], 0),
+    )
+    expect_error("ig story dry run, two Next buttons", lambda: zb.instagram.story_view("decoy.user", dry_run=True), -32001, "instagram_story_next_ambiguous")
+    expect_equal(
+        "ig two Next buttons dry run: neither Next touched",
+        (zb.page.evaluate("window.__ig.decoyNext")["result"], zb.page.evaluate("window.__ig.frames")["result"], page_input()),
+        (0, [1], []),
+    )
+    gate = dry("ig story behind a View story button", lambda: zb.instagram.story_view("gate.user", dry_run=True), "story_view", None)
+    stop = [c for c in gate["checks"] if c["name"] == "view_story_click"]
+    if not (stop and stop[0]["result"] == "not_reached" and stop[0]["reason"].startswith("instagram_story_view_needs_click")):
+        raise AssertionError(f"ig story gate: no stop reason: {gate['checks']}")
+    expect_equal("ig story gate: View story never clicked", zb.page.evaluate("window.__ig.events")["result"], [])
+    expect_equal("dry runs count nothing", zb.social.rate_status()["remaining_actions"], remaining)
+    passed.append("dry-run")
+
     # Platform URLs only.
     expect_error("off-platform URL", lambda: zb.linkedin.visit("https://evil.example/in/sam/"), -32602)
     expect_error("other platform's URL", lambda: zb.instagram.follow("https://www.linkedin.com/in/sam/"), -32602)

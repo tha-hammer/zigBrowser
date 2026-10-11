@@ -300,6 +300,40 @@ export class SocialNamespace {
   }
 }
 
+/**
+ * `dryRun: true` on an acting flow (x.post, x.schedulePost, linkedin.connect/
+ * follow/like/comment, instagram.follow/like/comment/storyView): everything
+ * up to the committing click, which is only tried (actionability checks, no
+ * event). Nothing is typed, clicked, counted or saved. See
+ * docs/how-to-automate.md.
+ */
+export interface DryRunOption {
+  dryRun?: boolean;
+}
+
+export interface DryRunCheck {
+  name: string;
+  /** "pass", "not_reached" (needs the committing action first) or "note". */
+  result: "pass" | "not_reached" | "note";
+  count?: number;
+  reason?: string;
+}
+
+export interface DryRunResult {
+  dry_run: true;
+  would_act: string;
+  /** What the committing click would act on; the profile owner's name reads "<owner>". Null when there is none (e.g. a one-frame story). */
+  target: { tag: string; label: string; box: { x: number; y: number; width: number; height: number } } | null;
+  checks: DryRunCheck[];
+}
+
+/** R, or DryRunResult when the call passes `dryRun: true`. */
+export type FlowResult<O, R> = O extends { dryRun: true } ? DryRunResult : R;
+
+function dryRun(opts: DryRunOption): Record<string, unknown> | undefined {
+  return opts.dryRun ? { dry_run: true } : undefined;
+}
+
 export interface XLoginCheckResult {
   loggedIn: boolean;
   platform: "x";
@@ -319,12 +353,14 @@ export class XNamespace {
   constructor(private readonly call: Caller) {}
 
   /** Post `text` (1-280 characters) now. `composeUrl` overrides the page the flow opens. */
-  post(text: string, opts: { composeUrl?: string } = {}): Promise<OkResult> {
-    return this.call("x.post", wire({ text, compose_url: opts.composeUrl })) as Promise<OkResult>;
+  post<O extends { composeUrl?: string } & DryRunOption = {}>(text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: { composeUrl?: string } & DryRunOption = opts ?? {};
+    return this.call("x.post", wire({ text, compose_url: o.composeUrl, options: dryRun(o) })) as Promise<FlowResult<O, OkResult>>;
   }
   /** Schedule `text` for `date` ("YYYY-MM-DD") at `time` ("HH:MM", 24-hour), X account local time. */
-  schedulePost(text: string, date: string, time: string, opts: { composeUrl?: string } = {}): Promise<SchedulePostResult> {
-    return this.call("x.schedule_post", wire({ text, date, time, compose_url: opts.composeUrl })) as Promise<SchedulePostResult>;
+  schedulePost<O extends { composeUrl?: string } & DryRunOption = {}>(text: string, date: string, time: string, opts?: O): Promise<FlowResult<O, SchedulePostResult>> {
+    const o: { composeUrl?: string } & DryRunOption = opts ?? {};
+    return this.call("x.schedule_post", wire({ text, date, time, compose_url: o.composeUrl, options: dryRun(o) })) as Promise<FlowResult<O, SchedulePostResult>>;
   }
   /** Whether the composer is on the current page. Does not navigate. */
   loginCheck(): Promise<XLoginCheckResult> {
@@ -370,11 +406,12 @@ export class LinkedInNamespace {
     return this.call("linkedin.visit", { profileUrl }) as Promise<OkResult>;
   }
   /** A note longer than 300 characters is cut to 300. */
-  connect(profileUrl: string, opts: { note?: string } = {}): Promise<OkResult> {
-    return this.call("linkedin.connect", wire({ profileUrl, note: opts.note })) as Promise<OkResult>;
+  connect<O extends { note?: string } & DryRunOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    const o: { note?: string } & DryRunOption = opts ?? {};
+    return this.call("linkedin.connect", wire({ profileUrl, note: o.note, options: dryRun(o) })) as Promise<FlowResult<O, OkResult>>;
   }
-  follow(profileUrl: string): Promise<OkResult> {
-    return this.call("linkedin.follow", { profileUrl }) as Promise<OkResult>;
+  follow<O extends DryRunOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    return this.call("linkedin.follow", wire({ profileUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
   }
   /** Exactly one of conversationUrl / profileUrl. */
   message(text: string, target: { conversationUrl: string } | { profileUrl: string }): Promise<OkResult> {
@@ -384,11 +421,11 @@ export class LinkedInNamespace {
     }
     return this.call("linkedin.message", wire({ text, conversationUrl: t.conversationUrl, profileUrl: t.profileUrl })) as Promise<OkResult>;
   }
-  like(postUrl: string): Promise<OkResult> {
-    return this.call("linkedin.like", { postUrl }) as Promise<OkResult>;
+  like<O extends DryRunOption = {}>(postUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    return this.call("linkedin.like", wire({ postUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
   }
-  comment(postUrl: string, text: string): Promise<OkResult> {
-    return this.call("linkedin.comment", { postUrl, text }) as Promise<OkResult>;
+  comment<O extends DryRunOption = {}>(postUrl: string, text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    return this.call("linkedin.comment", wire({ postUrl, text, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
   }
   search(query: string, opts: { searchType?: LinkedInSearchType } = {}): Promise<LinkedInSearchResult> {
     return this.call("linkedin.search", wire({ query, searchType: opts.searchType })) as Promise<LinkedInSearchResult>;
@@ -407,21 +444,22 @@ export class LinkedInNamespace {
 export class InstagramNamespace {
   constructor(private readonly call: Caller) {}
 
-  follow(profileUrl: string): Promise<OkResult> {
-    return this.call("instagram.follow", { profileUrl }) as Promise<OkResult>;
+  follow<O extends DryRunOption = {}>(profileUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    return this.call("instagram.follow", wire({ profileUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
   }
-  like(postUrl: string): Promise<OkResult> {
-    return this.call("instagram.like", { postUrl }) as Promise<OkResult>;
+  like<O extends DryRunOption = {}>(postUrl: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    return this.call("instagram.like", wire({ postUrl, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
   }
-  comment(postUrl: string, text: string): Promise<OkResult> {
-    return this.call("instagram.comment", { postUrl, text }) as Promise<OkResult>;
+  comment<O extends DryRunOption = {}>(postUrl: string, text: string, opts?: O): Promise<FlowResult<O, OkResult>> {
+    return this.call("instagram.comment", wire({ postUrl, text, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, OkResult>>;
   }
   /** Opens username's profile, presses Message, sends text. */
   dm(username: string, text: string): Promise<OkResult> {
     return this.call("instagram.dm", { username, text }) as Promise<OkResult>;
   }
-  storyView(username: string): Promise<StoryViewResult> {
-    return this.call("instagram.story_view", { username }) as Promise<StoryViewResult>;
+  /** With `dryRun: true`: opens the story URL as the real flow does, then only tries Next (no frame viewed, Next never clicked). */
+  storyView<O extends DryRunOption = {}>(username: string, opts?: O): Promise<FlowResult<O, StoryViewResult>> {
+    return this.call("instagram.story_view", wire({ username, options: dryRun(opts ?? {}) })) as Promise<FlowResult<O, StoryViewResult>>;
   }
   /** `{selector_name: count}` for Instagram's selector table on the current page. */
   selfcheck(): Promise<Record<string, number>> {

@@ -163,6 +163,8 @@ pub fn handleWithBudget(
     // released on any other way out.
     var reservation: ?XState.Reservation = null;
     defer if (reservation) |*r| r.release();
+    var is_dry_run = false;
+    var dry_remaining: u32 = 0;
 
     const flow_result: x.Error!?[]u8 = switch (verb) {
         .login_check => x.loginCheck(gpa, &runner),
@@ -174,9 +176,17 @@ pub fn handleWithBudget(
             // same client may already page.navigate anywhere. Default: x.com.
             const compose_url = if (params.get("compose_url")) |_| (stringField(params, "compose_url") orelse return invalidParams()) else x.compose_url;
             const input = inputOptions(params) orelse return invalidParams();
-            reservation = state.reserve() orelse return engine_mod.automationFailure(gpa, .platform_rate_limited, "x_daily_cap", ids);
+            const dry_run = dryRunOption(params) orelse return invalidParams();
+            if (dry_run) {
+                // No admission: nothing is reserved, counted or saved, and
+                // the cap does not refuse it (the result reports what is left).
+                dry_remaining = state.remaining();
+            } else {
+                reservation = state.reserve() orelse return engine_mod.automationFailure(gpa, .platform_rate_limited, "x_daily_cap", ids);
+            }
+            is_dry_run = dry_run;
             break :blk if (verb == .post)
-                x.post(gpa, &runner, .{ .text = text, .compose_url = compose_url, .input = input })
+                x.post(gpa, &runner, .{ .text = text, .compose_url = compose_url, .input = input, .dry_run = dry_run })
             else
                 x.schedulePost(gpa, &runner, .{
                     .text = text,
@@ -184,6 +194,7 @@ pub fn handleWithBudget(
                     .time = stringField(params, "time") orelse return invalidParams(),
                     .compose_url = compose_url,
                     .input = input,
+                    .dry_run = dry_run,
                 });
         },
     };
@@ -198,13 +209,18 @@ pub fn handleWithBudget(
         gpa.free(json);
         return runner.takeFailure();
     }
+    if (is_dry_run) {
+        defer gpa.free(json);
+        return .{ .result = try flow_runner.withRouteChecks(gpa, json, runner.clean_scans, .{ .remaining = dry_remaining, .cap_reason = "x_daily_cap" }) };
+    }
     // Only posts and scheduled posts are paced; checks are read-only.
     if (reservation) |*r| r.commit();
     return .{ .result = json };
 }
 
-/// `options: {input?: "synthetic"|"native", humanize?: bool}` (the N7/N8
-/// rules: humanize needs native input); null when malformed.
+/// `options: {input?: "synthetic"|"native", humanize?: bool, dry_run?: bool}`
+/// (the N7/N8 rules: humanize needs native input); null when malformed.
+/// dry_run is read by dryRunOption.
 fn inputOptions(params: std.json.ObjectMap) ?x.Input {
     const options = switch (params.get("options") orelse return .{}) {
         .object => |o| o,
@@ -224,10 +240,23 @@ fn inputOptions(params: std.json.ObjectMap) ?x.Input {
                 .bool => |b| b,
                 else => return null,
             };
-        } else return null;
+        } else if (!std.mem.eql(u8, entry.key_ptr.*, "dry_run")) return null;
     }
     if (input.humanize and !input.native) return null;
     return input;
+}
+
+/// `options.dry_run` (src/x.zig dryRun): absent -> false; null when not a
+/// bool (inputOptions has checked the rest of `options`).
+fn dryRunOption(params: std.json.ObjectMap) ?bool {
+    const options = switch (params.get("options") orelse return false) {
+        .object => |o| o,
+        else => return null,
+    };
+    return switch (options.get("dry_run") orelse return false) {
+        .bool => |b| b,
+        else => null,
+    };
 }
 
 fn invalidParams() engine_mod.Outcome {

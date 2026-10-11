@@ -14,6 +14,14 @@ def _drop_none(**params) -> dict:
     return {k: v for k, v in params.items() if v is not None}
 
 
+def _dry_run(dry_run: bool) -> dict | None:
+    """`options` for a flow's dry run: everything up to the committing click,
+    which is only tried (actionability checks, no event). Nothing is typed,
+    clicked, counted or saved; the result is {dry_run, would_act, target,
+    checks}. See docs/how-to-automate.md."""
+    return {"dry_run": True} if dry_run else None
+
+
 class DomNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
@@ -238,12 +246,13 @@ class LinkedInNamespace:
     def visit(self, profile_url: str) -> dict:
         return self._client.call("linkedin.visit", {"profileUrl": profile_url})
 
-    def connect(self, profile_url: str, note: str | None = None) -> dict:
-        """Send an invitation; a note longer than 300 characters is cut to 300."""
-        return self._client.call("linkedin.connect", _drop_none(profileUrl=profile_url, note=note))
+    def connect(self, profile_url: str, note: str | None = None, dry_run: bool = False) -> dict:
+        """Send an invitation; a note longer than 300 characters is cut to 300.
+        dry_run=True: everything up to the Connect click, which is only tried."""
+        return self._client.call("linkedin.connect", _drop_none(profileUrl=profile_url, note=note, options=_dry_run(dry_run)))
 
-    def follow(self, profile_url: str) -> dict:
-        return self._client.call("linkedin.follow", {"profileUrl": profile_url})
+    def follow(self, profile_url: str, dry_run: bool = False) -> dict:
+        return self._client.call("linkedin.follow", _drop_none(profileUrl=profile_url, options=_dry_run(dry_run)))
 
     def message(
         self,
@@ -260,11 +269,12 @@ class LinkedInNamespace:
             _drop_none(text=text, conversationUrl=conversation_url, profileUrl=profile_url),
         )
 
-    def like(self, post_url: str) -> dict:
-        return self._client.call("linkedin.like", {"postUrl": post_url})
+    def like(self, post_url: str, dry_run: bool = False) -> dict:
+        return self._client.call("linkedin.like", _drop_none(postUrl=post_url, options=_dry_run(dry_run)))
 
-    def comment(self, post_url: str, text: str) -> dict:
-        return self._client.call("linkedin.comment", {"postUrl": post_url, "text": text})
+    def comment(self, post_url: str, text: str, dry_run: bool = False) -> dict:
+        """dry_run=True: the text is checked, never typed."""
+        return self._client.call("linkedin.comment", _drop_none(postUrl=post_url, text=text, options=_dry_run(dry_run)))
 
     def search(self, query: str, search_type: str = "people") -> dict:
         """{ok, url, resultCount}: opens LinkedIn's search for query."""
@@ -292,22 +302,25 @@ class InstagramNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def follow(self, profile_url: str) -> dict:
-        return self._client.call("instagram.follow", {"profileUrl": profile_url})
+    def follow(self, profile_url: str, dry_run: bool = False) -> dict:
+        return self._client.call("instagram.follow", _drop_none(profileUrl=profile_url, options=_dry_run(dry_run)))
 
-    def like(self, post_url: str) -> dict:
-        return self._client.call("instagram.like", {"postUrl": post_url})
+    def like(self, post_url: str, dry_run: bool = False) -> dict:
+        return self._client.call("instagram.like", _drop_none(postUrl=post_url, options=_dry_run(dry_run)))
 
-    def comment(self, post_url: str, text: str) -> dict:
-        return self._client.call("instagram.comment", {"postUrl": post_url, "text": text})
+    def comment(self, post_url: str, text: str, dry_run: bool = False) -> dict:
+        """dry_run=True: the text is checked, never typed."""
+        return self._client.call("instagram.comment", _drop_none(postUrl=post_url, text=text, options=_dry_run(dry_run)))
 
     def dm(self, username: str, text: str) -> dict:
         """Open username's profile, press Message, send text."""
         return self._client.call("instagram.dm", {"username": username, "text": text})
 
-    def story_view(self, username: str) -> dict:
-        """{ok, framesViewed}: views username's stories frame by frame."""
-        return self._client.call("instagram.story_view", {"username": username})
+    def story_view(self, username: str, dry_run: bool = False) -> dict:
+        """{ok, framesViewed}: views username's stories frame by frame.
+        dry_run=True: opens the story URL as the real flow does, then only
+        tries Next (no frame is viewed, Next is never clicked)."""
+        return self._client.call("instagram.story_view", _drop_none(username=username, options=_dry_run(dry_run)))
 
     def selfcheck(self) -> dict:
         """{selector_name: count} for Instagram's selector table on the current page."""
@@ -395,16 +408,17 @@ class XNamespace:
     def __init__(self, client: "ZigBrowser"):
         self._client = client
 
-    def post(self, text: str, compose_url: str | None = None) -> dict:
+    def post(self, text: str, compose_url: str | None = None, dry_run: bool = False) -> dict:
         """Post text (1-280 characters) now. compose_url overrides the page
-        the flow opens (default https://x.com/compose/post)."""
-        return self._client.call("x.post", _drop_none(text=text, compose_url=compose_url))
+        the flow opens (default https://x.com/compose/post). dry_run=True:
+        the composer is opened and tried, the text never typed."""
+        return self._client.call("x.post", _drop_none(text=text, compose_url=compose_url, options=_dry_run(dry_run)))
 
-    def schedule_post(self, text: str, date: str, time: str, compose_url: str | None = None) -> dict:
+    def schedule_post(self, text: str, date: str, time: str, compose_url: str | None = None, dry_run: bool = False) -> dict:
         """Schedule text for date ("YYYY-MM-DD") at time ("HH:MM", 24-hour),
         in the X account's local time."""
         return self._client.call(
-            "x.schedule_post", _drop_none(text=text, date=date, time=time, compose_url=compose_url)
+            "x.schedule_post", _drop_none(text=text, date=date, time=time, compose_url=compose_url, options=_dry_run(dry_run))
         )
 
     def login_check(self) -> dict:

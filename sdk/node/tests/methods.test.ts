@@ -80,6 +80,17 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "instagram.dm": (zb) => zb.instagram.dm("ada", "hi"),
   "instagram.story_view": (zb) => zb.instagram.storyView("ada"),
   "instagram.selfcheck": (zb) => zb.instagram.selfcheck(),
+  // options.dry_run: up to the committing click, which is only tried.
+  "x.post.dry_run": (zb) => zb.x.post("hello", { dryRun: true }),
+  "x.schedule_post.dry_run": (zb) => zb.x.schedulePost("later", "2026-11-05", "14:07", { dryRun: true }),
+  "linkedin.connect.dry_run": (zb) => zb.linkedin.connect("https://www.linkedin.com/in/ada/", { note: "Hi Ada", dryRun: true }),
+  "linkedin.follow.dry_run": (zb) => zb.linkedin.follow("https://www.linkedin.com/in/ada/", { dryRun: true }),
+  "linkedin.like.dry_run": (zb) => zb.linkedin.like("https://www.linkedin.com/feed/update/urn:li:activity:1/", { dryRun: true }),
+  "linkedin.comment.dry_run": (zb) => zb.linkedin.comment("https://www.linkedin.com/feed/update/urn:li:activity:1/", "Great post", { dryRun: true }),
+  "instagram.follow.dry_run": (zb) => zb.instagram.follow("https://www.instagram.com/ada/", { dryRun: true }),
+  "instagram.like.dry_run": (zb) => zb.instagram.like("https://www.instagram.com/p/C0ffee/", { dryRun: true }),
+  "instagram.comment.dry_run": (zb) => zb.instagram.comment("https://www.instagram.com/p/C0ffee/", "So good", { dryRun: true }),
+  "instagram.story_view.dry_run": (zb) => zb.instagram.storyView("ada", { dryRun: true }),
 };
 
 describe("typed wrappers", () => {

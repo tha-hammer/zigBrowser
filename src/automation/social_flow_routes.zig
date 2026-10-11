@@ -19,6 +19,15 @@
 //!    (linkedin.extract, *.selfcheck) are not paced.
 //! 4. The flow.
 //!
+//! Dry run (`options: {dry_run: true}`, on the acting flows that have one:
+//! linkedin.connect/follow/like/comment, instagram.follow/like/comment/
+//! story_view): steps 1, 2 and 4 as above, but the flow stops at its
+//! committing click with a trial click instead (src/flow_steps.zig, "Dry
+//! runs"), and step 3 is bypassed: no admission (not even at the cap), no
+//! reservation, no pause, nothing counted or saved. The result lists the
+//! runner's clean rate-limit scans and the actions left (`daily_cap`, with
+//! the real call's error when there are none) in `checks`.
+//!
 //! Telemetry (Phase 5 EV8/EV7): one `automation.social.compound` span under
 //! the root and one `automation.social.action` event per step under it.
 //! URLs, usernames and texts never cross the sink: only hashes, lengths
@@ -166,8 +175,9 @@ fn execute(
     var keys = params.iterator();
     while (keys.next()) |entry| {
         if (!inList(allowedParams(call), entry.key_ptr.*)) return invalidParams();
-        // Every allowed param is a string, except the flow's timeout_ms.
-        if (std.mem.eql(u8, entry.key_ptr.*, "timeout_ms")) continue;
+        // Every allowed param is a string, except the flow's timeout_ms and
+        // options (checked by dryRunOption).
+        if (std.mem.eql(u8, entry.key_ptr.*, "timeout_ms") or std.mem.eql(u8, entry.key_ptr.*, "options")) continue;
         if (entry.value_ptr.* != .string) return invalidParams();
     }
     const p = Params{ .object = params };
@@ -177,6 +187,8 @@ fn execute(
     // 600 s), else the default.
     const explicit_ms = flow.flowTimeoutParam(params.get("timeout_ms")) catch return invalidParams();
     const deadline_ms = started +| flow.flowBudgetMs(default_budget_ms, explicit_ms, null);
+    const dry_run = dryRunOption(params.get("options")) catch return invalidParams();
+    trace.dry_run = dry_run;
 
     // 1. Everything that needs no page, before the gate and pacing.
     validate(gpa, call, s, p) catch |err| switch (err) {
@@ -205,7 +217,11 @@ fn execute(
     //    release (any other way out).
     var reservation: ?social_routes.SocialState.Reservation = null;
     defer if (reservation) |*r| r.release();
-    if (call.isAction()) {
+    if (dry_run) {
+        // No admission: nothing is reserved, paused, counted or saved, and
+        // the cap does not refuse it (the result reports what is left).
+        trace.remaining_actions = state.remaining();
+    } else if (call.isAction()) {
         trace.remaining_actions = state.remaining();
         reservation = state.reserve() orelse return engine_mod.automationFailure(gpa, .platform_rate_limited, "social_daily_cap", ids);
         var csprng: std.Random.DefaultCsprng = undefined;
@@ -216,7 +232,7 @@ fn execute(
     }
 
     // 4. The flow.
-    const flow_result = run(gpa, &runner, call, s, p);
+    const flow_result = if (dry_run) runDry(gpa, &runner, call, s, p) else run(gpa, &runner, call, s, p);
     const result = flow_result catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.InvalidParams => return invalidParams(),
@@ -228,8 +244,32 @@ fn execute(
         gpa.free(json);
         return runner.takeFailure();
     }
+    if (dry_run) {
+        defer gpa.free(json);
+        return .{ .result = try flow_runner.withRouteChecks(gpa, json, runner.clean_scans, .{ .remaining = trace.remaining_actions.?, .cap_reason = "social_daily_cap" }) };
+    }
     if (reservation) |*r| r.commit();
     return .{ .result = json };
+}
+
+/// `options` of a flow request: absent -> false; `{"dry_run": bool}` (no
+/// other key) -> that; anything else is InvalidParams. Only the flows with
+/// a dry run take `options` at all (allowedParams).
+fn dryRunOption(value: ?std.json.Value) error{InvalidParams}!bool {
+    const options = switch (value orelse return false) {
+        .object => |o| o,
+        else => return error.InvalidParams,
+    };
+    var dry_run = false;
+    var keys = options.iterator();
+    while (keys.next()) |entry| {
+        if (!std.mem.eql(u8, entry.key_ptr.*, "dry_run")) return error.InvalidParams;
+        dry_run = switch (entry.value_ptr.*) {
+            .bool => |b| b,
+            else => return error.InvalidParams,
+        };
+    }
+    return dry_run;
 }
 
 /// The platform's session cookie must be in the store (never reads or
@@ -267,20 +307,21 @@ fn sessionGate(gpa: std.mem.Allocator, env: Env, ext: *engine_mod.External, call
 fn allowedParams(call: Call) []const []const u8 {
     return switch (call) {
         .linkedin => |verb| switch (verb) {
-            .visit, .follow, .extract => &.{"profileUrl"},
-            .connect => &.{ "profileUrl", "note", "timeout_ms" },
+            .visit, .extract => &.{"profileUrl"},
+            .follow => &.{ "profileUrl", "options" },
+            .connect => &.{ "profileUrl", "note", "timeout_ms", "options" },
             .message => &.{ "text", "conversationUrl", "profileUrl", "timeout_ms" },
-            .like => &.{"postUrl"},
-            .comment => &.{ "postUrl", "text", "timeout_ms" },
+            .like => &.{ "postUrl", "options" },
+            .comment => &.{ "postUrl", "text", "timeout_ms", "options" },
             .search => &.{ "query", "searchType" },
             .selfcheck => &.{},
         },
         .instagram => |verb| switch (verb) {
-            .follow => &.{"profileUrl"},
-            .like => &.{"postUrl"},
-            .comment => &.{ "postUrl", "text", "timeout_ms" },
+            .follow => &.{ "profileUrl", "options" },
+            .like => &.{ "postUrl", "options" },
+            .comment => &.{ "postUrl", "text", "timeout_ms", "options" },
             .dm => &.{ "username", "text", "timeout_ms" },
-            .story_view => &.{"username"},
+            .story_view => &.{ "username", "options" },
             .selfcheck => &.{},
         },
     };
@@ -381,6 +422,26 @@ fn run(gpa: std.mem.Allocator, runner: *flow_runner.Runner, call: Call, s: flow.
     };
 }
 
+/// The dry run of a flow that allows `options` (allowedParams).
+fn runDry(gpa: std.mem.Allocator, runner: *flow_runner.Runner, call: Call, s: flow.Site, p: Params) linkedin.Error!?[]u8 {
+    return switch (call) {
+        .linkedin => |verb| switch (verb) {
+            .connect => linkedin.dryRun(gpa, runner, s, .connect, try p.required("profileUrl")),
+            .follow => linkedin.dryRun(gpa, runner, s, .follow, try p.required("profileUrl")),
+            .like => linkedin.dryRun(gpa, runner, s, .like, try p.required("postUrl")),
+            .comment => linkedin.dryRun(gpa, runner, s, .comment, try p.required("postUrl")),
+            else => error.InvalidParams,
+        },
+        .instagram => |verb| switch (verb) {
+            .follow => instagram.dryRun(gpa, runner, s, .follow, try p.required("profileUrl")),
+            .like => instagram.dryRun(gpa, runner, s, .like, try p.required("postUrl")),
+            .comment => instagram.dryRun(gpa, runner, s, .comment, try p.required("postUrl")),
+            .story_view => instagram.dryRun(gpa, runner, s, .story_view, try p.required("username")),
+            else => error.InvalidParams,
+        },
+    };
+}
+
 // ---- Telemetry (EV8 compound span, EV7 step events) ----
 
 const Hex64 = [64]u8;
@@ -415,6 +476,7 @@ const Trace = struct {
     error_step_len: usize = 0,
     error_step_index: ?u32 = null,
     login_verified: bool = false,
+    dry_run: bool = false,
     remaining_actions: ?u32 = null,
     // Bounded descriptions of the request (hashes and lengths only).
     profile_hash_buf: Hex64 = undefined,
@@ -562,6 +624,7 @@ const Trace = struct {
             },
         }
         put(&entries, &count, "platform.login_verified", if (self.login_verified) "true" else "false");
+        if (self.dry_run) put(&entries, &count, "social.dry_run", "true");
         if (self.remaining_actions) |n| put(&entries, &count, "pacing.remaining_actions", std.fmt.bufPrint(&bufs[5], "{d}", .{n}) catch unreachable);
         self.ext.childSpanUnder("automation.social.compound", self.compoundId(), self.ext.ids().parent_span_id, entries[0..count]);
     }

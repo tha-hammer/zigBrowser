@@ -37,6 +37,8 @@
          know" cards beside them carry the same kinds of labels for other people
          ("Invite <Name> to connect", "Follow <Name>"). Reaction buttons are
          labelled "Reaction button state: <reaction>" with the count as text.
+         Every pointer, key and edit event on any page is recorded, before any
+         handler, in window.__input (a dry run must leave it empty).
          Every name here is invented.
          ?loggedout=1 renders a signed-out page (sign-in link, no nav "Me").
          Everything the flows did is recorded in window.__li. -->
@@ -56,6 +58,15 @@
         var params = new URLSearchParams(location.search);
         var path = location.pathname;
         var li = window.__li = { page: '', events: [], sent: [], result: null, wrongPerson: [], otherCopies: [] };
+        // Every pointer, key and edit event, captured before any handler: a
+        // dry run (options.dry_run) must leave this empty.
+        var input = window.__input = [];
+        ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown', 'beforeinput', 'input'].forEach(function (type) {
+          document.addEventListener(type, function (e) {
+            var t = e.target && e.target.closest ? e.target.closest('[id], [aria-label]') : null;
+            input.push(type + ':' + (t ? (t.id || t.getAttribute('aria-label')) : 'document'));
+          }, true);
+        });
         var nav = document.getElementById('nav');
         var main = document.getElementById('main');
         function record(event) { li.events.push(event); }

@@ -385,6 +385,66 @@ pub fn selfCheck(gpa: std.mem.Allocator, runner: anytype) Error!?[]u8 {
     return flow.selectorReport(gpa, runner, selectors);
 }
 
+/// The acting flows a dry run (options.dry_run) covers.
+pub const DryVerb = enum { connect, follow, like, comment };
+
+/// Dry run of `verb` on `url` (a profile for connect and follow, a post for
+/// like and comment): the real flow's steps up to its committing click,
+/// then a trial click on that click's exact target instead (see
+/// flow_steps' "Dry runs"). Returns `{"dry_run":true,...}` (owned), or null
+/// / an error exactly where the real flow fails. Targets: the profile's own
+/// Connect or Follow (resolved like clickProfileAction), the like button,
+/// and for comment the Comment button (the comment box is typed into after
+/// it).
+pub fn dryRun(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, verb: DryVerb, url: []const u8) Error!?[]u8 {
+    if (!s.allows(url)) return error.InvalidParams;
+    if (!(try openPage(gpa, runner, url))) return null;
+    switch (verb) {
+        .connect, .follow => {
+            const action: ProfileAction = if (verb == .connect) .connect else .follow;
+            const name = (try profileName(gpa, runner, s)) orelse return null;
+            defer gpa.free(name);
+            const area = (try ownerArea(runner, s, action)) orelse return null;
+            const target = (try resolveProfileAction(gpa, runner, area, action, name)) orelse return null;
+            defer gpa.free(target);
+            const element = (try flow.trialTarget(gpa, runner, target, true, click_timeout_ms)) orelse return null;
+            defer gpa.free(element.tag);
+            const label = if (verb == .connect) "Invite <owner> to connect" else "Follow <owner>";
+            return try flow.dryRunResult(gpa, @tagName(verb), .{ .tag = element.tag, .label = label, .box = element.box }, &.{
+                flow.pass("signed_in"),
+                flow.pass("profile_owner"),
+                flow.counted("owner_area", 1),
+                flow.counted("visible_copies", 1),
+                flow.pass("actionable"),
+                if (verb == .connect)
+                    flow.notReached("invite_dialog", "opens only after the Connect click")
+                else
+                    flow.notReached("following_state", "appears only after the Follow click"),
+            });
+        },
+        .like => {
+            const element = (try flow.trialTarget(gpa, runner, selectors.like_button, true, click_timeout_ms)) orelse return null;
+            defer gpa.free(element.tag);
+            return try flow.dryRunResult(gpa, "like", .{ .tag = element.tag, .label = "Reaction button state: no reaction", .box = element.box }, &.{
+                flow.pass("signed_in"),
+                flow.pass("actionable"),
+                flow.notReached("liked_state", "appears only after the Like click"),
+            });
+        },
+        .comment => {
+            const element = (try flow.trialTarget(gpa, runner, selectors.comment_button, false, click_timeout_ms)) orelse return null;
+            defer gpa.free(element.tag);
+            const boxes = (try flow.countMatches(gpa, runner, selectors.comment_input)) orelse return null;
+            return try flow.dryRunResult(gpa, "comment", .{ .tag = element.tag, .label = "Comment", .box = element.box }, &.{
+                flow.pass("signed_in"),
+                flow.pass("actionable"),
+                flow.counted("comment_box", boxes),
+                flow.notReached("comment_submit", "used only after the comment is typed"),
+            });
+        },
+    }
+}
+
 const Optional = struct { text: ?[]u8 };
 
 /// The element's text, or `.text = null` when it is absent; null when a
@@ -466,31 +526,38 @@ fn profileName(gpa: std.mem.Allocator, runner: anytype, s: flow.Site) Error!?[]u
 /// linkedin_profile_action_missing; two visible copies, or the area twice
 /// -> linkedin_profile_action_ambiguous.
 pub fn clickProfileAction(gpa: std.mem.Allocator, runner: anytype, container: []const u8, action: ProfileAction, name: []const u8) Error!bool {
+    const target = (try resolveProfileAction(gpa, runner, container, action, name)) orelse return false;
+    defer gpa.free(target);
+    return click(gpa, runner, target, true);
+}
+
+/// The strict selector clickProfileAction clicks (owned): the exact label
+/// itself when it matches once, else its one visible copy by position; null
+/// (the runner holds why) when that target is missing or ambiguous.
+fn resolveProfileAction(gpa: std.mem.Allocator, runner: anytype, container: []const u8, action: ProfileAction, name: []const u8) Error!?[]u8 {
     const own = try profileSelector(gpa, action, name, container);
     defer gpa.free(own);
     const appeared = try flow.step(gpa, runner, "dom.waitFor", .{ .selector = own, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, page_ready_timeout_ms) });
-    const copies = (try visibleCopies(gpa, runner, own)) orelse return false;
+    const copies = (try visibleCopies(gpa, runner, own)) orelse return null;
     if (copies.total == 0) {
         try runner.notFound("linkedin_profile_action_missing");
-        return false;
+        return null;
     }
     // A failed wait with the target present (e.g. cancelled) keeps its failure.
-    if (!appeared) return false;
+    if (!appeared) return null;
     const area = try std.fmt.allocPrint(gpa, "xpath={s}", .{container});
     defer gpa.free(area);
-    const areas = (try flow.countMatches(gpa, runner, area)) orelse return false;
+    const areas = (try flow.countMatches(gpa, runner, area)) orelse return null;
     if (copies.visible > 1 or areas != 1) {
         try runner.notFound("linkedin_profile_action_ambiguous");
-        return false;
+        return null;
     }
     if (copies.visible == 0) {
         try runner.notFound("linkedin_profile_action_missing");
-        return false;
+        return null;
     }
-    if (copies.total == 1) return click(gpa, runner, own, true);
-    const copy = try std.fmt.allocPrint(gpa, "xpath=({s})[{d}]", .{ own["xpath=".len..], copies.first_visible });
-    defer gpa.free(copy);
-    return click(gpa, runner, copy, true);
+    if (copies.total == 1) return try gpa.dupe(u8, own);
+    return try std.fmt.allocPrint(gpa, "xpath=({s})[{d}]", .{ own["xpath=".len..], copies.first_visible });
 }
 
 const Copies = struct { total: usize, visible: usize, first_visible: usize };

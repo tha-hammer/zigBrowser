@@ -83,6 +83,17 @@ INVOCATIONS = {
     "instagram.dm": lambda zb: zb.instagram.dm("ada", "hi"),
     "instagram.story_view": lambda zb: zb.instagram.story_view("ada"),
     "instagram.selfcheck": lambda zb: zb.instagram.selfcheck(),
+    # options.dry_run: up to the committing click, which is only tried.
+    "x.post.dry_run": lambda zb: zb.x.post("hello", dry_run=True),
+    "x.schedule_post.dry_run": lambda zb: zb.x.schedule_post("later", "2026-11-05", "14:07", dry_run=True),
+    "linkedin.connect.dry_run": lambda zb: zb.linkedin.connect("https://www.linkedin.com/in/ada/", note="Hi Ada", dry_run=True),
+    "linkedin.follow.dry_run": lambda zb: zb.linkedin.follow("https://www.linkedin.com/in/ada/", dry_run=True),
+    "linkedin.like.dry_run": lambda zb: zb.linkedin.like("https://www.linkedin.com/feed/update/urn:li:activity:1/", dry_run=True),
+    "linkedin.comment.dry_run": lambda zb: zb.linkedin.comment("https://www.linkedin.com/feed/update/urn:li:activity:1/", "Great post", dry_run=True),
+    "instagram.follow.dry_run": lambda zb: zb.instagram.follow("https://www.instagram.com/ada/", dry_run=True),
+    "instagram.like.dry_run": lambda zb: zb.instagram.like("https://www.instagram.com/p/C0ffee/", dry_run=True),
+    "instagram.comment.dry_run": lambda zb: zb.instagram.comment("https://www.instagram.com/p/C0ffee/", "So good", dry_run=True),
+    "instagram.story_view.dry_run": lambda zb: zb.instagram.story_view("ada", dry_run=True),
 }
 
 

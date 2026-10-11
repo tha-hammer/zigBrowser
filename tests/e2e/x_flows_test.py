@@ -303,6 +303,31 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("limit: nothing posted", recorded(), None)
     passed.append("x-platform-signals")
 
+    # options.dry_run: up to the Post click, and no further. The text is never
+    # typed (the restored draft stays), no key, edit or click reaches the
+    # page (window.__xTrust records them before any handler), the schedule
+    # dialog stays closed and nothing is posted. Over the timeline (dialog
+    # mode) the target is the dialog's composer, never the timeline's.
+    js = lambda expression: rpc.call("page.evaluate", {"expression": expression})["result"]  # noqa: E731
+    for verb, params in (
+        ("post", {"text": "never typed"}),
+        ("schedule_post", {"text": "never typed", "date": "2026-11-05", "time": "14:07"}),
+    ):
+        result = rpc.call(f"x.{verb}", {**params, "compose_url": f"{base}?mode=dialog", "options": {"dry_run": True}})
+        target = result.get("target") or {}
+        expect_equal(f"x.{verb} dry run", (result.get("dry_run"), result.get("would_act"), target.get("tag"), target.get("label")), (True, verb, "div", "data-testid=tweetTextarea_0"))
+        names = [c["name"] for c in result["checks"]]
+        if "rate_limit_scans" not in names or ("schedule_option" in names) != (verb == "schedule_post"):
+            raise AssertionError(f"x.{verb} dry run checks: {result['checks']}")
+        trust = [entry for entry in js("window.__xTrust") if not entry.startswith("mousemove:")]
+        expect_equal(f"x.{verb} dry run: no input event", trust, [])
+        expect_equal(
+            f"x.{verb} dry run: draft kept, dialog closed, nothing posted, timeline untouched",
+            (js("window.__xEvents"), js("document.querySelector('#compose [data-testid=\"tweetTextarea_0\"]').textContent"), js("document.getElementById('schedule-dialog').hidden"), js("window.__xPosts"), recorded(), js("window.__xInline")),
+            ([], "STALE DRAFT", True, 0, None, {"events": 0, "scheduleClicks": 0}),
+        )
+    passed.append("dry-run")
+
     # Logged-out page: login link, no composer -> -32011 logged_out, nothing posted.
     response = rpc.raw("x.post", {"text": "should not post", "compose_url": f"{base}?mode=loggedout"})
     error = response.get("error") or {}

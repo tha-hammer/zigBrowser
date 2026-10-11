@@ -129,6 +129,102 @@ pub fn selectorReportExcept(gpa: std.mem.Allocator, runner: anytype, comptime Ta
     return try out.toOwnedSlice(gpa);
 }
 
+// ---- Dry runs (options.dry_run on the acting flows) ----
+//
+// A dry run does what the real flow does up to its committing action, then
+// stops: it navigates, passes the login gate (and the runner's rate-limit
+// scans), resolves exactly the target the real flow would act on and runs a
+// dom.click trial on it (actionability checks, no event). It sends no input
+// at all: no real click, fill, type, press or select.
+
+/// A dry run's box of its target (CSS px, as dom.query reports it).
+pub const Box = struct { x: f64 = 0, y: f64 = 0, width: f64 = 0, height: f64 = 0 };
+
+/// What a dry run would act on. `label` is the label its selector pins,
+/// with the profile owner's name written "<owner>" (never read back from
+/// the page).
+pub const Target = struct { tag: []const u8, label: []const u8, box: Box };
+
+/// One step a dry run checked: "pass" (with a count when it counted
+/// something), "not_reached" (it needs the committing action first), or
+/// "note".
+pub const Check = struct {
+    name: []const u8,
+    result: []const u8 = "pass",
+    count: ?usize = null,
+    reason: ?[]const u8 = null,
+};
+
+pub fn pass(name: []const u8) Check {
+    return .{ .name = name };
+}
+
+pub fn counted(name: []const u8, count: usize) Check {
+    return .{ .name = name, .count = count };
+}
+
+pub fn notReached(name: []const u8, reason: []const u8) Check {
+    return .{ .name = name, .result = "not_reached", .reason = reason };
+}
+
+/// `{"dry_run":true,"would_act":...,"target":{tag,label,box}|null,"checks":[...]}` (owned).
+pub fn dryRunResult(gpa: std.mem.Allocator, would_act: []const u8, target: ?Target, checks: []const Check) Error![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.print(gpa, "{{\"dry_run\":true,\"would_act\":\"{s}\",\"target\":", .{would_act});
+    try appendJson(gpa, &out, target);
+    try out.appendSlice(gpa, ",\"checks\":");
+    try appendJson(gpa, &out, checks);
+    try out.append(gpa, '}');
+    return try out.toOwnedSlice(gpa);
+}
+
+fn appendJson(gpa: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: anytype) Error!void {
+    const json = try std.json.Stringify.valueAlloc(gpa, value, .{ .emit_null_optional_fields = false });
+    defer gpa.free(json);
+    try out.appendSlice(gpa, json);
+}
+
+/// A dom.click trial of `selector` (resolve, scroll into view, the
+/// actionability checks; no event): true if the real click would start.
+pub fn trial(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, strict: bool, timeout_ms: u64) Error!bool {
+    return step(gpa, runner, "dom.click", .{ .selector = selector, .options = .{ .strict = strict, .trial = true, .timeout_ms = budget(runner, timeout_ms) } });
+}
+
+pub const Element = struct { tag: []u8, box: Box };
+
+/// Tag (owned) and box of the first element `selector` matches now (the one
+/// a click acts on), or null: the query failed, answered something unusable
+/// (malformed), or matched nothing (element_not_found `missing_reason`).
+pub fn firstElement(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, missing_reason: []const u8) Error!?Element {
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = selector, .timeout_ms = budget(runner, query_timeout_ms) }, .{});
+    defer gpa.free(params);
+    const result = (try runner.run("dom.query", params)) orelse return null;
+    const Item = struct { tag: []const u8, bbox: Box = .{} };
+    const parsed = std.json.parseFromSlice(struct { elements: []const Item }, gpa, result, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try runner.malformed();
+            return null;
+        },
+    };
+    defer parsed.deinit();
+    if (parsed.value.elements.len == 0) {
+        try runner.notFound(missing_reason);
+        return null;
+    }
+    const first = parsed.value.elements[0];
+    return .{ .tag = try gpa.dupe(u8, first.tag), .box = first.bbox };
+}
+
+/// The dry run of a target clicked as `selector`: a trial click, then its
+/// tag and box; null when either step failed (the runner holds why).
+pub fn trialTarget(gpa: std.mem.Allocator, runner: anytype, selector: []const u8, strict: bool, timeout_ms: u64) Error!?Element {
+    if (!(try trial(gpa, runner, selector, strict, timeout_ms))) return null;
+    // Gone between the trial and the query: the page changed under it.
+    return firstElement(gpa, runner, selector, "dry_run_target_gone");
+}
+
 /// An absolute http(s) URL without NUL or whitespace (flows navigate to it
 /// as given).
 pub fn isPageUrl(url: []const u8) bool {

@@ -9,8 +9,9 @@ const Step = struct { method: []u8, params: []u8, at_ms: u64 = 0 };
 /// Records every step; answers from a script keyed by method (default {"ok":true}).
 const FakeRunner = struct {
     steps: std.ArrayListUnmanaged(Step) = .empty,
-    /// method -> result JSON (null = the step fails).
-    answers: []const struct { method: []const u8, result: ?[]const u8 } = &.{},
+    /// method (and a substring of its params) -> result JSON (null = the
+    /// step fails); the first match wins.
+    answers: []const struct { method: []const u8, contains: []const u8 = "", result: ?[]const u8 } = &.{},
     fail_at: ?usize = null,
     now_ms: u64 = 0,
     /// Flow budget left at now_ms = 0.
@@ -54,7 +55,7 @@ const FakeRunner = struct {
         try self.steps.append(gpa, .{ .method = try gpa.dupe(u8, method), .params = try gpa.dupe(u8, params_json), .at_ms = self.now_ms });
         if (self.fail_at) |i| if (i == index) return null;
         for (self.answers) |a| {
-            if (std.mem.eql(u8, a.method, method)) return a.result;
+            if (std.mem.eql(u8, a.method, method) and std.mem.indexOf(u8, params_json, a.contains) != null) return a.result;
         }
         return "{\"ok\":true}";
     }
@@ -638,4 +639,77 @@ test "a humanized type gets a timeout that covers its worst-case schedule (withi
         const ms = parsed.value.object.get("options").?.object.get("timeout_ms").?.integer;
         try std.testing.expect(ms > 30_000 and ms <= 120_000);
     }
+}
+
+// ---- Dry run (options.dry_run): everything up to the committing click ----
+
+/// No step of a dry run may act on the page: only dom.click trials, reads
+/// and waits (no real click, no draft clear, no typing, no select).
+fn expectNoInput(runner: *const FakeRunner) !void {
+    for (runner.steps.items) |st| {
+        for ([_][]const u8{ "dom.fill", "dom.type", "dom.press", "dom.selectOption", "dom.setInputFiles", "dom.hover", "dom.scroll" }) |m| {
+            try std.testing.expect(!std.mem.eql(u8, st.method, m));
+        }
+        if (std.mem.eql(u8, st.method, "dom.click")) {
+            try std.testing.expect(std.mem.indexOf(u8, st.params, "\"trial\":true") != null);
+        }
+    }
+}
+
+const composer_box = "{\"elements\":[{\"id\":\"c\",\"tag\":\"div\",\"text\":\"\",\"bbox\":{\"x\":100,\"y\":80,\"width\":500,\"height\":60}}]}";
+
+test "x.post dry run: composer gate, a trial on the composer, Post buttons counted (disabled until text), nothing typed or clicked" {
+    var r = FakeRunner{ .answers = &.{.{ .method = "dom.query", .result = composer_box }} };
+    defer r.deinit();
+    const result = (try x.post(gpa, &r, .{ .text = "hello", .compose_url = "http://127.0.0.1:9/compose", .dry_run = true })).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query", "dom.query", "dom.query" });
+    const probe = try stepParams(&r, 2);
+    defer probe.deinit();
+    try std.testing.expectEqualStrings(x.selectors.composer, probe.value.object.get("selector").?.string);
+    try expectNoInput(&r);
+    try std.testing.expectEqual(@as(usize, 0), r.pauses);
+    try std.testing.expectEqualStrings(
+        "{\"dry_run\":true,\"would_act\":\"post\",\"target\":{\"tag\":\"div\",\"label\":\"data-testid=tweetTextarea_0\",\"box\":{\"x\":100,\"y\":80,\"width\":500,\"height\":60}}," ++
+            "\"checks\":[{\"name\":\"signed_in\",\"result\":\"pass\"},{\"name\":\"actionable\",\"result\":\"pass\"},{\"name\":\"post_button\",\"result\":\"pass\",\"count\":2}," ++
+            "{\"name\":\"post_click\",\"result\":\"not_reached\",\"reason\":\"Post stays disabled until the text is typed\"}]}",
+        result,
+    );
+    // The text is validated as for a real post, never sent to the page.
+    for (r.steps.items) |st| try std.testing.expect(std.mem.indexOf(u8, st.params, "hello") == null);
+    try std.testing.expectError(error.InvalidParams, x.post(gpa, &r, .{ .text = "", .dry_run = true }));
+}
+
+test "x.post dry run: no Post button at all fails closed (x_post_button_missing); logged out is LoggedOut" {
+    var none = FakeRunner{ .answers = &.{
+        .{ .method = "dom.query", .contains = "tweetTextarea_0", .result = composer_box },
+        .{ .method = "dom.query", .result = "{\"elements\":[]}" },
+    } };
+    defer none.deinit();
+    try std.testing.expect((try x.post(gpa, &none, .{ .text = "hi", .dry_run = true })) == null);
+    try std.testing.expectEqualStrings("x_post_button_missing", none.not_found.?);
+    try expectNoInput(&none);
+
+    var out = FakeRunner{ .answers = &.{
+        .{ .method = "dom.waitFor", .result = null },
+        .{ .method = "dom.query", .result = "{\"elements\":[{\"id\":\"l\",\"tag\":\"a\",\"text\":\"\",\"bbox\":{}}]}" },
+    } };
+    defer out.deinit();
+    try std.testing.expectError(error.LoggedOut, x.post(gpa, &out, .{ .text = "hi", .dry_run = true }));
+}
+
+test "x.schedule_post dry run: also a trial on the schedule option; the dialog is never opened, nothing selected" {
+    var r = FakeRunner{ .answers = &.{.{ .method = "dom.query", .result = composer_box }} };
+    defer r.deinit();
+    const result = (try x.schedulePost(gpa, &r, .{ .text = "later", .date = "2026-11-05", .time = "14:07", .dry_run = true })).?;
+    defer gpa.free(result);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "dom.click", "dom.query", "dom.click", "dom.query", "dom.query" });
+    const option = try stepParams(&r, 4);
+    defer option.deinit();
+    try std.testing.expectEqualStrings(x.selectors.schedule_option, option.value.object.get("selector").?.string);
+    try expectNoInput(&r);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"would_act\":\"schedule_post\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{\"name\":\"schedule_option\",\"result\":\"pass\"}") != null);
+    // Date and time are checked as for a real schedule.
+    try std.testing.expectError(error.InvalidParams, x.schedulePost(gpa, &r, .{ .text = "later", .date = "2026-02-30", .time = "14:07", .dry_run = true }));
 }

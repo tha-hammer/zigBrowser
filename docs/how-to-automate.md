@@ -336,19 +336,19 @@ delete the file.
 | Method | Params | Result |
 |---|---|---|
 | `linkedin.visit` | `profileUrl` | `{ok:true}` |
-| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?` | `{ok:true}` once the profile shows the invitation as pending (see below) |
-| `linkedin.follow` | `profileUrl` | `{ok:true}` once it shows Following (see below) |
+| `linkedin.connect` | `profileUrl`, `note?` (cut to 300 characters), `timeout_ms?`, `options?: {dry_run?}` | `{ok:true}` once the profile shows the invitation as pending (see below) |
+| `linkedin.follow` | `profileUrl`, `options?` | `{ok:true}` once it shows Following (see below) |
 | `linkedin.message` | `text`, and exactly one of `conversationUrl`, `profileUrl`, `timeout_ms?` | `{ok:true}` (from a profile: switched off for now, see below) |
-| `linkedin.like` | `postUrl` | `{ok:true}` once the post's reaction button no longer says "no reaction" |
-| `linkedin.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
+| `linkedin.like` | `postUrl`, `options?` | `{ok:true}` once the post's reaction button no longer says "no reaction" |
+| `linkedin.comment` | `postUrl`, `text`, `timeout_ms?`, `options?` | `{ok:true}` |
 | `linkedin.search` | `query`, `searchType?` (`people`, `companies`, `jobs`, `content`, `all`) | `{ok:true, url, resultCount}` |
 | `linkedin.extract` | `profileUrl` | `{name, headline, location}` (read-only; the name is from the page title; null when absent) |
 | `linkedin.selfcheck` | — | `{<selector name>: count, ...}` on the current page |
-| `instagram.follow` | `profileUrl` | `{ok:true}` once it shows Following or Requested |
-| `instagram.like` | `postUrl` | `{ok:true}` once it shows Unlike |
-| `instagram.comment` | `postUrl`, `text`, `timeout_ms?` | `{ok:true}` |
+| `instagram.follow` | `profileUrl`, `options?` | `{ok:true}` once it shows Following or Requested |
+| `instagram.like` | `postUrl`, `options?` | `{ok:true}` once it shows Unlike |
+| `instagram.comment` | `postUrl`, `text`, `timeout_ms?`, `options?` | `{ok:true}` |
 | `instagram.dm` | `username`, `text`, `timeout_ms?` | `{ok:true}` (profile, Message, send) |
-| `instagram.story_view` | `username` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes or moves on to someone else; see below) |
+| `instagram.story_view` | `username`, `options?` | `{ok:true, framesViewed}` (each frame ~1.5 s, Next until the viewer closes or moves on to someone else; see below) |
 | `instagram.selfcheck` | — | `{<selector name>: count, ...}` on the current page (`story_media` and `story_next` are 0 unless the page is a story) |
 
 - Each call is one command, like `x.*`: other page commands wait until it
@@ -418,7 +418,7 @@ delete the file.
 
 | Method | Params | Result |
 |---|---|---|
-| `x.post` | `text` (1-280 characters), `compose_url?`, `options?: {input?, humanize?}`, `timeout_ms?` | `{ok:true}` once X shows its confirmation |
+| `x.post` | `text` (1-280 characters), `compose_url?`, `options?: {input?, humanize?, dry_run?}`, `timeout_ms?` | `{ok:true}` once X shows its confirmation |
 | `x.schedule_post` | `text`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`, 24-hour), `compose_url?`, `options?`, `timeout_ms?` | `{ok:true, scheduledFor:"YYYY-MM-DDTHH:MM"}` |
 | `x.login_check` | — | `{loggedIn, platform:"x"}` (composer on the current page; does not navigate) |
 | `x.selfcheck` | — | `{<selector name>: count, ...}` for every entry of the X selector table on the current page (read-only, not paced) |
@@ -455,6 +455,85 @@ delete the file.
   changes its markup. `x.selfcheck` on a logged-in x.com page shows which
   entries still match (a 0 for `composer` or both `post_button.*` means the
   table needs updating; `login_link` and `post_success` are normally 0).
+
+### Dry run: `options: {dry_run: true}`
+
+The ten acting flows `linkedin.connect`, `linkedin.follow`, `linkedin.like`,
+`linkedin.comment`, `instagram.follow`, `instagram.like`,
+`instagram.comment`, `instagram.story_view`, `x.post` and
+`x.schedule_post` take `options: {dry_run: true}`. Use it to check a flow
+on a real account without acting. A dry run does what the real flow does up
+to the click that would act, then stops:
+
+- It checks the params as the real call does (a comment or post text must
+  still be valid), passes the session-cookie gate, opens the page, checks
+  that it is signed in, and runs the challenge and limit checks (see
+  below).
+- It finds exactly the control the real flow would click, with the same
+  checks (for LinkedIn profiles: the owner's own area and button), and runs
+  a trial click on it: the browser checks that a click would land (attached,
+  visible, steady, not covered, enabled), scrolls it into view, and sends no
+  event.
+- It sends no input at all: no click, typing, key, or option choice. A
+  restored X draft stays as it is.
+- It skips pacing entirely: it is not counted, does not pause, saves no
+  pacing state, and is not refused at the daily cap. The check `daily_cap`
+  says how many actions are left; at 0 its reason names the error the real
+  call would give now (`social_daily_cap`, `x_daily_cap`).
+- It fails exactly where the real flow would, with the same error (for
+  example -32011 `logged_out`, -32010 `platform_rate_limited`, -32001
+  `linkedin_profile_action_ambiguous`, `instagram_story_next_ambiguous`,
+  `x_post_button_missing`).
+
+It returns:
+
+```json
+{"dry_run": true, "would_act": "connect",
+ "target": {"tag": "a", "label": "Invite <owner> to connect",
+            "box": {"x": 56, "y": 513, "width": 97, "height": 48}},
+ "checks": [{"name": "signed_in", "result": "pass"},
+            {"name": "owner_area", "result": "pass", "count": 1},
+            {"name": "invite_dialog", "result": "not_reached", "reason": "opens only after the Connect click"},
+            {"name": "rate_limit_scans", "result": "pass", "count": 3},
+            {"name": "daily_cap", "result": "note", "count": 97, "reason": "a dry run is not counted"}]}
+```
+
+- `target` is the control the real flow would click first to act. `label`
+  is the label its selector requires, never text read from the page; the
+  profile owner's name is written `<owner>`. `box` is where it is on the
+  screen, in CSS pixels.
+- In `checks`, a `result` of `pass` means the step ran and passed. `count`
+  says how many matches were found. `not_reached` names a step that needs
+  the real click first, with the reason. `note` is information.
+  `rate_limit_scans` counts the challenge and limit checks that found
+  nothing.
+
+What each one stops at:
+
+| Call | `target` | Not reached |
+|---|---|---|
+| `linkedin.connect` | the owner's Connect | the invite dialog (Send without a note, Add a note, Send) |
+| `linkedin.follow` | the owner's Follow | the Following state |
+| `linkedin.like` | the first reaction button | the liked state |
+| `linkedin.comment` | the Comment button (the comment box is counted) | typing and the submit button |
+| `instagram.follow` | Follow | the Following / Requested state |
+| `instagram.like` | the post's Like | the Unlike state |
+| `instagram.comment` | the comment box (Post is counted; it stays disabled until there is text) | typing and Post |
+| `instagram.story_view` | the viewer's Next, or `null` when there is none (one frame) | viewing frames and every Next |
+| `x.post`, `x.schedule_post` | the composer (Post buttons are counted; Post stays disabled until there is text); `schedule_post` also tries the schedule button | typing, the schedule dialog, Post |
+
+`instagram.story_view` needs care. Opening `/stories/<username>/` is the
+real flow's own first step, and Instagram may count that first frame as
+seen. The dry run says so with the `note` check `first_frame`. It opens
+nothing else, does not wait on a frame, and never clicks Next. If a "View
+story" button stands in front of the viewer, it stops before that click.
+It returns `target: null` with the check `view_story_click`:
+`not_reached`, reason `instagram_story_view_needs_click`. That button's
+markup has not been seen live yet.
+
+The SDKs take it as `dry_run=True` (Python) and `{ dryRun: true }` (Node).
+For example, `zb.linkedin.connect(url, dry_run=True)` or
+`zb.x.post(text, { dryRun: true })`.
 
 ### Challenge, CAPTCHA and limit pages
 

@@ -28,6 +28,12 @@
            /stories/decoy.user/      the same viewer plus a second viewer-shaped
                                      Next outside <main> (a carousel); clicks
                                      recorded in window.__ig.decoyNext
+           /stories/gate.user/       no viewer yet: a "View story" button (a
+                                     click that would mark the story seen;
+                                     shape UNVERIFIED live), its click recorded
+                                     in window.__ig.events
+         Every pointer, key and edit event on any page is recorded, before any
+         handler, in window.__input (a dry run must leave it empty).
            /stories/next.user/       the same viewer; its last Next goes on to
                                      /stories/riley.sample/ (another person)
            /stories/auto.user/       the same viewer, which moves on to
@@ -54,6 +60,15 @@
         var params = new URLSearchParams(location.search);
         var path = location.pathname;
         var ig = window.__ig = { page: '', events: [], result: null, frames: [] };
+        // Every pointer, key and edit event, captured before any handler: a
+        // dry run (options.dry_run) must leave this empty.
+        var input = window.__input = [];
+        ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown', 'beforeinput', 'input'].forEach(function (type) {
+          document.addEventListener(type, function (e) {
+            var t = e.target && e.target.closest ? e.target.closest('[id], [aria-label]') : null;
+            input.push(type + ':' + (t ? (t.id || t.getAttribute('aria-label')) : 'document'));
+          }, true);
+        });
         var nav = document.getElementById('nav');
         var main = document.getElementById('main');
         function icon(label) {
@@ -79,6 +94,15 @@
             '<div><header><section><div role="menu"><div>' +
             '<button aria-label="Next" class="behind-next" style="width:0;height:0;padding:0;margin:0;border:0;overflow:hidden"></button>' +
             '</div></div></section></header></div>';
+          // Viewing needs a click first (a "View story" button that marks the
+          // story seen; shape UNVERIFIED live): a dry run stops before it.
+          if (user === 'gate.user') {
+            document.getElementById('overlay').innerHTML =
+              '<div><section class="gate"><img alt="" src="' + gif + '" width="56" height="56">' +
+              '<div role="button" tabindex="0" id="view-story">View story</div></section></div>';
+            document.getElementById('view-story').addEventListener('click', function () { ig.events.push('click:view_story'); });
+            return;
+          }
           // The viewer, outside <main>.
           document.getElementById('overlay').innerHTML =
             '<div><section class="viewer">' +

@@ -268,6 +268,49 @@ pub const Runner = struct {
     }
 };
 
+/// What a dry run reports about the daily cap it bypassed: the actions left
+/// and, at the cap, the error the real call would give.
+pub const CapNote = struct { remaining: u32, cap_reason: []const u8 };
+
+/// A dry run's result (`{"dry_run":true,...,"checks":[...]}`, from
+/// flow_steps.dryRunResult) with the route's checks added (owned): the
+/// runner's clean rate-limit scans, and a `daily_cap` note. Anything else
+/// comes back unchanged (a copy).
+pub fn withRouteChecks(gpa: std.mem.Allocator, result_json: []const u8, clean_scans: u32, cap: CapNote) error{OutOfMemory}![]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, result_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return gpa.dupe(u8, result_json),
+    };
+    defer parsed.deinit();
+    const checks = switch (parsed.value) {
+        .object => |*o| o.getPtr("checks") orelse return gpa.dupe(u8, result_json),
+        else => return gpa.dupe(u8, result_json),
+    };
+    switch (checks.*) {
+        .array => |*list| {
+            const check = try std.json.ObjectMap.init(parsed.arena.allocator(), &.{ "name", "result", "count" }, &.{
+                .{ .string = "rate_limit_scans" },
+                .{ .string = "pass" },
+                .{ .integer = clean_scans },
+            });
+            try list.append(.{ .object = check });
+            const arena = parsed.arena.allocator();
+            const reason = if (cap.remaining == 0)
+                try std.fmt.allocPrint(arena, "the real call would be refused now: {s}", .{cap.cap_reason})
+            else
+                "a dry run is not counted";
+            try list.append(.{ .object = try std.json.ObjectMap.init(arena, &.{ "name", "result", "count", "reason" }, &.{
+                .{ .string = "daily_cap" },
+                .{ .string = "note" },
+                .{ .integer = cap.remaining },
+                .{ .string = reason },
+            }) });
+        },
+        else => return gpa.dupe(u8, result_json),
+    }
+    return std.json.Stringify.valueAlloc(gpa, parsed.value, .{});
+}
+
 /// `params_json` with its `timeout_ms` and `options.timeout_ms` lowered to
 /// at most `max_ms`; null when nothing needed lowering (or the params are
 /// not an object).
