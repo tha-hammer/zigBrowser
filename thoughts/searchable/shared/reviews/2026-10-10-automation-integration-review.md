@@ -2429,6 +2429,16 @@ and are also reparented to 1368. The retained
 that `xvfb-run`'s EXIT cleanup did not execute. The processes were inspected
 only and deliberately left alive for the orchestrator.
 
+The wider `/tmp/.X11-unix` inventory separates live leaks from stale residue.
+At audit time X105, X106, and X107 had live Xvfb processes in cc_1's scope;
+X111 and X119 had live Xvfb processes in cc_2's scope. Most other X99-X120
+lock files named dead PIDs, so their sockets/locks are stale artifacts rather
+than live servers. Because `xvfb-run` chooses a display by the existence of
+the lock file, that residue also explains why later tests kept advancing to
+higher display numbers. The cross-agent Xvfb residue reinforces that the
+shared harness boundary is the owner even though the two preserved browsers
+are specifically cc_1 probes.
+
 The boundary error is concrete. `tests/e2e/slice2_common.py:97-112` returns
 `[xvfb-run, -a]` as a command prefix, so every caller's `Popen` object denotes
 the wrapper shell, not zigBrowser. `tests/e2e/automation_core_test.py:196-204`
