@@ -263,6 +263,16 @@ pub const PagePort = struct {
         /// Stay; `text` answers an accepted prompt (null = its default).
         /// NoPage without that window, NoDialog when it has none.
         respondDialog: *const fn (ptr: *anyopaque, id: WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) PortError!void = unsupportedRespond,
+
+        // --- v3.7 pointer settle ---
+
+        /// Returns once the page has received the last nativeMove (or its
+        /// document changed): a move answers when dispatched, and a backend
+        /// may hold it behind earlier mouse events while page evaluations
+        /// overtake it. A command that ends with a move (a native hover)
+        /// calls this before answering. `document` as in nativeMove. Null:
+        /// moves reach the page in order with everything else.
+        settlePointer: ?*const fn (ptr: *anyopaque, document: ?[]const u8, timeout_ms: u64) PortError!void = null,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -278,6 +288,13 @@ pub const PagePort = struct {
     pub fn navigateWithPolicy(self: PagePort, url_text: []const u8, before_unload: BeforeUnload, timeout_ms: u64) PortError!void {
         const guarded = self.vtable.navigateWithPolicy orelse return self.vtable.navigate(self.ptr, url_text, timeout_ms);
         return guarded(self.ptr, url_text, before_unload, timeout_ms);
+    }
+
+    /// v3.7: wait until the page received the last pointer move (no-op
+    /// on a backend without settlePointer).
+    pub fn settlePointer(self: PagePort, document: ?[]const u8, timeout_ms: u64) PortError!void {
+        const settle = self.vtable.settlePointer orelse return;
+        return settle(self.ptr, document, timeout_ms);
     }
 
     pub fn listDialogs(self: PagePort, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]DialogInfo {

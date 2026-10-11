@@ -18,7 +18,8 @@ pub const EvalReply = union(enum) {
 };
 
 pub const NativeCall = struct {
-    kind: enum { click, key, text, move, scroll },
+    /// settle: v3.7 settlePointer (x/y unused).
+    kind: enum { click, key, text, move, scroll, settle },
     x: f64 = 0,
     y: f64 = 0,
     /// Scroll calls: the wheel's CSS px deltas.
@@ -171,6 +172,7 @@ pub const FakePagePort = struct {
         .setInputFiles = setInputFiles,
         .nativeScroll = nativeScroll,
         .screenshot = screenshot,
+        .settlePointer = settlePointer,
     };
 
     /// A port with native click/key/text but no pointer motion (v3.1).
@@ -237,6 +239,12 @@ pub const FakePagePort = struct {
         const doc = try self.dupeDocument(document);
         if (try self.recordNative(.{ .kind = .move, .x = x, .y = y, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
         self.pointer_pos = .{ .x = x, .y = y };
+    }
+
+    fn settlePointer(ptr: *anyopaque, document: ?[]const u8, timeout_ms: u64) page_port.PortError!void {
+        const self = from(ptr);
+        const doc = try self.dupeDocument(document);
+        if (try self.recordNative(.{ .kind = .settle, .document = doc, .timeout_ms = timeout_ms })) |err| return err;
     }
 
     fn pointer(ptr: *anyopaque) ?page_port.Point {

@@ -73,6 +73,7 @@ const vtable: PagePort.VTable = .{
     .navigateWithPolicy = navigateWithPolicy,
     .listDialogs = listDialogs,
     .respondDialog = respondDialog,
+    .settlePointer = settlePointer,
 };
 
 // --- Page dialogs: PagePort v3.6 ---
@@ -322,6 +323,9 @@ const Ack = struct {
     keyup: i64 = 0,
     click: i64 = 0,
     wheel: i64 = 0,
+    /// Viewport CSS px of the last trusted mousemove (-1: none yet).
+    move_x: f64 = -1,
+    move_y: f64 = -1,
     /// Scroll events seen, and ms since the last one (-1: none yet).
     scrolls: i64 = 0,
     scroll_quiet_ms: f64 = -1,
@@ -399,16 +403,28 @@ fn readAckFromPage(ctx: *anyopaque, deadline: i64) PortError!?Ack {
     const out = try evalJson(ctx, gpa, .automation, ack_body, "null", try remainingMs(deadline));
     defer gpa.free(out);
     if (std.mem.eql(u8, out, "null")) return null;
-    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, wheel: i64 = 0, scrolls: i64 = 0, scrollQuietMs: f64 = -1, navigations: i64 = 0, leaving: bool = false };
+    const Wire = struct { doc: []const u8, mouseup: i64, keyup: i64, click: i64, wheel: i64 = 0, moveX: f64 = -1, moveY: f64 = -1, scrolls: i64 = 0, scrollQuietMs: f64 = -1, navigations: i64 = 0, leaving: bool = false };
     const parsed = std.json.parseFromSlice(Wire, gpa, out, .{}) catch return error.EvalFailed;
     defer parsed.deinit();
     if (!isDocumentToken(parsed.value.doc)) return error.EvalFailed;
-    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .wheel = parsed.value.wheel, .scrolls = parsed.value.scrolls, .scroll_quiet_ms = parsed.value.scrollQuietMs, .navigations = parsed.value.navigations, .leaving = parsed.value.leaving };
+    var ack: Ack = .{ .keyup = parsed.value.keyup, .click = parsed.value.click, .wheel = parsed.value.wheel, .move_x = parsed.value.moveX, .move_y = parsed.value.moveY, .scrolls = parsed.value.scrolls, .scroll_quiet_ms = parsed.value.scrollQuietMs, .navigations = parsed.value.navigations, .leaving = parsed.value.leaving };
     @memcpy(&ack.doc, parsed.value.doc);
     return ack;
 }
 
 const AckOutcome = enum { acknowledged, document_changed, leaving };
+
+/// A dispatched nativeMove (see AckTracker.settleMove).
+const MoveTarget = struct {
+    doc: [doc_len]u8,
+    x: f64,
+    y: f64,
+
+    /// Mouse events report whole viewport pixels: within 1 px is there.
+    fn reachedBy(self: MoveTarget, now: Ack) bool {
+        return @abs(now.move_x - self.x) <= 1 and @abs(now.move_y - self.y) <= 1;
+    }
+};
 
 /// How long one acknowledgement read may take before it is given up and
 /// read again (a quiet read answers in a few ms).
@@ -423,6 +439,9 @@ const AckTracker = struct {
     ctx: *anyopaque,
     debt: ?Ack = null,
     debt_mutex: SpinLock = .{},
+    /// Where the last nativeMove went, in which document, until
+    /// settleMove; only touched under txn_lock.
+    move_target: ?MoveTarget = null,
 
     /// One read, each attempt bounded by `ack_read_slice_ms`. A read can
     /// be lost: an eval that reaches the old document just as a navigation
@@ -457,6 +476,22 @@ const AckTracker = struct {
                 // A navigation started since `target`'s baseline (even one
                 // the page cancels later) ends the current sequence.
                 if (now.click >= target.click and now.keyup >= target.keyup and now.wheel >= target.wheel) return if (now.navigations != target.navigations) .leaving else .acknowledged;
+            }
+            sleepMs(@min(5, try remainingMs(deadline)));
+        }
+    }
+
+    /// Wait until the page's last trusted mousemove is at the last move's
+    /// position, or another document replaced the one it went to.
+    /// Positions, not counts: WebKit coalesces held moves, and an earlier
+    /// move of the same path may arrive first. Timeout at the deadline;
+    /// either way the move is no longer waited for.
+    fn settleMove(self: *AckTracker, deadline: i64) PortError!void {
+        const target = self.move_target orelse return;
+        defer self.move_target = null;
+        while (true) {
+            if (try self.read(deadline)) |now| {
+                if (!now.isDocument(&target.doc) or target.reachedBy(now)) return;
             }
             sleepMs(@min(5, try remainingMs(deadline)));
         }
@@ -607,18 +642,34 @@ pub fn pointer(ptr: *anyopaque) ?Point {
 /// One real pointer-motion event to viewport CSS px (x, y), no click (N8
 /// humanized paths). Guarded by `document` like nativeClick. Returns once
 /// dispatched: motion shares WebKit's FIFO mouse queue with the click that
-/// follows it, so it needs no acknowledgement (WebKit may coalesce moves).
+/// follows it. A page evaluation is not in that queue and can overtake a
+/// move WebKit still holds behind an earlier mouse event (2.54 holds them
+/// longer), so a command that ends with a move calls settlePointer.
 pub fn nativeMove(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
     const deadline = deadlineAfter(timeout_ms);
     try txn_lock.lockUntil(deadline);
     defer txn_lock.unlock();
-    _ = try (try acksFor(ptr)).begin(document, deadline);
+    const acks = try acksFor(ptr);
+    const base = try acks.begin(document, deadline);
     var doc_z: [doc_len + 1]u8 = undefined;
     const expected = if (document) |token| docZ(&doc_z, token) else null;
     var err: [*c]u8 = null;
     const rc = c.zb_native_move(windowOf(ptr), x, y, expected, clampMs(try remainingMs(deadline)), &err);
     c.zb_automation_free(err);
     try mapNativeCode(rc);
+    acks.move_target = .{ .doc = base.doc, .x = x, .y = y };
+}
+
+/// PagePort v3.7: returns once the page's last trusted mousemove is at the
+/// last nativeMove's position (a move onto an element always fires one,
+/// also at the same position), or another document replaced it. `document` is
+/// the move's own guard and needs no check here.
+fn settlePointer(ptr: *anyopaque, document: ?[]const u8, timeout_ms: u64) PortError!void {
+    _ = document;
+    const deadline = deadlineAfter(timeout_ms);
+    try txn_lock.lockUntil(deadline);
+    defer txn_lock.unlock();
+    return (try acksFor(ptr)).settleMove(deadline);
 }
 
 /// PagePort v3.4: PNG of the visible viewport, or of the whole document.
@@ -940,6 +991,55 @@ test "reads that never answer still end in Timeout at the deadline, the debt kep
     var quiet: FakeAcks = .{ .steps = &.{.lost} };
     var acks2 = quiet.tracker();
     try std.testing.expectError(error.Timeout, acks2.begin(null, deadlineAfter(1500)));
+}
+
+fn moveAck(x: f64, y: f64) Ack {
+    var a = testAck(5);
+    a.move_x = x;
+    a.move_y = y;
+    return a;
+}
+
+test "a settled move waits until the page's last mousemove is at the move's position" {
+    // The page still shows the pointer at (10, 10) twice (the move is held
+    // behind an earlier mouse event), then at (80.4, 60): mouse events
+    // carry whole pixels, so within 1 px is there.
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = moveAck(10, 10) }, .{ .ack = moveAck(10, 10) }, .{ .ack = moveAck(80, 60) } } };
+    var acks = page.tracker();
+    acks.move_target = .{ .doc = testAck(5).doc, .x = 80.4, .y = 60 };
+    try acks.settleMove(deadlineAfter(1000));
+    try std.testing.expectEqual(@as(usize, 3), page.index);
+    try std.testing.expect(acks.move_target == null);
+    // Nothing moved since: nothing to wait for, nothing read.
+    try acks.settleMove(deadlineAfter(1000));
+    try std.testing.expectEqual(@as(usize, 3), page.index);
+}
+
+test "a settled move is not satisfied by an earlier move of the same path" {
+    // A vertical path: steps 1..3 were dispatched; WebKit delivers step 2
+    // (any count of mousemoves has grown, and x already matches) and
+    // coalesces the rest into step 3 later.
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = moveAck(40, 20) }, .{ .ack = moveAck(40, 30) }, .{ .ack = moveAck(40, 30) }, .{ .ack = moveAck(40, 40) } } };
+    var acks = page.tracker();
+    acks.move_target = .{ .doc = testAck(5).doc, .x = 40, .y = 40 };
+    try acks.settleMove(deadlineAfter(1000));
+    try std.testing.expectEqual(@as(usize, 4), page.index);
+}
+
+test "a settled move counts a new document as delivered, re-reads a lost read, and times out otherwise" {
+    var other = moveAck(-1, -1);
+    @memcpy(&other.doc, "fedcba9876543210");
+    var moved: FakeAcks = .{ .steps = &.{ .{ .ack = moveAck(10, 10) }, .lost, .{ .ack = other } } };
+    var acks = moved.tracker();
+    acks.move_target = .{ .doc = testAck(5).doc, .x = 80, .y = 60 };
+    try acks.settleMove(deadlineAfter(6000));
+    try std.testing.expectEqual(@as(usize, 3), moved.index);
+
+    var stuck: FakeAcks = .{ .steps = &.{.{ .ack = moveAck(10, 10) }} };
+    var acks2 = stuck.tracker();
+    acks2.move_target = .{ .doc = testAck(5).doc, .x = 80, .y = 60 };
+    try std.testing.expectError(error.Timeout, acks2.settleMove(deadlineAfter(300)));
+    try std.testing.expect(acks2.move_target == null);
 }
 
 test "a navigation started during a sequence ends it, even after the page cancelled it" {

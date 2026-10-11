@@ -1422,12 +1422,29 @@ test "synthetic dom.hover runs the hover op; native hover locates (no focus) and
     try std.testing.expect(std.mem.indexOf(u8, arg, "\"op\":\"locate\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg, "\"action\":\"hover\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg, "\"focus\":false") != null);
-    try std.testing.expectEqual(@as(usize, 1), n.fake.native_calls.items.len);
+    // The move, then (v3.7) a settle in the same document before answering:
+    // a check of :hover right after must see the move.
+    try std.testing.expectEqual(@as(usize, 2), n.fake.native_calls.items.len);
     const move = n.fake.native_calls.items[0];
     try std.testing.expect(move.kind == .move);
     try std.testing.expectEqual(@as(f64, 10.5), move.x);
     try std.testing.expectEqual(@as(f64, 20), move.y);
     try std.testing.expectEqualStrings("0123456789abcdef", move.document.?);
+    const settle = n.fake.native_calls.items[1];
+    try std.testing.expect(settle.kind == .settle);
+    try std.testing.expectEqualStrings("0123456789abcdef", settle.document.?);
+}
+
+test "a native hover whose move the page never confirms fails as action_timeout" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    h.fake.eval_replies = &.{.{ .json = located_reply }};
+    h.fake.native_fail_at = 1; // the settle after the move
+    var outcome = try h.run("dom.hover", "{\"selector\":\"css=#m\",\"options\":{\"input\":\"native\"}}");
+    defer outcome.deinit(gpa);
+    try expectFailure(outcome, -32009, "action_timeout");
+    try std.testing.expectEqual(@as(usize, 2), h.fake.native_calls.items.len);
 }
 
 test "humanized native hover: a curved path that ends on the target, and no click" {
@@ -1442,7 +1459,11 @@ test "humanized native hover: a curved path that ends on the target, and no clic
     const moves = h.fake.nativeOf(.move, &buf);
     try std.testing.expect(moves.len >= 10);
     try std.testing.expect(dist(moves[moves.len - 1], 500, 400) < 1e-6);
-    try std.testing.expectEqual(moves.len, h.fake.native_calls.items.len);
+    // Every path step is a move; only the last one is settled (v3.7).
+    const calls = h.fake.native_calls.items;
+    try std.testing.expectEqual(moves.len + 1, calls.len);
+    try std.testing.expect(calls[calls.len - 1].kind == .settle);
+    try std.testing.expectEqual(@as(usize, 1), h.fake.nativeOf(.settle, &buf).len);
 }
 
 test "native hover on a backend without nativeMove: -32011 unsupported, no page work" {

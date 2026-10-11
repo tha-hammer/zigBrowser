@@ -800,6 +800,22 @@ pub const Engine = struct {
             return .{ .done = try portFailure(gpa, err, .action, run.ids) };
         };
         self.platformSpan(run, op, null, payload_bytes, 0, started, "ok");
+        if (kind == .move) return self.settleHover(gpa, target, deadline, run);
+        return .{ .done = try okResult(gpa) };
+    }
+
+    /// A native hover answers only once the page has the pointer's final
+    /// move (v3.7 settlePointer): the backend may hold a move behind
+    /// earlier mouse events while the caller's next page evaluation (a
+    /// :hover check) overtakes it. The move was sent: no re-locate.
+    fn settleHover(self: *Engine, gpa: std.mem.Allocator, target: *const Target, deadline: u64, run: *Run) error{OutOfMemory}!NativeStep {
+        const remaining = deadline -| self.clock.nowMs(); // 0: the port times out at once
+        const started = self.clock.nowMs();
+        run.port.settlePointer(target.document(), remaining) catch |err| {
+            self.platformSpan(run, "settlePointer", null, 0, 0, started, @errorName(err));
+            return .{ .done = try portFailure(gpa, err, .action, run.ids) };
+        };
+        self.platformSpan(run, "settlePointer", null, 0, 0, started, "ok");
         return .{ .done = try okResult(gpa) };
     }
 
@@ -895,7 +911,7 @@ pub const Engine = struct {
             };
             self.platformSpan(run, "nativeMove", null, 0, 0, started, "ok");
         }
-        if (gesture == .hover) return .{ .done = try okResult(gpa) };
+        if (gesture == .hover) return self.settleHover(gpa, target, deadline, run);
         if (!self.sleepUnlessCancelled(dwell_ms, run)) return .{ .done = try automationFailure(gpa, .cancelled, null, run.ids) };
         const remaining = deadline -| self.clock.nowMs();
         if (remaining == 0) return .{ .done = try timeoutWithReason(gpa, .action_timeout, "deadline_before_input", run.ids, run.attempts) };

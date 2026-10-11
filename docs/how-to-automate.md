@@ -269,7 +269,9 @@ nothing loads. Closing a window dismisses its dialog.
 - `dom.hover` with synthetic input (the default) only dispatches pointer
   and mouse events: CSS `:hover` rules do not apply. With
   `input: "native"` the real pointer moves onto the element (`humanize`:
-  along a curved, paced path), so `:hover` menus and tooltips open.
+  along a curved, paced path), so `:hover` menus and tooltips open. It
+  answers only once the page has received the final move, so a `:hover`
+  check or a read of the opened menu right after sees it.
 - `dom.scroll` with a selector brings the element's centre into the view;
   with `x`/`y` it scrolls the page by that much. With `input: "native"` it
   uses real wheel events at the centre of the view and answers only once

@@ -26,7 +26,7 @@
   // `doc` identifies this document: input that navigates lands in a new
   // document whose counters start again at zero, which callers must treat as
   // delivered rather than wait for counts that will never come.
-  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, wheel: 0, scrolls: 0, lastScrollAt: -1, navigations: 0, pending: null };
+  const inputAck = { doc: randomDocumentId(), mouseup: 0, keyup: 0, click: 0, wheel: 0, moveX: -1, moveY: -1, scrolls: 0, lastScrollAt: -1, navigations: 0, pending: null };
   function randomDocumentId() {
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
@@ -44,6 +44,8 @@
   // which alone makes the document leaving.
   globalScope.addEventListener('submit', (event) => { if (event.isTrusted) inputAck.navigations += 1; }, true);
   globalScope.addEventListener('wheel', (event) => { if (event.isTrusted) inputAck.wheel += 1; }, { capture: true, passive: true });
+  // A native move is settled once a trusted mousemove reached its position (PagePort v3.7).
+  globalScope.addEventListener('mousemove', (event) => { if (event.isTrusted) { inputAck.moveX = event.clientX; inputAck.moveY = event.clientY; } }, { capture: true, passive: true });
   // Scrolling (page or any element: capture sees non-bubbling scroll
   // events) for native scroll completion: a wheel is done once its
   // scrolling has gone quiet.
@@ -1299,7 +1301,7 @@
       handle,
       inputAck() {
         return {
-          doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click, wheel: inputAck.wheel, scrolls: inputAck.scrolls,
+          doc: inputAck.doc, mouseup: inputAck.mouseup, keyup: inputAck.keyup, click: inputAck.click, wheel: inputAck.wheel, moveX: inputAck.moveX, moveY: inputAck.moveY, scrolls: inputAck.scrolls,
           scrollQuietMs: inputAck.lastScrollAt < 0 ? -1 : globalScope.performance.now() - inputAck.lastScrollAt,
           navigations: inputAck.navigations, leaving: inputAck.pending !== null
         };
