@@ -2167,3 +2167,36 @@ The GOAWAY e2e reported all ten checks green. The disposable export was
 deleted immediately, and the live browser on display `:0` and its live socket
 were never touched. BlackRobin independently reported the same 86/86,
 645/645 result in Agent Mail 4964.
+
+## X selector refresh review at f8c1f14
+
+**Status: APPROVED. No blockers.** Commit `f8c1f14a83dc2da0154235636fa58dfa331dfa97`
+replaces the stale schedule-select assumptions and makes the compose dialog win
+over simultaneous timeline controls. The XPath union at `src/x.zig:51-55`
+selects the dialog copy whenever any matching control exists inside a dialog;
+otherwise it selects the page copy. More than one dialog copy remains an
+ambiguity for strict resolution and therefore fails closed. The labelled-select
+selector at `src/x.zig:58-60` follows `aria-labelledby` to exact label text and
+does not depend on generated `SELECTOR_*` ids or the absent `aria-label`
+attribute.
+
+The fixture at `tests/fixtures/x/composer.html:70-115` mirrors both relevant
+live structures: generated select ids with text-bearing labels, and a compose
+dialog over timeline controls that record any accidental use. The socket-level
+`x.post` and `x.schedule_post` scenarios at
+`tests/e2e/x_flows_test.py:145-165` prove that both timeline controls stay
+untouched. They traverse the production router, queue, engine, and PagePort;
+the test does not call selector helpers directly. Failing-first is mechanically
+credible and recorded in the commit: the old `select[aria-label=...]`
+selectors cannot match the new fixture selects, so scheduling times out before
+the production change.
+
+`git diff --check f8c1f14^ f8c1f14` is clean. An independent clean archive of
+exact `f8c1f14`, with a fresh cache, live display/socket variables removed, and
+Xvfb, exited 0 with seed `0x2e78fc95`:
+
+`Build Summary: 86/86 steps succeeded; 647/647 tests passed`
+
+The X production-chain E2E reported `compose-dialog-over-timeline` and
+`x-flows` PASS. The disposable export was deleted immediately. Verdict mailed
+to BlueBeaver as Agent Mail 4977.
