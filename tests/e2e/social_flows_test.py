@@ -273,6 +273,16 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     # The DM's Send has an icon <title> (text too), and a share sheet on the
     # page has its own "Send": only the composer's is clicked (audit 7c9d68a).
     expect_equal("ig dm: the share sheet's Send untouched", zb.page.evaluate("window.__ig.shareSends")["result"], 0)
+    # The composer's Send is missing while the share sheet's Send is the
+    # page's only one: the DM fails closed, the share sheet's Send untouched
+    # (RoseCat 5194).
+    try:
+        sent = zb.instagram.dm("nosend.user", "hi Sam")
+    except AutomationError as err:
+        sent = err.code
+    if sent not in (-32001, -32009):
+        raise AssertionError(f"ig dm without the composer's Send: expected a refusal, got {sent!r}")
+    expect_equal("ig dm without the composer's Send: nothing sent anywhere", (ig(), zb.page.evaluate("window.__ig.shareSends")["result"]), (None, 0))
     # The viewer as live (probe of 2026-10-11): its own Next (an svg in a
     # div[role=button], outside <main>) frame by frame; the zero-size "Next"
     # of the page behind it and the story previews are never clicked. The

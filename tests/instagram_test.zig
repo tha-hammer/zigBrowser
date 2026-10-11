@@ -596,13 +596,15 @@ fn visibleIs(comptime text: []const u8) []const u8 {
 const vis_send = visibleIs("Send");
 const vis_view_story = visibleIs("View story");
 
-test "DM Send (audit HIGH): only in the composer holding the DM box, by its visible text \"Send\" (never another Send on the page)" {
+test "DM Send (audit HIGH, RoseCat 5194): only inside the DM box's own container (its parent), never found by walking up to any Send" {
     const clickable = "*[self::button or @role=\"button\"]";
     const input = "//div[@aria-label=\"Message\"][@contenteditable=\"true\"]";
     try std.testing.expectEqualStrings(
-        "xpath=(" ++ input ++ ")/ancestor::*[.//" ++ clickable ++ "[" ++ vis_send ++ "]][1]//" ++ clickable ++ "[" ++ vis_send ++ "][not(ancestor-or-self::*[@aria-hidden=\"true\"])]",
+        "xpath=(" ++ input ++ ")/parent::*//" ++ clickable ++ "[" ++ vis_send ++ "][not(ancestor-or-self::*[@aria-hidden=\"true\"])]",
         instagram.selectors.dm_send,
     );
+    // No "contains a Send" walk: the container does not depend on a Send.
+    try std.testing.expect(std.mem.indexOf(u8, instagram.selectors.dm_send, "ancestor::*[.//") == null);
 }
 
 test "the View story stop gate (audit HIGH) matches its visible text anywhere (svg titles left out): a stop check may over-detect, never under-detect" {

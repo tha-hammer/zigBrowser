@@ -191,6 +191,9 @@
           document.getElementById('send').addEventListener('click', function () { ig.result = { action: 'dm', text: box.textContent }; });
           ig.shareSends = 0;
           document.getElementById('share-send').addEventListener('click', function () { ig.shareSends += 1; });
+          // nosend.user: the composer has no Send (renamed while sending), so
+          // the share sheet's Send is the page's only one (RoseCat 5194).
+          if (m[1] === 'nosend.user') document.getElementById('send').textContent = 'Sending\u2026';
           setTimeout(function () {
             document.getElementById('header-actions').innerHTML = '<button id="follow">Follow</button><div role="button" id="message">Message</div>';
             var follow = document.getElementById('follow');

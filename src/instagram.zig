@@ -38,12 +38,14 @@ pub const selectors = struct {
     pub const comment_submit = "xpath=//form//*[self::button or @role=\"button\"][normalize-space(.)=\"Post\"]";
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
-    /// Send, only inside the composer that holds dm_input (the nearest
-    /// ancestor of the box that has a Send), by its visible text: an icon's
-    /// <title> is text too, and another "Send" on the page (a share sheet)
-    /// must never be the one clicked (RoseCat's audit 7c9d68a). UNVERIFIED
-    /// live: no check that the message arrived (not probed yet).
-    pub const dm_send = "xpath=(//div[@aria-label=\"Message\"][@contenteditable=\"true\"])/ancestor::*[.//" ++ dm_send_button ++ "][1]//" ++
+    /// Send, by its visible text (an icon's <title> is text too), only
+    /// inside the DM box's own container: its parent element, a fixed
+    /// boundary that does not depend on finding a Send (walking up to the
+    /// first ancestor holding any Send could reach a share sheet's; RoseCat
+    /// 5194, audit 7c9d68a). UNVERIFIED live: that Send sits under the box's
+    /// parent (if not, the DM fails closed, nothing else is clicked), and no
+    /// check that the message arrived.
+    pub const dm_send = "xpath=(//div[@aria-label=\"Message\"][@contenteditable=\"true\"])/parent::*//" ++
         dm_send_button ++ "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
     /// Story viewer media, and its Next control, from the live viewer
     /// (probe of 2026-10-11): the page behind the viewer is in <main> and
