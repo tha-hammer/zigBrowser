@@ -2,14 +2,16 @@
 //! and the renderer path (environment WebKit and EGL read at startup).
 //! Pure: cli.zig parses into these types; webkit.zig applies them.
 //!
-//! Why this exists (2026-10-11, NVIDIA RTX 3080, driver 550.163.01, X11,
-//! WebKitGTK 2.54.0): with policy NEVER (our default since a78fa5c) and
-//! every other non-DMABUF path, a YouTube watch page's web process died
-//! within 10-35 s and the window stayed blank. WebKit's own policy kept
-//! it alive but drew nothing (GBM buffer allocation failures). WebKit's
-//! policy plus WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 ("shm") or plus Mesa's
-//! EGL vendor ("mesa-egl") survived with video playing. The default stays
-//! NEVER until a person has confirmed on screen which of those draws.
+//! Why this default (2026-10-11, NVIDIA RTX 3080, driver 550.163.01, X11,
+//! WebKitGTK 2.54.0, a YouTube video, checked on the real screen): with
+//! policy NEVER (our default from a78fa5c to this change) the thumbnail
+//! showed, then the window went blank and its web process died (as it did
+//! in the tested WEBKIT_DISABLE_DMABUF_RENDERER=1 combinations). WebKit's
+//! own policy alone kept the page alive but drew nothing (GBM buffer
+//! failures). WebKit's policy plus WEBKIT_DMABUF_RENDERER_FORCE_SHM=1
+//! ("shm", case J) drew the page and played the video in real time.
+//! WebKit's policy plus Mesa's EGL ("mesa-egl", case L) drew it too, but
+//! the video's time jumped back and forth. The user chose J.
 
 const std = @import("std");
 
@@ -28,10 +30,17 @@ pub const RenderConfig = struct {
     renderer: Renderer,
 };
 
-/// The built-in choice when no flag is given. The candidate replacement,
-/// pending on-screen confirmation, is `.{ .hw_policy = .webkit,
-/// .renderer = .shm }` (or `.mesa_egl`): a one-line change here.
-pub const default_render: RenderConfig = .{ .hw_policy = .never, .renderer = .default };
+/// The built-in choice when no flag is given (case J above). Opt out with
+/// `--hardware-acceleration never` or `--renderer default|mesa-egl`.
+pub const default_render: RenderConfig = .{ .hw_policy = .webkit, .renderer = .shm };
+
+/// The effective config: each flag the user gave, else the default.
+pub fn resolve(hw_policy: ?HwPolicy, renderer: ?Renderer) RenderConfig {
+    return .{
+        .hw_policy = hw_policy orelse default_render.hw_policy,
+        .renderer = renderer orelse default_render.renderer,
+    };
+}
 
 /// Mesa's libglvnd EGL vendor file (Debian/Ubuntu path).
 pub const mesa_egl_vendor = "/usr/share/glvnd/egl_vendor.d/50_mesa.json";
@@ -74,6 +83,27 @@ pub fn shouldSetEnv(existing: ?[]const u8) bool {
     return existing == null;
 }
 
+/// What startup does with a renderer's environment variable.
+pub const EnvAction = union(enum) {
+    /// The renderer sets no variable.
+    none,
+    /// Set it (overwrite=0, so a value set meanwhile still wins).
+    set: EnvVar,
+    /// The user already set it, to anything: leave it.
+    keep_user: EnvVar,
+    /// mesa-egl without Mesa's vendor file: set nothing and say so.
+    missing_vendor,
+};
+
+/// `existing`: the variable's current value (null: unset).
+/// `mesa_vendor_present`: whether `mesa_egl_vendor` exists.
+pub fn envAction(renderer: Renderer, existing: ?[]const u8, mesa_vendor_present: bool) EnvAction {
+    const env = rendererEnv(renderer) orelse return .none;
+    if (!shouldSetEnv(existing)) return .{ .keep_user = env };
+    if (renderer == .mesa_egl and !mesa_vendor_present) return .missing_vendor;
+    return .{ .set = env };
+}
+
 test "flag values parse; anything else is rejected" {
     try std.testing.expectEqual(HwPolicy.never, parseHwPolicy("never").?);
     try std.testing.expectEqual(HwPolicy.always, parseHwPolicy("always").?);
@@ -102,7 +132,30 @@ test "each renderer's environment, and a user's own value always wins" {
     try std.testing.expect(!shouldSetEnv("/somewhere/else.json"));
 }
 
-test "the built-in default is today's: policy NEVER, no renderer environment" {
-    try std.testing.expectEqual(HwPolicy.never, default_render.hw_policy);
-    try std.testing.expectEqual(Renderer.default, default_render.renderer);
+test "the built-in default is case J: WebKit's own policy and shared-memory frames" {
+    try std.testing.expectEqual(HwPolicy.webkit, default_render.hw_policy);
+    try std.testing.expectEqual(Renderer.shm, default_render.renderer);
+}
+
+test "flags override the default one at a time; no flag keeps it" {
+    try std.testing.expectEqual(default_render, resolve(null, null));
+    try std.testing.expectEqual(RenderConfig{ .hw_policy = .never, .renderer = .shm }, resolve(.never, null));
+    try std.testing.expectEqual(RenderConfig{ .hw_policy = .webkit, .renderer = .default }, resolve(null, .default));
+    try std.testing.expectEqual(RenderConfig{ .hw_policy = .always, .renderer = .mesa_egl }, resolve(.always, .mesa_egl));
+}
+
+test "startup environment: the default sets FORCE_SHM=1 only when the user has not set it" {
+    const shm = envAction(default_render.renderer, null, true);
+    try std.testing.expectEqualStrings("WEBKIT_DMABUF_RENDERER_FORCE_SHM", shm.set.name);
+    try std.testing.expectEqualStrings("1", shm.set.value);
+    // Any value the user exported is theirs, even "0" or empty.
+    try std.testing.expectEqualStrings("WEBKIT_DMABUF_RENDERER_FORCE_SHM", envAction(.shm, "0", true).keep_user.name);
+    try std.testing.expectEqualStrings("WEBKIT_DMABUF_RENDERER_FORCE_SHM", envAction(.shm, "", true).keep_user.name);
+    // --renderer default sets nothing (and leaves any user value alone).
+    try std.testing.expect(envAction(.default, null, true) == .none);
+    try std.testing.expect(envAction(.default, "1", true) == .none);
+    // mesa-egl needs Mesa's vendor file; a user's own vendor list wins.
+    try std.testing.expectEqualStrings(mesa_egl_vendor, envAction(.mesa_egl, null, true).set.value);
+    try std.testing.expect(envAction(.mesa_egl, null, false) == .missing_vendor);
+    try std.testing.expectEqualStrings("__EGL_VENDOR_LIBRARY_FILENAMES", envAction(.mesa_egl, "/x.json", false).keep_user.name);
 }

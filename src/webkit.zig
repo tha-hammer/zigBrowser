@@ -16,8 +16,9 @@ pub fn runOpen(uri_z: [:0]const u8, print_title: bool) i32 {
     return c.zb_run_open(uri_z.ptr, if (print_title) 1 else 0);
 }
 
-pub fn runScreenshot(uri_z: [:0]const u8, out_z: [:0]const u8, print_title: bool) i32 {
+pub fn runScreenshot(uri_z: [:0]const u8, out_z: [:0]const u8, print_title: bool, render: render_config.RenderConfig) i32 {
     preferHttp1();
+    applyRender(render);
     return c.zb_run_screenshot(uri_z.ptr, out_z.ptr, if (print_title) 1 else 0);
 }
 
@@ -46,22 +47,31 @@ pub fn applyRender(cfg: render_config.RenderConfig) void {
     if (comptime builtin.os.tag != .linux) return;
     if (render_config.rendererEnv(cfg.renderer)) |env| {
         const existing = if (std.c.getenv(env.name.ptr)) |v| std.mem.span(v) else null;
-        if (cfg.renderer == .mesa_egl and existing == null) {
-            if (std.c.access(render_config.mesa_egl_vendor, std.c.F_OK) != 0) {
-                std.debug.print("zigBrowser: --renderer mesa-egl: {s} is missing; not set\n", .{render_config.mesa_egl_vendor});
-            } else _ = setenv(env.name.ptr, env.value.ptr, 0);
-        } else if (render_config.shouldSetEnv(existing)) {
-            _ = setenv(env.name.ptr, env.value.ptr, 0);
+        const vendor_present = std.c.access(render_config.mesa_egl_vendor, std.c.F_OK) == 0;
+        switch (render_config.envAction(cfg.renderer, existing, vendor_present)) {
+            .none, .keep_user => {},
+            .set => |set| _ = setenv(set.name.ptr, set.value.ptr, 0),
+            .missing_vendor => std.debug.print("zigBrowser: --renderer mesa-egl: {s} is missing; not set\n", .{render_config.mesa_egl_vendor}),
         }
     }
-    c.zb_app_set_hw_policy(switch (cfg.hw_policy) {
+    c.zb_app_set_hw_policy(policyCode(cfg.hw_policy));
+    if (!std.meta.eql(cfg, render_config.default_render)) {
+        std.debug.print("zigBrowser: rendering: hardware-acceleration={s} renderer={s}\n", .{ @tagName(cfg.hw_policy), render_config.rendererName(cfg.renderer) });
+    }
+}
+
+fn policyCode(policy: render_config.HwPolicy) c_int {
+    return switch (policy) {
         .never => c.ZB_HW_POLICY_NEVER,
         .always => c.ZB_HW_POLICY_ALWAYS,
         .webkit => c.ZB_HW_POLICY_WEBKIT,
-    });
-    if (cfg.hw_policy != render_config.default_render.hw_policy or cfg.renderer != render_config.default_render.renderer) {
-        std.debug.print("zigBrowser: rendering: hardware-acceleration={s} renderer={s}\n", .{ @tagName(cfg.hw_policy), render_config.rendererName(cfg.renderer) });
-    }
+    };
+}
+
+test "the shim's policy before any startup setting is the built-in default" {
+    // Live tests call zb_app_run without applyRender: they run under the
+    // same policy as the browser.
+    try std.testing.expectEqual(policyCode(render_config.default_render.hw_policy), c.zb_app_get_hw_policy());
 }
 
 test "HTTP/1.1 is forced only when the user set neither SOUP_FORCE_HTTP1 nor ZIGBROWSER_HTTP2=1" {
@@ -643,7 +653,8 @@ const LiveDriver = struct {
         err = null;
         self.check(rc == c.ZB_AUTO_OK, "navigate to fixture A returns OK");
         self.check(c.zb_automation_window_id_at(0) == 1, "primary window is registered as id 1");
-        self.check(c.zb_automation_debug_hw_policy(1, 5000) == c.ZB_HW_POLICY_NEVER, "the default hardware-acceleration policy is NEVER");
+        const webkit_default = c.zb_automation_debug_webkit_default_hw_policy(5000);
+        self.check(webkit_default >= 0 and c.zb_automation_debug_hw_policy(1, 5000) == webkit_default, "the default hardware-acceleration policy is WebKit's own");
 
         self.check(std.mem.eql(u8, self.str(&rc, .url), self.uri_a), "page.url is fixture A");
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture A"), "page.title is Fixture A");
@@ -1761,8 +1772,9 @@ test "the startup hardware-acceleration policy reaches the main window and its p
 
     gtk_port.installScript();
     defer c.zb_automation_set_script(null, 0);
+    const previous_policy = c.zb_app_get_hw_policy();
     c.zb_app_set_hw_policy(c.ZB_HW_POLICY_ALWAYS);
-    defer c.zb_app_set_hw_policy(c.ZB_HW_POLICY_NEVER);
+    defer c.zb_app_set_hw_policy(previous_policy);
     c.zb_automation_loop_mark(1);
     var watchdog: Watchdog = .{};
     const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });

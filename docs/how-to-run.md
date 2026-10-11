@@ -55,34 +55,54 @@ LOAD_FAIL	<uri>	<message>
 - This runtime is an app shell pivot, not a tabbed browser product.
 - Active Slice 2 keeps legacy browser-chrome controls out of scope.
 
-## Rendering options (GPU problems)
+## Rendering (GPU problems)
 
-Two startup flags choose how WebKit renders. Without them the browser uses
-its built-in default, which today is `--hardware-acceleration never` with
-the default renderer.
+On Linux the browser now renders with **WebKit's own hardware-acceleration
+policy** and **shared-memory frames**: it sets
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` before WebKit starts, unless you have
+set that variable yourself (to anything, even `0` or empty). This applies to
+normal windows, their popups and `--screenshot`. Two startup flags change it:
 
 | Flag | Values | Effect |
 |---|---|---|
-| `--hardware-acceleration` | `never` (default), `always`, `webkit` | WebKit's hardware-acceleration policy for every window; `webkit` leaves WebKit's own choice |
-| `--renderer` | `default`, `shm`, `mesa-egl` | `shm` sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` (shared-memory frames, no GPU buffers); `mesa-egl` sets `__EGL_VENDOR_LIBRARY_FILENAMES` to Mesa's vendor file (`/usr/share/glvnd/egl_vendor.d/50_mesa.json`) |
+| `--hardware-acceleration` | `webkit` (default), `never`, `always` | WebKit's hardware-acceleration policy for every window; `webkit` leaves WebKit's own choice |
+| `--renderer` | `shm` (default), `default`, `mesa-egl` | `shm` sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` (shared-memory frames, no GPU buffers); `default` sets nothing; `mesa-egl` sets `__EGL_VENDOR_LIBRARY_FILENAMES` to Mesa's vendor file (`/usr/share/glvnd/egl_vendor.d/50_mesa.json`) instead |
 
-A variable you set yourself always wins: the flags never override it.
-When a flag changes the default, the browser prints
+The flags work the same after `--screenshot <out.png> <URL>`. Each flag
+changes only its own half: `--hardware-acceleration never` alone keeps the
+`shm` renderer. A variable you set yourself always wins over a flag and over
+the default. When the flags differ from the default, the browser prints
 `zigBrowser: rendering: hardware-acceleration=<policy> renderer=<renderer>`
 on stderr.
 
-Why these exist (measured 2026-10-11 on an NVIDIA RTX 3080, driver
-550.163.01, X11, WebKitGTK 2.54.0, playing a YouTube video):
+### Why this is the default
 
-- With `never` (the current default) or any other path without DMA-BUF,
-  the page's web process died within 10-35 s and the window stayed blank.
-  `page.list` now reports such a window as `crashed`.
-- With WebKit's own policy (`webkit`) or `always`, the page stayed alive
-  and the video played, but nothing was drawn ("Failed to create GBM
-  buffer"): the window looked empty but still answered clicks.
-- `--hardware-acceleration webkit --renderer shm` and
-  `--hardware-acceleration webkit --renderer mesa-egl` kept the page alive
-  and the video playing without GBM buffer failures.
+Measured on 2026-10-11 on an NVIDIA RTX 3080 (driver 550.163.01, X11,
+WebKitGTK 2.54.0) with a YouTube video, and watched by a person on the real
+screen:
 
-DRAFT: the built-in default changes to one of those two once it has been
-confirmed on screen (`default_render` in `src/render_config.zig`).
+- **The old default, `never`, failed.** The thumbnail showed, then the
+  window went blank and the page's web process died (within 10-35 s). So
+  did the tested combinations with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. `page.list` now reports such a
+  window as `"crashed"`, and stderr says `zigBrowser: window <n>: web
+  process terminated (<reason>)`.
+- **WebKit's policy on its own** (`--renderer default`) kept the page alive,
+  but nothing was drawn ("Failed to create GBM buffer"): the window looked
+  empty yet still answered clicks.
+- **WebKit's policy with `shm` (the new default) worked.** The video played
+  in real time (at 10, 35 and 60 s its time was 4.6, 29.9 and 54.6 s), with no
+  GBM buffer failures. The log still shows two harmless `nv_gbm` lines from
+  NVIDIA's start-up.
+- **WebKit's policy with `mesa-egl` drew the page too**, but the video's time
+  jumped back and forth (2.9, 5.4, then 3.8 s), so it is not the default.
+
+### Opting out
+
+- Use the old behaviour: `--hardware-acceleration never --renderer default`.
+- Keep WebKit's policy without shared memory: `--renderer default`, or export
+  `WEBKIT_DMABUF_RENDERER_FORCE_SHM=0`.
+- Try Mesa's EGL instead: `--renderer mesa-egl`.
+
+Shared memory copies each frame through the CPU instead of handing GPU
+buffers over, which costs some CPU on large, fast-changing pages. The
+default lives in `default_render` in `src/render_config.zig`.

@@ -3,6 +3,7 @@ const std = @import("std");
 const app = @import("app.zig");
 const cli = @import("cli.zig");
 const errors = @import("errors.zig");
+const render_config = @import("render_config.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
 
@@ -32,7 +33,8 @@ pub fn main(init: std.process.Init) !void {
                 "usage: zigBrowser --version\n" ++
                     "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
-                    "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n",
+                    "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n" ++
+                    "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n",
             );
             std.process.exit(errors.exitCode(error.Usage));
         },
@@ -58,7 +60,8 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(errors.exitCode(error.WriteFailed));
             };
 
-            const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title);
+            // The same rendering as an open window (applied before WebKit starts).
+            const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer));
             std.process.exit(@intCast(code));
         },
     }

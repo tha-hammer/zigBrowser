@@ -80,19 +80,24 @@ void zb_automation_loop_mark(int running);
  * zb_automation_free) when the directory cannot be created. */
 int zb_app_set_profile_dir(const char *dir, char **out_err);
 
-/* WebKit hardware-acceleration policy for every window created from now
- * on: ZB_HW_POLICY_NEVER (the default), _ALWAYS, or _WEBKIT (leave
- * WebKit's own default). Call before zb_app_run. */
+/* WebKit hardware-acceleration policy for every window (and the
+ * screenshot view) created from now on: ZB_HW_POLICY_WEBKIT (the default:
+ * leave WebKit's own choice), _NEVER or _ALWAYS. Call before zb_app_run
+ * or zb_run_screenshot. The getter returns the current setting. */
 #define ZB_HW_POLICY_NEVER 0
 #define ZB_HW_POLICY_ALWAYS 1
 #define ZB_HW_POLICY_WEBKIT 2
 void zb_app_set_hw_policy(int policy);
+int zb_app_get_hw_policy(void);
 
 /* Test hook: the hardware-acceleration policy WebKit holds for window
  * `id`, as ZB_HW_POLICY_NEVER or _ALWAYS (ZB_HW_POLICY_ON_DEMAND for
  * WebKit's deprecated on-demand), -1 without that window or loop. */
 #define ZB_HW_POLICY_ON_DEMAND 3
 int zb_automation_debug_hw_policy(unsigned int id, unsigned int timeout_ms);
+/* Test hook: the policy a fresh WebKitSettings holds (WebKit's own
+ * default), in the same codes; -1 without the loop. */
+int zb_automation_debug_webkit_default_hw_policy(unsigned int timeout_ms);
 
 /* Isolated script world shared by the injected automation script and evals. */
 #define ZB_AUTOMATION_WORLD "zigbrowser-automation"

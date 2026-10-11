@@ -167,7 +167,8 @@ static void auto_policy_dialog_close(ZbWindow *win, int accept);
 
 static guint64 zb_auto_next_id;
 /* ZB_HW_POLICY_*: see zb_app_set_hw_policy. */
-static gint zb_app_hw_policy = ZB_HW_POLICY_NEVER;
+static gint zb_app_hw_policy = ZB_HW_POLICY_WEBKIT;
+static void zb_apply_hw_policy(WebKitSettings *settings);
 static int auto_pub_index_locked(guint32 requested);
 
 /* Automation bridge hooks (defined with the bridge, called on the GTK thread). */
@@ -1103,12 +1104,7 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   WebKitSettings *settings = webkit_web_view_get_settings(view);
   if (settings != NULL) {
     webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
-    int policy = g_atomic_int_get(&zb_app_hw_policy);
-    if (policy != ZB_HW_POLICY_WEBKIT) {
-      webkit_settings_set_hardware_acceleration_policy(
-          settings, policy == ZB_HW_POLICY_ALWAYS ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
-                                                  : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
-    }
+    zb_apply_hw_policy(settings);
   }
 
   win->sig_load_changed =
@@ -4554,30 +4550,56 @@ void zb_app_set_hw_policy(int policy) {
   g_atomic_int_set(&zb_app_hw_policy, policy);
 }
 
+int zb_app_get_hw_policy(void) { return g_atomic_int_get(&zb_app_hw_policy); }
+
+/* Every window's view and the screenshot view: the startup policy, or
+ * nothing for ZB_HW_POLICY_WEBKIT (WebKit keeps its own default). */
+static void zb_apply_hw_policy(WebKitSettings *settings) {
+  int policy = g_atomic_int_get(&zb_app_hw_policy);
+  if (policy == ZB_HW_POLICY_WEBKIT) {
+    return;
+  }
+  webkit_settings_set_hardware_acceleration_policy(
+      settings, policy == ZB_HW_POLICY_ALWAYS ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
+                                              : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+}
+
 typedef struct {
   guint32 id;
   int policy;
 } ZbHwPolicyCall;
 
+static int zb_hw_policy_code(WebKitSettings *settings) {
+  switch (webkit_settings_get_hardware_acceleration_policy(settings)) {
+    case WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER:
+      return ZB_HW_POLICY_NEVER;
+    case WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS:
+      return ZB_HW_POLICY_ALWAYS;
+    default:
+      return ZB_HW_POLICY_ON_DEMAND;
+  }
+}
+
 static void auto_debug_hw_policy(void *ctx) {
   ZbHwPolicyCall *call = (ZbHwPolicyCall *)ctx;
   ZbWindow *win = auto_resolve_window(call->id);
   WebKitSettings *settings = win != NULL ? webkit_web_view_get_settings(win->view) : NULL;
-  if (settings == NULL) {
-    call->policy = -1;
-    return;
+  call->policy = settings != NULL ? zb_hw_policy_code(settings) : -1;
+}
+
+static void auto_debug_webkit_default_hw_policy(void *ctx) {
+  ZbHwPolicyCall *call = (ZbHwPolicyCall *)ctx;
+  WebKitSettings *fresh = webkit_settings_new();
+  call->policy = zb_hw_policy_code(fresh);
+  g_object_unref(fresh);
+}
+
+int zb_automation_debug_webkit_default_hw_policy(unsigned int timeout_ms) {
+  ZbHwPolicyCall call = {.id = 0, .policy = -1};
+  if (zb_main_invoke_sync(auto_debug_webkit_default_hw_policy, &call, timeout_ms) != ZB_AUTO_OK) {
+    return -1;
   }
-  switch (webkit_settings_get_hardware_acceleration_policy(settings)) {
-    case WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER:
-      call->policy = ZB_HW_POLICY_NEVER;
-      break;
-    case WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS:
-      call->policy = ZB_HW_POLICY_ALWAYS;
-      break;
-    default:
-      call->policy = ZB_HW_POLICY_ON_DEMAND;
-      break;
-  }
+  return call.policy;
 }
 
 int zb_automation_debug_hw_policy(unsigned int id, unsigned int timeout_ms) {
@@ -5161,8 +5183,7 @@ static int run_screenshot_internal(const char *uri, const char *out_path,
   shot.view = WEBKIT_WEB_VIEW(webkit_web_view_new_with_context(shot.context));
   WebKitSettings *shot_settings = webkit_web_view_get_settings(shot.view);
   if (shot_settings != NULL) {
-    webkit_settings_set_hardware_acceleration_policy(
-        shot_settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    zb_apply_hw_policy(shot_settings);
   }
 
   shot.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);

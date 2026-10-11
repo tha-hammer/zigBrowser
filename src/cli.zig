@@ -24,6 +24,9 @@ pub const Command = union(enum) {
         w: u32 = 1024,
         h: u32 = 768,
         print_title: bool = false,
+        /// Same as `open`: null = built-in default.
+        hw_policy: ?render_config.HwPolicy = null,
+        renderer: ?render_config.Renderer = null,
     },
     usage,
 };
@@ -45,20 +48,42 @@ pub fn parseArgs(args: []const []const u8) Command {
 }
 
 fn parseScreenshotArgs(tokens: []const []const u8) Command {
-    if (tokens.len != 3 and tokens.len != 4) return .usage;
+    if (tokens.len < 3) return .usage;
     if (!std.mem.eql(u8, tokens[0], "--screenshot")) return .usage;
     if (std.mem.startsWith(u8, tokens[1], "-")) return .usage;
 
     var print_title = false;
-    if (tokens.len == 4) {
-        if (!std.mem.eql(u8, tokens[3], "--print-title")) return .usage;
-        print_title = true;
+    var hw_policy: ?render_config.HwPolicy = null;
+    var renderer: ?render_config.Renderer = null;
+    var i: usize = 3;
+    while (i < tokens.len) : (i += 1) {
+        const token = tokens[i];
+        if (std.mem.eql(u8, token, "--print-title")) {
+            if (print_title) return .usage;
+            print_title = true;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--hardware-acceleration")) {
+            i += 1;
+            if (i >= tokens.len or hw_policy != null) return .usage;
+            hw_policy = render_config.parseHwPolicy(tokens[i]) orelse return .usage;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--renderer")) {
+            i += 1;
+            if (i >= tokens.len or renderer != null) return .usage;
+            renderer = render_config.parseRenderer(tokens[i]) orelse return .usage;
+            continue;
+        }
+        return .usage;
     }
 
     return .{ .screenshot = .{
         .out = tokens[1],
         .url = tokens[2],
         .print_title = print_title,
+        .hw_policy = hw_policy,
+        .renderer = renderer,
     } };
 }
 
@@ -327,4 +352,20 @@ test "parseArgs rendering flag errors are usage" {
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--renderer", "gbm" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--renderer", "shm", "--renderer", "shm" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--hardware-acceleration", "never", "--hardware-acceleration", "always" }) == .usage);
+}
+
+test "parseArgs --screenshot takes the same rendering flags after the URL" {
+    const plain = parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com" });
+    try std.testing.expect(plain.screenshot.hw_policy == null);
+    try std.testing.expect(plain.screenshot.renderer == null);
+    const cmd = parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--renderer", "default", "--print-title", "--hardware-acceleration", "never" });
+    try std.testing.expect(cmd == .screenshot);
+    try std.testing.expectEqual(render_config.HwPolicy.never, cmd.screenshot.hw_policy.?);
+    try std.testing.expectEqual(render_config.Renderer.default, cmd.screenshot.renderer.?);
+    try std.testing.expect(cmd.screenshot.print_title);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--renderer" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--renderer", "gbm" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--renderer", "shm", "--renderer", "shm" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--print-title", "--print-title" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "https://two.example" }) == .usage);
 }

@@ -46,6 +46,24 @@ rejects with "TypeError: Load failed". On X this breaks login with
 - To keep HTTP/2, start the browser with `ZIGBROWSER_HTTP2=1`.
 - A `SOUP_FORCE_HTTP1` value you export yourself is never changed.
 
+### Rendering by default (Linux): WebKit's policy and shared memory
+
+On Linux the browser leaves the hardware-acceleration policy to WebKit and
+sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` when it starts, so rendered
+frames reach the window through shared memory instead of GPU buffers. The
+reason: on an NVIDIA desktop (RTX 3080, driver 550.163.01, WebKitGTK
+2.54.0), the old default, policy `never`, made a YouTube window show its
+thumbnail and then go blank because its web process died. Such a window
+now shows `"crashed"` in `page.list`. WebKit's policy with shared memory
+played the same video in real time.
+
+- To opt out, start with `--hardware-acceleration never` and/or
+  `--renderer default` (or `--renderer mesa-egl`). These flags also work
+  with `--screenshot`.
+- A `WEBKIT_DMABUF_RENDERER_FORCE_SHM` value you export yourself is never
+  changed.
+- The details and measurements are in `docs/how-to-run.md` ("Rendering").
+
 ## Connect: socket, framing and token
 
 - **Transport:** a Unix socket, mode 0600 (only your user can connect).

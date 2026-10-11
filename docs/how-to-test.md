@@ -96,20 +96,22 @@ upgrade fallout.
   `native-hover`. Its follow-up `6f90a1a` makes a page that is replaced while
   the hover waits fail with `document_changed` instead of succeeding (review
   5052, closed).
-- **YouTube watch page goes blank (open, cc_1).** On the live NVIDIA/X11
+- **YouTube watch page goes blank (default changed, cc_1).** On the live NVIDIA/X11
   desktop, a YouTube watch page opened as a popup showed its poster, then the
   window went blank, while the page itself still loaded and answered. The live
   log shows NVIDIA buffer-allocation errors (`nv_gbm_create_device`,
   `DRM_IOCTL_MODE_CREATE_DUMB ... Permission denied`) even though every view
-  uses hardware-acceleration policy `NEVER`. 2.54.0 no longer crashes the
+  used hardware-acceleration policy `NEVER` (the old default). 2.54.0 no longer crashes the
   browser there, but on Xvfb the popup's web process is lost: the window
   stays black and `page.evaluate` there fails with -32603. Since `1c4d0d8`
   that loss is reported: stderr says `zigBrowser: window <n>: web process
   terminated (<reason>)` and `page.list` shows `"crashed": "<reason>"` for
   the window. The same commit adds `--hardware-acceleration` and
-  `--renderer` (see `docs/how-to-run.md`) to try other rendering settings;
-  the default is unchanged. The diagnosis, and the opt-in qualification test
-  to add, are in
+  `--renderer` (see `docs/how-to-run.md`). After the user watched the cases
+  on the real NVIDIA screen, the Linux default became WebKit's policy with
+  `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` (case J, which played the video in
+  real time); `--hardware-acceleration never` and `--renderer default` opt
+  out. Xvfb has no NVIDIA GPU, so the gate proves only that nothing else
+  broke; the real-screen check is the orchestrator's. The diagnosis is in
   `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
-  ("Live YouTube blank-window investigation"). Do not change the default
-  without testing on the real NVIDIA display.
+  ("Live YouTube blank-window investigation").

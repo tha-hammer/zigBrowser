@@ -86,6 +86,19 @@ error codes). Build notes for other platforms: `docs/how-to-build.md`.
    kept as it is. `ZIGBROWSER_HTTP2=1` turns the default off. This is tested
    by `tests/e2e/http2_goaway_test.py`, which uses a local HTTP/2 server
    that sends GOAWAY.
+8. **Rendering default on Linux (2026-10-11).** Windows, popups and
+   `--screenshot` now use WebKit's own hardware-acceleration policy, and the
+   browser sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` at startup unless the
+   user set it. Before, the policy was forced to `never`. On the user's
+   NVIDIA desktop (RTX 3080, WebKitGTK 2.54.0) that made a YouTube window
+   show its thumbnail, then go blank as its web process died; with the new
+   default the user watched the video play in real time. Opt out with
+   `--hardware-acceleration never` and/or `--renderer default` (or
+   `--renderer mesa-egl`). A dead web process is now visible: `page.list`
+   shows `"crashed"` for the window and stderr names it. Details:
+   `docs/how-to-run.md` ("Rendering"). Tested on Xvfb by
+   `tests/e2e/render_config_test.py` and `web_process_crash_test.py`; the
+   real-screen check is done by hand.
 
 ## Every method and how it is verified
 
