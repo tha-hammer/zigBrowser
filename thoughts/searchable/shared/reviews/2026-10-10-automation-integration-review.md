@@ -1860,7 +1860,8 @@ asserts on the reversed bounds. Saturate non-positive caps, route every native
 call through `left`, and advance the NavEnd stage labels. Mailed as
 4906/4907/4909.
 
-Status: **OPEN (cc_1 / BlackRobin); final/N23 is RED at `bc0bad1`.**
+Historical status at `bc0bad1`: **SUPERSEDED by the CLOSED status at
+`2dc67b6` above; this is not an open finding.**
 `5c15e0b` replaces the unsafe clamp with a saturating `remainingMs` helper and
 mutation-sensitive boundary cases, passes all eight NavEnd native operations
 through the 45-second aggregate budget, and advances the four phase labels.
