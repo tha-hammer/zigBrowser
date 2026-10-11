@@ -315,10 +315,12 @@ has a section for each; the section names are quoted below.
   process dies, stderr says `zigBrowser: window <n>: web process
   terminated (<reason>)`, and `page.list` shows `"crashed": "<reason>"`
   for that window until it loads a new page. Before, the window just went
-  blank with no sign. Closing a window with `page.close` is not reported.
-  A normal quit (Ctrl+C or SIGINT) still prints this line, with
-  `terminated_by_api`, for every open window; that is harmless noise, and a
-  fix is a known follow-up (RoseCat's SHOULD on `20e0265`). Tested by
+  blank with no sign. The browser's own endings are not reported: closing
+  a window with `page.close`, and since the quiet-shutdown follow-up also a
+  normal quit (SIGINT/Ctrl+C or SIGTERM), which before printed this line
+  with `terminated_by_api` for every open window (RoseCat's SHOULD on
+  `20e0265`). The 15-second timer giving up a lone window's load that never
+  committed is still reported (`terminated_by_api`). Tested by
   `tests/e2e/web_process_crash_test.py`. Review: "Web-process diagnostics
   and rendering startup review (`1c4d0d8`)".
 - **The 15-second load timer (`20e0265`).** It no longer kills a page that

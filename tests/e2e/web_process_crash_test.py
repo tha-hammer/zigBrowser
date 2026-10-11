@@ -13,6 +13,11 @@ own); each holds some state. Killing window 3's process marks only window 3,
 by its id (page.list and stderr); windows 1 and 2 keep their state. Killing
 the shared process then marks windows 1 and 2, each by its own id.
 
+Quiet shutdown: with the same three windows (two web processes), stopping
+the browser with SIGTERM, and in a second run with SIGINT, ends every web
+process without a "web process terminated" line: our own termination is
+not a death to report, as for page.close.
+
 Never uses the caller's DISPLAY. Exit 77 (skip) without the binary,
 Xvfb or xauth."""
 
@@ -187,6 +192,62 @@ def popups(browser: Path, base_env: dict[str, str], check) -> None:
             server.server_close()
 
 
+def quiet_shutdown(browser: Path, base_env: dict[str, str], check) -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Pages)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    origin = f"http://127.0.0.1:{server.server_address[1]}"
+    other = f"http://localhost:{server.server_address[1]}"  # another site: another web process
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            label = f"quiet {sig.name}"
+            env = dict(base_env)
+            with tempfile.TemporaryDirectory(prefix="zb-crash-quiet-e2e-") as tmp:
+                socket_path = Path(tmp) / "automation.sock"
+                env["ZIGBROWSER_SOCKET"] = str(socket_path)
+                proc = subprocess.Popen(
+                    xsession_prefix(True) + [str(browser.resolve()), f"{origin}/main", "--automation-api",
+                                             "--profile-dir", str(Path(tmp) / "profile")],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env,
+                )
+                stderr_lines: list[str] = []
+                reader = threading.Thread(target=lambda: stderr_lines.extend(proc.stderr), daemon=True)  # type: ignore[arg-type]
+                reader.start()
+                try:
+                    deadline = time.monotonic() + 20
+                    while not socket_path.exists():
+                        if time.monotonic() > deadline:
+                            raise TimeoutError("socket never appeared")
+                        time.sleep(0.05)
+                    with ZigBrowser(socket_path=str(socket_path)) as zb:
+                        zb.page.evaluate(f"(window.open('{origin}/sib'), window.open('{other}/solo', '_blank', 'noopener'), 1)")
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            titles = sorted(p["title"] for p in zb.page.list()["pages"])
+                            if titles == ["main", "sib", "solo"] and len(web_processes(proc.pid)) == 2:
+                                break
+                            time.sleep(0.1)
+                        check(titles == ["main", "sib", "solo"] and len(web_processes(proc.pid)) == 2,
+                              f"{label}: three windows in two web processes (titles {titles}, processes {web_processes(proc.pid)})")
+                    proc.send_signal(sig)
+                    try:
+                        rc = proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        rc = None
+                    reader.join(timeout=5)
+                    check(rc is not None, f"{label}: the browser stopped (rc={rc})")
+                    logged = [line.strip() for line in stderr_lines if "web process terminated" in line]
+                    check(not logged, f"{label}: no 'web process terminated' line on stderr (got {logged})")
+                except Exception as exc:  # noqa: BLE001 - report every failure the same way
+                    check(False, f"{label}: error={exc!r}")
+                    eprint("browser stderr (last 30 lines):\n" + "".join(stderr_lines[-30:]))
+                finally:
+                    stop_browser(proc)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -259,6 +320,7 @@ def main() -> int:
             stop_browser(proc)
 
         popups(browser, env, check)
+        quiet_shutdown(browser, env, check)
 
     if failures:
         print("FAIL\tweb-process-crash")

@@ -268,6 +268,23 @@ static void terminate_window_web_process(ZbWindow *win) {
   webkit_web_view_terminate_web_process(win->view);
 }
 
+/* Before our own termination at close or shutdown: that is not a death to
+ * report (no "web process terminated" line, no page.list mark). */
+static void window_stop_reporting_termination(ZbWindow *win) {
+  if (win != NULL && win->view != NULL && win->sig_web_process_terminated != 0) {
+    g_signal_handler_disconnect(win->view, win->sig_web_process_terminated);
+    win->sig_web_process_terminated = 0;
+  }
+}
+
+/* Shutdown: every window stops reporting before any process is ended, as
+ * ending one shared process ends its related windows' pages too. */
+static void app_stop_reporting_termination(ZbApp *app) {
+  for (int i = 0; app != NULL && i < app->n_windows; i++) {
+    window_stop_reporting_termination(app->windows[i]);
+  }
+}
+
 /* Whether another live window shares `win`'s web process (a popup and its
  * opener, which are related views). Closing `win` must not terminate that
  * process then: it would kill the other window's page too. */
@@ -851,10 +868,7 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     /* Only the last window of a process family ends the web process; a
      * popup closing must leave its opener's page alive. */
     /* Our own termination at close is not a death to report. */
-    if (win->sig_web_process_terminated != 0) {
-      g_signal_handler_disconnect(win->view, win->sig_web_process_terminated);
-      win->sig_web_process_terminated = 0;
-    }
+    window_stop_reporting_termination(win);
     if (!window_shares_process(win)) {
       terminate_window_web_process(win);
     }
@@ -1270,6 +1284,7 @@ static void request_app_shutdown(ZbApp *app, int with_deadline) {
   for (int i = 0; i < n; i++) {
     copy[i] = app->windows[i];
   }
+  app_stop_reporting_termination(app);
 
   for (int i = 0; i < n; i++) {
     if (copy[i] != NULL && copy[i]->gtk_window != NULL) {
@@ -4798,6 +4813,7 @@ static int app_run(const char *uri, int print_title, int e2e_protocol) {
     for (int i = 0; i < n; i++) {
       copy[i] = app.windows[i];
     }
+    app_stop_reporting_termination(&app);
 
     for (int i = 0; i < n; i++) {
       if (copy[i] != NULL && copy[i]->gtk_window != NULL) {
