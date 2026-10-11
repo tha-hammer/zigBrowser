@@ -3673,3 +3673,57 @@ Non-blocking follow-ups mailed to cc_1:
   thread (`tests/e2e/page_health_test.py:222-230`); an immediate error can
   otherwise make the thread's exception reporter raise `NameError` and hide
   the original failure.
+
+## LinkedIn owner-menu provenance follow-up (`518098f`)
+
+**Verdict: BLOCKER (cc_2; Agent Mail 5169/5170).** The follow-up closes the
+original, demonstrated form of BLOCKER 5157 but still broadens away from an
+available owner-to-menu relationship in two cases. `c1bfeb3` therefore remains
+blocked pending one more fail-closed follow-up.
+
+The main defense is correct. After resolving exactly one visible `More` inside
+the already-verified owner area, `resolveConnect` queries for any visible
+`role=menu` or any visible exact `Connect` candidate before dispatching input.
+Any match produces `linkedin_profile_menu_already_open`, with neither the
+owner's More nor a menu item clicked; the dry run uses the same path
+(`src/linkedin.zig:654-686`). After the click, a one-token `aria-controls`
+value restricts all wait, count and strict-click operations to descendants of
+that id (`:697-734`). Zero and multiple visible Connect candidates still fail
+closed. The new real-socket fixture proves the original counterexample: an
+already-open unrelated menu with its own Connect causes both real and dry-run
+calls to stop with an empty wrong-person click log
+(`tests/e2e/social_flows_test.py:234-245`,
+`tests/fixtures/linkedin/index.html:269-296`). The SVG-title fixture also
+drives the exact non-SVG-text selector through the production chain.
+
+Two remaining provenance failures are release blockers:
+
+- `ownerMenuItem` treats any non-empty, whitespace-separated
+  `aria-controls` value as if the attribute were absent, falling back to the
+  page-wide owner-area/any-`role=menu` union (`src/linkedin.zig:726-727`). If
+  the owner More names multiple controlled elements and an unrelated menu
+  becomes visible after its click, the sole exact Connect may again come from
+  outside every named id. This contradicts the documented rule that, when
+  More names its menu, only that menu is searched
+  (`docs/how-to-automate.md:482-490`). A present multi-ID value must either be
+  parsed and scoped to only those ids or fail closed; it must never select the
+  global fallback. The controlled id must also resolve uniquely, so duplicate
+  ids cannot supply a sole Connect under the wrong duplicate.
+- The JSON parser gives `value` a default of null
+  (`src/linkedin.zig:717-727`). A malformed successful reply such as
+  `{"ok":true}` is therefore silently interpreted as “attribute absent” and
+  also enables the broad fallback. The unit fake's default response currently
+  exercises exactly this accidental path (`tests/linkedin_test.zig:29-44,
+  713-744`). `value` must be required in a successful reply (explicit null is
+  the valid absent-attribute result); a missing/wrong field must call
+  `runner.malformed()` and stop before any menu-item click.
+
+Required failing-first coverage: give the owner More
+`aria-controls="owner-menu auxiliary"`, reveal an unrelated menu with the
+only Connect after the More click, and assert no menu-item click; separately
+return a successful object without `value` and assert malformed failure with
+no committing input. No reviewer gate was started because cc_2 still held the
+private-Xvfb gate slot and a correctness blocker was already established. The
+author's clean-export gate for the committed blobs was green at **93/93 steps,
+758/758 tests**; those tests do not cover either case above. No live browser,
+live socket, DISPLAY `:0`, or user account was accessed.
