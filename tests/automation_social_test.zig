@@ -87,7 +87,10 @@ test "login_check's LinkedIn probe anchors on the nav's \"Me\" button (hashed cl
     try std.testing.expect(std.mem.indexOf(u8, body, "global-nav") == null);
     // Only the top nav's buttons: a "Me" button in page content must not count.
     try std.testing.expect(std.mem.indexOf(u8, body, "document.querySelectorAll('header button, nav button')") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "=== 'Me'") != null);
+    // By its visible text: text inside an <svg> (an icon's <title>) is left
+    // out (audit 7c9d68a), still exactly "Me".
+    try std.testing.expect(std.mem.indexOf(u8, body, "visibleText(b) === 'Me'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "closest('svg')") != null);
 }
 
 test "login_check on an unknown site reports not logged in with null username" {

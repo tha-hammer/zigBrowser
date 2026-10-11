@@ -112,7 +112,7 @@
         nav.innerHTML =
           '<nav class="_8f2c1a"><a class="_c03e9b" href="/feed/" aria-label="Home, 1 new notification">Home</a>' +
           '<a class="_c03e9b" href="/messaging/" aria-label="Messaging, 0 new notifications">Messaging</a>' +
-          '<button class="_51d0aa" type="button"><img class="_e4a7f2" alt="Sam Example" src="data:,"> Me </button></nav>';
+          '<button class="_51d0aa" type="button"><img class="_e4a7f2" alt="Sam Example" src="data:,"> Me <svg width="10" height="10"><title>Down arrow icon</title></svg></button></nav>';
 
         // A Draft-like editor: cancels beforeinput and keeps its own text.
         function editor(el) {
@@ -203,7 +203,7 @@
             menuItem('report', 'Report ' + first) + menuItem('block', 'Block ' + first) + menuItem('about', 'About this member');
           var own = m[1] === 'same-name-missing' ? '' : creator ?
             '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
-            '  <span><button id="more" type="button"' + controls + '>More</button>' + (multi ? '<div id="auxiliary" hidden></div>' : '') +
+            '  <span><button id="more" type="button"' + controls + '><svg width="10" height="10"><title>Three dots icon</title></svg>More</button>' + (multi ? '<div id="auxiliary" hidden></div>' : '') +
             (inlineMenu ? '<div id="menu" hidden>' + menuHtml + '</div>' : '') + '</span>' +
             // The display:none copy of More, as live.
             '<div class="_2f8a1c" style="display:none"><button id="more-hidden" type="button">More</button></div>' :

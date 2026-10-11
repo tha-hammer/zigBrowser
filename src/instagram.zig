@@ -20,7 +20,9 @@ pub const selectors = struct {
     /// Message a div[role=button]). They render a few seconds after the
     /// page loads; the flows' clicks wait for them (missing elements are
     /// retried until the step's deadline).
-    pub const follow_button = "xpath=//header//button[normalize-space(.)=\"Follow\"]";
+    /// Both by their visible text (an icon's <title> is text too; audit
+    /// 7c9d68a), in the owner header, under no aria-hidden element.
+    pub const follow_button = "xpath=//header//button[" ++ flow.visibleTextIs("Follow") ++ "]" ++ not_hidden;
     /// After Follow (live, 2026-10-11: a real follow): the same header
     /// button reads "Following" (or "Requested" for a private account)
     /// plus a chevron <svg> whose <title> "Down chevron icon" is text too,
@@ -29,13 +31,17 @@ pub const selectors = struct {
     /// aria-hidden element; the flow requires exactly one visible copy. The
     /// suggested accounts' Follow buttons below the header never match.
     pub const following_button = "xpath=//header//button[" ++ flow.visibleTextIs("Following") ++ " or " ++ flow.visibleTextIs("Requested") ++ "][not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
-    pub const message_button = "xpath=//header//*[self::button or @role=\"button\"][normalize-space(.)=\"Message\"]";
+    pub const message_button = "xpath=//header//*[self::button or @role=\"button\"][" ++ flow.visibleTextIs("Message") ++ "]" ++ not_hidden;
     /// Post page: the post's own action bar (the first <section>); comment
     /// likes sit in lists, not in it.
     pub const like_button = "xpath=(//section//*[name()=\"svg\" and @aria-label=\"Like\"])[1]";
     pub const unlike_marker = "xpath=(//section//*[name()=\"svg\" and @aria-label=\"Unlike\"])[1]";
     pub const comment_input = "css=textarea[aria-label=\"Add a comment\u{2026}\"]";
-    pub const comment_submit = "xpath=//form//*[self::button or @role=\"button\"][normalize-space(.)=\"Post\"]";
+    /// Post, by its visible text, only in the form that holds the comment
+    /// box: another form's Post is never the one clicked (audit 7c9d68a).
+    /// UNVERIFIED live: no check that the comment was accepted.
+    pub const comment_submit = "xpath=//form[.//textarea[@aria-label=\"Add a comment\u{2026}\"]]//*[self::button or @role=\"button\"][" ++
+        flow.visibleTextIs("Post") ++ "]" ++ not_hidden;
     /// Direct message composer.
     pub const dm_input = "css=div[aria-label=\"Message\"][contenteditable=\"true\"]";
     /// Send, by its visible text (an icon's <title> is text too), only
@@ -76,6 +82,9 @@ pub const selectors = struct {
 /// element_not_found instagram_story_viewer_unverified (tests could still
 /// run the frames through flow_steps.Site.unverified_actions).
 pub const story_viewer_verified = true;
+
+/// Under no aria-hidden element.
+const not_hidden = "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
 
 /// A clickable whose visible text is exactly "Send".
 const dm_send_button = "*[self::button or @role=\"button\"][" ++ flow.visibleTextIs("Send") ++ "]";

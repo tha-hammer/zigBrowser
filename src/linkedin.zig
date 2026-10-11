@@ -18,7 +18,9 @@ pub const selectors = struct {
     /// exactly "Me"; it has no aria-label), inside a <header> or <nav> so a
     /// "Me" button in page content does not count. UNVERIFIED live: that the
     /// nav is a <header>/<nav> element (the probe found the button by text).
-    pub const signed_in = "xpath=(//header | //nav)//button[normalize-space(.)=\"Me\"]";
+    /// By its visible text: a badge or icon <title> is text too (audit
+    /// 7c9d68a).
+    pub const signed_in = "xpath=(//header | //nav)//button[" ++ flow.visibleTextIs("Me") ++ "]";
     /// Signs of a signed-out page.
     pub const login_link = "css=a[href*=\"/login\"], a[href*=\"/uas/login\"], .sign-in-form";
     /// Profile actions, for x.selfcheck-style counts only. Live, these also
@@ -76,7 +78,9 @@ pub const selectors = struct {
     /// "no reaction"; liked = that same button no longer says so.
     /// UNVERIFIED: the liked label itself (nothing was liked in the probe).
     pub const like_button = "xpath=(//button[starts-with(@aria-label, \"Reaction button state: \")])[1][@aria-label=\"Reaction button state: no reaction\"]";
-    pub const liked_button = "xpath=(//button[starts-with(@aria-label, \"Reaction button state: \")])[1][not(@aria-label=\"Reaction button state: no reaction\")]";
+    /// Exactly "like" (the flow clicks Like): no other or unknown state
+    /// counts (audit 7c9d68a). UNVERIFIED live: the liked label.
+    pub const liked_button = "xpath=(//button[starts-with(@aria-label, \"Reaction button state: \")])[1][@aria-label=\"Reaction button state: like\"]";
     pub const comment_button = "css=button[aria-label=\"Comment\"]";
     /// Not used by the flows; reported by linkedin.selfcheck.
     pub const repost_button = "css=button[aria-label=\"Repost\"]";
@@ -120,7 +124,7 @@ const clickable = "self::button or self::a or @role=\"button\" or @role=\"menuit
 /// text is exactly "Connect", under no aria-hidden element.
 const menu_connect_item = "//*[" ++ clickable ++ "][" ++ flow.visibleTextIs("Connect") ++ "][not(.//*[" ++ clickable ++ "][" ++ flow.visibleTextIs("Connect") ++ "])]" ++ not_hidden;
 /// The owner's More button, below an owner area.
-const more_button_path = "//button[normalize-space(.)=\"More\" or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ not_hidden;
+const more_button_path = "//button[" ++ flow.visibleTextIs("More") ++ " or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ not_hidden;
 
 /// Whether a profile action may click at all. Connect and follow: on, in
 /// owner_container. Message: OFF, since the profile's own Message was not

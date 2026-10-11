@@ -594,6 +594,9 @@ fn visibleIs(comptime text: []const u8) []const u8 {
 }
 
 const vis_send = visibleIs("Send");
+const vis_follow = visibleIs("Follow");
+const vis_message = visibleIs("Message");
+const vis_post = visibleIs("Post");
 const vis_view_story = visibleIs("View story");
 
 test "DM Send (audit HIGH, RoseCat 5194): only inside the DM box's own container (its parent), never found by walking up to any Send" {
@@ -611,5 +614,15 @@ test "the View story stop gate (audit HIGH) matches its visible text anywhere (s
     try std.testing.expectEqualStrings(
         "xpath=//*[self::button or @role=\"button\"][" ++ vis_view_story ++ "]",
         instagram.selectors.story_view_gate,
+    );
+}
+
+test "audit MED: Follow and Message in the owner header, and the comment's Post in the comment box's own form, by visible text (svg titles left out)" {
+    const shown = "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
+    try std.testing.expectEqualStrings("xpath=//header//button[" ++ vis_follow ++ "]" ++ shown, instagram.selectors.follow_button);
+    try std.testing.expectEqualStrings("xpath=//header//*[self::button or @role=\"button\"][" ++ vis_message ++ "]" ++ shown, instagram.selectors.message_button);
+    try std.testing.expectEqualStrings(
+        "xpath=//form[.//textarea[@aria-label=\"Add a comment\u{2026}\"]]//*[self::button or @role=\"button\"][" ++ vis_post ++ "]" ++ shown,
+        instagram.selectors.comment_submit,
     );
 }

@@ -127,7 +127,10 @@ const own_pending = "xpath=" ++ area ++ "//*[starts-with(@aria-label, \"Pending\
 const own_following = "xpath=" ++ area ++ "//*[(starts-with(@aria-label, \"Following\") or starts-with(@aria-label, \"Unfollow\")) and contains(@aria-label, \"Sam Example\")]" ++ shown;
 /// The owner's More button (live: two in the owner area, one of them hidden)
 /// and the Connect item of the menu it opens.
-const more_path = "//button[normalize-space(.)=\"More\" or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ shown;
+const more_path = "//button[" ++ more_text ++ " or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ shown;
+/// Visible text (svg titles left out) exactly "More" (audit 7c9d68a).
+const more_text = "(.//text()[not(ancestor::*[name()=\"svg\"])][normalize-space(.)=\"More\"] and " ++
+    "not(.//text()[not(ancestor::*[name()=\"svg\"])][normalize-space(.)!=\"\" and normalize-space(.)!=\"More\"]))";
 const own_more = "xpath=" ++ area ++ more_path;
 const own_more_2 = "xpath=(" ++ area ++ more_path ++ ")[2]";
 /// What a Connect waits for first: the owner's own Connect, or their More.
@@ -147,7 +150,9 @@ const two_elements = "{\"elements\":[{\"id\":\"a\",\"tag\":\"button\",\"text\":\
 
 test "live markup (2026-10-11): hashed classes, so the signed-in marker is the nav's \"Me\" button" {
     // The top nav's (a "Me" button in page content must not count).
-    try std.testing.expectEqualStrings("xpath=(//header | //nav)//button[normalize-space(.)=\"Me\"]", linkedin.selectors.signed_in);
+    // By its visible text: a badge or icon <title> is text too (audit 7c9d68a).
+    try std.testing.expectEqualStrings("xpath=(//header | //nav)//button[(.//text()[not(ancestor::*[name()=\"svg\"])][normalize-space(.)=\"Me\"] and " ++
+        "not(.//text()[not(ancestor::*[name()=\"svg\"])][normalize-space(.)!=\"\" and normalize-space(.)!=\"Me\"]))]", linkedin.selectors.signed_in);
     inline for (@typeInfo(linkedin.selectors).@"struct".decls) |decl| {
         const value: []const u8 = @field(linkedin.selectors, decl.name);
         try std.testing.expect(std.mem.indexOf(u8, value, "global-nav") == null);
@@ -158,13 +163,13 @@ test "live markup (2026-10-11): hashed classes, so the signed-in marker is the n
     try std.testing.expectEqualStrings("css=button[aria-label=\"Repost\"]", linkedin.selectors.repost_button);
 }
 
-test "like: the first reaction button must say \"no reaction\"; liked when that same button no longer does" {
+test "like: the first reaction button must say \"no reaction\"; liked only when that same button says exactly \"like\" (audit MED: no other state counts)" {
     try std.testing.expectEqualStrings(
         "xpath=(//button[starts-with(@aria-label, \"Reaction button state: \")])[1][@aria-label=\"Reaction button state: no reaction\"]",
         linkedin.selectors.like_button,
     );
     try std.testing.expectEqualStrings(
-        "xpath=(//button[starts-with(@aria-label, \"Reaction button state: \")])[1][not(@aria-label=\"Reaction button state: no reaction\")]",
+        "xpath=(//button[starts-with(@aria-label, \"Reaction button state: \")])[1][@aria-label=\"Reaction button state: like\"]",
         linkedin.selectors.liked_button,
     );
 }

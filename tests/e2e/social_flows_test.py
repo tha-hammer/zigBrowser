@@ -266,6 +266,9 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_equal("ig like recorded", ig(), {"action": "like"})
     expect_equal("ig comment", zb.instagram.comment(ig_post, "So good"), {"ok": True})
     expect_equal("ig comment recorded", ig(), {"action": "comment", "text": "So good"})
+    # The comment's Post has an icon <title>, and another form has its own
+    # "Post": only the comment form's is clicked (audit 7c9d68a).
+    expect_equal("ig comment: the other form's Post untouched", zb.page.evaluate("window.__ig.otherPosts")["result"], 0)
     if "keydown:comment" not in zb.page.evaluate("window.__ig.events")["result"]:
         raise AssertionError("the comment was not typed")
     expect_equal("ig dm", zb.instagram.dm("sam.example", "hi Sam"), {"ok": True})
@@ -376,7 +379,7 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     dry("li comment", lambda: zb.linkedin.comment(post, "Great post", dry_run=True), "comment", ("button", "Comment"))
     expect_equal("li comment dry run: box closed and empty", (li(), js("document.querySelector('.comments-comment-box__form').hidden"), js("document.querySelector('.comments-comment-box__form [contenteditable]').textContent")), (None, True, ""))
     dry("ig follow", lambda: zb.instagram.follow(ig_profile, dry_run=True), "follow", ("button", "Follow"))
-    expect_equal("ig follow dry run: still Follow", (ig(), js("document.getElementById('follow').textContent")), (None, "Follow"))
+    expect_equal("ig follow dry run: still Follow", (ig(), js("document.getElementById('follow').lastChild.textContent")), (None, "Follow"))
     dry("ig like", lambda: zb.instagram.like(ig_post, dry_run=True), "like", ("svg", "Like"))
     expect_equal("ig like dry run: not liked", (ig(), zb.page.evaluate("window.__ig.events")["result"]), (None, []))
     dry("ig comment", lambda: zb.instagram.comment(ig_post, "So good", dry_run=True), "comment", ("textarea", "Add a comment\u2026"))

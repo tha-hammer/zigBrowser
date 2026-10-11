@@ -27,7 +27,8 @@ pub fn verbFromMethod(method: []const u8) ?Verb {
 }
 
 /// Heuristic login probe. LinkedIn: the top nav's "Me" button (in a
-/// <header> or <nav>, text exactly "Me"; LinkedIn's classes are hashed
+/// <header> or <nav>, visible text exactly "Me", text inside an <svg> left
+/// out; LinkedIn's classes are hashed
 /// since 2026-10) present and not on a login/checkpoint path; the username
 /// is its photo's alt text, if any. Instagram: ds_user_id cookie. Anything
 /// else: not logged in. Returns {ok,value:{logged_in,username}}.
@@ -37,8 +38,17 @@ pub const login_check_body =
     \\  let loggedIn = false;
     \\  let username = null;
     \\  if (/(^|\.)linkedin\.com$/.test(host)) {
+    \\    // Visible text: an icon's <title> inside an <svg> is left out.
+    \\    const visibleText = function (el) {
+    \\      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    \\      let text = '';
+    \\      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    \\        if (!n.parentElement || !n.parentElement.closest('svg')) text += n.data;
+    \\      }
+    \\      return text.replace(/\s+/g, ' ').trim();
+    \\    };
     \\    const me = Array.from(document.querySelectorAll('header button, nav button')).find(function (b) {
-    \\      return (b.textContent || '').replace(/\s+/g, ' ').trim() === 'Me';
+    \\      return visibleText(b) === 'Me';
     \\    });
     \\    loggedIn = !!me && !/^\/(login|checkpoint|uas|authwall)/.test(location.pathname);
     \\    const photo = me ? me.querySelector('img[alt]') : null;

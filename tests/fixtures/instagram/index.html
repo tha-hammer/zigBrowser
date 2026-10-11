@@ -152,7 +152,11 @@
             '<span role="button">' + icon('Comment') + '</span></section>' +
             // A comment's own like heart sits in a list, not in the action bar.
             '<ul><li>nice! <span role="button">' + icon('Like') + '</span></li></ul>' +
-            '<form><textarea aria-label="Add a comment…"></textarea><div role="button" id="post">Post</div></form></article>';
+            '<form><textarea aria-label="Add a comment…"></textarea><div role="button" id="post"><svg width="12" height="12"><title>Send icon</title></svg>Post</div></form></article>' +
+            // Another form with its own "Post" (audit 7c9d68a): never the comment's.
+            '<form id="other-form"><input aria-label="Search"><div role="button" id="other-post">Post</div></form>';
+          ig.otherPosts = 0;
+          document.getElementById('other-post').addEventListener('click', function () { ig.otherPosts += 1; });
           var like = document.getElementById('like');
           like.addEventListener('click', function () {
             ig.events.push('click:like');
@@ -195,7 +199,9 @@
           // the share sheet's Send is the page's only one (RoseCat 5194).
           if (m[1] === 'nosend.user') document.getElementById('send').textContent = 'Sending\u2026';
           setTimeout(function () {
-            document.getElementById('header-actions').innerHTML = '<button id="follow">Follow</button><div role="button" id="message">Message</div>';
+            // Icons with a <title> (text too) in Follow and Message (audit 7c9d68a).
+            document.getElementById('header-actions').innerHTML = '<button id="follow"><svg width="12" height="12"><title>Add person icon</title></svg>Follow</button>' +
+              '<div role="button" id="message"><svg width="12" height="12"><title>Paper plane icon</title></svg>Message</div>';
             var follow = document.getElementById('follow');
             follow.addEventListener('click', function () {
               var state = m[1] === 'private.user' ? 'Requested' : 'Following';
