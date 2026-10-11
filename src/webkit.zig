@@ -532,7 +532,14 @@ const LiveDriver = struct {
     }
 
     fn eq(a: ?[]const u8, b: []const u8) bool {
-        return a != null and std.mem.eql(u8, a.?, b);
+        const v = a orelse return false;
+        return std.mem.eql(u8, v, b);
+    }
+
+    /// `hay` is present and contains `needle` (no optional unwrap).
+    fn has(hay: ?[]const u8, needle: []const u8) bool {
+        const v = hay orelse return false;
+        return std.mem.indexOf(u8, v, needle) != null;
     }
 
     const handle_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
@@ -589,10 +596,10 @@ const LiveDriver = struct {
 
         // C: real command through handle(), argument passed as data.
         r = self.eval(0, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
-        self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "\"text\":\"Hello fixture\"") != null, "getText returns live fixture text");
+        self.check(r.rc == c.ZB_AUTO_OK and has(r.out, "\"text\":\"Hello fixture\""), "getText returns live fixture text");
 
         r = self.eval(0, handle_body, "{\"op\":\"waitFor\",\"selector\":\"css=#late\",\"state\":\"attached\",\"timeout_ms\":5000}", automation_world, 8000);
-        self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "\"ok\":true") != null, "waitFor promise resolves before return");
+        self.check(r.rc == c.ZB_AUTO_OK and has(r.out, "\"ok\":true"), "waitFor promise resolves before return");
 
         const tricky = "q\"uote \\ back\nline \u{2028} sep";
         r = self.eval(0, "return arg;", tricky, automation_world, 5000);
@@ -606,7 +613,7 @@ const LiveDriver = struct {
         self.check(r.rc == c.ZB_AUTO_OK and eq(r.out, "null"), "NULL arg_json binds the string null");
 
         r = self.eval(0, "throw new Error('boom');", null, null, 5000);
-        self.check(r.rc == c.ZB_AUTO_ERR_JS and r.err != null and std.mem.indexOf(u8, r.err.?, "boom") != null, "JS exception maps to ZB_AUTO_ERR_JS");
+        self.check(r.rc == c.ZB_AUTO_ERR_JS and has(r.err, "boom"), "JS exception maps to ZB_AUTO_ERR_JS");
 
         // The resolver is kept reachable: an unreferenced pending promise can be
         // garbage-collected, and WebKit then fails the call early.
@@ -628,7 +635,7 @@ const LiveDriver = struct {
         self.check(rc == c.ZB_AUTO_OK, "navigate to fixture B returns OK");
         self.check(std.mem.eql(u8, self.str(&rc, .title), "Fixture B"), "title follows navigation");
         r = self.eval(0, handle_body, "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", automation_world, 5000);
-        self.check(r.rc == c.ZB_AUTO_OK and r.out != null and std.mem.indexOf(u8, r.out.?, "Page B") != null, "script re-injected after navigation");
+        self.check(r.rc == c.ZB_AUTO_OK and has(r.out, "Page B"), "script re-injected after navigation");
 
         rc = c.zb_automation_navigate(0, self.uri_missing.ptr, 15000, &err);
         self.check(rc == c.ZB_AUTO_ERR_NAV_FAILED and err != null, "missing file is NAV_FAILED with message");
@@ -645,7 +652,7 @@ const LiveDriver = struct {
         const gpa = self.allocator;
         const handle_cmd = "{\"op\":\"getText\",\"selector\":\"css=#msg\"}";
         const port_text = port.evalJson(gpa, .automation, handle_body, handle_cmd, 5000) catch null;
-        self.check(port_text != null and std.mem.indexOf(u8, port_text.?, "Page B") != null, "PagePort.evalJson returns live text");
+        self.check(has(port_text, "Page B"), "PagePort.evalJson returns live text");
         const port_page = port.evalJson(gpa, .page, "return typeof window.__zbAutomation;", "null", 5000) catch null;
         self.check(eq(port_page, "undefined"), "PagePort .page world is the page world");
         self.check(if (port.evalJson(gpa, .page, "throw new Error('x');", "null", 5000)) |_| false else |e| e == error.EvalFailed, "PagePort maps JS failure to EvalFailed");
@@ -693,7 +700,7 @@ const LiveDriver = struct {
         self.check(rc == c.ZB_AUTO_ERR_TIMEOUT, "stalled load times out");
         sleepMs(200);
         r = self.eval(0, "return String(document.readyState);", null, null, 5000);
-        self.check(r.rc == c.ZB_AUTO_OK and r.out != null and !std.mem.eql(u8, r.out.?, "loading"), "timed-out load was stopped");
+        self.check(r.rc == c.ZB_AUTO_OK and r.out != null and !eq(r.out, "loading"), "timed-out load was stopped");
         rc = c.zb_automation_navigate(0, self.uri_a.ptr, 15000, &err);
         self.diag("navigate after stalled load", rc, err);
         c.zb_automation_free(err);
@@ -901,17 +908,17 @@ const LiveDriver = struct {
         const want = self.center("nb") orelse return self.check(false, "button center");
         const Located = struct { ok: bool, value: struct { x: f64, y: f64, document: []const u8, viewport: struct { width: f64, height: f64 } } };
         const loc = if (located.out) |out| std.json.parseFromSliceLeaky(Located, gpa, out, .{ .ignore_unknown_fields = true }) catch null else null;
-        self.check(loc != null and loc.?.ok and @abs(loc.?.value.x - want[0]) < 0.5 and @abs(loc.?.value.y - want[1]) < 0.5, "locate returns the element centre in viewport px");
+        self.check(if (loc) |l| l.ok and @abs(l.value.x - want[0]) < 0.5 and @abs(l.value.y - want[1]) < 0.5 else false, "locate returns the element centre in viewport px");
         const page_token = self.documentToken();
-        self.check(loc != null and page_token != null and loc.?.value.document.len == 16 and std.mem.eql(u8, loc.?.value.document, page_token.?), "locate returns this document's 16-hex token");
+        self.check(if (loc) |l| l.value.document.len == 16 and eq(page_token, l.value.document) else false, "locate returns this document's 16-hex token");
         const inner = self.eval(0, "return JSON.stringify([innerWidth, innerHeight]);", null, null, 5000);
         const wh = if (inner.out) |out| std.json.parseFromSliceLeaky([2]f64, gpa, out, .{}) catch null else null;
-        self.check(loc != null and wh != null and wh.?[0] > 0 and loc.?.value.viewport.width == wh.?[0] and loc.?.value.viewport.height == wh.?[1], "locate returns the viewport size");
+        self.check(if (loc) |l| (if (wh) |v| v[0] > 0 and l.value.viewport.width == v[0] and l.value.viewport.height == v[1] else false) else false, "locate returns the viewport size");
 
         // Obscured target: locate refuses it like an action would.
         _ = self.eval(0, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
         const blocked = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\"}", c.ZB_AUTOMATION_WORLD, 5000);
-        self.check(blocked.out != null and std.mem.indexOf(u8, blocked.out.?, "element_obscured") != null, "locate refuses an obscured element");
+        self.check(has(blocked.out, "element_obscured"), "locate refuses an obscured element");
         _ = self.eval(0, "document.getElementById('nbcover').remove(); return 0;", null, null, 5000);
 
         // Oracle: the page stamps Date.now() on trusted mouseup/keyup; the host
@@ -953,7 +960,7 @@ const LiveDriver = struct {
         // the caret at the end of existing text.
         _ = self.eval(0, "var o = document.createElement('div'); o.id = 'nbcover'; o.style.cssText = 'position:fixed;left:0;top:100px;width:300px;height:80px;z-index:9'; document.body.appendChild(o); return 0;", null, null, 5000);
         const forced = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#nb\",\"action\":\"click\",\"options\":{\"force\":true}}", c.ZB_AUTOMATION_WORLD, 5000);
-        self.check(forced.out != null and std.mem.indexOf(u8, forced.out.?, "\"ok\":true") != null, "locate with force skips actionability");
+        self.check(has(forced.out, "\"ok\":true"), "locate with force skips actionability");
         _ = self.eval(0, "document.getElementById('nbcover').remove(); var i = document.getElementById('ni'); i.focus(); i.setSelectionRange(0, 0); return 0;", null, null, 5000);
         _ = self.eval(0, locate_body, "{\"op\":\"locate\",\"selector\":\"css=#ni\",\"action\":\"type\",\"focus\":true}", c.ZB_AUTOMATION_WORLD, 5000);
         var tail_sent: usize = 0;
@@ -1051,7 +1058,7 @@ const LiveDriver = struct {
             const Move = struct { f64, f64, bool };
             const moves_out = self.eval(0, "return JSON.stringify(window.moves);", null, null, 5000);
             const moves = if (moves_out.out) |out| std.json.parseFromSliceLeaky([]const Move, gpa, out, .{}) catch null else null;
-            self.check(moves != null and moves.?.len >= 3, "the page saw several pointer moves");
+            self.check(if (moves) |m| m.len >= 3 else false, "the page saw several pointer moves");
             if (moves) |list| {
                 var all_trusted = true;
                 var max_off: f64 = 0;
@@ -1070,7 +1077,7 @@ const LiveDriver = struct {
             }
             self.check(std.mem.eql(u8, self.nativeLog(), "mousedown:true,mouseup:true,click:true"), "the click after the path lands on the button");
             const cached = gtk_port.pointer(port.ptr);
-            self.check(cached != null and cached.?.x == want[0] and cached.?.y == want[1], "the pointer cache holds the last dispatched position");
+            self.check(if (cached) |p| p.x == want[0] and p.y == want[1] else false, "the pointer cache holds the last dispatched position");
 
             // A move whose guard verdict is held past its deadline sends no
             // motion, ever, and leaves the cache alone.
@@ -1101,7 +1108,7 @@ const LiveDriver = struct {
             self.check(if (port_held) |_| false else |e| e == error.Timeout, "a held port move times out");
             sleepMs(600);
             const after_hold = gtk_port.pointer(port.ptr);
-            self.check(after_hold != null and after_hold.?.x == want[0] and after_hold.?.y == want[1], "a timed-out move leaves the pointer cache unchanged");
+            self.check(if (after_hold) |p| p.x == want[0] and p.y == want[1] else false, "a timed-out move leaves the pointer cache unchanged");
         }
 
         // Document binding (A -> B between locate and dispatch): A's token on
@@ -1116,7 +1123,7 @@ const LiveDriver = struct {
         const stale_move = gtk_port.nativeMove(port.ptr, want[0] + 5, want[1] + 5, token_a, 5000);
         self.check(if (stale_move) |_| false else |e| e == error.DocumentChanged, "native move with a stale document token is DocumentChanged");
         const cache_after = gtk_port.pointer(port.ptr);
-        self.check(cache_before != null and cache_after != null and cache_after.?.x == cache_before.?.x and cache_after.?.y == cache_before.?.y, "a refused move leaves the pointer cache unchanged");
+        self.check(if (cache_before) |b| (if (cache_after) |a| a.x == b.x and a.y == b.y else false) else false, "a refused move leaves the pointer cache unchanged");
         const stale = gtk_port.nativeClick(port.ptr, want[0], want[1], token_a, 5000);
         self.check(if (stale) |_| false else |e| e == error.DocumentChanged, "native click with a stale document token is DocumentChanged");
         const danger = self.eval(0, "return String(window.dangerClicked || 0);", null, null, 5000);
@@ -1277,7 +1284,7 @@ const LiveDriver = struct {
         self.check(responded_ms != 0 and done_ms >= responded_ms, "child op completed only after the child's load could finish");
         self.check(eq(title.out, "Fixture Delay"), "explicit child window op sees the child's real page");
         const text = self.eval(child, "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));", "{\"op\":\"getText\",\"selector\":\"css=#msg\"}", c.ZB_AUTOMATION_WORLD, 5000);
-        self.check(text.out != null and std.mem.indexOf(u8, text.out.?, "Delayed child") != null, "automation.js is injected into the child window");
+        self.check(has(text.out, "Delayed child"), "automation.js is injected into the child window");
         // (Page-initiated window.close() is not wired in the shim, so the child
         // stays open until teardown; stale pointers are covered by the bogus
         // window check above.)
@@ -2989,7 +2996,7 @@ const WindowsDriver = struct {
             defer page_port_mod.freeWindows(gpa, windows);
             self.check(windows.len == 2 and windows[0].id == 1 and windows[0].primary and windows[0].opener == null and
                 std.mem.eql(u8, windows[0].title, "A") and windows[1].id == 2 and !windows[1].primary and
-                windows[1].opener != null and windows[1].opener.? == 1 and std.mem.endsWith(u8, windows[1].url, "/b.html"), "listWindows: A (primary) then B opened by 1");
+                (if (windows[1].opener) |o| o == 1 else false) and std.mem.endsWith(u8, windows[1].url, "/b.html"), "listWindows: A (primary) then B opened by 1");
         } else |_| self.check(false, "listWindows succeeds");
 
         // The target matrix: every method on window 2, no page work on 1.
