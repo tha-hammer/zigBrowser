@@ -28,3 +28,10 @@ const maybe = zb.instagram.like("u", opts);
 expectType<Awaited<typeof maybe>, OkResult | DryRunResult>(true);
 const sched = zb.x.schedulePost("t", "2026-11-05", "14:07", { dryRun: flag });
 expectType<Awaited<typeof sched>, SchedulePostResult | DryRunResult>(true);
+// A union where one branch has no dryRun (RoseCat 5102): either.
+declare const choice: { dryRun: true } | {};
+const mixed = zb.x.post("t", choice);
+expectType<Awaited<typeof mixed>, OkResult | DryRunResult>(true);
+declare const offOrOn: { dryRun: false } | { dryRun: true; composeUrl: string };
+const both = zb.x.post("t", offOrOn);
+expectType<Awaited<typeof both>, OkResult | DryRunResult>(true);

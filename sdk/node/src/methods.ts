@@ -327,8 +327,11 @@ export interface DryRunResult {
   checks: DryRunCheck[];
 }
 
-/** The type of `opts.dryRun`; undefined when `opts` has no such key. */
-type DryRunFlag<O> = "dryRun" extends keyof O ? O[keyof O & "dryRun"] : undefined;
+/**
+ * The type of `opts.dryRun`, per member of a union (`O extends unknown`
+ * distributes); undefined for a member without the key.
+ */
+type DryRunFlag<O> = O extends unknown ? ("dryRun" extends keyof O ? O[keyof O & "dryRun"] : undefined) : never;
 
 /**
  * What a flow call resolves to: DryRunResult for a literal `dryRun: true`;
