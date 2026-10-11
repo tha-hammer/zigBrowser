@@ -410,6 +410,10 @@ fn readAckFromPage(ctx: *anyopaque, deadline: i64) PortError!?Ack {
 
 const AckOutcome = enum { acknowledged, document_changed, leaving };
 
+/// How long one acknowledgement read may take before it is given up and
+/// read again (a quiet read answers in a few ms).
+const ack_read_slice_ms = 1000;
+
 /// Acknowledgement reading plus the debt the page still owes for earlier
 /// calls that gave up. Production uses one tracker bound to the live page
 /// (`acksFor`, one per window); tests build their own with a fake reader, so nothing global
@@ -420,8 +424,18 @@ const AckTracker = struct {
     debt: ?Ack = null,
     debt_mutex: SpinLock = .{},
 
+    /// One read, bounded by `ack_read_slice_ms`. A read can be lost: an
+    /// eval that reaches the old document just as a navigation puts it in
+    /// WebKit's back/forward cache is suspended with it and never answers.
+    /// A read that timed out before the caller's deadline answered nothing
+    /// (null, as while no script answers); the next read goes to whatever
+    /// document is current. Only the deadline ends the wait in Timeout.
     fn read(self: *AckTracker, deadline: i64) PortError!?Ack {
-        return self.reader(self.ctx, deadline);
+        const slice = @min(deadline, monotonicMs() + ack_read_slice_ms);
+        return self.reader(self.ctx, slice) catch |e| switch (e) {
+            error.Timeout => if (monotonicMs() < deadline) null else e,
+            else => e,
+        };
     }
 
     fn readBaseline(self: *AckTracker, deadline: i64) PortError!Ack {
@@ -837,15 +851,21 @@ const FakeAcks = struct {
     steps: []const Step,
     index: usize = 0,
 
-    const Step = union(enum) { ack: Ack, fail: PortError };
+    /// `lost`: the eval never answers (WebKit suspended it with the old
+    /// document), so the read times out at the deadline it was given.
+    const Step = union(enum) { ack: Ack, fail: PortError, lost };
 
-    fn read(ctx: *anyopaque, _: i64) PortError!?Ack {
+    fn read(ctx: *anyopaque, deadline: i64) PortError!?Ack {
         const self: *FakeAcks = @ptrCast(@alignCast(ctx));
         const step = self.steps[@min(self.index, self.steps.len - 1)];
         self.index += 1;
         return switch (step) {
             .ack => |a| a,
             .fail => |e| e,
+            .lost => {
+                sleepMs(try remainingMs(deadline));
+                return error.Timeout;
+            },
         };
     }
 
@@ -890,6 +910,33 @@ test "debt is settled by an acknowledgement or a document change" {
     var acks2 = moved.tracker();
     try std.testing.expectEqual(AckOutcome.document_changed, try acks2.settle(testAck(6), deadlineAfter(1000)));
     try std.testing.expect(acks2.owed() == null);
+}
+
+test "an acknowledgement read lost with the replaced document is read again, not waited out" {
+    // The page still shows keyup 5; the next read reached the old document
+    // just as it was replaced and never answers; the read after that sees
+    // the new document. Delivery is known long before the deadline.
+    var other = testAck(0);
+    @memcpy(&other.doc, "fedcba9876543210");
+    var page: FakeAcks = .{ .steps = &.{ .{ .ack = testAck(5) }, .lost, .{ .ack = other } } };
+    var acks = page.tracker();
+    const start = monotonicMs();
+    try std.testing.expectEqual(AckOutcome.document_changed, try acks.settle(testAck(6), deadlineAfter(6000)));
+    try std.testing.expect(monotonicMs() - start < 3000);
+    try std.testing.expect(acks.owed() == null);
+}
+
+test "reads that never answer still end in Timeout at the deadline, the debt kept" {
+    var page: FakeAcks = .{ .steps = &.{.lost} };
+    var acks = page.tracker();
+    const start = monotonicMs();
+    try std.testing.expectError(error.Timeout, acks.settle(testAck(6), deadlineAfter(1500)));
+    try std.testing.expect(monotonicMs() - start >= 1500);
+    try std.testing.expectEqual(@as(i64, 6), acks.owed().?.keyup);
+    // A baseline read that never answers is a Timeout too (nothing sent).
+    var quiet: FakeAcks = .{ .steps = &.{.lost} };
+    var acks2 = quiet.tracker();
+    try std.testing.expectError(error.Timeout, acks2.begin(null, deadlineAfter(1500)));
 }
 
 test "a navigation started during a sequence ends it, even after the page cancelled it" {
