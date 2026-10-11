@@ -10,8 +10,11 @@ const flow = @import("flow_steps.zig");
 /// Every X selector, in one place. X changes its markup often; update here.
 /// data-testid hooks are X's most stable handles.
 pub const selectors = struct {
-    /// Post composer (a Draft.js contenteditable).
-    pub const composer = "testid=tweetTextarea_0";
+    /// Post composer (a Draft.js contenteditable). When /compose/post opens
+    /// as a dialog over the home timeline, both the dialog and the timeline
+    /// have one (live, 2026-10-11): this is the dialog's copy whenever a
+    /// [role=dialog] holds one, else the page's, so it never matches two.
+    pub const composer = dialogFirst("tweetTextarea_0");
     /// "Post" button data-testids, tried in order: tweetButton (compose
     /// dialog/page), tweetButtonInline (home timeline). Every copy of each
     /// is addressed as `xpath=(//*[@data-testid="<id>"])[n]` and probed with
@@ -22,21 +25,40 @@ pub const selectors = struct {
     pub const post_button_copy = "xpath=(//*[@data-testid=\"{s}\"])[{d}]";
     /// Confirmation toast shown after a post is sent or scheduled.
     pub const post_success = "testid=toast";
-    /// Calendar icon that opens the schedule dialog.
-    pub const schedule_option = "testid=scheduleOption";
+    /// Calendar icon that opens the schedule dialog (dialog copy first, as
+    /// for the composer).
+    pub const schedule_option = dialogFirst("scheduleOption");
     /// Native <select> elements in the schedule dialog. Option values: month
-    /// 1-12, day 1-31, year YYYY, hour 1-12, minute 0-59, "AM"/"PM".
-    pub const schedule_month = "css=select[aria-label=\"Month\"]";
-    pub const schedule_day = "css=select[aria-label=\"Day\"]";
-    pub const schedule_year = "css=select[aria-label=\"Year\"]";
-    pub const schedule_hour = "css=select[aria-label=\"Hour\"]";
-    pub const schedule_minute = "css=select[aria-label=\"Minute\"]";
-    pub const schedule_ampm = "css=select[aria-label=\"AM/PM\"]";
+    /// 1-12, day 1-31, year YYYY, hour 1-12, minute 0-59, "AM"/"PM". Live
+    /// (2026-10-11) they have generated ids (SELECTOR_1..6) and no
+    /// aria-label: each is aria-labelledby a label whose text names it, so
+    /// they are found by that text.
+    pub const schedule_month = labelledSelect("Month");
+    pub const schedule_day = labelledSelect("Day");
+    pub const schedule_year = labelledSelect("Year");
+    pub const schedule_hour = labelledSelect("Hour");
+    pub const schedule_minute = labelledSelect("Minute");
+    pub const schedule_ampm = labelledSelect("AM/PM");
     /// "Confirm" in the schedule dialog.
     pub const schedule_confirm = "testid=scheduledConfirmationPrimaryAction";
+    /// A dialog's close (X) button. Not used by the flows; reported by
+    /// x.selfcheck.
+    pub const dialog_close = "testid=app-bar-close";
     /// Signs of a logged-out page.
     pub const login_link = "css=a[href=\"/login\"], a[href=\"/i/flow/login\"], [data-testid=\"loginButton\"], [data-testid=\"signupButton\"]";
 };
+
+/// `testid` inside a [role=dialog] if a dialog holds one, else anywhere.
+fn dialogFirst(comptime testid: []const u8) []const u8 {
+    const any = "//*[@data-testid=\"" ++ testid ++ "\"]";
+    const in_dialog = "//*[@role=\"dialog\"]" ++ any;
+    return "xpath=" ++ in_dialog ++ " | " ++ any ++ "[not(" ++ in_dialog ++ ")]";
+}
+
+/// The <select> that is aria-labelledby the element whose text is `label`.
+fn labelledSelect(comptime label: []const u8) []const u8 {
+    return "xpath=//select[@aria-labelledby = //*[normalize-space(.)=\"" ++ label ++ "\"]/@id]";
+}
 
 pub const compose_url = "https://x.com/compose/post";
 

@@ -142,6 +142,28 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expect_equal("decoys skipped", recorded()["button"], "tweetButtonInline")
     passed.append("hidden-decoys+late-button")
 
+    # /compose/post as a dialog over the home timeline (live, 2026-10-11):
+    # the composer and the schedule option exist twice; the flows must use
+    # the dialog's copies and never touch the timeline's.
+    dialog = f"{base}?mode=dialog"
+    inline = lambda: rpc.call("page.evaluate", {"expression": "window.__xInline"})["result"]  # noqa: E731
+    expect_equal("x.post dialog", rpc.call("x.post", {"text": "from the dialog", "compose_url": dialog}), {"ok": True})
+    expect_equal("dialog post", recorded(), {"text": "from the dialog", "scheduled": None, "button": "tweetButton"})
+    expect_equal("timeline composer untouched", inline(), {"events": 0, "scheduleClicks": 0})
+    sched = rpc.call("x.schedule_post", {"text": "dialog schedule", "date": "2027-01-31", "time": "00:05", "compose_url": dialog})
+    expect_equal("x.schedule_post dialog", sched, {"ok": True, "scheduledFor": "2027-01-31T00:05"})
+    expect_equal(
+        "dialog scheduled values",
+        recorded(),
+        {
+            "text": "dialog schedule",
+            "scheduled": {"month": "1", "day": "31", "year": "2027", "hour": "12", "minute": "5", "ampm": "AM"},
+            "button": "tweetButton",
+        },
+    )
+    expect_equal("timeline schedule untouched", inline(), {"events": 0, "scheduleClicks": 0})
+    passed.append("compose-dialog-over-timeline")
+
     # One queue turn per flow. After the Post click the fixture's toast
     # waits for GET /hold; the server answers /hold only once a second
     # client has sent page.navigate (timeout_ms 300) plus a grace longer
@@ -194,7 +216,7 @@ def run_scenarios(socket_path: Path, server: HoldServer, timeout_sec: float) -> 
     expected_keys = [
         "composer", "post_button.tweetButton", "post_button.tweetButtonInline", "post_success",
         "schedule_option", "schedule_month", "schedule_day", "schedule_year", "schedule_hour",
-        "schedule_minute", "schedule_ampm", "schedule_confirm", "login_link",
+        "schedule_minute", "schedule_ampm", "schedule_confirm", "dialog_close", "login_link",
     ]
     expect_equal("selfcheck keys", list(report), expected_keys)
     missing = [name for name, count in report.items() if count < 1]

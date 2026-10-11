@@ -80,11 +80,42 @@ fn stepParams(runner: *const FakeRunner, index: usize) !std.json.Parsed(std.json
 }
 
 test "every selector lives in the one table at the top of x.zig" {
-    try std.testing.expectEqualStrings("testid=tweetTextarea_0", x.selectors.composer);
-    try std.testing.expectEqualStrings("testid=scheduleOption", x.selectors.schedule_option);
     try std.testing.expectEqualStrings("testid=scheduledConfirmationPrimaryAction", x.selectors.schedule_confirm);
     try std.testing.expectEqualStrings("tweetButton", x.selectors.post_button_testids[0]);
     try std.testing.expectEqualStrings("tweetButtonInline", x.selectors.post_button_testids[1]);
+    try std.testing.expectEqualStrings("testid=app-bar-close", x.selectors.dialog_close);
+}
+
+test "schedule selects are found by their label's text (live: aria-labelledby, no aria-label)" {
+    const cases = [_]struct { selector: []const u8, label: []const u8 }{
+        .{ .selector = x.selectors.schedule_month, .label = "Month" },
+        .{ .selector = x.selectors.schedule_day, .label = "Day" },
+        .{ .selector = x.selectors.schedule_year, .label = "Year" },
+        .{ .selector = x.selectors.schedule_hour, .label = "Hour" },
+        .{ .selector = x.selectors.schedule_minute, .label = "Minute" },
+        .{ .selector = x.selectors.schedule_ampm, .label = "AM/PM" },
+    };
+    for (cases) |case| {
+        var buf: [128]u8 = undefined;
+        const expected = try std.fmt.bufPrint(&buf, "xpath=//select[@aria-labelledby = //*[normalize-space(.)=\"{s}\"]/@id]", .{case.label});
+        try std.testing.expectEqualStrings(expected, case.selector);
+        // Neither the attribute X does not set nor X's generated ids.
+        try std.testing.expect(std.mem.indexOf(u8, case.selector, "aria-label=") == null);
+        try std.testing.expect(std.mem.indexOf(u8, case.selector, "SELECTOR_") == null);
+    }
+}
+
+test "composer and schedule option prefer the compose dialog's copy over the timeline's" {
+    try std.testing.expectEqualStrings(
+        "xpath=//*[@role=\"dialog\"]//*[@data-testid=\"tweetTextarea_0\"] | " ++
+            "//*[@data-testid=\"tweetTextarea_0\"][not(//*[@role=\"dialog\"]//*[@data-testid=\"tweetTextarea_0\"])]",
+        x.selectors.composer,
+    );
+    try std.testing.expectEqualStrings(
+        "xpath=//*[@role=\"dialog\"]//*[@data-testid=\"scheduleOption\"] | " ++
+            "//*[@data-testid=\"scheduleOption\"][not(//*[@role=\"dialog\"]//*[@data-testid=\"scheduleOption\"])]",
+        x.selectors.schedule_option,
+    );
 }
 
 /// Scripted page for the Post-button probe: how many copies of each testid
@@ -537,7 +568,7 @@ test "x.selfcheck reports every selector-table entry, read-only, in table order"
     try std.testing.expectEqualStrings(
         "{\"composer\":0,\"post_button.tweetButton\":1,\"post_button.tweetButtonInline\":1,\"post_success\":1," ++
             "\"schedule_option\":1,\"schedule_month\":1,\"schedule_day\":1,\"schedule_year\":1,\"schedule_hour\":1," ++
-            "\"schedule_minute\":1,\"schedule_ampm\":1,\"schedule_confirm\":1,\"login_link\":1}",
+            "\"schedule_minute\":1,\"schedule_ampm\":1,\"schedule_confirm\":1,\"dialog_close\":1,\"login_link\":1}",
         result,
     );
     // Only queries: no navigation, no input.
