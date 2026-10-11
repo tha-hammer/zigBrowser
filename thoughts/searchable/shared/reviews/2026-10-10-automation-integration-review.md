@@ -3469,7 +3469,8 @@ private-Xvfb gate at exact `bbd5d74`: **Build Summary: 92/92 steps succeeded;
 
 ## LinkedIn More-menu Connect and shadow piercing (`c1bfeb3`)
 
-**Verdict: BLOCKER (cc_2, wrong-person risk; Agent Mail 5157).** The direct
+**Historical verdict: BLOCKER (cc_2, wrong-person risk; Agent Mail 5157).
+Status: CLOSED by `518098f` plus `7f74e97`; the full chain is APPROVED below.** The direct
 owner-button route, the shadow-root primitive, the live label refresh, and the
 late-dialog behavior are otherwise correctly implemented and tested, but the
 More-menu item is not causally bound to the owner-scoped More button.
@@ -3676,7 +3677,8 @@ Non-blocking follow-ups mailed to cc_1:
 
 ## LinkedIn owner-menu provenance follow-up (`518098f`)
 
-**Verdict: BLOCKER (cc_2; Agent Mail 5169/5170).** The follow-up closes the
+**Historical verdict: BLOCKER (cc_2; Agent Mail 5169/5170). Status: CLOSED by
+`7f74e97`; the full chain is APPROVED below.** The follow-up closes the
 original, demonstrated form of BLOCKER 5157 but still broadens away from an
 available owner-to-menu relationship in two cases. `c1bfeb3` therefore remains
 blocked pending one more fail-closed follow-up.
@@ -3727,3 +3729,48 @@ private-Xvfb gate slot and a correctness blocker was already established. The
 author's clean-export gate for the committed blobs was green at **93/93 steps,
 758/758 tests**; those tests do not cover either case above. No live browser,
 live socket, DISPLAY `:0`, or user account was accessed.
+
+## LinkedIn owner-menu provenance closure (`c1bfeb3`, `518098f`, `7f74e97`)
+
+**Verdict: APPROVED.** `7f74e97` closes BLOCKERs 5169 and 5170, completing
+the safety chain that began with the More-menu route in `c1bfeb3` and the
+pre-click provenance defense in `518098f`. The earlier BLOCKER verdicts above
+are historical and are explicitly superseded by this closure.
+
+The final route fails closed at every owner/menu boundary:
+
+- The profile title supplies the owner's name; exactly one owner area and one
+  visible owner `More` are required. A visible menu anywhere before that
+  `More` click gives `linkedin_profile_menu_already_open`, with no input in
+  either the real or dry-run path (`src/linkedin.zig:654-686`).
+- A missing or blank `aria-controls` may use the guarded general path. A
+  nonblank value is an IDREF list and is never discarded: at most eight ids
+  are accepted, every named id must resolve to exactly one element, and the
+  eventual exact-text Connect selector is built only below the union of those
+  named elements. Missing, duplicate or excessive controlled ids close the
+  menu and return `linkedin_profile_menu_unbound`; an unnamed concurrent menu
+  cannot supply the action (`src/linkedin.zig:710-772`).
+- The successful attribute result requires a `value` field whose value is a
+  string or null. Missing/wrong-typed data records a malformed internal reply
+  and stops before another page step. `alloc_always` gives the parsed IDs
+  independent lifetime across the per-id queries; the fake runner now poisons
+  and frees every previous answer before the next step, so the unit test
+  detects a borrowed-buffer regression (`src/linkedin.zig:722-735`,
+  `tests/linkedin_test.zig:14-64,948-957`).
+- Unit tests cover one and multiple controlled ids, missing/duplicate roots,
+  the eight-id bound, and malformed replies. The real-socket fixture opens an
+  unrelated menu containing the sole Connect at the same instant as the
+  owner's multi-ID menu; the flow closes the owner's menu with
+  `linkedin_profile_connect_not_in_menu` and the unrelated click log stays
+  empty (`tests/e2e/social_flows_test.py:241-245`,
+  `tests/fixtures/linkedin/index.html:185-207,284-305`). This directly kills
+  the original wrong-person behavior without bypassing production routing.
+
+The author's exact-blob clean-export gate passed **93/93 steps, 761/761
+tests**. The independent reviewer gate at exact `7f74e97`, with fresh cache,
+private Xvfb, live variables unset and a 1,500-second timeout, also passed:
+**Build Summary: 93/93 steps succeeded; 761/761 tests passed**. Its
+`more-menu-connect` production-chain phase passed. The throwaway export was
+deleted immediately by its `find -delete` trap; `/tmp` was 32% used after
+cleanup. No live browser, live socket, DISPLAY `:0`, or user account was
+accessed.
