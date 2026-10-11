@@ -110,6 +110,11 @@ struct ZbWindow {
   gulong sig_uri_notify;
   gulong sig_file_chooser;
   gulong sig_close;
+  gulong sig_script_dialog;
+  /* The page dialog open on this window, if any (GTK thread only): our ref,
+   * and the native dialog a person can answer it with. */
+  WebKitScriptDialog *dialog;
+  GtkWidget *dialog_widget;
 };
 
 struct ZbApp {
@@ -141,6 +146,9 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
 static gboolean on_signal_force_quit(gpointer user_data);
 static void request_app_shutdown(ZbApp *app, int with_deadline);
 static void terminate_window_web_process(ZbWindow *win);
+static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog *dialog,
+                                        gpointer user_data);
+static int auto_dialog_close(ZbWindow *win, int accept, const char *text);
 
 static guint64 zb_auto_next_id;
 static int auto_pub_index_locked(guint32 requested);
@@ -794,6 +802,8 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
    * ("window destroyed"), before the web process is terminated below
    * (which would otherwise fail them as script errors first). */
   auto_window_destroyed(win);
+  /* A dialog still open is dismissed with its window. */
+  auto_dialog_close(win, 0, NULL);
 
   if (win->view != NULL) {
     if (!win->finished && !win->failed && !win->timed_out && win->app != NULL) {
@@ -813,6 +823,10 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     if (win->sig_close != 0) {
       g_signal_handler_disconnect(win->view, win->sig_close);
       win->sig_close = 0;
+    }
+    if (win->sig_script_dialog != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_script_dialog);
+      win->sig_script_dialog = 0;
     }
     if (win->sig_load_changed != 0) {
       g_signal_handler_disconnect(win->view, win->sig_load_changed);
@@ -1089,6 +1103,8 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
                             G_CALLBACK(on_window_file_chooser), win, NULL, 0);
   win->sig_close =
       g_signal_connect_data(view, "close", G_CALLBACK(on_window_close), win, NULL, 0);
+  win->sig_script_dialog = g_signal_connect_data(
+      view, "script-dialog", G_CALLBACK(on_window_script_dialog), win, NULL, 0);
   win->sig_destroy = g_signal_connect_data(win->gtk_window, "destroy",
                                            G_CALLBACK(on_window_destroy), win,
                                            NULL, 0);
@@ -1308,6 +1324,7 @@ struct ZbAutoJob {
   int load_armed;    /* saw LOAD_STARTED for `url` */
   int load_displaced; /* another URI committed over this load */
   int same_document; /* `url` differs from the page only by fragment */
+  int before_unload; /* navigate: ZB_BEFORE_UNLOAD_* for a beforeunload prompt */
   unsigned int load_gen;
   char **paths;         /* set files: absolute regular files to choose */
   int files_eval;       /* set files: 0 pending, 1 the op clicked the input */
@@ -2105,6 +2122,11 @@ static void auto_start_eval(ZbAutoJob *job) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
   }
+  /* The page's script is blocked in a dialog: the eval could not run. */
+  if (win->dialog != NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, g_strdup("a page dialog is open"));
+    return;
+  }
 
   GVariantDict dict;
   g_variant_dict_init(&dict, NULL);
@@ -2629,6 +2651,11 @@ static void auto_start_load(ZbAutoJob *job) {
     auto_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, g_strdup("no such window"));
     return;
   }
+  /* The page is blocked in a dialog: answer it first (nothing loads). */
+  if (win->dialog != NULL) {
+    auto_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, g_strdup("a page dialog is open"));
+    return;
+  }
 
   auto_track(job, win);
   job->load_gen = ++win->auto_load_gen;
@@ -2816,16 +2843,23 @@ int zb_automation_eval_json(uint32_t win, const char *function_body,
   return code;
 }
 
-int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms,
-                           char **out_err) {
-  if (url == NULL) {
+int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unload,
+                                   unsigned int timeout_ms, char **out_err) {
+  if (url == NULL || before_unload < ZB_BEFORE_UNLOAD_FAIL ||
+      before_unload > ZB_BEFORE_UNLOAD_DISMISS) {
     return ZB_AUTO_ERR_INTERNAL;
   }
   ZbAutoJob *job = auto_op_new(ZB_OP_NAVIGATE);
   job->url = g_strdup(url);
+  job->before_unload = before_unload;
   int code = auto_run_op(job, win, timeout_ms, NULL, out_err);
   auto_job_unref(job);
   return code;
+}
+
+int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms,
+                           char **out_err) {
+  return zb_automation_navigate_guarded(win, url, ZB_BEFORE_UNLOAD_FAIL, timeout_ms, out_err);
 }
 
 int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err) {
@@ -3784,6 +3818,271 @@ int zb_automation_close_window(uint32_t id, unsigned int timeout_ms) {
   if (code == ZB_AUTO_OK) {
     code = call->code;
   }
+  g_free(call);
+  return code;
+}
+
+/* ---- Page dialogs (alert, confirm, prompt, beforeunload) ----
+ * GTK thread. WebKit's script-dialog is taken over (ref + TRUE) so the dialog
+ * has one owner: it stays open until a person answers the native dialog
+ * shown for it, zb_automation_respond_dialog answers it, or its window
+ * closes. Nothing answers it by default. */
+
+static const char *auto_dialog_type_name(WebKitScriptDialogType type) {
+  switch (type) {
+    case WEBKIT_SCRIPT_DIALOG_CONFIRM:
+      return "confirm";
+    case WEBKIT_SCRIPT_DIALOG_PROMPT:
+      return "prompt";
+    case WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM:
+      return "beforeunload";
+    case WEBKIT_SCRIPT_DIALOG_ALERT:
+    default:
+      return "alert";
+  }
+}
+
+/* Answers and closes `win`'s dialog: accept = OK / Leave, else Cancel /
+ * Stay; `text` (NULL = the default) is an accepted prompt's answer. */
+static int auto_dialog_close(ZbWindow *win, int accept, const char *text) {
+  if (win == NULL || win->dialog == NULL) {
+    return ZB_AUTO_ERR_NO_DIALOG;
+  }
+  WebKitScriptDialog *dialog = win->dialog;
+  GtkWidget *widget = win->dialog_widget;
+  win->dialog = NULL;
+  win->dialog_widget = NULL;
+  if (widget != NULL) {
+    g_object_remove_weak_pointer(G_OBJECT(widget), (gpointer *)&win->dialog_widget);
+    g_signal_handlers_disconnect_matched(widget, G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, win);
+    gtk_widget_destroy(widget);
+  }
+  switch (webkit_script_dialog_get_dialog_type(dialog)) {
+    case WEBKIT_SCRIPT_DIALOG_CONFIRM:
+    case WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM:
+      webkit_script_dialog_confirm_set_confirmed(dialog, accept != 0);
+      break;
+    case WEBKIT_SCRIPT_DIALOG_PROMPT:
+      if (accept) {
+        webkit_script_dialog_prompt_set_text(
+            dialog, text != NULL ? text : webkit_script_dialog_prompt_get_default_text(dialog));
+      }
+      break;
+    default:
+      break;
+  }
+  webkit_script_dialog_close(dialog);
+  webkit_script_dialog_unref(dialog);
+  return ZB_AUTO_OK;
+}
+
+static void on_dialog_widget_response(GtkDialog *widget, gint response, gpointer user_data) {
+  ZbWindow *win = (ZbWindow *)user_data;
+  GtkWidget *entry = g_object_get_data(G_OBJECT(widget), "zb-entry");
+  char *text = entry != NULL ? g_strdup(gtk_entry_get_text(GTK_ENTRY(entry))) : NULL;
+  auto_dialog_close(win, response == GTK_RESPONSE_ACCEPT, text);
+  g_free(text);
+}
+
+/* The native dialog a person answers (not modal: other windows and the
+ * automation API keep working). */
+static GtkWidget *auto_dialog_widget(ZbWindow *win, WebKitScriptDialog *dialog) {
+  WebKitScriptDialogType type = webkit_script_dialog_get_dialog_type(dialog);
+  const char *message = webkit_script_dialog_get_message(dialog);
+  int leave = type == WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM;
+  GtkWidget *widget = gtk_message_dialog_new(
+      GTK_WINDOW(win->gtk_window), GTK_DIALOG_DESTROY_WITH_PARENT,
+      type == WEBKIT_SCRIPT_DIALOG_ALERT ? GTK_MESSAGE_INFO : GTK_MESSAGE_QUESTION,
+      GTK_BUTTONS_NONE, "%s", leave ? "Leave this page?" : (message != NULL ? message : ""));
+  if (leave) {
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(widget), "%s",
+                                             "Changes you made may not be saved.");
+    gtk_dialog_add_buttons(GTK_DIALOG(widget), "_Stay", GTK_RESPONSE_REJECT, "_Leave",
+                           GTK_RESPONSE_ACCEPT, NULL);
+  } else if (type == WEBKIT_SCRIPT_DIALOG_ALERT) {
+    gtk_dialog_add_button(GTK_DIALOG(widget), "_OK", GTK_RESPONSE_ACCEPT);
+  } else {
+    gtk_dialog_add_buttons(GTK_DIALOG(widget), "_Cancel", GTK_RESPONSE_REJECT, "_OK",
+                           GTK_RESPONSE_ACCEPT, NULL);
+  }
+  if (type == WEBKIT_SCRIPT_DIALOG_PROMPT) {
+    GtkWidget *entry = gtk_entry_new();
+    const char *value = webkit_script_dialog_prompt_get_default_text(dialog);
+    gtk_entry_set_text(GTK_ENTRY(entry), value != NULL ? value : "");
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    gtk_box_pack_end(GTK_BOX(gtk_message_dialog_get_message_area(GTK_MESSAGE_DIALOG(widget))),
+                     entry, FALSE, FALSE, 0);
+    g_object_set_data(G_OBJECT(widget), "zb-entry", entry);
+  }
+  gtk_dialog_set_default_response(GTK_DIALOG(widget), GTK_RESPONSE_ACCEPT);
+  gtk_window_set_title(GTK_WINDOW(widget), "zigBrowser");
+  g_signal_connect(widget, "response", G_CALLBACK(on_dialog_widget_response), win);
+  g_object_add_weak_pointer(G_OBJECT(widget), (gpointer *)&win->dialog_widget);
+  gtk_widget_show_all(widget);
+  return widget;
+}
+
+/* A policy's answer to a dialog that just opened. It runs from the main
+ * loop: closing a dialog inside WebKit's own script-dialog emission crashes
+ * WebKit. It holds its own dialog ref, and answers only if that dialog is
+ * still the one open on the window (a person may have answered it first,
+ * or the window closed). */
+typedef struct {
+  guint32 window;
+  WebKitScriptDialog *dialog;
+  int accept;
+} ZbDialogAnswer;
+
+static gboolean auto_dialog_answer_later(gpointer data) {
+  ZbDialogAnswer *answer = (ZbDialogAnswer *)data;
+  ZbWindow *win = auto_resolve_window(answer->window);
+  if (win != NULL && win->dialog == answer->dialog) {
+    auto_dialog_close(win, answer->accept, NULL);
+    /* DISMISS loads end once the prompt is closed, so their caller never
+     * sees it still open. (ACCEPT loads go on to their load events.) */
+    GList *link = zb_auto_inflight;
+    while (!answer->accept && link != NULL) {
+      GList *next = link->next;
+      ZbAutoJob *job = (ZbAutoJob *)link->data;
+      if (job->target == win && auto_is_load(job) && job->before_unload == ZB_BEFORE_UNLOAD_DISMISS) {
+        job->target = NULL;
+        auto_job_complete(job, ZB_AUTO_ERR_DIALOG_DISMISSED, NULL, g_strdup("the page asked and stayed"));
+        zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+        auto_job_unref(job);
+      }
+      link = next;
+    }
+  }
+  webkit_script_dialog_unref(answer->dialog);
+  g_free(answer);
+  return G_SOURCE_REMOVE;
+}
+
+/* A dialog opened on `win`: the page's script is blocked until it closes,
+ * so a load or eval the automation is waiting for on it ends now with
+ * DIALOG_OPEN (an eval's answer, if WebKit still delivers one, is dropped),
+ * except that a beforeunload prompt follows a load's policy (ACCEPT leaves
+ * and the load goes on; DISMISS stays). */
+static void auto_dialog_opened(ZbWindow *win) {
+  int before_unload =
+      webkit_script_dialog_get_dialog_type(win->dialog) == WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM;
+  int answer = -1; /* -1: leave it open */
+  GList *link = zb_auto_inflight;
+  while (link != NULL) {
+    GList *next = link->next;
+    ZbAutoJob *job = (ZbAutoJob *)link->data;
+    if (job->target == win && job->op == ZB_OP_EVAL) {
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, g_strdup("a page dialog opened"));
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+    } else if (job->target == win && auto_is_load(job)) {
+      /* ACCEPT and DISMISS are answered (and DISMISS ends) from the main
+       * loop, see auto_dialog_answer_later. */
+      if (before_unload && job->before_unload != ZB_BEFORE_UNLOAD_FAIL) {
+        answer = job->before_unload == ZB_BEFORE_UNLOAD_ACCEPT;
+        link = next;
+        continue;
+      }
+      job->target = NULL;
+      auto_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, g_strdup("a page dialog opened"));
+      zb_auto_inflight = g_list_delete_link(zb_auto_inflight, link);
+      auto_job_unref(job);
+    }
+    link = next;
+  }
+  if (answer >= 0) {
+    ZbDialogAnswer *later = g_new0(ZbDialogAnswer, 1);
+    later->window = win->auto_id;
+    later->dialog = webkit_script_dialog_ref(win->dialog);
+    later->accept = answer;
+    g_idle_add(auto_dialog_answer_later, later);
+  }
+}
+
+static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog *dialog,
+                                        gpointer user_data) {
+  (void)view;
+  ZbWindow *win = (ZbWindow *)user_data;
+  if (win == NULL || win->gtk_window == NULL || win->dialog != NULL) {
+    return FALSE; /* not expected (one blocked page shows one dialog): WebKit's own */
+  }
+  win->dialog = webkit_script_dialog_ref(dialog);
+  win->dialog_widget = auto_dialog_widget(win, dialog);
+  auto_dialog_opened(win);
+  return TRUE;
+}
+
+typedef struct {
+  guint32 id;
+  int accept;
+  char *text;
+  int code;
+  char *json;
+} ZbDialogCall;
+
+static void auto_list_dialogs(void *ctx) {
+  ZbDialogCall *call = (ZbDialogCall *)ctx;
+  GString *out = g_string_new("[");
+  ZbApp *app = zb_auto_app;
+  int first = 1;
+  for (int pass = 0; pass < 2 && app != NULL; pass++) {
+    for (int i = 0; i < app->n_windows; i++) {
+      ZbWindow *win = app->windows[i];
+      if (win == NULL || win->view == NULL || win->dialog == NULL ||
+          (pass == 0) != (win->auto_id == 1)) {
+        continue;
+      }
+      WebKitScriptDialogType type = webkit_script_dialog_get_dialog_type(win->dialog);
+      g_string_append_printf(out, "%s{\"window\":%u,\"type\":\"%s\",\"message\":", first ? "" : ",",
+                             win->auto_id, auto_dialog_type_name(type));
+      auto_json_string(out, webkit_script_dialog_get_message(win->dialog));
+      if (type == WEBKIT_SCRIPT_DIALOG_PROMPT) {
+        g_string_append(out, ",\"default_text\":");
+        auto_json_string(out, webkit_script_dialog_prompt_get_default_text(win->dialog));
+      }
+      g_string_append_c(out, '}');
+      first = 0;
+    }
+  }
+  g_string_append_c(out, ']');
+  call->json = g_string_free(out, FALSE);
+}
+
+int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
+  if (out_json == NULL) {
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  *out_json = NULL;
+  ZbDialogCall *call = g_new0(ZbDialogCall, 1);
+  int code = zb_main_invoke_sync(auto_list_dialogs, call, timeout_ms);
+  if (code == ZB_AUTO_OK) {
+    *out_json = call->json;
+  } else {
+    g_free(call->json);
+  }
+  g_free(call);
+  return code;
+}
+
+static void auto_respond_dialog(void *ctx) {
+  ZbDialogCall *call = (ZbDialogCall *)ctx;
+  ZbWindow *win = auto_resolve_window(call->id);
+  call->code = win == NULL ? ZB_AUTO_ERR_NO_WINDOW : auto_dialog_close(win, call->accept, call->text);
+}
+
+int zb_automation_respond_dialog(uint32_t win, int accept, const char *text,
+                                 unsigned int timeout_ms) {
+  ZbDialogCall *call = g_new0(ZbDialogCall, 1);
+  call->id = win;
+  call->accept = accept != 0;
+  call->text = g_strdup(text);
+  call->code = ZB_AUTO_ERR_INTERNAL;
+  int code = zb_main_invoke_sync(auto_respond_dialog, call, timeout_ms);
+  if (code == ZB_AUTO_OK) {
+    code = call->code;
+  }
+  g_free(call->text);
   g_free(call);
   return code;
 }

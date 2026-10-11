@@ -475,6 +475,9 @@ fn handleRequestWith(
     if (std.mem.eql(u8, method, "page.list") or std.mem.eql(u8, method, "page.close")) {
         return handleWindows(allocator, id_json, method, params_json, engine, queue, route, build_info);
     }
+    if (std.mem.eql(u8, method, "dialog.get") or std.mem.eql(u8, method, "dialog.respond")) {
+        return handleDialogs(allocator, id_json, method, params_json, engine, route, build_info);
+    }
 
     // N23: `window_id` sends a page.* or dom.* command to that window. It is
     // taken out of the params before the router sees them.
@@ -739,6 +742,117 @@ fn handleWindows(
     defer outcome.deinit(allocator);
     return outcomeJson(allocator, id_json, outcome);
 }
+
+// ---- v3.6: page dialogs ----
+
+/// listDialogs / respondDialog bound.
+const dialog_op_timeout_ms: u64 = 5_000;
+
+/// dialog.get {window_id?} -> {open:false} | {open:true, type, message,
+/// default_text? (prompt), window_id}: that window's dialog, else the first
+/// open one (the primary's first). dialog.respond {accept, text?,
+/// window_id?} -> {ok:true}: answers that window's dialog, else the one
+/// dialog.get reports; none is -32602 no_dialog. Neither takes a queue
+/// turn: the command a dialog blocks still holds its window's turn.
+fn handleDialogs(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+    engine: *engine_mod.Engine,
+    route: automation.router.RouteContext,
+    build_info: automation.telemetry.BuildInfo,
+) error{OutOfMemory}![]u8 {
+    const responding = std.mem.eql(u8, method, "dialog.respond");
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+    defer parsed.deinit();
+    const params = switch (parsed.value) {
+        .object => |o| o,
+        else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+    };
+
+    var call = DialogCall{ .responding = responding };
+    var keys = params.iterator();
+    while (keys.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "window_id")) {
+            call.target = switch (value) {
+                .string => |text| parseWindowId(text),
+                else => null,
+            } orelse return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+        } else if (responding and std.mem.eql(u8, key, "accept")) {
+            call.accept = switch (value) {
+                .bool => |b| b,
+                else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+            };
+        } else if (responding and std.mem.eql(u8, key, "text")) {
+            call.text = switch (value) {
+                // The text crosses the C ABI: no embedded NUL.
+                .string => |text| if (std.mem.indexOfScalar(u8, text, 0) == null) text else return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+                else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
+            };
+        } else return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+    }
+    if (responding and call.accept == null) return jsonRpcError(allocator, id_json, -32602, "Invalid params", null);
+
+    var dialog_route = route;
+    var route_bufs: [2][24]u8 = undefined;
+    if (call.target) |target| dialog_route = windowRoute(route, target, &route_bufs);
+    var outcome = try engine.executeExternal(allocator, method, "dialog", .{
+        .route = dialog_route,
+        .build = build_info,
+        .no_page_reason = "no_window",
+    }, call, DialogCall.run);
+    defer outcome.deinit(allocator);
+    return outcomeJson(allocator, id_json, outcome);
+}
+
+const DialogCall = struct {
+    responding: bool,
+    target: ?page_port.WindowId = null,
+    accept: ?bool = null,
+    text: ?[]const u8 = null,
+
+    fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
+        const dialogs = ext.listDialogs(gpa, dialog_op_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+        defer page_port.freeDialogs(gpa, dialogs);
+        var found: ?page_port.DialogInfo = null;
+        for (dialogs) |dialog| {
+            if (self.target == null or self.target.? == dialog.window) {
+                found = dialog;
+                break;
+            }
+        }
+        if (self.responding) {
+            // An explicit window answers for itself (no_window, no_dialog).
+            const window = self.target orelse if (found) |dialog| dialog.window else return engine_mod.portFailure(gpa, error.NoDialog, .action, ext.ids());
+            ext.respondDialog(window, self.accept.?, self.text, dialog_op_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+            return .{ .result = try gpa.dupe(u8, "{\"ok\":true}") };
+        }
+        const dialog = found orelse {
+            // A window that is gone is no_window, not "no dialog".
+            if (self.target) |target| {
+                const windows = ext.listWindows(gpa, dialog_op_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
+                defer page_port.freeWindows(gpa, windows);
+                for (windows) |w| {
+                    if (w.id == target) break;
+                } else return engine_mod.portFailure(gpa, error.NoPage, .action, ext.ids());
+            }
+            return .{ .result = try gpa.dupe(u8, "{\"open\":false}") };
+        };
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        const w = &out.writer;
+        w.print("{{\"open\":true,\"type\":\"{s}\",\"message\":{f}", .{ @tagName(dialog.type), std.json.fmt(dialog.message, .{}) }) catch return error.OutOfMemory;
+        if (dialog.default_text) |text| w.print(",\"default_text\":{f}", .{std.json.fmt(text, .{})}) catch return error.OutOfMemory;
+        w.print(",\"window_id\":\"" ++ window_prefix ++ "{d}\"}}", .{dialog.window}) catch return error.OutOfMemory;
+        return .{ .result = try out.toOwnedSlice() };
+    }
+};
 
 const CookieContext = struct {
     io: std.Io,

@@ -61,6 +61,15 @@ pub const PortError = error{
     /// v3.4 screenshot: the encoded PNG is over max_screenshot_bytes;
     /// nothing is returned.
     TooLarge,
+    /// v3.6: a page dialog is open on the window (it was before the call,
+    /// or the call's own load raised one): the call stopped and left the
+    /// dialog open. listDialogs shows it; respondDialog answers it.
+    DialogOpen,
+    /// v3.6 respondDialog: the window has no open dialog.
+    NoDialog,
+    /// v3.6 navigateWithPolicy(.dismiss): the beforeunload prompt was
+    /// dismissed, so the page stayed.
+    BeforeUnloadDismissed,
 };
 
 /// A viewport point in CSS px (native input, pointer cache).
@@ -90,6 +99,33 @@ pub const WindowInfo = struct {
     /// The window whose page opened this one (a popup), if any.
     opener: ?WindowId = null,
 };
+
+/// v3.6: the kinds of page dialog.
+pub const DialogType = enum { alert, confirm, prompt, beforeunload };
+
+/// v3.6: an open page dialog. `message` and `default_text` are owned by the
+/// `gpa` passed to listDialogs (see freeDialogs).
+pub const DialogInfo = struct {
+    window: WindowId,
+    type: DialogType,
+    message: []u8,
+    /// Prompts only: the text the field starts with.
+    default_text: ?[]u8 = null,
+};
+
+pub fn freeDialogs(gpa: std.mem.Allocator, dialogs: []DialogInfo) void {
+    for (dialogs) |d| {
+        gpa.free(d.message);
+        if (d.default_text) |text| gpa.free(text);
+    }
+    gpa.free(dialogs);
+}
+
+/// v3.6: what a navigation does when the page asks "Leave site?"
+/// (beforeunload). `fail` returns DialogOpen as soon as the prompt opens and
+/// leaves it open; `accept` leaves the page; `dismiss` stays
+/// (BeforeUnloadDismissed).
+pub const BeforeUnload = enum { fail, accept, dismiss };
 
 pub fn freeWindows(gpa: std.mem.Allocator, windows: []WindowInfo) void {
     for (windows) |w| {
@@ -211,6 +247,22 @@ pub const PagePort = struct {
         /// Closes window `id`; returns once it is destroyed. NoPage if
         /// there is no such window.
         closeWindow: *const fn (ptr: *anyopaque, id: WindowId, timeout_ms: u64) PortError!void = unsupportedClose,
+
+        // --- v3.6 page dialogs ---
+
+        /// navigate with an explicit beforeunload policy (see
+        /// BeforeUnload). A window that already shows a dialog is
+        /// DialogOpen at once, and so is any other dialog that opens during
+        /// the load. Null: the backend has no dialogs; `navigate` is used.
+        navigateWithPolicy: ?*const fn (ptr: *anyopaque, url: []const u8, before_unload: BeforeUnload, timeout_ms: u64) PortError!void = null,
+        /// Every open page dialog, the primary window's first (see
+        /// DialogInfo, freeDialogs). Not tied to this handle's window.
+        /// Never waits for a page load: a dialog can be what blocks it.
+        listDialogs: *const fn (ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]DialogInfo = unsupportedDialogs,
+        /// Answers window `id`'s dialog: accept = OK / Leave, else Cancel /
+        /// Stay; `text` answers an accepted prompt (null = its default).
+        /// NoPage without that window, NoDialog when it has none.
+        respondDialog: *const fn (ptr: *anyopaque, id: WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) PortError!void = unsupportedRespond,
     };
 
     pub fn evalJson(self: PagePort, gpa: std.mem.Allocator, world: World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -219,6 +271,21 @@ pub const PagePort = struct {
 
     pub fn navigate(self: PagePort, url_text: []const u8, timeout_ms: u64) PortError!void {
         return self.vtable.navigate(self.ptr, url_text, timeout_ms);
+    }
+
+    /// navigate with a beforeunload policy; a backend without dialogs
+    /// ignores the policy (it never shows one).
+    pub fn navigateWithPolicy(self: PagePort, url_text: []const u8, before_unload: BeforeUnload, timeout_ms: u64) PortError!void {
+        const guarded = self.vtable.navigateWithPolicy orelse return self.vtable.navigate(self.ptr, url_text, timeout_ms);
+        return guarded(self.ptr, url_text, before_unload, timeout_ms);
+    }
+
+    pub fn listDialogs(self: PagePort, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]DialogInfo {
+        return self.vtable.listDialogs(self.ptr, gpa, timeout_ms);
+    }
+
+    pub fn respondDialog(self: PagePort, id: WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) PortError!void {
+        return self.vtable.respondDialog(self.ptr, id, accept, text, timeout_ms);
     }
 
     pub fn reload(self: PagePort, timeout_ms: u64) PortError!void {
@@ -328,6 +395,12 @@ fn unsupportedFor(_: *anyopaque, _: WindowId) PortError!PagePort {
     return error.Unsupported;
 }
 fn unsupportedClose(_: *anyopaque, _: WindowId, _: u64) PortError!void {
+    return error.Unsupported;
+}
+fn unsupportedDialogs(_: *anyopaque, _: std.mem.Allocator, _: u64) PortError![]DialogInfo {
+    return error.Unsupported;
+}
+fn unsupportedRespond(_: *anyopaque, _: WindowId, _: bool, _: ?[]const u8, _: u64) PortError!void {
     return error.Unsupported;
 }
 

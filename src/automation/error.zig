@@ -15,6 +15,10 @@ pub const AutomationError = enum {
     platform_rate_limited,
     session_invalid,
     cancelled,
+    /// -32013: a page dialog (alert, confirm, prompt, or the beforeunload
+    /// "Leave site?" prompt) is open and blocks the command; dialog.get shows
+    /// it, dialog.respond answers it.
+    dialog_open,
 };
 
 pub const error_count = @typeInfo(AutomationError).@"enum".fields.len;
@@ -42,6 +46,7 @@ pub fn isRetryable(err: AutomationError) bool {
         .action_timeout,
         .session_invalid,
         .cancelled,
+        .dialog_open,
         => false,
     };
 }

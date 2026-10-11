@@ -154,10 +154,18 @@ class PageNamespace:
         self._client = client
 
     def navigate(
-        self, url: str, wait_until: str | None = None, timeout_ms: int | None = None
+        self,
+        url: str,
+        wait_until: str | None = None,
+        timeout_ms: int | None = None,
+        on_before_unload: str | None = None,
     ) -> dict:
+        """on_before_unload: what to do if the page asks "Leave site?":
+        "fail" (default: -32013 dialog_open at once, the prompt stays open),
+        "accept" (leave), or "dismiss" (stay: -32008 beforeunload_dismissed)."""
         return self._client.call(
-            "page.navigate", _drop_none(url=url, waitUntil=wait_until, timeout_ms=timeout_ms)
+            "page.navigate",
+            _drop_none(url=url, waitUntil=wait_until, timeout_ms=timeout_ms, onBeforeUnload=on_before_unload),
         )
 
     def reload(self, wait_until: str | None = None, timeout_ms: int | None = None) -> dict:
@@ -188,6 +196,26 @@ class PageNamespace:
     def close(self, window_id: str) -> dict:
         """Close a window from page.list (not the primary one)."""
         return self._client.call("page.close", {"window_id": window_id})
+
+
+class DialogNamespace:
+    """Page dialogs: alert, confirm, prompt and the beforeunload "Leave
+    site?" prompt. A dialog is never answered for you: it stays open (a
+    person can answer it) until respond() does."""
+
+    def __init__(self, client: "ZigBrowser"):
+        self._client = client
+
+    def get(self, window_id: str | None = None) -> dict:
+        """{open: false} or {open: true, type, message, window_id,
+        default_text (prompts)}: that window's dialog, else the first open
+        one (the primary's first)."""
+        return self._client.call("dialog.get", _drop_none(window_id=window_id))
+
+    def respond(self, accept: bool, text: str | None = None, window_id: str | None = None) -> dict:
+        """accept: OK / Leave, else Cancel / Stay. text answers an accepted
+        prompt. No open dialog: -32602 "no_dialog"."""
+        return self._client.call("dialog.respond", _drop_none(accept=accept, text=text, window_id=window_id))
 
 
 class LinkedInNamespace:
@@ -415,6 +443,7 @@ class ZigBrowser:
         self._response_queue: queue.Queue = queue.Queue()
         self.dom = DomNamespace(self)
         self.page = PageNamespace(self)
+        self.dialog = DialogNamespace(self)
         self.linkedin = LinkedInNamespace(self)
         self.instagram = InstagramNamespace(self)
         self.social = SocialNamespace(self)

@@ -217,6 +217,31 @@ pub const External = struct {
         self.engine.platformSpan(self.run, "closeWindow", null, 0, 0, started, "ok");
     }
 
+    /// v3.6: PagePort.listDialogs with an automation.platform.eval child
+    /// span (op "listDialogs"; counts only, never messages).
+    pub fn listDialogs(self: *External, gpa: std.mem.Allocator, timeout_ms: u64) page_port.PortError![]page_port.DialogInfo {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        const dialogs = self.run.port.listDialogs(gpa, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "listDialogs", null, 0, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "listDialogs", null, 0, dialogs.len, started, "ok");
+        return dialogs;
+    }
+
+    /// v3.6: PagePort.respondDialog with an automation.platform.eval child
+    /// span (never the prompt text).
+    pub fn respondDialog(self: *External, id: page_port.WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) page_port.PortError!void {
+        self.run.native_timeout_ms = timeout_ms;
+        const started = self.engine.clock.nowMs();
+        self.run.port.respondDialog(id, accept, text, timeout_ms) catch |err| {
+            self.engine.platformSpan(self.run, "respondDialog", null, 0, 0, started, @errorName(err));
+            return err;
+        };
+        self.engine.platformSpan(self.run, "respondDialog", null, 0, 0, started, "ok");
+    }
+
     /// Records a child span under this command's root. Attributes must
     /// already be redacted.
     /// A child span with an explicit span id and parent (e.g. a compound
@@ -381,7 +406,12 @@ pub const Engine = struct {
             },
             .page_navigate => {
                 const started = self.clock.nowMs();
-                run.port.navigate(command.url.?, timeout_ms) catch |err| {
+                const before_unload: page_port.BeforeUnload = switch (command.before_unload) {
+                    .fail => .fail,
+                    .accept => .accept,
+                    .dismiss => .dismiss,
+                };
+                run.port.navigateWithPolicy(command.url.?, before_unload, timeout_ms) catch |err| {
                     self.platformSpan(run, "navigate", null, command.url.?.len, 0, started, @errorName(err));
                     return portFailure(gpa, err, .navigation, ids);
                 };
@@ -1207,6 +1237,11 @@ pub fn portFailure(gpa: std.mem.Allocator, err: page_port.PortError, context: Po
         error.FilesUnconfirmed => return automationFailure(gpa, .action_timeout, "files_unconfirmed", ids),
         error.TooLarge => return failureWithReason(gpa, internal_error_code, "Internal error", "screenshot_too_large", ids),
         error.NoPage => return automationFailure(gpa, .session_invalid, ids.no_page_reason, ids),
+        // A page dialog blocks the page; dialog.get / dialog.respond.
+        error.DialogOpen => .dialog_open,
+        error.NoDialog => return failureWithReason(gpa, invalid_params_code, "Invalid params", "no_dialog", ids),
+        // onBeforeUnload "dismiss": the page asked and stayed.
+        error.BeforeUnloadDismissed => return automationFailure(gpa, .navigation_failed, "beforeunload_dismissed", ids),
         error.Cancelled => .cancelled,
         error.NavigationFailed => .navigation_failed,
         error.Timeout => switch (context) {
@@ -1492,7 +1527,9 @@ fn partialPortFailure(gpa: std.mem.Allocator, err: page_port.PortError, sent_cha
         error.Timeout, error.FilesUnconfirmed => .action_timeout,
         error.Cancelled => .cancelled,
         error.NoPage, error.Unsupported => .session_invalid,
-        error.NavigationFailed => .navigation_failed,
+        error.NavigationFailed, error.BeforeUnloadDismissed => .navigation_failed,
+        error.DialogOpen => .dialog_open,
+        error.NoDialog => return partialInternal(gpa, "Internal error", sent_chars, run),
         // Not text-input errors; still never lose the sent prefix.
         error.BadFile, error.TooLarge => return partialInternal(gpa, "Internal error", sent_chars, run),
     };

@@ -70,7 +70,76 @@ const vtable: PagePort.VTable = .{
     .listWindows = listWindows,
     .forWindow = forWindow,
     .closeWindow = closeWindow,
+    .navigateWithPolicy = navigateWithPolicy,
+    .listDialogs = listDialogs,
+    .respondDialog = respondDialog,
 };
+
+// --- Page dialogs: PagePort v3.6 ---
+
+/// Every open page dialog, the primary window's first: one snapshot taken
+/// on the GTK thread, without waiting for any load. Strings are owned by
+/// `gpa` (page_port.freeDialogs).
+fn listDialogs(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]page_port.DialogInfo {
+    var out: [*c]u8 = null;
+    const rc = c.zb_automation_list_dialogs(clampMs(timeout_ms), &out);
+    defer c.zb_automation_free(out);
+    try mapCode(rc);
+    if (out == null) return error.EvalFailed;
+    return parseDialogs(gpa, std.mem.span(out));
+}
+
+fn parseDialogs(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.DialogInfo {
+    const Wire = struct { window: u32, type: page_port.DialogType, message: []const u8, default_text: ?[]const u8 = null };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EvalFailed, // malformed shim JSON
+    };
+    defer parsed.deinit();
+    const dialogs = try gpa.alloc(page_port.DialogInfo, parsed.value.len);
+    var filled: usize = 0;
+    errdefer page_port.freeDialogs(gpa, dialogs[0..filled]);
+    for (parsed.value, dialogs) |wire, *info| {
+        const message = try gpa.dupe(u8, wire.message);
+        const default_text: ?[]u8 = if (wire.default_text) |text| gpa.dupe(u8, text) catch |e| {
+            gpa.free(message);
+            return e;
+        } else null;
+        info.* = .{ .window = wire.window, .type = wire.type, .message = message, .default_text = default_text };
+        filled += 1;
+    }
+    return dialogs;
+}
+
+test "shim dialog JSON becomes DialogInfo, and malformed JSON is EvalFailed" {
+    const gpa = std.testing.allocator;
+    const dialogs = try parseDialogs(gpa,
+        \\[{"window":1,"type":"beforeunload","message":""},{"window":3,"type":"prompt","message":"Name?","default_text":"ada"}]
+    );
+    defer page_port.freeDialogs(gpa, dialogs);
+    try std.testing.expectEqual(@as(usize, 2), dialogs.len);
+    try std.testing.expectEqual(page_port.DialogType.beforeunload, dialogs[0].type);
+    try std.testing.expect(dialogs[0].default_text == null);
+    try std.testing.expectEqual(@as(u32, 3), dialogs[1].window);
+    try std.testing.expectEqualStrings("Name?", dialogs[1].message);
+    try std.testing.expectEqualStrings("ada", dialogs[1].default_text.?);
+    try std.testing.expectError(error.EvalFailed, parseDialogs(gpa, "[{\"window\":1,\"type\":\"toast\",\"message\":\"\"}]"));
+}
+
+/// Answers window `id`'s dialog. The prompt text crosses the C ABI: an
+/// embedded NUL is refused here (EvalFailed is never reached: the server
+/// checks it first).
+fn respondDialog(_: *anyopaque, id: page_port.WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) PortError!void {
+    if (id == 0) return error.NoPage;
+    var text_z: ?[:0]u8 = null;
+    defer if (text_z) |z| std.heap.c_allocator.free(z);
+    if (text) |t| {
+        if (std.mem.indexOfScalar(u8, t, 0) != null) return error.EvalFailed;
+        text_z = try std.heap.c_allocator.dupeZ(u8, t);
+    }
+    const rc = c.zb_automation_respond_dialog(id, @intFromBool(accept), if (text_z) |z| z.ptr else null, clampMs(timeout_ms));
+    return mapCode(rc);
+}
 
 // --- Windows: PagePort v3.5 (N23) ---
 
@@ -137,6 +206,9 @@ fn mapCode(rc: c_int) PortError!void {
         c.ZB_AUTO_ERR_NAV_FAILED => error.NavigationFailed,
         c.ZB_AUTO_ERR_NO_LOOP, c.ZB_AUTO_ERR_CANCELLED => error.Cancelled,
         c.ZB_AUTO_ERR_DOC_CHANGED => error.DocumentChanged,
+        c.ZB_AUTO_ERR_DIALOG_OPEN => error.DialogOpen,
+        c.ZB_AUTO_ERR_NO_DIALOG => error.NoDialog,
+        c.ZB_AUTO_ERR_DIALOG_DISMISSED => error.BeforeUnloadDismissed,
         else => error.EvalFailed,
     };
 }
@@ -175,11 +247,20 @@ fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, fun
 }
 
 fn navigate(ptr: *anyopaque, url_text: []const u8, timeout_ms: u64) PortError!void {
+    return navigateWithPolicy(ptr, url_text, .fail, timeout_ms);
+}
+
+fn navigateWithPolicy(ptr: *anyopaque, url_text: []const u8, before_unload: page_port.BeforeUnload, timeout_ms: u64) PortError!void {
     const url_z = try std.heap.c_allocator.dupeZ(u8, url_text);
     defer std.heap.c_allocator.free(url_z);
+    const policy: c_int = switch (before_unload) {
+        .fail => c.ZB_BEFORE_UNLOAD_FAIL,
+        .accept => c.ZB_BEFORE_UNLOAD_ACCEPT,
+        .dismiss => c.ZB_BEFORE_UNLOAD_DISMISS,
+    };
 
     var err: [*c]u8 = null;
-    const rc = c.zb_automation_navigate(windowOf(ptr), url_z.ptr, clampMs(timeout_ms), &err);
+    const rc = c.zb_automation_navigate_guarded(windowOf(ptr), url_z.ptr, policy, clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
     return mapCode(rc);
 }
@@ -1003,6 +1084,9 @@ test "C error codes map onto PortError" {
     try std.testing.expectError(error.EvalFailed, mapCode(c.ZB_AUTO_ERR_INTERNAL));
     try std.testing.expectError(error.Cancelled, mapCode(c.ZB_AUTO_ERR_NO_LOOP));
     try std.testing.expectError(error.Cancelled, mapCode(c.ZB_AUTO_ERR_CANCELLED));
+    try std.testing.expectError(error.DialogOpen, mapCode(c.ZB_AUTO_ERR_DIALOG_OPEN));
+    try std.testing.expectError(error.NoDialog, mapCode(c.ZB_AUTO_ERR_NO_DIALOG));
+    try std.testing.expectError(error.BeforeUnloadDismissed, mapCode(c.ZB_AUTO_ERR_DIALOG_DISMISSED));
 }
 
 test "deadlines beyond 32 bits saturate instead of wrapping" {

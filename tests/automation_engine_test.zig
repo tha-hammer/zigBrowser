@@ -1651,3 +1651,29 @@ test "native dom.scroll by offset: the page replaced after the wheel (DocumentRe
     try std.testing.expectEqual(@as(usize, 1), h.fake.native_calls.items.len);
     try std.testing.expectEqual(@as(usize, 1), h.fake.eval_calls.items.len);
 }
+
+test "page dialogs: dialog_open is -32013, a dismissed beforeunload is navigation_failed, no dialog is invalid params" {
+    const cases = [_]struct { err: automation.page_port.PortError, code: i64, message: []const u8, data: []const u8 }{
+        .{ .err = error.DialogOpen, .code = -32013, .message = "dialog_open", .data = "\"trace_id\"" },
+        .{ .err = error.BeforeUnloadDismissed, .code = -32008, .message = "navigation_failed", .data = "\"reason\":\"beforeunload_dismissed\"" },
+    };
+    for (cases) |case| {
+        var h: Harness = undefined;
+        h.init();
+        defer h.deinit();
+        h.fake.navigate_result = case.err;
+        // The fake has no dialogs (no navigateWithPolicy): the policy is
+        // accepted and the plain navigate runs.
+        var outcome = try h.run("page.navigate", "{\"url\":\"https://example.test/\",\"onBeforeUnload\":\"dismiss\"}");
+        defer outcome.deinit(gpa);
+        try expectFailureData(outcome, case.code, case.message, case.data);
+        try std.testing.expectEqual(@as(usize, 1), h.fake.navigate_calls.items.len);
+    }
+    try std.testing.expectEqual(@as(i32, -32013), automation.errors.downstreamCode(.dialog_open));
+    try std.testing.expect(!automation.errors.isRetryable(.dialog_open));
+
+    const ids = script_command.Ids{ .trace_id = "t", .parent_span_id = "s", .command_id = "c" };
+    var outcome = try engine.portFailure(gpa, error.NoDialog, .action, ids);
+    defer outcome.deinit(gpa);
+    try expectFailureData(outcome, -32602, "Invalid params", "\"reason\":\"no_dialog\"");
+}

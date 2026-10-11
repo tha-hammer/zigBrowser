@@ -411,3 +411,20 @@ test "dom.scroll: exactly one of selector or x/y (finite numbers); input yes, hu
         "{\"y\":10,\"options\":{\"trial\":true}}",
     }) |params| try expectRejected(allocator, "dom.scroll", params);
 }
+
+test "page.navigate onBeforeUnload: fail by default, accept or dismiss, anything else is BadArgs" {
+    const allocator = std.testing.allocator;
+    var plain = try router.parse(allocator, "page.navigate", "{\"url\":\"http://a/\"}", .{});
+    defer plain.deinit();
+    try std.testing.expectEqual(router.BeforeUnload.fail, plain.before_unload);
+    inline for (.{ .{ "fail", router.BeforeUnload.fail }, .{ "accept", router.BeforeUnload.accept }, .{ "dismiss", router.BeforeUnload.dismiss } }) |case| {
+        var command = try router.parse(allocator, "page.navigate", "{\"url\":\"http://a/\",\"onBeforeUnload\":\"" ++ case[0] ++ "\"}", .{});
+        defer command.deinit();
+        try std.testing.expectEqual(case[1], command.before_unload);
+    }
+    for ([_][]const u8{ "\"Accept\"", "\"leave\"", "\"\"", "true", "1", "null" }) |value| {
+        const params = try std.fmt.allocPrint(allocator, "{{\"url\":\"http://a/\",\"onBeforeUnload\":{s}}}", .{value});
+        defer allocator.free(params);
+        try std.testing.expectError(error.BadArgs, router.parse(allocator, "page.navigate", params, .{}));
+    }
+}

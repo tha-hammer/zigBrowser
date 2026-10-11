@@ -22,6 +22,7 @@ test "AutomationError exposes stable names, downstream codes, and retryability" 
         .{ .err = .platform_rate_limited, .name = "platform_rate_limited", .code = -32010, .retryable = true },
         .{ .err = .session_invalid, .name = "session_invalid", .code = -32011, .retryable = false },
         .{ .err = .cancelled, .name = "cancelled", .code = -32012, .retryable = false },
+        .{ .err = .dialog_open, .name = "dialog_open", .code = -32013, .retryable = false },
     };
 
     try std.testing.expectEqual(cases.len, automation_error.error_count);

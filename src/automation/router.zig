@@ -26,6 +26,10 @@ pub const Verb = enum {
 
 pub const WaitState = enum { attached, visible, hidden, detached };
 
+/// page.navigate `onBeforeUnload`: what to do when the page asks "Leave
+/// site?". `fail` (default) returns dialog_open and leaves the prompt open.
+pub const BeforeUnload = enum { fail, accept, dismiss };
+
 /// `options.input`: synthetic DOM events from automation.js (default), or
 /// real platform input (PagePort.native*, `event.isTrusted === true`).
 /// Accepted for dom.click, dom.type, dom.press, dom.hover and dom.scroll
@@ -69,6 +73,8 @@ pub const ParsedCommand = struct {
     delay_ms: ?u64 = null,
     wait_state: WaitState = .visible,
     wait_until: ?[]const u8 = null,
+    /// page.navigate `onBeforeUnload`.
+    before_unload: BeforeUnload = .fail,
     full_page: bool = false,
     /// dom.press: KeyboardEvent.key value.
     key: ?[]const u8 = null,
@@ -211,6 +217,13 @@ pub fn parse(
             command.url = try requiredCString(arena_allocator, obj, "url");
             command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;
             command.wait_until = try optionalString(arena_allocator, obj, "waitUntil");
+            if (obj.get("onBeforeUnload")) |value| {
+                const text = switch (value) {
+                    .string => |t| t,
+                    else => return error.BadArgs,
+                };
+                command.before_unload = std.meta.stringToEnum(BeforeUnload, text) orelse return error.BadArgs;
+            }
         },
         .page_reload => {
             command.timeout_ms = optionalU64(obj, "timeout_ms") catch return error.BadArgs;

@@ -53,6 +53,9 @@ enum {
   ZB_AUTO_ERR_BAD_FILE = 9,    /* set files: a path is not a readable regular file, or too many */
   ZB_AUTO_ERR_FILES_UNCONFIRMED = 10, /* set files: chosen, but the page did not confirm in time */
   ZB_AUTO_ERR_TOO_LARGE = 11,  /* screenshot: the encoded PNG exceeds the limit */
+  ZB_AUTO_ERR_DIALOG_OPEN = 12, /* a page dialog is open on the window (see zb_automation_list_dialogs) */
+  ZB_AUTO_ERR_NO_DIALOG = 13,   /* respond: the window has no open dialog */
+  ZB_AUTO_ERR_DIALOG_DISMISSED = 14, /* navigate: the beforeunload prompt was dismissed; the page stays */
 };
 
 typedef void (*ZbMainJobFn)(void *ctx);
@@ -134,10 +137,42 @@ int zb_automation_eval_json(uint32_t win, const char *function_body,
                             char **out_err);
 
 /* Load `url` and wait for its load to finish. A load error or a navigation
- * blocked by policy returns ZB_AUTO_ERR_NAV_FAILED and sets *out_err. */
+ * blocked by policy returns ZB_AUTO_ERR_NAV_FAILED and sets *out_err.
+ * Page dialogs: a window that already shows a dialog is ZB_AUTO_ERR_DIALOG_OPEN
+ * at once (nothing loads). A beforeunload prompt the load raises is handled
+ * by `before_unload`: FAIL returns ZB_AUTO_ERR_DIALOG_OPEN as soon as it
+ * opens and leaves it open (a person or zb_automation_respond_dialog answers
+ * it; leaving then continues this navigation); ACCEPT leaves the page and
+ * waits for the load; DISMISS stays (ZB_AUTO_ERR_DIALOG_DISMISSED). Any other
+ * dialog that opens on the window during the load is ZB_AUTO_ERR_DIALOG_OPEN.
+ * zb_automation_navigate and zb_automation_reload use FAIL. */
+enum {
+  ZB_BEFORE_UNLOAD_FAIL = 0,
+  ZB_BEFORE_UNLOAD_ACCEPT = 1,
+  ZB_BEFORE_UNLOAD_DISMISS = 2,
+};
 int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms,
                            char **out_err);
+int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unload,
+                                   unsigned int timeout_ms, char **out_err);
 int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err);
+
+/* Page dialogs (alert, confirm, prompt, beforeunload). Each window keeps at
+ * most one open dialog; it is never answered by default: it stays open, as a
+ * native dialog a person can answer, until that or
+ * zb_automation_respond_dialog closes it. Closing the window dismisses it.
+ * They do not wait for any page load (a dialog can block one).
+ * list: every open dialog, the original primary's first, as
+ * [{"window":n,"type":"alert|confirm|prompt|beforeunload","message":"...",
+ *   "default_text":"..."}] (default_text: prompts only). Free with
+ * zb_automation_free.
+ * respond: answers window `win`'s dialog (0 = the original primary):
+ * accept = OK / Leave, else Cancel / Stay; `text` (NULL = the prompt's
+ * default) is a prompt's answer when accepted. ZB_AUTO_ERR_NO_WINDOW,
+ * ZB_AUTO_ERR_NO_DIALOG. */
+int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json);
+int zb_automation_respond_dialog(uint32_t win, int accept, const char *text,
+                                 unsigned int timeout_ms);
 
 /* Current URI (WebKit's committed URI) / document.title; "" when none. */
 int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url);

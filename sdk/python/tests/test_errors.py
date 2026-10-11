@@ -59,6 +59,7 @@ ERROR_CODE_MAP = {
     -32010: "platform_rate_limited",
     -32011: "session_invalid",
     -32012: "cancelled",
+    -32013: "dialog_open",
 }
 
 

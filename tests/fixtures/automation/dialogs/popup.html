@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Popup</title>
+<script>
+  function later(fn) { setTimeout(fn, 0); return 0; }
+  function showAlert(message) { return later(() => { alert(message); document.title = 'popup-alerted'; }); }
+  function askConfirm(message) { return later(() => { document.title = 'popup-confirm:' + confirm(message); }); }
+  addEventListener('beforeunload', (event) => {
+    event.preventDefault();
+    event.returnValue = 'Popup draft.';
+  });
+</script>
+</head>
+<body><h1>Popup</h1></body>
+</html>

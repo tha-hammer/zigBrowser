@@ -157,7 +157,7 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 
 | Method | Params | Result |
 |---|---|---|
-| `page.navigate` | `url`, `timeout_ms?`, `waitUntil?` | `{ok:true}` after the load finishes |
+| `page.navigate` | `url`, `timeout_ms?`, `waitUntil?`, `onBeforeUnload?` (`"fail"` default, `"accept"`, `"dismiss"`) | `{ok:true}` after the load finishes; see [Dialogs](#dialogs) for a page that asks "Leave site?" |
 | `page.reload` | `timeout_ms?`, `waitUntil?` | `{ok:true}` |
 | `page.url` | — | `{url}` |
 | `page.title` | — | `{title}` |
@@ -177,6 +177,38 @@ always use the primary window.
 Closing a popup, with `page.close` or by the page's own `window.close()`
 (for example when a login popup finishes), leaves its opener's page as it
 was: same URL, same page state.
+
+### Dialogs
+
+Page dialogs are `alert`, `confirm`, `prompt`, and the `beforeunload` "Leave site?" prompt.
+
+zigBrowser never answers a dialog for you. It stays open, as a normal window a
+person can answer, until that person or `dialog.respond` answers it. While it is
+open the page's script is blocked, so commands on that window end at once with
+-32013 `dialog_open` instead of waiting for their deadline. That includes the
+command that made the dialog open, if the dialog opened first.
+
+| Method | Params | Result |
+|---|---|---|
+| `dialog.get` | `window_id?` | `{open:false}` or `{open:true, type, message, window_id, default_text?}`. `type` is `alert`, `confirm`, `prompt` or `beforeunload`. `default_text` is given for prompts only. Without `window_id` you get the first open dialog, the primary window's first. |
+| `dialog.respond` | `accept`, `text?`, `window_id?` | `{ok:true}`. `accept: true` is OK / Leave, `false` is Cancel / Stay. `text` answers an accepted prompt; without it, the prompt's default is used. Without `window_id` it answers the dialog `dialog.get` reports. When no dialog is open you get -32602 `no_dialog`. |
+
+Neither call waits in the window's command queue, so they work while another
+command is blocked by the dialog.
+
+`page.navigate` on a page that asks "Leave site?" follows `onBeforeUnload`:
+
+- `"fail"` (default): -32013 `dialog_open`, about as soon as the prompt opens.
+  The prompt stays open. If someone then answers Leave, the navigation
+  continues.
+- `"accept"`: leave the page and finish the navigation.
+- `"dismiss"`: stay on the page. You get -32008 `navigation_failed` with
+  `data.reason = "beforeunload_dismissed"`.
+
+A window that already shows a dialog refuses any navigation with -32013, and
+nothing loads. Closing a window dismisses its dialog. Python: `zb.dialog.get()`,
+`zb.dialog.respond(accept, text=None, window_id=None)`,
+`zb.page.navigate(url, on_before_unload="accept")`.
 
 ### DOM
 
@@ -493,8 +525,9 @@ channel sends one notification, `automation.ready`.
 | -32010 | platform_rate_limited | Pacing limit reached (`x_daily_cap` for `x.*`, `social_daily_cap` for `linkedin.*`/`instagram.*`), or the platform showed a challenge, CAPTCHA or limit page (`data.signal`, `data.platform`) |
 | -32011 | session_invalid | No page or cookie store is available; `logged_out` for `x.*`, `linkedin.*`, `instagram.*`; `unsupported` when the build has no native input |
 | -32012 | cancelled | The browser stopped while the command was queued or running |
+| -32013 | dialog_open | A page dialog (alert, confirm, prompt, or beforeunload "Leave site?") is open on the window and blocks the command; see [Dialogs](#dialogs) |
 
-Errors -32001 to -32012 carry `data.trace_id` and `data.command_id`; the SDKs
+Errors -32001 to -32013 carry `data.trace_id` and `data.command_id`; the SDKs
 raise them as `AutomationError` with those fields.
 
 ## Result
