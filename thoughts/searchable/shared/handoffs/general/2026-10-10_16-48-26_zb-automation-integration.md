@@ -342,6 +342,11 @@ has a section for each; the section names are quoted below.
   reloading a frozen page (`page.recover`) is a later slice that needs a
   design the user confirms. `docs/how-to-automate.md` ("A frozen page")
   has the details.
+- **Frozen windows in the live log.** Once a window has been unresponsive
+  past the 2 s debounce, stderr says `zigBrowser: window <n>: page not
+  responding for <s>s`, once, and `zigBrowser: window <n>: page responding
+  again` when it answers. A normal quit and closing a window print
+  neither.
 - **`page.recover` (watchdog slice 2).** Two calls, never automatic. The
   first, for a window `page.health` reports frozen, ends nothing and
   returns a one-time incident token (60 s) and every window at risk (its

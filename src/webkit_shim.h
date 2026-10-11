@@ -99,6 +99,12 @@ int zb_automation_debug_hw_policy(unsigned int id, unsigned int timeout_ms);
  * default), in the same codes; -1 without the loop. */
 int zb_automation_debug_webkit_default_hw_policy(unsigned int timeout_ms);
 
+/* How long WebKit must keep a window's web process unresponsive before
+ * stderr says "zigBrowser: window N: page not responding for Ns" (once,
+ * then "page responding again" once when it answers). page.health uses the
+ * same debounce (health_debounce_ms in automation_server.zig). */
+#define ZB_UNRESPONSIVE_DEBOUNCE_MS 2000
+
 /* Media Source Extensions for every window, popups included, and the
  * screenshot view created from now on: 1 on (the default), 0 off. Off sets
  * WebKitSettings "enable-mediasource" FALSE and, because WebKitGTK 2.54

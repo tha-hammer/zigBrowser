@@ -23,6 +23,10 @@ Checks:
    suspected, never final).
 4. An alert in the solo window: dialog_open:true, and it stays responsive
    past WebKit's deadline plus the debounce (a dialog is not a freeze).
+5. stderr: `zigBrowser: window N: page not responding for Ns` once per
+   window that stayed unresponsive past the debounce, and `zigBrowser:
+   window N: page responding again` once when it answers again; no repeat
+   while the state holds, and no line on the normal quit.
 
 Never uses the caller's DISPLAY. Exit 77 (skip) without the binary,
 Xvfb or xauth."""
@@ -32,6 +36,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -110,6 +115,28 @@ def run(binary: Path, origin: str, other: str, check) -> None:
         finally:
             RELEASE.set()
             stop_browser(proc)
+        time.sleep(0.3)
+        log_checks(stderr, check)
+
+
+def log_checks(stderr: list[str], check) -> None:
+    """5. The live log: one line when a window has been unresponsive past
+    the debounce, one when it answers again; nothing repeated, nothing on
+    the normal quit (window 1 was still frozen when the browser quit)."""
+    events: dict[str, list[str]] = {}
+    for line in stderr:
+        m = re.fullmatch(r"zigBrowser: window (\d+): page (?:not responding for (\d+)s|responding again)", line.rstrip("\n"))
+        if not m:
+            continue
+        if m.group(2) is not None:
+            seconds = int(m.group(2))
+            check(2 <= seconds <= 4, f"log: window {m.group(1)}'s line gives the time so far, the debounce or a little more ({line.rstrip()})")
+            events.setdefault(m.group(1), []).append("not responding")
+        else:
+            events.setdefault(m.group(1), []).append("responding again")
+    check(events == {"1": ["not responding"], "2": ["not responding", "responding again"]},
+          f"log: window 1 (still frozen at quit) has one 'not responding' line; window 2 (the 9 s loop) one, then one "
+          f"'responding again'; the loading window none ({events})")
 
 
 def checks(zb: ZigBrowser, socket_path: Path, origin: str, other: str, check) -> None:

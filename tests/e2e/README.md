@@ -30,7 +30,9 @@ Slice 3/4 (Linux GTK now):
   within WebKit's deadline plus the debounce. A popup with its own web
   process stays responsive and answers. A 9 s busy loop turns false, then
   true again. An open alert shows `dialog_open` and stays responsive. Only
-  a loading window shows `loading`)
+  a loading window shows `loading`. stderr has one "page not responding
+  for Ns" line per frozen window, one "page responding again" when the
+  busy one recovers, and nothing on the normal quit)
 - `page_recover_test.py` (gate step: `page.recover`. A native click
   freezes window 1, whose same-origin popup shares its web process; a
   noopener popup has its own. Phase 1 refuses a responsive window and

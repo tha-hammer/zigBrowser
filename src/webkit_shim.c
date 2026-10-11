@@ -120,6 +120,10 @@ struct ZbWindow {
   gint64 unresponsive_since_us;
   /* Counts unresponsive stretches: page.recover's incident identity. */
   guint incident;
+  /* Fires ZB_UNRESPONSIVE_DEBOUNCE_MS into a stretch; `unresponsive_reported`:
+   * stderr said "not responding" for the current stretch. */
+  guint unresponsive_timer_id;
+  int unresponsive_reported;
   /* page.recover is ending this window's web process (GTK thread). */
   int recovering;
   int recover_ended; /* its web process ended during that recovery */
@@ -174,6 +178,7 @@ static void on_window_web_process_terminated(WebKitWebView *view,
                                              gpointer user_data);
 static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
                                         gpointer user_data);
+static void remove_source(guint *source_id);
 static int auto_dialog_close(ZbWindow *win, int accept, const char *text);
 static int auto_window_blocked(ZbWindow *win);
 static void auto_policy_dialog_close(ZbWindow *win, int accept);
@@ -284,11 +289,19 @@ static void terminate_window_web_process(ZbWindow *win) {
 }
 
 /* Before our own termination at close or shutdown: that is not a death to
- * report (no "web process terminated" line, no page.list mark). */
+ * report (no "web process terminated" line, no page.list mark), and the
+ * page's responsiveness is no longer news (no "page responding" line). */
 static void window_stop_reporting_termination(ZbWindow *win) {
   if (win != NULL && win->view != NULL && win->sig_web_process_terminated != 0) {
     g_signal_handler_disconnect(win->view, win->sig_web_process_terminated);
     win->sig_web_process_terminated = 0;
+  }
+  if (win != NULL && win->view != NULL && win->sig_responsive_notify != 0) {
+    g_signal_handler_disconnect(win->view, win->sig_responsive_notify);
+    win->sig_responsive_notify = 0;
+  }
+  if (win != NULL) {
+    remove_source(&win->unresponsive_timer_id);
   }
 }
 
@@ -469,6 +482,7 @@ static void window_free(ZbWindow *win) {
 
   remove_source(&win->timeout_source_id);
   remove_source(&win->pending_nav_fallback_source_id);
+  remove_source(&win->unresponsive_timer_id);
 
   if (win->cancellable != NULL) {
     g_object_unref(win->cancellable);
@@ -4316,18 +4330,40 @@ static void auto_dialog_opened(ZbWindow *win) {
  * page is gone and the window shows nothing until it loads again. Record
  * why for page.list and say so on stderr, so a blank window is
  * diagnosable. Every view in a process family gets this. */
+/* ZB_UNRESPONSIVE_DEBOUNCE_MS into an unbroken unresponsive stretch: one
+ * stderr line for the live log (page.health reports the same). */
+static gboolean on_window_unresponsive_timer(gpointer user_data) {
+  ZbWindow *win = (ZbWindow *)user_data;
+  win->unresponsive_timer_id = 0;
+  if (win->unresponsive_since_us != 0 && !win->unresponsive_reported) {
+    win->unresponsive_reported = 1;
+    gint64 seconds = (g_get_monotonic_time() - win->unresponsive_since_us) / G_USEC_PER_SEC;
+    g_printerr("zigBrowser: window %u: page not responding for %" G_GINT64_FORMAT "s\n", win->auto_id, seconds);
+  }
+  return G_SOURCE_REMOVE;
+}
+
 /* WebKit says the web process missed (false) or met (true) its reply
  * deadline. Only the start of an unbroken false stretch is kept; true ends
- * it. Nothing is killed or recovered here. */
+ * it, and says so on stderr if the stretch was reported. Nothing is killed
+ * or recovered here. */
 static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
                                         gpointer user_data) {
   (void)pspec;
   ZbWindow *win = (ZbWindow *)user_data;
   if (webkit_web_view_get_is_web_process_responsive(view)) {
     win->unresponsive_since_us = 0;
+    remove_source(&win->unresponsive_timer_id);
+    if (win->unresponsive_reported) {
+      win->unresponsive_reported = 0;
+      g_printerr("zigBrowser: window %u: page responding again\n", win->auto_id);
+    }
   } else if (win->unresponsive_since_us == 0) {
     win->unresponsive_since_us = g_get_monotonic_time();
     win->incident++;
+    remove_source(&win->unresponsive_timer_id);
+    win->unresponsive_timer_id =
+        g_timeout_add(ZB_UNRESPONSIVE_DEBOUNCE_MS, on_window_unresponsive_timer, win);
   }
 }
 

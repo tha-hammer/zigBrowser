@@ -274,6 +274,14 @@ end at their deadline. Native input is sent one command at a time across
 all windows, so a native command waiting on a frozen page delays native
 input to other windows until its deadline.
 
+stderr says the same for anyone watching the browser's log, once per
+stretch, like the crash line:
+`zigBrowser: window <n>: page not responding for <s>s` when `responsive`
+turns false (`<s>` is how long WebKit has said so, the debounce or a
+little more), and `zigBrowser: window <n>: page responding again` when it
+turns true again. Nothing is repeated while the state holds, and a normal
+quit or closing a window prints neither line.
+
 `responsive: false` is a suspicion, not a verdict: a script that is busy
 for a long time and then finishes looks the same until it finishes. Windows
 that share a web process (a popup and its opener) freeze together.

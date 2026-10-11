@@ -89,6 +89,10 @@ fn policyCode(policy: render_config.HwPolicy) c_int {
     };
 }
 
+test "the stderr 'page not responding' line and page.health use one debounce" {
+    try std.testing.expectEqual(@as(u64, c.ZB_UNRESPONSIVE_DEBOUNCE_MS), @import("automation_server.zig").health_debounce_ms);
+}
+
 test "the shim's media setting before any startup setting is the built-in default (MSE on)" {
     try std.testing.expectEqual(media_config.MediaSource.on, media_config.default_media_source);
     try std.testing.expectEqual(@as(c_int, 1), c.zb_app_get_media_source());
