@@ -327,8 +327,15 @@ export interface DryRunResult {
   checks: DryRunCheck[];
 }
 
-/** R, or DryRunResult when the call passes `dryRun: true`. */
-export type FlowResult<O, R> = O extends { dryRun: true } ? DryRunResult : R;
+/** The type of `opts.dryRun`; undefined when `opts` has no such key. */
+type DryRunFlag<O> = "dryRun" extends keyof O ? O[keyof O & "dryRun"] : undefined;
+
+/**
+ * What a flow call resolves to: DryRunResult for a literal `dryRun: true`;
+ * R when `dryRun` is absent, undefined or `false`; either (R | DryRunResult)
+ * when it is a runtime `boolean` or optional.
+ */
+export type FlowResult<O, R> = [DryRunFlag<O>] extends [true] ? DryRunResult : true extends DryRunFlag<O> ? R | DryRunResult : R;
 
 function dryRun(opts: DryRunOption): Record<string, unknown> | undefined {
   return opts.dryRun ? { dry_run: true } : undefined;

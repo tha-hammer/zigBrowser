@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,6 +93,18 @@ const INVOCATIONS: Record<string, (zb: ZigBrowser) => Promise<unknown>> = {
   "instagram.comment.dry_run": (zb) => zb.instagram.comment("https://www.instagram.com/p/C0ffee/", "So good", { dryRun: true }),
   "instagram.story_view.dry_run": (zb) => zb.instagram.storyView("ada", { dryRun: true }),
 };
+
+describe("dry-run result types", () => {
+  // tests/dry_run_types.ts holds compile-time checks: a literal dryRun:true
+  // gives DryRunResult, absent/false the real result, a runtime boolean either.
+  it("type-check tests/dry_run_types.ts", () => {
+    const sdk = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const tsc = path.join(sdk, "node_modules/.bin/tsc");
+    const run = spawnSync(tsc, ["-p", "tests/tsconfig.types.json"], { cwd: sdk, encoding: "utf-8" });
+    expect(run.stdout + run.stderr).toBe("");
+    expect(run.status).toBe(0);
+  }, 60_000);
+});
 
 describe("typed wrappers", () => {
   let server: MockUDSServer;
