@@ -486,7 +486,10 @@ delete the file.
   `role=menu` or any such Connect item is already shown before More is
   clicked (another menu is open), the call fails with -32001
   `linkedin_profile_menu_already_open` and clicks nothing. When the More
-  button names its menu (`aria-controls`), only that menu is searched. If the menu has no Connect (already connected or pending, or
+  button names its menu (`aria-controls`, one id or several), only those
+  elements are searched, and each must be on the page exactly once:
+  otherwise Escape closes the menu and the call fails with
+  `linkedin_profile_menu_unbound`. If the menu has no Connect (already connected or pending, or
   Follow only), Escape closes it and the call fails with -32001
   `linkedin_profile_connect_not_in_menu`; two Connect items fail with
   `linkedin_profile_action_ambiguous`. Not yet run live: where LinkedIn
@@ -795,7 +798,7 @@ channel sends one notification, `automation.ready`.
 | -32602 | Invalid params | Missing, unknown or wrong-typed params; `data.reason` explains file problems for `cookies.import` |
 | -32603 | Internal error | Page script exception, malformed page answer, unsupported method |
 | -32000 | Authentication failed | Missing or wrong `auth` token |
-| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `linkedin_profile_connect_not_in_menu`, `linkedin_profile_menu_already_open`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
+| -32001 | element_not_found | No match (see `data.reason`: `strict_zero`, `strict_multiple`, `no_match`, `no_option`, `timeout`, `malformed_selector`, `document_changed`, `x_post_button_missing`, `linkedin_profile_owner_unverified`, `linkedin_not_a_profile`, `linkedin_profile_name_missing`, `linkedin_profile_action_missing`, `linkedin_profile_action_ambiguous`, `linkedin_profile_connect_not_in_menu`, `linkedin_profile_menu_already_open`, `linkedin_profile_menu_unbound`, `instagram_story_viewer_unverified`, `instagram_no_story_viewer`, `instagram_story_next_ambiguous`) |
 | -32002 | element_not_visible | Matched but hidden or zero-size |
 | -32003 | element_not_stable | Matched but still moving |
 | -32004 | element_obscured | Another element covers the click point |

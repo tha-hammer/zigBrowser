@@ -238,6 +238,11 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     expect_equal("another menu already open: nothing clicked", (events(), li(), wrong_person(), other_copies()), ([], None, [], []))
     expect_error("another menu already open (dry run)", lambda: zb.linkedin.connect(decoy, dry_run=True), -32001, "linkedin_profile_menu_already_open")
     expect_equal("another menu already open (dry run): no input", (zb.page.evaluate("window.__input")["result"], wrong_person()), ([], []))
+    # The More names several elements (aria-controls "owner-menu auxiliary"):
+    # only they are searched, so the Connect of a menu that opens with it but
+    # is not named is never clicked (RoseCat 5169).
+    expect_error("an unnamed menu opens with the owner's", lambda: zb.linkedin.connect(f"{origin}/in/creator.multi/"), -32001, "linkedin_profile_connect_not_in_menu")
+    expect_equal("an unnamed menu opens with the owner's: its Connect untouched", (events(), li(), wrong_person()), (["click:more", "menu:escape"], None, []))
     # Any other open menu, even one without Connect (the orchestrator's rule).
     expect_error("another menu without Connect open", lambda: zb.linkedin.connect(f"{origin}/in/creator.othermenu/"), -32001, "linkedin_profile_menu_already_open")
     expect_equal("another menu without Connect open: nothing clicked", (events(), li(), wrong_person()), ([], None, []))

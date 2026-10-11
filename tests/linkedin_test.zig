@@ -19,8 +19,12 @@ const FakeRunner = struct {
     malformed_calls: usize = 0,
     not_found: ?[]const u8 = null,
     used: [32]usize = [_]usize{0} ** 32,
+    /// The last answer, owned: like the real runner's, it is only valid
+    /// until the next step (then poisoned and freed).
+    last: ?[]u8 = null,
 
     fn deinit(self: *FakeRunner) void {
+        self.dropLast();
         for (self.steps.items) |s| {
             gpa.free(s.method);
             gpa.free(s.params);
@@ -28,7 +32,22 @@ const FakeRunner = struct {
         self.steps.deinit(gpa);
     }
 
+    fn dropLast(self: *FakeRunner) void {
+        if (self.last) |l| {
+            @memset(l, 0xAA);
+            gpa.free(l);
+        }
+        self.last = null;
+    }
+
     pub fn run(self: *FakeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
+        self.dropLast();
+        const reply = (try self.answer(method, params_json)) orelse return null;
+        self.last = try gpa.dupe(u8, reply);
+        return self.last.?;
+    }
+
+    fn answer(self: *FakeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         try self.steps.append(gpa, .{ .method = try gpa.dupe(u8, method), .params = try gpa.dupe(u8, params_json) });
         for (self.rules, 0..) |rule, i| {
             if (!std.mem.eql(u8, rule.method, method) or std.mem.indexOf(u8, params_json, rule.contains) == null) continue;
@@ -712,6 +731,8 @@ const menu_baseline = Rule{ .method = "dom.query", .contains = "menuitem", .resu
 /// first) opens a menu whose item "Connect" carries no full name.
 const more_menu_rules = [_]Rule{
     menu_baseline,
+    // The owner's More names no menu (the general path).
+    .{ .method = "dom.getAttribute", .contains = "aria-controls", .result = "{\"value\":null}" },
     .{ .method = "dom.query", .contains = ")[2]", .result = one_element },
     .{ .method = "dom.query", .contains = "More actions", .result = hidden_then_visible },
     .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
@@ -885,10 +906,55 @@ test "More route: a More that names its menu (aria-controls) binds the Connect i
     const item_body = menu_connect["xpath=(".len + area.len + " | //*[@role=\"menu\"])".len ..];
     const bound = try std.fmt.allocPrint(gpa, "xpath=//*[@id=\"menu-7\"]{s}", .{item_body});
     defer gpa.free(bound);
-    try expectSelector(&c, 11, bound);
+    // The named element must be there exactly once.
+    try expectSelector(&c, 11, "xpath=//*[@id=\"menu-7\"]");
     try expectSelector(&c, 12, bound);
     try expectSelector(&c, 13, bound);
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[13].params, "\"strict\":true") != null);
+    try expectSelector(&c, 14, bound);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[14].params, "\"strict\":true") != null);
+}
+
+test "More route (RoseCat 5169): aria-controls naming several ids binds to exactly those ids (never every menu)" {
+    var c = FakeRunner{ .rules = &([_]Rule{
+        .{ .method = "dom.getAttribute", .contains = "aria-controls", .result = "{\"value\":\" owner-menu  auxiliary \"}" },
+    } ++ more_menu_rules) };
+    defer c.deinit();
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
+    const item_body = menu_connect["xpath=(".len + area.len + " | //*[@role=\"menu\"])".len ..];
+    const bound = try std.fmt.allocPrint(gpa, "xpath=//*[@id=\"owner-menu\" or @id=\"auxiliary\"]{s}", .{item_body});
+    defer gpa.free(bound);
+    try expectSelector(&c, 11, "xpath=//*[@id=\"owner-menu\"]");
+    try expectSelector(&c, 12, "xpath=//*[@id=\"auxiliary\"]");
+    try expectSelector(&c, 13, bound);
+    try expectSelector(&c, 15, bound);
+}
+
+fn expectUnbound(rules: []const Rule) !void {
+    var c = FakeRunner{ .rules = rules };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_menu_unbound", c.not_found.?);
+    try std.testing.expectEqualStrings("dom.press", c.steps.items[c.steps.items.len - 1].method);
+    try expectNoMenuItemClick(&c);
+}
+
+test "More route (RoseCat 5169): a named menu id that is missing or not unique, or too many ids -> Escape, linkedin_profile_menu_unbound, no item clicked" {
+    const named = Rule{ .method = "dom.getAttribute", .contains = "aria-controls", .result = "{\"value\":\"menu-7\"}" };
+    try expectUnbound(&([_]Rule{ menu_baseline, named, .{ .method = "dom.query", .contains = "menu-7", .result = two_elements } } ++ more_menu_rules));
+    try expectUnbound(&([_]Rule{ menu_baseline, named, .{ .method = "dom.query", .contains = "menu-7", .result = no_elements } } ++ more_menu_rules));
+    try expectUnbound(&([_]Rule{.{ .method = "dom.getAttribute", .contains = "aria-controls", .result = "{\"value\":\"a b c d e f g h i\"}" }} ++ more_menu_rules));
+}
+
+test "More route (RoseCat 5170): an unusable aria-controls read is malformed and stops before any item click (never the general path)" {
+    for ([_][]const u8{ "{\"ok\":true}", "{\"value\":7}" }) |reply| {
+        const rules = [_]Rule{.{ .method = "dom.getAttribute", .contains = "aria-controls", .result = reply }} ++ more_menu_rules;
+        var c = FakeRunner{ .rules = &rules };
+        defer c.deinit();
+        try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+        try std.testing.expectEqual(@as(usize, 1), c.malformed_calls);
+        try std.testing.expectEqualStrings("dom.getAttribute", c.steps.items[c.steps.items.len - 1].method);
+        try expectNoMenuItemClick(&c);
+    }
 }
 
 test "More route (RoseCat 5157): a Connect item already shown before the owner's More is clicked (another menu open) -> linkedin_profile_menu_already_open, nothing clicked" {

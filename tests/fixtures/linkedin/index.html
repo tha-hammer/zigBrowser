@@ -31,6 +31,11 @@
                                        (clicks recorded in window.__li.wrongPerson)
            /in/creator.othermenu/      the owner's menu has Connect, but another
                                        menu (no Connect) is already open
+           /in/creator.multi/          the More names "owner-menu auxiliary"
+                                       (aria-controls); the owner's menu has no
+                                       Connect, and the click also opens an
+                                       unrelated role=menu, outside that list,
+                                       with the only "Connect"
          creator.user's More names its menu with aria-controls; the others do not.
            /in/same-name/              the suggestion card, and a "More profiles"
                                        section in <main> outside the owner's area,
@@ -180,7 +185,10 @@
           var limited = m[1] === 'limit-reached';
           var creator = m[1].indexOf('creator.') === 0;
           var inlineMenu = m[1] === 'creator.inline';
-          var menuHasConnect = m[1] !== 'creator.pending' && m[1] !== 'creator.decoy';
+          var menuHasConnect = m[1] !== 'creator.pending' && m[1] !== 'creator.decoy' && m[1] !== 'creator.multi';
+          var multi = m[1] === 'creator.multi';
+          var menuId = multi ? 'owner-menu' : 'menu';
+          var controls = m[1] === 'creator.user' ? ' aria-controls="menu"' : multi ? ' aria-controls="owner-menu auxiliary"' : '';
           var hasConnect = !creator && m[1] !== 'same-name-missing';
           var connectLink = function (extra) { return '<a ' + extra + ' class="_6b0f3e" data-own-connect aria-label="Invite ' + name + ' to connect" href="/preload/custom-invite/">Connect</a>'; };
           var first = name.split(' ')[0];
@@ -195,7 +203,7 @@
             menuItem('report', 'Report ' + first) + menuItem('block', 'Block ' + first) + menuItem('about', 'About this member');
           var own = m[1] === 'same-name-missing' ? '' : creator ?
             '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
-            '  <span><button id="more" type="button"' + (m[1] === 'creator.user' ? ' aria-controls="menu"' : '') + '>More</button>' +
+            '  <span><button id="more" type="button"' + controls + '>More</button>' + (multi ? '<div id="auxiliary" hidden></div>' : '') +
             (inlineMenu ? '<div id="menu" hidden>' + menuHtml + '</div>' : '') + '</span>' +
             // The display:none copy of More, as live.
             '<div class="_2f8a1c" style="display:none"><button id="more-hidden" type="button">More</button></div>' :
@@ -276,13 +284,23 @@
               });
             }
             if (creator) {
-              var menu = document.getElementById('menu');
+              var menu = document.getElementById(menuId);
               if (!menu) {
                 // A menu outside the owner area, as a role=menu.
-                document.body.insertAdjacentHTML('beforeend', '<div id="menu" role="menu" hidden>' + menuHtml + '</div>');
-                menu = document.getElementById('menu');
+                document.body.insertAdjacentHTML('beforeend', '<div id="' + menuId + '" role="menu" hidden>' + menuHtml + '</div>');
+                menu = document.getElementById(menuId);
               }
-              document.getElementById('more').addEventListener('click', function () { record('click:more'); menu.hidden = false; });
+              document.getElementById('more').addEventListener('click', function () {
+                record('click:more');
+                menu.hidden = false;
+                // creator.multi: an unrelated menu opens at the same time.
+                if (multi && !document.getElementById('late-menu')) {
+                  document.body.insertAdjacentHTML('beforeend', '<div id="late-menu" role="menu">' +
+                    '<div role="menuitem" tabindex="0" aria-label="Invite Riley to connect"><span>Connect</span></div></div>');
+                  var late = document.querySelector('#late-menu [role=menuitem]');
+                  late.addEventListener('click', function () { li.wrongPerson.push('late-menu:Connect'); });
+                }
+              });
               document.addEventListener('keydown', function (e) {
                 if (e.key === 'Escape' && !menu.hidden) { record('menu:escape'); menu.hidden = true; }
               });

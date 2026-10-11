@@ -687,9 +687,8 @@ pub fn resolveConnect(gpa: std.mem.Allocator, runner: anytype, container: []cons
 }
 
 /// After the owner's More (`more`) was clicked: clicks the one visible
-/// "Connect" item of the menu it opened: in the element its aria-controls
-/// names, when it names one, else selectors.more_menu_connect (nothing of
-/// which was shown before the click: resolveConnect checked). No item
+/// "Connect" item of the menu it opened (see ownerMenuItem: only under the
+/// elements its aria-controls names, when it names any). No item
 /// (already connected or pending, or Follow-only) -> Escape closes the
 /// menu, then linkedin_profile_connect_not_in_menu; two visible -> Escape,
 /// then linkedin_profile_action_ambiguous. A failed wait with an item there
@@ -708,14 +707,25 @@ fn clickMenuConnect(gpa: std.mem.Allocator, runner: anytype, more: []const u8) E
     return click(gpa, runner, target, true);
 }
 
-/// The Connect item selector for the menu `more` opened (owned): bound to
-/// the element its aria-controls names (one id), else the general one.
-/// Null when the read failed (the runner holds why).
+/// At most this many ids in the owner More's aria-controls (more -> unbound).
+const max_controlled_ids = 8;
+
+/// The Connect item selector for the menu `more` opened (owned), or null
+/// (the runner holds why). When the More's aria-controls names elements
+/// (an IDREF list), the item is searched only under them, and each must be
+/// on the page exactly once; a missing or duplicate id, or more than
+/// max_controlled_ids, closes the menu and fails as
+/// linkedin_profile_menu_unbound (RoseCat 5169). Only an absent or blank
+/// aria-controls takes selectors.more_menu_connect (nothing of which was
+/// shown before the click: resolveConnect checked). A reply without a
+/// `value` string or null is malformed (RoseCat 5170).
 fn ownerMenuItem(gpa: std.mem.Allocator, runner: anytype, more: []const u8) Error!?[]u8 {
     const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = more, .name = "aria-controls", .timeout_ms = flow.budget(runner, flow.query_timeout_ms) }, .{});
     defer gpa.free(params);
     const result = (try runner.run("dom.getAttribute", params)) orelse return null;
-    const parsed = std.json.parseFromSlice(struct { value: ?[]const u8 = null }, gpa, result, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+    // alloc_always: the ids are used after the next step, which frees the
+    // runner's answer buffer.
+    const parsed = std.json.parseFromSlice(struct { value: ?[]const u8 }, gpa, result, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             try runner.malformed();
@@ -723,12 +733,40 @@ fn ownerMenuItem(gpa: std.mem.Allocator, runner: anytype, more: []const u8) Erro
         },
     };
     defer parsed.deinit();
-    const id = std.mem.trim(u8, parsed.value.value orelse "", " \t\r\n");
-    if (id.len == 0 or std.mem.indexOfAny(u8, id, " \t\r\n") != null) return try gpa.dupe(u8, selectors.more_menu_connect);
+    const listed = std.mem.trim(u8, parsed.value.value orelse "", " \t\r\n\x0c");
+    if (listed.len == 0) return try gpa.dupe(u8, selectors.more_menu_connect);
+
+    var ids: [max_controlled_ids][]const u8 = undefined;
+    var count: usize = 0;
+    var tokens = std.mem.tokenizeAny(u8, listed, " \t\r\n\x0c");
+    while (tokens.next()) |id| {
+        if (count == ids.len) {
+            _ = try closeMenu(gpa, runner, "linkedin_profile_menu_unbound");
+            return null;
+        }
+        ids[count] = id;
+        count += 1;
+    }
+    for (ids[0..count]) |id| {
+        var one: std.ArrayListUnmanaged(u8) = .empty;
+        defer one.deinit(gpa);
+        try one.appendSlice(gpa, "xpath=//*[@id=");
+        try xpathLiteral(gpa, &one, &.{id});
+        try one.append(gpa, ']');
+        const found = (try flow.countMatches(gpa, runner, one.items)) orelse return null;
+        if (found != 1) {
+            _ = try closeMenu(gpa, runner, "linkedin_profile_menu_unbound");
+            return null;
+        }
+    }
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
-    try out.appendSlice(gpa, "xpath=//*[@id=");
-    try xpathLiteral(gpa, &out, &.{id});
+    try out.appendSlice(gpa, "xpath=//*[");
+    for (ids[0..count], 0..) |id, i| {
+        if (i > 0) try out.appendSlice(gpa, " or ");
+        try out.appendSlice(gpa, "@id=");
+        try xpathLiteral(gpa, &out, &.{id});
+    }
     try out.append(gpa, ']');
     try out.appendSlice(gpa, menu_connect_item);
     return try out.toOwnedSlice(gpa);
