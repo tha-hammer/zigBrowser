@@ -258,6 +258,7 @@ test "a waiter queued before zb_app_run is released when GTK init fails" {
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern fn dup(fd: c_int) c_int;
 extern fn dup2(old: c_int, new: c_int) c_int;
+extern fn system(command: [*:0]const u8) c_int;
 
 /// Redirects fd 2 into a pipe until `end`, which restores it and returns
 /// what was written (up to the buffer size; the message here is one line).
@@ -1354,6 +1355,21 @@ const LiveDriver = struct {
 /// Turns a hung live test into a fast, visible failure. On expiry it writes
 /// with raw write(2) and _exit()s: Zig's panic/print path takes locks that a
 /// wedged thread may hold, which is how an earlier hang became permanent.
+/// Every thread's stack, from gdb attached to this process, on stderr. A
+/// thread wedged in Zig's panic handler never prints its own trace: this
+/// shows the frame that panicked. (A test file cannot install its own
+/// panic handler: in a test build the root module is the test runner.)
+/// Best effort and bounded (30 s): no gdb, no dump.
+fn dumpThreads() void {
+    const banner = "live bridge watchdog: thread stacks (gdb):\n";
+    _ = std.c.write(2, banner.ptr, banner.len);
+    // Linux Yama: let a non-ancestor (gdb, our child) attach to us.
+    _ = std.c.prctl(0x59616d61, @as(c_ulong, std.math.maxInt(c_ulong)));
+    var cmd: [192]u8 = undefined;
+    const line = std.fmt.bufPrintZ(&cmd, "timeout -s KILL 30 gdb -p {d} -batch -nx -ex 'thread apply all bt 40' 1>&2 2>/dev/null", .{std.c.getpid()}) catch return;
+    _ = system(line.ptr);
+}
+
 /// The live-test step a driver last started, named by the watchdog when it
 /// fires, so a stuck or crashed step is identifiable.
 var live_stage: std.atomic.Value(usize) = .{ .raw = 0 };
@@ -1378,6 +1394,7 @@ const Watchdog = struct {
                     _ = std.c.write(2, name.ptr, name.len);
                     _ = std.c.write(2, "\n", 1);
                 }
+                dumpThreads();
                 std.c._exit(124);
             }
             sleepMs(50);
