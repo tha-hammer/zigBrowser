@@ -135,9 +135,14 @@ uint32_t zb_automation_run_generation(void);
 /* Whether window `id` is open now (snapshot). */
 int zb_automation_window_alive(uint32_t id);
 /* Every live window as a JSON array, the original primary first:
- * [{"id":n,"url":"...","title":"...","primary":bool,"opener":n|0}, ...]
- * (opener: the window whose page opened it, 0 for none). One consistent
- * snapshot taken on the GTK thread. Free with zb_automation_free. */
+ * [{"id":n,"url":"...","title":"...","primary":bool,"opener":n|0,
+ *   "responsive":bool,"unresponsive_ms":n,"loading":bool,
+ *   "dialog_open":bool,"crashed":"<reason>"|null}, ...]
+ * (opener: the window whose page opened it, 0 for none; responsive:
+ * WebKit's "is-web-process-responsive", and unresponsive_ms how long it has
+ * been false without a break). One consistent snapshot taken on the GTK
+ * thread, which a frozen web process does not block. Free with
+ * zb_automation_free. */
 int zb_automation_list_windows(unsigned int timeout_ms, char **out_json);
 /* Destroy window `id` and return once it is gone (NO_WINDOW if there is no
  * such window). Closing a window ends its web process only when no other

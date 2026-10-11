@@ -1278,7 +1278,21 @@ const FakePort = struct {
         for (popups.open, 0..) |open, i| {
             if (!open) continue;
             // The second popup's web process crashed (v3.8 terminated).
-            try list.append(gpa, .{ .id = @intCast(i + 2), .url = try std.fmt.allocPrint(gpa, "https://login.example/popup-{d}", .{i + 2}), .title = try gpa.dupe(u8, "Sign in"), .primary = false, .opener = 1, .terminated = if (i == 1) .crashed else null });
+            // Health (page.health): the first popup is loading and WebKit
+            // found it unresponsive 500 ms ago (inside the debounce); the
+            // second has a dialog open and was found unresponsive 9 s ago.
+            try list.append(gpa, .{
+                .id = @intCast(i + 2),
+                .url = try std.fmt.allocPrint(gpa, "https://login.example/popup-{d}", .{i + 2}),
+                .title = try gpa.dupe(u8, "Sign in"),
+                .primary = false,
+                .opener = 1,
+                .terminated = if (i == 1) .crashed else null,
+                .web_process_responsive = false,
+                .unresponsive_ms = if (i == 0) 500 else 9000,
+                .loading = i == 0,
+                .dialog_open = i == 1,
+            });
         }
         return list.toOwnedSlice(gpa);
     }
@@ -1613,6 +1627,87 @@ test "N23: page.list, window_id targeting with one queue per window, and page.cl
     const released = try readFrame(held_stream);
     defer testing.allocator.free(released);
     try testing.expect(std.mem.indexOf(u8, released, "\"result\"") != null);
+}
+
+test "watchdog: page.health reports each window's health, debounced, out of band (it answers while a window's queue is held)" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    var fixture = try Fixture.start("health", .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" });
+    defer fixture.deinit();
+    var popups = FakePort.Popups{ .ports = .{
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+        .{ .eval_reply = "{\"ok\":true,\"value\":{\"elements\":[]}}" },
+    } };
+    fixture.fake.popups = &popups;
+    var stream = try fixture.connect();
+    defer stream.close(testing.io);
+
+    // The primary window's queue is held by a command the page never answers.
+    fixture.fake.hold.store(true, .release);
+    defer fixture.fake.hold.store(false, .release);
+    var held_stream = try fixture.connect();
+    defer held_stream.close(testing.io);
+    try writeFrame(held_stream, "{\"jsonrpc\":\"2.0\",\"method\":\"dom.query\",\"params\":{\"selector\":\"css=a\"},\"id\":1}");
+    var waited: u32 = 0;
+    while (!fixture.fake.held.load(.acquire)) : (waited += 1) {
+        if (waited > 5000) return error.NeverHeld;
+        try testing.io.sleep(.fromMilliseconds(1), .awake);
+    }
+
+    var health = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.health\",\"params\":{},\"id\":2}");
+    defer health.deinit();
+    const result = health.value.object.get("result").?.object;
+    try testing.expectEqual(@as(i64, automation_server.health_debounce_ms), result.get("debounce_ms").?.integer);
+    const pages = result.get("pages").?.array.items;
+    try testing.expectEqual(@as(usize, 3), pages.len);
+
+    const primary = pages[0].object;
+    try testing.expectEqualStrings("window-1", primary.get("window_id").?.string);
+    try testing.expectEqualStrings("file:///fixture/index.html", primary.get("url").?.string);
+    try testing.expect(primary.get("responsive").?.bool);
+    try testing.expectEqual(@as(i64, 0), primary.get("unresponsive_ms").?.integer);
+    try testing.expect(!primary.get("loading").?.bool);
+    try testing.expect(!primary.get("dialog_open").?.bool);
+    try testing.expect(primary.get("crashed") == null);
+
+    // Unresponsive for less than the debounce: still responsive, with the time so far.
+    const recent = pages[1].object;
+    try testing.expectEqualStrings("window-2", recent.get("window_id").?.string);
+    try testing.expect(recent.get("responsive").?.bool);
+    try testing.expectEqual(@as(i64, 500), recent.get("unresponsive_ms").?.integer);
+    try testing.expect(recent.get("loading").?.bool);
+
+    const stuck = pages[2].object;
+    try testing.expect(!stuck.get("responsive").?.bool);
+    try testing.expectEqual(@as(i64, 9000), stuck.get("unresponsive_ms").?.integer);
+    try testing.expect(stuck.get("dialog_open").?.bool);
+    try testing.expectEqualStrings("crashed", stuck.get("crashed").?.string);
+
+    // page.list's answer has no health fields.
+    var listed = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.list\",\"params\":{},\"id\":3}");
+    defer listed.deinit();
+    const first = listed.value.object.get("result").?.object.get("pages").?.array.items[0].object;
+    try testing.expect(first.get("responsive") == null and first.get("unresponsive_ms") == null);
+
+    // page.health takes no params.
+    var bad = try rpc(stream, "{\"jsonrpc\":\"2.0\",\"method\":\"page.health\",\"params\":{\"window_id\":\"window-1\"},\"id\":4}");
+    defer bad.deinit();
+    try testing.expectEqual(@as(i64, -32602), errorOf(bad).?.code);
+
+    fixture.fake.hold.store(false, .release);
+    const released = try readFrame(held_stream);
+    defer testing.allocator.free(released);
+    try testing.expect(std.mem.indexOf(u8, released, "\"result\"") != null);
+}
+
+test "watchdog: a window counts as unresponsive only after WebKit has said so for the whole debounce" {
+    const debounce = automation_server.health_debounce_ms;
+    try testing.expect(automation_server.healthResponsive(true, 0));
+    try testing.expect(automation_server.healthResponsive(false, 0));
+    try testing.expect(automation_server.healthResponsive(false, debounce - 1));
+    try testing.expect(!automation_server.healthResponsive(false, debounce));
+    try testing.expect(!automation_server.healthResponsive(false, debounce * 10));
+    // WebKit's own answer wins once it says responsive again.
+    try testing.expect(automation_server.healthResponsive(true, debounce * 10));
 }
 
 test "N23: without window support, page.list and window_id are -32011 unsupported (with the command's normal root span)" {

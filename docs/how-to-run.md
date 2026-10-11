@@ -122,9 +122,17 @@ on stderr. With `off`, the browser prints `zigBrowser: media-source=off`.
 Why: on 2026-10-11 an Instagram window froze twice. Its web process was
 stuck in WebKitGTK 2.54.0's Media Source seek, in a lock cycle with
 GStreamer (WebKit bugs 320336 and 272975; review log, "Instagram media
-deadlock investigation"). No environment variable avoided it. Sites
-that find no `MediaSource` usually play plain video files instead. The
-default stays `on` until the user decides from evidence.
+deadlock investigation"). No environment variable avoided it. A site
+that has a plain-video fallback uses it when it finds no `MediaSource`;
+a site without one may not play video at all. The default stays `on`
+until the user decides from evidence.
+
+The reviewer's retest of `off` on a private Xvfb (review log, "Media Source
+opt-out review (c0c1c18)"): the MSE pages stayed responsive, and a page
+that checks for `MediaSource` chose and played plain MP4. A separate hang
+in WebKit's plain-video path, in the same GStreamer area, still happened
+with a deliberately extreme fixture, with `off` and `on` alike. So `off`
+removes the MSE deadlock, not every media freeze.
 
 How: `off` sets WebKit's `enable-mediasource` setting to false. WebKitGTK
 2.54.0 ignores that setting: a bare WebKit view still runs Media Source

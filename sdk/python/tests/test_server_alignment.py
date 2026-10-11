@@ -44,6 +44,7 @@ INVOCATIONS = {
     "page.title": lambda zb: zb.page.title(),
     "page.evaluate": lambda zb: zb.page.evaluate("1+1"),
     "page.list": lambda zb: zb.page.list(),
+    "page.health": lambda zb: zb.page.health(),
     "page.close": lambda zb: zb.page.close("window-2"),
     "page.navigate.onBeforeUnload": lambda zb: zb.page.navigate("https://example.com/", on_before_unload="accept"),
     "dialog.get": lambda zb: zb.dialog.get(),

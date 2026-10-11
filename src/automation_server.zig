@@ -472,7 +472,7 @@ fn handleRequestWith(
         return handleSocial(allocator, id_json, method, verb, params_json, engine, queue, social, route, build_info);
     }
 
-    if (std.mem.eql(u8, method, "page.list") or std.mem.eql(u8, method, "page.close")) {
+    if (std.mem.eql(u8, method, "page.list") or std.mem.eql(u8, method, "page.close") or std.mem.eql(u8, method, "page.health")) {
         return handleWindows(allocator, id_json, method, params_json, engine, queue, route, build_info);
     }
     if (std.mem.eql(u8, method, "dialog.get") or std.mem.eql(u8, method, "dialog.respond")) {
@@ -654,7 +654,24 @@ fn outcomeJson(allocator: std.mem.Allocator, id_json: []const u8, outcome: engin
     };
 }
 
+/// How long WebKit must keep saying a window's web process is unresponsive
+/// before page.health reports it (WebKit itself says so only after the
+/// process missed a reply for about 3 s). Busy JavaScript that ends sooner
+/// is not reported.
+pub const health_debounce_ms: u64 = 2000;
+
+/// page.health's `responsive`: false only after WebKit has said
+/// unresponsive for the whole debounce, and true again as soon as it says
+/// responsive. Suspected only: a long, finite busy loop looks the same.
+pub fn healthResponsive(web_process_responsive: bool, unresponsive_ms: u64) bool {
+    return web_process_responsive or unresponsive_ms < health_debounce_ms;
+}
+
 /// page.list {} -> {pages:[{window_id, url, title, primary, opener_window_id?}]}.
+/// page.health {} -> {debounce_ms, pages:[{window_id, url, responsive,
+/// unresponsive_ms, loading, dialog_open, crashed?}]} (watchdog slice 1).
+/// Neither takes a queue turn: they answer while a window's command waits
+/// on a frozen page.
 /// page.close {window_id} -> {ok:true}; runs in that window's queue turn.
 /// The primary window cannot be closed (-32602 primary_window).
 fn handleWindows(
@@ -668,6 +685,7 @@ fn handleWindows(
     build_info: automation.telemetry.BuildInfo,
 ) error{OutOfMemory}![]u8 {
     const closing = std.mem.eql(u8, method, "page.close");
+    const health = std.mem.eql(u8, method, "page.health");
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return jsonRpcError(allocator, id_json, -32602, "Invalid params", null),
@@ -689,6 +707,7 @@ fn handleWindows(
     const Call = struct {
         target: page_port.WindowId,
         closing: bool,
+        health: bool,
 
         fn run(self: @This(), gpa: std.mem.Allocator, ext: *engine_mod.External) error{OutOfMemory}!engine_mod.Outcome {
             // Through ext: each PagePort call gets its platform child span,
@@ -696,6 +715,7 @@ fn handleWindows(
             // Unsupported -> unsupported, EvalFailed -> -32603, ...).
             const windows = ext.listWindows(gpa, window_op_timeout_ms) catch |err| return engine_mod.portFailure(gpa, err, .action, ext.ids());
             defer page_port.freeWindows(gpa, windows);
+            if (self.health) return healthJson(gpa, windows);
             if (!self.closing) return listJson(gpa, windows);
             for (windows) |w| if (w.id == self.target and w.primary) {
                 // Invalid params, recorded as such on the root span too.
@@ -722,6 +742,29 @@ fn handleWindows(
             w.writeAll("]}") catch return error.OutOfMemory;
             return .{ .result = try out.toOwnedSlice() };
         }
+
+        fn healthJson(gpa: std.mem.Allocator, windows: []const page_port.WindowInfo) error{OutOfMemory}!engine_mod.Outcome {
+            var out: std.Io.Writer.Allocating = .init(gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            w.print("{{\"debounce_ms\":{d},\"pages\":[", .{health_debounce_ms}) catch return error.OutOfMemory;
+            for (windows, 0..) |window, i| {
+                if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+                const unresponsive_ms: u64 = if (window.web_process_responsive) 0 else window.unresponsive_ms;
+                w.print("{{\"window_id\":\"" ++ window_prefix ++ "{d}\",\"url\":{f},\"responsive\":{},\"unresponsive_ms\":{d},\"loading\":{},\"dialog_open\":{}", .{
+                    window.id,
+                    std.json.fmt(window.url, .{}),
+                    healthResponsive(window.web_process_responsive, window.unresponsive_ms),
+                    unresponsive_ms,
+                    window.loading,
+                    window.dialog_open,
+                }) catch return error.OutOfMemory;
+                if (window.terminated) |reason| w.print(",\"crashed\":\"{s}\"", .{@tagName(reason)}) catch return error.OutOfMemory;
+                w.writeAll("}") catch return error.OutOfMemory;
+            }
+            w.writeAll("]}") catch return error.OutOfMemory;
+            return .{ .result = try out.toOwnedSlice() };
+        }
     };
 
     var close_route = route;
@@ -739,7 +782,7 @@ fn handleWindows(
         .route = close_route,
         .build = build_info,
         .no_page_reason = "no_window",
-    }, Call{ .target = target, .closing = closing }, Call.run);
+    }, Call{ .target = target, .closing = closing, .health = health }, Call.run);
     defer outcome.deinit(allocator);
     return outcomeJson(allocator, id_json, outcome);
 }

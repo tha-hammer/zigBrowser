@@ -92,6 +92,21 @@ export interface PageInfo {
   crashed?: "crashed" | "memory_limit" | "terminated_by_api";
 }
 
+export interface PageHealth {
+  /** "window-<n>" */
+  window_id: string;
+  url: string;
+  /** False once WebKit has found the window's web process unresponsive for
+   *  `debounce_ms` without a break (a suspicion: a long busy script looks
+   *  the same). */
+  responsive: boolean;
+  /** How long WebKit has said unresponsive without a break (0 if not). */
+  unresponsive_ms: number;
+  loading: boolean;
+  dialog_open: boolean;
+  crashed?: "crashed" | "memory_limit" | "terminated_by_api";
+}
+
 export interface ActionOptions {
   force?: boolean;
   trial?: boolean;
@@ -227,6 +242,14 @@ export class PageNamespace {
    */
   list(): Promise<{ pages: PageInfo[] }> {
     return this.call("page.list", {}) as Promise<{ pages: PageInfo[] }>;
+  }
+  /**
+   * Every open window's health, primary first. It answers at once even
+   * while a window's commands wait on a frozen page. Nothing is killed or
+   * reloaded.
+   */
+  health(): Promise<{ debounce_ms: number; pages: PageHealth[] }> {
+    return this.call("page.health", {}) as Promise<{ debounce_ms: number; pages: PageHealth[] }>;
   }
   /** Close a window from page.list (not the primary one). */
   close(windowId: string): Promise<OkResult> {

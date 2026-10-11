@@ -70,8 +70,8 @@ played the same video in real time.
 `window.MediaSource` from every page in every window, popups included.
 It is a mitigation for a WebKitGTK 2.54.0 deadlock that froze an
 Instagram window's web process. The default is `on`. While it is off,
-`page.evaluate("typeof MediaSource")` answers `"undefined"`, and video
-sites fall back to plain media. Details: `docs/how-to-run.md` ("Media
+`page.evaluate("typeof MediaSource")` answers `"undefined"`; video sites
+that have a plain-video fallback use it. Details: `docs/how-to-run.md` ("Media
 Source Extensions").
 
 ## Connect: socket, framing and token
@@ -226,6 +226,7 @@ Options shown with `?` are optional. Results are the JSON-RPC `result`.
 | `page.screenshot` | `fullPage?`, `timeout_ms?` | `{data, width, height}`: `data` is a base64 PNG; a backend without screenshots answers -32603, a PNG over 16 MiB -32603 with `data.reason = "screenshot_too_large"`; a capture that ends past `timeout_ms` -32009 `screenshot_deadline` |
 | `page.list` | — | `{pages:[{window_id, url, title, primary, opener_window_id?, crashed?}]}`: every open window, primary first. `crashed` (`"crashed"`, `"memory_limit"`, `"terminated_by_api"`): that window's web process died since its last page load; its page is gone (calls on it fail) until it loads a page again. The browser also prints `zigBrowser: window <n>: web process terminated (<reason>)` on stderr. The browser's own endings print nothing: `page.close` and a normal quit (SIGINT or SIGTERM) |
 | `page.close` | `window_id` | `{ok:true}`; the primary window cannot be closed (-32602 `primary_window`) |
+| `page.health` | — | `{debounce_ms, pages:[{window_id, url, responsive, unresponsive_ms, loading, dialog_open, crashed?}]}`: every open window's health, primary first. It never waits behind a window's commands. See [A frozen page](#a-frozen-page-pagehealth) |
 
 Other `page.*` calls and every `dom.*` call take an optional `window_id` (from
 `page.list`, e.g. `"window-2"`) to act on that window instead of the
@@ -238,6 +239,43 @@ always use the primary window.
 Closing a popup, with `page.close` or by the page's own `window.close()`
 (for example when a login popup finishes), leaves its opener's page as it
 was: same URL, same page state.
+
+### A frozen page: `page.health`
+
+A page whose web process stops answering (a script stuck in a loop, or the
+WebKitGTK 2.54.0 media deadlock that froze an Instagram window) makes every
+command on that window wait until its deadline. `page.health` answers at
+once anyway, like `page.list`: it never waits in a window's command queue,
+and the browser's own thread answers it, not the page.
+
+For each window:
+- `responsive`: false once WebKit has said the window's web process is
+  unresponsive for `debounce_ms` (2000) without a break. WebKit itself says
+  so only after the process has missed a reply for about 3 s, so a frozen
+  page shows `responsive: false` about 5 s after it froze. It turns true
+  again as soon as WebKit says the process answers.
+- `unresponsive_ms`: how long WebKit has said unresponsive without a break,
+  0 when it has not. A value below `debounce_ms` still has
+  `responsive: true`.
+- `loading`: a page load is in progress.
+- `dialog_open`: a page dialog is open (see Dialogs below). A dialog blocks
+  the page's script on purpose; it does not make the window unresponsive.
+- `crashed`: as in `page.list`.
+
+WebKit checks only while it waits for the page to take input: a click,
+a key, a scroll or a mouse move, from a person or from native input
+(`input: "native"`). A page that freezes while nothing is sent to it, or
+that only gets script commands (`page.evaluate`, synthetic `dom.*`), keeps
+`responsive: true` (measured: 20 s with no change). Those commands still
+end at their deadline. Native input is sent one command at a time across
+all windows, so a native command waiting on a frozen page delays native
+input to other windows until its deadline.
+
+`responsive: false` is a suspicion, not a verdict: a script that is busy
+for a long time and then finishes looks the same until it finishes. Windows
+that share a web process (a popup and its opener) freeze together.
+Nothing is killed or reloaded: ending a frozen web process is a later,
+separate step that a person confirms.
 
 ### Dialogs
 

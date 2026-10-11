@@ -330,6 +330,18 @@ has a section for each; the section names are quoted below.
   `14676f3`).** See "dry_run" below.
 - **`--media-source on|off` (the Instagram media freeze follow-up).** See
   "The Instagram media freeze" below. The default is still `on`.
+- **`page.health` (watchdog slice 1).** Each window's health: `responsive`,
+  `unresponsive_ms`, `loading`, `dialog_open` and `crashed`. It answers at
+  once even while the frozen window's commands wait, so a frozen web
+  process no longer has to be found by hand with eu-stack. `responsive`
+  turns false once WebKit has said the web process is unresponsive for 2 s
+  without a break, about 5 s after a freeze. WebKit only checks while the
+  page owes an answer to input (a person's or native automation input); a
+  page that freezes with nothing sent to it stays `responsive: true`. It
+  only reports: killing or
+  reloading a frozen page (`page.recover`) is a later slice that needs a
+  design the user confirms. `docs/how-to-automate.md` ("A frozen page")
+  has the details.
 
 ### Live selector refresh (the orchestrator's read-only probes)
 
@@ -521,16 +533,20 @@ Review: "Instagram media deadlock investigation" (`d87ca04`).
 
 The follow-up adds `--media-source on|off`, and `ZIGBROWSER_MEDIA_SOURCE`
 for when the flag is not given. With `off`, no page in any window, popup or
-`--screenshot` sees `MediaSource`, so sites should use plain video. The
-default stays `on` until the user decides from evidence.
+`--screenshot` sees `MediaSource`; sites that have a plain-video fallback
+use it. The default stays `on` until the user decides from evidence.
+RoseCat approved it (review "Media Source opt-out review (c0c1c18)"): with
+`off` the MSE pages stayed responsive and a fallback page played MP4, but
+a separate plain-video hang in GStreamer still occurred with an extreme
+fixture, with `off` and `on` alike.
 
 WebKitGTK 2.54.0 ignores its own `enable-mediasource` setting: a bare
 WebKit view with it off still runs MSE. So `off` sets the setting and also
 adds a script that runs in every frame before the page's scripts and
 deletes the MSE names. `tests/e2e/media_source_test.py` checks what pages
-see, not the setting. Whether `off` stops the freeze is for RoseCat's
-Xvfb repro to show. Whether Instagram plays video with MSE off is not
-checked live yet.
+see, not the setting. RoseCat's Xvfb repro (above) found no MSE hang
+with `off`. Whether Instagram plays video with MSE off is not checked live
+yet.
 
 ### Test harness: one launcher for every E2E browser
 

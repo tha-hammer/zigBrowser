@@ -131,6 +131,21 @@ test "shim window JSON becomes WindowInfo with the web-process termination reaso
     try std.testing.expectError(error.EvalFailed, parseWindows(gpa, "[{\"id\":1,\"url\":\"\",\"title\":\"\",\"primary\":true,\"opener\":0,\"crashed\":\"melted\"}]"));
 }
 
+test "shim window JSON carries each window's health (page.health); without it a window counts as healthy" {
+    const gpa = std.testing.allocator;
+    const windows = try parseWindows(gpa,
+        \\[{"id":1,"url":"","title":"","primary":true,"opener":0,"responsive":false,"unresponsive_ms":4200,"loading":true,"dialog_open":false,"crashed":null},
+        \\ {"id":2,"url":"","title":"","primary":false,"opener":1,"responsive":true,"unresponsive_ms":0,"loading":false,"dialog_open":true,"crashed":null},
+        \\ {"id":3,"url":"","title":"","primary":false,"opener":1,"crashed":null}]
+    );
+    defer page_port.freeWindows(gpa, windows);
+    try std.testing.expect(!windows[0].web_process_responsive);
+    try std.testing.expectEqual(@as(u64, 4200), windows[0].unresponsive_ms);
+    try std.testing.expect(windows[0].loading and !windows[0].dialog_open);
+    try std.testing.expect(windows[1].web_process_responsive and windows[1].dialog_open and !windows[1].loading);
+    try std.testing.expect(windows[2].web_process_responsive and windows[2].unresponsive_ms == 0);
+}
+
 test "shim dialog JSON becomes DialogInfo, and malformed JSON is EvalFailed" {
     const gpa = std.testing.allocator;
     const dialogs = try parseDialogs(gpa,
@@ -177,7 +192,18 @@ fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError
 /// The shim's window list JSON as WindowInfo (owned by `gpa`). Malformed
 /// JSON or an unknown termination reason is EvalFailed.
 fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.WindowInfo {
-    const Wire = struct { id: u32, url: []const u8, title: []const u8, primary: bool, opener: u32, crashed: ?[]const u8 = null };
+    const Wire = struct {
+        id: u32,
+        url: []const u8,
+        title: []const u8,
+        primary: bool,
+        opener: u32,
+        crashed: ?[]const u8 = null,
+        responsive: bool = true,
+        unresponsive_ms: u64 = 0,
+        loading: bool = false,
+        dialog_open: bool = false,
+    };
     const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.EvalFailed, // malformed shim JSON
@@ -206,7 +232,18 @@ fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
             }
         else
             null;
-        info.* = .{ .id = wire.id, .url = url_copy, .title = title_copy, .primary = wire.primary, .opener = if (wire.opener == 0) null else wire.opener, .terminated = terminated };
+        info.* = .{
+            .id = wire.id,
+            .url = url_copy,
+            .title = title_copy,
+            .primary = wire.primary,
+            .opener = if (wire.opener == 0) null else wire.opener,
+            .terminated = terminated,
+            .web_process_responsive = wire.responsive,
+            .unresponsive_ms = wire.unresponsive_ms,
+            .loading = wire.loading,
+            .dialog_open = wire.dialog_open,
+        };
         filled += 1;
     }
     return windows;

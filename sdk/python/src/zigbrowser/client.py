@@ -204,6 +204,16 @@ class PageNamespace:
         login popup."""
         return self._client.call("page.list", {})
 
+    def health(self) -> dict:
+        """Every open window's health, primary first: {debounce_ms, pages:
+        [{window_id, url, responsive, unresponsive_ms, loading, dialog_open,
+        crashed?}]}. It answers at once even while a window's commands wait
+        on a frozen page. responsive is false once WebKit has found the
+        window's web process unresponsive for debounce_ms without a break
+        (a suspicion: a long busy script looks the same); unresponsive_ms is
+        how long so far. Nothing is killed or reloaded."""
+        return self._client.call("page.health", {})
+
     def close(self, window_id: str) -> dict:
         """Close a window from page.list (not the primary one)."""
         return self._client.call("page.close", {"window_id": window_id})

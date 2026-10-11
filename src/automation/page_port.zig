@@ -101,6 +101,15 @@ pub const WindowInfo = struct {
     /// v3.8: the window's web process died since its last page load (its
     /// page is gone; the window shows nothing until it loads again).
     terminated: ?Termination = null,
+    /// v3.9 health (page.health): WebKit's own view of the web process
+    /// (false once it missed WebKit's reply deadline, about 3 s), and how
+    /// long it has said false without a break (0 while true).
+    web_process_responsive: bool = true,
+    unresponsive_ms: u64 = 0,
+    /// A page load is in progress.
+    loading: bool = false,
+    /// A page dialog is open on the window (dialog.get lists it).
+    dialog_open: bool = false,
 };
 
 /// v3.8: why a window's web process ended (WebKit's reasons).

@@ -113,6 +113,11 @@ struct ZbWindow {
   gulong sig_close;
   gulong sig_script_dialog;
   gulong sig_web_process_terminated;
+  gulong sig_responsive_notify;
+  /* WebKit's "is-web-process-responsive" turned false at this monotonic
+   * time (microseconds) and has stayed false since; 0 while responsive.
+   * GTK thread only; page.health reports it (it debounces). */
+  gint64 unresponsive_since_us;
   /* Why this window's web process ended since its last committed load
    * ("crashed", "memory_limit", "terminated_by_api"; NULL: alive). A
    * static string, GTK thread only; page.list reports it. */
@@ -162,6 +167,8 @@ static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog 
 static void on_window_web_process_terminated(WebKitWebView *view,
                                              WebKitWebProcessTerminationReason reason,
                                              gpointer user_data);
+static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
+                                        gpointer user_data);
 static int auto_dialog_close(ZbWindow *win, int accept, const char *text);
 static int auto_window_blocked(ZbWindow *win);
 static void auto_policy_dialog_close(ZbWindow *win, int accept);
@@ -913,6 +920,10 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
       g_signal_handler_disconnect(win->view, win->sig_file_chooser);
       win->sig_file_chooser = 0;
     }
+    if (win->sig_responsive_notify != 0) {
+      g_signal_handler_disconnect(win->view, win->sig_responsive_notify);
+      win->sig_responsive_notify = 0;
+    }
   }
 
   if (win->ucm != NULL) {
@@ -1169,6 +1180,9 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
       view, "script-dialog", G_CALLBACK(on_window_script_dialog), win, NULL, 0);
   win->sig_web_process_terminated = g_signal_connect_data(
       view, "web-process-terminated", G_CALLBACK(on_window_web_process_terminated), win, NULL, 0);
+  win->sig_responsive_notify = g_signal_connect_data(
+      view, "notify::is-web-process-responsive", G_CALLBACK(on_window_responsive_notify), win, NULL, 0);
+  on_window_responsive_notify(view, NULL, win); /* a popup of an unresponsive process */
   win->sig_destroy = g_signal_connect_data(win->gtk_window, "destroy",
                                            G_CALLBACK(on_window_destroy), win,
                                            NULL, 0);
@@ -3857,8 +3871,18 @@ static void auto_list_windows(void *ctx) {
       auto_json_string(out, webkit_web_view_get_uri(win->view));
       g_string_append(out, ",\"title\":");
       auto_json_string(out, webkit_web_view_get_title(win->view));
-      g_string_append_printf(out, ",\"primary\":%s,\"opener\":%u,\"crashed\":", win->auto_id == 1 ? "true" : "false",
+      g_string_append_printf(out, ",\"primary\":%s,\"opener\":%u", win->auto_id == 1 ? "true" : "false",
                              win->auto_opener_id);
+      /* Health (page.health): WebKit's own responsiveness, the time it has
+       * said false without a break, loading, and an open dialog. */
+      gint64 unresponsive_ms =
+          win->unresponsive_since_us != 0 ? (g_get_monotonic_time() - win->unresponsive_since_us) / 1000 : 0;
+      g_string_append_printf(out,
+                             ",\"responsive\":%s,\"unresponsive_ms\":%" G_GINT64_FORMAT
+                             ",\"loading\":%s,\"dialog_open\":%s,\"crashed\":",
+                             win->unresponsive_since_us == 0 ? "true" : "false", unresponsive_ms,
+                             webkit_web_view_is_loading(win->view) ? "true" : "false",
+                             (win->dialog != NULL || win->policy_dialog != NULL) ? "true" : "false");
       if (win->terminated != NULL) {
         g_string_append_printf(out, "\"%s\"}", win->terminated);
       } else {
@@ -4156,6 +4180,20 @@ static void auto_dialog_opened(ZbWindow *win) {
  * page is gone and the window shows nothing until it loads again. Record
  * why for page.list and say so on stderr, so a blank window is
  * diagnosable. Every view in a process family gets this. */
+/* WebKit says the web process missed (false) or met (true) its reply
+ * deadline. Only the start of an unbroken false stretch is kept; true ends
+ * it. Nothing is killed or recovered here. */
+static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
+                                        gpointer user_data) {
+  (void)pspec;
+  ZbWindow *win = (ZbWindow *)user_data;
+  if (webkit_web_view_get_is_web_process_responsive(view)) {
+    win->unresponsive_since_us = 0;
+  } else if (win->unresponsive_since_us == 0) {
+    win->unresponsive_since_us = g_get_monotonic_time();
+  }
+}
+
 static void on_window_web_process_terminated(WebKitWebView *view,
                                              WebKitWebProcessTerminationReason reason,
                                              gpointer user_data) {

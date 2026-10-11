@@ -24,6 +24,13 @@ Slice 3/4 (Linux GTK now):
   the timer releases it, at 16 s at once); the never-committing related
   popup gets LOAD_FAIL without ending the shared process; a lone window
   whose load never commits still has its web process ended)
+- `page_health_test.py` (gate step: `page.health`. A native click runs
+  `while (true) {}` in window 1. page.health answers at once while that
+  click holds window 1's queue, and window 1 turns `responsive: false`
+  within WebKit's deadline plus the debounce. A popup with its own web
+  process stays responsive and answers. A 9 s busy loop turns false, then
+  true again. An open alert shows `dialog_open` and stays responsive. Only
+  a loading window shows `loading`)
 - `media_source_test.py` (gate step: `--media-source off` and
   `ZIGBROWSER_MEDIA_SOURCE=off` hide `MediaSource` from window 1, a
   same-origin popup, a cross-origin noopener popup, an about:blank iframe
