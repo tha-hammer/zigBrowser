@@ -2200,3 +2200,118 @@ Xvfb, exited 0 with seed `0x2e78fc95`:
 The X production-chain E2E reported `compose-dialog-over-timeline` and
 `x-flows` PASS. The disposable export was deleted immediately. Verdict mailed
 to BlueBeaver as Agent Mail 4977.
+
+## Page-dialog review at a8678c1
+
+**Status: BLOCKED pending follow-up.** The native ownership and primary-window
+production chain are otherwise sound: the shim owns one explicit
+`WebKitScriptDialog` reference per window, duplicates prompt text across the C
+ABI, closes and unreferences through one GTK-thread path, and the synchronous
+main-thread bridge keeps call storage alive even if the caller's wait expires.
+The socket-level dialog e2e uses the real binary, server, engine, GTK adapter,
+and WebKit page; it covers alert, both confirm outcomes, prompt text/dismiss,
+beforeunload fail/accept/dismiss, popup targeting, and popup closure.
+
+Open blockers from the exact committed diff:
+
+- `src/automation/engine.zig:1102` still bounded root-span automation errors at
+  `.cancelled`, excluding new `-32013 dialog_open`; the root span therefore had
+  no `automation.error`. `src/automation/social_flow_routes.zig:557-558` had
+  the same stale bound and emitted `internal` for a dialog-blocked compound
+  flow. The owner follow-ups must derive this bound from the taxonomy and test
+  both root and compound spans.
+- `sdk/node/src/errors.ts:19` still used `AUTOMATION_MIN = -32012`, so the Node
+  SDK classified `dialog_open` as a generic `ProtocolError`. Its error table
+  and wire/API coverage must include the thirteenth code and the new methods.
+  The independent legacy enum in `src/automation_rpc.zig:14-27` was also still
+  twelve values and should reuse the canonical taxonomy rather than drift.
+- A popup dialog blocks the opener's JavaScript because related WebViews share
+  a WebKit process, but the committed pre-dispatch checks inspect only the
+  target window (`src/webkit_shim.c:2125-2128`, `:2654-2657`) and
+  `auto_dialog_opened` completes only jobs whose target is the dialog's window
+  (`:3966-3990`). Thus a known popup alert can leave an opener DOM/eval call to
+  consume its deadline. Related-window jobs must fail fast with `dialog_open`
+  both when already open and when the dialog appears in flight, while the
+  dialog remains available to `dialog.get/respond`; a production-chain popup
+  regression is required.
+- The automatic beforeunload answer is deferred with `g_idle_add`, and the
+  code explicitly permits a person or `dialog.respond` to close the dialog
+  first (`src/webkit_shim.c:3925-3957`). In that ordering the idle callback
+  skips its reconciliation. A requested dismiss that actually stays, or an
+  accept whose dialog is dismissed, can remain in flight until
+  `navigation_timeout`; an opposite human answer can also contradict the
+  requested policy. Every close ordering must give the tracked navigation one
+  exactly-once outcome, with a deterministic race regression.
+- The dialog guards cover ordinary eval and load jobs, but
+  `auto_start_files` (`src/webkit_shim.c:2314-2353`) and full-page screenshot
+  measurement (`:2627-2643`) call page JavaScript directly. They have no
+  already-open check, and `auto_dialog_opened` does not complete these job
+  kinds when a dialog appears in flight. The native input document guard is a
+  third direct JS call (`:3494-3514`) that is missed when a dialog opens after
+  locate but before dispatch. `dom.setInputFiles`, a full-page screenshot, and
+  an in-flight native guard can therefore still wait to deadline; the follow-up
+  must include them without weakening set-files' late-chooser tombstone or
+  native no-dispatch-after-failure guarantees.
+
+Findings were mailed to BlackRobin and BlueBeaver as 4984, 4985, 4987, 4990,
+and 4991.
+Approval and an independent gate are deferred until the follow-up commits land.
+
+## LinkedIn/Instagram selector refresh review at d9fc82b
+
+**Status: APPROVED.** The wrong-person risk is fail-closed in production.
+`src/linkedin.zig:88` makes
+`owner_actions_enabled` an immutable false constant. Although the future
+scoped path can be exercised through `flow_steps.Site.unverified_actions`, the
+production server constructs `social_flow_routes.Env` without that field at
+`src/automation_server.zig:469`; repository-wide xref at this commit finds the
+true capability only in unit/route tests.
+
+All three profile mutations—Connect, Follow, and Message from a profile—open
+the page, pass the signed-in gate, check the final URL with both `Site.allows`
+and `/in/<x>`, read the owner from `<Name> | LinkedIn`, and then return
+`linkedin_profile_owner_unverified` before any click
+(`src/linkedin.zig:248-295`, `src/linkedin.zig:404-475`). The socket-level
+`social_flows_test.py` drives the real server and
+asserts for each that `result` is null, `wrongPerson` is empty, and the event
+list is empty. This test covers the production refusal; the prospective
+enabled selector remains intentionally test-only/unverified. That helper uses
+the exact title-derived label outside `aside`, counts the owner and the same
+label across the document, rejects zero/multiple/duplicate matches, and sends
+a strict click (`:447-465`). It therefore never falls back to a generic
+sidebar button, but must not be enabled until the live owner container is
+verified.
+
+Instagram story viewing follows the same safe-off pattern: the final URL must
+be on the configured site and have a real `/stories/<x>` path, then production
+returns `instagram_story_viewer_unverified` before waiting for media or
+clicking Next (`src/instagram.zig:141-159,196-224`). The production-chain e2e
+keeps both the ordinary story and an earlier decoy carousel untouched. The
+future frames loop strictly rejects more than one Next.
+
+The refreshed fixtures use synthetic `Sam Example` / `Riley Sample`; a search
+found none of the known real-person names removed from the prior fixtures.
+The signed-out fixture includes a content-only Me decoy, the LinkedIn fixture
+renders owner actions late beside suggestion-card actions, and the Instagram
+fixture renders late profile buttons plus both highlight and story Next
+controls. `git diff --check d9fc82b^ d9fc82b` is clean.
+
+The follow-up docs commits `3b53df8` and `040a719` were also reviewed. Their net
+tree documents strict `dom.waitFor`, the X compose dialog/leave prompt, and the
+safe-off social-flow reasons. `040a719` removes only the three dialog-document
+hunks accidentally captured from BlackRobin's working tree; those edits remain
+unstaged for their owner. The historical `3b53df8` subject/body described the X
+draft failure as `-32007`, but both the committed docs and resulting tree
+correctly say `-32013`; no history rewrite is warranted.
+
+Independent clean-export gate at exact `040a719`, with a fresh cache and Xvfb,
+exited 0 with seed `0x892ba706`:
+
+```text
+Build Summary: 87/87 steps succeeded; 671/671 tests passed
+```
+
+The selector production-chain cases reported `linkedin`, `instagram`,
+`social-flows`, and `x-flows` PASS. The disposable export was deleted
+immediately. Preliminary review was mailed to BlueBeaver as Agent Mail 4992;
+the final APPROVE follows this review-log commit.
