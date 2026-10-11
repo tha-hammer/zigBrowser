@@ -396,6 +396,24 @@ const StalledServer = struct {
     }
 };
 
+/// How long a test server waits on one connection's request or reply. A
+/// browser may open a speculative connection and never send on it: without
+/// a bound the server thread blocks in read() and close() never joins.
+const conn_io_bound_ms = 2000;
+
+/// accept() for the serving test servers: the connection's reads and writes
+/// are bounded by `conn_io_bound_ms`; `accepted` counts accepted connections
+/// (a test can wait for one). Returns < 0 once the listener is shut.
+fn acceptBounded(listener: c_int, accepted: *std.atomic.Value(u32)) c_int {
+    const conn = std.c.accept(listener, null, null);
+    if (conn < 0) return conn;
+    defer _ = accepted.fetchAdd(1, .release);
+    const tv: std.c.timeval = .{ .sec = conn_io_bound_ms / 1000, .usec = (conn_io_bound_ms % 1000) * 1000 };
+    _ = std.c.setsockopt(conn, std.c.SOL.SOCKET, std.c.SO.RCVTIMEO, @ptrCast(&tv), @sizeOf(std.c.timeval));
+    _ = std.c.setsockopt(conn, std.c.SOL.SOCKET, std.c.SO.SNDTIMEO, @ptrCast(&tv), @sizeOf(std.c.timeval));
+    return conn;
+}
+
 /// HTTP server for one request: accepts, holds the response for `hold_ms`,
 /// then answers 200 with an empty body. `responded_ms` records when the
 /// response went out (monotonic ms), so a test can order events around it.
@@ -404,6 +422,7 @@ const DelayServer = struct {
     port: u16,
     hold_ms: u64,
     responded_ms: std.atomic.Value(i64) = .{ .raw = 0 },
+    accepted: std.atomic.Value(u32) = .{ .raw = 0 },
     thread: ?std.Thread = null,
 
     fn open(hold_ms: u64) !DelayServer {
@@ -416,7 +435,7 @@ const DelayServer = struct {
     }
 
     fn serve(self: *DelayServer) void {
-        const conn = std.c.accept(self.fd, null, null);
+        const conn = acceptBounded(self.fd, &self.accepted);
         if (conn < 0) return;
         defer _ = std.c.close(conn);
         var req: [2048]u8 = undefined;
@@ -526,6 +545,8 @@ const LiveDriver = struct {
     }
 
     fn run(self: *LiveDriver) void {
+        // Whatever path leaves this driver, the loop ends (no 124 hang).
+        defer _ = c.zb_main_invoke_sync(quit, null, 5000);
         const automation_world: [:0]const u8 = c.ZB_AUTOMATION_WORLD;
         var rc: c_int = 0;
         var err: [*c]u8 = null;
@@ -682,7 +703,6 @@ const LiveDriver = struct {
         self.check(c.zb_automation_debug_cookie_delay_hits() == cookie_hits + 1, "a cookie op is held in flight at loop end");
         c.zb_automation_debug_cookie_delay(0);
         sleepMs(200);
-        _ = c.zb_main_invoke_sync(quit, null, 5000);
     }
 
     fn cookiesJson(self: *LiveDriver, url: ?[*:0]const u8) ?[]const u8 {
@@ -1127,6 +1147,9 @@ const LiveDriver = struct {
         gtk_port.nativeText(port.ptr, "a", token_delay, 5000, &one) catch return self.check(false, "first code point typed");
         var enter_sent: usize = 0;
         const enter_one = gtk_port.nativeText(port.ptr, "\n", token_delay, 10_000, &enter_sent);
+        if (enter_one) |_| {
+            std.debug.print("single navigating Enter: returned success (sent {d})\n", .{enter_sent});
+        } else |e| if (e != error.DocumentChanged) std.debug.print("single navigating Enter: {s} (sent {d})\n", .{ @errorName(e), enter_sent });
         self.check(if (enter_one) |_| false else |e| e == error.DocumentChanged, "a single navigating code point reports DocumentChanged");
         self.check(enter_sent == 1, "that code point was sent");
         var b_sent: usize = 9;
@@ -1144,9 +1167,11 @@ const LiveDriver = struct {
         var nav_err: [*c]u8 = null;
         const nav_start = monotonicMs();
         const link = self.center("navlink") orelse return self.check(false, "link center");
-        const link_result = gtk_port.nativeClick(port.ptr, link[0], link[1], null, 5000);
+        // A 20 s deadline and an 8 s bound: "returned without waiting for
+        // its deadline" holds on a loaded machine too.
+        const link_result = gtk_port.nativeClick(port.ptr, link[0], link[1], null, 20_000);
         self.check(if (link_result) |_| true else |_| false, "native click on a navigating link succeeds");
-        self.check(monotonicMs() - nav_start < 3000, "navigating click returned without waiting for its deadline");
+        self.check(monotonicMs() - nav_start < 8000, "navigating click returned without waiting for its deadline");
         var nav_waited: u32 = 0;
         while (nav_waited < 3000) : (nav_waited += 10) {
             if (std.mem.endsWith(u8, self.str(&nav_rc_dummy, .url), "b.html")) break;
@@ -1159,9 +1184,9 @@ const LiveDriver = struct {
         const navq = self.center("navq") orelse return self.check(false, "form input center");
         gtk_port.nativeClick(port.ptr, navq[0], navq[1], null, 5000) catch return self.check(false, "focus the form input");
         const enter_start = monotonicMs();
-        const enter_result = gtk_port.nativeKey(port.ptr, "Enter", 0, null, 5000);
+        const enter_result = gtk_port.nativeKey(port.ptr, "Enter", 0, null, 20_000);
         self.check(if (enter_result) |_| true else |_| false, "native Enter that submits a form succeeds");
-        self.check(monotonicMs() - enter_start < 3000, "navigating Enter returned without waiting for its deadline");
+        self.check(monotonicMs() - enter_start < 8000, "navigating Enter returned without waiting for its deadline");
         nav_waited = 0;
         while (nav_waited < 3000) : (nav_waited += 10) {
             if (std.mem.indexOf(u8, self.str(&nav_rc_dummy, .url), "b.html") != null) break;
@@ -1329,15 +1354,30 @@ const LiveDriver = struct {
 /// Turns a hung live test into a fast, visible failure. On expiry it writes
 /// with raw write(2) and _exit()s: Zig's panic/print path takes locks that a
 /// wedged thread may hold, which is how an earlier hang became permanent.
+/// The live-test step a driver last started, named by the watchdog when it
+/// fires, so a stuck or crashed step is identifiable.
+var live_stage: std.atomic.Value(usize) = .{ .raw = 0 };
+
+fn stage(comptime name: [:0]const u8) void {
+    live_stage.store(@intFromPtr(name.ptr), .release);
+}
+
 const Watchdog = struct {
     done: std.atomic.Value(bool) = .{ .raw = false },
 
     fn run(self: *Watchdog, limit_ms: u64) void {
-        var waited: u64 = 0;
-        while (!self.done.load(.acquire)) : (waited += 50) {
-            if (waited >= limit_ms) {
+        const end = monotonicMs() + @as(i64, @intCast(limit_ms));
+        while (!self.done.load(.acquire)) {
+            if (monotonicMs() >= end) {
                 const msg = "live bridge watchdog: test exceeded its time limit; aborting\n";
                 _ = std.c.write(2, msg.ptr, msg.len);
+                const at = live_stage.load(.acquire);
+                if (at != 0) {
+                    const name = std.mem.span(@as([*:0]const u8, @ptrFromInt(at)));
+                    _ = std.c.write(2, "live bridge watchdog: last stage: ", 34);
+                    _ = std.c.write(2, name.ptr, name.len);
+                    _ = std.c.write(2, "\n", 1);
+                }
                 std.c._exit(124);
             }
             sleepMs(50);
@@ -1491,6 +1531,7 @@ const ReplaceDriver = struct {
     }
 
     fn run(self: *ReplaceDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const port = gtk_port.pagePort().?;
         var err: [*c]u8 = null;
         _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
@@ -1525,7 +1566,6 @@ const ReplaceDriver = struct {
             std.heap.c_allocator.free(u);
             break :blk false;
         } else |e| e == error.NoPage, "the primary port answers NoPage after id 1 closed");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
 
@@ -1599,6 +1639,7 @@ const SelfCloseDriver = struct {
     }
 
     fn run(self: *SelfCloseDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         var err: [*c]u8 = null;
         _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
         c.zb_automation_free(err);
@@ -1633,7 +1674,6 @@ const SelfCloseDriver = struct {
         self.check(key_rc == c.ZB_AUTO_ERR_NO_WINDOW, "a key whose press closed its window reports NO_WINDOW");
         self.check(c.zb_automation_debug_native_skipped() > skipped_before, "the key release was not sent to the destroyed window");
         self.check(c.zb_automation_window_id_at(1) == 0, "every child is gone, the primary remains");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
 
@@ -1695,6 +1735,7 @@ const nav_fixture =
 const NoContentServer = struct {
     fd: c_int,
     port: u16,
+    accepted: std.atomic.Value(u32) = .{ .raw = 0 },
     thread: ?std.Thread = null,
 
     fn open() !NoContentServer {
@@ -1708,7 +1749,7 @@ const NoContentServer = struct {
 
     fn serve(self: *NoContentServer) void {
         while (true) {
-            const conn = std.c.accept(self.fd, null, null);
+            const conn = acceptBounded(self.fd, &self.accepted);
             if (conn < 0) return;
             defer _ = std.c.close(conn);
             var req: [4096]u8 = undefined;
@@ -1737,6 +1778,31 @@ const NoContentServer = struct {
 const NavEndDriver = struct {
     failures: u32 = 0,
     buf: [512]u8 = undefined,
+    /// One overall wall-clock budget for the whole driver (monotonic ms; 0 =
+    /// none): every call gets at most what is left of it, so a chain of
+    /// bounded failures still ends well inside the test's watchdog.
+    deadline: i64 = 0,
+
+    fn begin(self: *NavEndDriver, budget_ms: i64) void {
+        self.deadline = monotonicMs() + budget_ms;
+    }
+
+    /// Milliseconds a single call may take: at most `cap`, never past the
+    /// driver's deadline.
+    fn left(self: *NavEndDriver, cap: i64) c_uint {
+        if (self.deadline == 0) return @intCast(cap);
+        return @intCast(std.math.clamp(self.deadline - monotonicMs(), 0, cap));
+    }
+
+    /// Waits (checked, within the budget) until the first page answers.
+    fn ready(self: *NavEndDriver) bool {
+        const end = monotonicMs() + 20_000;
+        while (monotonicMs() < end and self.left(5000) > 0) {
+            if (std.mem.eql(u8, self.eval("return '1';", null), "1")) return true;
+            sleepMs(50);
+        }
+        return false;
+    }
 
     fn check(self: *NavEndDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
@@ -1748,9 +1814,16 @@ const NavEndDriver = struct {
     /// Page-world (or automation-world) eval; the answer is copied into
     /// `self.buf` ("" on failure).
     fn eval(self: *NavEndDriver, body: [:0]const u8, world: ?[*:0]const u8) []const u8 {
+        return self.evalWithin(body, world, 5000);
+    }
+
+    /// eval taking at most `cap` ms (and never past the driver's deadline).
+    fn evalWithin(self: *NavEndDriver, body: [:0]const u8, world: ?[*:0]const u8, cap: i64) []const u8 {
         var out: [*c]u8 = null;
         var err: [*c]u8 = null;
-        const rc = c.zb_automation_eval_json(0, body.ptr, null, world, 5000, &out, &err);
+        const timeout = self.left(cap);
+        if (timeout == 0) return "";
+        const rc = c.zb_automation_eval_json(0, body.ptr, null, world, timeout, &out, &err);
         defer c.zb_automation_free(out);
         c.zb_automation_free(err);
         if (rc != c.ZB_AUTO_OK or out == null) return "";
@@ -1769,9 +1842,9 @@ const NavEndDriver = struct {
     }
 
     fn waitNotLeaving(self: *NavEndDriver) bool {
-        var waited: u32 = 0;
-        while (waited < 8000) : (waited += 20) {
-            const r = self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD);
+        const end = monotonicMs() + 8000; // wall clock: each eval counts
+        while (monotonicMs() < end and self.left(1) > 0) {
+            const r = self.evalWithin("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD, end - monotonicMs());
             if (std.mem.eql(u8, r, "false")) return true;
             sleepMs(20);
         }
@@ -1781,9 +1854,9 @@ const NavEndDriver = struct {
     /// The pending navigation's arrival number once the shell answered it,
     /// when it differs from `not` (0 = any).
     fn pendingId(self: *NavEndDriver, not: i64) ?i64 {
-        var waited: u32 = 0;
-        while (waited < 3000) : (waited += 10) {
-            const r = self.eval("const p = globalThis.__zbAutomation.debugPendingNavigation(); return String(p && p.seq !== null ? p.seq : 0);", c.ZB_AUTOMATION_WORLD);
+        const end = monotonicMs() + 3000;
+        while (monotonicMs() < end and self.left(1) > 0) {
+            const r = self.evalWithin("const p = globalThis.__zbAutomation.debugPendingNavigation(); return String(p && p.seq !== null ? p.seq : 0);", c.ZB_AUTOMATION_WORLD, end - monotonicMs());
             const id = std.fmt.parseInt(i64, r, 10) catch 0;
             if (id != 0 and id != not) return id;
             sleepMs(10);
@@ -1792,8 +1865,11 @@ const NavEndDriver = struct {
     }
 
     fn run(self: *NavEndDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+        self.begin(45_000);
         const port = gtk_port.pagePort().?;
-        _ = self.eval("return 1;", null);
+        stage("navend: first load");
+        if (!self.ready()) return self.check(false, "the first page loaded");
         var tok: [17]u8 = undefined;
 
         // 1. The page cancels the navigation its Enter starts.
@@ -1866,7 +1942,6 @@ const NavEndDriver = struct {
         self.check(std.mem.eql(u8, self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD), "true"), "an older request's end leaves D pending");
         self.check(self.waitNotLeaving(), "D's own 204 ends it");
         self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after C and D");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
 
@@ -1899,10 +1974,13 @@ test "native text: a navigation that ends without a new document stops one seque
 // A navigation the shell's policy blocks (a file:// page posting to http)
 // never replaces the document: once blocked, a fresh native text call in
 // the same document types again, whatever order WebKit uses between the
-// page's 'navigate' report and the policy decision.
+// page's 'navigate' report and the policy decision. Also: a submit the page
+// prevents.
 const blocked_fixture =
     \\<!doctype html><html><head><title>Blocked</title></head><body>
     \\<form action="http://127.0.0.1:9/blocked"><input id="q" name="q" style="position:fixed;left:20px;top:40px;width:200px;height:30px"></form>
+    \\<form id="kept" action="blocked.html"><input id="p" name="p" style="position:fixed;left:20px;top:100px;width:200px;height:30px"></form>
+    \\<script>window.kept = 0; document.getElementById('kept').addEventListener('submit', function (e) { e.preventDefault(); window.kept += 1; });</script>
     \\</body></html>
 ;
 
@@ -1910,39 +1988,70 @@ const BlockedDriver = struct {
     nav: NavEndDriver = .{},
 
     fn run(self: *BlockedDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
+        d.begin(45_000);
         const port = gtk_port.pagePort().?;
-        _ = d.eval("return 1;", null);
+        stage("blocked: first load");
+        if (!d.ready()) return d.check(false, "the blocked fixture loaded");
         var tok: [17]u8 = undefined;
-        gtk_port.nativeClick(port.ptr, 120, 55, null, 5000) catch return d.check(false, "focus #q");
+        stage("blocked: focus click");
+        gtk_port.nativeClick(port.ptr, 120, 55, null, d.left(5000)) catch |e| {
+            std.debug.print("blocked: focus click {s}\n", .{@errorName(e)});
+            return d.check(false, "focus #q");
+        };
+        stage("blocked: token");
         const t = d.token(&tok) orelse return d.check(false, "token");
         var sent: usize = 0;
-        const typed = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t), 10_000, &sent);
-        // Stopped after Enter (the page saw the navigation start), or not
-        // stopped at all (WebKit refused it before its 'navigate' event).
+        stage("blocked: typing a, Enter, b");
+        const typed = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t), d.left(10_000), &sent);
+        if (typed) |_| {} else |e| std.debug.print("blocked: typing ended {s} after {d}\n", .{ @errorName(e), sent });
+        // The trusted submit counts as a navigation inside the Enter's own
+        // default action, whether or not WebKit later fires 'navigate' (it
+        // does not for a blocked submit): the sequence stops right there.
         const stopped_after_enter = if (typed) |_| false else |e| e == error.DocumentChanged and sent == 2;
-        const not_started = if (typed) |_| sent == 3 else |_| false;
-        d.check(stopped_after_enter or not_started, "the blocked submit either stops the sequence after Enter or never starts");
+        d.check(stopped_after_enter, "the blocked submit stops the sequence right after Enter");
+        stage("blocked: wait for the submit to end");
         d.check(d.waitNotLeaving(), "the blocked navigation is not pending");
         d.check(std.mem.eql(u8, d.eval("return location.protocol;", null), "file:"), "the document stayed");
         var fresh: usize = 0;
-        gtk_port.nativeText(port.ptr, "c", std.mem.span(t), 5000, &fresh) catch d.check(false, "a fresh native text after the blocked navigation types");
+        stage("blocked: fresh typing");
+        gtk_port.nativeText(port.ptr, "c", std.mem.span(t), d.left(5000), &fresh) catch d.check(false, "a fresh native text after the blocked navigation types");
         const value = d.eval("return document.getElementById('q').value;", null);
         d.check(std.mem.endsWith(u8, value, "c") and std.mem.startsWith(u8, value, "a"), "the fresh call typed into the same document");
-        std.debug.print("blocked submit: {s}, sent {d}, value {s}\n", .{ if (stopped_after_enter) "stopped after Enter" else "never started", sent, value });
+        std.debug.print("blocked submit: {s}, sent {d}, value {s}\n", .{ if (stopped_after_enter) "stopped after Enter" else "not stopped after Enter", sent, value });
 
         // A script navigation fires 'navigate' (and reports it) before the
         // policy decision blocks it: the end the shell sends at the block
         // must already cover that report.
         const navs_before = std.fmt.parseInt(i64, d.eval("return String(globalThis.__zbAutomation.inputAck().navigations);", c.ZB_AUTOMATION_WORLD), 10) catch -1;
+        stage("blocked: script navigation");
         _ = d.eval("location.href = 'http://127.0.0.1:9/blocked'; return 0;", null);
         d.check(d.waitNotLeaving(), "the blocked script navigation is not pending");
         const navs_after = std.fmt.parseInt(i64, d.eval("return String(globalThis.__zbAutomation.inputAck().navigations);", c.ZB_AUTOMATION_WORLD), 10) catch -1;
         d.check(navs_after == navs_before + 1, "the blocked script navigation started in the page");
         d.check(std.mem.eql(u8, d.eval("return location.protocol;", null), "file:"), "the document stayed after the blocked script navigation");
-        gtk_port.nativeText(port.ptr, "d", std.mem.span(t), 5000, &fresh) catch d.check(false, "native text after the blocked script navigation types");
+        stage("blocked: typing after the script navigation");
+        gtk_port.nativeText(port.ptr, "d", std.mem.span(t), d.left(5000), &fresh) catch d.check(false, "native text after the blocked script navigation types");
         d.check(std.mem.endsWith(u8, d.eval("return document.getElementById('q').value;", null), "cd"), "it typed into the same document");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+
+        // A submit the page prevents (to an allowed destination): the Enter
+        // conservatively ends that sequence, nothing stays pending, and a
+        // fresh call types into the same input.
+        stage("blocked: prevented submit");
+        gtk_port.nativeClick(port.ptr, 120, 115, null, d.left(5000)) catch return d.check(false, "focus #p");
+        const tp = d.token(&tok) orelse return d.check(false, "token before the prevented submit");
+        var kept_sent: usize = 0;
+        const kept_typed = gtk_port.nativeText(port.ptr, "e\nf", std.mem.span(tp), d.left(10_000), &kept_sent);
+        if (kept_typed) |_| std.debug.print("prevented submit: returned success (sent {d})\n", .{kept_sent}) else |e| std.debug.print("prevented submit: {s} after {d}\n", .{ @errorName(e), kept_sent });
+        d.check(if (kept_typed) |_| false else |e| e == error.DocumentChanged and kept_sent == 2, "a prevented submit ends the sequence after Enter");
+        d.check(std.mem.eql(u8, d.eval("return String(window.kept);", null), "1"), "the page prevented one submit");
+        d.check(d.waitNotLeaving(), "a prevented submit is not pending");
+        var kept_fresh: usize = 0;
+        gtk_port.nativeText(port.ptr, "g", std.mem.span(tp), d.left(5000), &kept_fresh) catch d.check(false, "native text after a prevented submit types");
+        d.check(std.mem.eql(u8, d.eval("return document.getElementById('p').value;", null), "eg"), "it typed into the same input");
+
+        stage("blocked: done");
     }
 };
 
@@ -2028,6 +2137,7 @@ const FilesDriver = struct {
     }
 
     fn run(self: *FilesDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
         _ = d.eval("return 1;", null);
         var out: [512]u8 = undefined;
@@ -2152,7 +2262,6 @@ const FilesDriver = struct {
         // Without the shell's token the op refuses before clicking.
         const bare = d.eval("return JSON.stringify(await globalThis.__zbAutomation.handle({ op: 'chooseFiles', selector: 'css=#multi', count: 1 }));", c.ZB_AUTOMATION_WORLD);
         self.check(std.mem.indexOf(u8, bare, "files_unavailable") != null, "no token: files_unavailable, nothing clicked");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
 
@@ -2232,6 +2341,7 @@ const ScrollDriver = struct {
     }
 
     fn run(self: *ScrollDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
         const port = gtk_port.pagePort().?;
         _ = d.eval("return 1;", null);
@@ -2292,8 +2402,23 @@ const ScrollDriver = struct {
         _ = d.eval("document.addEventListener('wheel', function () { location.href = 'next.html'; }); return 0;", null);
         const t2 = d.token(&tok) orelse return self.check(false, "token before the navigating wheel");
         const replaced = gtk_port.nativeScroll(port.ptr, 200, 300, 0, 100, std.mem.span(t2), 5000);
-        self.check(if (replaced) |_| false else |e| e == error.DocumentReplaced, "a wheel that navigated is DocumentReplaced");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+        // Contract: DocumentReplaced if the navigation started before the
+        // call returned; otherwise this page's own settled offsets (300 +
+        // 100), never next.html's (it scrolls itself to 777). Either way
+        // the handler's navigation then really happens.
+        if (replaced) |offsets| {
+            std.debug.print("navigating wheel answered offsets ({d}, {d})\n", .{ offsets.x, offsets.y });
+            self.check(offsets.x == 0 and offsets.y == 400, "a wheel answered before its navigation started reports this page's exact offsets");
+        } else |e| {
+            if (e != error.DocumentReplaced) std.debug.print("navigating wheel answered {s}\n", .{@errorName(e)});
+            self.check(e == error.DocumentReplaced, "a wheel whose navigation started is DocumentReplaced");
+        }
+        var reached = false;
+        const until = monotonicMs() + 10_000;
+        while (!reached and monotonicMs() < until) : (sleepMs(100)) {
+            reached = std.mem.eql(u8, d.eval("return document.title;", null), "Next");
+        }
+        self.check(reached, "the wheel's handler navigated to the next page");
     }
 };
 
@@ -2392,6 +2517,7 @@ const ShotDriver = struct {
     }
 
     fn run(self: *ShotDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
         const port = gtk_port.pagePort().?;
         const gpa = std.heap.c_allocator;
@@ -2510,7 +2636,6 @@ const ShotDriver = struct {
         } else |e| e == error.TooLarge, "a full-page shot of a 50000 px document is TooLarge");
         const still = gtk_port.screenshot(port.ptr, gpa, false, 10_000) catch return self.check(false, "the viewport shot of the tall page works");
         gpa.free(still.png);
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
 
@@ -2551,6 +2676,7 @@ test "screenshot returns a PNG of the viewport or the whole document" {
 const ScanServer = struct {
     fd: c_int,
     port: u16,
+    accepted: std.atomic.Value(u32) = .{ .raw = 0 },
     thread: ?std.Thread = null,
 
     const Page = struct { prefix: []const u8, body: []const u8 };
@@ -2580,7 +2706,7 @@ const ScanServer = struct {
 
     fn serve(self: *ScanServer) void {
         while (true) {
-            const conn = std.c.accept(self.fd, null, null);
+            const conn = acceptBounded(self.fd, &self.accepted);
             if (conn < 0) return;
             defer _ = std.c.close(conn);
             var req: [4096]u8 = undefined;
@@ -2646,6 +2772,7 @@ const ScanDriver = struct {
     }
 
     fn run(self: *ScanDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         _ = self.nav.eval("return 1;", null);
         self.expectSignal("/x/toast", "x", "toast", "X: a 'Something went wrong' toast");
         self.expectSignal("/x/arkose", "x", "challenge", "X: the arkose challenge iframe");
@@ -2672,9 +2799,53 @@ const ScanDriver = struct {
         const want_field = std.fmt.bufPrint(&want, "\"text_hash\":\"{s}\"", .{std.fmt.bytesToHex(digest, .lower)}) catch return;
         if (std.mem.indexOf(u8, out, want_field) == null) std.debug.print("invite scan: {s}\nwanted {s}\n", .{ out, want_field });
         self.check(std.mem.indexOf(u8, out, "invitation limit") == null and std.mem.indexOf(u8, out, want_field) != null, "the modal text is reported only as its SHA-256");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 };
+
+/// Connects to 127.0.0.1:port and sends nothing (a speculative connection).
+fn idleClient(port: u16) !c_int {
+    const fd = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return error.SocketFailed;
+    errdefer _ = std.c.close(fd);
+    var addr: std.c.sockaddr.in = .{ .port = std.mem.nativeToBig(u16, port), .addr = std.mem.nativeToBig(u32, 0x7f000001) };
+    if (std.c.connect(fd, @ptrCast(&addr), @sizeOf(std.c.sockaddr.in)) != 0) return error.ConnectFailed;
+    return fd;
+}
+
+/// Closes `fd` after `ms`: an unbounded server is released eventually, so
+/// the oracle below fails on time instead of hanging the test binary.
+fn closeLater(fd: c_int, ms: u64) void {
+    sleepMs(ms);
+    _ = std.c.close(fd);
+}
+
+test "test servers close promptly while a connection sends nothing" {
+    const late_ms = conn_io_bound_ms + 4000;
+    inline for (.{ ScanServer, NoContentServer, DelayServer }) |Server| {
+        var server = if (Server == DelayServer) try Server.open(0) else try Server.open();
+        try server.start();
+        const client = try idleClient(server.port);
+        const releaser = try std.Thread.spawn(.{}, closeLater, .{ client, late_ms });
+        // The server accepted it: it is now (or is about to be) blocked
+        // reading that connection.
+        const wait_end = monotonicMs() + 5000;
+        while (server.accepted.load(.acquire) == 0 and monotonicMs() < wait_end) sleepMs(5);
+        if (server.accepted.load(.acquire) == 0) {
+            releaser.join();
+            server.close();
+            std.debug.print("{s} never accepted the idle connection\n", .{@typeName(Server)});
+            return error.TestUnexpectedResult;
+        }
+        const t0 = monotonicMs();
+        server.close();
+        const took = monotonicMs() - t0;
+        releaser.join();
+        if (took > conn_io_bound_ms + 1000) {
+            std.debug.print("{s}.close took {d} ms with an idle connection\n", .{ @typeName(Server), took });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
 
 test "rateLimitScan reports X, LinkedIn and Instagram block signals" {
     try skipUnlessGtk();
@@ -2744,6 +2915,7 @@ const WindowsDriver = struct {
     }
 
     fn run(self: *WindowsDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const gpa = std.heap.c_allocator;
         const p1 = gtk_port.pagePort().?;
         self.check(says(p1, "return window.mark;", "A"), "the primary is page A");
@@ -2894,7 +3066,6 @@ const WindowsDriver = struct {
             self.check(std.mem.endsWith(u8, u, "/a.html"), "the opener's url is unchanged");
             gpa.free(u);
         } else |_| self.check(false, "the opener answers page.url after the popup closed");
-        _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
     }
 
     const Held = struct {

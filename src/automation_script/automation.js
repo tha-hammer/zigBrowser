@@ -34,6 +34,15 @@
   }
   globalScope.addEventListener('mouseup', (event) => { if (event.isTrusted) inputAck.mouseup += 1; }, true);
   globalScope.addEventListener('keyup', (event) => { if (event.isTrusted) inputAck.keyup += 1; }, true);
+  // A form submission starts its navigation only in a later task (WebKit
+  // fires 'navigate' after its policy step), so a reader could see the
+  // Enter's keyup before the navigation. The trusted 'submit' event fires
+  // inside the key's own default action, before its keyup: counting it as a
+  // navigation makes native text stop right after that key. Only the count:
+  // whether a navigation really follows (the page may prevent it, retarget
+  // it or the shell may block it) is left to the 'navigate' event below,
+  // which alone makes the document leaving.
+  globalScope.addEventListener('submit', (event) => { if (event.isTrusted) inputAck.navigations += 1; }, true);
   globalScope.addEventListener('wheel', (event) => { if (event.isTrusted) inputAck.wheel += 1; }, { capture: true, passive: true });
   // Scrolling (page or any element: capture sees non-bubbling scroll
   // events) for native scroll completion: a wheel is done once its
