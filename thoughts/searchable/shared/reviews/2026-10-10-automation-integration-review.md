@@ -2744,7 +2744,7 @@ and had 685/685 tests pass, with only the independently reproduced WebKitGTK
 
 ### BLOCKER — story ownership is checked after, not before, the next click
 
-**Status: OPEN (cc_2), mailed as Agent Mail 5046.** The Instagram probe supports
+**Status: CLOSED by `d91eba9`; approved as Agent Mail 5068.** The Instagram probe supports
 the new selectors: the page-behind zero-sized button is inside `<main>`, while
 the viewer's SVG-backed role button and video are outside it. The selectors at
 `src/instagram.zig:45-46` therefore exclude the observed page-behind target,
@@ -2757,6 +2757,25 @@ and `tests/e2e/social_flows_test.py:223-228` cover only a transition caused by
 the flow's preceding click, not an automatic transition before the next click.
 Add a pre-click ownership check on every iteration and a regression that changes
 the URL during the pause and proves no later `dom.click` is dispatched.
+
+`d91eba9` performs that check at the top of every frame iteration, before
+counting or clicking Next, and retains the post-click ownership check. Its
+deadline reserve now covers all three per-frame queries, the click, and the
+viewing pause. Unit regressions cover an automatic transition during both the
+first and a later frame, assert that no later query/click occurs, and pin the
+budget boundary. The production-chain e2e makes the fixture advance from
+`auto.user` to `riley.sample` on its own and requires Riley's frame list to
+remain `[1]`.
+
+Failing-first was observed directly in the earlier shared-worktree gate: its
+browser had compiled the old flow, while the newly edited fixture and Python
+test were read later at runtime. The old flow advanced Riley to `[1,2]`, so
+the regression caught the real wrong-story click. This was a mixed-snapshot
+gate, not an intermittent test race. With the fix, clean exports passed first
+at `793e55f` plus the four-file overlay (**88/88 steps, 691/691 tests**) and
+then at exact `6f90a1a` plus that same now-committed content (**88/88 steps,
+693/693 tests**). `social-flows` passed both. Both export/cache pairs were
+deleted by their `find -delete` traps.
 
 The LinkedIn half passes the wrong-person review. The probe has exactly one
 `//main//section[@aria-label="Primary content"]`; it holds one visible owner
@@ -2817,7 +2836,7 @@ and its cache were deleted immediately with `find -delete`.
 
 ### BLOCKER — `53b5c66` turns post-move document replacement into success
 
-**Status: OPEN (cc_1), mailed as Agent Mail 5052.** PagePort v3.7 and the
+**Status: CLOSED by `6f90a1a`; approved as Agent Mail 5067.** PagePort v3.7 and the
 trusted-mousemove position acknowledgement correctly close the WebKitGTK 2.54
 move/evaluation ordering race, and the engine settles only the final hover move.
 But `AckTracker.settleMove` returns success when the acknowledgement comes from
@@ -2831,6 +2850,21 @@ engine test for document replacement during settle. Return `DocumentChanged`
 from the adapter, map that post-dispatch case to the public
 `element_not_found`/`document_changed` result, and cover both single and
 multi-move humanized hover.
+
+`6f90a1a` makes the production GTK tracker return `DocumentChanged` on a new
+document and clears only the pending settle target. The engine treats that
+post-dispatch outcome as terminal `element_not_found` with reason
+`document_changed`, never relocation. The adapter regression is red on
+`53b5c66` (which returns success); the engine regressions cover single and
+humanized hover, one settle, no second locate, and the cached pointer remaining
+at the last dispatched move. The exact combined clean-export gate recorded
+above passed **88/88 steps and 693/693 tests**, including `native-hover` and
+`automation-scroll`.
+
+The `6f90a1a` commit message's own 86/88 pre-commit result calls its social
+failure intermittent. That attribution is superseded: the run was the
+mixed-snapshot failing-first case described above. The later clean combined
+gate is the green evidence for this commit; history was not rewritten.
 
 The independent clean-export gate at exact `53b5c66`, under a private Xvfb
 and with live-display/socket variables unset, was fully green: **88/88 steps
