@@ -170,7 +170,18 @@ the selector matches more than one element, it fails at once with -32001
 - Commands for the page run one at a time, in arrival order. Time spent
   waiting behind earlier commands counts against the deadline.
 - Right after start-up, page commands wait for the first page load to
-  finish. `page.navigate` and `cookies.*` do not wait for it.
+  finish. `page.navigate` and `cookies.*` do not wait for it. The same holds
+  for each new window (a popup) and its first page.
+- A page load that you did not start with `page.navigate` or `page.reload`
+  (the start page, a popup, a link the page follows) has a 15-second timer:
+  - If the page has appeared by then (its load committed) but is still
+    loading, nothing is stopped or closed: the page keeps loading and stays
+    usable. Commands waiting for that window's first load stop waiting and
+    run.
+  - If nothing has arrived by then (the load never committed), the load is
+    given up (`LOAD_FAIL` on the `--e2e-protocol` stdout). Its web process
+    is ended only when no other window shares it, so a popup that hangs
+    never takes its opener's page down.
 
 ## Methods
 

@@ -69,6 +69,7 @@ struct ZbWindow {
   int load_superseded;
   int seed_pending;
 
+  int load_committed; /* the current load has a document (COMMITTED) */
   int finished;
   int failed;
   int cancelled;
@@ -373,6 +374,7 @@ static void window_reset_load_state(ZbWindow *win) {
     return;
   }
 
+  win->load_committed = 0;
   win->finished = 0;
   win->failed = 0;
   win->timed_out = 0;
@@ -744,12 +746,24 @@ static GtkWidget *on_window_create(WebKitWebView *parent_view,
   return GTK_WIDGET(child_win->view);
 }
 
+/* The 15-second timer of a load nobody else owns (automation loads use the
+ * caller's deadline). A load that committed has a document the user can
+ * use while the rest of it arrives: it is never ended for being slow; the
+ * timer only stops holding automation commands for a first load. A load
+ * that never committed is given up (LOAD_FAIL). Its web process is ended
+ * only when no other window shares it: ending a shared one would kill the
+ * related windows' pages too. */
 static gboolean on_window_timeout(gpointer user_data) {
   ZbWindow *win = (ZbWindow *)user_data;
   if (win == NULL) {
     return G_SOURCE_REMOVE;
   }
+  win->timeout_source_id = 0; /* this source ends here */
   if (win->finished || win->failed || win->cancelled || win->timed_out) {
+    return G_SOURCE_REMOVE;
+  }
+  if (win->load_committed) {
+    auto_first_load_done(win);
     return G_SOURCE_REMOVE;
   }
 
@@ -767,7 +781,9 @@ static gboolean on_window_timeout(gpointer user_data) {
   if (win->cancellable != NULL) {
     g_cancellable_cancel(win->cancellable);
   }
-  terminate_window_web_process(win);
+  if (!window_shares_process(win)) {
+    terminate_window_web_process(win);
+  }
   webkit_web_view_stop_loading(win->view);
 
   emit_load_fail(win, timed_out_uri, win->load_error_domain,
@@ -957,6 +973,7 @@ static void on_window_load_changed(WebKitWebView *view,
       break;
     case WEBKIT_LOAD_COMMITTED:
       win->load_superseded = 0;
+      win->load_committed = 1;
       break;
     case WEBKIT_LOAD_FINISHED: {
       if (win->load_superseded) {

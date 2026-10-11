@@ -99,6 +99,17 @@ error codes). Build notes for other platforms: `docs/how-to-build.md`.
    `docs/how-to-run.md` ("Rendering"). Tested on Xvfb by
    `tests/e2e/render_config_test.py` and `web_process_crash_test.py`; the
    real-screen check is done by hand.
+9. **A slow page is no longer killed after 15 seconds (2026-10-11).** Every
+   load the user or the page starts (not `page.navigate`) has a 15-second
+   timer. Before, it ended the page's web process even when the page was
+   already showing, so a slow site went blank, and so did every popup or
+   opener sharing that process. Now a page that has appeared (its load
+   committed) keeps loading and stays usable; the timer only stops holding
+   automation commands that wait for a window's first load. A load where
+   nothing arrived in 15 s is still given up (`LOAD_FAIL`), and its web
+   process is ended only if no other window shares it. Tested by
+   `tests/e2e/slow_load_watchdog_test.py` (a gate step) and
+   `load_timeout_test.py`.
 
 ## Every method and how it is verified
 

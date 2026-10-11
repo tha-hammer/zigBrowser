@@ -30,6 +30,10 @@ Rules:
 `LOAD_FAIL`:
 - `LOAD_FAIL\t<uri>\t<domain>\t<code>`
 - Example: `LOAD_FAIL\tfile:///x\t1\t-2`
+- Also emitted when a load the browser started (not the automation API)
+  has not committed after 15 s. A load that committed is never failed or
+  ended for being slow. `<uri>` can be empty for a popup whose request was
+  never answered (WebKit gives it no URI yet).
 
 `SUBWIN`:
 - `SUBWIN\t<uri>`

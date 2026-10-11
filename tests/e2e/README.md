@@ -15,7 +15,15 @@ Slice 2:
 Slice 3/4 (Linux GTK now):
 - `ipc_roundtrip_test.py` (M1/M2)
 - `nav_block_test.py` (M3 traversal block)
-- `load_timeout_test.py` (M6 timeout + T-epsilon race)
+- `load_timeout_test.py` (M6 timeout for a load that never commits, a busy
+  committed page that is not ended, and the T-epsilon race)
+- `slow_load_watchdog_test.py` (gate step: that 15 s timer never ends a
+  committed page, nor a web process related windows share. At 14 s and
+  16 s the opener and its sibling popup keep their state and answer; the
+  committed slow windows answer (a command sent before 15 s is held until
+  the timer releases it, at 16 s at once); the never-committing related
+  popup gets LOAD_FAIL without ending the shared process; a lone window
+  whose load never commits still has its web process ended)
 - `lifecycle_test.py` (M7 SIGINT->130<=3s)
 - `reload_test.py` (M7 GTK-only SIGHUP reload)
 
