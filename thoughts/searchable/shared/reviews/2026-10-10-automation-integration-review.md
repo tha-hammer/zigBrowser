@@ -1774,16 +1774,68 @@ their local monotonic deadline as well as the 45-second aggregate driver
 budget, and counts a trusted form `submit` before its later Navigation API
 task. A bounded worktree gate passed 85/85 steps and 642/642 tests under the
 ongoing stress load; the policy case took the new `stopped after Enter` path
-with `sent 2, value ac`. This is useful green evidence, but not closure: the
-submit marker increments the counter without marking the document pending, so
-an immediate second call can baseline the new count and dispatch before the
-later navigation task. The production-chain `b_sent == 0` oracle passed once,
-but the missing invariant remains. Mailed as 4887; loop iteration 16 also
-confirmed the pre-fix whole-string call could return success and over-dispatch
-(4888).
+with `sent 2, value ac`. The exact PagePort contract requires stopping when
+the character's acknowledgement shows a navigation; it does not require
+predicting arbitrary navigation scheduled for a later task. Because the
+trusted submit marker makes the reproduced form Enter visible synchronously,
+this is the right production fix if its rebuilt stress run and a committed
+clean gate remain green. The speculative immediate-second-call concern from
+4887 is therefore a non-blocking follow-up, as corrected in 4895/4897. Loop
+iteration 16 also confirmed the pre-fix whole-string call could return success
+and over-dispatch (4888).
+
+BlueBeaver independently ran the `92ea230` root binary 30 times idle and 30
+times beside a full gate. Test 15 reproduced zero times, but the same Enter
+race failed eight times each in tests 10 and 14. More importantly, two runs
+stalled in `ScanServer.close`: gdb showed the server thread blocked in
+`read(conn)` on an accepted speculative connection while the main thread
+waited in `join()`. Closing only the listening fd cannot release that read.
+Bound every accepted connection read (the identical seam is also in
+DelayServer and NoContentServer) and add an idle-client close oracle. Mailed as
+4891/4893. The relaxed wheel-navigation branch is contract-valid when it
+returns page A before navigation starts, but `y != 777` is too weak: require
+the exact page-A offsets and eventual navigation to Next (4895).
+
+`765a32b` is an accurate docs-only handoff correction: it explicitly records
+the `92ea230` gate as RED, retains the Enter-race and ScanServer findings as
+open with cc_1, closes only the tracker oracle by `7059814`, and requires a
+clean full-gate pass before integration is called green. Exact diff reviewed
+and approved in mail 4901.
+
+An intermediate navigation-marker WIP expanded beyond the surgical form-submit
+ACK fix and was not safe to land. `automation.js:103-148` pre-marked capture-time
+submit and click destinations as real pending navigations, posts them to the
+shell, then clears them only when `defaultPrevented` is later true. A page
+handler can instead change the action/href or target (including a final
+`_blank`/`<base target>` destination) without preventing default. That leaves
+this document permanently `leaving`, because it receives no matching
+Navigation API event/end; normal same-context actions also count/report both
+the pre-marker and the real `navigate`. The reproduced contract needs only a
+trusted submit to increment the key acknowledgement's navigation counter. The
+real Navigation API event must remain the sole owner of pending state and
+shell reporting. The reviewer's required worktree gate compiled this
+intermediate version and failed the exact policy test, **83/85 steps and
+642/643 tests**, seed `0xec4f4630`: the blocked and prevented submits stopped
+after Enter, but later fresh typing into the unchanged document failed. This
+directly validates the objection. cc_1 reverted while that already-compiled
+test was running; the current source is the approved one-line trusted-submit
+counter only, with no pending/shell/click pre-marker. It still awaits the
+author's mutant/gate result and a committed clean review gate. Mailed as
+4898/4902/4904/4905.
+
+The accepted-connection timeout is the right production-shaped test-server
+fix and covers ScanServer, NoContentServer and DelayServer. Its first oracle
+slept 200 ms and assumed the server entered `read`, permitting a false green
+if close won before accept. The current follow-up gives each server an atomic
+accepted count, waits for that accepted fd, applies a two-second receive/send
+bound before publishing the count, and releases an unbounded mutant only after
+six seconds; the three-second close ceiling therefore distinguishes the
+mutant. `idleClient` also closes its fd on connect failure. Code shape approved;
+mutation result and clean committed gate remain pending. Mailed as
+4900/4902/4905.
 
 Status: **OPEN (cc_1 / BlackRobin).** Mailed as
-4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888.
+4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905.
 
 ## Deferred scope note
 
