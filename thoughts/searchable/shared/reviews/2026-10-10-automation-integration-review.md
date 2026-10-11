@@ -2519,3 +2519,137 @@ cgroup rather than only the driver.
 
 Finding mailed to BlackRobin, with BlueBeaver copied because the flow E2Es use
 the vulnerable shared launch pattern, as Agent Mail 5011.
+
+## Live YouTube blank-window investigation at `8e80655`
+
+### BLOCKER — the NVIDIA media/presentation failure is not guarded or diagnosable
+
+**Status: OPEN (cc_1). Probable root cause, captured symptom; the physical
+blank frame itself was not captured.** The user's live `07643a1` browser
+opened a YouTube watch page as the second related popup. It showed the poster
+briefly and then the physical GTK window went blank. All investigation of the
+live instance was read-only; no navigation, reload, input, window close,
+process signal, account action, or DISPLAY `:0` capture was performed. The two
+socket screenshots remain outside the repository.
+
+The document did not fail to load. At 08:51--08:54 EDT, `page.url`,
+`page.title`, `dialog.get`, and side-effect-free `page.evaluate` calls on
+window-3 answered in milliseconds. The document was `complete` and `visible`,
+with 58 body children, about 2.29 MB of HTML, 87 resource entries, and a
+1.514-second load event. The YouTube app, player, and video existed; the video
+reported `readyState=4`, an 854x480 stream, and no `MediaError`. A viewport
+PagePort snapshot completed in 53 ms and a full-document snapshot contained
+the poster, controls, comments, and recommendations. That snapshot proves
+WebKit could still rasterize the document; it does not prove that GTK
+successfully presented the same pixels to the X11 window, which is the layer
+the user saw fail.
+
+The frozen 08:49 live log supplies the matching lower-layer failure. It has
+NVIDIA `nv_gbm_create_device` errors, repeated
+`DRM_IOCTL_MODE_CREATE_DUMB ... Permission denied`, and four exact
+`Failed to create GBM buffer of size 1024x768: Permission denied` messages.
+The allocation size is the window size configured at
+`src/webkit_shim.c:1080-1083`. Media-process warnings report GStreamer sticky
+events out of order around the same period, but those warnings alone do not
+identify the failed view. The relevant WebProcesses remained alive and
+CPU-active and mapped EGL, GBM, DRM, CUDA/nvcodec, and GStreamer while holding
+NVIDIA and render-node descriptors. This occurs despite the `NEVER` hardware
+policy applied to every view at `src/webkit_shim.c:1085-1090`, so that setting
+does not remove the media transport/presentation path.
+
+Competing causes were checked. The browser cgroup had about 22.3 GiB host
+memory available, zero current memory pressure, and no OOM event. The network
+process was alive, every WebKit child had inherited `SOUP_FORCE_HTTP1=1`, and
+the page had completed its navigation and resource load; the prior HTTP/2
+GOAWAY failure is not implicated. Both stdout and stderr feed the inspected
+live log, which contains no `LOAD_FAIL`, timeout, termination, crash, or
+GOAWAY line. That plus the 1.514-second completed load rules out the shim's
+legacy 15-second load watchdog for this occurrence.
+
+This is also a known project and platform failure class. The July handoff at
+`thoughts/searchable/shared/handoffs/general/2026-07-04_09-04-50_linux-deb-launch-debug.md:48-50`
+records the same GBM permission error causing blank renders; `a78fa5c` added
+the current hardware-policy setting but no presentation regression. Upstream
+WebKit [bug 281279](https://bugs.webkit.org/show_bug.cgi?id=281279) describes
+invisible-but-interactive GTK3 views on proprietary NVIDIA and names
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` and
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` as workarounds. WebKit bug 260654 is more
+specific to YouTube/media: decoder output can require a raw-NV12-to-DMABUF
+conversion in which WebKit allocates a GBM buffer and has no reliable
+nonaccelerated fallback ([WebKit bug 260654](https://bugs.webkit.org/show_bug.cgi?id=260654)).
+The exact host package is Debian WebKitGTK
+2.52.6-1~deb13u1. Debian includes `disable-nvidia-dmabuf.patch` for the normal
+[UI backing store](https://sources.debian.org/patches/webkit2gtk/2.52.6-1~deb13u1/disable-nvidia-dmabuf.patch/),
+so the remaining live failure may be the GStreamer/video DMABUF path; neither
+generic environment flag may be sufficient. No production environment default
+is approved without a discriminating test.
+
+The isolated result corroborates an upstream WebKitGTK/YouTube problem but is
+not the same phenotype. Exact `07643a1` reaches a complete YouTube player under
+Xvfb and then the zigBrowser UI process's GTK main thread dereferences a null
+WebKit object at offset `0x48` inside `libwebkit2gtk`; direct, one-hop, and
+two-hop watch-page launches do the same in roughly 4--8 seconds. Actual X11
+root-window pixels are nonblank and changing until that crash. The result
+persists with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, and
+`ZIGBROWSER_HTTP2=1`. Stock WebKitGTK 2.52.6 MiniBrowser also crashes on the
+same page, with both default HTTP and forced HTTP/1, and reports
+`WebLoaderStrategy.cpp:640` before exiting. A local VP9/Opus autoplay page and
+YouTube's homepage and embed route survive, isolating the controlled failure
+to the watch-page path rather than generic media. This rules out the popup
+chain, zigBrowser shim, HTTP/1 default, and the two generic renderer switches
+as causes or fixes for the Xvfb crash. Because the live UI process and document
+survived, the Xvfb crash is not claimed as the exact live root cause.
+
+There is now a concrete failing-first compatibility test: make an opt-in
+network E2E open the same public watch URL through a local two-hop popup
+fixture, confirm title/DOM/video readiness, and then require the UI process,
+socket reads, and actual X11 window pixels to remain live and nonblank at 10
+and 35 seconds. Exact `07643a1` currently fails in 5--8 seconds. Keep it out of
+the hermetic default gate because it depends on a public site, but run it when
+qualifying a WebKitGTK package; the installed version is 2.52.6 and the
+currently available Debian candidate is 2.54.0, which was not installed or
+tested. A fully local generic-media fixture is not a substitute: the VP9/Opus
+control survived 20 seconds, as did YouTube homepage/embed controls for 15
+seconds.
+
+The live blank-with-responsive-DOM symptom still needs an actual-presentation
+matrix on the affected NVIDIA/X11 path. Do not use `page.screenshot` as the
+sole oracle because the live snapshot bypassed the failed presentation.
+Preserve stderr and compare baseline with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_COMPOSITING_MODE=1`,
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`, and diagnostically
+`WEBKIT_GST_DMABUF_SINK_DISABLED=1`. A viable mitigation must keep the actual
+window nonblank, retain playback, and remove the allocation failure. Also
+connect WebKit's `web-process-terminated` signal and expose its reason with
+`window_id`; the current connections at
+`src/webkit_shim.c:1092-1118` cannot distinguish a crash, API termination, or
+memory-limit exit. Findings and the corrected X11-pixel oracle were mailed to
+BlackRobin as Agent Mail 5024--5026.
+
+The review-note pre-commit gate exported exact parent `8e80655` into a fresh
+throwaway directory, unset `DISPLAY`, `WAYLAND_DISPLAY`, and
+`ZIGBROWSER_SOCKET`, and ran the full suite under a private Xvfb display with
+a 1500-second bound. It passed **87/87 steps, 677/677 tests**, seed
+`0xa00e20f1`. The export and its cache were deleted immediately by the
+`find -delete` exit trap; the live browser was not involved.
+
+### SHOULD — the legacy 15-second human-load watchdog can create the same symptom
+
+**Status: OPEN (cc_1), separately discovered; not the cause of this incident.**
+Every non-automation `WEBKIT_LOAD_STARTED` arms a fixed timer at
+`src/webkit_shim.c:360-380`; only a tracked automation load suppresses it at
+`src/webkit_shim.c:932-937` and `1942-1951`. If a human navigation commits but
+does not reach `FINISHED` within 15 seconds, `on_window_timeout` marks failure
+and unconditionally terminates the WebProcess at lines 736-768. The current
+test at `tests/e2e/load_timeout_test.py:109-139` asserts only `LOAD_FAIL` and
+that the browser parent is alive. It does not prove the affected view renders
+or answers afterward, nor that related siblings retain state.
+
+Add a local three-view regression whose last response commits a DOM sentinel
+but remains unfinished beyond 15 seconds. At 14 and 16 seconds, assert the
+specified recovery contract for that view and prove both related siblings
+remain usable. A separate test-only termination should assert that the new
+`web-process-terminated` handler records `TERMINATED_BY_API` for the exact
+window. The live YouTube document finished in 1.514 seconds and emitted no
+`LOAD_FAIL`, so this latent defect is deliberately not labeled its root cause.
