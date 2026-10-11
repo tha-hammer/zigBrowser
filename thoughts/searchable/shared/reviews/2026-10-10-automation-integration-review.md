@@ -2733,3 +2733,109 @@ is the WebKitGTK-2.54.0 upgrade regression that BlackRobin reproduced 5/5 on
 clean `cf004fe` and 5/5 on the harness tree; BlueBeaver's preceding gate also
 failed only that step. No additional failure appeared. The disposable gate
 tree and its Xvfb were deleted by the `find -delete` exit trap.
+
+## Social owner-scope, launcher ownership, and acknowledgement follow-ups
+
+Reviewed commits `61a62ea`, `38a1e78`, and `e112995` against the redacted live
+probe captures and their exact committed blobs. The full clean-export gate at
+`61a62ea` is recorded immediately above; it exercised both earlier commits too
+and had 685/685 tests pass, with only the independently reproduced WebKitGTK
+2.54 hover-ordering step failing.
+
+### BLOCKER — story ownership is checked after, not before, the next click
+
+**Status: OPEN (cc_2), mailed as Agent Mail 5046.** The Instagram probe supports
+the new selectors: the page-behind zero-sized button is inside `<main>`, while
+the viewer's SVG-backed role button and video are outside it. The selectors at
+`src/instagram.zig:45-46` therefore exclude the observed page-behind target,
+require the exact `Next` label, and the flow refuses zero or multiple matches.
+However, the loop at `src/instagram.zig:175-190` counts and clicks Next before
+calling `onStories`/`isStoryOf`. If Instagram auto-advances during the frame
+pause, the next iteration can click the other account's Next once before the
+URL check detects the change. The tests at `tests/instagram_test.zig:284-300`
+and `tests/e2e/social_flows_test.py:223-228` cover only a transition caused by
+the flow's preceding click, not an automatic transition before the next click.
+Add a pre-click ownership check on every iteration and a regression that changes
+the URL during the pause and proves no later `dom.click` is dispatched.
+
+The LinkedIn half passes the wrong-person review. The probe has exactly one
+`//main//section[@aria-label="Primary content"]`; it holds one visible owner
+Connect, one hidden owner Connect, and one visible owner Follow. The visible
+aria-hidden toolbar clone is outside `<main>`, and recommendation actions are
+in an `<aside>` outside that section. `profileNameFromTitle` derives the exact
+owner name from `<Name> | LinkedIn`; `clickProfileAction` scopes every candidate
+to that owner area, excludes aria-hidden ancestry, waits for visibility,
+requires exactly one positive-size bbox and exactly one owner area, and then
+strict-clicks only the owner-scoped indexed selector
+(`src/linkedin.zig:80-131,418-493`). Zero or multiple visible candidates fail
+closed. The socket e2e renders sidebar, toolbar, hidden-copy, same-name, and
+duplicate-owner decoys and records every wrong target
+(`tests/e2e/social_flows_test.py:137-167`). Fixtures contain only the plainly
+synthetic `Sam Example` and `Riley Sample`; no probe identity was copied.
+
+### `38a1e78` launcher ownership
+
+**Status: APPROVED; BLOCKER 5011 CLOSED; mailed as Agent Mail 5050.**
+`xsession.py` execs into the browser, gives it a dedicated process group, and
+starts a detached guardian that uses pidfds for both driver and browser. Driver
+death drains the browser group; browser-first exit gives helpers eight seconds
+then drains them; only then does the guardian terminate its private Xvfb and
+remove its owned lock/socket/auth directory. `detect_runner` always supplies
+this launcher, including for an existing private display, and the three former
+self-launching scripts were migrated. `stop_browser` retains a clean SIGINT
+grace and group-kills only a browser still running. On a clean archive of the
+commit, `harness_group_test.py` passed all five cases: Xvfb driver SIGKILL,
+Xvfb driver SIGTERM, explicit stop, browser-first child-left, and existing-
+display driver SIGKILL.
+
+Failing-first was independently verified by changing only `detect_runner` in
+that clean export back to the exact old `xvfb-run -a` launch shape while
+retaining the new regression. Its Xvfb/SIGKILL case reported that zigBrowser,
+the WebKit network and web processes, Xvfb, and xvfb-run all survived the
+driver, together with the X lock, socket, and auth directory. The regression's
+PID-targeted cleanup then removed them; a post-run process and residue check
+was empty. All launcher-review trees were deleted immediately.
+
+### `e112995` acknowledgement retry
+
+**Status: APPROVED; mailed to cc_1 as Agent Mail 5049.** A timed-out
+one-second acknowledgement read is now retried inside `AckTracker.read` until
+the caller's absolute deadline. A real `null` remains reserved for a page on
+which no automation script answers, non-timeout errors still propagate, and a
+deadline still returns `Timeout`; debt ownership and clearing are unchanged.
+That removes the false `DocumentReplaced` path in `waitScrollSettled` without
+re-dispatching input. The new `{moving}, lost, {quiet}` regression exercises the
+same tracker used by production rather than bypassing it
+(`src/automation_gtk_port.zig:406-425,993-1006`).
+
+An independent clean-export filtered build ran module reachability plus the
+new acknowledgement regression: **5/5 steps, 3/3 tests passed**. Replacing
+only `AckTracker.read` with the exact parent behavior while retaining the test
+failed it at `waitScrollSettled` with `DocumentReplaced` (**2/3 passed, 1
+failed**). This verifies the claimed red-before behavior. The disposable tree
+and its cache were deleted immediately with `find -delete`.
+
+### BLOCKER — `53b5c66` turns post-move document replacement into success
+
+**Status: OPEN (cc_1), mailed as Agent Mail 5052.** PagePort v3.7 and the
+trusted-mousemove position acknowledgement correctly close the WebKitGTK 2.54
+move/evaluation ordering race, and the engine settles only the final hover move.
+But `AckTracker.settleMove` returns success when the acknowledgement comes from
+a different document (`src/automation_gtk_port.zig:481-495`), after which
+`settleHover` returns `{ok:true}` (`src/automation/engine.zig:811-819`). A
+humanized hover has already dispatched one or more moves at that point. Fixed
+N8 rule 4 requires `document_changed`, with no relocation, and the pointer cache
+must retain the last position actually dispatched. The new GTK test explicitly
+pins the contrary “new document counts as delivered” behavior and there is no
+engine test for document replacement during settle. Return `DocumentChanged`
+from the adapter, map that post-dispatch case to the public
+`element_not_found`/`document_changed` result, and cover both single and
+multi-move humanized hover.
+
+The independent clean-export gate at exact `53b5c66`, under a private Xvfb
+and with live-display/socket variables unset, was fully green: **88/88 steps
+succeeded; 689/689 tests passed**. Native hover, automation-scroll,
+social-flows, and all five launcher-hygiene cases passed. A fixture-server
+BrokenPipe during a canceled response did not fail its social-flow test. The
+export and cache were deleted by the `find -delete` exit trap. This green gate
+does not waive either semantic blocker above.
