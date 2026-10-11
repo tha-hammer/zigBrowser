@@ -65,9 +65,10 @@ pub const session_cookie = "sessionid";
 /// Story viewing: time on each frame, and a bound on frames.
 pub const story_frame_ms = 1_500;
 pub const max_story_frames = 100;
-/// Budget kept for one Next click, the Next query and the URL check of a
-/// frame.
-const reserve_ms = click_timeout_ms + 2 * flow.query_timeout_ms;
+/// Budget kept, beside the frame's viewing time, for one Next click and a
+/// frame's three queries: whose story it is (before Next), the Next query,
+/// and whose story it is after the click.
+const reserve_ms = click_timeout_ms + 3 * flow.query_timeout_ms;
 
 /// Instagram's limits for a comment and a direct message.
 pub const max_comment_chars = 2200;
@@ -165,8 +166,11 @@ pub fn storyView(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username
 /// story_frame_ms, then Next, until there is no Next, the viewer closes or
 /// moves on to someone else's stories (the page leaves
 /// /stories/<username>/), max_story_frames, or the flow budget would not
-/// cover another frame. Every step is clamped to the flow budget. More than
-/// one Next fails closed (instagram_story_next_ambiguous).
+/// cover another frame. Instagram also moves on by itself when a frame ends,
+/// so the URL is checked before every Next, not only after it (review
+/// 5046): Next is never counted or clicked on someone else's story. Every
+/// step is clamped to the flow budget. More than one Next fails closed
+/// (instagram_story_next_ambiguous).
 pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, username: []const u8) Error!?[]u8 {
     if (!(try waitAttached(gpa, runner, selectors.story_media))) return null;
     // View the first frame, then Next + view until the viewer closes.
@@ -174,6 +178,9 @@ pub fn viewStoryFrames(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, us
     var frames: usize = 1;
     while (frames < max_story_frames) {
         if (runner.remainingMs() <= story_frame_ms + reserve_ms) break;
+        // Still `username`'s story after the frame's viewing time?
+        const still_theirs = (try onStories(gpa, runner, s, username)) orelse return null;
+        if (!still_theirs) break;
         const next = (try flow.countMatches(gpa, runner, selectors.story_next)) orelse return null;
         if (next == 0) break;
         if (next > 1) {

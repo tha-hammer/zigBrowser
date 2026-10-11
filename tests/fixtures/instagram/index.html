@@ -30,6 +30,9 @@
                                      recorded in window.__ig.decoyNext
            /stories/next.user/       the same viewer; its last Next goes on to
                                      /stories/riley.sample/ (another person)
+           /stories/auto.user/       the same viewer, which moves on to
+                                     /stories/riley.sample/ BY ITSELF 1 s after
+                                     loading, as Instagram does when a frame ends
            /p/blocked/               Like is refused with Instagram's
                                      "Try Again Later" dialog (N20)
          ?loggedout=1 renders a logged-out page (login form).
@@ -94,6 +97,7 @@
           };
           Array.prototype.forEach.call(document.querySelectorAll('.behind-next, .preview, #decoy-next'), function (el) { el.addEventListener('click', decoy); });
           ig.frames.push(frame);
+          if (user === 'auto.user') setTimeout(function () { location.href = '/stories/riley.sample/'; }, 1000);
           document.getElementById('story-next').addEventListener('click', function () {
             if (frame === 3) {
               ig.result = { action: 'story_view', frames: ig.frames.slice() };

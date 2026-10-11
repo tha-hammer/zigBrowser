@@ -224,6 +224,17 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     # end of the requested user's, and the other person's are not advanced.
     expect_equal("ig stories then another person", zb.instagram.story_view("next.user"), {"ok": True, "framesViewed": 3})
     expect_equal("ig another person's stories untouched", (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.frames")["result"]), ("stories:riley.sample", [1]))
+    # Instagram also moves on BY ITSELF when a frame ends: the flow checks
+    # whose story it is before every Next and never clicks on someone else's
+    # (review 5046).
+    try:
+        auto = zb.instagram.story_view("auto.user")
+    except AutomationError as err:  # moved on before the first check: refused
+        auto = (err.code, (err.diagnostics or {}).get("reason"))
+    if auto not in ({"ok": True, "framesViewed": 1}, (-32001, "instagram_no_story_viewer")):
+        raise AssertionError(f"ig story moved on by itself: {auto}")
+    zb.call("dom.waitFor", {"selector": "css=#story-next", "state": "attached"})
+    expect_equal("ig moved on by itself: the other person's story untouched", (zb.page.evaluate("window.__ig.page")["result"], zb.page.evaluate("window.__ig.frames")["result"]), ("stories:riley.sample", [1]))
     story_report = zb.instagram.selfcheck()
     expect_equal("ig selfcheck in the viewer", (story_report["story_next"], story_report["story_media"] >= 1), (1, True))
     # No active stories: the profile, whose highlights carousel has its own
