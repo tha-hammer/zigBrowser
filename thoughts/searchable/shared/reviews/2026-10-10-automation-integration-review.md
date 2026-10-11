@@ -1879,7 +1879,7 @@ Closure now requires the exact null unwrap and stack, a surgical correction
 (plus regression if production), at least 30 loaded iterations of this test,
 and **two consecutive** bounded clean-export gates at **85/85, 644/644**. My
 initial static trace found no explicit unwrap in `automation_gtk_port.nativeText`;
-the driver's `gtk_port.pagePort().?` at `src/webkit.zig:2018` executes before the
+the driver's `gtk_port.pagePort().?` at `src/webkit.zig:2037` executes before the
 recorded typing stage and is not yet a credible attribution. The owner must use
 a raw-write test panic handler or repeated gdb panic/ABRT catch rather than let
 the ordinary panic handler deadlock and lose the stack. Earlier green messages
@@ -1942,8 +1942,28 @@ Thread.current.?`, this is a test-driver/Zig-Io defect, not a production shim,
 adapter, or engine defect; the narrow correction is to avoid the high-level
 stderr path in that expected branch. Mailed as 4932.
 
+A compiled-xref audit at `4f2de62` strengthens the same classification.
+`webkit.BlockedDriver.run` contains exactly one direct call to
+`FullPanic.unwrapNull`, the pre-stage `pagePort().?`. The compiled
+`automation_gtk_port.nativeText` body contains none, and neither do the audited
+direct and second-level adapter helpers (`acksFor`/`acksForRun`, `windowOf`,
+`AckTracker.begin`/`settle`/ack waits, `SpinLock.lockUntil`, `docZ`, or the
+deadline helpers). Immediately after the normal `DocumentChanged` result, the
+driver calls the diagnostic at `src/webkit.zig:2052`; its compiled unlock path
+does reach the stdlib `recancelInner` unwrap. JSON parsing and deeper library
+invariants prevent this from being a complete call-graph proof, so the blocker
+remains OPEN pending the captured stack. Mailed as 4937.
+
+A warm-cache worktree gate of exact `4f2de62`, deliberately overlapping
+cc_1's six-CPU target stress and cc_2's full-build/gdb load, passed **85/85
+steps, 644/644 tests** with seed `0xb59213c8`. The strict case again returned
+`DocumentChanged after 2`, value `ac`, and the prevented submit after two.
+This supplies another loaded server-runner sample and the pre-commit gate for
+the review note, but it is neither a clean-export gate nor a reproduction and
+does not change the OPEN status.
+
 Review thread:
-4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929.
+4871/4872/4874/4875/4879/4880/4882/4883/4884/4886/4887/4888/4889/4891/4893/4895/4897/4898/4900/4902/4904/4905/4906/4907/4909/4910/4912/4914/4915/4917/4918/4919/4920/4921/4922/4923/4924/4925/4926/4927/4928/4929/4930/4931/4932/4933/4934/4935/4936/4937.
 
 ## Deferred scope note
 
