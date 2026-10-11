@@ -114,18 +114,16 @@ including the real-binary e2e suites and the cross-platform check. Latest
 green joint gate (HEAD + the N23 files, fresh cache, for `3528d84`): **85/85 steps, 641/641 tests** (the first handoff was 80/80, 577/577 at `3b4dd8f`; see the review
 log for the reviewer's independent gates).
 
-**The final gate is NOT green yet.** The orchestrator's clean gate at
-`92ea230` was **RED, 640/641**: the live test "native text: a navigation
-blocked by policy does not refuse later typing" panicked ("attempt to use
-null value") and its watchdog exited 124. A 60-run reproduction of the
-root test binary at `92ea230` (BlueBeaver, mail 4890) did not hit that
-test, but found the same family of flakes: "a navigation that ends without
-a new document…" 8/60 and "automation bridge drives a live WebKitGTK page"
-8/30 under load (the Enter-starts-a-navigation acknowledgement race), and
-a ScanServer close hang in the rateLimitScan test (2/60; an idle accepted
-connection blocks `join`). These are open with cc_1 (RoseCat 4871-4891).
-Treat the integration as green only after that fix and a clean full gate
-pass.
+**Final clean gate: GREEN.** RoseCat's independent gate on a fresh
+`git archive` of `5c15e0bb70314ad33e105a9de40b9e44912b575d` (timeout 900,
+Xvfb): `Build Summary: 85/85 steps succeeded; 644/644 tests passed`. It
+followed a RED orchestrator gate at `92ea230` (640/641: watchdog in "a
+navigation blocked by policy does not refuse later typing") and a 60-run
+reproduction (mail 4890) that found the native Enter acknowledgement race
+and a ScanServer close hang; cc_1 fixed both in `b0994ad` (submit counter,
+bounded test servers) and `5c15e0b` (NavEnd budget, saturating deadline),
+and RoseCat marked the final-gate blocker and N23/final integration GREEN
+(mail 4914).
 
 ## What is NOT verified
 
@@ -249,8 +247,8 @@ The running review log is
   popup-close fix (`1088651`, oracles `d689f72`: the shared web process
   ends only with its last window) is approved; its last review item
   (RoseCat 4859, the tracker sweep's test) is CLOSED by `7059814`. The
-  final-gate flakes above (native Enter acknowledgement race, ScanServer
-  close hang) are the open BLOCKERs, with cc_1. Only if site flows ever accept
+  final-gate flakes (native Enter acknowledgement race, ScanServer close
+  hang) are CLOSED by `b0994ad` + `5c15e0b`; the final clean gate is GREEN. Only if site flows ever accept
   `window_id` does the two-window X cap oracle (RoseCat 4785) become due;
   today they refuse it.
 - **APPROVED or CLOSED since the first handoff:** `8a16668` (closes 4737),
