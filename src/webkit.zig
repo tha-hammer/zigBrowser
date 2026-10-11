@@ -71,6 +71,20 @@ fn monotonicMs() i64 {
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), std.time.ns_per_ms);
 }
 
+/// stderr for test threads: formats into a stack buffer and write(2)s it.
+/// Takes no lock and never enters std.Io: std.debug.print's stderr unlock
+/// can reach Io.Threaded.recancelInner's `Thread.current.?` on a plain
+/// std.Thread (the probable cause of the intermittent blocked-navigation
+/// panic, never captured). Lines past 2 KiB are cut.
+fn rawPrint(comptime fmt: []const u8, args: anytype) void {
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const cut = if (w.print(fmt, args)) |_| false else |_| true;
+    const out = w.buffered();
+    _ = std.c.write(2, out.ptr, out.len);
+    if (cut) _ = std.c.write(2, "...\n", 4);
+}
+
 fn sleepMs(ms: u64) void {
     var ts: std.c.timespec = .{ .sec = @intCast(ms / 1000), .nsec = @intCast((ms % 1000) * std.time.ns_per_ms) };
     _ = std.c.nanosleep(&ts, &ts);
@@ -81,7 +95,7 @@ const CountingJob = struct {
     ran_on: std.atomic.Value(std.Thread.Id) = .{ .raw = 0 },
 
     fn run(ctx: ?*anyopaque) callconv(.c) void {
-        const self: *CountingJob = @ptrCast(@alignCast(ctx.?));
+        const self: *CountingJob = @ptrCast(@alignCast(ctx orelse return));
         self.ran_on.store(std.Thread.getCurrentId(), .release);
         _ = self.runs.fetchAdd(1, .acq_rel);
     }
@@ -484,7 +498,7 @@ const LiveDriver = struct {
     failures: std.ArrayList([]const u8) = .empty,
 
     fn diag(_: *LiveDriver, what: []const u8, rc: c_int, err: [*c]u8) void {
-        if (rc != c.ZB_AUTO_OK) std.debug.print("live bridge {s}: rc={d} err={s}\n", .{ what, rc, if (err != null) std.mem.span(err) else "" });
+        if (rc != c.ZB_AUTO_OK) rawPrint("live bridge {s}: rc={d} err={s}\n", .{ what, rc, if (err != null) std.mem.span(err) else "" });
     }
 
     fn check(self: *LiveDriver, ok: bool, comptime what: []const u8) void {
@@ -627,7 +641,7 @@ const LiveDriver = struct {
         err = null;
 
         // The PagePort adapter over the same ABI (what the server uses).
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         const gpa = self.allocator;
         const handle_cmd = "{\"op\":\"getText\",\"selector\":\"css=#msg\"}";
         const port_text = port.evalJson(gpa, .automation, handle_body, handle_cmd, 5000) catch null;
@@ -879,7 +893,7 @@ const LiveDriver = struct {
     // methods return only after the page acknowledged their trusted events.
     fn runNativePort(self: *LiveDriver) void {
         const gpa = self.allocator;
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         _ = self.eval(0, "nativeLog.length = 0; document.getElementById('ni').value = ''; return 0;", null, null, 5000);
 
         const locate_body = "return JSON.stringify(await globalThis.__zbAutomation.handle(JSON.parse(arg)));";
@@ -1076,7 +1090,7 @@ const LiveDriver = struct {
             const late = self.eval(0, "return String(window.moves.filter(function (m) { return m[0] === 30 && m[1] === 30; }).length);", null, null, 5000);
             if (!eq(late.out, "0")) {
                 const seen = self.eval(0, "return JSON.stringify(window.moves);", null, null, 5000);
-                std.debug.print("late moves: {s}\n", .{seen.out orelse "?"});
+                rawPrint("late moves: {s}\n", .{seen.out orelse "?"});
             }
             self.check(eq(late.out, "0"), "no motion reached the page after the timeout");
             const port_held = blk: {
@@ -1114,7 +1128,7 @@ const LiveDriver = struct {
         const b_moves = self.eval(0, moves_body, null, null, 5000);
         if (!eq(b_moves.out, "0")) {
             const seen = self.eval(0, "return JSON.stringify(window.bMoves);", null, null, 5000);
-            std.debug.print("page B moves: {s}\n", .{seen.out orelse "?"});
+            rawPrint("page B moves: {s}\n", .{seen.out orelse "?"});
         }
         self.check(eq(b_moves.out, "0"), "no motion reached the new document");
         var stale_sent: usize = 9;
@@ -1149,8 +1163,8 @@ const LiveDriver = struct {
         var enter_sent: usize = 0;
         const enter_one = gtk_port.nativeText(port.ptr, "\n", token_delay, 10_000, &enter_sent);
         if (enter_one) |_| {
-            std.debug.print("single navigating Enter: returned success (sent {d})\n", .{enter_sent});
-        } else |e| if (e != error.DocumentChanged) std.debug.print("single navigating Enter: {s} (sent {d})\n", .{ @errorName(e), enter_sent });
+            rawPrint("single navigating Enter: returned success (sent {d})\n", .{enter_sent});
+        } else |e| if (e != error.DocumentChanged) rawPrint("single navigating Enter: {s} (sent {d})\n", .{ @errorName(e), enter_sent });
         self.check(if (enter_one) |_| false else |e| e == error.DocumentChanged, "a single navigating code point reports DocumentChanged");
         self.check(enter_sent == 1, "that code point was sent");
         var b_sent: usize = 9;
@@ -1481,7 +1495,7 @@ test "automation bridge drives a live WebKitGTK page" {
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), driver.pending_eval_rc.load(.acquire));
     if (driver.pending_cookie) |pending| pending.join();
     try std.testing.expectEqual(@as(c_int, c.ZB_AUTO_ERR_NO_LOOP), driver.pending_cookie_rc.load(.acquire));
-    for (driver.failures.items) |f| std.debug.print("live bridge check failed: {s}\n", .{f});
+    for (driver.failures.items) |f| rawPrint("live bridge check failed: {s}\n", .{f});
     try std.testing.expectEqual(@as(usize, 0), driver.failures.items.len);
 
     // After the loop has ended there is no primary window and ops fail fast.
@@ -1548,14 +1562,14 @@ const ReplaceDriver = struct {
 
     fn check(self: *ReplaceDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("primary replacement check failed: {s}\n", .{what});
+            rawPrint("primary replacement check failed: {s}\n", .{what});
             self.failures += 1;
         }
     }
 
     fn run(self: *ReplaceDriver) void {
         defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         var err: [*c]u8 = null;
         _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
         c.zb_automation_free(err);
@@ -1639,7 +1653,7 @@ const SelfCloseDriver = struct {
 
     fn check(self: *SelfCloseDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("self-closing window check failed: {s}\n", .{what});
+            rawPrint("self-closing window check failed: {s}\n", .{what});
             self.failures += 1;
         }
     }
@@ -1845,7 +1859,7 @@ const NavEndDriver = struct {
 
     fn check(self: *NavEndDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("ended-navigation check failed: {s}\n", .{what});
+            rawPrint("ended-navigation check failed: {s}\n", .{what});
             self.failures += 1;
         }
     }
@@ -1906,7 +1920,7 @@ const NavEndDriver = struct {
     fn run(self: *NavEndDriver) void {
         defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         self.begin(45_000);
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         stage("navend: first load");
         if (!self.ready()) return self.check(false, "the first page loaded");
         var tok: [17]u8 = undefined;
@@ -2035,13 +2049,13 @@ const BlockedDriver = struct {
         defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
         d.begin(45_000);
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return d.check(false, "the page port is installed");
         stage("blocked: first load");
         if (!d.ready()) return d.check(false, "the blocked fixture loaded");
         var tok: [17]u8 = undefined;
         stage("blocked: focus click");
         gtk_port.nativeClick(port.ptr, 120, 55, null, d.left(5000)) catch |e| {
-            std.debug.print("blocked: focus click {s}\n", .{@errorName(e)});
+            rawPrint("blocked: focus click {s}\n", .{@errorName(e)});
             return d.check(false, "focus #q");
         };
         stage("blocked: token");
@@ -2049,7 +2063,7 @@ const BlockedDriver = struct {
         var sent: usize = 0;
         stage("blocked: typing a, Enter, b");
         const typed = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t), d.left(10_000), &sent);
-        if (typed) |_| {} else |e| std.debug.print("blocked: typing ended {s} after {d}\n", .{ @errorName(e), sent });
+        if (typed) |_| {} else |e| rawPrint("blocked: typing ended {s} after {d}\n", .{ @errorName(e), sent });
         // The trusted submit counts as a navigation inside the Enter's own
         // default action, whether or not WebKit later fires 'navigate' (it
         // does not for a blocked submit): the sequence stops right there.
@@ -2063,7 +2077,7 @@ const BlockedDriver = struct {
         gtk_port.nativeText(port.ptr, "c", std.mem.span(t), d.left(5000), &fresh) catch d.check(false, "a fresh native text after the blocked navigation types");
         const value = d.eval("return document.getElementById('q').value;", null);
         d.check(std.mem.endsWith(u8, value, "c") and std.mem.startsWith(u8, value, "a"), "the fresh call typed into the same document");
-        std.debug.print("blocked submit: {s}, sent {d}, value {s}\n", .{ if (stopped_after_enter) "stopped after Enter" else "not stopped after Enter", sent, value });
+        rawPrint("blocked submit: {s}, sent {d}, value {s}\n", .{ if (stopped_after_enter) "stopped after Enter" else "not stopped after Enter", sent, value });
 
         // A script navigation fires 'navigate' (and reports it) before the
         // policy decision blocks it: the end the shell sends at the block
@@ -2087,7 +2101,7 @@ const BlockedDriver = struct {
         const tp = d.token(&tok) orelse return d.check(false, "token before the prevented submit");
         var kept_sent: usize = 0;
         const kept_typed = gtk_port.nativeText(port.ptr, "e\nf", std.mem.span(tp), d.left(10_000), &kept_sent);
-        if (kept_typed) |_| std.debug.print("prevented submit: returned success (sent {d})\n", .{kept_sent}) else |e| std.debug.print("prevented submit: {s} after {d}\n", .{ @errorName(e), kept_sent });
+        if (kept_typed) |_| rawPrint("prevented submit: returned success (sent {d})\n", .{kept_sent}) else |e| rawPrint("prevented submit: {s} after {d}\n", .{ @errorName(e), kept_sent });
         d.check(if (kept_typed) |_| false else |e| e == error.DocumentChanged and kept_sent == 2, "a prevented submit ends the sequence after Enter");
         d.check(std.mem.eql(u8, d.eval("return String(window.kept);", null), "1"), "the page prevented one submit");
         d.check(d.waitNotLeaving(), "a prevented submit is not pending");
@@ -2175,7 +2189,7 @@ const FilesDriver = struct {
 
     fn check(self: *FilesDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("set-files check failed: {s}\n", .{what});
+            rawPrint("set-files check failed: {s}\n", .{what});
             self.nav.failures += 1;
         }
     }
@@ -2367,7 +2381,7 @@ const ScrollDriver = struct {
 
     fn check(self: *ScrollDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("native scroll check failed: {s}\n", .{what});
+            rawPrint("native scroll check failed: {s}\n", .{what});
             self.nav.failures += 1;
         }
     }
@@ -2380,14 +2394,14 @@ const ScrollDriver = struct {
             if (@abs(v - want) <= 2) return true;
             sleepMs(20);
         }
-        std.debug.print("{s} = {s}, wanted {d}\n", .{ expr, self.nav.eval("return String(Math.round(" ++ expr ++ "));", null), want });
+        rawPrint("{s} = {s}, wanted {d}\n", .{ expr, self.nav.eval("return String(Math.round(" ++ expr ++ "));", null), want });
         return false;
     }
 
     fn run(self: *ScrollDriver) void {
         defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         _ = d.eval("return 1;", null);
         var tok: [17]u8 = undefined;
         const t = d.token(&tok) orelse return self.check(false, "token");
@@ -2400,7 +2414,7 @@ const ScrollDriver = struct {
         const centre = d.eval("const v = globalThis.__zbAutomation.handle({ op: 'measure' }).value; return String(v.x === innerWidth / 2 && v.y === innerHeight / 2);", c.ZB_AUTOMATION_WORLD);
         self.check(std.mem.eql(u8, centre, "true"), "measure without a selector is the viewport centre");
         const none = d.eval("return JSON.stringify(globalThis.__zbAutomation.handle({ op: 'measure', selector: 'css=#absent' }));", c.ZB_AUTOMATION_WORLD);
-        if (!(std.mem.startsWith(u8, none, "{\"ok\":false") and std.mem.indexOf(u8, none, "\"retryable\":true") != null)) std.debug.print("measure absent: {s}\n", .{none});
+        if (!(std.mem.startsWith(u8, none, "{\"ok\":false") and std.mem.indexOf(u8, none, "\"retryable\":true") != null)) rawPrint("measure absent: {s}\n", .{none});
         self.check(std.mem.startsWith(u8, none, "{\"ok\":false") and std.mem.indexOf(u8, none, "\"retryable\":true") != null, "measure of a missing element is a retryable failure");
 
         const page_offsets = gtk_port.nativeScroll(port.ptr, 200, 300, 0, 300, std.mem.span(t), 5000) catch return self.check(false, "page scroll succeeds");
@@ -2451,10 +2465,10 @@ const ScrollDriver = struct {
         // 100), never next.html's (it scrolls itself to 777). Either way
         // the handler's navigation then really happens.
         if (replaced) |offsets| {
-            std.debug.print("navigating wheel answered offsets ({d}, {d})\n", .{ offsets.x, offsets.y });
+            rawPrint("navigating wheel answered offsets ({d}, {d})\n", .{ offsets.x, offsets.y });
             self.check(offsets.x == 0 and offsets.y == 400, "a wheel answered before its navigation started reports this page's exact offsets");
         } else |e| {
-            if (e != error.DocumentReplaced) std.debug.print("navigating wheel answered {s}\n", .{@errorName(e)});
+            if (e != error.DocumentReplaced) rawPrint("navigating wheel answered {s}\n", .{@errorName(e)});
             self.check(e == error.DocumentReplaced, "a wheel whose navigation started is DocumentReplaced");
         }
         var reached = false;
@@ -2541,7 +2555,7 @@ const ShotDriver = struct {
 
     fn check(self: *ShotDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("screenshot check failed: {s}\n", .{what});
+            rawPrint("screenshot check failed: {s}\n", .{what});
             self.nav.failures += 1;
         }
     }
@@ -2563,7 +2577,7 @@ const ShotDriver = struct {
     fn run(self: *ShotDriver) void {
         defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const d = &self.nav;
-        const port = gtk_port.pagePort().?;
+        const port = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         const gpa = std.heap.c_allocator;
         _ = d.eval("return 1;", null);
         const vw = std.fmt.parseInt(u32, d.eval("return String(innerWidth);", null), 10) catch 0;
@@ -2782,7 +2796,7 @@ const ScanDriver = struct {
 
     fn check(self: *ScanDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("rate-limit scan check failed: {s}\n", .{what});
+            rawPrint("rate-limit scan check failed: {s}\n", .{what});
             self.nav.failures += 1;
         }
     }
@@ -2804,14 +2818,14 @@ const ScanDriver = struct {
         const out = self.scan(path, platform);
         const ok = std.mem.indexOf(u8, out, "\"error\":\"platform_rate_limited\"") != null and
             std.mem.indexOf(u8, out, "\"signal\":\"" ++ kind ++ "\"") != null;
-        if (!ok) std.debug.print("{s}: {s}\n", .{ what, out });
+        if (!ok) rawPrint("{s}: {s}\n", .{ what, out });
         self.check(ok, what);
     }
 
     fn expectClean(self: *ScanDriver, path: []const u8, platform: []const u8, comptime what: []const u8) void {
         const out = self.scan(path, platform);
         const ok = std.mem.eql(u8, out, "{\"ok\":true,\"value\":{\"signals\":[]},\"telemetry\":[]}");
-        if (!ok) std.debug.print("{s}: {s}\n", .{ what, out });
+        if (!ok) rawPrint("{s}: {s}\n", .{ what, out });
         self.check(ok, what);
     }
 
@@ -2841,7 +2855,7 @@ const ScanDriver = struct {
         std.crypto.hash.sha2.Sha256.hash("You've reached the weekly invitation limit", &digest, .{});
         var want: [64 + 16]u8 = undefined;
         const want_field = std.fmt.bufPrint(&want, "\"text_hash\":\"{s}\"", .{std.fmt.bytesToHex(digest, .lower)}) catch return;
-        if (std.mem.indexOf(u8, out, want_field) == null) std.debug.print("invite scan: {s}\nwanted {s}\n", .{ out, want_field });
+        if (std.mem.indexOf(u8, out, want_field) == null) rawPrint("invite scan: {s}\nwanted {s}\n", .{ out, want_field });
         self.check(std.mem.indexOf(u8, out, "invitation limit") == null and std.mem.indexOf(u8, out, want_field) != null, "the modal text is reported only as its SHA-256");
     }
 };
@@ -2877,7 +2891,7 @@ test "test servers close promptly while a connection sends nothing" {
         if (server.accepted.load(.acquire) == 0) {
             releaser.join();
             server.close();
-            std.debug.print("{s} never accepted the idle connection\n", .{@typeName(Server)});
+            rawPrint("{s} never accepted the idle connection\n", .{@typeName(Server)});
             return error.TestUnexpectedResult;
         }
         const t0 = monotonicMs();
@@ -2885,7 +2899,7 @@ test "test servers close promptly while a connection sends nothing" {
         const took = monotonicMs() - t0;
         releaser.join();
         if (took > conn_io_bound_ms + 1000) {
-            std.debug.print("{s}.close took {d} ms with an idle connection\n", .{ @typeName(Server), took });
+            rawPrint("{s}.close took {d} ms with an idle connection\n", .{ @typeName(Server), took });
             return error.TestUnexpectedResult;
         }
     }
@@ -2939,7 +2953,7 @@ const WindowsDriver = struct {
 
     fn check(self: *WindowsDriver, ok: bool, comptime what: []const u8) void {
         if (!ok) {
-            std.debug.print("window targeting check failed: {s}\n", .{what});
+            rawPrint("window targeting check failed: {s}\n", .{what});
             self.nav.failures += 1;
         }
     }
@@ -2961,7 +2975,7 @@ const WindowsDriver = struct {
     fn run(self: *WindowsDriver) void {
         defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
         const gpa = std.heap.c_allocator;
-        const p1 = gtk_port.pagePort().?;
+        const p1 = gtk_port.pagePort() orelse return self.check(false, "the page port is installed");
         self.check(says(p1, "return window.mark;", "A"), "the primary is page A");
         _ = evalOn(p1, "window.open('b.html'); return 0;", .page);
         var waited: u32 = 0;
@@ -3080,7 +3094,7 @@ const WindowsDriver = struct {
         self.check(c.zb_automation_debug_window_work(2) > work_before_held, "the held call reached window 2 before the close");
         p1.closeWindow(2, 5000) catch self.check(false, "closeWindow(2)");
         holder.join();
-        if (held.outcome != .cancelled and held.outcome != .no_page) std.debug.print("held outcome: {s} {s}\n", .{ @tagName(held.outcome), held.err_name });
+        if (held.outcome != .cancelled and held.outcome != .no_page) rawPrint("held outcome: {s} {s}\n", .{ @tagName(held.outcome), held.err_name });
         self.check(held.outcome == .cancelled, "the in-flight call ended Cancelled (window destroyed)");
         if (p1.listWindows(gpa, 5000)) |windows| {
             defer page_port_mod.freeWindows(gpa, windows);
