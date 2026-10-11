@@ -1165,8 +1165,9 @@ test "data.step for the More-menu Connect: the owner's visible More copy (by pos
         const hidden_then_visible = fakes.EvalReply{ .json = "{\"ok\":true,\"value\":{\"elements\":[{\"id\":\"zb-1\",\"tag\":\"button\",\"text\":\"More\",\"bbox\":{\"x\":0,\"y\":0,\"width\":0,\"height\":0}},{\"id\":\"zb-2\",\"tag\":\"button\",\"text\":\"More\",\"bbox\":{\"x\":5,\"y\":5,\"width\":80,\"height\":32}}]}}" };
         const obscured = fakes.EvalReply{ .json = "{\"ok\":false,\"error\":\"element_obscured\",\"retryable\":false,\"data\":{\"reason\":\"receives-events\"}}" };
         // Signed in; Connect or More appeared; no own Connect; the More
-        // copies; one owner area; the click on the visible More fails.
-        f.h.fake.eval_replies = &.{ flow_ok, flow_ok, no_elements, hidden_then_visible, flow_ok, obscured };
+        // copies; one owner area; no menu item shown yet; the click on the
+        // visible More fails.
+        f.h.fake.eval_replies = &.{ flow_ok, flow_ok, no_elements, hidden_then_visible, flow_ok, no_elements, obscured };
         var outcome = try f.call("linkedin.connect", "{\"profileUrl\":\"https://www.linkedin.com/in/sam/\"}");
         defer outcome.deinit(gpa);
         try expectStep(outcome, "click_owner_more_button");

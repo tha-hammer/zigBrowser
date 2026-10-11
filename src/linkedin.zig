@@ -43,12 +43,18 @@ pub const selectors = struct {
     /// sticky header's copy). UNVERIFIED live: its label (text "More" seen).
     pub const owner_more_button = "xpath=" ++ owner_container ++ more_button_path;
     /// The Connect item of the menu the owner's More opens: the innermost
-    /// clickable whose text is exactly "Connect" (live; its label has only
-    /// the first name), inside the owner area or a role=menu. UNVERIFIED
+    /// clickable whose visible text (svg titles left out) is exactly
+    /// "Connect" (live; its label has only the first name), inside the
+    /// owner area or a role=menu. UNVERIFIED
     /// live: where the open menu sits (inside the owner area, or a
     /// role=menu elsewhere); neither -> the flow finds no item and refuses.
-    pub const more_menu_connect = "xpath=(" ++ owner_container ++ " | //*[@role=\"menu\"])" ++
-        "//*[" ++ clickable ++ "][normalize-space(.)=\"Connect\"][not(.//*[" ++ clickable ++ "][normalize-space(.)=\"Connect\"])]" ++ not_hidden;
+    /// When the owner's More names its menu (aria-controls), only that menu
+    /// is searched instead (see `clickMenuConnect`).
+    pub const more_menu_connect = "xpath=(" ++ owner_container ++ " | //*[@role=\"menu\"])" ++ menu_connect_item;
+    /// Checked before the owner's More is clicked, and must show nothing: any
+    /// open role=menu, or a menu Connect item already shown (another
+    /// person's menu could hold it; RoseCat 5157).
+    pub const open_menu_or_item = "xpath=//*[@role=\"menu\"]" ++ not_hidden ++ " | " ++ more_menu_connect["xpath=".len..];
     /// Connect dialog. Live (2026-10-11): it opens 3-5 s after the Connect
     /// click, inside an open shadow root (pierce=), with the buttons
     /// Dismiss, Add a note and Send without a note. UNVERIFIED live: the
@@ -110,6 +116,9 @@ pub const owner_container = "//main//section[@aria-label=\"Primary content\"]";
 /// Under no aria-hidden element (the sticky toolbar's clone is aria-hidden).
 const not_hidden = "[not(ancestor-or-self::*[@aria-hidden=\"true\"])]";
 const clickable = "self::button or self::a or @role=\"button\" or @role=\"menuitem\"";
+/// A menu's Connect item below a menu: the innermost clickable whose visible
+/// text is exactly "Connect", under no aria-hidden element.
+const menu_connect_item = "//*[" ++ clickable ++ "][" ++ flow.visibleTextIs("Connect") ++ "][not(.//*[" ++ clickable ++ "][" ++ flow.visibleTextIs("Connect") ++ "])]" ++ not_hidden;
 /// The owner's More button, below an owner area.
 const more_button_path = "//button[normalize-space(.)=\"More\" or @aria-label=\"More\" or @aria-label=\"More actions\"]" ++ not_hidden;
 
@@ -303,7 +312,7 @@ pub fn connect(gpa: std.mem.Allocator, runner: anytype, s: flow.Site, profile_ur
     const target = (try resolveConnect(gpa, runner, area, name)) orelse return null;
     defer gpa.free(target.selector);
     if (!(try click(gpa, runner, target.selector, true))) return null;
-    if (target.route == .more_menu and !(try clickMenuConnect(gpa, runner))) return null;
+    if (target.route == .more_menu and !(try clickMenuConnect(gpa, runner, target.selector))) return null;
     const first = if (note != null) selectors.add_note_button else selectors.send_without_note_button;
     if (!(try flow.step(gpa, runner, "dom.waitFor", .{ .selector = first, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, dialog_timeout_ms) }))) return null;
     if (note) |text| {
@@ -639,7 +648,9 @@ pub const ConnectTarget = struct { route: ConnectRoute, selector: []u8 };
 /// Otherwise the target is the owner's one visible More button, by the
 /// same rules (live: the area holds two, one of them hidden): no More
 /// either -> linkedin_profile_action_missing; two visible ->
-/// linkedin_profile_action_ambiguous.
+/// linkedin_profile_action_ambiguous. No menu Connect item may be shown
+/// before the owner's More is clicked (the item clicked later must be one
+/// that click opened): otherwise linkedin_profile_menu_already_open.
 pub fn resolveConnect(gpa: std.mem.Allocator, runner: anytype, container: []const u8, name: []const u8) Error!?ConnectTarget {
     const own = try profileSelector(gpa, .connect, name, container);
     defer gpa.free(own);
@@ -659,17 +670,33 @@ pub fn resolveConnect(gpa: std.mem.Allocator, runner: anytype, container: []cons
         return null;
     }
     const selector = (try pickVisibleCopy(gpa, runner, container, more, more_copies, appeared)) orelse return null;
+    errdefer gpa.free(selector);
+    // Only an item that the owner's click opens may be clicked: one already
+    // shown (another person's open menu, a role=menu elsewhere) could be
+    // anyone's Connect (RoseCat 5157). Fail closed before any click.
+    const shown = (try visibleCopies(gpa, runner, selectors.open_menu_or_item)) orelse {
+        gpa.free(selector);
+        return null;
+    };
+    if (shown.visible > 0) {
+        try runner.notFound("linkedin_profile_menu_already_open");
+        gpa.free(selector);
+        return null;
+    }
     return .{ .route = .more_menu, .selector = selector };
 }
 
-/// After the owner's More click: clicks the one visible "Connect" item of
-/// the menu it opened (selectors.more_menu_connect). No item (already
-/// connected or pending, or Follow-only) -> Escape closes the menu, then
-/// linkedin_profile_connect_not_in_menu; two visible -> Escape, then
-/// linkedin_profile_action_ambiguous. A failed wait with an item there
+/// After the owner's More (`more`) was clicked: clicks the one visible
+/// "Connect" item of the menu it opened: in the element its aria-controls
+/// names, when it names one, else selectors.more_menu_connect (nothing of
+/// which was shown before the click: resolveConnect checked). No item
+/// (already connected or pending, or Follow-only) -> Escape closes the
+/// menu, then linkedin_profile_connect_not_in_menu; two visible -> Escape,
+/// then linkedin_profile_action_ambiguous. A failed wait with an item there
 /// (e.g. cancelled) keeps its own failure.
-fn clickMenuConnect(gpa: std.mem.Allocator, runner: anytype) Error!bool {
-    const item = selectors.more_menu_connect;
+fn clickMenuConnect(gpa: std.mem.Allocator, runner: anytype, more: []const u8) Error!bool {
+    const item = (try ownerMenuItem(gpa, runner, more)) orelse return false;
+    defer gpa.free(item);
     const appeared = try flow.step(gpa, runner, "dom.waitFor", .{ .selector = item, .state = "visible", .strict = false, .timeout_ms = flow.waitBudget(runner, menu_timeout_ms) });
     const copies = (try visibleCopies(gpa, runner, item)) orelse return false;
     if (copies.visible == 0 and copies.total == 0) return closeMenu(gpa, runner, "linkedin_profile_connect_not_in_menu");
@@ -679,6 +706,32 @@ fn clickMenuConnect(gpa: std.mem.Allocator, runner: anytype) Error!bool {
     const target = try indexedCopy(gpa, item, copies);
     defer gpa.free(target);
     return click(gpa, runner, target, true);
+}
+
+/// The Connect item selector for the menu `more` opened (owned): bound to
+/// the element its aria-controls names (one id), else the general one.
+/// Null when the read failed (the runner holds why).
+fn ownerMenuItem(gpa: std.mem.Allocator, runner: anytype, more: []const u8) Error!?[]u8 {
+    const params = try std.json.Stringify.valueAlloc(gpa, .{ .selector = more, .name = "aria-controls", .timeout_ms = flow.budget(runner, flow.query_timeout_ms) }, .{});
+    defer gpa.free(params);
+    const result = (try runner.run("dom.getAttribute", params)) orelse return null;
+    const parsed = std.json.parseFromSlice(struct { value: ?[]const u8 = null }, gpa, result, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try runner.malformed();
+            return null;
+        },
+    };
+    defer parsed.deinit();
+    const id = std.mem.trim(u8, parsed.value.value orelse "", " \t\r\n");
+    if (id.len == 0 or std.mem.indexOfAny(u8, id, " \t\r\n") != null) return try gpa.dupe(u8, selectors.more_menu_connect);
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, "xpath=//*[@id=");
+    try xpathLiteral(gpa, &out, &.{id});
+    try out.append(gpa, ']');
+    try out.appendSlice(gpa, menu_connect_item);
+    return try out.toOwnedSlice(gpa);
 }
 
 /// Escape (to the focused element: the menu closes), then fails as

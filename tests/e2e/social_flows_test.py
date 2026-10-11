@@ -231,6 +231,16 @@ def scenario(zb: ZigBrowser, origin: str, server: FixtureServer) -> list[str]:
     # menu is closed again, nothing else clicked.
     err = expect_error("menu without Connect", lambda: zb.linkedin.connect(f"{origin}/in/creator.pending/"), -32001, "linkedin_profile_connect_not_in_menu")
     expect_equal("menu without Connect: closed, nothing chosen", (events(), li(), wrong_person(), other_copies()), (["click:more", "menu:escape"], None, [], []))
+    # Another person's menu already open (RoseCat 5157): its Connect could be
+    # anyone's, so nothing is clicked, the owner's More included.
+    decoy = f"{origin}/in/creator.decoy/"
+    expect_error("another menu already open", lambda: zb.linkedin.connect(decoy), -32001, "linkedin_profile_menu_already_open")
+    expect_equal("another menu already open: nothing clicked", (events(), li(), wrong_person(), other_copies()), ([], None, [], []))
+    expect_error("another menu already open (dry run)", lambda: zb.linkedin.connect(decoy, dry_run=True), -32001, "linkedin_profile_menu_already_open")
+    expect_equal("another menu already open (dry run): no input", (zb.page.evaluate("window.__input")["result"], wrong_person()), ([], []))
+    # Any other open menu, even one without Connect (the orchestrator's rule).
+    expect_error("another menu without Connect open", lambda: zb.linkedin.connect(f"{origin}/in/creator.othermenu/"), -32001, "linkedin_profile_menu_already_open")
+    expect_equal("another menu without Connect open: nothing clicked", (events(), li(), wrong_person()), ([], None, []))
     passed.append("more-menu-connect")
 
     # Signed-in marker gate after navigation (stale cookie, signed-out page).

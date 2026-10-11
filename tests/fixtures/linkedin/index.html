@@ -25,6 +25,13 @@
                                        owner area and has no role=menu
            /in/creator.pending/        the owner's menu has no Connect (Escape
                                        closes it)
+           /in/creator.decoy/          the same, while another person's menu is
+                                       already open outside the owner area: a
+                                       visible role=menu with its own "Connect"
+                                       (clicks recorded in window.__li.wrongPerson)
+           /in/creator.othermenu/      the owner's menu has Connect, but another
+                                       menu (no Connect) is already open
+         creator.user's More names its menu with aria-controls; the others do not.
            /in/same-name/              the suggestion card, and a "More profiles"
                                        section in <main> outside the owner's area,
                                        are for another person with the profile's own
@@ -173,7 +180,7 @@
           var limited = m[1] === 'limit-reached';
           var creator = m[1].indexOf('creator.') === 0;
           var inlineMenu = m[1] === 'creator.inline';
-          var menuHasConnect = m[1] !== 'creator.pending';
+          var menuHasConnect = m[1] !== 'creator.pending' && m[1] !== 'creator.decoy';
           var hasConnect = !creator && m[1] !== 'same-name-missing';
           var connectLink = function (extra) { return '<a ' + extra + ' class="_6b0f3e" data-own-connect aria-label="Invite ' + name + ' to connect" href="/preload/custom-invite/">Connect</a>'; };
           var first = name.split(' ')[0];
@@ -184,11 +191,11 @@
           }
           var menuHtml = menuItem('sales_navigator', 'View in Sales Navigator') + menuItem('send_profile', 'Send profile in a message') +
             menuItem('pdf', 'Save to PDF') + menuItem('message', 'Message ' + first) +
-            (menuHasConnect ? menuItem('connect', '<svg aria-hidden="true" width="16" height="16"></svg><span>Connect</span>', 'Invite ' + first + ' to connect') : '') +
+            (menuHasConnect ? menuItem('connect', '<svg aria-hidden="true" width="16" height="16"><title>Add person icon</title></svg><span>Connect</span>', 'Invite ' + first + ' to connect') : '') +
             menuItem('report', 'Report ' + first) + menuItem('block', 'Block ' + first) + menuItem('about', 'About this member');
           var own = m[1] === 'same-name-missing' ? '' : creator ?
             '  <button id="follow" aria-label="Follow ' + name + '">Follow</button>' +
-            '  <span><button id="more" type="button">More</button>' +
+            '  <span><button id="more" type="button"' + (m[1] === 'creator.user' ? ' aria-controls="menu"' : '') + '>More</button>' +
             (inlineMenu ? '<div id="menu" hidden>' + menuHtml + '</div>' : '') + '</span>' +
             // The display:none copy of More, as live.
             '<div class="_2f8a1c" style="display:none"><button id="more-hidden" type="button">More</button></div>' :
@@ -259,6 +266,15 @@
               }
               openInvite(1000);
             });
+            if (m[1] === 'creator.decoy' || m[1] === 'creator.othermenu') {
+              // Another menu, already open: never the owner's.
+              document.body.insertAdjacentHTML('beforeend', '<div id="other-menu" role="menu">' +
+                '<div role="menuitem" tabindex="0">Message Riley</div>' +
+                (m[1] === 'creator.decoy' ? '<div role="menuitem" tabindex="0" aria-label="Invite Riley to connect"><span>Connect</span></div>' : '') + '</div>');
+              Array.prototype.forEach.call(document.querySelectorAll('#other-menu [role=menuitem]'), function (item) {
+                item.addEventListener('click', function () { li.wrongPerson.push('other-menu:' + item.textContent); });
+              });
+            }
             if (creator) {
               var menu = document.getElementById('menu');
               if (!menu) {

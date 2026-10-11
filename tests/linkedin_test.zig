@@ -7,8 +7,9 @@ const gpa = std.testing.allocator;
 const Step = struct { method: []u8, params: []u8 };
 
 /// Scripted answer: the first rule whose method matches and whose `contains`
-/// occurs in the params wins. `result = null` fails the step.
-const Rule = struct { method: []const u8, contains: []const u8 = "", result: ?[]const u8 };
+/// occurs in the params wins. `result = null` fails the step. A rule with
+/// `uses` answers only that many times, then is skipped.
+const Rule = struct { method: []const u8, contains: []const u8 = "", result: ?[]const u8, uses: ?usize = null };
 
 const FakeRunner = struct {
     steps: std.ArrayListUnmanaged(Step) = .empty,
@@ -17,6 +18,7 @@ const FakeRunner = struct {
     budget_ms: u64 = 120_000,
     malformed_calls: usize = 0,
     not_found: ?[]const u8 = null,
+    used: [32]usize = [_]usize{0} ** 32,
 
     fn deinit(self: *FakeRunner) void {
         for (self.steps.items) |s| {
@@ -28,8 +30,13 @@ const FakeRunner = struct {
 
     pub fn run(self: *FakeRunner, method: []const u8, params_json: []const u8) error{OutOfMemory}!?[]const u8 {
         try self.steps.append(gpa, .{ .method = try gpa.dupe(u8, method), .params = try gpa.dupe(u8, params_json) });
-        for (self.rules) |rule| {
-            if (std.mem.eql(u8, rule.method, method) and std.mem.indexOf(u8, params_json, rule.contains) != null) return rule.result;
+        for (self.rules, 0..) |rule, i| {
+            if (!std.mem.eql(u8, rule.method, method) or std.mem.indexOf(u8, params_json, rule.contains) == null) continue;
+            if (rule.uses) |n| {
+                if (self.used[i] >= n) continue;
+                self.used[i] += 1;
+            }
+            return rule.result;
         }
         if (std.mem.eql(u8, method, "dom.query")) return one_element;
         if (std.mem.eql(u8, method, "page.title")) return "{\"title\":\"Sam Example | LinkedIn\"}";
@@ -107,6 +114,9 @@ const own_more_2 = "xpath=(" ++ area ++ more_path ++ ")[2]";
 /// What a Connect waits for first: the owner's own Connect, or their More.
 const connect_or_more = "xpath=" ++ area ++ "//*[@aria-label=\"Invite Sam Example to connect\"]" ++ shown ++ " | " ++ area ++ more_path;
 const menu_connect = linkedin.selectors.more_menu_connect;
+/// Checked before the owner's More is clicked: any open menu, or a menu
+/// Connect item already shown (RoseCat 5157).
+const menu_open = linkedin.selectors.open_menu_or_item;
 const visible_box = "{\"x\":56,\"y\":513,\"width\":97,\"height\":48}";
 const hidden_box = "{\"x\":0,\"y\":0,\"width\":0,\"height\":0}";
 const one_element = "{\"elements\":[{\"id\":\"a\",\"tag\":\"a\",\"text\":\"\",\"bbox\":" ++ visible_box ++ "}]}";
@@ -694,9 +704,14 @@ test "connect, direct route: the owner's own Connect, then the late dialog's Sen
     try expectSelector(&c, 10, own_pending);
 }
 
+/// Before the owner's More is clicked no menu item is shown (RoseCat 5157:
+/// only an item that appears after the owner's click may be clicked).
+const menu_baseline = Rule{ .method = "dom.query", .contains = "menuitem", .result = no_elements, .uses = 1 };
+
 /// The live layout: no own Connect; the owner's visible More (a hidden copy
 /// first) opens a menu whose item "Connect" carries no full name.
 const more_menu_rules = [_]Rule{
+    menu_baseline,
     .{ .method = "dom.query", .contains = ")[2]", .result = one_element },
     .{ .method = "dom.query", .contains = "More actions", .result = hidden_then_visible },
     .{ .method = "dom.query", .contains = "Invite Sam Example", .result = no_elements },
@@ -706,28 +721,37 @@ test "connect, More route: no own Connect -> the owner's visible More, the menu'
     var c = FakeRunner{ .rules = &more_menu_rules };
     defer c.deinit();
     gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
-    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.click", "dom.waitFor", "dom.query", "dom.click", "dom.waitFor", "dom.click", "dom.waitFor" });
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.query", "dom.click", "dom.getAttribute", "dom.waitFor", "dom.query", "dom.click", "dom.waitFor", "dom.click", "dom.waitFor" });
     try expectSelector(&c, 5, own_connect);
     try expectSelector(&c, 6, own_more);
     try expectSelector(&c, 7, owner_area);
+    // No open menu and no menu item shown before the owner's More is clicked.
+    try expectSelector(&c, 8, menu_open);
     // The visible copy, strictly by its position.
-    try expectSelector(&c, 8, own_more_2);
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[8].params, "\"strict\":true") != null);
-    try expectSelector(&c, 9, menu_connect);
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[9].params, "\"state\":\"visible\"") != null);
-    try expectSelector(&c, 10, menu_connect);
+    try expectSelector(&c, 9, own_more_2);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[9].params, "\"strict\":true") != null);
+    // The menu it controls, if it names one (none here).
+    try expectSelector(&c, 10, own_more_2);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[10].params, "\"name\":\"aria-controls\"") != null);
     try expectSelector(&c, 11, menu_connect);
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "\"strict\":true") != null);
-    try expectSelector(&c, 12, linkedin.selectors.send_without_note_button);
-    try expectSelector(&c, 13, linkedin.selectors.send_without_note_button);
-    try expectSelector(&c, 14, own_pending);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "\"state\":\"visible\"") != null);
+    try expectSelector(&c, 12, menu_connect);
+    try expectSelector(&c, 13, menu_connect);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[13].params, "\"strict\":true") != null);
+    try expectSelector(&c, 14, linkedin.selectors.send_without_note_button);
+    try expectSelector(&c, 15, linkedin.selectors.send_without_note_button);
+    try expectSelector(&c, 16, own_pending);
     try std.testing.expect(c.not_found == null);
 }
 
-test "the menu's Connect item: text exactly \"Connect\", the innermost clickable, inside the owner area or a role=menu, never aria-hidden" {
+/// Its visible text, svg titles left out, is exactly "Connect" (RoseCat 5160).
+const connect_text = "(.//text()[not(ancestor::*[name()=\"svg\"])][normalize-space(.)=\"Connect\"] and " ++
+    "not(.//text()[not(ancestor::*[name()=\"svg\"])][normalize-space(.)!=\"\" and normalize-space(.)!=\"Connect\"]))";
+
+test "the menu's Connect item: visible text exactly \"Connect\" (svg titles left out), the innermost clickable, inside the owner area or a role=menu, never aria-hidden" {
     try std.testing.expectEqualStrings(
-        "xpath=(" ++ area ++ " | //*[@role=\"menu\"])//*[self::button or self::a or @role=\"button\" or @role=\"menuitem\"][normalize-space(.)=\"Connect\"]" ++
-            "[not(.//*[self::button or self::a or @role=\"button\" or @role=\"menuitem\"][normalize-space(.)=\"Connect\"])]" ++ shown,
+        "xpath=(" ++ area ++ " | //*[@role=\"menu\"])//*[self::button or self::a or @role=\"button\" or @role=\"menuitem\"][" ++ connect_text ++ "]" ++
+            "[not(.//*[self::button or self::a or @role=\"button\" or @role=\"menuitem\"][" ++ connect_text ++ "])]" ++ shown,
         menu_connect,
     );
     try std.testing.expectEqualStrings(own_more, linkedin.selectors.owner_more_button);
@@ -737,12 +761,12 @@ test "connect, More route with a note: Add a note, the note, Send; all in the di
     var c = FakeRunner{ .rules = &more_menu_rules };
     defer c.deinit();
     gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, "Hi Sam")).?);
-    try expectSelector(&c, 11, menu_connect);
-    try expectSelector(&c, 12, linkedin.selectors.add_note_button);
-    try expectSelector(&c, 13, linkedin.selectors.add_note_button);
-    try expectSelector(&c, 14, linkedin.selectors.note_input);
-    try expectSelector(&c, 17, linkedin.selectors.send_invite_button);
-    try expectSelector(&c, 18, own_pending);
+    try expectSelector(&c, 13, menu_connect);
+    try expectSelector(&c, 14, linkedin.selectors.add_note_button);
+    try expectSelector(&c, 15, linkedin.selectors.add_note_button);
+    try expectSelector(&c, 16, linkedin.selectors.note_input);
+    try expectSelector(&c, 19, linkedin.selectors.send_invite_button);
+    try expectSelector(&c, 20, own_pending);
 }
 
 fn expectNoMenuItemClick(runner: *const FakeRunner) !void {
@@ -756,20 +780,22 @@ fn expectNoMenuItemClick(runner: *const FakeRunner) !void {
 
 test "connect, More route: no Connect in the owner's menu (connected, pending, Follow-only) -> Escape closes it, linkedin_profile_connect_not_in_menu" {
     var c = FakeRunner{ .rules = &([_]Rule{
+        menu_baseline,
         .{ .method = "dom.waitFor", .contains = "menuitem", .result = null },
         .{ .method = "dom.query", .contains = "menuitem", .result = no_elements },
     } ++ more_menu_rules) };
     defer c.deinit();
     try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
     try std.testing.expectEqualStrings("linkedin_profile_connect_not_in_menu", c.not_found.?);
-    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.click", "dom.waitFor", "dom.query", "dom.press" });
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "\"key\":\"Escape\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[11].params, "selector") == null);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.query", "dom.click", "dom.getAttribute", "dom.waitFor", "dom.query", "dom.press" });
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[13].params, "\"key\":\"Escape\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[13].params, "selector") == null);
     try expectNoMenuItemClick(&c);
 }
 
 test "connect, More route: two visible Connect items -> Escape, linkedin_profile_action_ambiguous, neither clicked" {
     var c = FakeRunner{ .rules = &([_]Rule{
+        menu_baseline,
         .{ .method = "dom.query", .contains = "menuitem", .result = two_elements },
     } ++ more_menu_rules) };
     defer c.deinit();
@@ -816,7 +842,8 @@ test "connect, More route: only the owner area is looked in for More (never a su
     var c = FakeRunner{ .rules = &more_menu_rules };
     defer c.deinit();
     gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
-    for (4..9) |i| {
+    // (Step 8, the open-menu check, looks at the whole page on purpose.)
+    for ([_]usize{ 4, 5, 6, 7, 9 }) |i| {
         const sel = try c.selectorOf(i);
         defer gpa.free(sel);
         try std.testing.expect(std.mem.startsWith(u8, sel, owner_area) or std.mem.startsWith(u8, sel, "xpath=(" ++ area));
@@ -828,8 +855,9 @@ test "dry run connect, More route: a trial on the owner's visible More only (the
     defer r.deinit();
     const result = (try linkedin.dryRun(gpa, &r, linkedin.site, .connect, profile)).?;
     defer gpa.free(result);
-    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.click", "dom.query" });
-    try expectSelector(&r, 8, own_more_2);
+    try expectMethods(&r, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.query", "dom.click", "dom.query" });
+    try expectSelector(&r, 8, menu_open);
+    try expectSelector(&r, 9, own_more_2);
     try expectNoInput(&r);
     try std.testing.expect(std.mem.indexOf(u8, result, "Sam") == null);
     try std.testing.expectEqualStrings(
@@ -840,4 +868,43 @@ test "dry run connect, More route: a trial on the owner's visible More only (the
             "{\"name\":\"invite_dialog\",\"result\":\"not_reached\",\"reason\":\"opens only after the Connect click\"}]}",
         result,
     );
+}
+
+test "More route (RoseCat 5157): the check before the More click is any visible role=menu or any menu Connect item" {
+    const item_body = menu_connect["xpath=(".len + area.len + " | //*[@role=\"menu\"])".len ..];
+    try std.testing.expectEqualStrings("xpath=//*[@role=\"menu\"]" ++ shown ++ " | " ++ menu_connect["xpath=".len..], menu_open);
+    try std.testing.expect(std.mem.startsWith(u8, item_body, "//*[self::button"));
+}
+
+test "More route: a More that names its menu (aria-controls) binds the Connect item to that menu only" {
+    var c = FakeRunner{ .rules = &([_]Rule{
+        .{ .method = "dom.getAttribute", .contains = "aria-controls", .result = "{\"value\":\"menu-7\"}" },
+    } ++ more_menu_rules) };
+    defer c.deinit();
+    gpa.free((try linkedin.connect(gpa, &c, linkedin.site, profile, null)).?);
+    const item_body = menu_connect["xpath=(".len + area.len + " | //*[@role=\"menu\"])".len ..];
+    const bound = try std.fmt.allocPrint(gpa, "xpath=//*[@id=\"menu-7\"]{s}", .{item_body});
+    defer gpa.free(bound);
+    try expectSelector(&c, 11, bound);
+    try expectSelector(&c, 12, bound);
+    try expectSelector(&c, 13, bound);
+    try std.testing.expect(std.mem.indexOf(u8, c.steps.items[13].params, "\"strict\":true") != null);
+}
+
+test "More route (RoseCat 5157): a Connect item already shown before the owner's More is clicked (another menu open) -> linkedin_profile_menu_already_open, nothing clicked" {
+    // Every menu query sees one visible item, the first one included.
+    const open_menu = [_]Rule{.{ .method = "dom.query", .contains = "menuitem", .result = one_element }} ++ more_menu_rules;
+    var c = FakeRunner{ .rules = &open_menu };
+    defer c.deinit();
+    try std.testing.expect((try linkedin.connect(gpa, &c, linkedin.site, profile, null)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_menu_already_open", c.not_found.?);
+    try expectMethods(&c, &.{ "page.navigate", "dom.waitFor", "page.url", "page.title", "dom.waitFor", "dom.query", "dom.query", "dom.query", "dom.query" });
+    try expectSelector(&c, 8, menu_open);
+
+    // The dry run refuses at the same point (no trial on More either).
+    var r = FakeRunner{ .rules = &open_menu };
+    defer r.deinit();
+    try std.testing.expect((try linkedin.dryRun(gpa, &r, linkedin.site, .connect, profile)) == null);
+    try std.testing.expectEqualStrings("linkedin_profile_menu_already_open", r.not_found.?);
+    for (r.steps.items) |st| try std.testing.expect(!std.mem.eql(u8, st.method, "dom.click"));
 }

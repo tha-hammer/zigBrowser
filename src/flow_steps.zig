@@ -14,6 +14,16 @@ const std = @import("std");
 
 pub const Error = error{ OutOfMemory, InvalidParams, LoggedOut };
 
+/// An XPath predicate: the element's text, leaving out what is inside an
+/// <svg> (an icon's <title> is text too), is exactly `text`: one such text
+/// node, any whitespace around it, and no other non-blank one. Exact, never
+/// a prefix (RoseCat 5160).
+pub fn visibleTextIs(comptime text: []const u8) []const u8 {
+    const visible = ".//text()[not(ancestor::*[name()=\"svg\"])]";
+    return "(" ++ visible ++ "[normalize-space(.)=\"" ++ text ++ "\"] and not(" ++ visible ++
+        "[normalize-space(.)!=\"\" and normalize-space(.)!=\"" ++ text ++ "\"]))";
+}
+
 /// dom.query answers at once (an empty list is a valid answer, never
 /// retried); its timeout only bounds the native page call, so it must be a
 /// real duration, not 0.
