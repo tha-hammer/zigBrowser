@@ -2526,8 +2526,11 @@ the vulnerable shared launch pattern, as Agent Mail 5011.
 
 ### BLOCKER — the NVIDIA media/presentation failure is not guarded or diagnosable
 
-**Status: OPEN (cc_1). Probable root cause, captured symptom; the physical
-blank frame itself was not captured.** The user's live `07643a1` browser
+**Status: CLOSED by `ee00876`; superseded by the approved Linux case-J
+default at the section below.** This paragraph records the original state:
+the probable root cause and captured symptom before the physical-presentation
+matrix and user-watched case-J run supplied the missing evidence. The user's
+live `07643a1` browser
 opened a YouTube watch page as the second related popup. It showed the poster
 briefly and then the physical GTK window went blank. All investigation of the
 live instance was read-only; no navigation, reload, input, window close,
@@ -3774,3 +3777,183 @@ private Xvfb, live variables unset and a 1,500-second timeout, also passed:
 deleted immediately by its `find -delete` trap; `/tmp` was 32% used after
 cleanup. No live browser, live socket, DISPLAY `:0`, or user account was
 accessed.
+
+## Instagram Following state with an SVG title (`6a9264a`)
+
+**Verdict: APPROVED.** The live failure was a false negative after a real
+Follow: the owner control visibly said `Following`, but its descendant SVG
+`<title>` made `textContent` read `FollowingDown chevron icon`. The replacement
+selector remains scoped to `//header//button`, excludes SVG text nodes, and
+accepts only the exact remaining visible text `Following` or `Requested`; the
+flow then requires exactly one visible match (`src/instagram.zig:21-32,
+125-133`). It is not a prefix match, and the suggested-account Follow controls
+below the header cannot satisfy it.
+
+The unit test pins the predicate plus `state:"visible"` and `strict:true`.
+The production-chain social-flow E2E uses the observed nested text plus SVG
+title, a private-account `Requested` state, a Similar Accounts control, and
+nine suggested Follow controls outside the header
+(`tests/instagram_test.zig:112-129`,
+`tests/fixtures/instagram/index.html:189-213`,
+`tests/e2e/social_flows_test.py:255-268`). The author's failing-first run
+reproduced the post-click timeout on the old selector, and its exact-blob
+clean-export gate passed **93/93 steps, 762/762 tests**. The approval is
+independent of the later X finding below.
+
+## X stale-toast confirmation (`32721f9`)
+
+**Historical verdict: BLOCKER (cc_2; Agent Mail 5185). Status: CLOSED by
+`0484dcf` (APPROVED; Agent Mail 5192).** Requiring no
+visible `data-testid=toast` before Post and a visible toast afterward correctly
+kills the demonstrated false success from a toast that predated the action.
+The fixture proves both a persistent stale toast (no commit input, error
+`x_toast_already_shown`) and one that fades before a successful post. However,
+the production ordering introduces a wrong-action race.
+
+`submit` first probes the current Post copies and retains a positional selector
+such as `xpath=(//*[@data-testid="tweetButton"])[1]`. It then waits as long as
+10 seconds for the old toast to disappear before resolving and clicking that
+selector (`src/x.zig:298-308`). X is a dynamic React page; during that interval
+the matching copies can be inserted, removed, or reordered. The same selector
+can consequently identify a different composer's Post control. The new
+`stale=fade` fixture leaves the DOM stable, so neither it nor the index-only
+unit assertion detects this (`tests/fixtures/x/composer.html:97-105,223-224`,
+`tests/x_test.zig:208-240`).
+
+Required fix: establish the hidden-toast precondition before
+`findPostButton`, then probe and commit the selected copy without the new
+multi-second gap. A failing-first test must at least pin hidden-wait-before-
+query/probe ordering; a production-chain case should reorder the copies as
+the toast disappears and prove that no decoy/other-composer Post is clicked.
+The author's clean gate (**93/93 steps, 763/763 tests**) does not cover this
+race. Separately, the audit's semantic-oracle HIGH remains open: this commit
+deliberately accepts any newly visible toast, not a proven post-success state.
+
+The follow-up moves the entire hidden-toast precondition before
+`findPostButton`, so no Post copy is queried or trialed until the page is quiet;
+the selected positional copy is then committed immediately after its successful
+trial (`src/x.zig:298-312`). Unit and engine-route tests pin the exact sequence
+and prove a persistent toast prevents even discovery
+(`tests/x_test.zig:208-256`, `tests/automation_x_test.zig:90-97`). The
+production-chain `stale=reorder` case removes the toast while inserting another
+composer's disabled Post before the intended one. The old ordering retained
+the now-wrong index and failed on `element_disabled`; the fixed ordering
+discovers after insertion, skips the decoy, and posts the intended text
+(`tests/fixtures/x/composer.html:227-240`,
+`tests/e2e/x_flows_test.py:169-179`). The decoy's click counter is only a NIT:
+a disabled button cannot fire that listener, so the regression is actually
+killed by the old failure plus the new intended-post success. The author's
+exact-blob clean gate passed **93/93 steps, 763/763 tests**. The separate
+semantic-toast HIGH remains open exactly as documented; it does not reopen this
+ordering blocker.
+
+## `page.recover` review (`9f09035`)
+
+**Verdict: APPROVED. BLOCKER 5187, BLOCKER 5196 and SHOULD 5199 are CLOSED by
+`9f09035`.** The committed implementation satisfies the user-confirmed
+recovery contract and does not add an automatic termination path.
+
+The two-phase boundary is real and revalidated at confirmation time. Phase 1
+requires a currently debounced frozen target, ends nothing, and issues a
+32-hex OS-random token bound to the target's current responsiveness incident
+and current process-family window list. Phase 2 lists the windows again, then
+requires the same live incident, an unexpired current token, and a duplicate-
+free acknowledgement equal to both the originally disclosed and current
+blast radius (`src/automation_server.zig:841-895,935-1021`). A mismatch,
+changed incident, expired/unknown/used token, or responsive target returns
+without calling the native recovery. A successful consume invalidates every
+outstanding token whose family intersects the acknowledged one while holding
+the confirmation mutex, so overlapping sibling confirmations cannot terminate
+the replacement process a second time. The overlap regression holds the first
+native call, rejects the sibling token both during and after it, and observes
+exactly one `recoverWindows` call
+(`tests/automation_server_test.zig:1825-1898,1942-1999`).
+
+Confirmed recovery establishes the per-window queue gate before native
+termination. `beginRecovery` now owns every unique key and reserves all map
+capacity before inserting anything or setting a cancellation flag; its
+failing-allocator test forces each allocation to fail in turn and proves no
+window is stranded as recovering and no waiter is cancelled. Once installed,
+queued waiters leave immediately as `-32012`, the running ticket is flagged,
+and new page work for every family window is refused as `-32014 recovering`;
+`endRecovery` removes the gate on every exit
+(`src/automation/queue.zig:60-94,137-176`,
+`tests/automation_queue_test.zig:247-283,334-370`). The engine remaps the page
+call failure caused by termination to cancelled, while the native job state
+machine accepts only its first completion. The socket/server test and real
+binary E2E each prove one reply for the held command, immediate cancellation
+of the queued command, refusal of new family work, and continued operation of
+an independent window (`src/automation/engine.zig:337-360`,
+`src/webkit_shim.c:1499-1515`,
+`tests/automation_server_test.zig:2001-2105`,
+`tests/e2e/page_recover_test.py:195-286`).
+
+The only new call to `webkit_web_view_terminate_web_process` is reachable from
+the confirmed `page.recover` handler through `PagePort.recoverWindows`; neither
+`page.health` nor the responsiveness callback invokes it. The shim captures
+owned URL strings, marks the acknowledged family, terminates only the target
+view's web process, waits for WebKit's termination notification, clears native
+pointer state, reloads only windows WebKit reported ended, serializes the
+result, and frees every captured string and call object
+(`src/automation_server.zig:1023-1036`,
+`src/automation_gtk_port.zig:260-304`,
+`src/webkit_shim.c:3944-4070,4315-4358`). The real E2E drives the full
+socket/server/engine/GTK/shim chain: refusals leave three windows intact;
+confirmation ends/reloads the two actual shared-process pages, preserves the
+acknowledged over-approximation in its separate process, clears old page
+state, restores native input, and rejects token reuse. This does not bypass
+the production chain.
+
+Telemetry is target-specific and redacted: `windowRoute` binds both phase
+roots to the requested window, the child reports counts only, and tests reject
+URLs and the incident token in the sink (`src/automation_server.zig:1086-1102`,
+`tests/automation_server_test.zig:1900-1940`). The SDK wire fixtures and both
+clients agree on the two request shapes and `-32014`. Documentation explicitly
+warns that page memory and popup opener links are not preserved.
+
+The author's exact-blob clean-export gate passed **94/94 steps, 774/774
+tests**. The independent reviewer gate at exact `9f09035`, with a fresh cache,
+private Xvfb, live variables unset and a 1,500-second timeout, also passed:
+**Build Summary: 94/94 steps succeeded; 774/774 tests passed**. Its
+`page-recover` production-chain phase passed all 27 checks. The throwaway tree
+was deleted immediately by its `find -delete` trap. No live browser, live
+socket, DISPLAY `:0`, or user account was accessed.
+
+## Instagram DM Send and story-gate text (`ddd5e8a`, `430da5d`)
+
+**Historical verdict on `ddd5e8a`: BLOCKER (Agent Mail 5194). Status: CLOSED
+by `430da5d`; the combined chain is APPROVED.** The `View story` change is
+conservative and correct: it uses exact non-SVG visible text for a stop-only
+gate, so a false positive can only stop the flow before a committing click
+(`src/instagram.zig:63-69`). The original DM change fixed the demonstrated
+SVG-title mismatch when both Send controls existed, but its ancestor search
+was not a stable composer boundary.
+
+The XPath starts from the contenteditable and selects the nearest ancestor
+that contains *any* matching Send (`src/instagram.zig:39-47`). If the intended
+composer Send is absent, renamed, hidden, or otherwise no longer matches while
+an unrelated share-sheet Send remains, the ancestor search widens to their
+lowest common ancestor (potentially the document root), and the unrelated
+control becomes the sole strict match. This is the same wrong-action class the
+change is intended to close. The fixture always renders both controls, so its
+`shareSends == 0` assertion does not cover disappearance or drift of the
+intended action (`tests/fixtures/instagram/index.html:184-193`,
+`tests/e2e/social_flows_test.py:271-275`).
+
+`430da5d` removes that widening behavior. The contenteditable's immediate
+parent is now the fixed scope, independent of whether any Send exists; only an
+exact non-SVG visible-text `Send` below that parent, outside hidden ancestry,
+can satisfy the strict click (`src/instagram.zig:38-49,77-81,158-167`). If the
+live composer layout differs from the unverified boundary, the flow fails
+closed instead of searching the page.
+
+The real-socket regression renames the composer's control while leaving the
+share sheet as the page's sole global exact `Send`. The old selector returned
+success after clicking that unrelated control; the follow-up refuses with no
+DM result and `shareSends == 0`, while the ordinary both-present case still
+sends (`tests/fixtures/instagram/index.html:181-205`,
+`tests/e2e/social_flows_test.py:270-288`). The unit test also pins the absence
+of any `ancestor::*[.//...]` search. The independent green gate at `9f09035`
+passed the Instagram production-chain phase. The separate live message-arrival
+acceptance oracle remains advisory and unimplemented, exactly as documented;
+it does not reopen this wrong-action closure.
