@@ -3359,15 +3359,18 @@ const DialogPolicyDriver = struct {
 
         // A navigate whose caller gives up before its held "accept": the page
         // stays (nothing navigates after the timeout), no prompt remains and
-        // every job drains.
+        // every job drains. The deadline leaves WebKit ample time to raise
+        // the prompt; the hold outlasts it by far.
         const late_jobs = c.zb_automation_debug_live_jobs();
         const late_scheduled = c.zb_automation_debug_dialog_policy_scheduled();
+        c.zb_automation_debug_dialog_policy_hold(1800);
         var late_err: [*c]u8 = null;
-        const late_rc = c.zb_automation_navigate_guarded(0, self.uri_b.ptr, c.ZB_BEFORE_UNLOAD_ACCEPT, 150, &late_err);
+        const late_rc = c.zb_automation_navigate_guarded(0, self.uri_b.ptr, c.ZB_BEFORE_UNLOAD_ACCEPT, 900, &late_err);
         c.zb_automation_free(late_err);
         self.check(late_rc == c.ZB_AUTO_ERR_TIMEOUT, "a navigate that gives up before its held accept times out");
         self.check(c.zb_automation_debug_dialog_policy_scheduled() == late_scheduled + 1, "the policy had taken that prompt");
-        sleepMs(800);
+        sleepMs(2200); // longer than the whole hold, counted from the navigate's return
+        c.zb_automation_debug_dialog_policy_hold(400);
         self.check(self.titleIs("A"), "the held accept did not leave after its caller gave up");
         self.check(self.hasDialog(""), "no prompt remains after the held answer");
         self.check(self.drained(late_jobs), "the abandoned navigate's job drains");

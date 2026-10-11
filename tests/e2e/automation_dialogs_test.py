@@ -212,29 +212,36 @@ def scenario(zb: ZigBrowser, t: float, socket_path: Path) -> None:
     # In flight: an opener command already running when the popup's dialog
     # opens ends at once with dialog_open (it runs on its own connection;
     # its page work could not finish while the dialog blocks the process).
+    # Handshake: the evaluate first sets the opener's title, and page.list
+    # (no page turn, the native title) shows it, so the alert below opens
+    # while that evaluate is in flight, never before it was dispatched.
     slow: dict = {}
 
     def slow_opener() -> None:
         with ZigBrowser(socket_path=str(socket_path)) as other:
-            started = time.monotonic()
             try:
-                other.call("page.evaluate", {"expression": "new Promise((r) => setTimeout(() => r('late'), 8000))"})
+                other.call("page.evaluate", {"expression": "(document.title = 'slow-started', new Promise((r) => setTimeout(() => r('late'), 8000)))"})
                 slow["outcome"] = "returned"
             except AutomationError as exc:
                 slow["outcome"] = exc.code
-            slow["elapsed"] = time.monotonic() - started
+            slow["ended"] = time.monotonic()
+
+    def opener_title() -> str:
+        return next(p["title"] for p in zb.page.list()["pages"] if p["window_id"] == "window-1")
 
     worker = threading.Thread(target=slow_opener, daemon=True)
     worker.start()
-    time.sleep(1.0)  # the opener's evaluate is in flight
+    wait_until("the opener's evaluate is in flight", lambda: opener_title() == "slow-started", t)
+    alerted = time.monotonic()
     trigger("showAlert('in flight')", window_id=popup)
     worker.join(timeout=t)
     expect_equal("in-flight opener evaluate ends with dialog_open", slow.get("outcome"), -32013)
-    if slow["elapsed"] > 1.0 + FAIL_FAST_SEC:
-        raise AssertionError(f"in-flight opener evaluate took {slow['elapsed']:.2f}s")
+    if slow["ended"] - alerted > FAIL_FAST_SEC:
+        raise AssertionError(f"in-flight opener evaluate ended {slow['ended'] - alerted:.2f}s after the alert")
     expect_equal("the popup's alert stays open and answerable", zb.dialog.get()["window_id"], popup)
     zb.dialog.respond(accept=True)
     wait_until("popup resumes after the in-flight case", lambda: title(window_id=popup) == "popup-alerted", t)
+    js("document.title = 'Dialogs'")
 
     trigger("showAlert('closing soon')", window_id=popup)
     expect_equal("popup alert", open_dialog()["window_id"], popup)
