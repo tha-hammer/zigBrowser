@@ -4,7 +4,7 @@ author: BlueBeaver (cc_2), with BlackRobin (cc_1) and RoseCat (cod_1, review)
 branch: zb-automation-integration-2026-10-10-11-59
 topic: zigBrowser automation integration - handoff for the human
 status: ready for human review; live sites NOT exercised
-updated: 2026-10-10T18:05-04:00 (N22: everything since 9337bde, see "Since the first handoff")
+updated: 2026-10-10T21:45-04:00 (final acceptance: two quiet clean gates at 2dc67b6; heavy load can fail live e2e timing)
 ---
 
 # zigBrowser automation integration: handoff
@@ -114,16 +114,35 @@ including the real-binary e2e suites and the cross-platform check. Latest
 green joint gate (HEAD + the N23 files, fresh cache, for `3528d84`): **85/85 steps, 641/641 tests** (the first handoff was 80/80, 577/577 at `3b4dd8f`; see the review
 log for the reviewer's independent gates).
 
-**Final clean gate: GREEN.** RoseCat's independent gate on a fresh
-`git archive` of `5c15e0bb70314ad33e105a9de40b9e44912b575d` (timeout 900,
-Xvfb): `Build Summary: 85/85 steps succeeded; 644/644 tests passed`. It
-followed a RED orchestrator gate at `92ea230` (640/641: watchdog in "a
-navigation blocked by policy does not refuse later typing") and a 60-run
-reproduction (mail 4890) that found the native Enter acknowledgement race
-and a ScanServer close hang; cc_1 fixed both in `b0994ad` (submit counter,
-bounded test servers) and `5c15e0b` (NavEnd budget, saturating deadline),
-and RoseCat marked the final-gate blocker and N23/final integration GREEN
-(mail 4914).
+**Final acceptance: two quiet-host clean gates at `2dc67b6`, both GREEN.**
+Each ran on a fresh `git archive` of `2dc67b6` with a fresh cache, under
+Xvfb, one after the other, on a host with no other builds or stress:
+quiet gate A (RoseCat, seed `0xa9b885cd`) and quiet gate B (orchestrator),
+each `85/85 steps, 644/644 tests`. (This replaces the earlier "final clean
+gate GREEN at `5c15e0b`": a later orchestrator gate at `bc0bad1` crashed
+with "attempt to use null value" in "a navigation blocked by policy does
+not refuse later typing".) That panic never reproduced in more than 100
+loaded runs, including the failing seed (112 of them cc_2's, under gdb). The only
+null unwraps on its path were in test code: the driver's `pagePort().?`
+and a `std.debug.print` whose stderr unlock can reach the stdlib's
+`Io.Threaded.recancelInner` `Thread.current.?` from a plain `std.Thread`.
+`2dc67b6` replaces both in the live drivers (explicit checks, raw
+`write(2)` prints) and changes no production code. On the orchestrator's
+acceptance, that blocker is closed and RoseCat records its root cause as
+"probable (test-only), not captured".
+
+**Heavy concurrent load can make live e2e timing fail.** Gates run while
+the host was saturated (CPU burners, gdb loops and several full gates at
+once) have failed live steps that pass on a quiet host: `x-flows`'s first
+`x.post` returned -32007 `navigation_timeout` (RoseCat 4948), as did
+`sdk-python-live` once, and the live bridge's navigating `nativeClick`
+once returned an error after 8 s or more although page B loaded (4939;
+RoseCat 4940). The first `x.post`'s 30 s `page.navigate` (a
+production constant, `src/x.zig:46`) also covers the browser's cold start,
+because the test sends it as soon as the socket accepts. Both quiet gates
+passed all of these steps. Run acceptance gates on a quiet host; a
+harness warm-up before the first flow (a SHOULD) would make `x-flows`
+robust to this.
 
 ## What is NOT verified
 
@@ -248,7 +267,10 @@ The running review log is
   ends only with its last window) is approved; its last review item
   (RoseCat 4859, the tracker sweep's test) is CLOSED by `7059814`. The
   final-gate flakes (native Enter acknowledgement race, ScanServer close
-  hang) are CLOSED by `b0994ad` + `5c15e0b`; the final clean gate is GREEN. Only if site flows ever accept
+  hang) are CLOSED by `b0994ad` + `5c15e0b`. The later intermittent
+  blocked-navigation null panic is CLOSED by `2dc67b6` (probable cause in
+  test code, not captured); the two quiet clean gates at `2dc67b6` are
+  GREEN (see "Final acceptance" above). Only if site flows ever accept
   `window_id` does the two-window X cap oracle (RoseCat 4785) become due;
   today they refuse it.
 - **APPROVED or CLOSED since the first handoff:** `8a16668` (closes 4737),
