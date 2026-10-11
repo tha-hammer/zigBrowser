@@ -216,6 +216,19 @@ test "failure root span records error status and automation.error" {
     try std.testing.expectEqualStrings(data.value.object.get("trace_id").?.string, root.trace_id);
 }
 
+test "a page dialog blocking navigate is recorded as automation.error dialog_open (-32013, the last code)" {
+    var h: Harness = undefined;
+    h.init(&.{});
+    defer h.deinit();
+    h.fake.navigate_result = error.DialogOpen;
+    var outcome = try h.run("page.navigate", "{\"url\":\"https://example.test/\"}", 0);
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32013), outcome.failure.code);
+    const root = try h.root();
+    try std.testing.expectEqualStrings("error", root.attr("result.status").?);
+    try std.testing.expectEqualStrings("dialog_open", root.attr("automation.error").?);
+}
+
 test "internal failures are recorded as status error with an empty automation.error" {
     var h: Harness = undefined;
     h.init(&.{.{ .json = "garbage" }});

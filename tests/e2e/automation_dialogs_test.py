@@ -126,6 +126,26 @@ def scenario(zb: ZigBrowser, t: float) -> None:
     zb.dialog.respond(accept=False)
     wait_until("prompt dismissed -> null", lambda: title() == "prompt:null", t)
 
+    # --- while a dialog is open, page work that needs the page fails fast ---
+    trigger("showAlert('blocking')")
+    open_dialog()
+    blocked = [
+        ("viewport screenshot", lambda: zb.page.screenshot(timeout_ms=20000)),
+        ("full-page screenshot", lambda: zb.page.screenshot(fullPage=True, timeout_ms=20000)),
+        ("dom.setInputFiles", lambda: zb.dom.set_input_files("css=#file", [str(FIXTURES / "next.html")], timeout_ms=20000)),
+        ("native dom.click", lambda: zb.dom.click("css=#btn", input="native", timeout_ms=20000)),
+        ("page.title (reads the DOM)", lambda: zb.page.title()),
+    ]
+    for label, call in blocked:
+        elapsed = expect_error(f"{label} with an alert open", call, -32013, None)
+        if elapsed > FAIL_FAST_SEC:
+            raise AssertionError(f"{label} took {elapsed:.2f}s")
+    expect_equal("page.url needs no page script", zb.page.url()["url"], index_url)
+    zb.dialog.respond(accept=True)
+    wait_until("the page resumes", lambda: title() == "alerted", t)
+    expect_equal("no file was chosen", js("document.getElementById('file').files.length")["result"], 0)
+    expect_equal("no trusted click reached the page", js("window.trusted")["result"], 0)
+
     # --- beforeunload ---
     expect_error("unknown onBeforeUnload", lambda: zb.page.navigate(next_url, on_before_unload="maybe"), -32602, None)
     elapsed = expect_error("navigate (default fail) on a guarded page", lambda: zb.page.navigate(next_url, timeout_ms=20000), -32013, None)
@@ -173,6 +193,22 @@ def scenario(zb: ZigBrowser, t: float) -> None:
 
     # A popup closed while its alert is open: the dialog goes with it.
     expect_equal("popup back", zb.call("page.navigate", {"url": (FIXTURES / "popup.html").as_uri(), "timeout_ms": 20000, "window_id": popup}), {"ok": True})
+    # The popup and its opener share one web process: the popup's dialog
+    # blocks the opener's script too, so opener commands fail fast with
+    # dialog_open instead of waiting out their deadline. Nothing answers it.
+    trigger("showAlert('shared process')", window_id=popup)
+    expect_equal("popup alert (shared process)", open_dialog()["window_id"], popup)
+    elapsed = expect_error("opener read while its popup's alert is open", lambda: zb.call("dom.getText", {"selector": "css=#draft", "timeout_ms": 20000}), -32013, None)
+    if elapsed > FAIL_FAST_SEC:
+        raise AssertionError(f"opener dialog_open took {elapsed:.2f}s")
+    expect_error("opener evaluate while its popup's alert is open", lambda: js("1"), -32013, None)
+    expect_error("opener navigate while its popup's alert is open", lambda: zb.page.navigate(next_url, timeout_ms=20000), -32013, None)
+    expect_equal("the popup's alert is still the open one", zb.dialog.get()["window_id"], popup)
+    zb.dialog.respond(accept=True)
+    wait_until("popup resumes", lambda: title(window_id=popup) == "popup-alerted", t)
+    expect_equal("opener state survived", js("document.getElementById('draft').value")["result"], "unsaved draft")
+    expect_equal("opener still on its page", heading(), "Dialogs")
+
     trigger("showAlert('closing soon')", window_id=popup)
     expect_equal("popup alert", open_dialog()["window_id"], popup)
     expect_equal("close the popup", zb.page.close(popup), {"ok": True})

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import { AutomationError } from "./errors.js";
-import { CookiesNamespace, DomNamespace, InstagramNamespace, LinkedInNamespace, PageNamespace, SocialNamespace, XNamespace } from "./methods.js";
+import { CookiesNamespace, DialogNamespace, DomNamespace, InstagramNamespace, LinkedInNamespace, PageNamespace, SocialNamespace, XNamespace } from "./methods.js";
 
 type EventCallback = (params: Record<string, unknown>) => void;
 
@@ -18,6 +18,7 @@ export class ZigBrowser {
 
   readonly dom: DomNamespace;
   readonly page: PageNamespace;
+  readonly dialog: DialogNamespace;
   readonly cookies: CookiesNamespace;
   readonly social: SocialNamespace;
   readonly x: XNamespace;
@@ -32,6 +33,7 @@ export class ZigBrowser {
     const call = (method: string, params?: Record<string, unknown>) => this.call(method, params);
     this.dom = new DomNamespace(call);
     this.page = new PageNamespace(call);
+    this.dialog = new DialogNamespace(call);
     this.cookies = new CookiesNamespace(call);
     this.social = new SocialNamespace(call);
     this.x = new XNamespace(call);

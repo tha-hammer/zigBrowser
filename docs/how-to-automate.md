@@ -187,11 +187,22 @@ was: same URL, same page state.
 
 Page dialogs are `alert`, `confirm`, `prompt`, and the `beforeunload` "Leave site?" prompt.
 
-zigBrowser never answers a dialog for you. It stays open, as a normal window a
-person can answer, until that person or `dialog.respond` answers it. While it is
-open the page's script is blocked, so commands on that window end at once with
--32013 `dialog_open` instead of waiting for their deadline. That includes the
-command that made the dialog open, if the dialog opened first.
+zigBrowser does not answer a dialog for you. The one exception is a "Leave
+site?" prompt that `page.navigate` raises with `onBeforeUnload` set to
+`"accept"` or `"dismiss"` (see below). A dialog stays open, as a normal window a
+person can answer, until that person or `dialog.respond` answers it.
+
+While a dialog is open, the page's script and rendering are blocked. Commands
+that need them end at once with -32013 `dialog_open` instead of waiting for
+their deadline. These are every `dom.*` command, `page.evaluate`, `page.title`,
+`page.navigate`, `page.reload` and `page.screenshot` (the viewport too).
+Commands that do not need the page keep working: `page.url`, `page.list`,
+`dialog.get` and `dialog.respond`.
+
+This applies on the dialog's window and on every window that shares its page
+process: a popup and the page that opened it block each other. It also covers
+the command that made the dialog open, if the dialog opened first. No native
+input is sent while a dialog is open, so none can arrive after it closes.
 
 | Method | Params | Result |
 |---|---|---|
@@ -210,10 +221,17 @@ command is blocked by the dialog.
 - `"dismiss"`: stay on the page. You get -32008 `navigation_failed` with
   `data.reason = "beforeunload_dismissed"`.
 
+With `"accept"` or `"dismiss"`, the navigation answers the prompt itself, at
+once. The prompt is never shown, `dialog.get` does not list it, and
+`dialog.respond` cannot answer it, so nothing can race that answer.
+
 A window that already shows a dialog refuses any navigation with -32013, and
-nothing loads. Closing a window dismisses its dialog. Python: `zb.dialog.get()`,
-`zb.dialog.respond(accept, text=None, window_id=None)`,
-`zb.page.navigate(url, on_before_unload="accept")`.
+nothing loads. Closing a window dismisses its dialog.
+
+- Python: `zb.dialog.get()`, `zb.dialog.respond(accept, text=None, window_id=None)`,
+  `zb.page.navigate(url, on_before_unload="accept")`.
+- Node: `zb.dialog.get({windowId})`, `zb.dialog.respond(accept, {text, windowId})`,
+  `zb.page.navigate(url, {onBeforeUnload: "accept"})`.
 
 ### DOM
 

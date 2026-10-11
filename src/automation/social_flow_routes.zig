@@ -554,8 +554,7 @@ const Trace = struct {
         switch (outcome.*) {
             .result => {},
             .failure => |f| {
-                const in_taxonomy = f.code <= errors.downstreamCode(.element_not_found) and f.code >= errors.downstreamCode(.cancelled);
-                put(&entries, &count, "automation.error", if (in_taxonomy) f.message else "internal");
+                put(&entries, &count, "automation.error", if (errors.isAutomationCode(f.code)) f.message else "internal");
                 if (self.error_step_index) |i| {
                     put(&entries, &count, "error.step", self.error_step_buf[0..self.error_step_len]);
                     put(&entries, &count, "error.step_index", std.fmt.bufPrint(&bufs[4], "{d}", .{i}) catch unreachable);

@@ -368,6 +368,21 @@ test "an action pauses within the pacing range, runs, and counts one action" {
     try std.testing.expectEqualStrings("https://www.linkedin.com/feed/update/1/", f.h.fake.navigate_calls.items[0]);
 }
 
+test "a page dialog that stops a flow is -32013 and the compound span records automation.error dialog_open" {
+    var f: FlowHarness = undefined;
+    f.init();
+    defer f.deinit();
+    f.h.fake.navigate_result = error.DialogOpen;
+    var outcome = try f.call("linkedin.like", "{\"postUrl\":\"https://www.linkedin.com/feed/update/1/\"}");
+    defer outcome.deinit(gpa);
+    try std.testing.expectEqual(@as(i64, -32013), outcome.failure.code);
+    var compound: ?*const telemetry.Span = null;
+    for (f.sink.spans.items) |*span| {
+        if (std.mem.eql(u8, span.name, "automation.social.compound")) compound = span;
+    }
+    try std.testing.expectEqualStrings("dialog_open", compound.?.attr("automation.error").?);
+}
+
 test "login gate before navigation (C31): no session cookie -> -32011 logged_out, no page step, no pacing" {
     var f: FlowHarness = undefined;
     f.init();

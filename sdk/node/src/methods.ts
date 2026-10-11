@@ -192,8 +192,19 @@ export class DomNamespace {
 export class PageNamespace {
   constructor(private readonly call: Caller) {}
 
-  navigate(url: string, opts: { waitUntil?: string; timeoutMs?: number } = {}): Promise<OkResult> {
-    return this.call("page.navigate", wire({ url, waitUntil: opts.waitUntil, timeout_ms: opts.timeoutMs })) as Promise<OkResult>;
+  /**
+   * onBeforeUnload: what to do if the page asks "Leave site?": "fail" (default:
+   * -32013 dialog_open at once, the prompt stays open), "accept" (leave) or
+   * "dismiss" (stay: -32008 beforeunload_dismissed).
+   */
+  navigate(
+    url: string,
+    opts: { waitUntil?: string; timeoutMs?: number; onBeforeUnload?: "fail" | "accept" | "dismiss" } = {},
+  ): Promise<OkResult> {
+    return this.call(
+      "page.navigate",
+      wire({ url, waitUntil: opts.waitUntil, timeout_ms: opts.timeoutMs, onBeforeUnload: opts.onBeforeUnload }),
+    ) as Promise<OkResult>;
   }
   reload(opts: { waitUntil?: string; timeoutMs?: number } = {}): Promise<OkResult> {
     return this.call("page.reload", wire({ waitUntil: opts.waitUntil, timeout_ms: opts.timeoutMs })) as Promise<OkResult>;
@@ -221,6 +232,30 @@ export class PageNamespace {
   /** A backend without screenshots answers -32603. */
   screenshot(opts: { fullPage?: boolean; timeoutMs?: number } = {}): Promise<ScreenshotResult> {
     return this.call("page.screenshot", wire({ fullPage: opts.fullPage, timeout_ms: opts.timeoutMs })) as Promise<ScreenshotResult>;
+  }
+}
+
+export type DialogType = "alert" | "confirm" | "prompt" | "beforeunload";
+export type DialogState =
+  | { open: false }
+  | { open: true; type: DialogType; message: string; window_id: string; default_text?: string };
+
+/**
+ * Page dialogs: alert, confirm, prompt and the beforeunload "Leave site?"
+ * prompt. A dialog is not answered for you (except a prompt that
+ * page.navigate's onBeforeUnload "accept"/"dismiss" answers): it stays open
+ * (a person can answer it) until respond() does.
+ */
+export class DialogNamespace {
+  constructor(private readonly call: Caller) {}
+
+  /** That window's dialog, else the first open one (the primary's first). */
+  get(opts: { windowId?: string } = {}): Promise<DialogState> {
+    return this.call("dialog.get", wire({ window_id: opts.windowId })) as Promise<DialogState>;
+  }
+  /** accept: OK / Leave, else Cancel / Stay; text answers an accepted prompt. No dialog: -32602 "no_dialog". */
+  respond(accept: boolean, opts: { text?: string; windowId?: string } = {}): Promise<OkResult> {
+    return this.call("dialog.respond", wire({ accept, text: opts.text, window_id: opts.windowId })) as Promise<OkResult>;
   }
 }
 

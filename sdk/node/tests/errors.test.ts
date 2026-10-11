@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { AutomationError, ProtocolError } from "../src/index";
 
 describe("AutomationError", () => {
-  it("maps all 12 automation codes", () => {
-    for (let code = -32001; code >= -32012; code--) {
+  it("maps all 13 automation codes (-32013 dialog_open included)", () => {
+    for (let code = -32001; code >= -32013; code--) {
       const err = AutomationError.fromRpcError({
         code,
         message: `error_${code}`,

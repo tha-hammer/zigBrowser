@@ -23,5 +23,12 @@
 <body>
 <h1>Dialogs</h1>
 <textarea id="draft">unsaved draft</textarea>
+<input type="file" id="file">
+<button id="btn" style="width:160px;height:60px">click me</button>
+<script>
+  // Trusted (native) clicks that reached the page.
+  window.trusted = 0;
+  document.getElementById('btn').addEventListener('click', (event) => { if (event.isTrusted) window.trusted += 1; });
+</script>
 </body>
 </html>

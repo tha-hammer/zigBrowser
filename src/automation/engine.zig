@@ -1099,7 +1099,7 @@ fn recordRoot(facts: RootFacts, options: ExecuteOptions, run: *const Run, outcom
     var redaction_bufs: telemetry.RedactionBuffers = .{};
     const automation_error: ?[]const u8 = switch (outcome.*) {
         .result => null,
-        .failure => |failure| if (failure.code <= errors.downstreamCode(.element_not_found) and failure.code >= errors.downstreamCode(.cancelled)) failure.message else null,
+        .failure => |failure| if (errors.isAutomationCode(failure.code)) failure.message else null,
     };
     sink.recordCommandSpan(.{
         .trace_id = run.ids.trace_id,

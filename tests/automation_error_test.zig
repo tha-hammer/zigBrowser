@@ -34,6 +34,17 @@ test "AutomationError exposes stable names, downstream codes, and retryability" 
     }
 }
 
+test "isAutomationCode covers exactly -32001 through the last variant (-32013 dialog_open)" {
+    try std.testing.expect(automation_error.isAutomationCode(-32001));
+    try std.testing.expect(automation_error.isAutomationCode(-32012));
+    try std.testing.expect(automation_error.isAutomationCode(-32013));
+    try std.testing.expect(automation_error.isAutomationCode(automation_error.downstreamCode(@enumFromInt(automation_error.error_count - 1))));
+    try std.testing.expect(!automation_error.isAutomationCode(-32000));
+    try std.testing.expect(!automation_error.isAutomationCode(-32014));
+    try std.testing.expect(!automation_error.isAutomationCode(-32602));
+    try std.testing.expect(!automation_error.isAutomationCode(-32603));
+}
+
 test "AutomationError rejects unknown names" {
     try std.testing.expectError(error.UnknownAutomationError, automation_error.fromName("timeout"));
     try std.testing.expectError(error.UnknownAutomationError, automation_error.fromName("cookies_denied"));

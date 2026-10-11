@@ -347,6 +347,14 @@ void zb_automation_debug_files_hold(int stage, unsigned int ms);
 void zb_automation_debug_files_preclick(const char *page_js);
 /* Test hook: like close_on_motion, from the view's key-press handler. */
 int zb_automation_debug_close_on_key(uint32_t win, unsigned int timeout_ms);
+/* Test hooks: answer a navigate policy's beforeunload prompt `ms` after it
+ * opens instead of on the next main-loop iteration (0 = off), and count
+ * the prompts a policy took. */
+void zb_automation_debug_dialog_policy_hold(unsigned int ms);
+int zb_automation_debug_dialog_policy_scheduled(void);
+/* Test hook: page script run after a guarded native input job is tracked
+ * and before its document guard runs (NULL = off). */
+void zb_automation_debug_native_preguard(const char *page_js);
 /* Test hook: key events not sent because their window was destroyed. */
 int zb_automation_debug_native_skipped(void);
 

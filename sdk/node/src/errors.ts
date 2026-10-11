@@ -16,7 +16,7 @@ export class ProtocolError extends ZigBrowserError {
 }
 
 export class AutomationError extends ZigBrowserError {
-  static readonly AUTOMATION_MIN = -32012;
+  static readonly AUTOMATION_MIN = -32013;
   static readonly AUTOMATION_MAX = -32001;
 
   code: number;

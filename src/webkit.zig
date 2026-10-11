@@ -3238,3 +3238,154 @@ test "window targeting: every method reaches its own window, list/close/gone/unk
     try std.testing.expectEqual(@as(u32, 0), driver.nav.failures);
     c.zb_automation_loop_mark(1);
 }
+
+// Page dialogs: a navigate's beforeunload policy ("accept" / "dismiss")
+// owns the "Leave site?" prompt from the moment it opens. The prompt is
+// never shown, listed or answerable by anyone else, so a person or
+// dialog.respond cannot win a race against the policy's answer (which runs
+// from the main loop) and leave the navigate waiting for its deadline or
+// ending with the other outcome. The hold seam delays that answer to make
+// the race window as wide as a test needs.
+const dialog_page_a =
+    \\<!doctype html><html><head><title>A</title><script>
+    \\addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = 'draft'; });
+    \\</script></head><body><p>a</p></body></html>
+;
+const dialog_page_b =
+    \\<!doctype html><html><head><title>B</title></head><body>
+    \\<button id="b" style="position:fixed;left:20px;top:20px;width:100px;height:60px">b</button>
+    \\<script>window.trusted = 0;
+    \\document.getElementById('b').addEventListener('click', (e) => { if (e.isTrusted) window.trusted += 1; });</script>
+    \\</body></html>
+;
+
+const DialogPolicyDriver = struct {
+    uri_a: [:0]const u8,
+    uri_b: [:0]const u8,
+    failures: u32 = 0,
+
+    fn check(self: *DialogPolicyDriver, ok: bool, comptime what: []const u8) void {
+        if (!ok) {
+            rawPrint("dialog policy check failed: {s}\n", .{what});
+            self.failures += 1;
+        }
+    }
+
+    const Nav = struct {
+        uri: [:0]const u8,
+        policy: c_int,
+        rc: c_int = -1,
+        fn run(self: *Nav) void {
+            var err: [*c]u8 = null;
+            self.rc = c.zb_automation_navigate_guarded(0, self.uri.ptr, self.policy, 15_000, &err);
+            c.zb_automation_free(err);
+        }
+    };
+
+    fn title(self: *DialogPolicyDriver) [64]u8 {
+        _ = self;
+        var out: [*c]u8 = null;
+        var buf = [_]u8{0} ** 64;
+        if (c.zb_automation_eval_json(0, "return document.title;", null, null, 5000, &out, null) == c.ZB_AUTO_OK and out != null) {
+            const text = std.mem.span(out);
+            @memcpy(buf[0..@min(text.len, buf.len - 1)], text[0..@min(text.len, buf.len - 1)]);
+        }
+        c.zb_automation_free(out);
+        return buf;
+    }
+
+    fn titleIs(self: *DialogPolicyDriver, want: []const u8) bool {
+        const got = self.title();
+        return std.mem.eql(u8, std.mem.sliceTo(&got, 0), want);
+    }
+
+    /// Navigates away from A under `policy` while the policy's answer is
+    /// held, and tries to answer the prompt (`accept`) meanwhile.
+    fn raced(self: *DialogPolicyDriver, policy: c_int, accept: c_int) c_int {
+        const held_before = c.zb_automation_debug_dialog_policy_scheduled();
+        var nav: Nav = .{ .uri = self.uri_b, .policy = policy };
+        const t = std.Thread.spawn(.{}, Nav.run, .{&nav}) catch {
+            self.check(false, "spawn the navigate");
+            return -1;
+        };
+        var waited: u32 = 0;
+        while (c.zb_automation_debug_dialog_policy_scheduled() == held_before and waited < 10_000) : (waited += 5) sleepMs(5);
+        self.check(c.zb_automation_debug_dialog_policy_scheduled() == held_before + 1, "the policy took the prompt");
+        self.check(c.zb_automation_respond_dialog(0, accept, null, 5000) == c.ZB_AUTO_ERR_NO_DIALOG, "nobody else can answer a prompt the policy owns");
+        var listed: [*c]u8 = null;
+        self.check(c.zb_automation_list_dialogs(5000, &listed) == c.ZB_AUTO_OK and listed != null and std.mem.eql(u8, std.mem.span(listed), "[]"), "a policy-owned prompt is not listed");
+        c.zb_automation_free(listed);
+        t.join();
+        return nav.rc;
+    }
+
+    fn run(self: *DialogPolicyDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+        defer c.zb_automation_debug_dialog_policy_hold(0);
+        self.check(self.titleIs("A"), "page A loaded");
+        c.zb_automation_debug_dialog_policy_hold(400);
+
+        self.check(self.raced(c.ZB_BEFORE_UNLOAD_DISMISS, 1) == c.ZB_AUTO_ERR_DIALOG_DISMISSED, "dismiss ends DIALOG_DISMISSED even though someone tried Leave");
+        self.check(self.titleIs("A"), "dismiss stayed on A");
+
+        self.check(self.raced(c.ZB_BEFORE_UNLOAD_ACCEPT, 0) == c.ZB_AUTO_OK, "accept leaves even though someone tried Stay");
+        self.check(self.titleIs("B"), "accept reached B");
+
+        // A dialog that opens after the target was located but before the
+        // native input's document guard ran: the input ends DIALOG_OPEN and
+        // no trusted event is sent, not even once the dialog is answered.
+        var token: [*c]u8 = null;
+        self.check(c.zb_automation_eval_json(0, "return globalThis.__zbAutomation.documentToken;", null, c.ZB_AUTOMATION_WORLD, 5000, &token, null) == c.ZB_AUTO_OK and token != null, "read the document token");
+        defer c.zb_automation_free(token);
+        c.zb_automation_debug_native_preguard("alert('between locate and dispatch')");
+        var err: [*c]u8 = null;
+        const click_rc = c.zb_native_click(0, 40, 40, 1, token, 5000, &err);
+        c.zb_automation_free(err);
+        c.zb_automation_debug_native_preguard(null);
+        self.check(click_rc == c.ZB_AUTO_ERR_DIALOG_OPEN, "the guarded click ends DIALOG_OPEN");
+        var listed: [*c]u8 = null;
+        self.check(c.zb_automation_list_dialogs(5000, &listed) == c.ZB_AUTO_OK and listed != null and std.mem.indexOf(u8, std.mem.span(listed), "\"type\":\"alert\"") != null, "the alert is open and listed");
+        c.zb_automation_free(listed);
+        self.check(c.zb_automation_respond_dialog(0, 1, null, 5000) == c.ZB_AUTO_OK, "answer the alert");
+        sleepMs(300);
+        var trusted: [*c]u8 = null;
+        self.check(c.zb_automation_eval_json(0, "return String(window.trusted);", null, null, 5000, &trusted, null) == c.ZB_AUTO_OK and trusted != null and std.mem.eql(u8, std.mem.span(trusted), "0"), "no trusted click reached the page");
+        c.zb_automation_free(trusted);
+    }
+};
+
+test "a navigate's beforeunload policy owns the prompt: no other answer can race it" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-dialog-policy-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    defer removeTree(dir);
+    const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_a, dialog_page_a.ptr, dialog_page_a.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_b, dialog_page_b.ptr, dialog_page_b.len, null) != 0);
+    const raw_a = gfile.g_filename_to_uri(path_a, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_a);
+    const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_b);
+    const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
+    var driver: DialogPolicyDriver = .{ .uri_a = uri_a, .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, DialogPolicyDriver.run, .{&driver});
+    _ = c.zb_app_run(uri_a.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(u32, 0), driver.failures);
+    c.zb_automation_loop_mark(1);
+}

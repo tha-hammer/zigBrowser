@@ -11,20 +11,8 @@ pub const RouterResult = union(enum) {
     automation_error: AutomationError,
 };
 
-pub const AutomationError = enum {
-    element_not_found,
-    element_not_visible,
-    element_not_stable,
-    element_obscured,
-    element_disabled,
-    element_not_editable,
-    navigation_timeout,
-    navigation_failed,
-    action_timeout,
-    platform_rate_limited,
-    session_invalid,
-    cancelled,
-};
+/// The one automation error taxonomy (no second copy to drift).
+pub const AutomationError = @import("automation/error.zig").AutomationError;
 
 pub fn automationErrorCode(err: AutomationError) i64 {
     return -32001 - @as(i64, @intCast(@intFromEnum(err)));
@@ -457,6 +445,7 @@ test "P2.3 maps AutomationError variants to JSON-RPC reserved application codes 
         .{ .err = .platform_rate_limited, .code = -32010, .name = "platform_rate_limited" },
         .{ .err = .session_invalid, .code = -32011, .name = "session_invalid" },
         .{ .err = .cancelled, .code = -32012, .name = "cancelled" },
+        .{ .err = .dialog_open, .code = -32013, .name = "dialog_open" },
     };
 
     for (cases) |case| {

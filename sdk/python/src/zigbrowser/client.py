@@ -200,8 +200,9 @@ class PageNamespace:
 
 class DialogNamespace:
     """Page dialogs: alert, confirm, prompt and the beforeunload "Leave
-    site?" prompt. A dialog is never answered for you: it stays open (a
-    person can answer it) until respond() does."""
+    site?" prompt. A dialog is not answered for you (except a prompt that
+    page.navigate's on_before_unload "accept"/"dismiss" answers): it stays
+    open (a person can answer it) until respond() does."""
 
     def __init__(self, client: "ZigBrowser"):
         self._client = client

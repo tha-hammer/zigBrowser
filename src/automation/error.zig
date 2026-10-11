@@ -31,6 +31,12 @@ pub fn downstreamCode(err: AutomationError) i32 {
     return downstream_code_base - @as(i32, @intCast(@intFromEnum(err)));
 }
 
+/// True for the downstream codes of this taxonomy (-32001 down to the last
+/// variant's code), so telemetry never needs its own copy of the bounds.
+pub fn isAutomationCode(code: i64) bool {
+    return code <= downstream_code_base and code > downstream_code_base - @as(i64, error_count);
+}
+
 pub fn isRetryable(err: AutomationError) bool {
     return switch (err) {
         .element_not_found,
