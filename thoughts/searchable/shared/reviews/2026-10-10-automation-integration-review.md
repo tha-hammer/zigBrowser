@@ -2653,3 +2653,83 @@ remain usable. A separate test-only termination should assert that the new
 `web-process-terminated` handler records `TERMINATED_BY_API` for the exact
 window. The live YouTube document finished in 1.514 seconds and emitted no
 `LOAD_FAIL`, so this latent defect is deliberately not labeled its root cause.
+
+### WebKitGTK 2.54.0 qualification on Xvfb
+
+**Status: BLOCKER remains OPEN (cc_1). The old UI-process SIGSEGV was not
+observed, but the upgrade does not produce a usable YouTube view.** After the
+host was upgraded to Debian `libwebkit2gtk-4.1-0` and
+`libjavascriptcoregtk-4.1-0` `2.54.0-1~deb13u2`, the reviewer rebuilt exact
+`07643a1` from a fresh `git archive` with private local and global Zig caches.
+The resulting binary's SHA-256 was
+`4a251625ac8a30814ff5426d0aea8d071398cb6d15cf9ee7a81f66d4eba2642c`.
+Every run used a new Xvfb display and throwaway HOME, XDG directories,
+profile, and socket; neither DISPLAY `:0` nor the live socket/profile was
+touched. The package-download experiment requested before the system upgrade
+was stopped and its complete scratch tree was deleted.
+
+The installed MiniBrowser reached the exact watch URL through a local
+opener-to-middle-to-YouTube `window.open` chain, with automatic popups enabled
+explicitly. At 10 and 35 seconds from launch, its UI process, network process,
+and three WebProcesses were alive, and the top-level X title still named the
+expected video. The actual 1280x900 X11 root captures were nevertheless
+uniformly black at both samples: mean 0, standard deviation 0, and identical
+MD5 `54ab45ed329c9f0bfdefff6e74753459`. MiniBrowser emitted no crash marker and
+no GBM, DRM-dumb-buffer, or explicit GBM-buffer-allocation error. Thus 2.54.0
+does avoid the old 2.52.6 MiniBrowser process exit in this run, but its
+two-hop popup still fails the real-presentation oracle.
+
+The fresh zigBrowser used actual `dom.click` commands for both links, proving
+the production window chain and recording `window-3` with the expected URL,
+full title, and `opener_window_id: window-2` before the failure. By 10 seconds
+after that readiness point, the target WebProcess had disappeared while the
+UI process, network process, and the opener/middle WebProcess remained alive.
+At both 10 and 35 seconds, `page.list` kept `window-3` but cleared only its URL
+and title, side-effect-free `page.evaluate` returned `-32603 Evaluation
+failed`, and the X11 frame was the same all-zero frame as MiniBrowser. stderr
+contained no WebProcess-termination diagnostic and zero GBM/DRM allocation
+errors. This is a silent target-WebProcess failure rather than the old
+whole-UI-process SIGSEGV, but it is still the blank-window failure from a
+client's perspective.
+
+One installed-MiniBrowser discriminator ties the document loss to
+zigBrowser's configuration. Repeating the same two-hop chain with only
+`--hardware-acceleration-policy=never`, matching
+`src/webkit_shim.c:1085-1090`, produced `WebProcess CRASHED` within 20 seconds
+while MiniBrowser's UI shell remained alive. The default-policy MiniBrowser
+run did not emit that crash. No GBM or DRM line appeared in either Xvfb run,
+so this result is not an NVIDIA-path reproduction. It makes the `NEVER` policy
+the probable trigger for zigBrowser's 2.54.0 target-document loss; the
+default-policy MiniBrowser's all-black popup is a separate presentation
+failure and prevents treating that control as healthy.
+
+The restarted live 2.54.0 log was inspected read-only and confirms that the
+package upgrade also does not remove the physical NVIDIA errors. At the time
+of inspection it already contained 24 `DRM_IOCTL_MODE_CREATE_DUMB` permission
+failures and three NVIDIA `nv_gbm_create_device` failures. The frozen 2.52.6
+log contained 78 and nine respectively, plus six explicit `Failed to create
+GBM buffer` messages. Counts are not directly comparable because the logs
+cover different run lengths, but the error class persists. Xvfb has no NVIDIA
+path, so changing the production acceleration policy still requires a
+user-authorized real-presentation matrix on DISPLAY `:0`.
+
+The proposed opt-in package-qualification test remains required and is now a
+known failing test on 2.54.0: open the public watch URL through the two-hop
+fixture and, at 10 and 35 seconds, require the UI and target WebProcess to be
+alive, the target URL/title to remain populated, a side-effect-free evaluation
+to succeed, and real X11 pixels to be nonblack. Add a MiniBrowser
+`hardware-acceleration-policy=never` control. Independently connect WebKit's
+`web-process-terminated` signal and record its reason and `window_id`; without
+that diagnostic, zigBrowser silently turns the target into an empty window.
+The finding and reproducer contract were mailed to BlackRobin as Agent Mail
+5039.
+
+The required pre-commit gate used a clean `git archive` of exact HEAD
+`61a62ea`, a private Xvfb display, unset `DISPLAY`, `WAYLAND_DISPLAY`, and
+`ZIGBROWSER_SOCKET`, and a 1500-second bound. It reported **86/88 steps
+succeeded (1 failed); 685/685 tests passed**. The only failed step was
+`automation-scroll`, with `hover moved away: expected False, got True`. That
+is the WebKitGTK-2.54.0 upgrade regression that BlackRobin reproduced 5/5 on
+clean `cf004fe` and 5/5 on the harness tree; BlueBeaver's preceding gate also
+failed only that step. No additional failure appeared. The disposable gate
+tree and its Xvfb were deleted by the `find -delete` exit trap.
