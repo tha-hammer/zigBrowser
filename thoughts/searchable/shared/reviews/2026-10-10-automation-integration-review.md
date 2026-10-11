@@ -2873,3 +2873,72 @@ social-flows, and all five launcher-hygiene cases passed. A fixture-server
 BrokenPipe during a canceled response did not fail its social-flow test. The
 export and cache were deleted by the `find -delete` exit trap. This green gate
 does not waive either semantic blocker above.
+
+## Web-process diagnostics and rendering startup review (`1c4d0d8`)
+
+**Status: APPROVED with two SHOULD follow-ups. No production blocker found.**
+The review used the exact committed blobs, not the later shared-worktree HEAD.
+It did not access DISPLAY `:0`, the live socket, or the live browser.
+
+The dead-process reason follows the production chain. Every `ZbWindow` owns a
+GTK-thread-only static-string termination field and its own
+`web-process-terminated` handler (`src/webkit_shim.c:116-120,1138-1139`). The
+handler maps all WebKitGTK 2.54 reasons, conservatively maps an unknown future
+reason to `crashed`, stores the result on that signal's window, and prints the
+numeric window id and reason to stderr
+(`src/webkit_shim.c:4122-4145`). Intentional window destruction disconnects the
+handler before the last related view's process can be terminated, so a normal
+`page.close` is not misreported (`src/webkit_shim.c:834-843`). A committed load
+clears the prior reason (`src/webkit_shim.c:942-945`). The GTK window snapshot
+serializes the reason on that same window, the Zig bridge parses it into the
+closed `Termination` enum with owned URL/title cleanup on every error path, and
+the server emits the public optional `crashed` field
+(`src/webkit_shim.c:3810-3838`, `src/automation_gtk_port.zig:177-212`,
+`src/automation_server.zig:708-723`). No borrowed C string crosses the shim;
+only the snapshot JSON does.
+
+`tests/e2e/web_process_crash_test.py:88-134` drives the real binary through its
+Unix socket, kills its actual WebKitWebProcess, then proves `page.list` reports
+`window-1` as `crashed`, stderr reports `window 1` plus `crashed`, and a later
+committed navigation clears the field. This does not bypass the C signal,
+PagePort parser, or server serializer. **SHOULD (cc_1):** extend it with a
+popup/related-view case and assert that the reported field and stderr id belong
+to the affected popup (and that an unaffected window is not marked). The
+production handler is correctly per-window, but the current e2e only exercises
+the primary window, so a future accidental primary-window assignment would not
+be caught.
+
+The rendering defaults remain unchanged in both layers: the pure default is
+`NEVER` plus no renderer environment (`src/render_config.zig:31-34,105-108`),
+and the C fallback is initialized to `ZB_HW_POLICY_NEVER`
+(`src/webkit_shim.c:165-167`). `runOpen` applies the resolved config before
+profile setup, automation threads, WebKit context/view construction, EGL, and
+child processes (`src/app.zig:36-62`; `src/webkit_shim.c:4699-4735`). Every
+new main or popup view reads the same atomic policy before loading
+(`src/webkit_shim.c:1103-1111`), and the live policy test checks both. Renderer
+flags set only their documented environment variable, preserve even an empty
+user-set value, and the external e2e reads the actual WebKitWebProcess
+environment (`src/webkit.zig:40-66`; `tests/e2e/render_config_test.py:60-135`).
+The CLI accepts only `never|always|webkit` and
+`default|shm|mesa-egl`; missing, unknown, underscore-spelled, and duplicate
+values become usage (`src/cli.zig:108-118,311-329`).
+
+The supplied NVIDIA/X11 matrix supports the implementation's cautious default:
+the original C/NEVER control lost its target WebProcess by 35-40 seconds, while
+J (WebKit policy plus force-SHM) and L (WebKit policy plus Mesa EGL) retained two
+WebProcesses through 60 seconds. The fresh J and L samples have changing,
+non-uniform pixels and live video state; J still recorded two DRM-dumb and two
+NVIDIA-GBM setup errors, while L recorded none of those three classes. This is
+stronger automated presentation evidence than the earlier 24-bpp samples, but
+the review artifacts contain no record of the watching user's verbal verdict.
+**SHOULD (cc_1):** narrow `src/render_config.zig:6-8` and
+`docs/how-to-run.md:77-78`. “Every/any other non-DMABUF path died” is broader
+than the data and reads as contradicting the surviving force-SHM case. The
+matrix specifically establishes failure for policy NEVER and for the tested
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` combinations.
+
+The independent clean-export gate at exact `1c4d0d8` used fresh local/global
+Zig caches, a private Xvfb, unset `DISPLAY`, `WAYLAND_DISPLAY`, and
+`ZIGBROWSER_SOCKET`, and a 1500-second bound. It reported **90/90 steps
+succeeded; 700/700 tests passed**. Both new production-chain e2es passed. The
+export and caches were deleted immediately by the `find -delete` trap.
