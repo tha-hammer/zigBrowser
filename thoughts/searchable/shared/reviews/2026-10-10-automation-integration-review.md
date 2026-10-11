@@ -2401,3 +2401,15 @@ a fresh `git archive fd961a8`, unset `DISPLAY`, `WAYLAND_DISPLAY`, and
 `0x2c33c323`. The disposable tree was deleted immediately. Findings and the
 test-validity follow-ups were mailed as Agent Mail 5000-5007; final approval
 follows this log commit.
+
+## Final quiet clean-export gate at 07643a1
+
+**Status: GREEN.** On a quiet host, the reviewer exported exact commit
+`07643a1` into a fresh disposable directory, unset `DISPLAY`,
+`WAYLAND_DISPLAY`, and `ZIGBROWSER_SOCKET`, and ran the full suite under a
+new Xvfb display with a 1500-second bound. The result was **87/87 steps
+succeeded; 675/675 tests passed**, seed `0xeb3b72b9`. This includes the dialog
+production-chain regression, popup-close survival, the HTTP/2 GOAWAY control
+and default cases, selector/social flows, and the live WebKit input tests. The
+throwaway export was deleted by its `find -delete` exit trap. No live browser,
+DISPLAY `:0`, or `zb-live.sock` was used.
