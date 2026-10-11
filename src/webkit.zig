@@ -1775,6 +1775,23 @@ const NoContentServer = struct {
     }
 };
 
+/// What a call may take: `cap` ms, never past `deadline` (0 = none), never
+/// negative (a cap computed from a second clock read can be below zero).
+fn remainingMs(deadline: i64, now: i64, cap: i64) c_uint {
+    const bounded = if (deadline == 0) cap else @min(cap, deadline - now);
+    return if (bounded <= 0) 0 else @intCast(@min(bounded, std.math.maxInt(c_uint)));
+}
+
+test "a driver budget is never negative and never past its deadline" {
+    try std.testing.expectEqual(@as(c_uint, 0), remainingMs(1000, 1000, 5000));
+    try std.testing.expectEqual(@as(c_uint, 0), remainingMs(1000, 1001, 5000));
+    try std.testing.expectEqual(@as(c_uint, 0), remainingMs(1000, 900, -1));
+    try std.testing.expectEqual(@as(c_uint, 0), remainingMs(0, 900, -1));
+    try std.testing.expectEqual(@as(c_uint, 100), remainingMs(1000, 900, 5000));
+    try std.testing.expectEqual(@as(c_uint, 50), remainingMs(1000, 900, 50));
+    try std.testing.expectEqual(@as(c_uint, 5000), remainingMs(0, 900, 5000));
+}
+
 const NavEndDriver = struct {
     failures: u32 = 0,
     buf: [512]u8 = undefined,
@@ -1790,8 +1807,7 @@ const NavEndDriver = struct {
     /// Milliseconds a single call may take: at most `cap`, never past the
     /// driver's deadline.
     fn left(self: *NavEndDriver, cap: i64) c_uint {
-        if (self.deadline == 0) return @intCast(cap);
-        return @intCast(std.math.clamp(self.deadline - monotonicMs(), 0, cap));
+        return remainingMs(self.deadline, monotonicMs(), cap);
     }
 
     /// Waits (checked, within the budget) until the first page answers.
@@ -1873,44 +1889,47 @@ const NavEndDriver = struct {
         var tok: [17]u8 = undefined;
 
         // 1. The page cancels the navigation its Enter starts.
+        stage("navend: 1 cancelled navigation");
         _ = self.eval("window.cancelNav = true; return 0;", null);
-        gtk_port.nativeClick(port.ptr, 120, 55, null, 5000) catch return self.check(false, "focus #q");
+        gtk_port.nativeClick(port.ptr, 120, 55, null, self.left(5000)) catch return self.check(false, "focus #q");
         const t1 = self.token(&tok) orelse return self.check(false, "token");
         var sent: usize = 0;
-        const stopped = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t1), 10_000, &sent);
+        const stopped = gtk_port.nativeText(port.ptr, "a\nb", std.mem.span(t1), self.left(10_000), &sent);
         self.check(if (stopped) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a navigation stops");
         self.check(sent == 2, "'a' and Enter were sent, 'b' was not");
         self.check(std.mem.eql(u8, self.eval("return String(window.cancelled);", null), "1"), "the page cancelled the navigation");
         self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed");
         var fresh: usize = 0;
-        gtk_port.nativeText(port.ptr, "cd", std.mem.span(t1), 5000, &fresh) catch self.check(false, "a fresh native text after the cancelled navigation types");
+        gtk_port.nativeText(port.ptr, "cd", std.mem.span(t1), self.left(5000), &fresh) catch self.check(false, "a fresh native text after the cancelled navigation types");
         self.check(fresh == 2, "both characters of the fresh call were sent");
         self.check(std.mem.eql(u8, self.eval("return document.getElementById('q').value;", null), "acd"), "the fresh call typed into the same document");
 
+        stage("navend: 2 a 204 navigation");
         // 2. A navigation whose response is 204: the browser ends it, the
         // document stays.
         _ = self.eval("window.cancelNav = false; return 0;", null);
-        gtk_port.nativeClick(port.ptr, 120, 115, null, 5000) catch return self.check(false, "focus #r");
+        gtk_port.nativeClick(port.ptr, 120, 115, null, self.left(5000)) catch return self.check(false, "focus #r");
         const t2 = self.token(&tok) orelse return self.check(false, "token");
         sent = 0;
-        const stopped_204 = gtk_port.nativeText(port.ptr, "x\ny", std.mem.span(t2), 10_000, &sent);
+        const stopped_204 = gtk_port.nativeText(port.ptr, "x\ny", std.mem.span(t2), self.left(10_000), &sent);
         self.check(if (stopped_204) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a 204 navigation stops");
         self.check(sent == 2, "'x' and Enter were sent, 'y' was not");
         self.check(self.waitNotLeaving(), "the 204 navigation ended in the page");
         self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after the 204");
         fresh = 0;
-        gtk_port.nativeText(port.ptr, "z", std.mem.span(t2), 5000, &fresh) catch self.check(false, "a fresh native text after the 204 navigation types");
+        gtk_port.nativeText(port.ptr, "z", std.mem.span(t2), self.left(5000), &fresh) catch self.check(false, "a fresh native text after the 204 navigation types");
         self.check(std.mem.eql(u8, self.eval("return document.getElementById('r').value;", null), "xz"), "the fresh call after the 204 typed into the same document");
 
+        stage("navend: 3 held navigations A and B");
         // 3. An older navigation's end never clears a newer one to the same
         // URL. Navigation A (held 1.5 s, then 204) gets arrival number a;
         // the page then starts B to the same URL, which supersedes A (A's
         // abort must not clear B) and gets b > a. An end the shell sent
         // before it heard of B leaves B pending; only B's own 204 clears it.
-        gtk_port.nativeClick(port.ptr, 120, 175, null, 5000) catch return self.check(false, "focus #s");
+        gtk_port.nativeClick(port.ptr, 120, 175, null, self.left(5000)) catch return self.check(false, "focus #s");
         const t3 = self.token(&tok) orelse return self.check(false, "token");
         sent = 0;
-        const stopped_hold = gtk_port.nativeText(port.ptr, "u\nv", std.mem.span(t3), 10_000, &sent);
+        const stopped_hold = gtk_port.nativeText(port.ptr, "u\nv", std.mem.span(t3), self.left(10_000), &sent);
         self.check(if (stopped_hold) |_| false else |e| e == error.DocumentChanged, "the sequence whose Enter started a held navigation stops");
         const id_a = self.pendingId(0) orelse return self.check(false, "navigation A got an arrival number");
         _ = self.eval("location.href = '/hold?s=u'; return 0;", null);
@@ -1923,6 +1942,7 @@ const NavEndDriver = struct {
         self.check(self.waitNotLeaving(), "B's own 204 ends it");
         self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after both held navigations");
 
+        stage("navend: 4 navigations C and D");
         // 4. Same-URL supersession at once: C and D start in the same task,
         // before any arrival number is back. D keeps its own number, not
         // C's; an end sent before the shell heard of D leaves D pending;
@@ -1942,6 +1962,7 @@ const NavEndDriver = struct {
         self.check(std.mem.eql(u8, self.eval("return String(globalThis.__zbAutomation.inputAck().leaving);", c.ZB_AUTOMATION_WORLD), "true"), "an older request's end leaves D pending");
         self.check(self.waitNotLeaving(), "D's own 204 ends it");
         self.check(std.mem.eql(u8, self.eval("return location.pathname;", null), "/"), "the document stayed after C and D");
+        stage("navend: done");
     }
 };
 
