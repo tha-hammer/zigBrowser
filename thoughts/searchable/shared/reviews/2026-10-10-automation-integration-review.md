@@ -3957,3 +3957,106 @@ of any `ancestor::*[.//...]` search. The independent green gate at `9f09035`
 passed the Instagram production-chain phase. The separate live message-arrival
 acceptance oracle remains advisory and unimplemented, exactly as documented;
 it does not reopen this wrong-action closure.
+
+## Frozen-window stderr transitions (`9e49912`)
+
+**Verdict: APPROVED.** Each `ZbWindow` owns its own timer and reported bit.
+The WebKit responsiveness notification records only the start of an unbroken
+stretch, arms one GLib timeout, emits one line after the shared 2-second
+debounce, and emits the matching recovery line only if that stretch had been
+reported (`src/webkit_shim.c:4333-4367`). All of this runs on the GTK main
+context; the callback does not cross threads or retain a borrowed string. The
+line contains only the stable numeric window id and elapsed whole seconds, not
+a URL, title, page text, or account data.
+
+Close and shutdown disconnect the responsiveness signal before WebKit process
+termination and remove the timer; final destruction removes it again safely
+(`src/webkit_shim.c:291-305,478-485`). That prevents a normal quit from being
+misreported as recovery and prevents a timer from retaining a freed window.
+The debounce constant is compile-time pinned to `page.health`'s constant.
+
+The production-chain `page-health` E2E freezes window 1 indefinitely, runs a
+bounded 9-second busy loop in independent window 2, and keeps a loading window
+responsive. It then checks the complete transition sequence after normal
+shutdown: one frozen line for window 1, one frozen/recovered pair for window 2,
+none for the loading window, and no duplicate or shutdown recovery line
+(`tests/e2e/page_health_test.py:89-139,194-291`). The new assertions necessarily
+failed on the predecessor, which emitted none of these lines; the author's
+quit-guard mutant also produced the forbidden recovery line and failed.
+
+**SHOULD (cc_1, test coverage):** add a private-Xvfb case that kills a web
+process after its frozen line has been emitted. WebKit reports a dead view as
+responsive in `page.health`, while the termination callback does not explicitly
+retire the outstanding responsiveness state (`src/webkit_shim.c:4350-4395`).
+The current tests therefore do not prove that a freeze-to-crash transition
+cannot append a misleading `page responding again` line. This is a diagnostic
+edge and does not block the normal freeze/recovery feature approved here.
+
+## Social selector MEDIUM fixes (`2965a9f`)
+
+**Verdict: APPROVED.** The changed committing selectors stay exact and become
+more tightly scoped; none introduces a prefix or page-wide fallback. Instagram
+Follow and Message remain under the profile header, exclude hidden ancestry,
+and compare only non-SVG text. Comment Post is now below the unique form that
+contains the comment textarea, so another form's Post cannot become the sole
+candidate (`src/instagram.zig:19-44`). The flow uses strict clicks for all
+three controls (`src/instagram.zig:134-142,154-163,166-175`). LinkedIn's
+owner-area More text branch likewise remains under the previously proven owner
+area, and the post-click Like state now accepts exactly
+`Reaction button state: like`, rather than treating every unknown reaction as
+success (`src/linkedin.zig:72-83,118-127,367-373`). The nav `Me` changes affect
+only signed-in detection, not selection of an action target.
+
+The fixtures add SVG-title text to all affected controls and a second-form
+Post decoy. The real-socket E2E proves the intended actions still work and the
+decoy counter remains zero; on the predecessor the titled LinkedIn `Me` and
+owner More controls fail the flow, so the regression is failing-first
+(`tests/fixtures/instagram/index.html:152-160,199-210`,
+`tests/fixtures/linkedin/index.html:112-115,203-209`,
+`tests/e2e/social_flows_test.py:263-275`). No real identity was added to the
+fixtures.
+
+The existing advisory is narrower but still open: `visibleTextIs` excludes SVG
+text, not hidden descendant text or a visible counter, and the standalone
+LinkedIn login probe does the same (`src/flow_steps.zig:17-24`,
+`src/automation/social_routes.zig:35-56`). Those cases fail closed for the
+reviewed action selectors rather than selecting another person. The general
+`role=`/`text=` accessible-name cleanup and live acceptance oracles remain
+separate follow-ups, as the commit documents.
+
+## Site-flow `window_id` routing (`817f23b`)
+
+**Verdict: APPROVED.** All `x.*` verbs enter one handler and all
+`linkedin.*`/`instagram.*` verbs enter the other; both now remove and validate
+`window_id` before strict flow parsing, derive the named page/telemetry route,
+take that page's queue turn, and pass the named `PagePort` through
+`Engine.executeExternal` (`src/automation_server.zig:458-477,568-606,
+1270-1322,1334-1387`). Every primitive step and final stop-sign scan runs
+through that one external context, so there is no secondary primary-page path.
+If the id is absent, `flow_route` remains the original primary route and the
+port stays null, preserving the old primary-window behavior. Malformed ids are
+`-32602`; a disappeared targeted page becomes `-32011 no_window`; a recovering
+target uses that target's queue and `-32014` response. Cookie/session state,
+pacing, and caps remain intentionally account-global.
+
+The server regression drives both LinkedIn and X against separate fake window
+ports, observes navigation and scans only there, and proves the primary port
+untouched. It also covers malformed/gone ids and a shared X cap while two
+window queues progress independently (`tests/automation_server_test.zig:
+2121-2233`). The real-binary `social-flows` phase opens a popup through the
+browser, targets LinkedIn Follow plus the owner-More Connect dry run to it,
+checks the popup's navigation and action log, and verifies the primary URL and
+input log are unchanged; the predecessor rejects this request as invalid
+params (`tests/e2e/social_flows_test.py:422-446`). Existing no-`window_id`
+phases in the same test continue to exercise the primary default. Both SDKs
+expose the option on every X, LinkedIn, and Instagram method, with shared wire
+fixtures covering read, action, dry-run, message, search, story, and selfcheck
+shapes (`sdk/node/src/methods.ts:372-424,442-564`,
+`sdk/python/src/zigbrowser/client.py:268-363,439-473`).
+
+One independent clean-export gate at exact `817f23b`, with a fresh cache,
+private Xvfb, live variables unset, and a 1,500-second timeout, passed:
+**Build Summary: 94/94 steps succeeded; 778/778 tests passed**. The
+`page-health`, `social-flows/window-id`, SDK-live, and all other phases ran. The
+throwaway tree was deleted immediately by its `find -delete` trap. No live
+browser, live socket, DISPLAY `:0`, or user account was accessed.
