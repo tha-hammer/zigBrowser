@@ -4,7 +4,7 @@ author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
 git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; see section 3b
+status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -35,7 +35,7 @@ All `path:line` references are at HEAD `b4c23a1`, re-derived for this plan. The 
 1. **`--agent-drawer` default switches to ON after S5.** Before S8, act-on-page tools must not exist at all. So "on" after S5 means chat only, then chat plus read-only tools (S7).
 2. **"All hooks on."** Every SAI hook is copied into the agent home and resolves inside it, because HOME is the agent home. A hook path that still resolves outside it is rejected.
    - The token is still kept away from hooks. The env route is **not** used if any non-env route works.
-   - If env is the only working route, every copied hook command is wrapped as `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN <cmd>`.
+   - If env is the only working route, every copied hook command is wrapped as `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN <cmd>`. *(Rev 6 implements this intent more strongly: on every route, `zb-hook-run` builds each hook's environment from an allowlist before bwrap starts, so neither the hook nor its namespace PID 1 ever holds the token; see D12.)*
    - A failing-first test proves that a canary token is absent from every hook process environment, while every hook still runs. Hooks that talk to localhost services (for example the voice notify server on :51091) keep working.
 3. **Scratchpad:** free writes in `scratchpad/`, and approval required in `workspace/` (as planned).
 4. **The drawer floats over the page** (D2, as planned).
@@ -232,7 +232,8 @@ agent-home/
     - This check is **hygiene only** (rev 4): it catches accidental external executables. It cannot constrain what a copied script does, because a script can build any path at run time. The boundary is the kernel sandbox, which applies from S3, before the first hook can run (D12).
     - One violation makes setup exit 2 with `zigBrowser: agent-setup: hook path outside agent home: <event>/<index>`, and the agent home is left unchanged (staging directory, then an atomic rename).
     - The directories of the resolved commands (for example `bun`'s directory) are recorded in `agent-home/runtime/path.json`. They are appended to the helper's `PATH` allowlist and bound read-only by bwrap **from S3** (D12), so the hooks still run.
-  - **Every hook command is rewritten as `<agent-home>/runtime/bin/zb-hook-run -- <original command>`** (rev 5). Under the opt-in R3, `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN` is also inserted after `--`. `zb-hook-run` puts the hook in its own PID namespace with a read-only workspace (D12, "Hook isolation"). A hook whose rewritten form cannot be produced makes setup exit 2.
+  - **Every hook command is rewritten as `<agent-home>/runtime/bin/zb-hook-run -- <original command>`** (rev 5), on every route. `zb-hook-run` puts the hook in its own PID namespace with a read-only workspace, and **builds the hook's environment from an allowlist before it starts bwrap** (D12, "Hook isolation"; rev 6). No `env -u` prefix is used. A hook whose rewritten form cannot be produced makes setup exit 2.
+  - The rewritten definitions live in the **read-only** part of `.claude` inside the sandbox, so no hook can rewrite them (D12, "Immutable configuration"; rev 6).
   - It rejects any other remaining absolute path outside the agent home.
   - It never copies `.credentials.json`, `projects/`, `history.jsonl`, `todos/`, `shell-snapshots/` or the user's `MEMORY/` contents. The agent starts with an empty memory (user answer 5).
 - The setup command itself never touches the user's `~/.claude`.
@@ -279,7 +280,7 @@ agent-home/
 - On **helper death**, bwrap's init sees its only child exit and exits, so the namespace is torn down.
 - No test harness is involved. The xsession guardian ends only the browser's process group, and the namespace is in another session.
 - **From S3, before the first real helper or prompt, the full filesystem confinement of D12 applies** (rev 4, blocker 1). No hook, helper or CLI ever runs outside it, and S10 only adds the `fs_*` tools.
-- If bwrap or unprivileged user namespaces are unavailable, the agent is **unavailable**: the drawer says "Agent sandbox unavailable", and nothing is spawned. There is no `--agent-sandbox none`.
+- If bwrap or unprivileged user namespaces are unavailable, the agent is **unavailable**: the drawer says "Agent sandbox unavailable" (`DRAWER status unavailable sandbox`), and nothing is spawned. There is no `--agent-sandbox none`.
 
 **Bounds and backpressure (rev 3, blocker 9).**
 - **Helper → app:**
@@ -358,23 +359,23 @@ agent-home/
 
 | Row | Emitted when |
 |---|---|
-| `DRAWER	<win>	icon	<rect>` | the icon is shown or moved |
-| `DRAWER	<win>	open	<rect>` | the drawer opens |
-| `DRAWER	<win>	minus	<rect>` | together with `open`: the '-' button's rect |
-| `DRAWER	<win>	anim	<frames>	<from-rect>	<to-rect>` | the minimize animation ends |
-| `DRAWER	<win>	minimized	<rect>` | after minimize |
-| `DRAWER	<win>	focus	<icon\|input\|send\|stop\|minus\|list\|approve\|deny>` | focus moves |
-| `DRAWER	<win>	scroll	<bottom\|value>` | the list scrolls |
-| `DRAWER	<win>	msg	<user\|assistant\|system\|approval\|error>	<text>` | a bubble is finalized |
-| `DRAWER	<win>	delta	<session>	<text>` | a coalesced delta is applied |
-| `DRAWER	<win>	status	<stopped\|starting\|ready\|busy\|crashed\|unavailable>	<reason or ->` | the agent state changes |
-| `DRAWER	<win>	approval	<id>	<tool>	<origin>	<account>	<digest>` | an approval card is shown |
-| `DRAWER	<win>	idles	<n>` | every 250 ms while a stream is active (pending GTK idles) |
-| `DRAWER	<win>	tree	<comma-separated GTK type names>` | the drawer subtree is built |
-| `SECRETS	status	<empty\|connected-secret-service\|connected-file\|no-keyring\|rejected>` | the Secrets window state changes |
-| `SECRETS	tree	<GTK type names>` | the Secrets window is built |
-| `AUTH	allowed	<scheme://host:port>` | an auth-window navigation is allowed |
-| `AUTH	blocked	<reason>` | an auth-window navigation or callback is refused (`state`, `origin`, `path`, `scheme`, `replay`, `popup`) |
+| `DRAWER\t<win>\ticon\t<rect>` | the icon is shown or moved |
+| `DRAWER\t<win>\topen\t<rect>` | the drawer opens |
+| `DRAWER\t<win>\tminus\t<rect>` | together with `open`: the '-' button's rect |
+| `DRAWER\t<win>\tanim\t<frames>\t<from-rect>\t<to-rect>` | the minimize animation ends |
+| `DRAWER\t<win>\tminimized\t<rect>` | after minimize |
+| `DRAWER\t<win>\tfocus\t<icon\|input\|send\|stop\|minus\|list\|approve\|deny>` | focus moves |
+| `DRAWER\t<win>\tscroll\t<bottom\|value>` | the list scrolls |
+| `DRAWER\t<win>\tmsg\t<user\|assistant\|system\|approval\|error>\t<text>` | a bubble is finalized |
+| `DRAWER\t<win>\tdelta\t<session>\t<text>` | a coalesced delta is applied |
+| `DRAWER\t<win>\tstatus\t<stopped\|starting\|ready\|busy\|crashed\|unavailable>\t<reason>` | the agent state changes. `<reason>` is exactly one of `-`, `runtime-missing`, `sandbox`, `hook-isolation`, `config-changed`, `cli-changed`, `no-token`, `exit-<n>` or `signal-<n>` (rev 6) |
+| `DRAWER\t<win>\tapproval\t<id>\t<tool>\t<origin>\t<account>\t<digest>` | an approval card is shown |
+| `DRAWER\t<win>\tidles\t<n>` | every 250 ms while a stream is active (pending GTK idles) |
+| `DRAWER\t<win>\ttree\t<comma-separated GTK type names>` | the drawer subtree is built |
+| `SECRETS\tstatus\t<empty\|connected-secret-service\|connected-file\|no-keyring\|rejected>` | the Secrets window state changes |
+| `SECRETS\ttree\t<GTK type names>` | the Secrets window is built |
+| `AUTH\tallowed\t<scheme://host:port>` | an auth-window navigation is allowed |
+| `AUTH\tblocked\t<reason>` | an auth-window navigation or callback is refused (`state`, `origin`, `path`, `scheme`, `replay`, `popup`) |
 
 ### D8. The broker (in-process browser control)
 
@@ -466,7 +467,7 @@ agent-home/
   - Under R1, no process environment holds the token, and hooks inherit at most a drained descriptor.
 - **R2 is removed** (rev 4, blocker 2). A credentials file inside the agent's `CLAUDE_CONFIG_DIR` would be readable by every hook, which contradicts A4 and the Secrets-window boundary.
 - **R3 — env, explicit opt-in only.** It is used only when `--agent-setup --agent-token-route env` was given. Setup prints the risk: any process in the sandbox, hooks included, can read the CLI's `/proc/<pid>/environ` as the same user.
-  - The token goes through the SDK `env` option, and every copied hook command is wrapped as `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN <cmd>` (D6), so no hook's own environment holds it.
+  - The token goes through the SDK `env` option. Every hook still starts through `zb-hook-run`, which passes bwrap a **fresh environment built only from the hook-environment allowlist** (D12; rev 6). bwrap's namespace PID 1, the hook and every hook descendant therefore never receive the token. `zb-hook-run`'s own pre-exec process sits in the outer namespace, which the hook cannot see.
 
 **Route selection happens on the installed CLI, never from a build-host artifact** (rev 4, blocker 5).
 - `--agent-setup` runs the R1 probe against the **installed** bundled CLI: a one-shot loopback probe server inside the setup process, a random probe token through the real wrapper and FIFO, then a check that the probe server received `Authorization: Bearer <probe>` and that `/proc/<cli>/environ` lacks it.
@@ -506,26 +507,39 @@ agent-home/
     - Mounts: `--unshare-pid --unshare-ipc --unshare-uts --die-with-parent --new-session --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run`. `--dev` gives the minimal null, zero, full, random, urandom and tty devices plus `/dev/pts` and `/dev/shm`. The pty for S6's login helper comes from that `/dev/pts`.
     - Read-only: `/usr`, plus the `/bin`, `/sbin`, `/lib` and `/lib64` symlinks into `/usr` (`--symlink usr/bin /bin`, and so on); `/etc/ssl`, `/etc/ca-certificates`, `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/group`, `/etc/localtime`; `agent-home/runtime` (the venv, `zb-claude`, `zb-hook-run` and the bundled CLI); and each hook command directory from `runtime/path.json` (for example `~/.bun/bin`).
     - Read-only: **`agent-home/workspace`** (rev 5, blocker 1).
-    - Writable: exactly `agent-home/.claude`, `agent-home/.claude.json` and `agent-home/scratchpad`. A private tmpfs is mounted at `/run/zb-token` with mode 0300 (R1).
+    - **Immutable configuration (rev 6, blocker 1):** `agent-home/.claude` is bound **read-only** as a whole. That covers `settings.json`, `CLAUDE.md`, the SAI copy, `hooks/`, `commands/`, `skills/`, `agents/` and every script a hook runs or imports. Only the exact state directories in `runtime/writable.json` are then re-bound writable on top of it, one by one. That list is produced by P0.5's write census (initial expectation: `projects/`, `todos/`, `statsig/`, `debug/`, `session-env/`, and the SAI data directory `MEMORY/`), and it is reviewed before S3.
+    - **Rules for the writable state directories.** They hold data only. Provisioning refuses a hook whose command or whose script's import and require specifiers resolve into any of them, and refuses a writable entry that contains an executable or a hook-referenced path. `.claude/settings.json` and every hook definition are never writable from inside the sandbox.
+    - Writable: `agent-home/.claude.json`, because the CLI keeps its state there. Before **each** session the app (outside the sandbox) re-validates it against a key allowlist and refuses the session ("Agent configuration changed: run zigBrowser --agent-setup again") if it contains `mcpServers`, `hooks`, `env`, `apiKeyHelper`, `permissions`, `enabledMcpjsonServers` or `enableAllProjectMcpServers` at any depth.
+    - The helper also starts the CLI with `--strict-mcp-config` through the SDK's `extra_args` (P0.5 contract), so only the in-process `zigbrowser` server can exist. `setting_sources=["user"]` keeps project settings inside the workspace from ever loading.
+    - **Per-session integrity:** the app also re-hashes the read-only `.claude` tree against `runtime/config-manifest.json` (SHA-256 per file, written by `--agent-setup`, outside the sandbox) before each session. A mismatch refuses the session. This catches changes made outside the sandbox, by any other user process.
+    - Writable: `agent-home/scratchpad`. A private tmpfs is mounted at `/run/zb-token` with mode 0300 (R1).
     - `agent-home/secrets/` is **never mounted**, because only the app reads it.
     - If P0.5 finds that the Python venv or the CLI needs another path, the list is amended in the plan before S3. It is never widened ad hoc during green.
-  - **Hook isolation (rev 5, blocker 2):** every hook command runs through `zb-hook-run`, a nested `bwrap --unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace>`. Inside the outer view, that mounts the same files (workspace read-only, scratchpad and `.claude` writable), but the hook gets its own PID namespace and `/proc`. It also closes descriptors ≥ 3.
-  - **Approved workspace mutations happen outside the sandbox (rev 5, blocker 1).** `fs_write`, `fs_edit`, `fs_delete` and `fs_move` on a `workspace/` path are not performed by the helper. They become a `tool_call` that the app's broker turns into a card. After Approve, the browser process itself does the I/O in `src/agent_fs.zig`, with `openat2` beneath a workspace directory fd and the same `RESOLVE_*` flags as below. The result goes back as `tool_result`.
-  - Workspace reads, and every scratchpad operation, stay in the helper's `fs_*` tools. No process inside the sandbox can write the workspace.
+  - **Hook isolation (rev 5, blocker 2; rev 6, blocker 2):** every hook command runs through `zb-hook-run`. That is a small program in the read-only runtime, so a hook cannot replace it. In order, it:
+    1. closes every descriptor ≥ 3 (`close_range(3, ~0, 0)`);
+    2. builds a **fresh environment** containing only the names in `runtime/hook-env.json`, copying their values from its own environment. The allowlist is produced by P0.5's census of the variables the CLI sets for hooks, plus `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR` and `TERM`. `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` and `ZB_TOKEN_FIFO` are **refused** by name even if a future census lists them, and setup exits 2;
+    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`, and with `--unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace> -- <hook command>`.
+    - So bwrap's own process, its namespace PID 1 (the reaper; `--as-pid-1` is not used) and the hook all start from the allowlisted environment only. The CLI's environment never crosses into the hook's namespace.
+    - Inside, the hook sees the same files as the outer view (workspace read-only, `.claude` read-only apart from the state directories, scratchpad writable), but its own PID namespace and `/proc`.
+  - File operations follow the single routing table below (rev 6, blocker 3). No process inside the sandbox can write the workspace.
   - The user's home, the profile, `XDG_RUNTIME_DIR` and `/run/user` are not mounted.
   - It uses `--unshare-pid`, `--die-with-parent` and `--new-session`. The network is shared, because HTTPS to the API is needed. That also keeps localhost hooks working, such as the voice notify server on :51091 (user answer 2).
   - The hook command directories from `runtime/path.json` (for example `bun`'s) are bound read-only, so every copied hook still runs inside the sandbox.
 - There is no unsandboxed mode. If bwrap fails, the drawer shows "Agent sandbox unavailable" and does **not** fall back.
 - **File tools are app-owned MCP tools, not the SDK's built-in Read/Write/Edit (rev 3, blocker 3).** Built-in tools stay `tools=[]` for the whole plan.
   - Why: `can_use_tool` only approves a pathname, and the built-in tool opens it later, so a symlink could be swapped in between.
-  - The helper's `fs_read`, `fs_list`, `fs_find`, `fs_grep`, `fs_write`, `fs_edit`, `fs_delete` and `fs_move` perform the I/O themselves:
-    - Every path is opened with **`openat2(root_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** relative to an fd held for `workspace/` or `scratchpad/`. This is kernel-enforced, and kernel 6.12 has syscall 437.
-    - The opened file is checked with `fstat` and must be `S_ISREG`.
-    - Writes go to an `O_CREAT|O_EXCL` temp file in the same directory fd, then `renameat2` within that fd.
-  - So the checked object and the I/O object are the same file descriptor.
-- **Approvals (user answer 3, which amends T7 for the scratchpad only; see section 9):**
-  - Everything in `scratchpad/` is free: create, write, overwrite, delete, move. The scratchpad is writable by hooks anyway, so a card there could not be enforced, and the user chose it to be free.
-  - Every create, write, edit, delete, move or rename in `workspace/` needs the exact per-operation card. **The read-only mount enforces this against every process in the sandbox**, not just the MCP tools.
+  - **The single file-operation routing table (rev 6, blocker 3; this table is the only contract):**
+
+    | Tool | Path under | Performed by (the real I/O owner) | Card |
+    |---|---|---|---|
+    | `fs_read`, `fs_list`, `fs_find`, `fs_grep` | `workspace/` (read-only bind) | helper `fs_tools.py` | none |
+    | `fs_read`, `fs_list`, `fs_find`, `fs_grep` | `scratchpad/` | helper `fs_tools.py` | none |
+    | `fs_write`, `fs_edit`, `fs_delete`, `fs_move` (including rename) | `scratchpad/` (both ends, for move) | helper `fs_tools.py` | none (user answer 3) |
+    | `fs_write`, `fs_edit`, `fs_delete`, `fs_move` (including rename) | `workspace/` (either end, for move) | **app** `src/agent_fs.zig`, in the browser process, outside the sandbox, after Approve | exact per-operation card |
+    | anything else | anywhere | nobody: `is_error` "path outside the agent's folders" | — |
+
+  - Both owners do every open as **`openat2(root_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). Each checks `fstat` and requires `S_ISREG`. Each writes through an `O_CREAT|O_EXCL` temp file and `renameat2` within that directory fd. The checked object and the I/O object are the same descriptor.
+  - A workspace mutation reaches the helper's `fs_tools.py` **only as a forwarded `tool_call`**. The helper has no code path that writes `workspace/`, and the read-only bind would refuse it anyway.
   - Execution is impossible, because no tool exists for it.
 - Bash stays unavailable.
 
@@ -534,7 +548,7 @@ agent-home/
 | # | Blocker | Resolution in rev 3 | Where |
 |---|---|---|---|
 | 1 | P0 has no real-binary e2e | P0 is renamed a **prerequisite**, not a slice. Its contracts are re-proved through the browser in S3, S4 and S5. | §1, P0 |
-| 2 | Free scratchpad writes weaken T7 | The user explicitly amended the invariant on 2026-10-13 (answer 3, through the orchestrator) for **creating and writing regular files inside `scratchpad/` only**. Delete, move and rename anywhere, and every workspace write, still need the exact card. No execution tool exists. | D12, §9 T7, S10.2 |
+| 2 | Free scratchpad writes weaken T7 | The user explicitly amended the invariant on 2026-10-13 (answer 3, through the orchestrator). **Superseded wording, rev 6:** every scratchpad operation (create, write, edit, delete, move, rename) is free; every workspace mutation needs the exact card; no execution tool exists. The single routing table in D12 is the only contract. | D12, §9 T7, S10.2 |
 | 3 | `can_use_tool` cannot govern the SDK's own open; bwrap exposed the whole agent home | Built-in file tools stay off (`tools=[]`). App-owned `fs_*` MCP tools do the I/O through `openat2(RESOLVE_BENEATH\|NO_SYMLINKS\|NO_MAGICLINKS\|NO_XDEV)` on root fds, with `S_ISREG` on the opened fd. A 10k-iteration swap race is tested at that seam. bwrap's writable binds are only `.claude`, `.claude.json`, `workspace` and `scratchpad`; `secrets/` is never mounted. | D12, S10.1, S10.3 |
 | 4 | The grant omits the account and the resolved target | `account` and `target_fp` are shown on the card and bound into the grant. `options.expect` is checked inside the same FIFO ticket at the commit seam, with new error -32015 `expectation_mismatch`. T5 adds wrong-account and selector-retarget cases. | D10, §9 T5, S8 |
 | 5 | Scanner misses telemetry, crash text and errors | Scanner inventory extended. S9 is added to T6. | §7, §9 T6 |
@@ -555,6 +569,10 @@ agent-home/
 | R4-3 | T4/T6 attacks not driven failing-first | T4 is a full attack matrix (reveal credential, enable a forbidden tool, Post/Follow/Connect/Like with forged approval, injected via page text and via tool output), each with red-at-seam. T6 seeds canaries deliberately into telemetry, JSON-RPC error data, tool errors, drawer errors, API error bodies, stderr crash lines and transcripts, each with a redactor-removal red. | §9, S5.7, S7.7, S8.7, S9.4 |
 | R4-4 | Helper and row protocols incomplete | D7b fixes both processes (chat and one-shot login), every pipe's direction, owner and limit (fd 3 app → chat; fd 4 login → app), every frame's fields, and every `DRAWER`/`SECRETS`/`AUTH` row. | D7b |
 | SHOULD | D6 stale; duplicate property; minimal binds; whole-gate orphans | D6 says "from S3". The duplicate property is removed. D12 names every bind. A final gate step checks for agent orphans. | D6, P0.4, D12, §11 |
+| R5-1 | Writable hook configuration lets a hook remove its own isolation | `.claude` is bound read-only as a whole, and only the census-derived state directories in `runtime/writable.json` are writable (data only; hooks may not reference them). `zb-hook-run` and `zb-claude` live in the read-only runtime. `.claude.json` is re-validated before every session, and `--strict-mcp-config` plus `setting_sources=["user"]` stop planted MCP servers and project settings. The read-only tree is re-hashed against `runtime/config-manifest.json` before every session. S3.10 is the two-session malicious-hook red. | D6, D12, P0.5, S3.10 |
+| R5-2 | The R3 token reaches the namespace PID 1 | `zb-hook-run` closes descriptors, builds a fresh environment from `runtime/hook-env.json` (token names refused), and `execve`s `bwrap --clearenv --setenv …` with that environment. bwrap, its PID-1 reaper and the hook never hold the token. The `env -u` prefix is gone. S3.9 under R3 reads `/proc/1/environ` and every visible `environ`, with a red-at-seam. No `ptrace_scope` change. | D6, D11, D12, P0.4, S3.9, S4.4, A4 |
+| R5-3 | Two answers for file-tool owner and scratchpad approval | One routing table in D12: helper reads plus every scratchpad operation; app `agent_fs.zig` for every workspace mutation (write, edit, delete, move, rename) after the card. S10.1 drives every row at its real owner, with denied, timeout and approved cases and a swap race per owner. T7 and the old response row are rewritten to match. | D12, §9 T7, S10.1, S10.2 |
+| R5-4 | Competing observation schemas | The section 7 table is deleted. D7b is the only schema, with exact `status` reasons. Every assertion writes all fields, the Secrets window uses `SECRETS tree`, approval rows carry `account`, and `parse_row` fails any row that does not match D7b. Real tab characters in the table are replaced with literal `\t`. | D7b, §7, S1.2, S2.5, S4.3, S8.1 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -591,7 +609,7 @@ When every slice has landed, these hold:
 | # | Item | Answer | Where it lands |
 |---|---|---|---|
 | 1 | `--agent-drawer` default | **On after S5.** No act-on-page tool exists before S8. | D2, D9, S5.5, S7.5 |
-| 2 | SAI hooks | **All hooks on.** Paths must resolve inside the agent home. No env token route if a non-env route works; if env is the only route, every hook is wrapped with `env -u …`. A canary test covers the hook env. Localhost hooks keep working. | D6, D11, P0.2, S3.1, S4.4 (A4) |
+| 2 | SAI hooks | **All hooks on.** Paths must resolve inside the agent home. No env token route if a non-env route works; if env is the only route, the hook environment is scrubbed (rev 6: by `zb-hook-run`'s allowlist before bwrap, which covers the `env -u` intent, PID 1 included). A canary test covers the hook env. Localhost hooks keep working. | D6, D11, P0.2, S3.1, S4.4 (A4) |
 | 3 | Scratchpad writes | Free in `scratchpad/`; approval in `workspace/`. | S10.2 |
 | 4 | Drawer placement | Floats over the page. | D2 |
 | 5 | Agent memory | Starts empty. | D6 |
@@ -629,20 +647,7 @@ Residual risk, for the record (rev 4):
 **`xsession.py --display-file PATH`**
 - The guardian writes `DISPLAY` and `XAUTHORITY` for the driver (additive flag).
 
-**`DRAWER` protocol rows** (only with `--e2e-protocol`, same mechanism as `IPC`, `C:238-251`)
-
-| Row | Emitted when |
-|---|---|
-| `DRAWER\t<win>\ticon\t<rx>,<ry>,<w>,<h>` | the icon is shown or moved; root coordinates |
-| `…\topen\t<rect>` | the drawer opens |
-| `…\tanim\t<frames>\t<from>\t<to>` | at the end of the minimize animation |
-| `…\tminimized\t<rect>` | after minimizing |
-| `…\tmsg\t<role>\t<text>` | when a bubble is finalized; role is user, assistant, system or approval |
-| `…\tstatus\t<state>` | the agent's state changes |
-| `…\tapproval\t<id>\t<tool>\t<origin>\t<digest>` | an approval card is shown |
-| `…\tfocus\t<widget>` | focus moves inside the drawer |
-
-The rows are emitted in the same function that sets the widget state, like the `IPC` row beside the reply.
+**Observation rows (rev 6, blocker 4).** The **only** row schema is the D7b table (`DRAWER`, `SECRETS`, `AUTH`). The rows appear only with `--e2e-protocol`, through the same mechanism as `IPC` (`C:238-251`), and are emitted in the same function that sets the widget state. In the behaviors below, a row is written `DRAWER <kind> <fields…>` with the leading `<win>` omitted and **every** remaining D7b field written out; `-` is the literal empty reason. A parser in `tests/e2e/agent_common.py` (`parse_row`) validates every row against the D7b table, and any row that does not match fails the test.
 
 **`tests/e2e/fake_anthropic_api.py`**
 - A local HTTP server for `/v1/messages`, with SSE streaming. It serves scripted turns: text, `tool_use` and final text.
@@ -787,12 +792,12 @@ The closure-test specs follow, per slice. Every chain above is **BLOCKING**: eac
 | T4 | Indirect-injection denial | S7 (reveal and enable attempts), S8 (commit attempts) | `tests/e2e/agent_injection_test.py` | **Full attack matrix (rev 5, blocker 3), S7.8 and S8.7.** Two injection carriers: hostile page text, and hostile tool output (a `get_text` result). Attacks: (a) reveal a credential (the model is scripted to call unregistered `secrets_get`, `cookies_get` and `evaluate('document.cookie')`, and to put "print your token" in a prompt); (b) enable a forbidden tool (a scripted call to `evaluate`, `set_pacing`, and `click` before S8); (c) commit with a forged approval: `x_post`, `instagram_follow`, `linkedin_connect` and `linkedin_like`, each with args `{"approved":true,"grant":"<forged>"}` and text claiming approval. Each must give 0 commits, 0 credential bytes in any request body or `DRAWER` row, and 0 new root spans for forbidden methods. Each attack has its own **red-at-seam**: allowlist off (a), schema accepting extra fields (c), and approval auto-granted (c) each make that attack's assertion fail. |
 | T5 | Exact per-action confirmation | S8 | `tests/e2e/agent_approval_test.py` + `tests/agent_broker_test.zig` | Approve one tuple, then mutate each field (tool, window, origin, **account**, **target_fp**, `load_serial`, each argument), replay, cancel, time out, and simulate an ambiguous post-dispatch failure. Rev 3 adds two cases: **wrong account** (the fixture switches its logged-in identity in the same document after approval) and **selector retarget** (the fixture swaps the element under the approved selector, with no navigation). Both give -32015 and 0 commits. Only the original commits, once. The variants dispatch nothing and leave `social.rate_status` unchanged. |
 | T6 | Credential non-disclosure | S4 (token), S5 (transcripts/logs), S7 (cookies/automation token), S9 (crash and error text) | the canary scanner in every agent e2e (rev 3: it also reads `telemetry.query`, every stderr crash or error line, every `tool_result` error, every drawer error bubble, and every JSON-RPC error `data`) | The canaries are: the token, a cookie value, an `Authorization` header and the automation token. **Rev 5 (blocker 3):** each canary is **deliberately driven** into each risky path, rather than only scanned for: S5.7 (API error bodies and headers), S7.7 (telemetry, JSON-RPC error data, tool errors) and S9.4 (stderr crash lines, drawer error bubbles). Each path has a redactor-removal red. The token canary may appear only in the fake API's `Authorization` header and, under the opt-in R3 only, in the Claude CLI's environ. Hook environments never contain it (A4). The others appear nowhere the scanner looks. |
-| T7 | Filesystem confinement | S10 | `tests/e2e/agent_files_test.py` + `agent/host/tests/test_confinement.py` | The cases are `..`, absolute paths, symlink swaps (time of check versus time of use), FIFOs and devices, writes and deletes with no grant, and reads of `~/.claude`, the profile and `XDG_RUNTIME_DIR`. All are refused by the kernel (`openat2` `RESOLVE_BENEATH`) or by `S_ISREG`, at the real I/O seam, including a 10,000-iteration symlink-swap race. An approved regular write in the workspace happens once. **T7 is amended by the user (2026-10-13, answer 3) for the scratchpad only:** creating or writing regular files inside `scratchpad/` needs no card. Every workspace write, and every delete, move or rename anywhere, still needs the exact card. |
+| T7 | Filesystem confinement | S10 (tools), S3.9/S3.10 (hooks) | `tests/e2e/agent_files_test.py`, `agent/host/tests/test_fs_tools.py`, `tests/agent_fs_test.zig` | The cases are `..`, absolute paths, symlink swaps (time of check versus time of use), FIFOs and devices, mutation without a grant, and reads of `~/.claude`, the profile and `XDG_RUNTIME_DIR`. All are refused by the kernel (`openat2` `RESOLVE_BENEATH`) or by `S_ISREG`, **at the real owner from the D12 routing table**: helper `fs_tools.py` for reads and scratchpad, app `agent_fs.zig` for workspace mutations. That includes a 10,000-iteration symlink-swap race against each owner. **T7 is amended by the user (2026-10-13, answer 3) for the scratchpad only:** every scratchpad operation is free. Every workspace create, write, edit, delete, move or rename needs the exact card; it is denied when there is no card or the card is denied, and it happens exactly once when approved. Execution does not exist. |
 | T8 | Lifecycle and target invalidation | S9 | `tests/e2e/agent_lifecycle_invalidation_test.py` | Between preview, approval and dispatch: navigate, crash (SIGKILL the web process), close, recover, and kill the helper. Nothing stale is dispatched. A popup opened from the bound window gets its own empty session. |
 | A1 | The canary token appears only in the subprocess env | S4 | `tests/e2e/agent_secrets_test.py` | See G. |
 | A2 | The callback is accepted only from the expected origin and state | S6 | `tests/e2e/agent_login_test.py` | The cases are: wrong state, missing state, another port, http versus https, a host lookalike, and a replayed callback after success. Each gives an `AUTH blocked` row, the fake CLI receives no code, and the store is unchanged. |
-| A3 | The Secrets window is unreachable from the page world and the socket | S4 | `tests/e2e/agent_secrets_test.py` + T1/T3 files | It is not in `page.list`, has no handler name, and has no socket method. It contains no `WebKitWebView` (asserted with the GTK widget-tree debug row `DRAWER … tree`). |
-| A4 | A canary token is absent from every hook environment, while every hook runs (user answer 2) | P0 (contract, all six events), S4 (product: `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`), S7 (product: `PreToolUse`, `PostToolUse` on the first real MCP tools; rev 4, blocker 3) | `agent/host/tests/test_contract.py`, `tests/e2e/agent_secrets_test.py`, `tests/e2e/agent_tools_test.py` | Fixture hooks dump their env and POST to a fake localhost notify server. Every event's dump must exist, and no dump may contain the canary. Under R3, every hook command carries the `env -u` wrapper. The product runs are already inside the S3 sandbox. **Unconditionally** (rev 5), the S3.9 malicious hook tries `/proc/<cli>/mem`, `environ`, ptrace and `process_vm_readv` on every PID it can name, and every attempt must fail. |
+| A3 | The Secrets window is unreachable from the page world and the socket | S4 | `tests/e2e/agent_secrets_test.py` + T1/T3 files | It is not in `page.list`, has no handler name, and has no socket method. It contains no `WebKitWebView` (asserted with the GTK widget-tree debug row `SECRETS tree`). |
+| A4 | A canary token is absent from every hook environment, while every hook runs (user answer 2) | P0 (contract, all six events), S4 (product: `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`), S7 (product: `PreToolUse`, `PostToolUse` on the first real MCP tools; rev 4, blocker 3) | `agent/host/tests/test_contract.py`, `tests/e2e/agent_secrets_test.py`, `tests/e2e/agent_tools_test.py` | Fixture hooks dump their env and POST to a fake localhost notify server. Every event's dump must exist, and no dump may contain the canary. Every hook command starts with `zb-hook-run --`, and under R3 no visible `/proc/*/environ` (PID 1 included) holds the canary (rev 6). The product runs are already inside the S3 sandbox. **Unconditionally** (rev 5), the S3.9 malicious hook tries `/proc/<cli>/mem`, `environ`, ptrace and `process_vm_readv` on every PID it can name, and every attempt must fail. |
 
 ## 10. Slices
 
@@ -832,7 +837,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then**:
   - every event's hook ran (one env file per event, and one POST per event at the fake notify server);
   - no env file contains the canary;
-  - under R3, every recorded hook command line starts with `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN`.
+  - every recorded hook command line starts with `zb-hook-run --` (rev 6). Under R3, the canary is absent from **every** `/proc/*/environ` visible inside the hook's namespace, **PID 1 included**, read by the hook itself.
 - **Red first:** before the wrapper and route selection exist, the R3-only run shows the canary in the hook env files.
 - **Property:** none. The input is fixed.
 
@@ -844,7 +849,10 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - inside each hook, `/proc` lists only the hook's own processes, and neither the CLI's nor the helper's PID exists;
   - a create in `workspace/` from the hook and from the helper gets `EROFS`, and a scratchpad write succeeds;
   - descriptors ≥ 3 in the hook are closed;
-  - the census of non-hook CLI descendants is recorded in `agent/host/tests/cli_child_census.json`, as absolute paths under `/usr` only.
+  - the census of non-hook CLI descendants is recorded in `agent/host/tests/cli_child_census.json`, as absolute paths under `/usr` only;
+  - (rev 6) the **write census**: every path the CLI and the SAI hooks write under `.claude` during the turn, from the inotify oracle. It becomes `runtime/writable.json`, the reviewed list of state directories;
+  - (rev 6) the **hook-environment census**: the variable names the CLI sets for hooks. It becomes `runtime/hook-env.json`, minus the refused names;
+  - (rev 6) `--strict-mcp-config` passed through the SDK's `extra_args` is accepted, and an `mcpServers` entry planted in `.claude.json` is ignored.
 - **Red first:** without `zb-hook-run`, the probe hook finds the CLI's PID in `/proc`, so red.
 - If this is red on the host for a reason other than missing code (nested namespaces refused), the plan stops and the orchestrator takes the host question to the user.
 - **Property:** none. The input is fixed.
@@ -877,7 +885,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Given** `--agent-drawer on`,
 - **When** the primary window loads and the page opens a popup,
 - **Then** there are two `DRAWER\t<id>\ticon\t…` rows, one per `auto_id`, and none for screenshot mode.
-- **Given** off, **Then** there are no `DRAWER` rows, and `DRAWER … tree` (debug row, emitted only with `--e2e-protocol`) is absent. The existing 94 steps stay green unchanged.
+- **Given** off, **Then** there are no `DRAWER` rows at all, including no `DRAWER tree` row. The existing 94 steps stay green unchanged.
 - **Edge cases:**
   - the 16-window cap: the icon is created only after `zb_window_new`'s guards pass;
   - a window that closes during load leaves no leaked overlay (S1.5).
@@ -976,7 +984,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 #### Behavior S2.5 (T1): hostile pages cannot reach or cover the drawer
 - See the table in section 9.
-- The drawer contains no `WebKitWebView`: the `DRAWER … tree` row lists only GTK types.
+- The drawer contains no `WebKitWebView`: the `DRAWER tree <types>` row lists only GTK types.
 - A full-viewport overlay page cannot intercept X clicks on '-'.
 - No new script-message handler name exists on any UCM: the page probes names and checks for `undefined`.
 
@@ -1002,7 +1010,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then**:
   - the agent-home layout of D6 exists with modes 0700;
   - `.claude/CLAUDE.md` equals the source;
-  - `settings.json` has none of the removed keys, and **every** fixture hook is present (user answer 2), with `~/.claude/...` paths unchanged (they resolve inside the agent home because HOME is the agent home) and, under R3, each command wrapped with `env -u …`;
+  - `settings.json` has none of the removed keys, and **every** fixture hook is present (user answer 2), with `~/.claude/...` paths unchanged (they resolve inside the agent home because HOME is the agent home) and each command prefixed with `zb-hook-run --` on every route (rev 6);
   - `.credentials.json`, `projects/` and `MEMORY/` contents are absent;
   - the inotify oracle records **zero** events in the decoy home's `.claude/` and in the decoy repository, during setup and during the later S5, S7 and S10 turns. The browser runs with `HOME` set to the decoy home;
   - **every copied text file**, not just `settings.json`, is scanned for absolute paths. The source user's HOME prefix is rewritten to the agent home. Other absolute paths are allowed only under `/usr`, `/bin`, `/lib`, `/etc`, `/opt` and `/proc/self`. Anything else makes setup exit 2 with `zigBrowser: agent-setup: outside path in <file>:<line>`. The fixture SAI has such paths in a `.md`, a `.ts` hook and a JSON file;
@@ -1017,12 +1025,12 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Given** drawer on, a provisioned home, and the browser started with `DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `ZIGBROWSER_SOCKET`, `SSH_AUTH_SOCK`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM` and a canary `ZB_CANARY_ENV=…`,
 - **When** the first Send happens,
 - **Then**:
-  - `DRAWER status starting` → `ready`;
+  - `DRAWER status starting -` → `DRAWER status ready -`;
   - `/proc/<helper>/environ` keys equal the D7 allowlist exactly;
   - `HOME` and `CLAUDE_CONFIG_DIR` are inside the agent home;
   - the helper's pgid is its own pid, and its parent is the browser;
   - no helper exists before the first Send.
-- **Edge case:** the venv is missing, giving `DRAWER status unavailable` and a system bubble "Agent runtime not set up: run zigBrowser --agent-setup". No crash.
+- **Edge case:** the venv is missing, giving `DRAWER status unavailable runtime-missing` and a system bubble "Agent runtime not set up: run zigBrowser --agent-setup". No crash.
 
 #### Behavior S3.3: frames are validated natively (T2, frame part)
 - **Given** a scripted fake helper (`tests/fixtures/agent/fake_host.py`, selected only by `ZIGBROWSER_AGENT_HOST_CMD` **and** `--e2e-protocol`, refused otherwise) that emits each bad frame of section 9 T2,
@@ -1054,12 +1062,30 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - create, overwrite, rename and unlink of `workspace/keep.txt` and `workspace/new.txt` (`EROFS`);
   - reading any descriptor ≥ 3.
 - And:
-  - the canary is absent from `attack.json` and from every file the hook wrote;
+  - the canary is absent from `attack.json` and from every file the hook wrote. Under R3 (a second run with `--agent-token-route env`), the hook also reads `/proc/1/environ`, its own `/proc/self/environ` and every other visible `/proc/*/environ`, and none holds the canary (rev 6, blocker 2). **Red-at-seam** for this case: have `zb-hook-run` pass its own environment to bwrap, and `/proc/1/environ` shows the canary, so red;
   - `workspace/keep.txt` is still "original" (hash checked from outside), and `workspace/new.txt` does not exist;
   - the hook's positive controls succeed: a scratchpad write, and a localhost POST to the fake notify server;
   - the census holds: every CLI descendant is in a `zb-hook-run` namespace or on the allowlist.
 - **Fail-closed case:** with `ZIGBROWSER_AGENT_BWRAP` pointing at a bwrap shim that ignores `--unshare-pid` for nested calls (e2e-only seam), the self-check fails. `DRAWER status unavailable hook-isolation` is shown, and no session starts.
 - **Red-at-seam:** remove the `zb-hook-run` prefix from the provisioned hooks, and the hook reads the canary from `/proc/<cli>/environ` under R3, or from `/proc/<cli>/mem` under R1, so red. Bind the workspace writable, and `keep.txt` changes, so red.
+- **Property:** none. The input is fixed.
+
+#### Behavior S3.10: a hook cannot persist an escape into the next session (rev 6, blocker 1)
+- **Given** the S3.9 setup, with the malicious hook extended to try, in **session 1**, every persistence route:
+  - (a) overwrite `.claude/settings.json` so its own hook command loses `zb-hook-run --`;
+  - (b) overwrite its own hook script, and every other file under `hooks/`;
+  - (c) write a new hook definition into `.claude/settings.local.json` and into a project-level `workspace/.claude/settings.json`;
+  - (d) add `hooks` and `mcpServers` to `.claude.json`;
+  - (e) drop an executable and a module named like each hook's imports into every writable state directory;
+  - (f) replace `runtime/bin/zb-hook-run` and `runtime/bin/zb-claude`.
+- **When** the window's session ends, a second window opens a **session 2**, and its first prompt runs,
+- **Then**:
+  - attempts (a), (b), (c) and (f) got `EROFS` in session 1;
+  - for (d), session 2 is refused with "Agent configuration changed", and nothing runs. In a second variant, (d) is skipped and session 2 runs;
+  - in session 2 the same malicious hook runs **through `zb-hook-run`** (its `/proc/self/ns/pid` differs from the CLI's), still cannot read the token (the S3.9 checks), and still cannot mutate `workspace/`;
+  - the file planted in (e) is never executed: a marker it would write is absent;
+  - the config manifest check passes for session 2.
+- **Red-at-seam:** bind `agent-home/.claude` writable as in rev 5. Session 1's rewrite (a) then sticks, and session 2's hook runs without `zb-hook-run`, sees the CLI's PID and reads the canary, so red.
 - **Property:** none. The input is fixed.
 
 #### Behavior S3.6: the e2e-only seams are inert in production (rev 3, blocker 10)
@@ -1078,7 +1104,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - (e) the window owning the only session is closed while another stays open,
 - **Then**:
   - (a), (b) and (c): within 2 s, no process remains in the agent's PID namespace (`/proc/*/ns/pid` equal to the recorded namespace): no helper, no Claude CLI, and no hook process (a fixture `Stop` hook that sleeps 60 s is running at the moment of the kill). This is proven without harness help: the xsession guardian only ends the browser's process group, and the namespace is in another session. For (c), the check runs **before** the test lets the guardian end the Xvfb.
-  - (d): the CLI and the sleeping hook are gone within 2 s (the namespace was torn down), `DRAWER status crashed`, and a system bubble "Agent stopped (signal 9). Send to restart." The next Send restarts, and the backoff is observed in the row timestamps.
+  - (d): the CLI and the sleeping hook are gone within 2 s (the namespace was torn down), `DRAWER status crashed signal-9`, and a system bubble "Agent stopped (signal 9). Send to restart." The next Send restarts, and the backoff is observed in the row timestamps.
   - (f): bwrap is unavailable (the test sets an e2e-only bwrap path that does not exist; see the e2e-only seams in section 7). The drawer shows "Agent sandbox unavailable", and no process is spawned.
   - (e): that session's Claude CLI exits, and the helper stays.
 - **Property:** none. These are fixed lifecycle cases.
@@ -1126,7 +1152,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 #### Behavior S4.4 (A4): every real hook runs, and none sees the token
 - **Given** an agent home provisioned by the real `--agent-setup` from the fixture SAI tree (all hooks on), and the canary token stored through the Secrets window,
 - **When** a prompt with no tool call runs end to end through the browser (there are no browser tools before S7, and built-in tools are off),
-- **Then** `SessionStart`, `UserPromptSubmit`, `Stop` and `SessionEnd` each fired, inside the sandbox: one env dump per event, and one POST per event at the fake localhost notify server. No dump contains the canary. Under R3, every hook process's command line starts with the `env -u` wrapper.
+- **Then** `SessionStart`, `UserPromptSubmit`, `Stop` and `SessionEnd` each fired, inside the sandbox: one env dump per event, and one POST per event at the fake localhost notify server. No dump contains the canary. Every hook command line starts with `zb-hook-run --`. Under R3, each hook also reads every `/proc/*/environ` it can see, PID 1 included, and finds no canary (rev 6).
 - `PreToolUse` and `PostToolUse` are proven in S7.6, when the first real MCP tools exist (rev 4, blocker 3).
 - **Red-at-seam:** force R3 without the wrapper, and the canary appears in the `UserPromptSubmit` dump, so red.
 
@@ -1134,7 +1160,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - It is not in `page.list` and gets no `DRAWER` window id.
 - Every page-world probe name is undefined (the T1 file gains the `zbSecrets*` names).
 - The socket's `secrets.*` gives -32601.
-- `DRAWER … tree` for the Secrets window shows no `WebKitWebView`.
+- The `SECRETS tree <types>` row for the Secrets window shows no `WebKitWebView`.
 
 **Closure Test S4: "a token saved in the Secrets window reaches only the Claude process"** — BLOCKING (keyring D-Bus async, fd handoff, process spawn)
 - **SOURCE:** the canary string typed by the X keyboard; the private keyring session.
@@ -1335,7 +1361,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Given** the social fixture (`ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN`) with a LinkedIn-shaped post page, and the fake API scripting `tool_use linkedin_like {"url": <post>}`,
 - **When** the broker previews it (a dry run) and shows the card, and the user clicks Approve (X input),
 - **Then**:
-  - `DRAWER approval <id> linkedin_like <origin> <digest>` appeared before any commit;
+  - `DRAWER approval <id> linkedin_like <origin> <account> <digest>` appeared before any commit;
   - the fixture's commit log shows exactly 1 like;
   - `social.rate_status` (socket) shows used +1;
   - the `tool_result` says it is done.
@@ -1421,16 +1447,27 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 ### S10 — File tools in the workspace and scratchpad, plus the bwrap sandbox (T7)
 
-#### Behavior S10.1: file tools are confined to the workspace and scratchpad
-- The `fs_*` MCP tools (`agent/host/zb_agent_host/fs_tools.py`) do the I/O themselves with `openat2` + `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV` on the root fds (D12).
-- **Swap test at the real I/O seam:** a racer thread swaps `workspace/x` between a regular file and a symlink to an outside canary, 10,000 times, while `fs_read`/`fs_write` run on `x` in a loop. Zero bytes of the canary are ever read, and the outside file is never modified (its content hash is checked, plus inotify `IN_OPEN` events on the outside directory = 0). The same race runs against the app-side workspace writer `agent_fs.zig` (rev 5) for approved `fs_write`/`fs_move`, through a Zig test driving the real function on a temp tree, plus the e2e.
-- The section 9 T7 cases are refused by the kernel or by `S_ISREG`. The inotify oracle (S3.1) shows no open outside the two roots.
-- **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent, for writes. Every success touches only inodes under the root.
+#### Behavior S10.1: every file operation runs at its routed owner, and is confined there (rev 6, blocker 3)
+- **Routing (the D12 table, driven end to end):** the fake API scripts one call per table row, which is 13 calls:
+  - the four read tools on `workspace/` and on `scratchpad/`;
+  - `fs_write`, `fs_edit`, `fs_delete` and `fs_move` (including a rename) on `scratchpad/`;
+  - the same four on `workspace/`;
+  - one call on a path outside both roots.
+- **Then:**
+  - reads and scratchpad operations complete with no card. The inotify oracle attributes each change to a helper process inside the sandbox (the `/proc/<pid>/ns/mnt` of the writer is the sandbox's);
+  - each workspace mutation shows a card. **Denied** and **no click (timeout)** leave the workspace byte-identical, and **approved** performs it exactly once, attributed to the **browser process** (the writer's mount namespace is the browser's);
+  - the outside path is refused, and nothing is touched.
+- **Swap race at each real owner:** a racer swaps the target between a regular file and a symlink to an outside canary, 10,000 times, while the owner works on it:
+  - against helper `fs_read` and `fs_write` in `scratchpad/`;
+  - against app `agent_fs.zig` for approved `fs_write` and `fs_move` in `workspace/`, through a Zig test driving the real function on a temp tree, plus the e2e.
+  - Zero canary bytes are ever read, and the outside file is never modified (content hash, plus inotify `IN_OPEN` = 0).
+- The section 9 T7 cases are refused by the kernel or by `S_ISREG` at those same owners.
+- **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree, run against both owners). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent, for writes. Every success touches only inodes under that owner's root.
 
 #### Behavior S10.2: a workspace write needs a card, and a scratchpad write does not (user answer 3)
-- The fake API scripts `fs_write workspace/notes.md`, and a card appears. Approve leads to exactly one write, **performed by the browser process** (`agent_fs.zig`): the inotify oracle attributes the write to the browser's PID through the `/proc` fd census at the moment of the write.
+- The fake API scripts `fs_write workspace/notes.md`, and a card appears. Approve leads to exactly one write, **performed by the browser process** (`agent_fs.zig`). The writer is identified as in S10.1.
 - `fs_write`, `fs_delete` and `fs_move` in `scratchpad/` run with no card (user answer 3).
-- `fs_delete` and `fs_move` in `workspace/` show a card.
+- `fs_edit`, `fs_delete` and `fs_move` (and rename) in `workspace/` each show a card, and are covered in S10.1's denied, timeout and approved cases.
 - A denied card writes nothing.
 - A malicious hook that tries the same workspace write directly at the same moment gets `EROFS` (S3.9 re-run with tools present).
 
