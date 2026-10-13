@@ -4,7 +4,7 @@ author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
 git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); see section 3b
+status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -518,9 +518,9 @@ agent-home/
   - **Hook isolation (rev 5, blocker 2; rev 6, blocker 2):** every hook command runs through `zb-hook-run`. That is a small program in the read-only runtime, so a hook cannot replace it. In order, it:
     1. closes every descriptor ≥ 3 (`close_range(3, ~0, 0)`);
     2. builds a **fresh environment** containing only the names in `runtime/hook-env.json`, copying their values from its own environment. The allowlist is produced by P0.5's census of the variables the CLI sets for hooks, plus `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR` and `TERM`. `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` and `ZB_TOKEN_FIFO` are **refused** by name even if a future census lists them, and setup exits 2;
-    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`, and with `--unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace> --ro-bind <agent-home>/.claude.json <agent-home>/.claude.json --tmpfs /run/zb-token -- <hook command>`.
+    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`, and with `--unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace> --ro-bind <agent-home>/.claude.json <agent-home>/.claude.json --tmpfs /tmp --tmpfs /run --tmpfs /dev/shm --tmpfs <agent-home>/scratchpad/.zb-q -- <hook command>` (rev 8 adds the private `/tmp`, `/run` and `/dev/shm`, and hides the helper's quarantine directory; `/run` covers `/run/zb-token`).
     - **Rev 7, blocker 1:** inside the hook's view, `.claude.json` is **read-only**, although it stays writable for the outer CLI. So a hook cannot change the CLI's live configuration during a session; its write gets `EROFS`. `/run/zb-token` is replaced by an empty tmpfs, so a hook cannot even see the FIFO directory. The pre-session `.claude.json` validator stays, to catch corruption by the CLI itself or by another same-user process outside the sandbox.
-    - The only paths a hook can write are the census state directories under `.claude` and `scratchpad/`.
+    - **What a hook can write (rev 8, SHOULD):** persistent agent-home paths are exactly the census state directories under `.claude` and `scratchpad/`, excluding `scratchpad/.zb-q`, which is an empty tmpfs mount point in the hook's view and cannot be renamed (`EBUSY`). Ephemeral paths are the hook's **private** `/tmp`, `/run` and `/dev/shm` tmpfs mounts. They are not shared with the CLI or the helper, and they are discarded when the hook exits. Nothing else is writable.
     - So bwrap's own process, its namespace PID 1 (the reaper; `--as-pid-1` is not used) and the hook all start from the allowlisted environment only. The CLI's environment never crosses into the hook's namespace.
     - Inside, the hook sees the same files as the outer view (workspace read-only, `.claude` read-only apart from the state directories, scratchpad writable), but its own PID namespace and `/proc`.
   - File operations follow the single routing table below (rev 6, blocker 3). No process inside the sandbox can write the workspace.
@@ -540,7 +540,7 @@ agent-home/
     | `fs_write`, `fs_edit`, `fs_delete`, `fs_move` (including rename) | `workspace/` (either end, for move) | **app** `src/agent_fs.zig`, in the browser process, outside the sandbox, after Approve | exact per-operation card |
     | anything else | anywhere | nobody: `is_error` "path outside the agent's folders" | — |
 
-  - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). The checked object and the I/O object are always the same descriptor.
+  - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). For reads and writes, the checked object and the I/O object are the same descriptor. For `fs_move` and `fs_delete`, which name syscalls cannot do by fd, the capture → verify → commit protocol below gives the same guarantee (rev 8).
   - **Object types (rev 7, SHOULD):**
 
     | Object | Open flags | Required `fstat` type | Used by |
@@ -551,7 +551,34 @@ agent-home/
     | anything else (symlink, FIFO, socket, device) | not opened as a leaf | — | listed by name and type only, never followed or read |
 
   - **Traversal:** `fs_list` reads the directory fd with `getdents64`. `fs_find`/`fs_grep` recurse by opening each child directory **relative to its parent's fd** with the same `openat2` flags and `S_ISDIR`. Symlinks are never followed, and other types are skipped. Limits: depth 32, 10,000 entries, 1 MiB of matches; exceeding a limit returns a truncated result plus a note.
-  - **`fs_move` across roots** (app owner only): `renameat2(src_dir_fd, src_name, dst_dir_fd, dst_name, RENAME_NOREPLACE)` between the scratchpad and workspace parent fds, which are on one filesystem under `agent-home`. `EXDEV` gives `is_error` "cannot move across filesystems", with no copy fallback. `fs_delete` is `unlinkat(parent_fd, name, 0)` after an `S_ISREG` check of that name's opened fd; directories are never deleted.
+  - **Mutations act on a captured object, never on a re-resolved name (rev 8, blocker 1).** `renameat2` and `unlinkat` resolve a name again at syscall time, so an fd check before them proves nothing about the object they act on. Every `fs_move` and `fs_delete`, at either owner, therefore uses this **capture → verify → commit** protocol:
+    1. **Quarantine directories that no other writer can reach.**
+       - The app's is `agent-home/.zb-quarantine/` (0700). It is **not mounted** into the sandbox at all.
+       - The helper's is `scratchpad/.zb-q/` (0700). It sits on the same bind mount as the scratchpad, so a rename into it is not `EXDEV`. Every hook view covers it with an empty tmpfs (`zb-hook-run`), so no hook can enter, list or rename it.
+       - Setup refuses an agent home whose subdirectories are on different filesystems (`st_dev` differs), so the app's cross-root renames cannot hit `EXDEV`.
+    2. **Capture:** `renameat2(src_dir_fd, name, q_fd, <random 128-bit name>, RENAME_NOREPLACE)` moves **whatever object** is at `name` into the quarantine. From that moment, no other process can touch it by name.
+    3. **Verify:** open the captured name with `openat2(q_fd, …, O_PATH|O_NOFOLLOW)` and `fstat` it. It must be `S_ISREG`, with `st_nlink == 1`. Its `(st_dev, st_ino)` must equal the inode checked earlier (the card's preview for an approved operation, or the open at the start of this operation).
+    4. **Commit:**
+       - for a delete, `unlinkat(q_fd, captured, 0)`;
+       - for a move whose destination is in the **scratchpad**, `renameat2(q_fd, captured, dst_dir_fd, dst_name, RENAME_NOREPLACE)`. The object that lands at the destination is the verified inode;
+       - for any destination in the **workspace**, the object is **never moved in**, because a sandbox process might still hold a writable fd on it. Instead, the app copies the bytes from its own fd of the verified inode into a fresh `O_CREAT|O_EXCL` temp file in the workspace directory fd. It computes the SHA-256 of the copied bytes, which must equal the `content_sha256` shown on the card and bound into the grant. It then `fsync`s, `renameat2(ws_fd, tmp, ws_fd, dst, RENAME_NOREPLACE)`, and finally unlinks the captured source in the quarantine.
+    5. **Roll back on any failure in 3 or 4:** `renameat2(q_fd, captured, src_dir_fd, name, RENAME_NOREPLACE)`. If the original name has been taken meanwhile, the object stays in quarantine under a journal entry, and the result says so. Workspace temp files are unlinked (the workspace has no other writer).
+  - **Journal and crash recovery.** Before step 2, the owner writes `<q>/<captured>.json` = `{op, src, dst, dev, ino, content_sha256, phase}`. It updates the phase after capture, install and unlink. At startup, the owner replays each journal entry:
+    - `installed`: unlink the captured source;
+    - `captured`: roll back to the source name if it is free, otherwise keep the object and log `zigBrowser: agent: quarantined <name> kept (source name taken)`.
+    - Quarantine directories are emptied only through this replay.
+  - **Outcomes (exact, returned in `tool_result`):**
+
+    | Case | Destination | Source | `ok` and message |
+    |---|---|---|---|
+    | success | the verified regular inode (scratchpad) or a fresh copy with the approved digest (workspace) | removed | `true` |
+    | the object at the source name is not regular, or is a different inode, at capture | unchanged | rolled back (or kept in quarantine) | `false`, "the file changed after approval; nothing was moved" |
+    | the copied digest differs from the card | unchanged; the temp is removed | rolled back | `false`, "the file's content changed after approval; nothing was moved" |
+    | the destination exists (`EEXIST`) | unchanged | rolled back | `false`, "the destination already exists" |
+    | delete of a non-regular or different inode | — | rolled back | `false`, "not the file you approved / not a regular file" |
+  - **Concurrency.** The app serializes all of its own mutations with one workspace mutex. The helper serializes scratchpad mutations per helper. Quarantine names are random and never reused.
+  - `fs_write` and `fs_edit` already write through an fd the owner created with `O_EXCL`, followed by `renameat2(…, RENAME_NOREPLACE)` within one directory fd, and are unchanged. In the scratchpad, a hook can replace the temp name before the rename, which only moves a hook-made object within the hook's own scratchpad, never into the workspace. That is an accepted property of the user-chosen free scratchpad.
+  - Directories are never deleted or moved.
   - A workspace mutation reaches the helper's `fs_tools.py` **only as a forwarded `tool_call`**. The helper has no code path that writes `workspace/`, and the read-only bind would refuse it anyway.
   - Execution is impossible, because no tool exists for it.
 - Bash stays unavailable.
@@ -589,6 +616,8 @@ agent-home/
 | R6-1 | A hook can change live `.claude.json` within a session | `zb-hook-run` re-binds `.claude.json` read-only inside every hook's view (it stays writable for the outer CLI) and hides `/run/zb-token` behind an empty tmpfs. S3.11 is the same-session red: the hook's write gets `EROFS`, and later events in that session run no planted command. The pre-session validator stays. | D12, S3.11 |
 | R6-2 | Cross-root `fs_move` not driven, and a wrong count | S10.1 now has 19 calls, including `scratchpad → workspace` and `workspace → scratchpad`. Both go to the app owner with a card. Denied and timeout leave both roots byte-identical, approval commits once, and a source-only-routing red is included. | S10.1 |
 | R6-S | Directory object type; stale PID-1 and history text | D12 has an object-type table (`S_ISDIR` directory fds, `S_ISREG` leaves, relative traversal, limits, cross-root `renameat2`). D11 says bwrap's reaper is PID 1. The rev-3 row is marked superseded. | D11, D12, §3b |
+| R7-1 | `fs_move`/`fs_delete` checked an fd but mutated a name | A capture → verify → commit protocol at both owners. The object is renamed into a quarantine no other writer can reach (the app's is outside the sandbox; the helper's is hidden from hooks by a tmpfs), then verified as the same regular inode, then committed. Moves into the workspace copy the verified bytes into a fresh inode, checked against the card's `content_sha256`, so no sandbox fd can reach the workspace. There are exact outcomes, rollback, and a journal with crash replay. S10.4 is the failing-first racing-hook test (Zig 10k, Python 10k, e2e 50), red first against the rev-7 sequence. | D12, S10.1, S10.4 |
+| R7-S | `EBUSY` on rename; ephemeral writable paths | S3.11 accepts `{EROFS, EBUSY, EXDEV}` for temp-plus-rename, with byte identity required, and exact `EROFS` for write and truncate. Hooks now get private `/tmp`, `/run` and `/dev/shm`, and the writable set is enumerated. | D12, S3.11 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -1111,7 +1140,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - (b) create a FIFO or file under `/run/zb-token`;
 - and the **same session** then runs `UserPromptSubmit`, one MCP tool call (`get_text`) and `Stop`,
 - **Then**:
-  - every (a) write attempt gets `EROFS`, which the hook records;
+  - the in-place write and the truncate each get exactly `EROFS`. The temp-plus-rename attempt is refused with an errno in the accepted set `{EROFS, EBUSY, EXDEV}` (rev 8, SHOULD; renaming over a bind-mounted file may return `EBUSY`). In every case the file must be byte-identical afterwards;
   - (b) gets an empty private tmpfs, and the real FIFO directory is unchanged;
   - `scratchpad/planted-stop` and `scratchpad/planted-mcp` never appear;
   - no process with the planted command line ever exists (the `/proc` census during the session);
@@ -1492,6 +1521,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - each of the 6 workspace-touching mutations (the 4 in-workspace operations and the 2 cross-root moves) shows a card. **Denied** and **no click (timeout)** leave **both** roots byte-identical: a recursive content hash of `workspace/` and `scratchpad/` from outside, plus no inotify change event in either. **Approved** performs it exactly once, attributed to the **browser process** (the writer's mount namespace is the browser's). For a cross-root move, the source is gone from one root and the destination appears in the other, both in the same `renameat2`;
   - a cross-root move is **never** card-free, and is never performed by the helper. The red-at-seam for that: route by source path only (a seeded bug in the broker's router), so `scratchpad/a.txt → workspace/a.txt` runs card-free in the helper and the read-only workspace makes it fail. The test asserts a card was shown, so red;
   - the outside path is refused, and nothing is touched.
+- **Cards for moves into the workspace (rev 8)** show the source's size and `content_sha256`, computed by the app through its own `openat2` fd at card time. Both are bound into the grant (D10's normalized args).
 - **Swap race at each real owner:** a racer swaps the target between a regular file and a symlink to an outside canary, 10,000 times, while the owner works on it:
   - against helper `fs_read` and `fs_write` in `scratchpad/`;
   - against app `agent_fs.zig` for approved `fs_write`, `fs_move` in `workspace/`, and both cross-root `fs_move` directions, through a Zig test driving the real function on a temp tree, plus the e2e;
@@ -1499,6 +1529,31 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - Zero canary bytes are ever read, and the outside file is never modified (content hash, plus inotify `IN_OPEN` = 0).
 - The section 9 T7 cases are refused by the kernel or by `S_ISREG` at those same owners.
 - **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree, run against both owners). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent, for writes. Every success touches only inodes under that owner's root.
+
+#### Behavior S10.4: a racing hook cannot substitute the object a move or delete acts on (rev 8, blocker 1; failing-first)
+- **Racer.** A real malicious hook process runs inside its `zb-hook-run` namespace for the whole test. It is started by `SessionStart` and stays alive (a long-running hook). For a target name `a.txt` in `scratchpad/`, it loops as fast as it can:
+  - opening the current regular `a.txt` with `O_RDWR` and **keeping that fd**;
+  - renaming `a.txt` aside to `a.txt.orig`;
+  - putting at `a.txt`, in rotation, a symlink to `/etc/passwd`, a symlink to `../workspace/keep.txt`, a FIFO, a Unix socket and a second regular file with different content;
+  - renaming `a.txt.orig` back;
+  - writing `PWNED` through every held fd.
+- **Operations under test, each run many times against the racer:**
+  - (a) approved `fs_move scratchpad/a.txt → workspace/a.txt`, at the app owner;
+  - (b) `fs_move scratchpad/a.txt → scratchpad/b.txt`, at the helper owner;
+  - (c) `fs_delete scratchpad/a.txt`, at the helper owner;
+  - (d) approved `fs_move workspace/w.txt → scratchpad/w.txt` and `fs_delete workspace/w.txt`, at the app owner (no racer can reach the workspace source; checked anyway).
+  - The **Zig test** (`tests/agent_fs_test.zig`) drives the real `agent_fs.zig` functions with a racer thread: 10,000 iterations of (a) and (d). The **Python test** (`agent/host/tests/test_fs_tools.py`) does the same for (b) and (c). The **e2e** (`tests/e2e/agent_files_test.py`) runs 50 iterations of each through the real browser, helper, CLI and hook.
+- **Then, for every iteration:**
+  - **Destination type:** `lstat` of the destination is never a symlink, FIFO, socket or device. If the operation returned `ok`, the destination is `S_ISREG`.
+  - **Exact object or content.** For (b), a successful destination has the captured inode's `(st_dev, st_ino)`. For (a), it is a fresh inode whose SHA-256 equals the card's `content_sha256`, it has `st_nlink == 1`, and **no** sandbox process holds an fd on it: a `/proc/*/fd` census from outside, matching `st_ino`, finds none.
+  - **Writes through held fds** never change any workspace file, by hash after the run.
+  - **Delete:** for (c), when `ok`, the deleted object was the regular inode that was checked, and every racer-made replacement object still exists or was rolled back. When not `ok`, nothing was deleted.
+  - **Outcomes:** each `false` result has one of the exact messages in the D12 outcome table. Every journal in the quarantine is replayed or empty at the end.
+- **Red first:** before the protocol exists, run the rev-7 sequence (`openat2`/`fstat`, then a path `renameat2`/`unlinkat`) against the same racer. A symlink or FIFO lands in `workspace/`, or `PWNED` appears in a workspace file through a held fd. The test records that red.
+- **Red-at-seam afterwards:**
+  - skip the inode comparison in "verify": a substituted regular file is moved, so the `st_ino` assertion fails, so red;
+  - for (a), rename the captured inode into the workspace instead of copying it: the held fd writes `PWNED` into the workspace, so red.
+- **Property:** Invariant (seeded schedules for the racer's interleaving in the Zig test, using a deterministic step driver). For every schedule, either the result is `ok` and the destination holds the verified object or approved content, or the result is a D12 failure and both roots are unchanged apart from racer-made objects.
 
 #### Behavior S10.2: a workspace write needs a card, and a scratchpad write does not (user answer 3)
 - The fake API scripts `fs_write workspace/notes.md`, and a card appears. Approve leads to exactly one write, **performed by the browser process** (`agent_fs.zig`). The writer is identified as in S10.1.
