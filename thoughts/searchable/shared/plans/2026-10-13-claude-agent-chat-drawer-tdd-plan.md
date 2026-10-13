@@ -4,7 +4,7 @@ author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
 git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); see section 3b
+status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -544,7 +544,13 @@ agent-home/
     | `fs_write` (create or overwrite), `fs_edit` (overwrite) | `workspace/` | **app broker** `src/agent_fs.zig`, in the browser process, outside the sandbox, after Approve | exact per-operation card |
     | anything else, including `fs_move`/`fs_delete` | anywhere | nobody: `is_error` "tool not available" (not registered) or "path outside the agent's folders" | — |
 
-  - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). The checked object and the I/O object are always the same descriptor.
+  - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437).
+  - **The descriptor invariant (rev 11; the only one):** every existing object is handled with **two descriptors that are proven to refer to one inode**.
+    1. A **classification descriptor**, opened with `O_PATH|O_NOFOLLOW`, is `fstat`ed for the type.
+    2. Only for `S_ISREG` or `S_ISDIR`, an **I/O descriptor** is opened from the classification descriptor's `/proc/self/fd/<n>` link, never from the pathname.
+    3. The I/O descriptor is accepted only if its `fstat` gives the same `st_dev`, `st_ino` and file type as the classification descriptor.
+    - A new file has one descriptor, created `O_CREAT|O_EXCL` and type-checked by `fstat`.
+    - There is no other order. Opening an existing object for I/O by its pathname, or opening it before classifying it, violates the contract.
   - **Object types:**
 
     **Classify first, without opening (rev 10, blocker 2).** Every existing object is first resolved with `openat2(dir_fd, path, O_PATH|O_NOFOLLOW|O_CLOEXEC, RESOLVE_*)`. An `O_PATH` descriptor does not call the object's `open` operation: no device driver runs, a FIFO does not wait, and no `IN_OPEN` event fires. That descriptor is then `fstat`ed.
@@ -613,13 +619,16 @@ agent-home/
 | R6-S | Directory object type; stale PID-1 and history text | D12 has an object-type table (`S_ISDIR` directory fds, `S_ISREG` leaves, relative traversal, limits, cross-root `renameat2`). D11 says bwrap's reaper is PID 1. The rev-3 row is marked superseded. | D11, D12, §3b |
 | R7-1 | `fs_move`/`fs_delete` checked an fd but mutated a name | A capture → verify → commit protocol at both owners. The object is renamed into a quarantine no other writer can reach (the app's is outside the sandbox; the helper's is hidden from hooks by a tmpfs), then verified as the same regular inode, then committed. Moves into the workspace copy the verified bytes into a fresh inode, checked against the card's `content_sha256`, so no sandbox fd can reach the workspace. There are exact outcomes, rollback, and a journal with crash replay. S10.4 is the failing-first racing-hook test (Zig 10k, Python 10k, e2e 50), red first against the rev-7 sequence. | D12, S10.1, S10.4 |
 | R7-S | `EBUSY` on rename; ephemeral writable paths | S3.11 accepts `{EROFS, EBUSY, EXDEV}` for temp-plus-rename, with byte identity required, and exact `EROFS` for write and truncate. Hooks now get private `/tmp`, `/run` and `/dev/shm`, and the writable set is enumerated. | D12, S3.11 |
-| R8 (all) | Journal crash cuts; S10.1 named the one-syscall move; readable-fd and rollback outcomes | **Superseded by the rev-9 scope cut.** `fs_move` and `fs_delete` are removed from the plan (section 5), so the quarantine, journal and rollback machinery they needed is removed too. Workspace writes now install a fresh inode from a broker-only temp directory with `fsync` and rename into place. The only crash residue is an orphan temp that startup deletes, so no journal is needed. Every read uses a readable fd that is type-checked on that same fd (`O_NONBLOCK`, `S_ISREG`). S10.1 has 17 routes, and S10.4 races reads and writes. | D12, §5, S10.1, S10.4 |
+| R8 (all) | Journal crash cuts; S10.1 named the one-syscall move; readable-fd and rollback outcomes | **Superseded by the rev-9 scope cut.** `fs_move` and `fs_delete` are removed from the plan (section 5), so the quarantine, journal and rollback machinery they needed is removed too. Workspace writes now install a fresh inode from a broker-only temp directory with `fsync` and rename into place. The only crash residue is an orphan temp that startup deletes, so no journal is needed. ~~Every read uses a readable fd that is type-checked on that same fd (`O_NONBLOCK`, `S_ISREG`).~~ **(superseded by rev 10/11: classify with `O_PATH`, then reopen through `/proc/self/fd/<n>` and check the same inode; see the D12 descriptor invariant.)** S10.1 has 17 routes, and S10.4 races reads and writes. | D12, §5, S10.1, S10.4 |
 | R6-2, R7-1 | Cross-root moves; capture → verify → commit | **Withdrawn with the scope cut (rev 9).** Kept only as input for a later move/delete slice. | §5 |
 | R9-1 | D9 registry lacks the file tools | D9 gains `fs_read`/`fs_list`/`fs_find`/`fs_grep` (no card) and `fs_write`/`fs_edit` (path-dependent card), registered in S10. `fs_move`/`fs_delete` are listed as never exposed. New S10.0 checks the recorded tool list, refuses forged move and delete calls, and has an allowlist property. | D9, S10.0 |
 | R9-2 | The leaf open opened a device before rejecting it | Every object is classified with `O_PATH|O_NOFOLLOW` plus `fstat` first, which never calls the object's `open`. Only a regular file or directory is reopened, through `/proc/self/fd/<n>`, and the result is re-`fstat`ed for the same inode. Device and FIFO cases assert zero `IN_OPEN`. | D12, S10.4 |
 | R9-3 | Two impossible observation claims | The invariant is now **no write-capable descriptor** (`fdinfo` access mode), and read-only descriptors are allowed. "Helper writes only inodes it created" is proven by an `os_ops` unit seam that records the real opens, plus the e2e `FSTRACE` create-before-write rows and inotify `IN_CREATE`. | D12, D7b, §7 seams, S10.4 |
 | R9-4 | The racer cannot outlive `SessionStart` | The production-representative concurrent writer is a second session's `UserPromptSubmit` hook, which races for 40 s inside its 60 s timeout while window 1 runs the operations. A forked child is shown to die with the hook's PID namespace. Unit races keep threads. | S10.4 |
 | R9-S | Shared broker temp across browser instances; duplicated text | An exclusive `flock` on `agent-home/.zb-owner.lock` is held by one browser instance. Others show `unavailable home-locked` and never touch the temp directory or the workspace. The duplicate line is removed. | D12, D7b |
+| R10-1 | The device test was short-circuited by `RESOLVE_NO_XDEV` | The guard is tested at the leaf-open path through the injected syscall seams (Python `os_ops`, Zig `Sys`). The fake `fstat` reports char, block, FIFO and socket objects on the same mount. The test asserts the first open is `O_PATH` and that no I/O reopen follows. It is red first, with an `O_RDONLY` red-at-seam. The dev-bind case is kept only as a mount-boundary check. | S10.4 |
+| R10-2 | D12 stated two descriptor contracts | One invariant: a classification descriptor (`O_PATH`) and an I/O descriptor opened through its `/proc/self/fd` link, with equal dev, ino and type; a new file has one `O_EXCL` descriptor. The rev-8 history clause is marked superseded. | D12, §3b |
+| R10-S | S3.12 relied on PID attribution from inotify | Split into phases: B against an idle A (zero events, no B-descendant process), then A alone with a paused write and an exact event sequence, then B taking over. A new e2e-only pause seam is added. | S3.12, §7 seams |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -727,6 +736,7 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 | `ZIGBROWSER_AGENT_APPROVAL_TTL_MS` | a short approval TTL (S8.2) | 500–120000 |
 | `ZIGBROWSER_AGENT_DRAWER_DEMO` | seeded system messages (S2.3) | `messages:<n≤5000>` |
 | `ZIGBROWSER_AGENT_FS_TRACE` | sets `hello.e2e.fs_trace`, so the helper emits `fs_trace` (S10.4; rev 10) | `1` only |
+| `ZIGBROWSER_AGENT_FS_PAUSE` | pauses the app broker at a named point of a workspace write until the test releases it on stdin (S3.12; rev 11) | `after-temp` only |
 
 **Social fixture.** The existing `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN` server shape from `tests/e2e/social_flows_test.py` gains a commit log (POST count per action).
 
@@ -1155,13 +1165,13 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Property:** none. The input is fixed.
 
 #### Behavior S3.12: only one browser instance owns the agent home (rev 10, SHOULD)
-- **Given** browser A with its agent started, holding `agent-home/.zb-owner.lock`,
-- **When** browser B starts with the same `XDG_DATA_HOME` and a prompt is sent in B's drawer,
-- **Then**:
-  - B shows `DRAWER status unavailable home-locked` and spawns nothing;
-  - B never opens anything in `.zb-broker-tmp/` or `workspace/` (inotify, with every event attributed to A's writes);
-  - A's in-flight workspace write still installs exactly once;
-  - after A quits, B's next Send takes the lock and starts the agent.
+Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
+- **Phase 1, A idle.** **Given** browser A with its agent started and holding `agent-home/.zb-owner.lock`, but doing nothing (no prompt, no tool call), **When** browser B starts with the same `XDG_DATA_HOME` and a prompt asking for `fs_write workspace/x.txt` is sent in B's drawer, **Then**:
+  - B shows `DRAWER status unavailable home-locked`;
+  - no new process appears with B as an ancestor (`/proc` census by ppid chain);
+  - the inotify watches on `.zb-broker-tmp/` and `workspace/` record **zero** events during the whole phase. A is idle, so any event would be B's.
+- **Phase 2, A writing, B absent.** B is quit first. An approved `fs_write workspace/y.txt` in A is held in flight by a deterministic pause after its temp is created (the e2e-only seam `ZIGBROWSER_AGENT_FS_PAUSE=after-temp`, gated by `--e2e-protocol`). Then it is released. The inotify sequence is exactly: `IN_CREATE` and `IN_CLOSE_WRITE` of one temp in `.zb-broker-tmp/`, then `IN_MOVED_FROM` there and `IN_MOVED_TO` of `y.txt` in `workspace/`. The final state is `y.txt` with the approved SHA-256 and an empty temp directory.
+- **Phase 3, B takes over.** After A quits, B's next Send takes the lock and starts the agent (`DRAWER status ready -`).
 - **Property:** none. The input is fixed.
 
 #### Behavior S3.6: the e2e-only seams are inert in production (rev 3, blocker 10)
@@ -1563,7 +1573,12 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then, for every iteration:**
   - **Reads:** no read returns bytes of `/etc/passwd` or of a workspace file through a scratchpad name, and no read blocks (each finishes within 1 s, even with the FIFO in place).
   - **No special object is ever opened:** inotify `IN_OPEN` on the FIFO and socket placed at `a.txt` stays at 0 across the run. `O_PATH` classification does not fire `IN_OPEN`.
-  - **Device case (Python unit test):** the test runs `fs_read` inside a bwrap that `--dev-bind`s `/dev/null` and `/dev/tty` into the temp scratchpad. The call is refused, and inotify `IN_OPEN` on both device nodes stays at 0 (rev 10, blocker 2).
+  - **Device case, at the leaf-open path itself (rev 11, blocker 1; failing-first).** A bind-mounted device would be refused earlier by `RESOLVE_NO_XDEV` (`EXDEV`), so it cannot exercise this guard. The guard is therefore tested through the injected syscall seams, at both owners:
+    - **Python** (`fs_tools.py`'s `os_ops`) and **Zig** (`agent_fs.zig`'s injected `Sys` table of function pointers; the production default is the real syscalls). In each, the fake `openat2` succeeds on the same mount, and the fake `fstat` reports `S_IFCHR` (and, in separate cases, `S_IFBLK`, `S_IFIFO` and `S_IFSOCK`) for `scratchpad/dev`.
+    - The test calls the real `fs_read`, `fs_grep` and `fs_edit` (helper), and the real overwrite preflight and `fs_edit` read (broker), on that path.
+    - **Assertions on the recorded call sequence:** the **first** open of the object has `O_PATH|O_NOFOLLOW` set and no read or write access; there is **no** later open of `/proc/self/fd/<n>` or of the pathname for that object; and the operation returns "not a regular file".
+    - **Red first:** before the classification exists, the recorded first call is `openat2(…, O_RDONLY|O_NOFOLLOW…)`, so the first-call assertion fails. **Red-at-seam:** replace the first call's `O_PATH` with `O_RDONLY`, and the test fails.
+    - **Additional fail-closed check (kept):** the `--dev-bind` variant is refused with `EXDEV`, with zero `IN_OPEN` on the device nodes. It is documented as covering only the mount boundary.
   - **Helper writes only inodes it created** (rev 10, blocker 3, replacing the fdinfo inference):
     - **unit oracle:** `fs_tools.py` performs every open through an injected `os_ops` seam (the production default is `os`). The Python test records every real call, and asserts that every descriptor written to came from an `O_CREAT|O_EXCL` open in that same operation;
     - **e2e oracle:** with `ZIGBROWSER_AGENT_FS_TRACE=1` (a section 7 e2e-only seam), every `FSTRACE … write <dev>:<ino>` row is preceded, in the same operation, by an `FSTRACE … create` row with the same `<dev>:<ino>`;
@@ -1574,7 +1589,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - `.zb-broker-tmp/` is empty after every operation. The racer's attempts there, and its write-mode opens in `workspace/`, always failed.
 - **Red first:** before the protocol exists, a naive implementation runs against the same racer (`open(path, O_RDONLY)` without `openat2`, `O_PATH` classification or a type check; workspace writes in place with `O_TRUNC`). It reads `/etc/passwd`, hangs on the FIFO (`IN_OPEN` fires), or rewrites the existing workspace inode, which the racer's held read-only fd then shows. The test records that red.
 - **Red-at-seam afterwards:**
-  - open leaves directly with `O_RDONLY|O_NOFOLLOW` instead of classifying with `O_PATH`: `IN_OPEN` fires on the FIFO and the device, so red;
+  - open leaves directly with `O_RDONLY|O_NOFOLLOW` instead of classifying with `O_PATH`: `IN_OPEN` fires on the FIFO in the e2e, and the seam test's first-call assertion fails for the character and block device cases, so red;
   - install workspace writes in place instead of renaming into place: the inode is not fresh, so red.
 - **Property:** Invariant (seeded racer interleavings through a deterministic step driver in the Zig test). For every schedule, an `ok` broker write leaves the approved bytes in a fresh inode, and a failure leaves `workspace/` unchanged.
 
