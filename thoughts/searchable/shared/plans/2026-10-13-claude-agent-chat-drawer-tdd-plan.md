@@ -4,7 +4,7 @@ author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
 git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); see section 3b
+status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -518,9 +518,9 @@ agent-home/
   - **Hook isolation (rev 5, blocker 2; rev 6, blocker 2):** every hook command runs through `zb-hook-run`. That is a small program in the read-only runtime, so a hook cannot replace it. In order, it:
     1. closes every descriptor ≥ 3 (`close_range(3, ~0, 0)`);
     2. builds a **fresh environment** containing only the names in `runtime/hook-env.json`, copying their values from its own environment. The allowlist is produced by P0.5's census of the variables the CLI sets for hooks, plus `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR` and `TERM`. `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` and `ZB_TOKEN_FIFO` are **refused** by name even if a future census lists them, and setup exits 2;
-    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`, and with `--unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace> --ro-bind <agent-home>/.claude.json <agent-home>/.claude.json --tmpfs /tmp --tmpfs /run --tmpfs /dev/shm --tmpfs <agent-home>/scratchpad/.zb-q -- <hook command>` (rev 8 adds the private `/tmp`, `/run` and `/dev/shm`, and hides the helper's quarantine directory; `/run` covers `/run/zb-token`).
+    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`, and with `--unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace> --ro-bind <agent-home>/.claude.json <agent-home>/.claude.json --tmpfs /tmp --tmpfs /run --tmpfs /dev/shm -- <hook command>` (rev 8 adds the private `/tmp`, `/run` and `/dev/shm`; `/run` covers `/run/zb-token`).
     - **Rev 7, blocker 1:** inside the hook's view, `.claude.json` is **read-only**, although it stays writable for the outer CLI. So a hook cannot change the CLI's live configuration during a session; its write gets `EROFS`. `/run/zb-token` is replaced by an empty tmpfs, so a hook cannot even see the FIFO directory. The pre-session `.claude.json` validator stays, to catch corruption by the CLI itself or by another same-user process outside the sandbox.
-    - **What a hook can write (rev 8, SHOULD):** persistent agent-home paths are exactly the census state directories under `.claude` and `scratchpad/`, excluding `scratchpad/.zb-q`, which is an empty tmpfs mount point in the hook's view and cannot be renamed (`EBUSY`). Ephemeral paths are the hook's **private** `/tmp`, `/run` and `/dev/shm` tmpfs mounts. They are not shared with the CLI or the helper, and they are discarded when the hook exits. Nothing else is writable.
+    - **What a hook can write (rev 8, SHOULD):** persistent agent-home paths are exactly the census state directories under `.claude` and `scratchpad/`. Ephemeral paths are the hook's **private** `/tmp`, `/run` and `/dev/shm` tmpfs mounts. They are not shared with the CLI or the helper, and they are discarded when the hook exits. Nothing else is writable.
     - So bwrap's own process, its namespace PID 1 (the reaper; `--as-pid-1` is not used) and the hook all start from the allowlisted environment only. The CLI's environment never crosses into the hook's namespace.
     - Inside, the hook sees the same files as the outer view (workspace read-only, `.claude` read-only apart from the state directories, scratchpad writable), but its own PID namespace and `/proc`.
   - File operations follow the single routing table below (rev 6, blocker 3). No process inside the sandbox can write the workspace.
@@ -530,57 +530,39 @@ agent-home/
 - There is no unsandboxed mode. If bwrap fails, the drawer shows "Agent sandbox unavailable" and does **not** fall back.
 - **File tools are app-owned MCP tools, not the SDK's built-in Read/Write/Edit (rev 3, blocker 3).** Built-in tools stay `tools=[]` for the whole plan.
   - Why: `can_use_tool` only approves a pathname, and the built-in tool opens it later, so a symlink could be swapped in between.
-  - **The single file-operation routing table (rev 6, blocker 3; this table is the only contract):**
+  - **The single file-operation routing table (rev 9: scope cut by the orchestrator; this table is the only contract).** The user never asked for moving or deleting files, so `fs_move` and `fs_delete` are **not in this plan**. They are not registered as tools, and they are listed under section 5 as a later slice. The tools are:
 
     | Tool | Path under | Performed by (the real I/O owner) | Card |
     |---|---|---|---|
     | `fs_read`, `fs_list`, `fs_find`, `fs_grep` | `workspace/` (read-only bind) | helper `fs_tools.py` | none |
     | `fs_read`, `fs_list`, `fs_find`, `fs_grep` | `scratchpad/` | helper `fs_tools.py` | none |
-    | `fs_write`, `fs_edit`, `fs_delete`, `fs_move` (including rename) | `scratchpad/` (both ends, for move) | helper `fs_tools.py` | none (user answer 3) |
-    | `fs_write`, `fs_edit`, `fs_delete`, `fs_move` (including rename) | `workspace/` (either end, for move) | **app** `src/agent_fs.zig`, in the browser process, outside the sandbox, after Approve | exact per-operation card |
-    | anything else | anywhere | nobody: `is_error` "path outside the agent's folders" | — |
+    | `fs_write` (create or overwrite), `fs_edit` (overwrite) | `scratchpad/` | helper `fs_tools.py` | none (user answer 3) |
+    | `fs_write` (create or overwrite), `fs_edit` (overwrite) | `workspace/` | **app broker** `src/agent_fs.zig`, in the browser process, outside the sandbox, after Approve | exact per-operation card |
+    | anything else, including `fs_move`/`fs_delete` | anywhere | nobody: `is_error` "tool not available" (not registered) or "path outside the agent's folders" | — |
 
-  - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). For reads and writes, the checked object and the I/O object are the same descriptor. For `fs_move` and `fs_delete`, which name syscalls cannot do by fd, the capture → verify → commit protocol below gives the same guarantee (rev 8).
-  - **Object types (rev 7, SHOULD):**
+  - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). The checked object and the I/O object are always the same descriptor.
+  - **Object types:**
 
-    | Object | Open flags | Required `fstat` type | Used by |
+    | Object | Open flags | Required `fstat` type on that same fd | Used by |
     |---|---|---|---|
-    | directory | `O_RDONLY\|O_DIRECTORY\|O_CLOEXEC` | `S_ISDIR` | `fs_list`, and each level of `fs_find`/`fs_grep`; the parent of every write, move or delete |
-    | regular file (leaf) | `O_RDONLY` or `O_WRONLY`, plus `O_NOFOLLOW\|O_CLOEXEC` | `S_ISREG` | `fs_read`, `fs_grep` leaves, the source of `fs_move`, the target of `fs_edit` |
-    | new file | `O_WRONLY\|O_CREAT\|O_EXCL\|O_CLOEXEC`, a random temp name in the parent directory fd | `S_ISREG` (after create) | `fs_write`, `fs_edit` (then `renameat2` within the parent fd) |
-    | anything else (symlink, FIFO, socket, device) | not opened as a leaf | — | listed by name and type only, never followed or read |
+    | directory | `O_RDONLY\|O_DIRECTORY\|O_CLOEXEC` | `S_ISDIR` | `fs_list`, each level of `fs_find`/`fs_grep`, the parent of every write |
+    | existing leaf (read) | `O_RDONLY\|O_NOFOLLOW\|O_NONBLOCK\|O_CLOEXEC`, then `O_NONBLOCK` cleared with `fcntl` after the type check | `S_ISREG` | `fs_read`, `fs_grep` leaves, the current content for `fs_edit` and for an overwrite card |
+    | new file | `O_WRONLY\|O_CREAT\|O_EXCL\|O_CLOEXEC`, a random temp name, in the owner's **write directory** (below) | `S_ISREG` | every `fs_write` and `fs_edit` |
+    | anything else (symlink, FIFO, socket, device) | never opened as a leaf | — | listed by name and type only. `O_NONBLOCK` means a FIFO swapped in can never hang a read |
 
-  - **Traversal:** `fs_list` reads the directory fd with `getdents64`. `fs_find`/`fs_grep` recurse by opening each child directory **relative to its parent's fd** with the same `openat2` flags and `S_ISDIR`. Symlinks are never followed, and other types are skipped. Limits: depth 32, 10,000 entries, 1 MiB of matches; exceeding a limit returns a truncated result plus a note.
-  - **Mutations act on a captured object, never on a re-resolved name (rev 8, blocker 1).** `renameat2` and `unlinkat` resolve a name again at syscall time, so an fd check before them proves nothing about the object they act on. Every `fs_move` and `fs_delete`, at either owner, therefore uses this **capture → verify → commit** protocol:
-    1. **Quarantine directories that no other writer can reach.**
-       - The app's is `agent-home/.zb-quarantine/` (0700). It is **not mounted** into the sandbox at all.
-       - The helper's is `scratchpad/.zb-q/` (0700). It sits on the same bind mount as the scratchpad, so a rename into it is not `EXDEV`. Every hook view covers it with an empty tmpfs (`zb-hook-run`), so no hook can enter, list or rename it.
-       - Setup refuses an agent home whose subdirectories are on different filesystems (`st_dev` differs), so the app's cross-root renames cannot hit `EXDEV`.
-    2. **Capture:** `renameat2(src_dir_fd, name, q_fd, <random 128-bit name>, RENAME_NOREPLACE)` moves **whatever object** is at `name` into the quarantine. From that moment, no other process can touch it by name.
-    3. **Verify:** open the captured name with `openat2(q_fd, …, O_PATH|O_NOFOLLOW)` and `fstat` it. It must be `S_ISREG`, with `st_nlink == 1`. Its `(st_dev, st_ino)` must equal the inode checked earlier (the card's preview for an approved operation, or the open at the start of this operation).
-    4. **Commit:**
-       - for a delete, `unlinkat(q_fd, captured, 0)`;
-       - for a move whose destination is in the **scratchpad**, `renameat2(q_fd, captured, dst_dir_fd, dst_name, RENAME_NOREPLACE)`. The object that lands at the destination is the verified inode;
-       - for any destination in the **workspace**, the object is **never moved in**, because a sandbox process might still hold a writable fd on it. Instead, the app copies the bytes from its own fd of the verified inode into a fresh `O_CREAT|O_EXCL` temp file in the workspace directory fd. It computes the SHA-256 of the copied bytes, which must equal the `content_sha256` shown on the card and bound into the grant. It then `fsync`s, `renameat2(ws_fd, tmp, ws_fd, dst, RENAME_NOREPLACE)`, and finally unlinks the captured source in the quarantine.
-    5. **Roll back on any failure in 3 or 4:** `renameat2(q_fd, captured, src_dir_fd, name, RENAME_NOREPLACE)`. If the original name has been taken meanwhile, the object stays in quarantine under a journal entry, and the result says so. Workspace temp files are unlinked (the workspace has no other writer).
-  - **Journal and crash recovery.** Before step 2, the owner writes `<q>/<captured>.json` = `{op, src, dst, dev, ino, content_sha256, phase}`. It updates the phase after capture, install and unlink. At startup, the owner replays each journal entry:
-    - `installed`: unlink the captured source;
-    - `captured`: roll back to the source name if it is free, otherwise keep the object and log `zigBrowser: agent: quarantined <name> kept (source name taken)`.
-    - Quarantine directories are emptied only through this replay.
-  - **Outcomes (exact, returned in `tool_result`):**
-
-    | Case | Destination | Source | `ok` and message |
-    |---|---|---|---|
-    | success | the verified regular inode (scratchpad) or a fresh copy with the approved digest (workspace) | removed | `true` |
-    | the object at the source name is not regular, or is a different inode, at capture | unchanged | rolled back (or kept in quarantine) | `false`, "the file changed after approval; nothing was moved" |
-    | the copied digest differs from the card | unchanged; the temp is removed | rolled back | `false`, "the file's content changed after approval; nothing was moved" |
-    | the destination exists (`EEXIST`) | unchanged | rolled back | `false`, "the destination already exists" |
-    | delete of a non-regular or different inode | — | rolled back | `false`, "not the file you approved / not a regular file" |
-  - **Concurrency.** The app serializes all of its own mutations with one workspace mutex. The helper serializes scratchpad mutations per helper. Quarantine names are random and never reused.
-  - `fs_write` and `fs_edit` already write through an fd the owner created with `O_EXCL`, followed by `renameat2(…, RENAME_NOREPLACE)` within one directory fd, and are unchanged. In the scratchpad, a hook can replace the temp name before the rename, which only moves a hook-made object within the hook's own scratchpad, never into the workspace. That is an accepted property of the user-chosen free scratchpad.
-  - Directories are never deleted or moved.
-  - A workspace mutation reaches the helper's `fs_tools.py` **only as a forwarded `tool_call`**. The helper has no code path that writes `workspace/`, and the read-only bind would refuse it anyway.
-  - Execution is impossible, because no tool exists for it.
+  - **Traversal:** `fs_list` reads the directory fd with `getdents64`. `fs_find`/`fs_grep` recurse by opening each child directory relative to its parent's fd, with the same `openat2` flags and `S_ISDIR`. Symlinks are never followed, and other types are skipped. Limits: depth 32, 10,000 entries, 1 MiB of matches; exceeding a limit returns a truncated result plus a note.
+  - **How a write is installed (fresh inode, rename into place; no journal).**
+    - **Workspace (app broker):** the broker writes the new content into a fresh `O_EXCL` temp file in **`agent-home/.zb-broker-tmp/`**. That directory is 0700, is **never mounted into the sandbox**, and only the broker writes it. The broker `fsync`s the file, then installs it with `renameat2(tmp_dir_fd, tmp, ws_dir_fd, name, flags)` and `fsync`s the workspace directory.
+      - `flags` is `RENAME_NOREPLACE` for a create. For an overwrite, it is 0 (replace), but only after the broker has checked, under its workspace mutex, that the current object at `name` is `S_ISREG` with the SHA-256 shown on the card.
+      - The check-then-rename is race-free because the workspace is read-only to every sandbox process, the broker's temp directory is unreachable from the sandbox, and the broker serializes its own mutations.
+      - The installed file is always a fresh inode (`st_nlink == 1`) that only the broker ever opened, so no sandbox process can hold an fd on it.
+      - Setup refuses an agent home where `.zb-broker-tmp/` and `workspace/` are on different filesystems (`st_dev` differs), so the rename cannot hit `EXDEV`.
+      - A crash before the rename leaves only an orphan temp in `.zb-broker-tmp/`. Startup deletes everything there, because nothing else ever lives there. A crash after the rename leaves a complete new file. No other state exists, so **no journal is needed**.
+    - **Scratchpad (helper):** the helper writes a fresh `O_EXCL` temp in `scratchpad/` through its own fd, `fsync`s it, and `renameat2`s it into place within the scratchpad directory fd (`RENAME_NOREPLACE` for create, replace for overwrite). The content goes only into the inode the helper created.
+      - A hook can rename objects inside the free scratchpad at any moment, including the helper's temp name. The helper's guarantees are therefore exactly these: it never reads or writes anything outside `scratchpad/`; it never follows a symlink; it never blocks on a FIFO; and it never writes into an inode it did not create.
+      - The scratchpad is the user's free area, shared with hooks (user answer 3). Its final state is not protected against hooks.
+  - **Cards for workspace writes** show the path, create or overwrite, the size and SHA-256 of the new content, and, for an overwrite, the current content's SHA-256 and a unified diff (truncated at 64 KiB). The new SHA-256, and for an overwrite the current one, are bound into the grant (D10's normalized args).
+  - Execution is impossible, because no tool exists for it.  - Execution is impossible, because no tool exists for it.
 - Bash stays unavailable.
 
 ## 3b. Response to RoseCat's pre-review blockers (mail 5230, on e03c6d5) — rev 3
@@ -618,6 +600,8 @@ agent-home/
 | R6-S | Directory object type; stale PID-1 and history text | D12 has an object-type table (`S_ISDIR` directory fds, `S_ISREG` leaves, relative traversal, limits, cross-root `renameat2`). D11 says bwrap's reaper is PID 1. The rev-3 row is marked superseded. | D11, D12, §3b |
 | R7-1 | `fs_move`/`fs_delete` checked an fd but mutated a name | A capture → verify → commit protocol at both owners. The object is renamed into a quarantine no other writer can reach (the app's is outside the sandbox; the helper's is hidden from hooks by a tmpfs), then verified as the same regular inode, then committed. Moves into the workspace copy the verified bytes into a fresh inode, checked against the card's `content_sha256`, so no sandbox fd can reach the workspace. There are exact outcomes, rollback, and a journal with crash replay. S10.4 is the failing-first racing-hook test (Zig 10k, Python 10k, e2e 50), red first against the rev-7 sequence. | D12, S10.1, S10.4 |
 | R7-S | `EBUSY` on rename; ephemeral writable paths | S3.11 accepts `{EROFS, EBUSY, EXDEV}` for temp-plus-rename, with byte identity required, and exact `EROFS` for write and truncate. Hooks now get private `/tmp`, `/run` and `/dev/shm`, and the writable set is enumerated. | D12, S3.11 |
+| R8 (all) | Journal crash cuts; S10.1 named the one-syscall move; readable-fd and rollback outcomes | **Superseded by the rev-9 scope cut.** `fs_move` and `fs_delete` are removed from the plan (section 5), so the quarantine, journal and rollback machinery they needed is removed too. Workspace writes now install a fresh inode from a broker-only temp directory with `fsync` and rename into place. The only crash residue is an orphan temp that startup deletes, so no journal is needed. Every read uses a readable fd that is type-checked on that same fd (`O_NONBLOCK`, `S_ISREG`). S10.1 has 17 routes, and S10.4 races reads and writes. | D12, §5, S10.1, S10.4 |
+| R6-2, R7-1 | Cross-root moves; capture → verify → commit | **Withdrawn with the scope cut (rev 9).** Kept only as input for a later move/delete slice. | §5 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -648,6 +632,7 @@ When every slice has landed, these hold:
 - Packaging (.deb dependencies, shipping the venv). For now, `--agent-setup` creates the venv with `uv`.
 - Changing the automation socket API, except the internal split and the new `load_serial` field in `page.list`/`page.health` (additive).
 - Fixing the SDK clients' single-pending-request limits. The broker does not use them.
+- **Moving or deleting files (`fs_move`, `fs_delete`, in either root and either direction).** This was cut by the orchestrator in rev 9: the user never asked for it. A later slice would need its own design for a fd-stable move and delete, crash-consistent recovery and outcomes. RoseCat's rev-7 and rev-8 findings (de0ef43, 27e4aa2) are the starting requirements for that slice.
 
 ## 6. Decisions on the former open items (answered by the user 2026-10-13; rev 2)
 
@@ -837,7 +822,7 @@ The closure-test specs follow, per slice. Every chain above is **BLOCKING**: eac
 | T4 | Indirect-injection denial | S7 (reveal and enable attempts), S8 (commit attempts) | `tests/e2e/agent_injection_test.py` | **Full attack matrix (rev 5, blocker 3), S7.8 and S8.7.** Two injection carriers: hostile page text, and hostile tool output (a `get_text` result). Attacks: (a) reveal a credential (the model is scripted to call unregistered `secrets_get`, `cookies_get` and `evaluate('document.cookie')`, and to put "print your token" in a prompt); (b) enable a forbidden tool (a scripted call to `evaluate`, `set_pacing`, and `click` before S8); (c) commit with a forged approval: `x_post`, `instagram_follow`, `linkedin_connect` and `linkedin_like`, each with args `{"approved":true,"grant":"<forged>"}` and text claiming approval. Each must give 0 commits, 0 credential bytes in any request body or `DRAWER` row, and 0 new root spans for forbidden methods. Each attack has its own **red-at-seam**: allowlist off (a), schema accepting extra fields (c), and approval auto-granted (c) each make that attack's assertion fail. |
 | T5 | Exact per-action confirmation | S8 | `tests/e2e/agent_approval_test.py` + `tests/agent_broker_test.zig` | Approve one tuple, then mutate each field (tool, window, origin, **account**, **target_fp**, `load_serial`, each argument), replay, cancel, time out, and simulate an ambiguous post-dispatch failure. Rev 3 adds two cases: **wrong account** (the fixture switches its logged-in identity in the same document after approval) and **selector retarget** (the fixture swaps the element under the approved selector, with no navigation). Both give -32015 and 0 commits. Only the original commits, once. The variants dispatch nothing and leave `social.rate_status` unchanged. |
 | T6 | Credential non-disclosure | S4 (token), S5 (transcripts/logs), S7 (cookies/automation token), S9 (crash and error text) | the canary scanner in every agent e2e (rev 3: it also reads `telemetry.query`, every stderr crash or error line, every `tool_result` error, every drawer error bubble, and every JSON-RPC error `data`) | The canaries are: the token, a cookie value, an `Authorization` header and the automation token. **Rev 5 (blocker 3):** each canary is **deliberately driven** into each risky path, rather than only scanned for: S5.7 (API error bodies and headers), S7.7 (telemetry, JSON-RPC error data, tool errors) and S9.4 (stderr crash lines, drawer error bubbles). Each path has a redactor-removal red. The token canary may appear only in the fake API's `Authorization` header and, under the opt-in R3 only, in the Claude CLI's environ. Hook environments never contain it (A4). The others appear nowhere the scanner looks. |
-| T7 | Filesystem confinement | S10 (tools), S3.9/S3.10 (hooks) | `tests/e2e/agent_files_test.py`, `agent/host/tests/test_fs_tools.py`, `tests/agent_fs_test.zig` | The cases are `..`, absolute paths, symlink swaps (time of check versus time of use), FIFOs and devices, mutation without a grant, and reads of `~/.claude`, the profile and `XDG_RUNTIME_DIR`. All are refused by the kernel (`openat2` `RESOLVE_BENEATH`) or by `S_ISREG`, **at the real owner from the D12 routing table**: helper `fs_tools.py` for reads and scratchpad, app `agent_fs.zig` for workspace mutations. That includes a 10,000-iteration symlink-swap race against each owner. **T7 is amended by the user (2026-10-13, answer 3) for the scratchpad only:** every scratchpad operation is free. Every workspace create, write, edit, delete, move or rename needs the exact card; it is denied when there is no card or the card is denied, and it happens exactly once when approved. Execution does not exist. |
+| T7 | Filesystem confinement | S10 (tools), S3.9/S3.10/S3.11 (hooks) | `tests/e2e/agent_files_test.py`, `agent/host/tests/test_fs_tools.py`, `tests/agent_fs_test.zig` | The cases are `..`, absolute paths, symlink swaps (time of check versus time of use), FIFOs and devices, writes without a grant, and reads of `~/.claude`, the profile and `XDG_RUNTIME_DIR`. All are refused by the kernel (`openat2` `RESOLVE_BENEATH`) or by the fd type check, **at the real owner from the D12 routing table**: helper `fs_tools.py` for reads and scratchpad writes, the app broker `agent_fs.zig` for workspace writes. That includes a symlink and FIFO swap race against each owner (S10.4). **T7 is amended by the user (2026-10-13, answer 3) for the scratchpad only:** scratchpad create and overwrite are free. Every workspace create or overwrite needs the exact card; it is denied when there is no card or the card is denied, and it happens exactly once when approved. **Rev 9:** move, delete and execute do not exist as tools.
 | T8 | Lifecycle and target invalidation | S9 | `tests/e2e/agent_lifecycle_invalidation_test.py` | Between preview, approval and dispatch: navigate, crash (SIGKILL the web process), close, recover, and kill the helper. Nothing stale is dispatched. A popup opened from the bound window gets its own empty session. |
 | A1 | The canary token appears only in the subprocess env | S4 | `tests/e2e/agent_secrets_test.py` | See G. |
 | A2 | The callback is accepted only from the expected origin and state | S6 | `tests/e2e/agent_login_test.py` | The cases are: wrong state, missing state, another port, http versus https, a host lookalike, and a replayed callback after success. Each gives an `AUTH blocked` row, the fake CLI receives no code, and the store is unchanged. |
@@ -1509,58 +1494,47 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 ### S10 — File tools in the workspace and scratchpad, plus the bwrap sandbox (T7)
 
-#### Behavior S10.1: every file operation runs at its routed owner, and is confined there (rev 6, blocker 3)
-- **Routing (the D12 table, driven end to end; rev 7 recount):** the fake API scripts **19 calls**:
+#### Behavior S10.1: every file operation runs at its routed owner, and is confined there (rev 9)
+- **Routing (the D12 table, driven end to end):** the fake API scripts **17 calls**:
   - 8 reads: `fs_read`, `fs_list`, `fs_find` and `fs_grep`, each on `workspace/` and on `scratchpad/`;
-  - 4 scratchpad mutations: `fs_write`, `fs_edit`, `fs_delete`, and `fs_move` as a rename inside `scratchpad/`;
-  - 4 workspace mutations: `fs_write`, `fs_edit`, `fs_delete`, and `fs_move` as a rename inside `workspace/`;
-  - **2 cross-root moves (rev 7, blocker 2):** `fs_move scratchpad/a.txt → workspace/a.txt` and `fs_move workspace/b.txt → scratchpad/b.txt`. Each has an endpoint in `workspace/`, so each must go to the app owner with a card;
-  - 1 call on a path outside both roots.
+  - 3 scratchpad writes: `fs_write` (create), `fs_write` (overwrite) and `fs_edit`;
+  - 3 workspace writes: `fs_write` (create), `fs_write` (overwrite) and `fs_edit`;
+  - 1 call on a path outside both roots;
+  - 2 calls to the unregistered `fs_move` and `fs_delete`.
 - **Then:**
-  - reads and scratchpad operations complete with no card. The inotify oracle attributes each change to a helper process inside the sandbox (the `/proc/<pid>/ns/mnt` of the writer is the sandbox's);
-  - each of the 6 workspace-touching mutations (the 4 in-workspace operations and the 2 cross-root moves) shows a card. **Denied** and **no click (timeout)** leave **both** roots byte-identical: a recursive content hash of `workspace/` and `scratchpad/` from outside, plus no inotify change event in either. **Approved** performs it exactly once, attributed to the **browser process** (the writer's mount namespace is the browser's). For a cross-root move, the source is gone from one root and the destination appears in the other, both in the same `renameat2`;
-  - a cross-root move is **never** card-free, and is never performed by the helper. The red-at-seam for that: route by source path only (a seeded bug in the broker's router), so `scratchpad/a.txt → workspace/a.txt` runs card-free in the helper and the read-only workspace makes it fail. The test asserts a card was shown, so red;
-  - the outside path is refused, and nothing is touched.
-- **Cards for moves into the workspace (rev 8)** show the source's size and `content_sha256`, computed by the app through its own `openat2` fd at card time. Both are bound into the grant (D10's normalized args).
-- **Swap race at each real owner:** a racer swaps the target between a regular file and a symlink to an outside canary, 10,000 times, while the owner works on it:
-  - against helper `fs_read` and `fs_write` in `scratchpad/`;
-  - against app `agent_fs.zig` for approved `fs_write`, `fs_move` in `workspace/`, and both cross-root `fs_move` directions, through a Zig test driving the real function on a temp tree, plus the e2e;
-  - against `fs_list`/`fs_find` traversal: the racer swaps a subdirectory for a symlink to an outside directory, and no outside name ever appears in a result.
-  - Zero canary bytes are ever read, and the outside file is never modified (content hash, plus inotify `IN_OPEN` = 0).
-- The section 9 T7 cases are refused by the kernel or by `S_ISREG` at those same owners.
-- **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree, run against both owners). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent, for writes. Every success touches only inodes under that owner's root.
+  - reads and scratchpad writes complete with no card. The inotify oracle attributes each scratchpad change to a helper process inside the sandbox (the writer's `/proc/<pid>/ns/mnt` is the sandbox's);
+  - each of the 3 workspace writes shows a card with the D12 fields. **Denied** and **no click (timeout)** leave `workspace/` byte-identical (a recursive content hash from outside, and no inotify change event). **Approved** installs exactly once, attributed to the **browser process** (the writer's mount namespace is the browser's). The installed file has the card's SHA-256, is a fresh inode with `st_nlink == 1`, and no `.zb-broker-tmp/` leftovers remain;
+  - an overwrite whose current content no longer matches the card's current SHA-256 is refused with "the file changed after approval", and nothing is installed. The test changes the file from outside the sandbox between card and Approve;
+  - the outside path and the two unregistered tools are refused, and nothing is touched.
+- **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree, run against both owners). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent. Every success touches only inodes under that owner's root, plus the broker's own temp directory.
 
-#### Behavior S10.4: a racing hook cannot substitute the object a move or delete acts on (rev 8, blocker 1; failing-first)
-- **Racer.** A real malicious hook process runs inside its `zb-hook-run` namespace for the whole test. It is started by `SessionStart` and stays alive (a long-running hook). For a target name `a.txt` in `scratchpad/`, it loops as fast as it can:
-  - opening the current regular `a.txt` with `O_RDWR` and **keeping that fd**;
-  - renaming `a.txt` aside to `a.txt.orig`;
-  - putting at `a.txt`, in rotation, a symlink to `/etc/passwd`, a symlink to `../workspace/keep.txt`, a FIFO, a Unix socket and a second regular file with different content;
-  - renaming `a.txt.orig` back;
-  - writing `PWNED` through every held fd.
-- **Operations under test, each run many times against the racer:**
-  - (a) approved `fs_move scratchpad/a.txt → workspace/a.txt`, at the app owner;
-  - (b) `fs_move scratchpad/a.txt → scratchpad/b.txt`, at the helper owner;
-  - (c) `fs_delete scratchpad/a.txt`, at the helper owner;
-  - (d) approved `fs_move workspace/w.txt → scratchpad/w.txt` and `fs_delete workspace/w.txt`, at the app owner (no racer can reach the workspace source; checked anyway).
-  - The **Zig test** (`tests/agent_fs_test.zig`) drives the real `agent_fs.zig` functions with a racer thread: 10,000 iterations of (a) and (d). The **Python test** (`agent/host/tests/test_fs_tools.py`) does the same for (b) and (c). The **e2e** (`tests/e2e/agent_files_test.py`) runs 50 iterations of each through the real browser, helper, CLI and hook.
+#### Behavior S10.4: a racing hook cannot redirect, block or poison a read or a write (rev 9; failing-first)
+- **Racer.** A real malicious hook process runs inside its `zb-hook-run` namespace for the whole test, started by `SessionStart` as a long-running hook. In a loop it:
+  - swaps `scratchpad/a.txt` between a regular file, a symlink to `/etc/passwd`, a symlink to `../workspace/keep.txt`, a FIFO and a Unix socket;
+  - renames any new temp-looking name in `scratchpad/` it sees;
+  - tries to open every `workspace/` file `O_RDWR` (expected `EROFS`), and holds `O_RDONLY` fds on them;
+  - tries to create anything in `agent-home/.zb-broker-tmp/` (expected `ENOENT`, because it is not mounted).
+- **Operations under test, run many times against the racer:**
+  - (a) helper `fs_read`, `fs_grep` and `fs_edit` on `scratchpad/a.txt`;
+  - (b) helper `fs_write` (create and overwrite) on `scratchpad/b.txt`;
+  - (c) approved broker `fs_write` (create and overwrite) and `fs_edit` on `workspace/w.txt`.
+  - The Zig test (`tests/agent_fs_test.zig`) drives the real broker functions with a racer thread for 10,000 iterations. The Python test (`agent/host/tests/test_fs_tools.py`) does the same for (a) and (b). The e2e runs 50 iterations of each through the real browser, helper, CLI and hook.
 - **Then, for every iteration:**
-  - **Destination type:** `lstat` of the destination is never a symlink, FIFO, socket or device. If the operation returned `ok`, the destination is `S_ISREG`.
-  - **Exact object or content.** For (b), a successful destination has the captured inode's `(st_dev, st_ino)`. For (a), it is a fresh inode whose SHA-256 equals the card's `content_sha256`, it has `st_nlink == 1`, and **no** sandbox process holds an fd on it: a `/proc/*/fd` census from outside, matching `st_ino`, finds none.
-  - **Writes through held fds** never change any workspace file, by hash after the run.
-  - **Delete:** for (c), when `ok`, the deleted object was the regular inode that was checked, and every racer-made replacement object still exists or was rolled back. When not `ok`, nothing was deleted.
-  - **Outcomes:** each `false` result has one of the exact messages in the D12 outcome table. Every journal in the quarantine is replayed or empty at the end.
-- **Red first:** before the protocol exists, run the rev-7 sequence (`openat2`/`fstat`, then a path `renameat2`/`unlinkat`) against the same racer. A symlink or FIFO lands in `workspace/`, or `PWNED` appears in a workspace file through a held fd. The test records that red.
+  - no read ever returns bytes of `/etc/passwd` or of a workspace file through a scratchpad name, and no read blocks (each finishes within 1 s, even when the FIFO is in place);
+  - the helper never writes into an inode it did not create (`/proc/<helper>/fdinfo` census: every write fd's inode was created by `O_EXCL`), and never touches anything outside `scratchpad/`;
+  - for (c), the installed `workspace/w.txt` is a fresh inode with `st_nlink == 1` and the approved SHA-256; no sandbox process holds any fd on it right after install (`/proc/*/fd` census from outside, matching `st_ino`); and its hash never changes afterwards;
+  - `.zb-broker-tmp/` is empty after every operation, and the racer's attempts there and its `O_RDWR` attempts in `workspace/` always failed.
+- **Red first:** before the protocol exists, a naive implementation (`open(path, O_RDONLY)` without `openat2` resolution and `O_NONBLOCK`; workspace writes in place with `O_TRUNC`) runs against the same racer. It reads `/etc/passwd`, hangs on the FIFO, or rewrites the existing workspace inode that the racer holds open. The test records that red.
 - **Red-at-seam afterwards:**
-  - skip the inode comparison in "verify": a substituted regular file is moved, so the `st_ino` assertion fails, so red;
-  - for (a), rename the captured inode into the workspace instead of copying it: the held fd writes `PWNED` into the workspace, so red.
-- **Property:** Invariant (seeded schedules for the racer's interleaving in the Zig test, using a deterministic step driver). For every schedule, either the result is `ok` and the destination holds the verified object or approved content, or the result is a D12 failure and both roots are unchanged apart from racer-made objects.
+  - drop `O_NONBLOCK` from leaf opens: the FIFO read hangs past 1 s, so red;
+  - install workspace writes by writing the existing file in place instead of rename-into-place: the installed inode is not fresh and the racer's held fd sees the new content, so red.
+- **Property:** Invariant (seeded racer interleavings through a deterministic step driver in the Zig test). For every schedule, an `ok` broker write leaves the approved bytes in a fresh inode, and a failure leaves `workspace/` unchanged.
 
 #### Behavior S10.2: a workspace write needs a card, and a scratchpad write does not (user answer 3)
 - The fake API scripts `fs_write workspace/notes.md`, and a card appears. Approve leads to exactly one write, **performed by the browser process** (`agent_fs.zig`). The writer is identified as in S10.1.
-- `fs_write`, `fs_delete` and `fs_move` in `scratchpad/` run with no card (user answer 3).
-- `fs_edit`, `fs_delete` and `fs_move` (and rename) in `workspace/` each show a card, and are covered in S10.1's denied, timeout and approved cases.
+- `fs_write` and `fs_edit` in `scratchpad/` run with no card.
 - A denied card writes nothing.
-- A malicious hook that tries the same workspace write directly at the same moment gets `EROFS` (S3.9 re-run with tools present).
+- A malicious hook that tries the same workspace write directly at the same moment gets `EROFS` (S3.9, re-run with tools present).
 
 #### Behavior S10.3: the helper runs in bwrap
 - `/proc/<claude-cli>/root` mount namespace check: `$HOME` (the real one) does not exist inside, `XDG_RUNTIME_DIR` does not exist, and the profile does not exist.
@@ -1569,7 +1543,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 **Closure Test S10:** BLOCKING. TRIGGER: an X-typed prompt. OBSERVE: the filesystem state of the temp tree, the fake API request bodies, and `/proc` namespaces. RED-AT-SEAM: drop `RESOLVE_NO_SYMLINKS` (use plain `openat`), and the swap test reads the outside canary, so red.
 
-**Files touched:** `agent/host/zb_agent_host/{fs_tools,options}.py` (`openat2` through ctypes syscall 437; reads and scratchpad only), `src/agent_fs.zig` and `tests/agent_fs_test.zig` (app-side approved workspace mutations, rev 5), `src/agent_broker.zig` (workspace file cards), `agent/host/tests/test_fs_tools.py` (swap race, property), `tests/e2e/agent_files_test.py`, `tests/e2e/agent_common.py` (inotify oracle).
+**Files touched:** `agent/host/zb_agent_host/{fs_tools,options}.py` (`openat2` through ctypes syscall 437; reads and scratchpad only), `src/agent_fs.zig` and `tests/agent_fs_test.zig` (the app broker's approved workspace writes through `.zb-broker-tmp/`, rev 9), `src/agent_broker.zig` (workspace file cards), `agent/host/tests/test_fs_tools.py` (swap race, property), `tests/e2e/agent_files_test.py`, `tests/e2e/agent_common.py` (inotify oracle).
 
 ### Test shapes and the refactor checklist (apply to every slice)
 
