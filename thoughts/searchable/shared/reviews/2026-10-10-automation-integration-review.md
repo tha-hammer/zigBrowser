@@ -4578,3 +4578,77 @@ The remaining structure continues to meet the reviewed CodeCleanup criteria:
 policy is data-driven, security limits are named, callback logic is intended to
 stay in Zig, and each product slice retains a real-binary private-Xvfb closure
 test. Agent Mail 5239 sent the rev-5 blockers to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 6 (`ea2eb63`)
+
+**Verdict at exact `ea2eb63`: BLOCKER.** Rev 6 closes the four findings from
+`bdd9ba7` in their original form. The `.claude` configuration tree is now
+read-only, the hook launcher constructs a fresh allowlisted environment before
+starting bwrap, D12 contains one file-operation routing table, and D7b is the
+only observation-row schema. Two security-critical cases remain unspecified or
+untested.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check bdd9ba7..ea2eb63` is clean. The plan remains pinned
+to production commit `b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; the commits
+after that pin are documentation only for this project.
+
+### `bdd9ba7` blocker disposition
+
+| Prior finding | Rev-6 disposition |
+|---|---|
+| R5-1: writable hook configuration | **CLOSED for `.claude`; a narrower same-session `.claude.json` path remains OPEN below.** The whole `.claude` tree is read-only, only census-derived data directories are overlaid writable, setup rejects hook scripts/imports from those directories, and S3.10 attacks the persistence paths across two sessions (`plan:503-517,1073-1089`). |
+| R5-2: token reaches the namespace monitor before `env -u` | **CLOSED.** `zb-hook-run` closes descriptors, constructs a fresh allowlisted environment, refuses all credential names, and execs bwrap with `--clearenv` and explicit `--setenv`; P0.4 and S3.9 inspect PID 1 and every visible environment under R3 (`plan:518-523,834-842,1056-1070`). |
+| R5-3: conflicting file owner and scratchpad approval contracts | **CLOSED as a design table; route coverage remains OPEN below.** D12 is now the single contract: helper reads and scratchpad operations, while the app owns any mutation whose move endpoint is in the workspace (`plan:529-543`). |
+| R5-4: competing observation schemas | **CLOSED.** The later table is gone, all prose refers to D7b, `parse_row` validates exact rows, approval retains `account`, status retains its reason, and the Secrets widget tree uses `SECRETS tree` (`plan:298-378,650-650,1159-1163`). |
+
+The no-host-policy requirement is also satisfied. Nested PID-namespace failure
+leaves the agent unavailable; the plan neither depends on nor changes
+`kernel.yama.ptrace_scope` (`plan:479-486`). A host change would require a new
+user decision and is not part of this plan's green path.
+
+### Current rev-6 BLOCKER findings
+
+1. **A hook can still mutate live `.claude.json` during the same session.** The
+   outer sandbox deliberately keeps `agent-home/.claude.json` writable for the
+   CLI, and the app checks it only before each session (`plan:512-514`). The
+   nested hook sandbox binds `/` writable and re-binds only the workspace
+   read-only (`plan:518-523`), so a malicious hook can write that file too.
+   S3.10 proves that planted `hooks` and `mcpServers` refuse *session 2*, but it
+   does not prove that the live CLI cannot re-read the planted configuration
+   before a later event in session 1 (`plan:1073-1088`). The hook sandbox must
+   re-bind `.claude.json` read-only while leaving it writable to the outer CLI,
+   or use an equivalent immutable/app-mediated per-session view. Add a
+   failing-first same-session test: an early hook attempts the write and a
+   later hook event in the same session must not execute any planted command.
+   Prefer asserting the hook write itself gets `EROFS`; retain the pre-session
+   validator for corruption by the CLI or another same-user process.
+
+2. **The tests do not drive either cross-root `fs_move` route.** D12 makes a
+   move card-free only when both endpoints are under `scratchpad/`, and routes
+   it to the app plus an exact card when either endpoint is under `workspace/`
+   (`plan:531-539`). S10.1 tests reads, same-root mutations and an outside path,
+   but omits both `scratchpad -> workspace` and `workspace -> scratchpad`
+   (`plan:1450-1465`). A source-only routing bug could therefore make a
+   workspace mutation card-free. Add both directions and prove that denial or
+   timeout leaves both roots byte-identical and approval commits exactly once
+   at the app owner. The stated count is also wrong: the existing bullets name
+   17 calls, not 13; adding both cross-root cases makes 19.
+
+### SHOULD amendments
+
+- Make the filesystem object-type contract executable. D12 currently says
+  every open requires `S_ISREG`, but `fs_list` and recursive `fs_find`/
+  `fs_grep` must open and traverse directories (`plan:535-541`). Specify
+  securely opened `S_ISDIR` directory descriptors separately from regular-file
+  leaf I/O while preserving the `openat2` resolution constraints.
+- Remove two stale implementation traps: D11 says the hook is PID 1 even though
+  D12 correctly assigns PID 1 to bwrap's reaper (`plan:480,522`), and the rev-3
+  history row still describes all of `.claude` as writable. Mark historical
+  text explicitly superseded or rewrite it to the current contract.
+
+The plan otherwise preserves the required real-binary private-Xvfb closure per
+slice, all eight threat-model tests land red-first in named slices, the drawer
+defaults on after S5 with read-only tools, social writes remain per-action
+approved, and the agent home/scratchpad/workspace separation remains explicit.
+Agent Mail 5242 sent the rev-6 blockers to BlackRobin.
