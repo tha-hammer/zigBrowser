@@ -4810,3 +4810,103 @@ unavailable.
 The CodeCleanup review did not find a control-expression or maintainability
 issue in the documentation diff; the blockers are conflicting and incomplete
 security protocols. Agent Mail 5248 sent the concrete findings to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 9 (`29f7ad0`)
+
+**Verdict at exact `29f7ad0`: BLOCKER.** The orchestrator's scope cut is sound:
+`fs_move` and `fs_delete` are absent from the tool surface and deferred to a
+later slice, so rev 8's quarantine, journal and rollback protocol is no longer
+needed. The remaining write design is substantially smaller: a broker-only
+fresh temp, file `fsync`, atomic rename into the read-only-to-sandbox workspace,
+and directory `fsync`. Four interface and test contracts still prevent the
+plan from being implementation-ready.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check 27e4aa2..29f7ad0` is clean, and the revision changes
+only the plan. The plan remains pinned to production commit
+`b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; commits after that pin are
+documentation only for this project.
+
+### `27e4aa2` finding disposition
+
+| Prior finding | Rev-9 disposition |
+|---|---|
+| Journal cannot recover all crash cuts | **WITHDRAWN by scope.** Move/delete and their capture, quarantine, rollback and journal are removed. A write has only a private temp and atomic install; an interrupted pre-install temp is startup-cleaned (`plan:533-565,603-604,635`). |
+| S10 required a stale one-`renameat2` cross-root move | **WITHDRAWN by scope.** S10 now drives 17 read/write/refusal cases and no move operation (`plan:1495-1509`). |
+| Move copied from an unspecified readable fd; retained-quarantine outcomes conflicted | **WITHDRAWN by scope.** Neither source-copy nor quarantine remains. Existing-leaf reads now name a readable fd and check that same fd, although the special-file ordering remains OPEN below (`plan:543-551`). |
+
+The two earlier SHOULD findings remain closed: S3.11 retains its exact refusal
+errno contract and byte-identity check, while D12 still enumerates persistent
+and private ephemeral writable paths. The revision introduces no host-policy
+or `ptrace_scope` dependency.
+
+### Current rev-9 BLOCKER findings
+
+1. **The canonical model/broker tool registry contains none of the six file
+   tools.** D8 says `agent_broker.zig` owns D9's allowlist, and D9 identifies
+   itself as the model-visible tool set (`plan:380-411`). That table has no
+   `fs_read`, `fs_list`, `fs_find`, `fs_grep`, `fs_write` or `fs_edit`, and it
+   says the read-only set is exactly the five S7 rows. Under that contract,
+   D12 and S10's file calls cannot reach either owner.
+
+   Add the six tools to D9 with first registration in S10. Reads need no card;
+   write/edit approval is path-dependent—free under scratchpad and exact
+   per-action approval under workspace. Extend the recorded-tool and forged
+   call assertions so `fs_move` and `fs_delete` remain absent from both MCP
+   registration and the broker allowlist.
+
+2. **The leaf-open sequence opens a device before rejecting it.** D12 opens an
+   existing leaf `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`, then calls `fstat`, while the
+   next row claims special files are never opened (`plan:543-551`).
+   `O_NONBLOCK` prevents a FIFO wait, but it cannot make an arbitrary device's
+   `open` side-effect-free. This contradicts T7's promise that special files
+   fail closed before I/O (`plan:825`).
+
+   Classify with `O_PATH|O_NOFOLLOW` first, then obtain a readable descriptor
+   pinned to that verified regular inode—such as through a controlled
+   `/proc/self/fd/<n>` handle—and re-`fstat` it, or specify an equivalent
+   mechanism that never opens a device. Reopening the original pathname would
+   recreate the substitution race.
+
+3. **S10.4 has two impossible observation claims.** First, its racer is
+   explicitly allowed to hold `O_RDONLY` descriptors on workspace files
+   (`plan:1512-1516`). Once the fresh destination is installed, that racer may
+   legally open it too. D12 and S10 nevertheless assert that no sandbox process
+   can hold *any* descriptor on the new inode (`plan:558,1525`). The relevant
+   safety invariant is no write-capable descriptor; read-only descriptors are
+   expected. Inspect the descriptor access mode and inode, and permit reads.
+
+   Second, `/proc/<helper>/fdinfo` cannot prove that a write descriptor's inode
+   “was created by `O_EXCL`” (`plan:1524`). Linux fdinfo exposes current access
+   and status flags, not the creation operation's history; `O_CREAT` and
+   `O_EXCL` are creation flags. Replace that inference with an observable
+   oracle—for example a unit seam that records the real open call plus an e2e
+   final-state/inotify check, or a deterministic pause paired with an
+   independently recorded created inode.
+
+4. **The real-chain racer has no stated way to outlive `SessionStart` without
+   blocking it.** S10.4 starts a real malicious hook at `SessionStart`, keeps it
+   alive, and then drives later file-tool calls concurrently
+   (`plan:1511-1521`). A normal command hook is awaited, so the session cannot
+   advance to those calls. Name and test a supported asynchronous-hook mode
+   that preserves the nested sandbox, or use another production-representative
+   concurrent writer. Merely backgrounding a child is insufficient unless the
+   plan also proves how the nested bwrap PID namespace remains alive and is
+   cleaned up.
+
+### SHOULD and NIT
+
+- **SHOULD — make broker-temp ownership cross-process.** D6 gives browser
+  processes one fixed agent home, but D12 uses only a process-local workspace
+  mutex and says startup deletes everything in the shared
+  `.zb-broker-tmp/` (`plan:212-223,555-560`). Two browser processes could race
+  an overwrite or one could delete the other's live temp. Either take an
+  exclusive cross-process agent-home lock and fail closed, or give each
+  instance isolated temp ownership plus cross-process mutation serialization.
+- **NIT — remove duplicated text.** `plan:565` repeats “Execution is
+  impossible, because no tool exists for it” on the same line.
+
+The reduced design addresses the root cause instead of layering more journal
+states, which is a CodeCleanup maintainability improvement. The blockers are
+now finite interface and oracle defects rather than a move/delete foundation
+problem. Agent Mail 5251 sent them to BlackRobin.
