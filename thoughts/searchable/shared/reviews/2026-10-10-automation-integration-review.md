@@ -4474,3 +4474,107 @@ The data-driven tool table, strict schemas as a design goal, flat GTK-to-Zig
 callbacks, named bounds and explicit per-slice refactor checklist otherwise
 continue to satisfy the applicable CodeCleanup plan-hygiene criteria. Agent
 Mail 5236 sent the current blockers to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 5 (`3f48207`)
+
+**Verdict at exact `3f48207`: BLOCKER.** Rev 5 adopts the right enforcement
+direction: the workspace is read-only to the sandbox, approved workspace
+mutations move to the browser process, and hooks get a nested PID namespace
+instead of relying on `kernel.yama.ptrace_scope`. The T4/T6 matrix and the
+chat/login protocol are also substantially more concrete. Four contradictory
+or bypassable contracts still prevent implementation.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check 23e0264..3f48207` is clean. The plan remains pinned
+to production commit `b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; the commits
+since that pin are documentation only for this project.
+
+### `23e0264` blocker disposition
+
+| Prior finding | Rev-5 disposition |
+|---|---|
+| R4-1: hooks bypass workspace approval | **PARTIALLY CLOSED, still OPEN.** The read-only workspace plus browser-side `agent_fs.zig` is the required privilege split (`plan:502-528`, S3.9), but the file-tool ownership text still conflicts, and writable hook configuration can remove the wrapper on a later invocation. See blockers 1 and 3 below. |
+| R4-2: token protection depends on `ptrace_scope` | **The host-policy dependency is CLOSED; the token boundary is still OPEN.** A working nested PID namespace hides the helper and CLI even when `ptrace_scope=0`, and failure leaves the agent unavailable (`plan:478-485`). No host sysctl change is part of or authorized by this plan. The mutable hook definitions and R3 pre-namespace environment leak below still bypass that design. |
+| R4-3: T4/T6 attacks are not failing first | **CLOSED in the plan.** S5.7, S7.7, S7.8, S8.7 and S9.4 deliberately drive the credential and policy attacks through API errors, telemetry, JSON-RPC/tool/drawer errors, crash text, hostile page text and hostile tool output, with red-at-seam mutations (`plan:787-789,1201-1206,1291-1305,1372-1379,1410-1414`). |
+| R4-4: helper/login/row protocols incomplete | **PARTIALLY CLOSED, still OPEN.** D7b now fixes distinct chat/login processes, pipe directions, frame schemas and a complete row table (`plan:299-377`), but a second conflicting row table and one wrong row consumer remain. See blocker 4. |
+
+The former SHOULD items are otherwise addressed: D6 says the hook command
+directories are bound from S3, the duplicate property is gone, D12 enumerates
+the intended binds and P0.5 proves them before product work, and the final
+`agent-no-orphans` step depends on the full agent gate (`plan:229-235,839-850,
+1501-1513`).
+
+### Current rev-5 BLOCKER findings
+
+1. **Writable hook configuration lets a hook remove its own isolation.** Setup
+   stores the rewritten `zb-hook-run -- ...` definitions in the copied,
+   sanitized SAI (`plan:225-236`), but the outer sandbox binds all of
+   `agent-home/.claude` writable (`plan:505-510`). A malicious wrapped hook can
+   replace `.claude/settings.json`, its hook command, or a copied hook script.
+   On the next CLI/session invocation, the direct replacement runs outside
+   `zb-hook-run`, can see the outer PID namespace, and defeats both the token
+   and workspace boundaries. The pre-ready self-check proves only that the
+   wrapper works; it does not prove that every active hook definition still
+   names it (`plan:483`). S3.9 does not attempt persistence followed by a
+   second session (`plan:1048-1063`). Make the provisioned settings, SAI and
+   hook definitions immutable in the sandbox, with only the exact CLI state
+   and transcript paths writable, or construct and hash-verify an immutable
+   per-session view. Add a two-session malicious-hook red: session 1 attempts
+   to replace its definition, and session 2 must still run nested, fail to read
+   the token, and fail to mutate the workspace. With the configuration bind
+   writable, that test must go red.
+
+2. **The R3 token is removed after the namespace monitor has already inherited
+   it.** Rev 5 specifies
+   `zb-hook-run -- env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN ...`
+   (`plan:235,468-469`). Its nested bwrap invocation does not use
+   `--as-pid-1`, so bwrap installs a PID-1 reaper. Removing variables only in
+   the final `env` command is too late: unless `zb-hook-run` sanitizes its own
+   environment before it execs bwrap, that namespace-visible PID 1 inherits
+   the R3 token and the hook can read `/proc/1/environ`. Specify pre-bwrap
+   `unsetenv` or bwrap `--clearenv` plus an exact allowlist, and assert the
+   canary is absent from every visible `/proc/*/environ`, including PID 1.
+   P0.4 and S4.4 must also stop expecting the command line to begin with
+   `env -u`; that contradicts the mandatory `zb-hook-run` prefix
+   (`plan:829-836,1126-1131`). This fix is intrinsic and must not use or request
+   a `ptrace_scope` change.
+
+3. **The file-tool owner and scratchpad approval contract have two answers.**
+   D12 first says every workspace mutation is performed by browser-side
+   `agent_fs.zig` and the helper retains reads plus scratchpad operations
+   (`plan:513-514`). Eight lines later it says the helper's
+   `fs_write/fs_edit/fs_delete/fs_move` perform the I/O themselves
+   (`plan:519-525`), and S10.1 repeats the latter (`plan:1424-1426`). The T7
+   table and the old response row say scratchpad delete/move/rename require a
+   card (`plan:537,790`), while the current user decision and S10.2 make every
+   scratchpad operation free (`plan:526-528,1430-1435`). Replace those passages
+   with one routing table: helper-side reads plus all scratchpad operations;
+   app-side `agent_fs` for every workspace mutation. Drive write, edit, delete,
+   move and rename at their real production owner, with denied/unapproved and
+   approved cases.
+
+4. **The supposedly exact observation protocol still has competing schemas.**
+   D7b's canonical table includes the approval account, status reason, error
+   message role, minus/scroll/delta/idles/tree rows and a `SECRETS tree` row
+   (`plan:361-377`). The later `DRAWER protocol rows` table omits or changes
+   those fields (`plan:632-644`): approval lacks `account`, status lacks its
+   reason, and message roles omit `error`. S4.3 then observes
+   `DRAWER ... tree` for the Secrets window even though D7b defines
+   `SECRETS tree` (`plan:1133-1137`). Delete the competing table or make it
+   refer to D7b, and make every closure assertion consume the one canonical
+   schema.
+
+### Host-policy decision
+
+The PID-namespace design itself satisfies the orchestrator's constraint: it
+does not rely on `ptrace_scope`, does not change it, and fails closed when a
+host cannot create the required nested namespace (`plan:478-485,602-604,
+839-850`). The sentences about taking a future host question to the user are
+not authorization to change a sysctl and are outside this plan's green path.
+Implementation must leave the agent unavailable on such a host unless the user
+later makes a separate explicit decision.
+
+The remaining structure continues to meet the reviewed CodeCleanup criteria:
+policy is data-driven, security limits are named, callback logic is intended to
+stay in Zig, and each product slice retains a real-binary private-Xvfb closure
+test. Agent Mail 5239 sent the rev-5 blockers to BlackRobin.
