@@ -4,7 +4,7 @@ author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
 git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); see section 3b
+status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -342,6 +342,7 @@ agent-home/
 | `result` | `session`, `subtype`, `is_error`, `num_turns`, `cost_usd` (number or null) |
 | `error` | `session` (or null), `code` (`auth`\|`busy`\|`protocol`\|`overflow`\|`sdk`\|`sandbox`), `message` (≤ 1 KiB, redacted) |
 | `session_ended` | `session`, `reason` (`end`\|`interrupt`\|`crash`\|`token_removed`) |
+| `fs_trace` | **e2e-only** (sent only when `hello.e2e.fs_trace` is true; rev 10): `session`, `op` (`create`\|`write`\|`rename`\|`read`), `dev`, `ino`, `path` (relative to its root). It is emitted by `fs_tools.py` from the same call that performs the operation, using `fstat` of the descriptor it just used. |
 
 **Login frames**
 
@@ -368,13 +369,14 @@ agent-home/
 | `DRAWER\t<win>\tscroll\t<bottom\|value>` | the list scrolls |
 | `DRAWER\t<win>\tmsg\t<user\|assistant\|system\|approval\|error>\t<text>` | a bubble is finalized |
 | `DRAWER\t<win>\tdelta\t<session>\t<text>` | a coalesced delta is applied |
-| `DRAWER\t<win>\tstatus\t<stopped\|starting\|ready\|busy\|crashed\|unavailable>\t<reason>` | the agent state changes. `<reason>` is exactly one of `-`, `runtime-missing`, `sandbox`, `hook-isolation`, `config-changed`, `cli-changed`, `no-token`, `exit-<n>` or `signal-<n>` (rev 6) |
+| `DRAWER\t<win>\tstatus\t<stopped\|starting\|ready\|busy\|crashed\|unavailable>\t<reason>` | the agent state changes. `<reason>` is exactly one of `-`, `runtime-missing`, `sandbox`, `hook-isolation`, `config-changed`, `cli-changed`, `no-token`, `home-locked` (rev 10), `exit-<n>` or `signal-<n>` (rev 6) |
 | `DRAWER\t<win>\tapproval\t<id>\t<tool>\t<origin>\t<account>\t<digest>` | an approval card is shown |
 | `DRAWER\t<win>\tidles\t<n>` | every 250 ms while a stream is active (pending GTK idles) |
 | `DRAWER\t<win>\ttree\t<comma-separated GTK type names>` | the drawer subtree is built |
 | `SECRETS\tstatus\t<empty\|connected-secret-service\|connected-file\|no-keyring\|rejected>` | the Secrets window state changes |
 | `SECRETS\ttree\t<GTK type names>` | the Secrets window is built |
 | `AUTH\tallowed\t<scheme://host:port>` | an auth-window navigation is allowed |
+| `FSTRACE\t<session>\t<create\|write\|rename\|read>\t<dev>:<ino>\t<path>` | the app relays a helper `fs_trace` frame (e2e only; rev 10) |
 | `AUTH\tblocked\t<reason>` | an auth-window navigation or callback is refused (`state`, `origin`, `path`, `scheme`, `replay`, `popup`) |
 
 ### D8. The broker (in-process browser control)
@@ -406,9 +408,11 @@ agent-home/
 | `navigate`, `reload` | `page.navigate/reload` | per action (navigation can exfiltrate data in a URL) | S8 |
 | `click`, `fill`, `type`, `press`, `select_option` | `dom.*` | per action | S8 |
 | `x_post`, `x_schedule_post`, `linkedin_connect/follow/like/comment/message`, `instagram_follow/like/comment/dm/story_view` | the flow, real run | per action, exact tuple | S8 |
-| never exposed | `page.evaluate`, `dom.setInputFiles`, `cookies.*`, `social.set_pacing`, `social.pause`, `page.close`, `page.recover`, `dialog.respond`, `telemetry.query` | — | never |
+| `fs_read`, `fs_list`, `fs_find`, `fs_grep` | none (file reads, D12) | none | S10 |
+| `fs_write`, `fs_edit` | none (file writes, D12) | **path-dependent:** none under `scratchpad/`; exact per-operation card under `workspace/`, performed by the app broker | S10 |
+| never exposed | `page.evaluate`, `dom.setInputFiles`, `cookies.*`, `social.set_pacing`, `social.pause`, `page.close`, `page.recover`, `dialog.respond`, `telemetry.query`, **`fs_move`, `fs_delete`** (rev 9 scope cut) | — | never |
 
-"Not registered" means the tool is absent from the MCP server's tool list (the model never sees it) **and** absent from the broker's allowlist (a forged call is refused). The read-only set is exactly the five S7 rows.
+"Not registered" means the tool is absent from the MCP server's tool list (the model never sees it) **and** absent from the broker's allowlist (a forged call is refused). The **browser** read-only set is exactly the five S7 rows. The six file tools are first registered in S10 (rev 10). They are not browser tools, and they never call the engine.
 
 ### D10. The approval invariant (native broker; the threat model's "Approval invariant")
 
@@ -543,26 +547,35 @@ agent-home/
   - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437). The checked object and the I/O object are always the same descriptor.
   - **Object types:**
 
-    | Object | Open flags | Required `fstat` type on that same fd | Used by |
+    **Classify first, without opening (rev 10, blocker 2).** Every existing object is first resolved with `openat2(dir_fd, path, O_PATH|O_NOFOLLOW|O_CLOEXEC, RESOLVE_*)`. An `O_PATH` descriptor does not call the object's `open` operation: no device driver runs, a FIFO does not wait, and no `IN_OPEN` event fires. That descriptor is then `fstat`ed.
+    - Only a `S_ISREG` or `S_ISDIR` result is ever turned into an I/O descriptor. Everything else is reported by name and type and never opened.
+    - The I/O descriptor is obtained by reopening **the same inode** through the magic link of the `O_PATH` fd: `open("/proc/self/fd/<n>", O_RDONLY|O_CLOEXEC)`, plus `O_DIRECTORY` for directories. This is a plain `open` without `RESOLVE_NO_MAGICLINKS`, because following this one magic link is the intent. The pathname is never re-resolved.
+    - The new descriptor is `fstat`ed again, and its `(st_dev, st_ino)` and type must equal the `O_PATH` descriptor's. A mismatch is refused with "the file changed while it was opened".
+    - Both the helper's and the app's sandboxes and processes have `/proc` mounted (D12 `--proc /proc`), so the reopen works at both owners.
+
+    | Object | Step 1 (classify) | Step 2 (I/O fd; only after the type check) | Used by |
     |---|---|---|---|
-    | directory | `O_RDONLY\|O_DIRECTORY\|O_CLOEXEC` | `S_ISDIR` | `fs_list`, each level of `fs_find`/`fs_grep`, the parent of every write |
-    | existing leaf (read) | `O_RDONLY\|O_NOFOLLOW\|O_NONBLOCK\|O_CLOEXEC`, then `O_NONBLOCK` cleared with `fcntl` after the type check | `S_ISREG` | `fs_read`, `fs_grep` leaves, the current content for `fs_edit` and for an overwrite card |
-    | new file | `O_WRONLY\|O_CREAT\|O_EXCL\|O_CLOEXEC`, a random temp name, in the owner's **write directory** (below) | `S_ISREG` | every `fs_write` and `fs_edit` |
-    | anything else (symlink, FIFO, socket, device) | never opened as a leaf | — | listed by name and type only. `O_NONBLOCK` means a FIFO swapped in can never hang a read |
+    | directory | `O_PATH\|O_NOFOLLOW` + `fstat` = `S_ISDIR` | `open("/proc/self/fd/<n>", O_RDONLY\|O_DIRECTORY\|O_CLOEXEC)` + re-`fstat` equal | `fs_list`, each level of `fs_find`/`fs_grep`, the parent of every write |
+    | existing regular file | `O_PATH\|O_NOFOLLOW` + `fstat` = `S_ISREG` | `open("/proc/self/fd/<n>", O_RDONLY\|O_CLOEXEC)` + re-`fstat` equal | `fs_read`, `fs_grep` leaves, the current content for `fs_edit` and for an overwrite card |
+    | new file | none: it does not exist yet | `O_WRONLY\|O_CREAT\|O_EXCL\|O_CLOEXEC`, a random temp name in the owner's **write directory** (below), then `fstat` = `S_ISREG` | every `fs_write` and `fs_edit` |
+    | anything else (symlink, FIFO, socket, block or character device) | `O_PATH\|O_NOFOLLOW` + `fstat` (or refused by `RESOLVE_NO_SYMLINKS`) | **never** | listed by name and type only |
 
   - **Traversal:** `fs_list` reads the directory fd with `getdents64`. `fs_find`/`fs_grep` recurse by opening each child directory relative to its parent's fd, with the same `openat2` flags and `S_ISDIR`. Symlinks are never followed, and other types are skipped. Limits: depth 32, 10,000 entries, 1 MiB of matches; exceeding a limit returns a truncated result plus a note.
   - **How a write is installed (fresh inode, rename into place; no journal).**
     - **Workspace (app broker):** the broker writes the new content into a fresh `O_EXCL` temp file in **`agent-home/.zb-broker-tmp/`**. That directory is 0700, is **never mounted into the sandbox**, and only the broker writes it. The broker `fsync`s the file, then installs it with `renameat2(tmp_dir_fd, tmp, ws_dir_fd, name, flags)` and `fsync`s the workspace directory.
       - `flags` is `RENAME_NOREPLACE` for a create. For an overwrite, it is 0 (replace), but only after the broker has checked, under its workspace mutex, that the current object at `name` is `S_ISREG` with the SHA-256 shown on the card.
       - The check-then-rename is race-free because the workspace is read-only to every sandbox process, the broker's temp directory is unreachable from the sandbox, and the broker serializes its own mutations.
-      - The installed file is always a fresh inode (`st_nlink == 1`) that only the broker ever opened, so no sandbox process can hold an fd on it.
+      - The installed file is always a fresh inode (`st_nlink == 1`) that only the broker opened for writing. A sandbox process can never obtain a **write-capable** descriptor on it, because the workspace is a read-only bind. A process may open it read-only after installation, which is expected and harmless (rev 10, blocker 3).
       - Setup refuses an agent home where `.zb-broker-tmp/` and `workspace/` are on different filesystems (`st_dev` differs), so the rename cannot hit `EXDEV`.
-      - A crash before the rename leaves only an orphan temp in `.zb-broker-tmp/`. Startup deletes everything there, because nothing else ever lives there. A crash after the rename leaves a complete new file. No other state exists, so **no journal is needed**.
+      - A crash before the rename leaves only an orphan temp in `.zb-broker-tmp/`. A crash after the rename leaves a complete new file. No other state exists, so **no journal is needed**.
+      - **One browser instance owns the agent home (rev 10, SHOULD).** Before the agent starts (first Send) and before `--agent-setup`, the app takes `flock(agent-home/.zb-owner.lock, LOCK_EX|LOCK_NB)` and holds it until it exits. The lock file is never mounted into the sandbox.
+        - A second zigBrowser instance that cannot take the lock does not start the agent. Its drawer shows `DRAWER status unavailable home-locked` and "Another zigBrowser window is using the Claude Agent", and it never touches `.zb-broker-tmp/` or the workspace.
+        - Only the lock holder empties `.zb-broker-tmp/` at agent start (its orphans are from a crashed earlier owner), and only the lock holder writes the workspace. The in-process workspace mutex serializes that owner's own sessions.
     - **Scratchpad (helper):** the helper writes a fresh `O_EXCL` temp in `scratchpad/` through its own fd, `fsync`s it, and `renameat2`s it into place within the scratchpad directory fd (`RENAME_NOREPLACE` for create, replace for overwrite). The content goes only into the inode the helper created.
       - A hook can rename objects inside the free scratchpad at any moment, including the helper's temp name. The helper's guarantees are therefore exactly these: it never reads or writes anything outside `scratchpad/`; it never follows a symlink; it never blocks on a FIFO; and it never writes into an inode it did not create.
       - The scratchpad is the user's free area, shared with hooks (user answer 3). Its final state is not protected against hooks.
   - **Cards for workspace writes** show the path, create or overwrite, the size and SHA-256 of the new content, and, for an overwrite, the current content's SHA-256 and a unified diff (truncated at 64 KiB). The new SHA-256, and for an overwrite the current one, are bound into the grant (D10's normalized args).
-  - Execution is impossible, because no tool exists for it.  - Execution is impossible, because no tool exists for it.
+  - Execution is impossible, because no tool exists for it.
 - Bash stays unavailable.
 
 ## 3b. Response to RoseCat's pre-review blockers (mail 5230, on e03c6d5) — rev 3
@@ -602,6 +615,11 @@ agent-home/
 | R7-S | `EBUSY` on rename; ephemeral writable paths | S3.11 accepts `{EROFS, EBUSY, EXDEV}` for temp-plus-rename, with byte identity required, and exact `EROFS` for write and truncate. Hooks now get private `/tmp`, `/run` and `/dev/shm`, and the writable set is enumerated. | D12, S3.11 |
 | R8 (all) | Journal crash cuts; S10.1 named the one-syscall move; readable-fd and rollback outcomes | **Superseded by the rev-9 scope cut.** `fs_move` and `fs_delete` are removed from the plan (section 5), so the quarantine, journal and rollback machinery they needed is removed too. Workspace writes now install a fresh inode from a broker-only temp directory with `fsync` and rename into place. The only crash residue is an orphan temp that startup deletes, so no journal is needed. Every read uses a readable fd that is type-checked on that same fd (`O_NONBLOCK`, `S_ISREG`). S10.1 has 17 routes, and S10.4 races reads and writes. | D12, §5, S10.1, S10.4 |
 | R6-2, R7-1 | Cross-root moves; capture → verify → commit | **Withdrawn with the scope cut (rev 9).** Kept only as input for a later move/delete slice. | §5 |
+| R9-1 | D9 registry lacks the file tools | D9 gains `fs_read`/`fs_list`/`fs_find`/`fs_grep` (no card) and `fs_write`/`fs_edit` (path-dependent card), registered in S10. `fs_move`/`fs_delete` are listed as never exposed. New S10.0 checks the recorded tool list, refuses forged move and delete calls, and has an allowlist property. | D9, S10.0 |
+| R9-2 | The leaf open opened a device before rejecting it | Every object is classified with `O_PATH|O_NOFOLLOW` plus `fstat` first, which never calls the object's `open`. Only a regular file or directory is reopened, through `/proc/self/fd/<n>`, and the result is re-`fstat`ed for the same inode. Device and FIFO cases assert zero `IN_OPEN`. | D12, S10.4 |
+| R9-3 | Two impossible observation claims | The invariant is now **no write-capable descriptor** (`fdinfo` access mode), and read-only descriptors are allowed. "Helper writes only inodes it created" is proven by an `os_ops` unit seam that records the real opens, plus the e2e `FSTRACE` create-before-write rows and inotify `IN_CREATE`. | D12, D7b, §7 seams, S10.4 |
+| R9-4 | The racer cannot outlive `SessionStart` | The production-representative concurrent writer is a second session's `UserPromptSubmit` hook, which races for 40 s inside its 60 s timeout while window 1 runs the operations. A forked child is shown to die with the hook's PID namespace. Unit races keep threads. | S10.4 |
+| R9-S | Shared broker temp across browser instances; duplicated text | An exclusive `flock` on `agent-home/.zb-owner.lock` is held by one browser instance. Others show `unavailable home-locked` and never touch the temp directory or the workspace. The duplicate line is removed. | D12, D7b |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -708,6 +726,7 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 | `ZIGBROWSER_AGENT_BWRAP` | the bwrap path (S3.4 case f) | an absolute path |
 | `ZIGBROWSER_AGENT_APPROVAL_TTL_MS` | a short approval TTL (S8.2) | 500–120000 |
 | `ZIGBROWSER_AGENT_DRAWER_DEMO` | seeded system messages (S2.3) | `messages:<n≤5000>` |
+| `ZIGBROWSER_AGENT_FS_TRACE` | sets `hello.e2e.fs_trace`, so the helper emits `fs_trace` (S10.4; rev 10) | `1` only |
 
 **Social fixture.** The existing `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN` server shape from `tests/e2e/social_flows_test.py` gains a commit log (POST count per action).
 
@@ -1135,6 +1154,16 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - The pre-session validator from rev 6 stays. S3.10 still covers the cross-session path.
 - **Property:** none. The input is fixed.
 
+#### Behavior S3.12: only one browser instance owns the agent home (rev 10, SHOULD)
+- **Given** browser A with its agent started, holding `agent-home/.zb-owner.lock`,
+- **When** browser B starts with the same `XDG_DATA_HOME` and a prompt is sent in B's drawer,
+- **Then**:
+  - B shows `DRAWER status unavailable home-locked` and spawns nothing;
+  - B never opens anything in `.zb-broker-tmp/` or `workspace/` (inotify, with every event attributed to A's writes);
+  - A's in-flight workspace write still installs exactly once;
+  - after A quits, B's next Send takes the lock and starts the agent.
+- **Property:** none. The input is fixed.
+
 #### Behavior S3.6: the e2e-only seams are inert in production (rev 3, blocker 10)
 - **Given** every variable in the section 7 seam table, set to hostile values (a remote base URL, `/bin/sh` as the CLI, a TTL of 1 ms),
 - **When** the browser runs **without** `--e2e-protocol` and a prompt is sent,
@@ -1494,6 +1523,13 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 ### S10 — File tools in the workspace and scratchpad, plus the bwrap sandbox (T7)
 
+#### Behavior S10.0: the six file tools are registered, and move and delete stay absent (rev 10, blocker 1)
+- **Given** S10 built,
+- **When** any session starts,
+- **Then** the fake API's recorded tool list holds exactly the S8 set **plus** `fs_read`, `fs_list`, `fs_find`, `fs_grep`, `fs_write` and `fs_edit`. It contains no `fs_move`, `fs_delete` or any other `fs_*` name.
+- Forged `tool_use` calls for `mcp__zigbrowser__fs_move` and `mcp__zigbrowser__fs_delete` are refused by the broker: `is_error` "tool not available", and no file event in either root (inotify).
+- **Property:** Invariant (Zig broker test). For every name in a generated set (all D9 names, `fs_*` variants, case and Unicode look-alikes), `allowlist(S10).contains(n)` iff `n` is a D9 row registered by S10 or earlier. The approval policy of `fs_write` and `fs_edit` is a function of the routed root: none under `scratchpad/`, a card under `workspace/`.
+
 #### Behavior S10.1: every file operation runs at its routed owner, and is confined there (rev 9)
 - **Routing (the D12 table, driven end to end):** the fake API scripts **17 calls**:
   - 8 reads: `fs_read`, `fs_list`, `fs_find` and `fs_grep`, each on `workspace/` and on `scratchpad/`;
@@ -1508,26 +1544,38 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - the outside path and the two unregistered tools are refused, and nothing is touched.
 - **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree, run against both owners). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent. Every success touches only inodes under that owner's root, plus the broker's own temp directory.
 
-#### Behavior S10.4: a racing hook cannot redirect, block or poison a read or a write (rev 9; failing-first)
-- **Racer.** A real malicious hook process runs inside its `zb-hook-run` namespace for the whole test, started by `SessionStart` as a long-running hook. In a loop it:
-  - swaps `scratchpad/a.txt` between a regular file, a symlink to `/etc/passwd`, a symlink to `../workspace/keep.txt`, a FIFO and a Unix socket;
-  - renames any new temp-looking name in `scratchpad/` it sees;
-  - tries to open every `workspace/` file `O_RDWR` (expected `EROFS`), and holds `O_RDONLY` fds on them;
-  - tries to create anything in `agent-home/.zb-broker-tmp/` (expected `ENOENT`, because it is not mounted).
-- **Operations under test, run many times against the racer:**
+#### Behavior S10.4: a racing writer cannot redirect, block or poison a read or a write (rev 9; rev 10 oracles; failing-first)
+- **The concurrent writer is a production-representative hook in a second session (rev 10, blocker 4).**
+  - Hooks are awaited by the CLI, and `zb-hook-run`'s nested bwrap (`--die-with-parent`, reaper PID 1) kills anything a hook leaves behind when the hook exits. So no hook process can outlive its own event, which is itself asserted below.
+  - The real concurrency in production is **between sessions**: every drawer session shares the one helper sandbox and its scratchpad. The racer is therefore window 2's `UserPromptSubmit` hook. The fixture sets its hook timeout to 60 s, and the hook races for 40 s and then exits. Meanwhile window 1's session runs the file operations under test. The helper runs sessions concurrently (one `ClaudeSDKClient` per session on its event loop).
+  - **In its loop the racer:**
+    - swaps `scratchpad/a.txt` between a regular file, a symlink to `/etc/passwd`, a symlink to `../workspace/keep.txt`, a FIFO and a Unix socket;
+    - renames any new temp-looking name in `scratchpad/` it sees;
+    - tries to open every `workspace/` file `O_RDWR` or `O_WRONLY` (expected `EROFS`), and holds `O_RDONLY` fds on them, including on newly installed files;
+    - tries to create anything in `agent-home/.zb-broker-tmp/` (expected `ENOENT`, because it is not mounted).
+  - **Cleanup check:** the racer also forks a child that sleeps forever. Within 2 s after the hook returns, no process remains in that hook's PID namespace, the child included (`/proc/*/ns/pid` census from outside).
+  - The unit-level races keep racer **threads**: the Zig test (`tests/agent_fs_test.zig`) runs 10,000 iterations of the real broker functions, and the Python test (`agent/host/tests/test_fs_tools.py`) runs the same against the real `fs_tools` functions.
+- **Operations under test:**
   - (a) helper `fs_read`, `fs_grep` and `fs_edit` on `scratchpad/a.txt`;
   - (b) helper `fs_write` (create and overwrite) on `scratchpad/b.txt`;
   - (c) approved broker `fs_write` (create and overwrite) and `fs_edit` on `workspace/w.txt`.
-  - The Zig test (`tests/agent_fs_test.zig`) drives the real broker functions with a racer thread for 10,000 iterations. The Python test (`agent/host/tests/test_fs_tools.py`) does the same for (a) and (b). The e2e runs 50 iterations of each through the real browser, helper, CLI and hook.
+  - The e2e runs 50 iterations of each inside the racer's 40 s window, through the real browser, helper, CLI and hook.
 - **Then, for every iteration:**
-  - no read ever returns bytes of `/etc/passwd` or of a workspace file through a scratchpad name, and no read blocks (each finishes within 1 s, even when the FIFO is in place);
-  - the helper never writes into an inode it did not create (`/proc/<helper>/fdinfo` census: every write fd's inode was created by `O_EXCL`), and never touches anything outside `scratchpad/`;
-  - for (c), the installed `workspace/w.txt` is a fresh inode with `st_nlink == 1` and the approved SHA-256; no sandbox process holds any fd on it right after install (`/proc/*/fd` census from outside, matching `st_ino`); and its hash never changes afterwards;
-  - `.zb-broker-tmp/` is empty after every operation, and the racer's attempts there and its `O_RDWR` attempts in `workspace/` always failed.
-- **Red first:** before the protocol exists, a naive implementation (`open(path, O_RDONLY)` without `openat2` resolution and `O_NONBLOCK`; workspace writes in place with `O_TRUNC`) runs against the same racer. It reads `/etc/passwd`, hangs on the FIFO, or rewrites the existing workspace inode that the racer holds open. The test records that red.
+  - **Reads:** no read returns bytes of `/etc/passwd` or of a workspace file through a scratchpad name, and no read blocks (each finishes within 1 s, even with the FIFO in place).
+  - **No special object is ever opened:** inotify `IN_OPEN` on the FIFO and socket placed at `a.txt` stays at 0 across the run. `O_PATH` classification does not fire `IN_OPEN`.
+  - **Device case (Python unit test):** the test runs `fs_read` inside a bwrap that `--dev-bind`s `/dev/null` and `/dev/tty` into the temp scratchpad. The call is refused, and inotify `IN_OPEN` on both device nodes stays at 0 (rev 10, blocker 2).
+  - **Helper writes only inodes it created** (rev 10, blocker 3, replacing the fdinfo inference):
+    - **unit oracle:** `fs_tools.py` performs every open through an injected `os_ops` seam (the production default is `os`). The Python test records every real call, and asserts that every descriptor written to came from an `O_CREAT|O_EXCL` open in that same operation;
+    - **e2e oracle:** with `ZIGBROWSER_AGENT_FS_TRACE=1` (a section 7 e2e-only seam), every `FSTRACE … write <dev>:<ino>` row is preceded, in the same operation, by an `FSTRACE … create` row with the same `<dev>:<ino>`;
+    - independently, the test's own inotify watch records an `IN_CREATE` for each such created name.
+  - **Broker installs** (c): the installed `workspace/w.txt` is a fresh inode (`st_ino` differs from the previous one), with `st_nlink == 1` and the approved SHA-256.
+    - **No write-capable descriptor** on it exists in any process except the broker's own, closed one. The `/proc/*/fd` census matches `st_ino`, and `/proc/<pid>/fdinfo` `flags & O_ACCMODE` is `O_RDONLY` for every match. Read-only descriptors held by the racer are expected and allowed.
+    - Its hash never changes afterwards.
+  - `.zb-broker-tmp/` is empty after every operation. The racer's attempts there, and its write-mode opens in `workspace/`, always failed.
+- **Red first:** before the protocol exists, a naive implementation runs against the same racer (`open(path, O_RDONLY)` without `openat2`, `O_PATH` classification or a type check; workspace writes in place with `O_TRUNC`). It reads `/etc/passwd`, hangs on the FIFO (`IN_OPEN` fires), or rewrites the existing workspace inode, which the racer's held read-only fd then shows. The test records that red.
 - **Red-at-seam afterwards:**
-  - drop `O_NONBLOCK` from leaf opens: the FIFO read hangs past 1 s, so red;
-  - install workspace writes by writing the existing file in place instead of rename-into-place: the installed inode is not fresh and the racer's held fd sees the new content, so red.
+  - open leaves directly with `O_RDONLY|O_NOFOLLOW` instead of classifying with `O_PATH`: `IN_OPEN` fires on the FIFO and the device, so red;
+  - install workspace writes in place instead of renaming into place: the inode is not fresh, so red.
 - **Property:** Invariant (seeded racer interleavings through a deterministic step driver in the Zig test). For every schedule, an `ok` broker write leaves the approved bytes in a fresh inode, and a failure leaves `workspace/` unchanged.
 
 #### Behavior S10.2: a workspace write needs a card, and a scratchpad write does not (user answer 3)
