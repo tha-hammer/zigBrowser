@@ -4727,3 +4727,86 @@ all eight threat-model tests red-first. The remaining blocker is a foundation
 issue rather than a CodeCleanup control-expression issue: the promised
 same-object invariant cannot be layered on a pathname syscall after an fd
 check. Agent Mail 5245 sent the finding to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 8 (`2ec7193`)
+
+**Verdict at exact `2ec7193`: BLOCKER.** Rev 8 closes the original
+live-name-substitution gap in principle: each move or delete first captures the
+named object into a quarantine unavailable to the adversarial writer, verifies
+the captured inode, and only then commits. A move into the workspace copies
+approved bytes into a fresh inode, so a hook's retained writable descriptor
+cannot mutate the workspace object. The new race test observes object type,
+exact inode or digest, retained-fd writes, and both real owners. The protocol's
+crash and failure-state contract is not yet complete enough to implement.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check de0ef43..2ec7193` is clean, and the revision changes
+only the plan. The plan remains pinned to production commit
+`b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; commits after that pin are
+documentation only for this project.
+
+### `de0ef43` finding disposition
+
+| Prior finding | Rev-8 disposition |
+|---|---|
+| R7-1: path substitution between fd check and name mutation | **CLOSED for the live-race invariant; OPEN for crash/failure atomicity below.** Capture moves whatever currently occupies the source name into an unreachable quarantine; verification then requires the approved/opened regular inode and one link before commit (`plan:554-565`). A substituted object cannot pass the inode check, and a workspace destination receives a fresh digest-checked copy rather than an inode on which a hook may retain a writable fd. S10.4 races symlink, FIFO, socket, another regular file and held descriptors through Zig, Python and the real browser/helper/hook chain (`plan:1533-1556`). |
+| R7 SHOULD: bind-mounted rename errno | **CLOSED.** S3.11 requires exact `EROFS` for direct write and truncate, accepts `{EROFS, EBUSY, EXDEV}` only for temp-plus-rename, and always checks byte identity (`plan:1137-1148`). |
+| R7 SHOULD: incomplete writable-path statement | **CLOSED.** D12 distinguishes persistent writable agent-home paths from private per-hook `/tmp`, `/run` and `/dev/shm`, and hides `scratchpad/.zb-q` from hooks (`plan:518-525`). |
+
+The revision still introduces no host-policy dependency. It does not change or
+depend on `ptrace_scope`; failure of nested namespaces keeps the agent
+unavailable.
+
+### Current rev-8 BLOCKER findings
+
+1. **The journal cannot recover several ordinary crash cuts.** D12 records
+   `{op, src, dst, dev, ino, content_sha256, phase}`, updates the phase after
+   capture, install and unlink, and defines replay only for `captured` and
+   `installed` (`plan:566-569`). That is insufficient at the boundaries the
+   journal exists to make atomic:
+
+   - a crash after capture but before its phase update leaves the object in
+     quarantine under the preceding, unspecified phase;
+   - a crash after a scratchpad destination rename or a delete's unlink but
+     before the next phase leaves no captured name for `captured` replay;
+   - a crash after creating the workspace temp but before install can orphan a
+     temp whose name is absent from the journal; and
+   - a crash after installing the workspace copy but before recording
+     `installed` makes replay restore the source while retaining the
+     destination, turning one move into a copy.
+
+   Specify atomic/durable journal transitions and replay for every syscall
+   boundary, including the identities or names of source, captured object,
+   destination and temp. Add deterministic fault injection at each boundary
+   for same-root rename, cross-root copy-move and delete at both owners. The
+   prior review explicitly required partial-failure semantics; the current
+   two-state replay does not yet meet them.
+
+2. **S10.1 still requires the superseded one-syscall implementation.** It says
+   an approved cross-root move removes the source and creates the destination
+   "both in the same `renameat2`" (`plan:1519-1523`). D12 now necessarily uses
+   a capture rename followed by another rename for a scratchpad destination,
+   or capture plus copy/install/unlink for a workspace destination
+   (`plan:559-565`). The closure test cannot simultaneously enforce both
+   contracts. Replace the old assertion with the rev-8 final-state and
+   exactly-once protocol oracle.
+
+3. **The readable-fd and rollback outcomes are internally incomplete.** Verify
+   opens the quarantined object with `O_PATH|O_NOFOLLOW` (`plan:560`), but Linux
+   rejects `read(2)` on an `O_PATH` descriptor with `EBADF`; commit then copies
+   from an unnamed "own fd" (`plan:564`). Require a readable descriptor bound
+   to the captured object and `fstat` that same descriptor, whether it is
+   retained from preview or opened after capture.
+
+   Separately, rollback can keep the checked object in quarantine when the
+   source name has already been retaken (`plan:565`), but the outcome table
+   still says "nothing was moved" or unconditionally "rolled back"
+   (`plan:570-578`). S10.4 says every failed run leaves both roots unchanged
+   and every journal is empty/replayed (`plan:1546-1556`). A continuously
+   racing hook makes the retained-quarantine state reachable. Give that state
+   its own exact result and message, state whether its journal remains pending,
+   and align the outcome table and test oracle with it.
+
+The CodeCleanup review did not find a control-expression or maintainability
+issue in the documentation diff; the blockers are conflicting and incomplete
+security protocols. Agent Mail 5248 sent the concrete findings to BlackRobin.
