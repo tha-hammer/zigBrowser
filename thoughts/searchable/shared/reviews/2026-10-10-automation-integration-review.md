@@ -4652,3 +4652,78 @@ slice, all eight threat-model tests land red-first in named slices, the drawer
 defaults on after S5 with read-only tools, social writes remain per-action
 approved, and the agent home/scratchpad/workspace separation remains explicit.
 Agent Mail 5242 sent the rev-6 blockers to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 7 (`3076758`)
+
+**Verdict at exact `3076758`: BLOCKER.** Rev 7 closes both findings from
+`ed14446` at the requested layer: the nested hook sandbox now makes the live
+`.claude.json` read-only and S3.11 drives later events in the same session;
+S10.1 now enumerates and drives 19 routes, including both cross-root moves.
+The newly explicit move/delete implementation, however, contradicts the
+fd-stability invariant it is meant to enforce.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check ed14446..3076758` is clean. The plan remains pinned
+to production commit `b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; the commits
+after that pin are documentation only for this project.
+
+### `ed14446` finding disposition
+
+| Prior finding | Rev-7 disposition |
+|---|---|
+| R6-1: same-session `.claude.json` mutation | **CLOSED.** `zb-hook-run` overlays `.claude.json` read-only in every hook namespace while the outer CLI retains its writable view, and it hides `/run/zb-token` behind a new empty tmpfs (`plan:518-525`). S3.11 attempts in-place, truncate and rename replacement, then drives `UserPromptSubmit`, a real MCP call and `Stop` in the same session while checking the file hash and process census (`plan:1107-1122`). The pre-session validator remains defense in depth. |
+| R6-2: missing cross-root `fs_move` routes | **CLOSED for routing and approval coverage.** S10.1 correctly counts 19 calls, sends both directions to the app owner, requires a card, checks denial/timeout against both roots, and includes a source-only-routing red (`plan:1483-1501`). The implementation contract behind those successful moves remains OPEN below. |
+| R6 SHOULD: object types and stale text | **CLOSED in substance.** D12 distinguishes securely opened directory descriptors from regular leaves, names traversal limits and cross-root behavior, D11 assigns PID 1 to bwrap's reaper, and the rev-3 row is visibly superseded (`plan:480,543-554,565`). Two precision amendments remain below. |
+
+The revision introduces no host-policy dependency. Nested-namespace failure
+still leaves the feature unavailable, and no `ptrace_scope` or other sysctl
+change is authorized.
+
+### Current rev-7 BLOCKER finding
+
+1. **`fs_move` and `fs_delete` validate an fd but mutate a pathname.** D12 says
+   the checked object and I/O object are always the same descriptor
+   (`plan:543`), but its concrete operations are
+   `renameat2(src_dir_fd, src_name, ...)` and
+   `unlinkat(parent_fd, name, 0)` (`plan:554`). Neither syscall consumes the
+   opened leaf fd. They resolve the name again at syscall time; Linux also
+   specifies that renaming a symlink renames the link itself and leaves an
+   already-open fd for the former path unaffected.
+
+   A writable scratchpad hook can therefore race an approved
+   `scratchpad/a.txt -> workspace/a.txt` move: after the app's `openat2` and
+   `fstat` accept the regular inode, the hook renames that file aside and puts
+   a symlink or FIFO at `a.txt`; the app's later `renameat2` moves the
+   replacement object into the workspace. The operation succeeds even though
+   the checked regular fd was not moved. This violates the special-file rule
+   and S10's success-if-and-only-if-regular property. The current race oracle
+   can miss it because moving a symlink does not open or modify the outside
+   canary (`plan:1495-1501`). The analogous check-then-`unlinkat` sequence can
+   delete a replacement name.
+
+   Either reject cross-root moves fail-closed and update the route/e2e
+   contract, or specify an actually fd-stable protocol, including its partial
+   failure and concurrency semantics. A second `fstat` before the path-based
+   syscall does not close the race. The race test must prove that a successful
+   move used the exact opened inode/content and that no symlink, FIFO, socket
+   or device ever appears at the destination. Apply the same analysis to
+   same-root `fs_move` and `fs_delete`.
+
+### SHOULD amendments
+
+- S3.11 requires every in-place, truncate and temp-plus-rename attempt to fail
+  specifically with `EROFS` (`plan:1110-1118`). Renaming over a bind-mounted
+  file may instead be refused with `EBUSY`. Name the accepted refusal errno set
+  and require byte identity; retain the exact `EROFS` check for direct write
+  and truncate.
+- D12 says the hook can write only the census state directories and scratchpad
+  (`plan:523`), although the nested view also deliberately has ephemeral
+  writable `/tmp`, `/run` and `/dev/shm`. Qualify that sentence as persistent
+  agent-home paths or enumerate the ephemeral mounts.
+
+The revision otherwise keeps the plan data-driven, names the traversal bounds,
+retains the real-binary private-Xvfb closure in each product slice, and covers
+all eight threat-model tests red-first. The remaining blocker is a foundation
+issue rather than a CodeCleanup control-expression issue: the promised
+same-object invariant cannot be layered on a pathname syscall after an fd
+check. Agent Mail 5245 sent the finding to BlackRobin.
