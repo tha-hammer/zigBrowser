@@ -4910,3 +4910,78 @@ The reduced design addresses the root cause instead of layering more journal
 states, which is a CodeCleanup maintainability improvement. The blockers are
 now finite interface and oracle defects rather than a move/delete foundation
 problem. Agent Mail 5251 sent them to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 10 (`892ffa4`)
+
+**Verdict at exact `892ffa4`: BLOCKER.** Rev 10 closes most of the rev-9
+design gaps: D9 and S10.0 register exactly the six intended file tools while
+keeping move and delete absent; the readable descriptor is reopened through
+the verified `O_PATH` descriptor; the workspace invariant now permits
+read-only descriptors and rejects write-capable ones; helper-write provenance
+has a unit open-call oracle plus e2e trace/inotify evidence; and the racing
+writer is an awaited hook in a second concurrent session. The agent-home
+`flock` also closes the earlier cross-process temp-ownership SHOULD in design.
+One special-file test does not exercise the guard it claims, and the canonical
+D12 text still contradicts its new two-descriptor protocol.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check b09a56c..892ffa4` is clean, and the revision changes
+only the plan. The plan remains pinned to production commit
+`b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; commits after that pin are
+documentation only for this project.
+
+### `b09a56c` finding disposition
+
+| Prior finding | Rev-10 disposition |
+|---|---|
+| D9 omits all six file tools | **CLOSED in design.** D9 adds the four reads and two path-dependent writes, S10.0 checks the exact recorded list and the broker allowlist, and move/delete remain unavailable (`plan:399-416,1526-1531`). |
+| A device is opened before its type is checked | **PARTIALLY CLOSED; test BLOCKER remains.** D12 now specifies `O_PATH` classification before any readable open and pins the readable fd through `/proc/self/fd/<n>` (`plan:547-561`). The proposed device regression is ineffective as described; see finding 1. |
+| Workspace assertion wrongly forbids read-only fds | **CLOSED.** D12 and S10.4 now inspect `fdinfo` access mode and forbid only write-capable descriptors (`plan:568,1571-1573`). |
+| `fdinfo` cannot prove `O_EXCL` creation history | **CLOSED.** The Python unit seam records the real open call, while e2e `FSTRACE` rows and independent inotify creation events cover the production chain (`plan:345,379,729,1567-1570`). |
+| `SessionStart` racer cannot coexist with later calls | **CLOSED.** Window 2's awaited `UserPromptSubmit` hook races while window 1's independent session runs the operations, and the test also checks namespace cleanup (`plan:1547-1557`). |
+| Cross-process broker-temp ownership | **CLOSED in design.** One browser holds `agent-home/.zb-owner.lock`; a loser starts no agent and cannot touch the temp or workspace (`plan:570-573,1157-1165`). The test-oracle SHOULD below remains. |
+| Duplicated execution sentence | **CLOSED.** The sentence appears once (`plan:578`). |
+
+### Current rev-10 BLOCKER findings
+
+1. **The device regression is rejected at the mount boundary before it tests
+   `O_PATH`.** S10.4 proposes placing `/dev/null` and `/dev/tty` in the
+   scratchpad with bwrap `--dev-bind` (`plan:1566`), while the production
+   resolver retains `RESOLVE_NO_XDEV` (`plan:547`). A bind-mounted device is a
+   mount crossing, so both the new `O_PATH` call and the pre-fix direct
+   `O_RDONLY` call fail with `EXDEV` before the device inode is opened. The
+   claimed direct-open red-at-seam therefore survives for the device case
+   (`plan:1577`).
+
+   Keep the real FIFO `IN_OPEN` test, but add a failing-first syscall/order
+   oracle for a same-mount `S_IFCHR` classification. The existing injected
+   `os_ops` seam can require the first open to use `O_PATH`, return a character
+   device from `fstat`, and assert that no readable reopen occurs; replacing
+   the first call with `O_RDONLY` must make that test fail. The dev-bind case
+   can remain as an additional fail-closed check, but it cannot prove the
+   no-device-open guard while `RESOLVE_NO_XDEV` short-circuits it.
+
+2. **Canonical D12 states mutually exclusive descriptor contracts.** Its
+   preamble still says “The checked object and the I/O object are always the
+   same descriptor” (`plan:547`). The new protocol intentionally holds one
+   `O_PATH` classification fd and opens a second readable fd through its proc
+   magic link, then ties them by equal device, inode and type
+   (`plan:550-559`). Replace the stale sentence with that same-inode,
+   two-descriptor invariant so an implementer cannot choose the old order.
+   The rev-8 history row also describes current reads as using `O_NONBLOCK`
+   (`plan:616`); mark that clause superseded by rev 10.
+
+### SHOULD
+
+- **Make the two-instance oracle executable without process attribution from
+  inotify.** S3.12 says browser B never opens the broker temp or workspace,
+  “with every event attributed to A's writes” (`plan:1161-1163`). Inotify
+  events do not carry a PID. Separate the observations: while A is idle, have
+  B request a workspace write and require `home-locked`, no helper spawn and
+  zero temp/workspace events; then independently hold A's write in flight and
+  check its exact expected event and final-state sequence. Alternatively name
+  a real process-attribution oracle.
+
+The CodeCleanup review found no new conditional-side-effect, nesting or
+literal-maintainability problem in this documentation-only diff. Agent Mail
+5254 sent the blockers and SHOULD to BlackRobin.
