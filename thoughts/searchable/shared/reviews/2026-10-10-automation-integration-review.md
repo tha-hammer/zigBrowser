@@ -4060,3 +4060,313 @@ private Xvfb, live variables unset, and a 1,500-second timeout, passed:
 `page-health`, `social-flows/window-id`, SDK-live, and all other phases ran. The
 throwaway tree was deleted immediately by its `find -delete` trap. No live
 browser, live socket, DISPLAY `:0`, or user account was accessed.
+
+## Historical Claude Agent chat-drawer plan review (`e03c6d5`)
+
+**Status: SUPERSEDED during review by follow-up `7922624`.** This records the
+first revision's findings. The current formal verdict and the disposition of
+those findings are in the next section.
+
+**Verdict: BLOCKER — needs major revision before implementation.** The native
+GTK drawer is a sound, stronger adaptation of the threat model's WebView-
+specific isolation design, and the plan covers the user's visual requirements
+and chosen Python/auth surfaces. The blockers are in the security contracts,
+the claimed closure tests, and child-process ownership.
+
+This was a docs-only review. No browser, display, socket, site, build, or test
+was run. `e03c6d5` changes only the plan. Its production pin
+`b4c23a1a56deced7b3ab7c8a34a660b22ffca622` is its exact parent, so the pin is
+reproducible and the production tree is identical to review-time `HEAD`.
+
+### Contract matrix
+
+| Required check | Result | Evidence |
+|---|---|---|
+| Verbatim drawer behavior | PASS | The bottom drawer, movable floating S, hidden icon while open, scrollable conversation, bottom input, top-right `-`, animation to the saved icon rectangle, and direct browser control are all explicit (`plan:20-22,147-193,357-371`). |
+| User's auth/helper decisions | PASS | The plan selects the Python Agent SDK helper, a native privileged Secrets window, pasted `claude setup-token` tokens, and a captured claude.ai callback (`plan:24-31,311-343,884-913`). The real CLI contract still needs the blocker below. |
+| Page/popup/socket privilege isolation | PASS in design | Native GTK eliminates drawer JavaScript, a privileged renderer, and its bridge. T1 still probes hostile top pages, same/cross-origin frames and related popups; T3 probes the authenticated socket (`plan:147-159,557-560`). This is an acceptable adaptation of afe9c0f T1/T2, not a skipped control. |
+| T1-T8 placed red first | PARTIAL | All eight labels appear in section 9 and the slice rule requires red first (`plan:553-571`), but T4, T6 and T7 do not yet implement the full threat-model oracles; see blockers 2 and 5. |
+| Real-binary private-Xvfb E2E in every slice | FAIL | S1-S10 name real-binary closure tests. S0 is explicitly helper-only/LEAF and has only helper contract/unit steps (`plan:575-607,1096-1108`), contradicting `plan:49,55,409,571`. |
+| Agent config/SAI/sandbox/scratchpad never touch the user's `.claude` or repositories | PARTIAL | Runtime HOME/config/cwd are private and the final bwrap mount excludes the real home (`plan:195-218,345-355`). The proposed open oracle and built-in file-tool design do not prove/enforce the promise; see blockers 3 and 10. |
+| Exact approval for every social write | PARTIAL | Every committing social flow is classified as approval-required and grants are single-use/no-retry (`plan:275-305`). Account/target identity and all-flow coverage are missing; see blocker 4. |
+| ClosureMaps pinned and re-derived at the production base | PASS with one missing test | Maps A and B match the `b4c23a1` production topology: `zb_window_new`, the shared-popup UCM, page-world `zbHost`, explicit window routing, per-window FIFO, GTK handoff/waiter, envelope, and the special out-of-band paths (`plan:57-117,465-537`). The committed `page.health` regression already proves an answer while the target FIFO is held (`tests/automation_server_test.zig:1672-1742`; `tests/e2e/page_health_test.py:224-225`). Closure A's page-side Promise oracle remains unscheduled; see blocker 7. |
+
+The spot-checked map locations are current: the standard-window seam is
+`src/webkit_shim.c:1127-1217`; the direct child and current render/media policy
+are at `:1163-1174`; the page-world handler/return path is `:674-752`; and the
+socket, parser/auth, special routes, target route, queue and envelope are
+`src/automation_server.zig:277-356,412-543,568-607`. The plan also correctly
+keeps screenshot construction separate and accounts for per-window sessions,
+related popups, crash state, dialogs, `page.health`/`page.recover`, and current
+render/MSE configuration.
+
+### BLOCKER findings
+
+1. **S0 violates the every-slice real-binary closure rule.** It is expressly a
+   helper-only LEAF slice with `agent-host-contract` and `agent-host-unit`, not
+   a real zigBrowser process under the private Xvfb (`plan:575-607,1098`). Make
+   it a prerequisite outside S0-S10, or add a non-bypassing real-binary Xvfb
+   E2E to S0. Merely running the binary as a wrapper around a helper unit test
+   would still bypass the product chain.
+
+2. **T7 deliberately weakens the accepted filesystem approval invariant.**
+   Afe9c0f requires every file write/delete/move/execute to stop at an exact
+   trusted confirmation and its T7 requires ungranted writes/deletes to fail.
+   The plan instead permits scratchpad writes without a card and calls that
+   T7 (`plan:354,390,563,1032-1034`). Until the user explicitly changes the
+   invariant, every scratchpad mutation must also be approved. Scratchpad
+   usefulness is not itself authority to weaken the threat model.
+
+3. **The filesystem TOCTOU defense is attached to the permission check, not
+   the actual I/O.** `can_use_tool` can canonicalize/open/fstat a path, but the
+   SDK's built-in Read/Write/Edit implementation later opens that pathname
+   independently (`plan:245-249,353-355,1025-1042`). The inode checked by the
+   policy is therefore not the inode used by the tool, so the promised symlink-
+   swap test cannot be killed by that design. The bwrap layout also exposes the
+   whole writable `agent-home`, including `.claude`, transcripts, and the
+   fallback secret (`plan:197-207,347-354`). Use app-owned/custom MCP file
+   tools that perform the actual fd-relative/openat2 operation, or an equally
+   strong kernel-enforced design, and run the swap against the actual I/O seam.
+
+4. **The approval tuple is missing the selected account and resolved action
+   target.** The card names origin/target/payload, but not account; the grant
+   digest binds only `(tool, window_id, origin, load_serial, normalized_args)`
+   (`plan:290-300`). A same-document account switch or DOM retarget need not
+   advance `load_serial`, so an approved selector/flow can execute against a
+   different account or control. Afe9c0f requires
+   `(tool, window, origin/account, target, payload)`. Define a deterministic
+   account and resolved-target fingerprint, display and bind it, and revalidate
+   it at the dispatch seam. T5 needs wrong-account, same-document retarget, and
+   every D9 committing social method in its table-driven approval tests; a
+   single LinkedIn Like E2E does not by itself prove the user's all-social-
+   writes rule (`plan:959-999`).
+
+5. **T4 and T6 are only partial copies of their required threat tests.** T4's
+   sole hostile instruction asks for `linkedin_like`; it does not attempt the
+   required secret revelation or tool enablement, or representative
+   Post/Follow/Connect requests (`plan:560,959-968`; afe9c0f:67). T6's scanner
+   inventories processes, logs, files, API requests, rows and page storage, but
+   omits `telemetry.query`; the mapped tests do not explicitly seed and observe
+   the API-token/cookie/auth-header/automation-token canaries through telemetry,
+   crash text and model-visible error paths (`plan:445-450,562,815-822`;
+   afe9c0f:69). Add those red-first oracles in S4/S5/S7/S9.
+
+6. **The plaintext secret fallback is automatic, contrary to the threat
+   model.** The plan silently chooses a 0600 file whenever Secret Service does
+   not answer or libsecret cannot load (`plan:322-330,808-812`). Afe9c0f:46
+   permits such a fallback only when explicit. Default failure must fail closed
+   and ask the user, or require `--agent-secret-store file`; it must never
+   silently downgrade storage. The secret directory must also stay outside the
+   agent-visible sandbox mount.
+
+7. **The research check's Closure A assertion is acknowledged but never
+   scheduled.** The plan correctly says the existing E2E stops at native
+   `IPC`/`IPCERR` rows and does not assert page-side Promise settlement
+   (`plan:68-70,467-495`). 05c3c17:139-143,224-228 required a failing test that
+   reads the fixture DOM after both resolve and reject. No slice adds it, while
+   `plan:1121` claims every required update is addressed. Put that real-WebKit
+   assertion in a slice (it can also contribute to S0's missing binary E2E) or
+   correct the closure claim and track it as an explicit prerequisite.
+
+8. **The native-to-helper streaming channel is not bounded.** A 256-KiB
+   per-frame maximum does not bound an unlimited stream of assistant deltas,
+   queued GTK-idle callbacks, chat rows, or total session memory
+   (`plan:230-256`). 05c3c17:216-221 required buffering/backpressure,
+   cancellation, and process-exit behavior. Specify named per-message,
+   per-queue, and per-session limits; delta coalescing/backpressure; overflow
+   behavior; cancellation/drain ordering; and a real-process E2E that exceeds
+   each bound without growing or hanging the UI process.
+
+9. **The S3 parent-death mechanism cannot satisfy its descendant cleanup
+   promise.** `PR_SET_PDEATHSIG(SIGKILL)` kills only the direct helper, not its
+   Claude CLI descendant. The helper deliberately creates a new process group,
+   while the test guardian owns the browser's group (`plan:221-229,770-791`).
+   Browser SIGKILL can therefore orphan the CLI; helper SIGKILL can do the
+   same. Define a production supervisor/pid-namespace/cgroup mechanism that
+   owns the whole descendant tree for both deaths, and have S3 prove cleanup
+   before the harness guardian acts. Deferring bwrap's `--die-with-parent` to
+   S10 cannot support the guarantee claimed in S3.
+
+10. **The “never touch the user's `.claude` or repos” oracle is too weak.**
+    S3 checks atime/mtime on a decoy `.claude` tree (`plan:738-750`). An open is
+    not reliably observable that way under relatime/noatime, and no decoy user
+    repository is named. Use a real-process file-access trace or open-event
+    oracle over both trees. Scan every copied SAI document/skill/agent/hook for
+    outside absolute paths, not only generated `settings.json`, and prove the
+    runtime starts with its CWD/config/scratch/TMPDIR inside the private home.
+
+11. **The fake Messages API is not reachable through the stated production
+    spawn contract.** S0 can pass `--base-url` directly to its helper command,
+    but S3-S10 all require the fake API while D7's exact helper environment
+    allowlist excludes `ANTHROPIC_BASE_URL` (`plan:221-228,461-463,1096-1108`).
+    Add an explicit, `--e2e-protocol`-gated app-to-helper test configuration
+    path. It must not become a production environment-inheritance escape.
+
+12. **The `claude setup-token` fake is accepted before its external contract
+    is known.** Its output is explicitly unconfirmed (`plan:440-443`), but the
+    real-CLI characterization is manual and after S6 (`plan:884-913`). Make the
+    orchestrator's throwaway-config characterization a prerequisite to S6's
+    green/approval, and pin the fake parser to the observed URL, callback/code,
+    and token-output shapes. Otherwise the required login path can go green
+    against an invented protocol.
+
+### Interface and plan-hygiene amendments
+
+- The NDJSON type list omits S6's `auth_url` and code/token handoff, and the
+  `DRAWER` row table omits row types later used as closure observations:
+  `tree`, `minus`, `scroll`, `delta`, and `BLOCKED`
+  (`plan:230-240,420-433,557,706,724,828,851,896`). Define their exact schemas,
+  ownership and size limits. Clarify whether login is a separate one-shot
+  helper and which direction each fd/pipe carries; normal token handoff and
+  login-token return cannot use one unidirectional fd-3 pipe in opposite
+  directions without separate processes/pipes.
+- Name the gesture, movement, animation, frame, rejection, backoff, shutdown,
+  approval-TTL and message/queue limits in their owning modules. Keep protocol
+  version and externally observed enum values stable. The plan's data-driven
+  tool table, flat GTK-to-Zig callbacks, strict schemas, shared atomic writer,
+  and explicit no-duplication/refactor pass otherwise satisfy the applicable
+  CodeCleanup plan-hygiene criteria (`plan:1044-1092`).
+- Keep the current explicit choice that the native drawer survives a page-web-
+  process crash, never joins a browsing UCM/process, and never becomes a
+  socket-visible `window_id`. This is the main architectural strength of the
+  plan.
+
+Agent Mail 5230 sent the blockers to BlackRobin. BlackRobin then landed the
+docs-only follow-up `7922624` while this review was in progress; it is reviewed
+below.
+
+## Claude Agent chat-drawer TDD plan rev 2 (`7922624`)
+
+**Verdict: BLOCKER — needs major revision before implementation.** Revision 2
+correctly records the user's five additional decisions: default-on after S5,
+all SAI hooks enabled, free scratchpad writes, a floating drawer, and empty
+initial memory (`plan:33-42,420-430`). It also makes a good safety correction:
+before S8 the model sees only the exact read-only S7 tool set, while previews,
+hover, scroll and every mutation remain both unregistered and refused by the
+broker (`plan:295-309,1009-1017,1037-1041`).
+
+The user's scratchpad decision **supersedes and closes** e03 finding 2. T7 must
+describe free scratchpad writes as the explicit user-approved exception to the
+earlier every-file-write threat invariant; workspace writes remain per-action.
+No other e03 blocker was closed by rev 2. The production ClosureMaps remain
+correctly pinned to `b4c23a1`, the production ancestor shared by both docs-only
+plan commits.
+
+### BLOCKER findings still open from e03
+
+1. **S0 still has no real-binary/private-Xvfb E2E.** It remains a helper-only
+   LEAF slice with only contract/unit steps (`plan:614-661,1180-1192`), while
+   the requirements say every S0-S10 slice ends with a real binary under a
+   private Xvfb (`plan:60,66,447`).
+
+2. **Built-in SDK file tools still cannot enforce the promised symlink-swap
+   invariant at the actual I/O seam.** `can_use_tool` checks one open/inode and
+   Read/Write/Edit later open the pathname again (`plan:263-269,378-389,
+   1109-1126`). Use app-owned MCP file tools that perform the actual fd-relative
+   operation, or an equivalent kernel-enforced primitive. This remains a T7
+   test-validity blocker even with the user's free-scratchpad decision.
+
+3. **Approval still omits current account and resolved target identity.** The
+   card and digest remain origin/`load_serial`/arguments only
+   (`plan:311-328,1043-1083`). A same-document account switch or selector
+   retarget can therefore survive revalidation. Bind, display and atomically
+   revalidate an account/target fingerprint, and test every committing D9
+   social method plus wrong-account and same-document retarget cases.
+
+4. **T4 and T6 remain incomplete.** T4 still tests only a page instruction to
+   Like, not the required attempts to reveal a secret, enable a tool, or make
+   representative Post/Follow/Connect requests (`plan:598,1043-1051`). The T6
+   scanner still omits `telemetry.query`, and the plan does not explicitly
+   drive canaries through telemetry, crash text and model-visible errors
+   (`plan:483-487,600,871-893,1019-1022`). A4 improves hook-environment
+   coverage but does not close those other T6 surfaces.
+
+5. **Secret storage can still silently downgrade to plaintext.** Failure of
+   Secret Service still automatically chooses a 0600 file
+   (`plan:345-348,864-870`), contrary to afe9c0f's explicit-fallback rule.
+   Require `--agent-secret-store file` or native user confirmation and otherwise
+   fail closed.
+
+6. **Closure A's page-side Promise oracle is still unscheduled.** The plan
+   acknowledges that `ipc_roundtrip_test.py` observes only native protocol rows
+   (`plan:79-81,505-533`) but still does not add the DOM assertion required by
+   05c3c17. It can be combined with S0's missing real-binary test.
+
+7. **Streaming is still bounded per frame only, not per queue/session.** The
+   plan still lacks aggregate delta/GTK-idle/message/conversation limits,
+   backpressure, coalescing, overflow behavior and cancellation/drain ordering
+   (`plan:250-276`). Add a real-process over-limit E2E as required by the
+   research check.
+
+8. **`PR_SET_PDEATHSIG` still does not own descendants.** It kills the direct
+   helper, not the Claude CLI, while the helper is deliberately placed in a
+   process group separate from the browser (`plan:241-248,271-276,824-846`).
+   Define a production descendant supervisor/pid namespace/cgroup and prove
+   browser death and helper death leave no CLI or hook process, without relying
+   on the test guardian.
+
+9. **The no-touch oracle remains atime/mtime based and omits a decoy user
+   repository.** That does not prove absence of opens on relatime/noatime
+   filesystems (`plan:790-806`). Use a real-process file-access trace/open-event
+   oracle, and scan all copied SAI scripts/documents for outside path references.
+
+10. **S3-S10 E2Es still lack a defined app-to-helper fake-API seam.** The exact
+    helper environment allowlist excludes `ANTHROPIC_BASE_URL`, while those
+    closure tests depend on the fake Messages API (`plan:243-248,499-501,
+    1180-1192`). Define a `--e2e-protocol`-gated handoff that cannot widen
+    production environment inheritance.
+
+11. **The `claude setup-token` fake still precedes characterization of the real
+    CLI contract.** Its URL/token output is explicitly unconfirmed
+    (`plan:478-481`), while the real check remains manual after S6
+    (`plan:986-988`). Make that throwaway-config characterization a prerequisite
+    to S6 green/approval and pin the fake parser to the observed contract.
+
+12. **The helper and `DRAWER` protocols remain incomplete on paper.** The
+    NDJSON schema omits `auth_url`, auth-code input and login-token return; the
+    row table omits `tree`, `minus`, `scroll`, `delta` and `BLOCKED`, although
+    later closure tests depend on them (`plan:250-260,458-471,595,760,778,
+    884,924,969`). Define exact schemas, limits, ownership and pipe direction.
+
+### New rev-2 blockers
+
+13. **All hooks run with the user's filesystem authority before the sandbox
+    exists.** The plan explicitly acknowledges that S3-S9 hooks can read the
+    rest of the user's files (`plan:420-430`), directly contradicting the
+    requirement that the agent never touch the user's `.claude` or repositories
+    (`plan:57`). Default-on at S5 makes this an ordinary product path. Move
+    bwrap/kernel confinement into S3 before the first real helper/prompt, or
+    keep the feature unable to start until confinement lands. Path-token checks
+    cannot constrain what an accepted hook script itself opens, nor a shell
+    command that computes a path dynamically.
+
+14. **R2 deliberately exposes the credential to hooks and file tools.** It
+    writes the token into `.claude/.credentials.json` inside the agent HOME
+    (`plan:352-363`), and the plan itself records that every unsandboxed hook
+    can read it (`plan:430`). This contradicts A4 and the privileged Secrets
+    boundary. Remove R2 unless the credential can be placed outside every
+    hook/tool-visible mount. A proven R1 followed by R3 with scrubbed hook
+    environments is safer.
+
+15. **The product A4 test is scheduled before product tools exist.** S4.4
+    requires `PreToolUse` and `PostToolUse` from a real read-only tool call
+    (`plan:880-885`), but browser tools first land in S7 and built-ins remain
+    disabled until S10 (`plan:263-269,295-309,990-1033`). Keep the complete
+    helper-level hook contract in S0, test the non-tool lifecycle hooks in S4,
+    then test Pre/Post at the first real MCP call in S7 and again inside bwrap.
+
+16. **Token-route selection has no installed-runtime owner.** S0 gate probes
+    R1/R2/R3 and D11 says the selection is written to
+    `runtime/token-route.json` (`plan:352-363,629-650`), but a developer gate or
+    cached helper environment cannot choose a route for the user's installed
+    CLI/home. Specify that the real `--agent-setup` probes the installed CLI,
+    writes the selected route atomically, and fails closed when none succeeds.
+
+The updated default-on/read-only design also needs one whole-gate process-tree
+oracle after S5, not only per-test helper checks, so a test that exits before
+`stop_browser` cannot leave an agent process behind. This is a SHOULD once the
+early-sandbox and descendant-ownership blockers are designed.
+
+Agent Mail 5230 contains the e03 findings; Agent Mail 5232 records the rev-2
+hook/sandbox/token-route findings. No browser, live site, socket, display,
+build, or test was used for either docs-only review.
