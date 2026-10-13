@@ -4985,3 +4985,58 @@ documentation only for this project.
 The CodeCleanup review found no new conditional-side-effect, nesting or
 literal-maintainability problem in this documentation-only diff. Agent Mail
 5254 sent the blockers and SHOULD to BlackRobin.
+
+## Claude Agent chat-drawer plan rev 11 (`2ce6f38`)
+
+**Verdict at exact `2ce6f38`: APPROVED.** Both rev-10 blockers are closed.
+S10.4 now tests the leaf-open order at both real owners through injected
+syscall tables, including character, block, FIFO and socket classifications,
+and its direct-`O_RDONLY` mutant fails before implementation can go green.
+D12 now specifies classification fd, proc-link I/O fd, equal device/inode/type
+acceptance and no other legal order. The old `O_NONBLOCK` history is explicitly
+superseded. The plan is implementation-ready; one cross-process overlap test
+remains a SHOULD and two wording/seam details are NITs.
+
+This was a docs-only review. No browser, display, socket, site, build or test
+was used. `git diff --check 8aa7329..2ce6f38` is clean, and the revision changes
+only the plan. The plan remains pinned to production commit
+`b4c23a1a56deced7b3ab7c8a34a660b22ffca622`; commits after that pin are
+documentation only for this project.
+
+### `8aa7329` finding disposition
+
+| Prior finding | Rev-11 disposition |
+|---|---|
+| Bind-mounted device test exits at `RESOLVE_NO_XDEV` | **CLOSED.** Python `os_ops` and Zig `Sys` seams now make `openat2` succeed on the same mount, return each special type from `fstat`, assert `O_PATH|O_NOFOLLOW` is first and prove no I/O reopen follows. The old direct-open path and a direct-open mutant both fail (`plan:1575-1581`). The dev-bind case is correctly retained only as a mount-boundary check. |
+| D12 says both one descriptor and two descriptors | **CLOSED.** The canonical sequence is classification fd, conditional proc-link I/O fd, and equality of device, inode and type; opening by pathname or before classification is forbidden (`plan:547-559`). The stale rev-8 `O_NONBLOCK` clause is marked superseded (`plan:622`). |
+| Inotify cannot attribute an event to browser A or B | **CLOSED as an observation defect.** S3.12 separates an idle-A/B-refusal observation from A's broker-write observation and uses a deterministic pause seam (`plan:1167-1174`). The original dangerous overlap is not yet driven; see the SHOULD below. |
+
+### Remaining SHOULD
+
+- **Exercise B's lock refusal while A has a live broker temp.** Phase 1 asks B
+  to write only while A has no operation in flight; phase 2 quits B before A
+  creates the paused temp (`plan:1167-1174`). A buggy B that empties
+  `.zb-broker-tmp/` *before* checking the owner lock produces no event when the
+  directory is empty, so phase 1 passes, but it can still delete A's live temp
+  in production. Pause A after the temp is fully written and closed, drain A's
+  initial events, then start and Send in B. While A remains paused, require
+  `home-locked`, no new B descendant, no additional temp/workspace event and
+  an unchanged live temp. Only then release A and verify the paired move cookie,
+  final digest and empty temp directory. This remains non-blocking because the
+  exclusive-lock production design itself is complete.
+
+### NITs
+
+- D12's lead sentence says every existing object uses two descriptors
+  (`plan:548`), while its next step correctly gives a special object only its
+  classification fd (`plan:550`). Say “every accepted regular file or
+  directory” in the lead sentence.
+- The seam preamble says every e2e variable reaches the helper in `hello`
+  (`plan:727`), but `ZIGBROWSER_AGENT_FS_PAUSE` acts in the app broker
+  (`plan:739`). Name the app-owned exception, bound its wait, and state the
+  filtered inotify mask plus matching move cookie used by the exact sequence;
+  otherwise normal `IN_OPEN`/`IN_MODIFY` events make “exact” ambiguous.
+
+The CodeCleanup review found no new conditional-side-effect, mutation,
+nesting, literal or maintainability blocker in the docs-only diff. Agent Mail
+5257 sent the approval, SHOULD and NITs to BlackRobin.
