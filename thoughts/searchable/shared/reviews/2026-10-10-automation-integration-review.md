@@ -4370,3 +4370,107 @@ early-sandbox and descendant-ownership blockers are designed.
 Agent Mail 5230 contains the e03 findings; Agent Mail 5232 records the rev-2
 hook/sandbox/token-route findings. No browser, live site, socket, display,
 build, or test was used for either docs-only review.
+
+## Claude Agent chat-drawer plan rev 3 (`fdf3783`) and rev 4 (`ad07556`)
+
+**Verdict at exact `fdf3783`: BLOCKER, then SUPERSEDED by `ad07556`.** Rev 3
+substantially improves the plan, but it does not close every blocker in
+`09069e3`. While this review was in progress, BlackRobin landed the docs-only
+rev-4 follow-up `ad07556`; its separate current verdict is below. The production
+pin `b4c23a1a56deced7b3ab7c8a34a660b22ffca622` remains reproducible because
+every intervening commit is docs-only.
+
+This was a docs-only review. No browser, display, socket, site, build, test, or
+user repository was opened. `git diff --check 09069e3..ad07556` is clean.
+
+### `09069e3` finding disposition
+
+| Finding | `fdf3783` | Current `ad07556` |
+|---|---|---|
+| 1. helper-only S0 | CLOSED: it is now prerequisite P0, and S1-S10 retain real-binary private-Xvfb closure tests (`fdf plan:64-66,683-730`) | CLOSED |
+| 2. built-in file-tool TOCTOU | CLOSED: built-ins stay off and app-owned `fs_*` tools own the `openat2` I/O seam (`fdf plan:405-426,1216-1237`) | CLOSED, subject to the direct-hook bypass below |
+| 3. grant lacks account/target | CLOSED in design: the card and digest include both, with `options.expect` checked inside the FIFO ticket at the commit seam (`fdf plan:332-349,1174-1190`) | CLOSED in design |
+| 4. T4/T6 incomplete | **OPEN:** adding scanner destinations is not the same as driving canaries through them, and T4 still covers only Like (`fdf plan:667-669,1143-1151`) | **OPEN**, blocker 3 below |
+| 5. silent plaintext fallback | CLOSED: only a flag or explicit native click selects the 0600 file (`fdf plan:371-375,940-953`) | CLOSED |
+| 6. Closure A Promise oracle | CLOSED: S1.6 observes success and rejection through page-set title, with a red-at-seam mutation (`fdf plan:786-791`) | CLOSED |
+| 7. aggregate streaming bounds | CLOSED: queue/view/bubble/result limits, coalescing, one GTK idle, pipe backpressure, overflow and Stop behavior are specified and driven by S5.6 (`fdf plan:286-297,1023-1031`) | CLOSED |
+| 8. descendant ownership | CLOSED in design: the bwrap PID namespace is production-owned and S3.4 checks it before harness cleanup (`fdf plan:278-284,918-930`) | CLOSED |
+| 9. no-touch oracle | The inotify/open-event oracle is CLOSED, but the product invariant remains OPEN because rev 3 deliberately exposes `/` until S10 (`fdf plan:283,484`) | Outside-user-tree confinement is CLOSED by early bwrap; workspace gating has a new bypass below |
+| 10. fake-API E2E seam | CLOSED: all seams require `--e2e-protocol`, loopback validation and an inert-production test (`fdf plan:543-556,896-907`) | CLOSED |
+| 11. real setup-token characterization | CLOSED: a redacted real transcript is a prerequisite and the fake must replay it (`fdf plan:1080-1086`) | CLOSED |
+| 12. helper/DRAWER protocol completeness | **OPEN:** S6 and multiple closure rows still use message/row types absent from the protocol tables | **OPEN**, blocker 4 below |
+| 13. hooks run before filesystem confinement | **OPEN:** S3 uses `--dev-bind / /` and the plan explicitly records the exposure (`fdf plan:278-284,484`) | CLOSED by moving the full filesystem sandbox to S3 (`plan:279-284,420-427,934-941`) |
+| 14. R2 credential visible to hooks | **OPEN:** R2 remains inside hook-visible `.claude` (`fdf plan:379-390,484`) | CLOSED: R2 is removed (`plan:379-398`) |
+| 15. S4 A4 calls tools before S7 | **OPEN:** S4.4 still requires a real read-only tool (`fdf plan:964-968`) | CLOSED: lifecycle hooks stay in S4 and Pre/Post move to S7.6 (`plan:1004-1009,1157-1160`) |
+| 16. no installed-runtime token-route owner | **OPEN:** P0 chooses and writes the route (`fdf plan:698-708`) | CLOSED: real `--agent-setup` probes the installed CLI, pins its version and fails closed (`plan:390-398,929-932`) |
+
+Rev 3 correctly records the five latest user choices: the drawer flips on after
+S5 with chat-only, then the exact S7 read-only set; every SAI hook is retained;
+scratchpad creates/writes are free while workspace mutations are intended to be
+gated; the drawer floats; and memory starts empty. Rev 4 preserves those
+choices. The remaining blockers concern whether the implementation actually
+enforces them.
+
+### Current rev-4 BLOCKER findings
+
+1. **Arbitrary hooks can bypass every workspace approval.** The helper, CLI
+   and all copied hooks share a sandbox in which `agent-home/workspace` is
+   writable (`plan:420-438`). The native card controls only calls through
+   `fs_*`; a hook can call `open`, `rename` or `unlink` directly. S10 tests only
+   the MCP tools (`plan:1264-1283`), so they cannot detect this bypass. This
+   contradicts the user's “scratchpad free, workspace gated” decision. Add a
+   real-process malicious hook that attempts direct create/overwrite/rename
+   after no card or a denied card and assert zero workspace mutation. The CLI
+   and hooks need a read-only workspace view, with approved mutation performed
+   by an app-owned broker outside that view, or an equivalent privilege/mount
+   boundary.
+
+2. **The token boundary is conditional on an unanswered root-level host
+   choice.** The plan records that this host's `ptrace_scope=0` lets a hook read
+   the CLI's token from `/proc/<pid>/mem`; seccomp does not stop that path
+   (`plan:399-411,504-511`). A4 skips the memory-read assertion unless the
+   setting is already at least 1 (`plan:702`). A default-on privileged feature
+   cannot satisfy its no-credential invariant conditionally. Either fail closed
+   on an unsafe host or use and test a production isolation mechanism that does
+   not depend on a global sysctl (for example a verified non-dumpable,
+   different-identity or PID-visibility boundary). The malicious hook's real
+   `/proc` read must fail in the real-binary E2E.
+
+3. **The required T4/T6 attacks are still not failing-first tests.** T4 drives
+   only hostile page text requesting `linkedin_like` (`plan:694,1189-1197`). It
+   still omits hostile page/tool output asking the model to reveal a credential,
+   enable a forbidden tool, and issue representative Post, Follow and Connect
+   calls, as required by `afe9c0f:67`. T6 now scans telemetry, crash/error
+   lines, JSON-RPC data, tool errors and drawer errors (`plan:567,696`), but no
+   behavior deliberately seeds a canary into each of those paths. A removed
+   redactor can therefore survive. Add the missing inputs plus red-at-seam
+   evidence that bypassing policy/redaction makes each test fail.
+
+4. **The cross-process login protocol and E2E observation protocol remain
+   incomplete.** D7's exact NDJSON list omits S6's `auth_url`, auth-code input
+   and login-token return (`plan:250-260`). Normal startup defines fd 3 as
+   app-to-helper, while S6 says the helper writes the captured token back on fd
+   3 (`plan:377-403,1094-1127`). Specify whether login is a distinct one-shot
+   process and give every pipe/fd one direction, exact frame schema, owner and
+   size/lifetime limit. The `DRAWER` table also omits `tree`, `minus`, `scroll`,
+   `delta`, `BLOCKED` and `idles`, even though closure tests consume them
+   (`plan:539-552,1033-1039,1069-1077,1103-1105`). Those schemas must be fixed
+   before implementation so tests and production do not invent incompatible
+   contracts.
+
+### SHOULD amendments
+
+- Update D6's stale statement that hook command directories are bound in S10;
+  rev 4 makes that an S3 requirement (`plan:229-234`).
+- Remove the duplicate `Property: none` in P0.4 (`plan:736-745`).
+- Name the minimal `/dev` and runtime/config binds required by Python and the
+  bundled CLI. The early sandbox must be executable as written, not discovered
+  ad hoc during green.
+- Add a whole-gate process-tree oracle after the S5 default-on transition, in
+  addition to per-test cleanup, so an early Python-driver exit cannot leave an
+  agent namespace behind.
+
+The data-driven tool table, strict schemas as a design goal, flat GTK-to-Zig
+callbacks, named bounds and explicit per-slice refactor checklist otherwise
+continue to satisfy the applicable CodeCleanup plan-hygiene criteria. Agent
+Mail 5236 sent the current blockers to BlackRobin.
