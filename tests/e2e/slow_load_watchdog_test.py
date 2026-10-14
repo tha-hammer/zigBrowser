@@ -34,6 +34,7 @@ display, with the automation API and the --e2e-protocol stdout.
 3. Single window whose page goes to the never-answering URL: nothing
    shares its web process, so the old recovery stays: at 16 s it has
    LOAD_FAIL, page.list marks it "terminated_by_api" and stderr names it.
+   That is our own termination: no crash page.
 
 Phases 1 and 2 must not print a "web process terminated" line on stderr.
 
@@ -240,6 +241,9 @@ def single_window_never(binary: Path, origin: str, check) -> None:
                 ended = browser.terminations()
                 check(ended == ["zigBrowser: window 1: web process terminated (terminated_by_api)"],
                       f"never, single window: stderr names window 1 (got {ended})")
+                time.sleep(0.5)
+                shown = [line.strip() for line in browser.stderr if "crash page" in line]
+                check(not shown, f"never, single window: our own termination shows no crash page (got {shown})")
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             check(False, f"never, single window: error={exc!r}")
             eprint("browser stderr (last 30 lines):\n" + "".join(browser.stderr[-30:]))

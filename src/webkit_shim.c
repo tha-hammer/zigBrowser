@@ -132,6 +132,13 @@ struct ZbWindow {
    * ("crashed", "memory_limit", "terminated_by_api"; NULL: alive). A
    * static string, GTK thread only; page.list reports it. */
   const char *terminated;
+  /* The last committed page's URI (GTK thread): the crash page's Reload
+   * link goes back to it, as WebKit forgets it when the process dies. */
+  char *committed_uri;
+  /* The crash page (ZB_CRASH_PAGE_*): a dead web process's message in the
+   * same view, loaded until its own load finishes, then shown until the
+   * next real load commits. GTK thread only. */
+  int crash_page;
   /* The page dialog open on this window, if any (GTK thread only): our ref,
    * and the native dialog a person can answer it with. */
   WebKitScriptDialog *dialog;
@@ -182,6 +189,7 @@ static void on_window_web_process_terminated(WebKitWebView *view,
                                              gpointer user_data);
 static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
                                         gpointer user_data);
+static void window_show_crash_page(ZbWindow *win);
 static void remove_source(guint *source_id);
 static int auto_dialog_close(ZbWindow *win, int accept, const char *text);
 static int auto_window_blocked(ZbWindow *win);
@@ -518,6 +526,7 @@ static void window_free(ZbWindow *win) {
   }
 
   g_free(win->current_uri);
+  g_free(win->committed_uri);
   g_free(win->seed_uri);
   g_free(win->pending_nav_uri);
   g_free(win->load_error_message);
@@ -975,6 +984,65 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   window_free(win);
 }
 
+enum {
+  ZB_CRASH_PAGE_NONE = 0,
+  ZB_CRASH_PAGE_LOADING = 1,
+  ZB_CRASH_PAGE_SHOWN = 2,
+};
+
+/* The crash page loads as the last committed page's URI (so page.list
+ * keeps that URL), or about:blank when nothing had committed. */
+static const char *window_crash_page_uri(const ZbWindow *win) {
+  return win->committed_uri != NULL && win->committed_uri[0] != '\0' ? win->committed_uri
+                                                                     : "about:blank";
+}
+
+static int window_is_crash_page_load(const ZbWindow *win, const char *uri) {
+  return g_strcmp0(uri, window_crash_page_uri(win)) == 0;
+}
+
+/* WebKit lets no page that it loaded from a string link to a file: URL, and
+ * the click never reaches decide-policy (nor does about:blank). So for a
+ * local page the Reload link goes here (.invalid never resolves), and
+ * decide-policy turns that click into a load of the page. It does this only
+ * while that window shows its crash page. */
+#define ZB_CRASH_RELOAD_URI "https://zigbrowser.invalid/reload-crashed-page"
+
+/* What a person sees in place of a page whose web process died: the reason
+ * in words and a link back to the page (it needs no zbHost privilege; for a
+ * local page, see ZB_CRASH_RELOAD_URI). Static HTML, no script; the URI is
+ * escaped. */
+static char *crash_page_html(const char *terminated, const char *uri) {
+  const char *words = g_strcmp0(terminated, "memory_limit") == 0
+                          ? "the page used too much memory"
+                          : "the page's process stopped unexpectedly";
+  GString *html = g_string_new(
+      "<!doctype html><meta charset=utf-8><title>Page crashed</title>"
+      "<style>body{font:16px/1.5 sans-serif;margin:3em;color:#222;background:#fff}"
+      "a{font-size:18px}</style>");
+  g_string_append_printf(html, "<h1 id=zb-crash>This page crashed (%s)</h1>", words);
+  if (uri != NULL && uri[0] != '\0') {
+    char *href = g_markup_escape_text(g_str_has_prefix(uri, "file:") ? ZB_CRASH_RELOAD_URI : uri, -1);
+    g_string_append_printf(html, "<p><a id=zb-crash-reload href=\"%s\">Reload</a></p>", href);
+    g_free(href);
+  } else {
+    g_string_append(html, "<p>Nothing had loaded in this window yet.</p>");
+  }
+  return g_string_free(html, FALSE);
+}
+
+/* A window whose web process died does not stay blank: the crash page
+ * replaces the dead page in the same view (no overlay). */
+static void window_show_crash_page(ZbWindow *win) {
+  if (win->view == NULL) {
+    return;
+  }
+  char *html = crash_page_html(win->terminated, win->committed_uri);
+  win->crash_page = ZB_CRASH_PAGE_LOADING;
+  webkit_web_view_load_alternate_html(win->view, html, window_crash_page_uri(win), NULL);
+  g_free(html);
+}
+
 static gboolean on_window_load_failed(WebKitWebView *view,
                                       WebKitLoadEvent load_event,
                                       const char *uri,
@@ -985,6 +1053,11 @@ static gboolean on_window_load_failed(WebKitWebView *view,
   ZbWindow *win = (ZbWindow *)user_data;
   if (win == NULL) {
     return FALSE;
+  }
+
+  if (win->crash_page == ZB_CRASH_PAGE_LOADING && window_is_crash_page_load(win, uri)) {
+    win->crash_page = ZB_CRASH_PAGE_NONE; /* replaced before it showed */
+    return TRUE;
   }
 
   remove_source(&win->timeout_source_id);
@@ -1023,9 +1096,23 @@ static void on_window_load_changed(WebKitWebView *view,
     return;
   }
 
+  if (win->crash_page == ZB_CRASH_PAGE_LOADING &&
+      window_is_crash_page_load(win, webkit_web_view_get_uri(view))) {
+    /* The crash page's own load is not the page's: no automation job, no
+     * load row, and page.list keeps reporting the crash. */
+    if (load_event == WEBKIT_LOAD_FINISHED) {
+      win->crash_page = ZB_CRASH_PAGE_SHOWN;
+      g_printerr("zigBrowser: window %u: showing crash page\n", win->auto_id);
+    }
+    return;
+  }
+
   auto_load_event(win, load_event, webkit_web_view_get_uri(view));
   if (load_event == WEBKIT_LOAD_COMMITTED) {
     win->terminated = NULL; /* a new page in a live web process */
+    win->crash_page = ZB_CRASH_PAGE_NONE;
+    g_free(win->committed_uri);
+    win->committed_uri = g_strdup(webkit_web_view_get_uri(view));
   }
   if (load_event == WEBKIT_LOAD_FINISHED) {
     auto_first_load_done(win);
@@ -1101,6 +1188,15 @@ static gboolean on_window_decide_policy(WebKitWebView *view,
   if (candidate == NULL) {
     webkit_policy_decision_ignore(decision);
     emit_protocol1(app, "BLOCKED", "(null)");
+    return TRUE;
+  }
+
+  if (win != NULL && win->crash_page == ZB_CRASH_PAGE_SHOWN && dtype == ZB_DTYPE_NAVIGATION &&
+      g_strcmp0(candidate, ZB_CRASH_RELOAD_URI) == 0) {
+    /* The crash page's Reload for a local page: load the page itself (it
+     * goes through this policy like any load). */
+    webkit_policy_decision_ignore(decision);
+    webkit_web_view_load_uri(view, window_crash_page_uri(win));
     return TRUE;
   }
 
@@ -4350,10 +4446,6 @@ static void auto_dialog_opened(ZbWindow *win) {
   }
 }
 
-/* A window's web process ended (crash, memory limit, or terminated): its
- * page is gone and the window shows nothing until it loads again. Record
- * why for page.list and say so on stderr, so a blank window is
- * diagnosable. Every view in a process family gets this. */
 /* ZB_UNRESPONSIVE_DEBOUNCE_MS into an unbroken unresponsive stretch: one
  * stderr line for the live log (page.health reports the same). */
 static gboolean on_window_unresponsive_timer(gpointer user_data) {
@@ -4391,6 +4483,11 @@ static void on_window_responsive_notify(WebKitWebView *view, GParamSpec *pspec,
   }
 }
 
+/* A window's web process ended (crash, memory limit, or terminated): its
+ * page is gone. Record why for page.list and say so on stderr. A death we
+ * did not cause shows the crash page in the same view, so the window is
+ * never left blank; page.list keeps the reason until a real load commits.
+ * Every view in a process family gets this. */
 static void on_window_web_process_terminated(WebKitWebView *view,
                                              WebKitWebProcessTerminationReason reason,
                                              gpointer user_data) {
@@ -4416,6 +4513,9 @@ static void on_window_web_process_terminated(WebKitWebView *view,
     return;
   }
   g_printerr("zigBrowser: window %u: web process terminated (%s)\n", win->auto_id, win->terminated);
+  if (reason != WEBKIT_WEB_PROCESS_TERMINATED_BY_API) {
+    window_show_crash_page(win); /* our own ends (close, recover, watchdog, quit) show none */
+  }
 }
 
 static gboolean on_window_script_dialog(WebKitWebView *view, WebKitScriptDialog *dialog,
