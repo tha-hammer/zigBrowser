@@ -52,6 +52,7 @@ CONNECT_TIMEOUT_S = 10.0
 HELLO_TIMEOUT_S = 10.0
 HELLO_MAX = 16384
 IDLE_TIMEOUT_S = 300.0
+SPLICE_BUFFER = 65536
 TUNNELS_MAX = 16
 BRIDGE_CONNECTIONS_MAX = 32
 BRIDGE_CONNECT_TIMEOUT_S = 1.0
@@ -220,45 +221,79 @@ def read_record(sock, buffered, deadline):
 
 # ---------------------------------------------------------------- splicing
 
-def splice(a, b, idle=IDLE_TIMEOUT_S):
-    """Relay bytes both ways until both directions end or nothing moves for `idle`
-    seconds. EOF on one side is passed on as shutdown(SHUT_WR)."""
-    poller = select.poll()
-    open_reads = {a.fileno(): (a, b), b.fileno(): (b, a)}
-    for fd in open_reads:
-        poller.register(fd, select.POLLIN)
+def splice(a, b, idle=IDLE_TIMEOUT_S, first=b""):
+    """Relay bytes both ways until both directions end, or until no byte has
+    moved for `idle` seconds in either direction. Never blocks on a peer that
+    stops reading: sockets are nonblocking, each direction holds at most
+    SPLICE_BUFFER bytes, and a full buffer stops reading from the other side.
+    EOF on one side is passed on as shutdown(SHUT_WR) once its bytes are out.
+    `first` is queued for `b` before anything else (a checked ClientHello)."""
+    peer = {a: b, b: a}
+    pending = {a: bytearray(), b: bytearray(first)}  # bytes still to write to the key
+    reading = {a, b}
+    by_fd = {a.fileno(): a, b.fileno(): b}
     last = time.monotonic()
     try:
-        while open_reads:
-            events = poller.poll(1000)
-            if not events:
-                if time.monotonic() - last > idle:
-                    return
-                continue
-            last = time.monotonic()
-            for fd, _ in events:
-                if fd not in open_reads:
-                    continue
-                src, dst = open_reads[fd]
-                try:
-                    data = src.recv(65536)
-                except OSError:
-                    data = b""
-                if data:
+        for sock in (a, b):
+            sock.setblocking(False)
+        while reading or pending[a] or pending[b]:
+            remaining = idle - (time.monotonic() - last)
+            if remaining <= 0:
+                return
+            poller = select.poll()
+            for sock in (a, b):
+                mask = 0
+                if sock in reading and len(pending[peer[sock]]) < SPLICE_BUFFER:
+                    mask |= select.POLLIN
+                if pending[sock]:
+                    mask |= select.POLLOUT
+                if mask:
+                    poller.register(sock.fileno(), mask)
+            moved = False
+            for fd, event in poller.poll(min(1000.0, remaining * 1000.0)):
+                sock = by_fd[fd]
+                other = peer[sock]
+                if event & (select.POLLIN | select.POLLHUP | select.POLLERR) and sock in reading:
                     try:
-                        dst.sendall(data)
-                        continue
+                        data = sock.recv(SPLICE_BUFFER)
+                    except (BlockingIOError, InterruptedError):
+                        data = None
+                    except OSError:
+                        data = b""
+                    if data:
+                        pending[other] += data
+                        moved = True
+                    elif data == b"":
+                        reading.discard(sock)
+                        moved = True
+                        if not pending[other]:
+                            _shut(other)
+                if event & select.POLLOUT and pending[sock]:
+                    try:
+                        sent = sock.send(pending[sock])
+                    except (BlockingIOError, InterruptedError):
+                        sent = 0
                     except OSError:
                         return
-                poller.unregister(fd)
-                del open_reads[fd]
-                try:
-                    dst.shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
+                    if sent:
+                        del pending[sock][:sent]
+                        moved = True
+                    if not pending[sock] and other not in reading:
+                        _shut(sock)
+                elif event & (select.POLLERR | select.POLLNVAL) and sock not in reading:
+                    return
+            if moved:
+                last = time.monotonic()
     finally:
         a.close()
         b.close()
+
+
+def _shut(sock):
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------- the service
@@ -314,6 +349,7 @@ class Netd:
         return None
 
     def egress(self, client):
+        client.settimeout(HEADER_TIMEOUT_S)  # every reply below is bounded too
         if not self.tunnels.acquire(blocking=False):
             try:
                 client.sendall(BUSY)
@@ -325,6 +361,7 @@ class Netd:
             head, rest = self.read_head(client)
             if head is None:
                 return
+            client.settimeout(HEADER_TIMEOUT_S)
             try:
                 host = parse_head(head, self.allowed)
             except Refused as refusal:
@@ -344,10 +381,7 @@ class Netd:
             upstream = self.connect(targets)
             if upstream is None:
                 return
-            upstream.settimeout(None)
-            upstream.sendall(early)
-            client.settimeout(None)
-            splice(client, upstream)
+            splice(client, upstream, first=early)
             client = upstream = None
         except OSError:
             pass
@@ -391,7 +425,6 @@ class Netd:
             except OSError:
                 client.close()
                 return
-            upstream.settimeout(None)
             splice(client, upstream)
         finally:
             self.bridge_slots.release()

@@ -38,6 +38,7 @@ from pathlib import Path
 
 HOST_DIR = Path(__file__).resolve().parents[1]
 BWRAP = "/usr/bin/bwrap"
+sys.path.insert(0, str(HOST_DIR))  # SpliceTest imports netd directly, also when this file runs alone
 FAKE = "fake.zb.invalid"
 CONNECT_LINE = "zigBrowser: agent: netd test-connect "
 
@@ -400,6 +401,30 @@ class ParserTest(unittest.TestCase):
                 self.assertEqual(status_of(head), 403)
         self.assertEqual(d.connects(), [], "no lookalike may reach an upstream attempt")
         self.assertEqual(self.upstream.accepted, [])
+
+
+class SpliceTest(unittest.TestCase):
+    """§3c.3's idle bound holds in both directions (RoseCat 5526): a peer that
+    stops reading cannot hold a splice, nor a tunnel slot, past `idle`."""
+
+    def test_a_peer_that_stops_reading_cannot_hold_a_splice_past_its_idle_deadline(self):
+        from zb_agent_host import netd
+        a, writer = socket.socketpair()
+        b, sink = socket.socketpair()  # `sink` never reads
+        for sock in (a, writer, b, sink):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            self.addCleanup(sock.close)
+        done = threading.Event()
+        threading.Thread(target=lambda: (netd.splice(a, b, idle=0.2), done.set()), daemon=True).start()
+        writer.setblocking(False)
+        until = time.monotonic() + 0.1
+        while time.monotonic() < until:  # fill every buffer on the way to `sink`
+            try:
+                writer.send(b"x" * 4096)
+            except BlockingIOError:
+                time.sleep(0.01)
+        self.assertTrue(done.wait(1.0), "the splice outlived its 0.2 s idle deadline behind a full send buffer")
 
 
 class VettingTest(unittest.TestCase):
