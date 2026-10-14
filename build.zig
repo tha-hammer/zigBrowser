@@ -677,6 +677,22 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_unit",
     });
+    // Chat drawer S3.1: --agent-setup's provisioning (unit and property
+    // tests of the helper's setup command); fails closed without the venv.
+    const agent_host_provision_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_provision",
+    });
+    // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
+    // decoy HOME, with the real token-route probe on the bundled CLI.
+    const agent_setup_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_setup_test.py --binary \"$1\"",
+        "agent-setup-e2e",
+    });
+    agent_setup_e2e.addArtifactArg(exe);
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -914,6 +930,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&agent_host_unit.step);
     test_step.dependOn(&agent_host_contract.step);
+    test_step.dependOn(&agent_host_provision_unit.step);
+    test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
@@ -1061,6 +1079,10 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     module.addCSourceFile(.{
         .file = b.path("src/agent_drawer.c"),
         .flags = &.{"-std=c11"},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_host.c"),
+        .flags = &.{"-std=gnu11"},
     });
 
     module.linkSystemLibrary("webkit2gtk-4.1", .{ .use_pkg_config = .force });

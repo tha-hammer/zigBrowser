@@ -288,3 +288,58 @@ def run_main(doc: str, cases: dict) -> int:
                 check(False, f"{name}: error {exc!r}")
     print(f"{check.count} checks, {len(check.failures)} failed", flush=True)
     return 1 if check.failures or check.count == 0 else 0
+
+
+# --- the helper runtime and the inotify oracle (S3) -------------------------
+def host_python() -> str:
+    """The helper venv's python (tools/agent_host_env.sh --check); a missing
+    venv fails the test (never a skip)."""
+    done = subprocess.run([str(REPO / "tools" / "agent_host_env.sh"), "--check"], capture_output=True, text=True)
+    path = done.stdout.strip()
+    if done.returncode != 0 or not path:
+        raise SystemExit(f"FAIL: helper venv missing: {done.stderr.strip()} (run tools/agent_host_env.sh)")
+    return path
+
+
+class Inotify:
+    """Every inotify event under the watched trees (recursive, all events),
+    for "nothing touched this" assertions. Opens are kernel events, so
+    relatime and noatime cannot hide them."""
+
+    IN_ALL_EVENTS = 0x00000FFF
+    IN_NONBLOCK, IN_CLOEXEC = 0o4000, 0o2000000
+
+    def __init__(self, *roots: Path) -> None:
+        import ctypes
+        import ctypes.util
+        self._libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        self._fd = self._libc.inotify_init1(self.IN_NONBLOCK | self.IN_CLOEXEC)
+        if self._fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1")
+        self._paths: dict[int, str] = {}
+        for root in roots:
+            for directory in [Path(root)] + [p for p in Path(root).rglob("*") if p.is_dir() and not p.is_symlink()]:
+                wd = self._libc.inotify_add_watch(self._fd, os.fsencode(str(directory)), self.IN_ALL_EVENTS)
+                if wd < 0:
+                    raise OSError(ctypes.get_errno(), f"inotify_add_watch {directory}")
+                self._paths[wd] = str(directory)
+
+    def events(self) -> list[tuple[str, int]]:
+        """(path, mask) of every event so far."""
+        import struct
+        out = []
+        while True:
+            try:
+                data = os.read(self._fd, 65536)
+            except BlockingIOError:
+                return out
+            offset = 0
+            while offset < len(data):
+                wd, mask, _cookie, length = struct.unpack_from("iIII", data, offset)
+                name = data[offset + 16: offset + 16 + length].rstrip(b"\0").decode(errors="replace")
+                out.append((os.path.join(self._paths.get(wd, "?"), name), mask))
+                offset += 16 + length
+
+    def close(self) -> None:
+        os.close(self._fd)
+

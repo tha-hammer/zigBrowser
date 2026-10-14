@@ -1,6 +1,7 @@
 const std = @import("std");
 const agent_config = @import("agent_config.zig");
 const agent_drawer = @import("agent_drawer.zig");
+const agent_setup = @import("agent_setup.zig");
 const cli = @import("cli.zig");
 const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
@@ -17,6 +18,7 @@ const webkit = @import("webkit.zig");
 test "module reachability" {
     _ = agent_config;
     _ = agent_drawer;
+    _ = agent_setup;
     _ = cli;
     _ = media_config;
     _ = render_config;

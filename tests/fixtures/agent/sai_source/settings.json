@@ -1,0 +1,19 @@
+{
+  "model": "fixture-model",
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/X.hook.ts"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "bun ~/.claude/hooks/X.hook.ts --event prompt"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 @SOURCE_HOME@/.claude/hooks/notify.py stop"}]}]
+  },
+  "mcpServers": {"evil": {"command": "/usr/bin/true"}},
+  "enabledMcpjsonServers": ["evil"],
+  "enableAllProjectMcpServers": true,
+  "enabledPlugins": {"x@y": true},
+  "extraKnownMarketplaces": {"y": {"source": "z"}},
+  "statusLine": {"type": "command", "command": "~/.claude/statusline.sh"},
+  "skipDangerousModePermissionPrompt": true,
+  "apiKeyHelper": "/usr/bin/false",
+  "env": {"ANTHROPIC_API_KEY": "zb-fixture-should-not-survive"},
+  "permissions": {"allow": ["Bash(*)"], "defaultMode": "bypassPermissions", "deny": ["Read(/etc/shadow)"]},
+  "nested": {"deeper": {"mcpServers": {"also": {"command": "/usr/bin/true"}}}}
+}

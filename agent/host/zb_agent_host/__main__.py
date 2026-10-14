@@ -6,6 +6,7 @@ import sys
 COMMANDS = {
     "contract-config": "contract",  # P0 contracts: one SDK turn under a token route
     "provision-runtime": "provision",  # wrappers, hook-env allowlist, hook rewrite
+    "setup": "setup",  # --agent-setup: the agent home from a SAI source, and the token route
 }
 
 

@@ -34,6 +34,7 @@ pub fn main(init: std.process.Init) !void {
                     "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
                     "                  [--media-source on|off] [--agent-drawer on|off]\n" ++
+                    "       zigBrowser --agent-setup [--sai-source DIR] [--agent-token-route r1|env] [--e2e-protocol]\n" ++
                     "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
                     "                  [--media-source on|off]\n",
@@ -50,6 +51,10 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(errors.exitCode(err));
             };
             std.process.exit(@intCast(code));
+        },
+        .agent_setup => {
+            const code = app.runWithIo(arena, init.io, command) catch |err| std.process.exit(errors.exitCode(err));
+            std.process.exit(code);
         },
         .screenshot => |spec| {
             const valid_uri = uri.validate(arena, spec.url) catch |err| {

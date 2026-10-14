@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const agent_drawer = @import("agent_drawer.zig");
+const agent_setup = @import("agent_setup.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
@@ -14,10 +15,12 @@ const webkit = @import("webkit.zig");
 
 const c = @cImport({
     @cInclude("webkit_shim.h");
+    @cInclude("agent_host.h");
 });
 
 const OpenSpec = @TypeOf(@as(cli.Command, .{ .open = undefined }).open);
 const ScreenshotSpec = @TypeOf(@as(cli.Command, .{ .screenshot = undefined }).screenshot);
+const AgentSetupSpec = @TypeOf(@as(cli.Command, .{ .agent_setup = undefined }).agent_setup);
 
 pub fn run(arena: std.mem.Allocator, command: cli.Command) errors.BrowserError!u8 {
     var threaded: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
@@ -31,7 +34,75 @@ pub fn runWithIo(arena: std.mem.Allocator, io: std.Io, command: cli.Command) err
         .usage => error.Usage,
         .open => |spec| runOpen(arena, io, spec),
         .screenshot => |spec| runScreenshot(arena, spec),
+        .agent_setup => |spec| runAgentSetup(arena, spec),
     };
+}
+
+/// `zigBrowser --agent-setup` (chat-drawer S3.1, S3.7): takes the agent
+/// home's owner lock, then runs the helper's `setup` command synchronously
+/// with an explicit environment (agent_setup.zig) and returns its status.
+fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserError!u8 {
+    if (comptime builtin.os.tag != .linux) {
+        std.debug.print("zigBrowser: agent-setup: the Claude Agent is Linux-only\n", .{});
+        return 1;
+    }
+    const user_home = getenvOwned(arena, "HOME");
+    const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), user_home) catch null) orelse {
+        std.debug.print("zigBrowser: agent-setup: neither XDG_DATA_HOME nor HOME is usable\n", .{});
+        return 1;
+    };
+    const python = getenvOwned(arena, "ZB_AGENT_HOST_PYTHON") orelse agent_setup.default_python;
+    const python_z = arena.dupeZ(u8, python) catch return error.WriteFailed;
+    if (std.c.access(python_z.ptr, std.c.X_OK) != 0) {
+        std.debug.print("zigBrowser: agent-setup: agent runtime missing at {s}\n", .{python});
+        return 1;
+    }
+    const source = spec.sai_source orelse
+        (std.fs.path.join(arena, &.{ user_home orelse "", ".claude" }) catch return error.WriteFailed);
+    const setup_run = agent_setup.launch(arena, .{
+        .home = home,
+        .python = python,
+        .package_dir = getenvOwned(arena, "ZB_AGENT_HOST_DIR") orelse agent_setup.default_package_dir,
+        .sai_source = source,
+        .source_home = user_home orelse "",
+        .source_path = getenvOwned(arena, "PATH") orelse "/usr/bin:/bin",
+        .route = spec.token_route,
+        .e2e_protocol = spec.e2e_protocol,
+        .claude_cli = getenvOwned(arena, agent_setup.claude_cli_env),
+        .lang = getenvOwned(arena, "LANG"),
+        .lc_all = getenvOwned(arena, "LC_ALL"),
+    }) catch |err| switch (err) {
+        error.RelativeCliPath => {
+            std.debug.print("zigBrowser: {s} must be an absolute path\n", .{agent_setup.claude_cli_env});
+            return 2;
+        },
+        error.OutOfMemory => return error.WriteFailed,
+    };
+    if (setup_run.warning) |line| std.debug.print("{s}\n", .{line});
+
+    const home_z = arena.dupeZ(u8, home) catch return error.WriteFailed;
+    switch (c.zb_agent_home_lock(home_z.ptr)) {
+        0 => {},
+        -2 => {
+            std.debug.print("zigBrowser: agent-setup: another zigBrowser is using the agent home\n", .{});
+            return 1;
+        },
+        else => {
+            std.debug.print("zigBrowser: agent-setup: cannot lock {s}\n", .{home});
+            return 1;
+        },
+    }
+    const argv = toCStrings(arena, setup_run.argv) catch return error.WriteFailed;
+    const envp = toCStrings(arena, setup_run.env) catch return error.WriteFailed;
+    const status = c.zb_agent_run_sync(argv.ptr, envp.ptr);
+    return if (status < 0) 1 else @intCast(@min(status, 255));
+}
+
+/// A NULL-terminated C string array of `items`.
+fn toCStrings(arena: std.mem.Allocator, items: []const []const u8) ![:null]?[*:0]const u8 {
+    const out = try arena.allocSentinel(?[*:0]const u8, items.len, null);
+    for (items, 0..) |item, i| out[i] = (try arena.dupeZ(u8, item)).ptr;
+    return out;
 }
 
 fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserError!u8 {

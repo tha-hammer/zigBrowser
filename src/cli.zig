@@ -1,5 +1,6 @@
 const std = @import("std");
 const agent_config = @import("agent_config.zig");
+const agent_setup = @import("agent_setup.zig");
 const config = @import("config.zig");
 const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
@@ -35,8 +36,19 @@ pub const Command = union(enum) {
         renderer: ?render_config.Renderer = null,
         media_source: ?media_config.MediaSource = null,
     },
+    /// --agent-setup [--sai-source DIR] [--agent-token-route r1|env]
+    /// [--e2e-protocol]: provisions the Claude Agent home (chat-drawer S3).
+    agent_setup: struct {
+        sai_source: ?[]const u8 = null,
+        token_route: TokenRoute = .r1,
+        e2e_protocol: bool = false,
+    },
     usage,
 };
+
+/// The token route --agent-setup selects (plan D11): R1 (a descriptor,
+/// probed on the installed CLI) unless the environment route is asked for.
+pub const TokenRoute = agent_setup.Route;
 
 pub fn parseArgs(args: []const []const u8) Command {
     if (args.len <= 1) return .{ .open = .{ .url = config.default_url } };
@@ -49,6 +61,10 @@ pub fn parseArgs(args: []const []const u8) Command {
 
     if (std.mem.eql(u8, first, "--screenshot")) {
         return parseScreenshotArgs(args[1..]);
+    }
+
+    if (std.mem.eql(u8, first, "--agent-setup")) {
+        return parseAgentSetupArgs(args[2..]);
     }
 
     return parseOpenArgs(args[1..]);
@@ -100,6 +116,37 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
         .renderer = renderer,
         .media_source = media_source,
     } };
+}
+
+fn parseAgentSetupArgs(tokens: []const []const u8) Command {
+    var sai_source: ?[]const u8 = null;
+    var token_route: ?TokenRoute = null;
+    var e2e_protocol = false;
+    var i: usize = 0;
+    while (i < tokens.len) : (i += 1) {
+        const token = tokens[i];
+        if (std.mem.eql(u8, token, "--e2e-protocol")) {
+            if (e2e_protocol) return .usage;
+            e2e_protocol = true;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--sai-source")) {
+            i += 1;
+            if (i >= tokens.len or sai_source != null) return .usage;
+            const path = tokens[i];
+            if (path.len == 0 or std.mem.startsWith(u8, path, "-")) return .usage;
+            sai_source = path;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--agent-token-route")) {
+            i += 1;
+            if (i >= tokens.len or token_route != null) return .usage;
+            token_route = std.meta.stringToEnum(TokenRoute, tokens[i]) orelse return .usage;
+            continue;
+        }
+        return .usage;
+    }
+    return .{ .agent_setup = .{ .sai_source = sai_source, .token_route = token_route orelse .r1, .e2e_protocol = e2e_protocol } };
 }
 
 fn parseOpenArgs(tokens: []const []const u8) Command {
@@ -198,17 +245,13 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
 }
 
 const profile_subpath = "zigbrowser/profile";
+const xdg_dirs = @import("xdg.zig");
 
 /// Default profile directory: $XDG_DATA_HOME/zigbrowser/profile, else
 /// $HOME/.local/share/zigbrowser/profile. A relative or empty XDG_DATA_HOME
 /// is ignored (XDG Base Directory spec). Returns null when neither is usable.
 pub fn defaultProfileDir(allocator: std.mem.Allocator, xdg_data_home: ?[]const u8, home: ?[]const u8) !?[]u8 {
-    if (xdg_data_home) |dir| {
-        if (std.fs.path.isAbsolute(dir)) return try std.fs.path.join(allocator, &.{ dir, profile_subpath });
-    }
-    const home_dir = home orelse return null;
-    if (home_dir.len == 0) return null;
-    return try std.fs.path.join(allocator, &.{ home_dir, ".local/share", profile_subpath });
+    return xdg_dirs.dataSubdir(allocator, xdg_data_home, home, profile_subpath);
 }
 
 test "parseArgs no args yields open with config default URL" {
@@ -436,4 +479,33 @@ test "parseArgs --agent-drawer errors are usage, and a screenshot rejects the fl
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-drawer", "on", "--agent-drawer", "on" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--agent-drawer", "on" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--agent-drawer", "off" }) == .usage);
+}
+
+test "parseArgs --agent-setup with a SAI source, a token route and the e2e protocol" {
+    const plain = parseArgs(&.{ "zigBrowser", "--agent-setup" });
+    try std.testing.expect(plain.agent_setup.sai_source == null);
+    try std.testing.expectEqual(TokenRoute.r1, plain.agent_setup.token_route);
+    try std.testing.expect(!plain.agent_setup.e2e_protocol);
+    const full = parseArgs(&.{ "zigBrowser", "--agent-setup", "--sai-source", "/src/sai", "--agent-token-route", "env", "--e2e-protocol" });
+    try std.testing.expectEqualStrings("/src/sai", full.agent_setup.sai_source.?);
+    try std.testing.expectEqual(TokenRoute.env, full.agent_setup.token_route);
+    try std.testing.expect(full.agent_setup.e2e_protocol);
+    const r1 = parseArgs(&.{ "zigBrowser", "--agent-setup", "--agent-token-route", "r1" });
+    try std.testing.expectEqual(TokenRoute.r1, r1.agent_setup.token_route);
+}
+
+test "parseArgs --agent-setup errors are usage" {
+    for ([_][]const []const u8{
+        &.{ "zigBrowser", "--agent-setup", "--sai-source" },
+        &.{ "zigBrowser", "--agent-setup", "--sai-source", "" },
+        &.{ "zigBrowser", "--agent-setup", "--sai-source", "-x" },
+        &.{ "zigBrowser", "--agent-setup", "--sai-source", "a", "--sai-source", "b" },
+        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "r3" },
+        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "env", "--agent-token-route", "env" },
+        &.{ "zigBrowser", "--agent-setup", "https://example.com" },
+        &.{ "zigBrowser", "--agent-setup", "--print-title" },
+        &.{ "zigBrowser", "https://example.com", "--agent-setup" },
+    }) |args| {
+        try std.testing.expect(parseArgs(args) == .usage);
+    }
 }
