@@ -1,16 +1,16 @@
 ---
 date: 2026-10-14T14:30:00-04:00
 planner: cc_3 / JadeBeacon (Opus 4.8)
-git_commit: 74413b0ccbde6f6b1fe1d4532170f0a1e0391d76
+git_commit: ed13e5ef582d1256cbe92bf06bb0bb3526210ca1
 branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 5)
-rev: 5
+status: plan for review (rev 6)
+rev: 6
 last_updated: 2026-10-14
 last_updated_by: cc_3 / JadeBeacon
-last_updated_note: "Rev 5 answers RoseCat's one remaining rev-4 blocker (5501): config flags have no C-ABI error channel (void setters, no out_err, --renderer has no setter), so the unsupported decision moves to a named fallible Zig validate/apply seam (applyMacBackendFlag in webkit.zig/app.zig) that refuses before the void setter and exits nonzero with an exact message; out_err claim dropped. Also adds the F2 loopback-proxy open design item to MS6. Re-pinned to HEAD 74413b0"
+last_updated_note: "Rev 6 answers RoseCat's one rev-5 blocker (review ed13e5e): the MS6 egress transport is no longer an open item — pinned exactly as a shared SandboxBackend egress capability (backend supplies endpoint + policy). macOS = ephemeral host-loopback 127.0.0.1:<port> + per-process Seatbelt port rules (CLI/helper permit only that endpoint; each hook permits only 51091/31337, no proxy/API); HTTPS_PROXY names that port; netd keeps the exact CONNECT/SNI allowlist; MS6.4 proves endpoint + both bridges + every denial + hook-cannot-reach-proxy. Unix-socket proxy ruled out (CLI rejects it, BlueBeaver 5503). Re-pinned to HEAD ed13e5e"
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
@@ -79,6 +79,30 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   finding (macOS has no per-sandbox loopback for the `127.0.0.1:3128` proxy hop) as an **open
   design item in MS6** that points at the shared sandbox interface, to be settled by BlackRobin
   and RoseCat in the drawer plan — not here. Re-pinned to HEAD `74413b0`.
+- **Rev 6** (this): answers RoseCat's **one rev-5 blocker** (review `ed13e5e`): rev 5 left the
+  MS6 egress transport as an explicitly unsettled open item, which is not implementation-ready.
+  Rev 6 **pins it** as a shared `SandboxBackend` **egress capability** — the backend supplies
+  both the loopback proxy *endpoint* and the *policy*. macOS: **host netd on an OS-selected
+  per-session `127.0.0.1:<port>`**; the generated CLI/helper Seatbelt profile permits **only** that
+  endpoint; `HTTPS_PROXY`/`HTTP_PROXY` name that exact port; netd keeps the exact CONNECT/SNI
+  allowlist; **each hook's own profile permits only loopback 51091/31337, with no proxy endpoint
+  and no API path**; and MS6.4 proves the endpoint, both bridge positives, every denial, and that a
+  hook cannot reach the proxy. The **Unix-socket-proxy option is ruled out** (the bundled CLI
+  rejects Unix-socket proxy URLs — BlueBeaver 5503), so a TCP `host:port` hop is mandatory. Linux
+  realizes the same capability with private-netns fixed ports + relays. The capability is captured
+  in the MS0 launch spec; MS6 realizes the macOS half. Re-pinned to HEAD `ed13e5e`.
+
+## Rev 6 — RoseCat's one rev-5 blocker, answered (review ed13e5e)
+
+RoseCat's exact review of `c8b646a` confirmed the config-ABI blocker **closed** (the fallible
+`applyMacBackendFlag` seam), but BLOCKED on one point: rev 5 made the load-bearing MS6 egress
+transport an explicitly **unsettled open design item**, and BlueBeaver's measurement (mail `5503`)
+ruled out the Unix-socket-proxy option, so an implementation-ready plan must **pin** the remaining
+viable mapping before MS6.
+
+| # | Blocker (ed13e5e) | Resolution in rev 6 | Where |
+|---|---|---|---|
+| 1 | MS6 egress is left open; the Linux-private `127.0.0.1:3128` listener can't be copied to a shared macOS loopback port, and the CLI rejects Unix-socket proxy URLs (5503) | **Pinned exactly** as a shared `SandboxBackend` egress capability (endpoint + policy supplied by the backend): (1) host netd on an **OS-selected per-session `127.0.0.1:<port>`**, CLI/helper profile permits **only** that loopback endpoint; (2) `HTTPS_PROXY`/`HTTP_PROXY` name that port, netd keeps the exact CONNECT/SNI allowlist (arbitrary host processes gain nothing — they already have host egress and the proxy grants only the same allowlist); (3) **each hook its own profile permitting only loopback 51091/31337**, no proxy endpoint, no API path; (4) the real-binary fake-API test proves the endpoint, both bridge positives, every MS6.4 denial, and that a hook cannot reach the proxy. **Linux** realizes it with private-netns fixed ports + relays; **macOS** with the ephemeral host-loopback proxy + per-process Seatbelt port rules. Unix-socket proxy ruled out (5503) | MS0 launch spec (egress capability + realization), MS6 "Egress mapping" §, MS6.4 |
 
 ## Rev 5 — RoseCat's one remaining rev-4 blocker, answered (review mail 5501)
 
@@ -90,11 +114,11 @@ in-process CGEvent/CGEventPost split, and the complete 75-export inventory + coo
 |---|---|---|---|
 | 1 | The config-flag ABI names an impossible error path: the table/MS3.2 say flags return `int<0 + out_err`, but `zb_app_set_hw_policy`/`zb_app_set_media_source` are **`void`**, their getters are bare `int`, and `--renderer` has **no C setter** — so no such channel exists (same class as rev-3 #2) | Moved the unsupported decision to a **named fallible Zig seam `applyMacBackendFlag(flag, value) !void`** (`src/webkit.zig`, called from `src/app.zig`): it validates each flag/value **before** any void C setter; a supported value is applied (void setter and/or `WKPreferences`), an unsupported value is **refused** so the **real binary exits nonzero with an exact message** and the C ABI is never touched. `--renderer` is handled entirely by this Zig seam. The void setters/int getters are simply **always implemented** (no error channel claimed). Dropped the `out_err` claim from the ABI table and MS3.2; named `mac_config_flags_test.py` for the supported-applies and unsupported-exits-nonzero cases (with a before-validate / swallow-error mutant) | ABI table (config rows + uniform-mechanism note), MS3.2 |
 
-**Also in rev 5 (advisory F2, orchestrator-directed):** the MS6 open-design item below records that
-the rev-16.2 `127.0.0.1:3128` localhost proxy hop is isolated on Linux only by the per-sandbox
-netns loopback, which macOS lacks; the macOS answer (a per-sandbox loopback alias vs a unix-socket
-proxy the CLI dials) is left to the shared sandbox interface and will be settled by BlackRobin and
-RoseCat in the drawer plan.
+**Also in rev 5 (advisory F2, orchestrator-directed):** rev 5 recorded the F2 egress-hop finding as
+an MS6 open design item (macOS has no per-sandbox loopback for the rev-16.2 `127.0.0.1:3128` hop).
+**Rev 6 closes that item** — it is no longer open: the egress capability is pinned in MS0 and MS6
+(see the Rev 6 table and MS6 "Egress mapping" §), with the Unix-socket-proxy option ruled out by
+BlueBeaver's CLI measurement (5503).
 
 ## Rev 4 — how each of RoseCat's 3 rev-3 blockers is answered (review db02324)
 
@@ -288,7 +312,7 @@ distributable one once the user has a Developer ID.
   or screen capture, never a production socket drawer-read API.
 - **Real-screen (UI slices):** macOS cases in the real-screen check, run by the orchestrator on
   the user's Mac; a UI slice is not approved until it passes there.
-- **Closure tests** are Tier-1 real-binary e2e; ClosureMaps pinned to HEAD 74413b0 (all three
+- **Closure tests** are Tier-1 real-binary e2e; ClosureMaps pinned to HEAD ed13e5e (all three
   JSON maps re-pinned in rev 4). **Both arches every run.**
 
 ## Shared sandbox backend contract (corrected layer — blocker 5)
@@ -305,10 +329,22 @@ The sandbox seam is **not** a Zig abstraction. Today it is:
 it **without behavior change**, naming the exact files, methods, ownership, and wire contract:
 
 - Launch spec (the contract both Linux and macOS satisfy): the broker byte stream; the token
-  channel (FIFO then fd 3, never env); the host allowlist-proxy endpoint (`api.anthropic.com` +
-  census-proven CLI domains, fail-closed) and the two bridge ports (51091, 31337); the shares
-  (agent home read-only, workspace read-only, scratchpad read-write); a per-hook confinement
-  launcher; and a lifetime contract (everything dies with the browser).
+  channel (FIFO then fd 3, never env); **the egress capability (rev 6) — the backend supplies both
+  the loopback proxy *endpoint* and the *policy*: the CLI/helper reach egress only at a
+  backend-supplied `127.0.0.1:<proxy-port>`, and netd enforces the exact CONNECT/SNI allowlist
+  (`api.anthropic.com` + census-proven CLI domains, fail-closed)**; the two bridge ports (51091,
+  31337); the shares (agent home read-only, workspace read-only, scratchpad read-write); a per-hook
+  confinement launcher (**each hook confined to only loopback 51091/31337, with no proxy endpoint
+  and no API path**); and a lifetime contract (everything dies with the browser).
+- **Egress capability realization (rev 6, pinned per RoseCat `ed13e5e`):** the *endpoint* is
+  backend-chosen, the *policy* (allowlist + per-process reachability) is backend-enforced. **Linux**
+  realizes it with a **private network namespace, fixed proxy/bridge ports and relays** (the hook's
+  own netns seals it). **macOS** realizes it with an **ephemeral host-loopback proxy** — netd
+  listens on an **OS-selected, per-session `127.0.0.1:<port>`** — plus **per-process Seatbelt port
+  rules**: the generated CLI/helper profile permits **only** that one loopback endpoint, and each
+  hook's profile permits **only** loopback 51091/31337 (no proxy endpoint, no API path). The
+  bundled CLI rejects Unix-socket proxy URLs (BlueBeaver 5503), so a TCP `host:port` hop is
+  mandatory on every backend; `HTTPS_PROXY`/`HTTP_PROXY` name that exact backend-supplied port.
 - Ownership: the **Python** side owns policy/argv/profile generation; the **C** side owns spawn +
   parent-death; the **host** side (shared, Linux+macOS) owns the proxy, bridges, in-process
   broker, and approval logic.
@@ -426,8 +462,8 @@ single red seam can't hold).
 ### Explicit ABI / test inventory (blockers 1, 4; rev 4 — literal export-by-export table)
 
 This is the **complete production ABI** — **all 75 `webkit_shim.h` exports** at the pin
-`74413b0` (the `webkit_shim.h` surface is byte-identical across 833767e→176782f→74413b0), each
-assigned an implementing slice, an **on-macOS status / unsupported mechanism**, and a **named
+`ed13e5e` (the `webkit_shim.h` surface is byte-identical across 833767e→176782f→74413b0→ed13e5e),
+each assigned an implementing slice, an **on-macOS status / unsupported mechanism**, and a **named
 test**. "Every `webkit_shim.h` export" is now literal, not a representative subset (rev 3
 blocker 4; rev 4 completeness; rev 5 corrects the config-flag mechanism).
 
@@ -585,7 +621,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 ```json
 {
   "behavior": "An ordinary routed automation command drives the live WKWebView page and its result is observable to the client.",
-  "git_commit": "74413b0ccbde6f6b1fe1d4532170f0a1e0391d76",
+  "git_commit": "ed13e5ef582d1256cbe92bf06bb0bb3526210ca1",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "loaded_page",         "module": "src/wkwebview_shim.m",         "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                     "seedable_store": "zb_automation_navigate_guarded" },
@@ -622,7 +658,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 ```json
 {
   "behavior": "page.health/page.list answer for all windows without waiting behind a sibling window's stuck FIFO.",
-  "git_commit": "74413b0ccbde6f6b1fe1d4532170f0a1e0391d76",
+  "git_commit": "ed13e5ef582d1256cbe92bf06bb0bb3526210ca1",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "two_windows_one_stuck", "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,               "seedable_store": "zb_automation_navigate_guarded" },
@@ -652,7 +688,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 ```json
 {
   "behavior": "A hung WKWebView window is recovered only via two-phase consent, with exactly-once job cancellation and no automatic kill.",
-  "git_commit": "74413b0ccbde6f6b1fe1d4532170f0a1e0391d76",
+  "git_commit": "ed13e5ef582d1256cbe92bf06bb0bb3526210ca1",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "frozen_window",     "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                  "seedable_store": "zb_automation_navigate_guarded" },
@@ -670,7 +706,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 }
 ```
 
-> Each map's `read_path`/`seedable_store`/`driver` resolves at 74413b0 (the macOS impls are
+> Each map's `read_path`/`seedable_store`/`driver` resolves at ed13e5e (the macOS impls are
 > added by MS2; `handleWindows`/`handleRecover`/`zb_app_run`/`zb_automation_*` resolve now). All
 > three e2es start at the authenticated socket and observe through production reads; **none** call
 > the WK port or shim directly (FORBIDDEN SPAN).
@@ -882,9 +918,10 @@ disabled until the shared interface's VM backend is implemented** — Seatbelt-f
 
 ### Design (from `…/research/2026-10-14-macos-sandbox-option.md`)
 - `MacSeatbeltBackend` implements the MS0 `SandboxBackend` spec: `(deny default)`, deny-default
-  reads, **no `same-sandbox` task-port/process-info rights**, allow only `localhost:<proxy>`/
-  `:51091`/`:31337`, tiny mach-lookup (no WindowServer, no mDNSResponder), **profile file + `-D`
-  params** (not inline), fixed `/usr/bin/sandbox-exec`.
+  reads, **no `same-sandbox` task-port/process-info rights**, allow only the backend's
+  ephemeral loopback proxy port and `:51091`/`:31337` (see the egress mapping below), tiny
+  mach-lookup (no WindowServer, no mDNSResponder), **profile file + `-D` params** (not inline),
+  fixed `/usr/bin/sandbox-exec`.
 - Hooks spawned **app-side**, each in its own profile (profiles don't nest); stdio over
   `SCM_RIGHTS`.
 - Orphan cleanup via kqueue `NOTE_EXIT` + pipe EOF + PID tracking. **The dedicated-user `kill(-1)`
@@ -892,19 +929,32 @@ disabled until the shared interface's VM backend is implemented** — Seatbelt-f
 - The proxy/bridges are owned here or depend on a named green Linux revision (per MS0/Shared
   contract).
 
-> **Open design item — the egress proxy's localhost hop on macOS (rev 5; advisory F2, mail 5502).**
-> The accepted Linux network design (drawer plan rev 16.2 §3c, `3856558`) has the CLI reach egress
-> via `HTTPS_PROXY=http://127.0.0.1:3128`, where the `127.0.0.1:3128` listener is isolated **only
-> because each sandbox has its own netns loopback**. **macOS has no per-sandbox loopback**, so a
-> `127.0.0.1:3128` listener would be host-global (collides with the host, reachable by any process)
-> and the isolation is lost. The egress path is already a filesystem **unix socket**
-> (`egress/proxy.sock`); the TCP hop exists only because the CLI wants a `host:port` proxy. The
-> macOS answer — a **per-sandbox loopback alias** the backend provides, or a **unix-socket proxy
-> the CLI dials directly** (if the bundled CLI/Bun supports one) — is a property of the **shared
-> sandbox interface (MS0 launch spec)**, not of Seatbelt alone. **This plan does not settle it:**
-> per the orchestrator, BlackRobin and RoseCat decide it in the drawer plan; MS6 then implements
-> whatever the shared interface specifies. The bridges' inner `127.0.0.1:51091`/`:31337` listeners
-> have the same shape and the same resolution.
+### Egress mapping — the `SandboxBackend` egress capability, pinned (rev 6; RoseCat `ed13e5e`)
+
+The MS0 egress capability (endpoint **and** policy supplied by the backend) is realized on macOS
+exactly as follows. This replaces rev 5's open design item: the "Unix-socket proxy" option is
+**ruled out** because the bundled CLI rejects Unix-socket proxy URLs (BlueBeaver measured, mail
+`5503`), so a TCP `127.0.0.1:<port>` hop is mandatory, and the remaining viable mapping is pinned:
+
+1. **Host netd listens on an OS-selected, per-session `127.0.0.1:<port>`** (an ephemeral port the
+   kernel assigns, recorded for the session), and the **generated CLI/helper Seatbelt profile
+   permits only that one loopback endpoint** — no other outbound, no other loopback port.
+2. **`HTTPS_PROXY`/`HTTP_PROXY` name that exact port**, and **netd keeps the exact CONNECT/SNI
+   allowlist** (`api.anthropic.com` + census-proven CLI domains, fail-closed; §MS6.4). An arbitrary
+   host process gains no meaningful capability from the port existing: it already has host egress,
+   and the proxy grants only the same API allowlist.
+3. **Each hook gets its own profile permitting only loopback ports `51091` and `31337`** — **no
+   proxy endpoint and no API path**. (Hooks never reach the egress proxy; the per-process rule, not
+   a shared loopback, is what isolates them on macOS, since macOS has no per-sandbox loopback.)
+4. **The real-binary fake-API test (MS6.4) proves:** the chosen endpoint carries egress; **both
+   bridge positives** (`:51091`, `:31337`); **every MS6.4 denial**; and that **a hook cannot reach
+   the proxy** (a hook's attempt to the CLI/helper proxy port is refused by its profile).
+
+**Shared capability framing:** the endpoint and policy are the backend's to supply. **Linux**
+implements the capability with a **private network namespace, fixed proxy/bridge ports, and relays**
+(the hook's own netns seals it). **macOS** implements it with the **ephemeral host-loopback proxy
+above plus per-process Seatbelt port rules**. Either way MS0's launch spec is the single owner of
+"which endpoint, which policy, who may reach it"; MS6 only realizes the macOS half.
 
 ### Hard-gate behaviors (all failing-first; failure ⇒ launch disabled + VM required)
 - **MS6.1 (gate):** a malicious hook's `task_for_pid(cli)`, `sysctl KERN_PROCARGS2`,
@@ -915,11 +965,15 @@ disabled until the shared interface's VM backend is implemented** — Seatbelt-f
   (disposition 3; failure selects VM).
 - **MS6.3 (gate):** the **fd-3 reopen** (`/dev/fd/3`) works with the macOS CLI on **both** arches
   (disposition 2).
-- **MS6.4 (gate):** network — the agent reaches the proxy, `:51091`, `:31337`; and **fails** to
+- **MS6.4 (gate, egress mapping pinned — rev 6):** network — the CLI/helper reach egress **only at
+  the backend's per-session `127.0.0.1:<port>`** (the generated profile permits only that endpoint);
+  both bridges `:51091`/`:31337` carry bytes (positive controls); and the sandbox **fails** to
   reach a direct loopback decoy, LAN, public IP, DNS, WindowServer/CGEvent/screen capture, a
-  non-allowlisted host, and a workspace write. The fake Messages/Anthropic API is reached **through
-  the production proxy** via an `--e2e-protocol` allowlist seam; **removing/bypassing the proxy
-  turns the test red**.
+  non-allowlisted host, and a workspace write. **A hook (its own profile) cannot reach the proxy
+  port at all** — its attempt is refused — while its two bridges still work. The fake
+  Messages/Anthropic API is reached **through the production proxy** via an `--e2e-protocol`
+  allowlist seam; **removing/bypassing the proxy, or widening the hook profile to admit the proxy
+  port, turns the test red**.
 - **MS6.5 (gate):** **no survivors** after `kill -9` of the browser, **including a hook that
   double-forks and `setsid`** — via the kqueue/pipe-EOF launcher. Failure ⇒ VM required.
 
