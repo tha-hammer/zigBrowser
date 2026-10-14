@@ -47,6 +47,12 @@ class AgentHome:
         return self.root / "runtime"
 
     @property
+    def state(self):
+        """The agent's writable state, outside every published build (plan
+        rev 15.4): the sandbox binds state/<name> at .claude/<name>."""
+        return self.root / "state"
+
+    @property
     def tmp(self):
         return self.scratchpad / "tmp"
 

@@ -229,8 +229,13 @@ class SandboxArgv(unittest.TestCase):
     def test_claude_is_read_only_with_only_state_dirs_writable(self):
         claude = str(self.home.claude_dir)
         self.assertIn(f"--ro-bind {claude} {claude}", self.joined)
-        writable = [self.argv[i + 1] for i, a in enumerate(self.argv) if a == "--bind"]
-        self.assertEqual(sorted(writable), sorted([f"{claude}/{d}" for d in sandbox.STATE_DIRS] + [str(self.home.scratchpad)]))
+        binds = [(self.argv[i + 1], self.argv[i + 2]) for i, a in enumerate(self.argv) if a == "--bind"]
+        state = str(self.home.state)
+        self.assertEqual(sorted(binds), sorted([(f"{state}/{d}", f"{claude}/{d}") for d in sandbox.STATE_DIRS]
+                                               + [(str(self.home.scratchpad), str(self.home.scratchpad))]))
+        # The CLI's state file and backups are state too, but read-only (plan rev 15.5).
+        for name in (".claude.json", "backups"):
+            self.assertIn(f"--ro-bind {state}/{name} {claude}/{name}", self.joined)
 
     def test_the_outer_seccomp_filter_is_passed_to_bwrap(self):
         argv = sandbox.helper_argv(self.home, seccomp_fd=17)

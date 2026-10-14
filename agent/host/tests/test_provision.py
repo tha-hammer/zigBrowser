@@ -2,7 +2,9 @@
 from a SAI source. Unit and property tests of zb_agent_host.setup; the real
 binary is driven by tests/e2e/agent_setup_test.py."""
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import random
@@ -132,8 +134,44 @@ class RewriteBlockerTest(unittest.TestCase):
         for bad in ("read /secret now", "cd /tmp", '"/srv"'):
             with self.assertRaises(setup.SetupError):
                 setup.rewrite_text(bad, "/home/u", "/h", "a.md", commands={"create_tdd_plan"})
-        for ok in ("run /create_tdd_plan", "use /clear first", "/usr", "/etc"):
+        for ok in ("run /create_tdd_plan", "use /clear first", "/usr", "/etc"):  # .md prose
             self.assertEqual(setup.rewrite_text(ok, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), ok)
+
+    def test_a_known_name_is_kept_only_as_a_slash_command_invocation_in_markdown_prose(self):
+        """RoseCat 5338: the exception may not certify an OS path."""
+        ok = ("First run /clear, then read.", "submits after /clear and", "you have been /clear'd", "shown in /help",
+              "/clear", "- /compact now", "> /help", "1. /status", "type `/clear` here", "Use /create_tdd_plan.")
+        for text in ok:
+            self.assertEqual(setup.rewrite_text(text, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), text, text)
+        bad = ("rm /clear", "open /help", "path=/status", "see /clear/x", "`rm /clear`")
+        for text in bad:
+            with self.assertRaises(setup.SetupError, msg=text):
+                setup.rewrite_text(text, "/home/u", "/h", "a.md")
+        for rel in ("hooks/x.ts", "a.py", "b.sh", "c.json"):
+            with self.assertRaises(setup.SetupError, msg=rel):
+                setup.rewrite_text("run /clear", "/home/u", "/h", rel)
+        with self.assertRaises(setup.SetupError):
+            setup.rewrite_text("text\n```\n/clear\n```\n", "/home/u", "/h", "a.md")
+
+    def test_a_copied_command_or_skill_named_like_a_root_path_refuses_setup(self):
+        """RoseCat 5352."""
+        for make in (lambda s: (s / "skills" / "tmp").mkdir(), lambda s: (s / "commands" / "etc.md").write_text("x")):
+            box = Sandbox(self)
+            make(box.source)
+            with self.assertRaises(setup.SetupError) as cm:
+                box.provision()
+            self.assertIn("collides with a root path", str(cm.exception))
+            self.assertFalse(box.home.root.exists())
+        with self.assertRaises(setup.SetupError):
+            setup.rewrite_text("stored in /tmp", "/home/u", "/h", "a.md")
+
+    def test_a_dot_segment_refuses_before_any_prefix_check_or_rewrite(self):
+        """RoseCat 5340."""
+        for text in ("cat /usr/../secret", "/proc/self/../../secret", "/agent/../secret", "/home/u/../other",
+                     "/usr/./bin/x"):
+            with self.assertRaises(setup.SetupError, msg=text) as cm:
+                setup.rewrite_text(text, "/home/u", "/agent", "a.md")
+            self.assertEqual(str(cm.exception), "path with a dot segment in a.md:1")
 
     def test_an_empty_or_relative_source_home_is_refused(self):
         for home in ("", "relative", "/"):
@@ -165,57 +203,213 @@ class RuntimeRecordTest(unittest.TestCase):
         self.assertIsNone(json.loads((box.home.runtime / "host.json").read_text())["runtime_lock"])
 
 
-class InstallFaultTest(unittest.TestCase):
-    """RoseCat 5328 (1): a failure at any install boundary keeps the live state."""
+def inode_and_bytes(path):
+    st = path.stat()
+    return st.st_ino, path.read_bytes()
+
+
+class PublishTest(unittest.TestCase):
+    """Plan rev 15.4: a complete build is published by one swap of `current`;
+    a failure or a kill anywhere leaves the old or the new `current`, never a
+    mix, and the state is never touched."""
 
     def setUp(self):
         self.box = Sandbox(self)
         self.box.provision()
-        root = self.box.home.root
-        (root / ".claude" / "projects").mkdir(exist_ok=True)
-        (root / ".claude" / "projects" / "keep.jsonl").write_text("transcript")
-        self.before = tree_digest(root)
+        self.root = root = self.box.home.root
+        (root / "state" / "projects" / "keep.jsonl").write_text("transcript")
+        (root / "state" / "MEMORY" / "note.md").write_text("memory")
+        (root / "workspace" / "keep.txt").write_text("mine")
+        self.state_files = [root / "state/projects/keep.jsonl", root / "state/MEMORY/note.md", root / "workspace/keep.txt",
+                            root / "state/.claude.json"]
+        self.state_before = [inode_and_bytes(p) for p in self.state_files]
+        self.current_before = os.readlink(root / "current")
+        self.dist_before = tree_digest(root / self.current_before)
 
-    def assert_unchanged(self):
-        root = self.box.home.root
-        self.assertEqual((root / ".claude" / "projects" / "keep.jsonl").read_text(), "transcript")
-        self.assertEqual(tree_digest(root), self.before)
-        self.assertEqual([p for p in root.parent.iterdir() if ".staging" in p.name], [])
+    def assert_state_untouched(self):
+        self.assertEqual([inode_and_bytes(p) for p in self.state_files], self.state_before)
 
-    def test_a_failed_first_exchange_keeps_everything(self):
-        with mock.patch.object(setup, "exchange", side_effect=OSError("injected")):
-            with self.assertRaises(OSError):
+    def assert_old_current(self):
+        self.assertEqual(os.readlink(self.root / "current"), self.current_before)
+        self.assertEqual(tree_digest(self.root / self.current_before), self.dist_before)
+        self.assert_state_untouched()
+
+    def assert_clean(self):
+        names = sorted(p.name for p in self.root.iterdir())
+        self.assertEqual([n for n in names if n.startswith(("dist-", ".dist-tmp-", ".current.tmp-"))],
+                         [os.readlink(self.root / "current")], names)
+
+    def test_the_layout_is_fixed_links_into_current_and_state_outside_it(self):
+        self.assertEqual(self.current_before, "dist-1")
+        self.assertEqual(os.readlink(self.root / ".claude"), "current/.claude")
+        self.assertEqual(os.readlink(self.root / "runtime"), "current/runtime")
+        for name in ("workspace", "scratchpad", "scratchpad/tmp", "secrets", "state", "state/backups",
+                     *(f"state/{d}" for d in setup.sandbox.STATE_DIRS)):
+            path = self.root / name
+            self.assertTrue(path.is_dir() and not path.is_symlink(), name)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, name)
+        self.assertEqual(json.loads((self.root / "state/.claude.json").read_text()), {})
+        self.assertEqual(stat.S_IMODE((self.root / "state/.claude.json").stat().st_mode), 0o600)
+        for d in ("backups", *setup.sandbox.STATE_DIRS):
+            self.assertEqual(list((self.root / "dist-1/.claude" / d).iterdir()), [], f"{d} is an empty mount point")
+        self.assertEqual((self.root / "dist-1/.claude/.claude.json").read_bytes(), b"{}\n", "a placeholder mount point")
+        self.assert_clean()
+
+    def test_a_second_run_publishes_a_new_build_and_keeps_the_state(self):
+        self.box.provision()
+        self.assertEqual(os.readlink(self.root / "current"), "dist-2")
+        self.assertEqual(tree_digest(self.root / "dist-2"), self.dist_before)
+        self.assert_state_untouched()
+        self.assert_clean()
+
+    def test_a_failure_at_any_build_step_keeps_the_old_current_and_the_state(self):
+        for target in ("copy_sai", "stage", "fsync_tree"):
+            with self.subTest(target=target):
+                with mock.patch.object(setup, target, side_effect=OSError("injected")):
+                    with self.assertRaises(OSError):
+                        self.box.provision()
+                self.assert_old_current()
+                self.assert_clean()
+
+    def test_a_failure_at_either_rename_of_the_publish_keeps_the_old_current(self):
+        for failing in (1, 2):  # the build to dist-<n>, then the temp link over current
+            with self.subTest(failing=failing):
+                real, calls = os.rename, []
+
+                def flaky(a, b):
+                    calls.append(b)
+                    if len(calls) == failing:
+                        raise OSError("injected")
+                    real(a, b)
+
+                with mock.patch.object(setup.os, "rename", side_effect=flaky):
+                    with self.assertRaises(OSError):
+                        self.box.provision()
+                self.assert_old_current()
+        self.box.provision()  # the next run publishes and removes the leftovers
+        self.assertNotEqual(os.readlink(self.root / "current"), self.current_before)
+        self.assert_state_untouched()
+        self.assert_clean()
+
+    def test_killed_at_either_cut_the_disk_holds_one_whole_current_and_a_rerun_recovers(self):
+        class Killed(BaseException):
+            pass
+
+        for cut, live in (("swap:before", self.current_before), ("swap:after", None)):
+            with self.subTest(cut=cut):
+                old = os.readlink(self.root / "current")
+                with mock.patch.object(setup, "_PAUSE_AT", cut), mock.patch.object(setup.time, "sleep"), \
+                        mock.patch.object(setup.os, "_exit", side_effect=Killed), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    with self.assertRaises(Killed):
+                        self.box.provision()
+                self.assertEqual(out.getvalue(), f"SETUP\tpaused\t{cut}\n")
+                now = os.readlink(self.root / "current")
+                self.assertEqual(now, old if cut == "swap:before" else f"dist-{int(old[5:]) + 1}")
+                self.assertEqual(tree_digest(self.root / now), self.dist_before)
+                self.assert_state_untouched()
                 self.box.provision()
-        self.assert_unchanged()
+                self.assert_state_untouched()
+                self.assert_clean()
 
-    def test_a_failed_second_exchange_rolls_back(self):
-        real = setup.exchange
-        calls = []
+    def test_a_failure_at_either_fsync_of_root_keeps_one_whole_current_and_the_state(self):
+        """Plan rev 15.5, steps 4 and 7 of the publish order."""
+        real = setup.fsync_dir
+        for failing, current_may_be in ((1, "old"), (2, "either")):
+            with self.subTest(failing=failing):
+                old = os.readlink(self.root / "current")
+                calls = []
 
-        def flaky(a, b):
-            calls.append((a, b))
-            if len(calls) == 2:
-                raise OSError("injected")
-            real(a, b)
+                def flaky(path):
+                    if Path(path) == self.root:
+                        calls.append(path)
+                        if len(calls) == failing:
+                            raise OSError("injected")
+                    real(path)
 
-        with mock.patch.object(setup, "exchange", side_effect=flaky):
-            with self.assertRaises(OSError):
+                with mock.patch.object(setup, "ensure_home"), mock.patch.object(setup, "fsync_dir", side_effect=flaky):
+                    with self.assertRaises(OSError):
+                        self.box.provision()
+                now = os.readlink(self.root / "current")
+                if current_may_be == "old":
+                    self.assertEqual(now, old)
+                else:
+                    self.assertIn(now, (old, f"dist-{int(old[5:]) + 1}"))
+                self.assertEqual(tree_digest(self.root / now), self.dist_before)
+                self.assert_state_untouched()
                 self.box.provision()
-        self.assert_unchanged()
+                self.assert_state_untouched()
+                self.assert_clean()
 
-    def test_a_failed_state_move_rolls_back(self):
-        with mock.patch.object(setup, "move_state", side_effect=OSError("injected")):
-            with self.assertRaises(OSError):
-                self.box.provision()
-        self.assert_unchanged()
+    def test_an_entry_setup_did_not_make_refuses_before_building_and_is_left_alone(self):
+        """Plan rev 15.5: garbage is deleted only once validated; nothing is followed."""
+        outside = self.box.tmp / "outside"
+        outside.mkdir()
+        (outside / "precious").write_text("keep")
+        cases = {
+            "dist-9 -> outside": lambda: os.symlink(outside, self.root / "dist-9"),
+            "dist-01": lambda: (self.root / "dist-01").mkdir(mode=0o700),
+            "dist-x": lambda: (self.root / "dist-x").mkdir(mode=0o700),
+            "dist-9 mode 0755": lambda: (self.root / "dist-9").mkdir(mode=0o755),
+            ".dist-tmp-a file": lambda: (self.root / ".dist-tmp-a").write_text("x"),
+            ".current.tmp-a dir": lambda: (self.root / ".current.tmp-a").mkdir(mode=0o700),
+        }
+        for label, plant in cases.items():
+            with self.subTest(label):
+                plant()
+                with self.assertRaises(setup.SetupError) as cm:
+                    self.box.provision()
+                self.assertIn("is not something setup made", str(cm.exception))
+                self.assertEqual((outside / "precious").read_text(), "keep")
+                self.assert_old_current()
+                name = label.split()[0]
+                path = self.root / name
+                (path.unlink if path.is_symlink() or path.is_file() else path.rmdir)()
+        for target in ("../x", "/tmp/x", "dist-1/.claude", "dist-01"):
+            with self.subTest(current=target):
+                (self.root / "current").unlink()
+                os.symlink(target, self.root / "current")
+                with self.assertRaises(setup.SetupError):
+                    self.box.provision()
+                (self.root / "current").unlink()
+                os.symlink(self.current_before, self.root / "current")
+        self.assert_old_current()
 
-    def test_the_exchange_uses_libc_renameat2_not_a_syscall_number(self):
-        self.assertNotIn("316", open(setup.__file__).read())
-        a, b = self.box.tmp / "a", self.box.tmp / "b"
-        a.write_text("A")
-        b.write_text("B")
-        setup.exchange(a, b)
-        self.assertEqual((a.read_text(), b.read_text()), ("B", "A"))
+    def test_a_missing_fixed_link_is_made_again_and_a_wrong_one_refuses(self):
+        (self.root / "runtime").unlink()
+        self.box.provision()
+        self.assertEqual(os.readlink(self.root / "runtime"), "current/runtime")
+        self.assert_state_untouched()
+        before = os.readlink(self.root / "current")
+        (self.root / "runtime").unlink()
+        (self.root / "runtime").mkdir()
+        with self.assertRaises(setup.SetupError):
+            self.box.provision()
+        self.assertEqual(os.readlink(self.root / "current"), before)
+
+    def test_a_failed_removal_of_an_old_build_is_reported_and_setup_succeeds(self):
+        with mock.patch.object(setup.shutil, "rmtree", side_effect=OSError("injected")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.box.provision()
+        self.assertEqual(os.readlink(self.root / "current"), "dist-2")
+        self.assertIn(f"zigBrowser: agent-setup: old build left at {self.root / 'dist-1'}", err.getvalue())
+        self.assert_state_untouched()
+
+    def test_an_old_layout_home_or_a_changed_link_refuses_and_nothing_changes(self):
+        other = Sandbox(self)
+        other.home.root.mkdir(parents=True)
+        (other.home.root / ".claude").mkdir()
+        (other.home.root / ".claude" / "projects").mkdir()
+        before = tree_digest(other.home.root)
+        with self.assertRaises(setup.SetupError) as cm:
+            other.provision()
+        self.assertEqual(str(cm.exception), f"{other.home.root} has the old layout; move it aside and run again")
+        self.assertEqual(tree_digest(other.home.root), before)
+        (self.root / "runtime").unlink()
+        os.symlink("dist-1/runtime", self.root / "runtime")
+        with self.assertRaises(setup.SetupError):
+            self.box.provision()
+        self.assert_old_current()
 
 
 class HookTest(unittest.TestCase):
@@ -305,7 +499,7 @@ class LayoutTest(unittest.TestCase):
         for kept in ("hooks/X.hook.ts", "commands/hello.md", "skills/demo/SKILL.md", "agents/helper.md", "SAI/README.md"):
             self.assertTrue((root / ".claude" / kept).is_file(), kept)
         self.assertTrue(os.access(root / ".claude/hooks/X.hook.ts", os.X_OK))
-        self.assertEqual(json.loads((root / ".claude/.claude.json").read_text()), {})
+        self.assertEqual(json.loads((root / "state/.claude.json").read_text()), {})
         for name in ("bin/zb-hook-run", "bin/zb-claude", "hook-env.json", "writable.json", "path.json",
                      "config-manifest.json", "host.json", "host/zb_agent_host/__main__.py"):
             self.assertTrue((root / "runtime" / name).exists(), name)
@@ -315,7 +509,7 @@ class LayoutTest(unittest.TestCase):
         manifest = json.loads((root / "runtime/config-manifest.json").read_text())
         self.assertIn("settings.json", manifest)
         self.assertEqual(manifest["settings.json"], hashlib.sha256((root / ".claude/settings.json").read_bytes()).hexdigest())
-        self.assertTrue((root / ".zb-agent-home").is_file())
+        self.assertEqual(json.loads((root / "current/.zb-agent-home").read_text()), {"layout": 2})
         text = "\n".join(p.read_text(errors="replace") for p in (root / ".claude").rglob("*") if p.is_file())
         for canary in ("ZB-FIXTURE-CREDENTIAL-CANARY", "ZB-FIXTURE-PROJECT-CANARY", "ZB-FIXTURE-MEMORY-CANARY",
                        "ZB-FIXTURE-HISTORY-CANARY", "zb-fixture-should-not-survive"):
@@ -325,19 +519,19 @@ class LayoutTest(unittest.TestCase):
         self.box.provision()
         root = self.box.home.root
         (root / "workspace" / "keep.txt").write_text("mine")
-        (root / ".claude" / "projects").mkdir(exist_ok=True)
-        (root / ".claude" / "projects" / "t.jsonl").write_text("transcript")
+        (root / "state" / "projects" / "t.jsonl").write_text("transcript")
         claude_before = tree_digest(root / ".claude")
         self.box.provision()
         self.assertEqual(tree_digest(root / ".claude"), claude_before)
         self.assertEqual((root / "workspace" / "keep.txt").read_text(), "mine")
-        self.assertEqual(sorted(p.name for p in root.iterdir() if ".staging" in p.name), [])
+        self.assertEqual((root / "state" / "projects" / "t.jsonl").read_text(), "transcript")
+        self.assertEqual(sorted(p.name for p in root.iterdir() if p.name.startswith(("dist-", ".dist-tmp"))), ["dist-2"])
 
     def test_a_home_holding_only_the_owner_lock_is_a_first_install(self):
         self.box.home.root.mkdir(parents=True, mode=0o700)
         (self.box.home.root / ".zb-owner.lock").write_text("")
         self.box.provision()
-        self.assertTrue((self.box.home.root / ".zb-agent-home").is_file())
+        self.assertTrue((self.box.home.root / "current" / ".zb-agent-home").is_file())
         self.assertTrue((self.box.home.root / ".zb-owner.lock").exists())
         self.assertTrue((self.box.home.root / ".claude" / "CLAUDE.md").is_file())
 

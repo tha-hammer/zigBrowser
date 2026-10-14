@@ -4,11 +4,14 @@ home from a SAI source and selects the token route on the installed CLI.
     python -m zb_agent_host setup --home H --sai-source S --source-home U
         --source-path PATH --python PY [--route r1|env] [--e2e-claude-cli CLI]
 
-Everything is built in a staging directory beside the home, and checked,
-before anything is installed: a refused source leaves the home exactly as it
-was. A first install is one rename; a later one swaps `.claude` and `runtime`
-atomically (renameat2 RENAME_EXCHANGE) and keeps the agent's own state
-directories, workspace, scratchpad and secrets.
+The home layout (plan rev 15.4): setup never mutates live state in place.
+Everything setup produces (`.claude/`, `runtime/`) is built complete in
+`.dist-tmp-*`, checked, fsynced and renamed to `dist-<n>/`, then published by
+one atomic swap of the `current` symlink. `.claude` and `runtime` are fixed
+links into `current`. The agent's state (`state/<STATE_DIRS>`, `workspace/`,
+`scratchpad/`, `secrets/`) lives outside every build; setup only creates it
+when absent. A refused source leaves the home exactly as it was; a crash
+leaves the old or the new `current`, never a mix.
 
 The source is only ever read. Never copied: credentials, transcripts,
 history, todos, shell snapshots, the user's MEMORY/ (the agent starts empty).
@@ -16,7 +19,6 @@ history, todos, shell snapshots, the user's MEMORY/ (the agent starts empty).
 
 import argparse
 import asyncio
-import ctypes
 import datetime
 import hashlib
 import json
@@ -25,10 +27,12 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -55,7 +59,29 @@ KNOWN_COMMANDS = frozenset((
     "hooks", "ide", "init", "login", "logout", "loop", "mcp", "memory", "model", "permissions", "plugin",
     "pr-comments", "release-notes", "resume", "review", "rewind", "status", "terminal-setup", "upgrade", "vim"))
 PROBE_TIMEOUT_S = 30
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
+# A copied command or skill may not take a name that is also a top-level path
+# (RoseCat 5352): then a prose `/name` could certify that path.
+RESERVED_ROOT_NAMES = frozenset((
+    "bin", "boot", "dev", "etc", "home", "lib", "lib32", "lib64", "libx32", "media", "mnt", "nix", "opt", "proc",
+    "root", "run", "sbin", "snap", "srv", "sys", "tmp", "usr", "var", "agent"))
+# A known `/name` is kept only as a slash-command invocation in Markdown prose
+# (RoseCat 5338): at the start of a line, as a whole inline code span, or
+# after one of these words; and followed by the end, a space or `',.;:)` + "`".
+LEAD_WORDS = ("run", "type", "use", "after", "before", "with", "via", "in", "for", "then", "and", "or", "been")
+_LINE_START_RE = re.compile(r"\s*(?:(?:[-*+]|\d+\.)\s+|>\s*|#{1,6}\s+|\|\s*)*")
+_LEAD_RE = re.compile(r"(?:^|\s)(?:" + "|".join(LEAD_WORDS) + r")\s+$", re.IGNORECASE)
+_SLASH_FOLLOW = "',.;:)`"
+# Published builds, and the leftovers of interrupted runs (never state).
+DIST_RE = re.compile(r"dist-([1-9][0-9]*)")
+GARBAGE_PREFIXES = ("dist-", ".dist-tmp-", ".current.tmp-")
+FIXED_LINKS = ((".claude", "current/.claude"), ("runtime", "current/runtime"))
+# State (plan rev 15.5): never in a build; setup only creates what is absent.
+STATE_DIR_PATHS = ("workspace", "scratchpad", "scratchpad/tmp", "secrets", "state", "state/backups",
+                   *(f"state/{name}" for name in sandbox.STATE_DIRS))
+STATE_FILE = "state/.claude.json"
+PAUSE_CUTS = ("swap:before", "swap:after")
+PAUSE_S = 30
 
 
 class SetupError(Exception):
@@ -88,24 +114,63 @@ def rewrite_text(text, source_home, agent_home, rel, strict=True, commands=froze
     directory other than `/` (RoseCat 5328: an empty one rewrote every path)."""
     if not os.path.isabs(source_home) or source_home.rstrip("/") == "":
         raise SetupError("the source HOME is not an absolute directory")
-    known = KNOWN_COMMANDS | frozenset(commands)
+    known = known_commands(commands)
+    markdown = rel.endswith(".md")
 
     def under(path, root):
         return path == root or path.startswith(root + "/")
 
     out = []
+    fenced = False
     for lineno, line in enumerate(text.splitlines(keepends=True), 1):
+        if markdown and line.lstrip().startswith("```"):
+            fenced = not fenced
+
         def fix(match):
             path = match.group(0)
+            if strict and any(part in (".", "..") for part in path.split("/")):
+                # Checked before any prefix test or rewrite (RoseCat 5340).
+                raise SetupError(f"path with a dot segment in {rel}:{lineno}")
             if under(path, source_home):
                 return agent_home + path[len(source_home):]
             if not strict or under(path, agent_home) or any(under(path, root) for root in ALLOWED_ROOTS):
                 return path
-            if path.count("/") == 1 and path[1:] in known:
+            name = path.rstrip(".")  # a sentence's full stop is not part of the name
+            if (markdown and not fenced and name.count("/") == 1 and name[1:] in known
+                    and slash_invocation(line, match.start(), match.start() + len(name))):
                 return path
             raise SetupError(f"outside path in {rel}:{lineno}")
         out.append(PATH_RE.sub(fix, line))
     return "".join(out)
+
+
+def known_commands(copied=frozenset()):
+    """The `/name` tokens that may be slash commands: the CLI's built-ins and
+    the copied commands and skills. A built-in that is also a top-level path
+    on this host is dropped (then `/name` is a path); a copied one refuses
+    setup in `slash_commands`."""
+    roots = _root_names()
+    return frozenset(n for n in KNOWN_COMMANDS if n not in roots) | frozenset(copied)
+
+
+def _root_names():
+    try:
+        return RESERVED_ROOT_NAMES | frozenset(os.listdir("/"))
+    except OSError:
+        return RESERVED_ROOT_NAMES
+
+
+def slash_invocation(line, start, end):
+    """Whether the `/name` at line[start:end] is written as a slash command."""
+    follow = line[end:end + 1]
+    if follow and not (follow.isspace() or follow in _SLASH_FOLLOW):
+        return False
+    before = line[:start]
+    if _LINE_START_RE.fullmatch(before):
+        return True
+    if before.endswith("`") and (follow == "`" or follow.isspace()):
+        return True  # it starts an inline code span: `/clear` or `/cw9_plan <doc>`
+    return _LEAD_RE.search(before) is not None
 
 
 def check_hooks(settings, home_root, staging_root, source_path):
@@ -154,12 +219,17 @@ def _inside_home(tok, home_root, staging_root, real_staging):
 # --- copying -------------------------------------------------------------------
 
 def slash_commands(source):
-    """The names a copied `/name` may refer to: commands/*.md stems and skills/* names."""
+    """The names a copied `/name` may refer to: commands/*.md stems and
+    skills/* names. A name that is also a top-level path refuses setup."""
     names = set()
     for sub, take in (("commands", lambda p: p.stem if p.suffix == ".md" else None), ("skills", lambda p: p.name)):
         root = Path(source) / sub
         if root.exists():
             names.update(n for n in (take(p) for p in Path(os.path.realpath(root)).iterdir()) if n)
+    roots = _root_names()
+    for name in sorted(names):
+        if name in roots:
+            raise SetupError(f"slash command /{name} collides with a root path")
     return frozenset(names)
 
 
@@ -245,13 +315,16 @@ def runtime_lock(package_dir):
 
 
 def stage(home, source, source_home, source_path, python, cli, staging, package_dir):
-    """A complete agent home in `staging`, laid out for `home`."""
+    """A complete build in `staging`: `.claude/` and `runtime/`, laid out for
+    `home` (they are published at home/.claude and home/runtime)."""
     root = str(home.root)
     claude, runtime = staging / ".claude", staging / "runtime"
-    for sub in (".claude", "workspace", "scratchpad", "scratchpad/tmp", "secrets", "runtime", "runtime/bin"):
+    for sub in (".claude", "runtime", "runtime/bin"):
         (staging / sub).mkdir(mode=0o700, parents=True, exist_ok=True)
     copy_sai(source, claude, str(source_home), root)
-    (claude / "MEMORY").mkdir(mode=0o700, exist_ok=True)
+    # Mount points: the sandbox binds state/<name> over these (D12).
+    for name in ("backups", *sandbox.STATE_DIRS):
+        (claude / name).mkdir(mode=0o700, exist_ok=True)
     settings_path = claude / "settings.json"
     settings = sanitize_settings(json.loads(settings_path.read_text())) if settings_path.exists() else {}
     dirs = check_hooks(settings, root, staging, source_path)
@@ -261,6 +334,7 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
     final = json.dumps(settings, indent=2) + "\n"
     rewrite_text(final, str(source_home), root, "settings.json", commands=_COMMANDS)
     atomic_write(settings_path, final, 0o600)
+    # The mount point of state/.claude.json; `{}` so the CLI can read it even unmounted.
     atomic_write(claude / ".claude.json", "{}\n", 0o600)
 
     bad = hook_run.refused_names(runtime_provision.HOOK_ENV_NAMES)
@@ -278,89 +352,196 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
     atomic_write(staging / ".zb-agent-home", json.dumps({"layout": LAYOUT_VERSION}), 0o600)
 
 
-_RENAME_EXCHANGE = 2  # <linux/fs.h>
-_AT_FDCWD = -100  # <fcntl.h>
-_libc = ctypes.CDLL(None, use_errno=True)
+def fsync_tree(top):
+    """Every file and directory under `top`, and `top`, to disk."""
+    for dirpath, dirnames, filenames in os.walk(top, topdown=False):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        fsync_dir(dirpath)
 
 
-def exchange(a, b):
-    """Atomically swaps two paths with libc's renameat2(RENAME_EXCHANGE)
-    (glibc 2.28+, every architecture). Fails closed when libc lacks it."""
-    renameat2 = getattr(_libc, "renameat2", None)
-    if renameat2 is None:
-        raise SetupError("renameat2 is not available in this libc")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    if renameat2(_AT_FDCWD, os.fsencode(str(a)), _AT_FDCWD, os.fsencode(str(b)), _RENAME_EXCHANGE) != 0:
-        err = ctypes.get_errno()
-        raise OSError(err, os.strerror(err), str(a))
-
-
-def move_state(src, dst):
-    """One state directory into place, replacing the empty one there."""
-    if dst.exists():
-        shutil.rmtree(dst)
-    os.rename(src, dst)
-
-
-def install(home, staging):
-    """First install: one rename (or, when the browser already made the home
-    to hold its owner lock in it, one rename per staged entry, the marker
-    last). Later: the agent's state directories move into the staged
-    .claude, then .claude and runtime are swapped atomically."""
-    root = home.root
-    if not root.exists():
-        os.rename(staging, root)
-        return
-    if not (root / ".zb-agent-home").exists():
-        for entry in sorted(staging.iterdir(), key=lambda p: p.name == ".zb-agent-home"):
-            os.rename(entry, root / entry.name)
-        os.chmod(root, 0o700)
-        staging.rmdir()
-        return
-    # The live state never enters cleanup-owned staging (RoseCat 5328): the
-    # new .claude goes live first, then the old tree's state directories
-    # move into it; any failure moves them back and swaps the old tree in.
-    exchange(staging / ".claude", root / ".claude")
-    moved = []
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        for name in sandbox.STATE_DIRS:
-            if (staging / ".claude" / name).is_dir():
-                move_state(staging / ".claude" / name, root / ".claude" / name)
-                moved.append(name)
-        exchange(staging / "runtime", root / "runtime")
-    except BaseException:
-        for name in reversed(moved):
-            move_state(root / ".claude" / name, staging / ".claude" / name)
-        exchange(staging / ".claude", root / ".claude")
-        raise
-    for name in ("workspace", "scratchpad", "scratchpad/tmp", "secrets"):
-        (root / name).mkdir(mode=0o700, exist_ok=True)
-    os.replace(staging / ".zb-agent-home", root / ".zb-agent-home")
-    shutil.rmtree(staging)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _owned(st, kind, mode=None):
+    return kind(st.st_mode) and st.st_uid == os.getuid() and (mode is None or stat.S_IMODE(st.st_mode) == mode)
+
+
+def _valid_garbage(name, st):
+    """Whether `name` (an entry of the home with a garbage prefix) is exactly
+    something setup made: then it may be deleted, unless it is live."""
+    if DIST_RE.fullmatch(name) or name.startswith(".dist-tmp-") and len(name) > len(".dist-tmp-"):
+        return _owned(st, stat.S_ISDIR, 0o700)
+    if name.startswith(".current.tmp-") and len(name) > len(".current.tmp-"):
+        return _owned(st, stat.S_ISLNK)
+    return False
+
+
+def check_layout(root):
+    """Refuses, before anything is built: an old-layout home (S3a before rev
+    15.4: a real `.claude` directory); fixed links, `current` or state that
+    are something else; and any entry with a build prefix that setup did not
+    make (rev 15.5: garbage is deleted only once validated). No link is
+    followed. Returns the live build's name, or None."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        def lstat(name):
+            try:
+                return os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+
+        claude = lstat(".claude")
+        if claude is not None and not stat.S_ISLNK(claude.st_mode):
+            raise SetupError(f"{root} has the old layout; move it aside and run again")
+        for name, target in FIXED_LINKS:
+            st = lstat(name)
+            if st is not None and (not stat.S_ISLNK(st.st_mode) or os.readlink(name, dir_fd=fd) != target):
+                raise SetupError(f"{root / name} is not the link setup made")
+        live = None
+        st = lstat("current")
+        if st is not None:
+            live = os.readlink("current", dir_fd=fd) if stat.S_ISLNK(st.st_mode) else ""
+            live_st = lstat(live) if DIST_RE.fullmatch(live) else None
+            if live_st is None or not _owned(live_st, stat.S_ISDIR, 0o700):
+                raise SetupError(f"{root / 'current'} does not name a build setup made")
+        for name in os.listdir(fd):
+            if name.startswith(GARBAGE_PREFIXES) and not _valid_garbage(name, lstat(name)):
+                raise SetupError(f"{root / name} is not something setup made; remove it and run again")
+        for name in STATE_DIR_PATHS:
+            st = lstat(name)
+            if st is not None and not _owned(st, stat.S_ISDIR):
+                raise SetupError(f"{root / name} is not a directory of this user")
+        st = lstat(STATE_FILE)
+        if st is not None and not _owned(st, stat.S_ISREG):
+            raise SetupError(f"{root / STATE_FILE} is not a file of this user")
+        return live
+    finally:
+        os.close(fd)
+
+
+def ensure_home(root):
+    """The state and the fixed links, each made only when absent, one at a
+    time. Setup never writes into, moves or deletes state."""
+    for name in STATE_DIR_PATHS:
+        try:
+            (root / name).mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    try:
+        fd = os.open(root / STATE_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        try:
+            write_all(fd, b"{}\n")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    for name, target in FIXED_LINKS:
+        try:
+            os.symlink(target, root / name)
+        except FileExistsError:
+            pass
+    fsync_dir(root / "state")
+    fsync_dir(root)
+
+
+def pause(cut):
+    """The e2e-only kill seam (--e2e-pause-at): announce the cut, then wait
+    to be killed; never continue past it."""
+    if cut != _PAUSE_AT:
+        return
+    print(f"SETUP\tpaused\t{cut}", flush=True)
+    time.sleep(PAUSE_S)
+    os._exit(1)
+
+
+_PAUSE_AT = None
+
+
+def publish(root, build):
+    """`build` becomes dist-<n>, then `current` points at it: one atomic swap."""
+    numbers = [int(m.group(1)) for p in root.iterdir() if (m := DIST_RE.fullmatch(p.name))]
+    dist = root / f"dist-{max(numbers, default=0) + 1}"
+    os.rename(build, dist)
+    fsync_dir(root)
+    pause("swap:before")
+    link = root / f".current.tmp-{secrets.token_hex(8)}"
+    os.symlink(dist.name, link)
+    os.rename(link, root / "current")
+    fsync_dir(root)
+    pause("swap:after")
+
+
+def collect_garbage(root):
+    """Every validated build but the live one, and leftovers of interrupted
+    runs: never state, never a link's target. fd-relative and no-follow.
+    Best-effort: a failure is reported and setup still succeeds."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        live = os.readlink("current", dir_fd=fd)
+        for name in sorted(os.listdir(fd)):
+            if name == live or not name.startswith(GARBAGE_PREFIXES):
+                continue
+            try:
+                st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if not _valid_garbage(name, st):
+                    raise OSError(f"{name} changed")
+                if stat.S_ISDIR(st.st_mode):
+                    shutil.rmtree(name, dir_fd=fd)
+                else:
+                    os.unlink(name, dir_fd=fd)
+            except OSError:
+                print(f"zigBrowser: agent-setup: old build left at {root / name}", file=sys.stderr)
+    finally:
+        os.close(fd)
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
 
 
 def provision(home, source, source_home, source_path, python, route, cli=None, probe=None, package_dir=PACKAGE_DIR):
-    """Stages, checks, selects the token route (when `route` is given) and
-    installs. Raises SetupError, leaving the home unchanged."""
+    """Builds and checks a complete dist, selects the token route (when
+    `route` is given), then publishes it. Raises SetupError, leaving the home
+    as it was."""
     root = home.root
     if not os.path.isabs(str(source_home)) or str(source_home).rstrip("/") == "":
         raise SetupError("the source HOME is not an absolute directory")
     root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".agent-home.staging-", dir=root.parent))
+    made_root = not root.exists()
+    root.mkdir(mode=0o700, exist_ok=True)
+    build = None
     try:
-        os.chmod(staging, 0o700)
+        check_layout(root)
+        build = Path(tempfile.mkdtemp(prefix=".dist-tmp-", dir=root))
+        os.chmod(build, 0o700)
         cli = cli or token.bundled_cli()
-        stage(home, source, source_home, source_path, python, cli, staging, package_dir)
+        stage(home, source, source_home, source_path, python, cli, build, package_dir)
         if route is not None:
-            select_route(staging / "runtime", route, cli, probe or probe_r1)
-        install(home, staging)
+            select_route(build / "runtime", route, cli, probe or probe_r1)
+        fsync_tree(build)
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        if build is not None:
+            shutil.rmtree(build, ignore_errors=True)
+        if made_root:
+            shutil.rmtree(root, ignore_errors=True)
         raise
+    ensure_home(root)
+    publish(root, build)
+    collect_garbage(root)
 
 
 # --- the token route (D11, S3.7) ---------------------------------------------
@@ -369,9 +550,18 @@ RISK_LINE = ("zigBrowser: agent-setup: token route env (R3): any process in the 
              "can read the Claude CLI's environment as the same user")
 
 
+def contained(argv):
+    """`argv` in its own PID namespace that dies with this process (RoseCat
+    5347): the setup helper dies with the browser (PDEATHSIG), bwrap with the
+    helper (--die-with-parent), and with bwrap's first child the kernel kills
+    every process in the namespace, whatever the CLI started."""
+    return [sandbox.BWRAP, "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc",
+            "--", *map(str, argv)]
+
+
 def cli_version(cli):
     try:
-        done = subprocess.run([cli, "--version"], capture_output=True, text=True, timeout=20,
+        done = subprocess.run(contained([cli, "--version"]), capture_output=True, text=True, timeout=20,
                               env={"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir()})
         return (done.stdout.strip().split() or ["unknown"])[0]
     except (OSError, subprocess.SubprocessError):
@@ -499,7 +689,12 @@ def probe_r1(wrapper, cli):
         for sub in (home.claude_dir, home.workspace, home.tmp):
             sub.mkdir(mode=0o700, parents=True, exist_ok=True)
         handoff = token.FifoHandoff(scratch / "zb-token", probe_token)
-        opts = options.build(home, route_env=handoff.env(), cli_path=str(wrapper), base_url=server.url)
+        # The SDK starts the CLI through this launcher, so the CLI and all it
+        # starts live in a PID namespace that dies with this helper.
+        launcher = scratch / "zb-claude-contained"
+        launcher.write_text("#!/bin/sh\nexec " + " ".join(map(shlex.quote, contained([wrapper]))) + ' "$@"\n')
+        launcher.chmod(0o700)
+        opts = options.build(home, route_env=handoff.env(), cli_path=str(launcher), base_url=server.url)
 
         async def turn():
             async for _ in query(prompt="probe", options=opts):
@@ -527,7 +722,10 @@ def main(argv):
     parser.add_argument("--python", required=True)
     parser.add_argument("--route", choices=("r1", "env"), default="r1")
     parser.add_argument("--e2e-claude-cli")
+    parser.add_argument("--e2e-pause-at", choices=PAUSE_CUTS)
     args = parser.parse_args(argv)
+    global _PAUSE_AT
+    _PAUSE_AT = args.e2e_pause_at
     try:
         provision(options.AgentHome(args.home), Path(args.sai_source), args.source_home.rstrip("/"),
                   args.source_path, args.python, args.route, cli=args.e2e_claude_cli)

@@ -3,7 +3,8 @@
 Nothing else is mounted: no user home, no profile, no XDG_RUNTIME_DIR, no
 agent-home/secrets. `.claude` is read-only as a whole, with only the reviewed
 state directories (STATE_DIRS, from the P0.5 write census) bound writable on
-top; the workspace is read-only; the scratchpad is writable.
+top, from agent-home/state/<name> (plan rev 15.4); the workspace is
+read-only; the scratchpad is writable.
 """
 
 import os
@@ -17,7 +18,8 @@ USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("
 # Writable state under .claude: the P0.5 write census of the bundled CLI (2.1.294)
 # and the SAI hooks, reviewed. Data only: no hook may reference a path in here.
 # `.claude.json` (it lives in CLAUDE_CONFIG_DIR, not HOME) and `backups/` stay
-# read-only: the CLI tolerates it, and its configuration cannot drift.
+# read-only: the CLI tolerates it, and its configuration cannot drift. All of
+# them live in agent-home/state/, outside every published build (plan rev 15.5).
 STATE_DIRS = ("projects", "sessions", "session-env", "todos", "statsig", "debug", "MEMORY")
 TOKEN_DIR = "/run/zb-token"
 
@@ -45,10 +47,21 @@ def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, cl
         argv += ["--bind", claude, claude]
     else:
         argv += ["--ro-bind", claude, claude]
-        for name in state_dirs:
-            path = os.path.join(claude, name)
-            os.makedirs(path, mode=0o700, exist_ok=True)
-            argv += ["--bind", path, path]
+        # The state lives outside the published build (plan rev 15.4); the
+        # build holds an empty mount point for each name.
+        # Setup made every source and mount point; a hand-built home may not have.
+        os.makedirs(str(home.state), mode=0o700, exist_ok=True)
+        state_json, target = os.path.join(str(home.state), ".claude.json"), os.path.join(claude, ".claude.json")
+        for path, data in ((state_json, b"{}\n"), (target, b"{}\n")):
+            if not os.path.lexists(path):
+                with open(path, "xb") as f:
+                    f.write(data)
+        argv += ["--ro-bind", state_json, target]
+        for name, flag in (("backups", "--ro-bind"), *((n, "--bind") for n in state_dirs)):
+            source, target = os.path.join(str(home.state), name), os.path.join(claude, name)
+            os.makedirs(source, mode=0o700, exist_ok=True)
+            os.makedirs(target, mode=0o700, exist_ok=True)
+            argv += [flag, source, target]
     argv += ["--bind", str(home.scratchpad), str(home.scratchpad),
              "--perms", "0300", "--dir", TOKEN_DIR,
              "--chdir", str(home.workspace)]

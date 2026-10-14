@@ -49,8 +49,7 @@ static void die_with_browser(gpointer data) {
   if (setup->delay_ms > 0) {
     usleep(setup->delay_ms * 1000u);
   }
-  prctl(PR_SET_PDEATHSIG, SIGKILL);
-  if (getppid() != setup->parent) {
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != setup->parent) {
     _exit(127);
   }
 }

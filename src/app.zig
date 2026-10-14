@@ -76,6 +76,7 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
         .lang = getenvOwned(arena, "LANG"),
         .lc_all = getenvOwned(arena, "LC_ALL"),
         .spawn_delay = getenvOwned(arena, agent_setup.spawn_delay_env),
+        .setup_pause = getenvOwned(arena, agent_setup.setup_pause_env),
     }) catch |err| switch (err) {
         error.RelativeCliPath => {
             std.debug.print("zigBrowser: {s} must be an absolute path\n", .{agent_setup.claude_cli_env});

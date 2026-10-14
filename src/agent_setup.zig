@@ -16,6 +16,11 @@ pub const claude_cli_env = "ZIGBROWSER_AGENT_CLAUDE_CLI";
 /// e2e-only (app-owned): the setup child sleeps this long before it sets
 /// PR_SET_PDEATHSIG, so the parent-death race is reproducible (RoseCat 5330).
 pub const spawn_delay_env = "ZIGBROWSER_AGENT_SPAWN_DELAY_MS";
+/// e2e-only (app-owned): the setup helper stops at this cut of its publish
+/// (plan rev 15.5: `swap:before` or `swap:after`), so a test can kill the
+/// browser there. Passed on only as `--e2e-pause-at <cut>`.
+pub const setup_pause_env = "ZIGBROWSER_AGENT_SETUP_PAUSE";
+const pause_cuts = [_][]const u8{ "swap:before", "swap:after" };
 /// The helper runtime lives beside the binary: <prefix>/lib/zigbrowser/
 /// agent-host/{venv, zb_agent_host, runtime.json}, installed by
 /// tools/install_agent_runtime.sh (`zig build agent-runtime`). For
@@ -62,6 +67,8 @@ pub const Inputs = struct {
     lc_all: ?[]const u8 = null,
     /// ZIGBROWSER_AGENT_SPAWN_DELAY_MS's value (null: unset).
     spawn_delay: ?[]const u8 = null,
+    /// ZIGBROWSER_AGENT_SETUP_PAUSE's value (null: unset).
+    setup_pause: ?[]const u8 = null,
 };
 
 pub const Launch = struct {
@@ -95,6 +102,13 @@ pub fn launch(gpa: std.mem.Allocator, in: Inputs) Error!Launch {
         } else if (std.fmt.parseInt(u32, text, 10)) |ms| {
             if (ms >= 1 and ms <= 5000) spawn_delay_ms = ms;
         } else |_| {}
+    }
+    if (in.setup_pause) |cut| {
+        if (!in.e2e_protocol) {
+            warning = "zigBrowser: " ++ setup_pause_env ++ " ignored without --e2e-protocol";
+        } else for (pause_cuts) |known| {
+            if (std.mem.eql(u8, cut, known)) try argv.appendSlice(gpa, &.{ "--e2e-pause-at", known });
+        }
     }
     if (in.claude_cli) |cli| {
         if (!in.e2e_protocol) {
@@ -225,6 +239,25 @@ test "the spawn-delay seam counts only with --e2e-protocol and within 1..5000 ms
     const off = try launch(arena.allocator(), in);
     try std.testing.expectEqual(@as(u32, 0), off.spawn_delay_ms);
     try std.testing.expectEqualStrings("zigBrowser: ZIGBROWSER_AGENT_SPAWN_DELAY_MS ignored without --e2e-protocol", off.warning.?);
+}
+
+test "the setup pause seam reaches the helper only with --e2e-protocol and only as a known cut" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var in: Inputs = .{ .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = "/u",
+        .source_path = "/usr/bin", .route = .r1, .e2e_protocol = true, .setup_pause = "swap:after" };
+    const on = try launch(arena.allocator(), in);
+    try std.testing.expectEqualStrings("--e2e-pause-at", on.argv[on.argv.len - 2]);
+    try std.testing.expectEqualStrings("swap:after", on.argv[on.argv.len - 1]);
+    in.setup_pause = "swap:sideways";
+    const bad = try launch(arena.allocator(), in);
+    for (bad.argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--e2e-pause-at"));
+    in.setup_pause = "swap:before";
+    in.e2e_protocol = false;
+    const off = try launch(arena.allocator(), in);
+    for (off.argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--e2e-pause-at"));
+    for (off.env) |kv| try std.testing.expect(std.mem.indexOf(u8, kv, "PAUSE") == null);
+    try std.testing.expectEqualStrings("zigBrowser: ZIGBROWSER_AGENT_SETUP_PAUSE ignored without --e2e-protocol", off.warning.?);
 }
 
 test "the agent home sits beside the profile: XDG_DATA_HOME, then HOME/.local/share" {

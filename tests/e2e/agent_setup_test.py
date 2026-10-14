@@ -22,6 +22,15 @@ event there. The SAI source is the fixture tree, copied with its
 - inertness: the CLI seam without --e2e-protocol is refused on stderr, never
   reaches the setup helper's argv or environment, and never runs
 - R3: --agent-token-route env writes R3 and prints the risk line
+- kill (plan rev 15.5): the browser is SIGKILLed while setup is paused at
+  `swap:before` or `swap:after` (ZIGBROWSER_AGENT_SETUP_PAUSE, e2e only):
+  `current` names one whole build, the old or the new; the seeded state
+  keeps its content and inodes; the helper is gone; a plain rerun publishes
+  and leaves one build. A first install killed at `swap:before` has no
+  `current`, and its rerun completes. An old-layout home refuses.
+- descendants (RoseCat 5347): the browser is SIGKILLed while the route
+  probe's CLI and a process it started are running: the helper, the CLI and
+  its child are all gone within 2 s
 
 Exit 1 (never 77) when the helper venv is missing."""
 
@@ -366,10 +375,150 @@ def case_clean_install(binary: Path, tmp: Path, check: Checks) -> None:
     check(code == 1 and want in err, f"no runtime: setup names where the runtime is missing ({code}; {err.strip()[-300:]!r})")
 
 
+SEEDED = ("state/projects/keep.jsonl", "state/MEMORY/note.md", "workspace/keep.txt")
+
+
+def seed_state(agent: Path) -> dict[str, tuple[int, bytes]]:
+    for rel in SEEDED:
+        (agent / rel).write_text(f"seed {rel}\n")
+    return state_of(agent)
+
+
+def state_of(agent: Path) -> dict[str, tuple[int, bytes]]:
+    out = {}
+    for rel in (*SEEDED, "state/.claude.json"):
+        path = agent / rel
+        out[rel] = (path.stat().st_ino, path.read_bytes()) if path.exists() else (0, b"")
+    return out
+
+
+def builds(agent: Path) -> list[str]:
+    return sorted(p.name for p in agent.iterdir() if p.name.startswith(("dist-", ".dist-tmp-", ".current.tmp-")))
+
+
+def current(agent: Path) -> str | None:
+    return os.readlink(agent / "current") if os.path.islink(agent / "current") else None
+
+
+def setup_until(binary: Path, w: World, want: str, extra: dict[str, str], timeout: float = 120):
+    """Starts --agent-setup --e2e-protocol and reads stdout until the row
+    `want`; returns (proc, seen)."""
+    proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--e2e-protocol", "--sai-source", str(w.source)],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=w.env(extra))
+    deadline, seen = time.monotonic() + timeout, False
+    while time.monotonic() < deadline and not seen:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        seen = line.rstrip("\n") == want
+    return proc, seen
+
+
+def case_kill(binary: Path, tmp: Path, check: Checks) -> None:
+    import signal
+    for cut in ("swap:before", "swap:after"):
+        w = World(tmp, f"kill-{cut.replace(':', '-')}")
+        code, _o, err, _e, _s = run_setup(binary, w)
+        if not check(code == 0, f"{cut}: the first setup succeeds ({code}; {err.strip()[-200:]!r})"):
+            continue
+        before = seed_state(w.agent)
+        old = current(w.agent)
+        proc, seen = setup_until(binary, w, f"SETUP\tpaused\t{cut}", {"ZIGBROWSER_AGENT_SETUP_PAUSE": cut})
+        if check(seen, f"{cut}: setup reports the pause"):
+            want = old if cut == "swap:before" else "dist-2"
+            check(current(w.agent) == want and "dist-2" in builds(w.agent),
+                  f"{cut}: before the kill, current is {want} and dist-2 is built ({current(w.agent)}, {builds(w.agent)})")
+        proc.send_signal(signal.SIGKILL)
+        proc.wait()
+        time.sleep(1.0)
+        left = helpers_for(w.agent)
+        check(left == [], f"{cut}: the paused helper died with the browser ({left})")
+        for pid in left:
+            os.kill(pid, signal.SIGKILL)
+        live = current(w.agent)
+        check(live in (old, "dist-2") and (w.agent / live / ".claude" / "settings.json").is_file(),
+              f"{cut}: current names one whole build ({live})")
+        check(state_of(w.agent) == before, f"{cut}: the state kept its content and inodes")
+        code, _o, err, _e, _s = run_setup(binary, w)
+        check(code == 0 and builds(w.agent) == [current(w.agent)] and state_of(w.agent) == before,
+              f"{cut}: a plain rerun publishes one build and keeps the state ({code}; {builds(w.agent)}; {err.strip()[-200:]!r})")
+
+    w = World(tmp, "kill-first")
+    proc, seen = setup_until(binary, w, "SETUP\tpaused\tswap:before", {"ZIGBROWSER_AGENT_SETUP_PAUSE": "swap:before"})
+    proc.send_signal(signal.SIGKILL)
+    proc.wait()
+    time.sleep(1.0)
+    check(seen and current(w.agent) is None and helpers_for(w.agent) == [],
+          f"first install killed at swap:before: no current, no helper ({current(w.agent)})")
+    code, _o, err, _e, _s = run_setup(binary, w)
+    check(code == 0 and current(w.agent) == "dist-2" and builds(w.agent) == ["dist-2"]
+          and os.readlink(w.agent / ".claude") == "current/.claude",
+          f"first install: the rerun completes ({code}; {builds(w.agent)}; {err.strip()[-200:]!r})")
+
+    w = World(tmp, "old-layout")
+    (w.agent / ".claude" / "projects").mkdir(parents=True)
+    code, _o, err, _e, _s = run_setup(binary, w)
+    check(code == 2 and f"{w.agent} has the old layout; move it aside and run again" in err
+          and sorted(p.name for p in w.agent.iterdir()) in ([".claude"], [".claude", ".zb-owner.lock"]),
+          f"old layout: refused with exit 2 and nothing built ({code}; {err.strip()[-200:]!r})")
+
+
+def case_descendants(binary: Path, tmp: Path, check: Checks) -> None:
+    """RoseCat 5347: the route probe's CLI and whatever it starts die with the
+    browser. The fake CLI answers --version, then on the probe starts a child
+    and sleeps; both carry a marker in their argv, so the test finds their
+    host PIDs (they live in their own PID namespace)."""
+    import signal
+    w = World(tmp, "descendants")
+    tag = f"zb-descendant-{os.getpid()}-{int(time.monotonic() * 1000)}"
+    ready = w.root / "ready"
+    cli = fake_cli(w.root, "sleepy-claude", (
+        "import subprocess, sys, time\n"
+        "if '--version' in sys.argv: print('0.0.0 (fake)'); sys.exit(0)\n"
+        f"subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)', {tag + '-child'!r}])\n"
+        f"open({str(ready)!r}, 'w').write('ok')\n"
+        "time.sleep(120)\n"))
+    proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--e2e-protocol", "--sai-source", str(w.source)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env=w.env({"ZIGBROWSER_AGENT_CLAUDE_CLI": str(cli)}))
+
+    def running(marker: str) -> list[int]:
+        pids = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                argv = Path(f"/proc/{pid}/cmdline").read_bytes()
+                state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            except OSError:
+                continue
+            if marker.encode() in argv and state != "Z":
+                pids.append(int(pid))
+        return pids
+
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and not ready.exists() and proc.poll() is None:
+        time.sleep(0.1)
+    cli_pids, child_pids = running(str(cli)), running(tag + "-child")
+    if not check(ready.exists() and cli_pids and child_pids,
+                 f"descendants: the probe's CLI and its child are running ({cli_pids}, {child_pids})"):
+        reap(proc)
+        return
+    proc.send_signal(signal.SIGKILL)
+    proc.wait()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and (helpers_for(w.agent) or running(str(cli)) or running(tag + "-child")):
+        time.sleep(0.1)
+    left = {"helper": helpers_for(w.agent), "cli": running(str(cli)), "child": running(tag + "-child")}
+    check(not any(left.values()), f"descendants: helper, CLI and child are gone within 2 s of the browser's death ({left})")
+    for pid in (p for pids in left.values() for p in pids):
+        os.kill(pid, signal.SIGKILL)
+
+
 def main() -> int:
     return run_main(__doc__, {"provision": case_provision, "refusals": case_refusals, "cli": case_cli_seam,
                               "parent": case_parent_death, "home": case_bad_home, "install": case_clean_install,
-                              "timeout": case_timeout_teardown})
+                              "timeout": case_timeout_teardown, "kill": case_kill, "descendants": case_descendants})
 
 
 if __name__ == "__main__":
