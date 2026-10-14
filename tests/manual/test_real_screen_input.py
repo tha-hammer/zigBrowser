@@ -67,8 +67,8 @@ class Canary:
         self.root = x.XDefaultRootWindow(self.dpy)
         self.counts: dict[tuple[int, int], int] = {}
 
-    def window(self, override_redirect=False):
-        w = self.x.XCreateSimpleWindow(self.dpy, self.root, 0, 0, 400, 300, 0, 0, 0x808080)
+    def window(self, override_redirect=False, x=0, y=0):
+        w = self.x.XCreateSimpleWindow(self.dpy, self.root, x, y, 400, 300, 0, 0, 0x808080)
         if override_redirect:
             attrs = SetWindowAttributes(override_redirect=1)
             self.x.XChangeWindowAttributes(self.dpy, w, 1 << 9, ctypes.byref(attrs))  # CWOverrideRedirect
@@ -83,13 +83,13 @@ class Canary:
         self.x.XUnmapWindow(self.dpy, w)
         self.sync()
 
-    def set_root(self, name: bytes, value):
+    def set_root(self, name: bytes, value, kind=33):  # XA_WINDOW; 6 is XA_CARDINAL
         atom = self.x.XInternAtom(self.dpy, name, 0)
         if value is None:
             self.x.XDeleteProperty(self.dpy, self.root, atom)
         else:
             data = ctypes.c_ulong(value)
-            self.x.XChangeProperty(self.dpy, self.root, atom, 33, 32, 0, ctypes.byref(data), 1)  # XA_WINDOW
+            self.x.XChangeProperty(self.dpy, self.root, atom, kind, 32, 0, ctypes.byref(data), 1)
         self.sync()
 
     def focus(self, w):
@@ -162,6 +162,28 @@ class GuardOnRealX(unittest.TestCase):
             self.canary.focus(self.target)
             self.assertIsNotNone(rsc.safe_click(self.x11, self.target, 200, 150))
             self.assertIsNotNone(rsc.safe_escape(self.x11, self.target))
+        self.assertEqual(self.calls, [])
+        self.assert_nothing_reached()
+
+    def test_the_active_target_without_the_focus_gets_nothing(self):
+        """RoseCat 5400: _NET_ACTIVE_WINDOW names the target, but the focus
+        is on a decoy beside it (not covering the click point)."""
+        beside = self.canary.window(x=500, y=0)
+        self.canary.show(beside)
+        self.canary.set_root(b"_NET_SUPPORTING_WM_CHECK", self.target)
+        self.canary.set_root(b"_NET_ACTIVE_WINDOW", self.target)
+        self.canary.focus(beside)
+        self.assertIsNotNone(rsc.safe_click(self.x11, self.target, 200, 150))
+        self.assertIsNotNone(rsc.safe_escape(self.x11, self.target))
+        self.assertEqual(self.calls, [], "no motion, no button, no key")
+        self.assert_nothing_reached()
+        self.assertEqual((self.canary.got(beside, BUTTON_PRESS), self.canary.got(beside, KEY_PRESS)), (0, 0))
+
+    def test_a_wrong_typed_active_window_property_refuses(self):
+        self.canary.set_root(b"_NET_SUPPORTING_WM_CHECK", self.target)
+        self.canary.set_root(b"_NET_ACTIVE_WINDOW", self.target, kind=6)  # XA_CARDINAL
+        self.canary.focus(self.target)
+        self.assertIsNotNone(rsc.safe_click(self.x11, self.target, 200, 150))
         self.assertEqual(self.calls, [])
         self.assert_nothing_reached()
 

@@ -970,16 +970,16 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 - **Input safety (rev 15.5c, RoseCat 5393 and 5395).** In the orchestrator's fa0aa48 run, the test window was not on top. That run sent no input: its first screen check failed before any click. The old script would still have clicked blindly, so:
   - **Every click and Escape goes through one guard.** It holds an `XGrabServer`, so nothing can restack, map or refocus between the last check and the input. It checks, on the same connection:
     - our window is viewable (`XGetWindowAttributes`);
-    - when a window manager runs (`_NET_SUPPORTING_WM_CHECK`), `_NET_ACTIVE_WINDOW` names our window; an unreadable property refuses;
-    - for a click, the point is inside our current geometry, and our window is on the window path there;
+    - when a window manager runs (`_NET_SUPPORTING_WM_CHECK`), `_NET_ACTIVE_WINDOW` names our window; an unreadable or wrong-typed (not `WINDOW`) property refuses;
+    - for a click, the point is inside our current geometry, our window is on the window path there, **and** the keyboard focus is inside our window (with PointerRoot focus, the point is over our window). Active and focused are not the same thing (RoseCat 5400);
     - after the pointer moves, `XQueryPointer` must report exactly that point over our window (otherwise: "it moved, no click sent");
     - for Escape, the focus is inside our window, or with PointerRoot focus the pointer is over it.
   - **Button and key up always follow down,** and the grab is always released.
   - **A refused input makes the case INVALID and stops the whole run** (exit 3). A covered window is never judged: the 3x3 grid check guards every capture.
   - **Tests:**
     - `test_real_screen_check.py` (in the gate) drives each refusal with a fake connection that records input and grabs;
-    - `test_real_screen_input.py` (gate step `real_screen_input_xvfb`, on a private Xvfb only; it fails rather than skips elsewhere) gives a real X server a canary client whose decoy window covers the target, is the active window, or is mapped just before the input. The decoy must receive no button or key event, and the guard must send none. The target on top, active and focused receives exactly one click and one Escape.
-    - Mutants that drop the active-window check or the on-top check fail the real-X test. The viewable check is also caught by the fake-connection test; on a real server an unmapped window already fails the other checks.
+    - `test_real_screen_input.py` (gate step `real_screen_input_xvfb`, on a private Xvfb only; it fails rather than skips elsewhere) gives a real X server a canary client whose decoy window covers the target, is the active window, or is mapped just before the input. The decoy must receive no button or key event, and the guard must send none. Also refused: the target is the active window but the focus is on a window beside it, and a wrong-typed active property. The target on top, active and focused receives exactly one click and one Escape.
+    - Mutants that drop the active-window, on-top or click focus check fail the real-X test. The viewable check is also caught by the fake-connection test; on a real server an unmapped window already fails the other checks.
 - **The fixture is shaped like Wikipedia** (RoseCat 5395, from WebKit 2.54's `RenderLayerCompositor.cpp`):
   - a tall document of text cards with small inline images under a sticky header;
   - a self-painting `translate3d(0,0,1px)` layer with a running transform animation;

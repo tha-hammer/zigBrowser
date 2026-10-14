@@ -367,11 +367,12 @@ class X11:
             return None
         actual, fmt, n, after = c.c_ulong(), c.c_int(), c.c_ulong(), c.c_ulong()
         data = c.POINTER(c.c_ubyte)()
-        if self.x.XGetWindowProperty(self.dpy, self.root, atom, 0, 1, 0, 33, c.byref(actual), c.byref(fmt),  # XA_WINDOW
+        # AnyPropertyType: the type is checked here, so a wrong-typed property refuses visibly.
+        if self.x.XGetWindowProperty(self.dpy, self.root, atom, 0, 1, 0, 0, c.byref(actual), c.byref(fmt),
                                      c.byref(n), c.byref(after), c.byref(data)) != 0 or not data:
             return None
         try:
-            if fmt.value != 32 or n.value != 1:
+            if actual.value != 33 or fmt.value != 32 or n.value != 1:  # XA_WINDOW, one 32-bit item
                 return None
             return c.cast(data, c.POINTER(c.c_ulong))[0]
         finally:
@@ -492,18 +493,29 @@ def raise_window(x11, wid: int, tries: int = 3) -> bool:
     return False
 
 
+def focused(x11, wid: int, path: list[int]) -> bool:
+    """Whether the keyboard focus is inside our window; with PointerRoot
+    focus, whether `path` (the windows at the pointer, or at the point the
+    pointer is about to reach) holds our window."""
+    focus = x11.focus()
+    return wid in path if focus == POINTER_ROOT else focus_inside(wid, focus, x11.parent)
+
+
 def safe_click(x11, wid: int, px: int, py: int) -> str | None:
     """Clicks at px, py only if, under a server grab, our window is viewable,
-    active, contains the point and is on top there. Returns why it refused
-    (saying whether the pointer had moved), or None."""
+    active, focused, contains the point and is on top there. Returns why it
+    refused (saying whether the pointer had moved), or None."""
     x11.grab()
     try:
         reason = window_ready(x11, wid)
         rect = x11.viewable_rect(wid)
+        path = x11.path_at(px, py)
         if reason is None and not (rect and rect[0] <= px < rect[0] + rect[2] and rect[1] <= py < rect[1] + rect[3]):
             reason = "the click point is outside our window"
-        if reason is None and wid not in x11.path_at(px, py):
+        if reason is None and wid not in path:
             reason = "our window is not on top at the click point"
+        if reason is None and not focused(x11, wid, path):
+            reason = "the keyboard focus is not in our window"
         if reason:
             return reason + "; no input sent"
         x11.move(px, py)
@@ -521,10 +533,8 @@ def safe_escape(x11, wid: int) -> str | None:
     x11.grab()
     try:
         reason = window_ready(x11, wid)
-        if reason is None:
-            focus = x11.focus()
-            ours = wid in x11.pointer_path() if focus == POINTER_ROOT else focus_inside(wid, focus, x11.parent)
-            reason = None if ours else "the keyboard focus is not in our window"
+        if reason is None and not focused(x11, wid, x11.pointer_path()):
+            reason = "the keyboard focus is not in our window"
         if reason:
             return reason + "; no input sent"
         x11.escape()

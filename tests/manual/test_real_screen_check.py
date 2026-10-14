@@ -172,6 +172,18 @@ class SafetyTest(unittest.TestCase):
                 if label != "the point is outside the window":
                     self.assert_refused(x, rsc.safe_escape(x, OURS))
 
+    def test_a_click_needs_the_focus_too_not_only_the_active_window(self):
+        """RoseCat 5400: active and focused are not the same thing."""
+        for focus, parents in ((TERMINAL, {TERMINAL: 1}), (0, {})):
+            x = self.ready(wm=True, active=OURS, focus=focus, parents=parents)
+            refused = rsc.safe_click(x, OURS, 10, 10)
+            self.assert_refused(x, refused)
+            self.assertIn("focus", refused)
+        x = self.ready(focus=1, path=lambda px, py: [FRAME, TERMINAL])  # PointerRoot over another window
+        self.assert_refused(x, rsc.safe_click(x, OURS, 10, 10))
+        x = self.ready(focus=1)  # PointerRoot, the point over ours
+        self.assertIsNone(rsc.safe_click(x, OURS, 10, 10))
+
     def test_a_pointer_that_lands_elsewhere_moves_but_never_clicks_and_says_so(self):
         x = self.ready(lands=(11, 10))
         refused = rsc.safe_click(x, OURS, 10, 10)
