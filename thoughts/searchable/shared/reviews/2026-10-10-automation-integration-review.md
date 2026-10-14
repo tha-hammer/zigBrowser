@@ -6351,12 +6351,15 @@ not override a correctness blocker.
 | `7eab90f` | **BLOCKER at that revision** | It overclaims rollback/descendant death and contains stale runtime/file inventory. Later plan revisions improve the contract, but the committed S3a implementation remains blocked. |
 | `d9674c1` | **BLOCKER at that revision** | Its real-screen oracle, inherited render environment, slash-name collision and interruption/death contracts were incomplete. |
 | `0524293` | **BLOCKER at that revision** | It closes the name/death issues but does not locate its pause seam on a defined side of each mutation. |
-| `46cdcf2` | **BLOCKER** | It gives the pause sides and records the drawer host, but the journal cannot distinguish all crash cuts and the dock contradicts the float/no-reflow requirement. `22ff1f9` narrows both rather than fully closing them. |
+| `46cdcf2` | **BLOCKER at that revision** | It gives the pause sides and records the drawer host, but the journal cannot distinguish all crash cuts and the dock contradicted the then-current float/no-reflow requirement. Later plan revisions and the user's 2026-10-14 dock decision close those plan findings. |
 | `220af5a` | **APPROVED** | The page-only scratch variant is isolated from ordinary cases and is a useful topology-bisect control. |
 | `607c3a3` | **APPROVED as completed by `60ce3b6`** | `60ce3b6` puts its nine oracle tests in `zig build test`, rejects partial/off-screen captures, and keeps the screen-plus-window judgment. |
-| `60ce3b6` | **APPROVED** | The structural red/green, retained behavioral checks, independent gate and the user's NVIDIA check all pass. The separate float-versus-dock product decision remains open in the plan. |
+| `60ce3b6` | **APPROVED** | The structural red/green, retained behavioral checks, independent gate and the user's NVIDIA check all pass. The user accepted its docked/page-resized behavior on 2026-10-14. |
 | `ddc892e` | **APPROVED** | The crash document and Reload path satisfy the production-chain contract; one `about:blank` edge case is a non-blocking SHOULD below. |
-| `22ff1f9` | **BLOCKER** | The plan now has a credible write-ahead protocol, but exchange reconciliation is only half-specified and float versus dock is deliberately unresolved. |
+| `22ff1f9` | **BLOCKER at that revision** | Its exchange reconciliation is only half-specified and float versus dock was deliberately unresolved. The user closed the product decision in favor of docked behavior; `f73296b` closes the exchange-state contract. |
+| `ce275ab` | **BLOCKER** | It correctly changes §0 and D2 to the accepted docked contract, but leaves section 6 item 4 saying “Floats over the page.” |
+| `f73296b` | **BLOCKER** | The exact two-state exchange reconciler, mixed-state test table and first-install cuts close the transaction findings. It inherits `ce275ab`'s contradictory section 6 item 4. |
+| `f262998` | **BLOCKER (docs)** | The immutable `dist/current/state` direction is accepted and removes the journal class, but the state placement, durable publish order, garbage namespace, fixed-link first install and old D6/section-6 text are not yet exact. |
 
 Therefore there is **no fully approved linear push prefix after `fa0aa48` yet**:
 the first unpushed implementation commit, `abbf0ea`, still has open production
@@ -6391,9 +6394,10 @@ old `607c3a3` test-integration blocker.
 The final hardware condition also passed. On the user's NVIDIA/X11 screen with
 the default case-J graphics route, drawer on and MSE off, the exact clean build
 showed the page and icon, allowed dragging, opened the drawer, and folded it
-back. This closes the original blank-presentation blocker. It does not silently
-decide whether the final product should dock or float; that product-contract
-choice remains in the plan review below.
+back. This closes the original blank-presentation blocker. On 2026-10-14 the
+user explicitly chose **“Keep it docked”**: the drawer stays at the bottom, the
+page is laid out above it, and nothing is hidden. That is now the accepted
+contract for this implementation; the floating S icon remains unchanged.
 
 ### `46cdcf2`: BLOCKER; `22ff1f9`: BLOCKER
 
@@ -6410,7 +6414,7 @@ directories; and the journal records inode identities (`plan:1322-1364`). It
 also honestly marks float-versus-dock as pending (`:42,214-216,242`) and repins
 the drawer glue to `60ce3b6`.
 
-Two blockers remain:
+Two blockers remained at exact `22ff1f9`:
 
 1. An exchange records both original inodes, but recovery calls it done merely
    when the live path holds the staging inode (`plan:1342-1355`). The only
@@ -6429,6 +6433,28 @@ while `:1322-1326` defines every `:before` cut as following a durable journal
 intent. State that first-move uses the same observable cut positions without a
 journal and that its marker rename plus parent-directory fsync is the durable
 first-install commit point.
+
+### Dock decision and rev 15.3g/h (`ce275ab`, `f73296b`)
+
+The user's 2026-10-14 decision closes blocker 2 above: **docked is the accepted
+contract**. `ce275ab` updates §0 answer 4 and D2 accordingly, including the
+shorter page viewport and the requirement that S7/S8 obtain element geometry
+at action time. Therefore `60ce3b6` is approved without a placement
+qualification, and the placement finding against `22ff1f9` is closed.
+
+`f73296b` closes blocker 1 and the first-install cleanup. For an exchange it
+accepts only the two complete inode pairings `(L=A,S=B)` and `(L=B,S=A)`; all
+missing, duplicated, foreign and one-sided combinations refuse while leaving
+the journal and staging untouched. Its failing-first table enumerates those
+states, plus malformed/unknown records and rename anomalies. It also defines
+both pause sides for a first install without pretending that its pre-marker
+moves have journal intents.
+
+**Verdict on exact `ce275ab` and `f73296b`: BLOCKER (docs).** Section 6 item 4
+still says `Drawer placement | Floats over the page.` (`plan:812`), directly
+contradicting §0 and D2 and the user's required section-6 update. A follow-up
+must change that row to the dock/page-resize contract. No code change is
+required for this finding.
 
 ### Independent gate and red evidence
 
@@ -6452,6 +6478,18 @@ Build Summary: 105/105 steps succeeded; 816/816 tests passed
 
 That tree was likewise deleted by its trap; Agent Mail 5379 released the gate
 slot.
+
+I later ran another bounded clean-export gate at exact `f73296b`, while
+reviewing the mechanism audit below. It was green and the trap deleted its
+tree:
+
+```text
+Build Summary: 105/105 steps succeeded; 816/816 tests passed
+```
+
+`f262998` was committed while that gate was running. It is docs-only, but the
+result is recorded against exact `f73296b`, not mislabelled as a gate of the
+new revision.
 
 ## Visible crash document (`ddc892e`)
 
@@ -6485,3 +6523,219 @@ therefore receives a visible Reload link that does nothing. Route that scheme
 through the sentinel too, or omit the link, and add the blank-popup case when
 this path next changes. Agent Mail 5376 sent the approved verdict and this
 follow-up to BlueBeaver.
+
+## Mechanism audit: why the old `GtkOverlay` drawer blanked NVIDIA
+
+This follows up the original `fa0aa48` diagnosis with the exact WebKitGTK
+2.54.0 and GTK 3.24.49 source paths. It also corrects an overstatement in the
+earlier review: case J is **not, merely because WebKit is accelerated, a GL
+texture drawn by GDK or a GLX swap to a native WebView child**. The old host was
+still the necessary application-side trigger, and `60ce3b6` remains the right
+fix, but bug 90085 does not by itself prove the modern mechanism.
+
+### What actually paints case J
+
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` makes
+`rendererBufferTransportMode()` return after adding SharedMemory and before it
+adds Hardware
+([WebKit 2.54.0 `AcceleratedBackingStore.cpp`:78-113](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp#L78-L113)).
+The WebProcess therefore renders through NVIDIA EGL/GL to an off-screen target,
+not an X window, and `RenderTargetSHMImage` copies the completed pixels with
+Skia `readPixels` or `glReadPixels` into a `ShareableBitmap`
+([`AcceleratedSurface.cpp`:409-457](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp#L409-L457),
+[:761-775](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp#L761-L775)).
+
+In the UI process, `BufferSHM` wraps those bytes in a
+`CAIRO_FORMAT_ARGB32` image surface. `Buffer::paint()` uses
+`cairo_set_source_surface` and `cairo_fill`; its
+`gdk_cairo_draw_from_gl()` branch is for a texture-backed buffer, which this
+forced-SHM route does not have
+([`AcceleratedBackingStore.cpp`:271-298,634-692](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp#L271-L298)).
+`WebKitWebViewBase::draw()` invokes that paint on the WebView's logical
+`GDK_INPUT_OUTPUT` child GdkWindow
+([`WebKitWebViewBase.cpp`:628-677,918-951](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebKit/UIProcess/API/gtk/WebKitWebViewBase.cpp#L628-L677)).
+
+There is one qualification. GTK can promote Cairo content into a whole-window
+GL frame if the native implementation window already owns a persistent
+`gl_paint_context`; that frame ends in the X11 backend's GLX presentation.
+Nothing in the forced-SHM WebKit paint or old drawer directly creates that
+context, so source inspection does **not** establish that this happened on the
+user's machine. The remaining real-screen `GDK_GL=disable` discriminator below
+is needed before blaming the final GLX swap. Without it, the evidence proves a
+NVIDIA EGL producer/readback plus GTK damage/presentation interaction, not a
+specific GLX call.
+
+### What `GtkOverlay` changes
+
+The old application installed `GtkWindow -> GtkOverlay -> WebKitWebView` and
+three overlay children: icon, hidden panel and hidden ghost
+(`fa0aa48 src/agent_drawer.c:734-766`). The ghost's draw handler returns
+`FALSE` (`:441-452`), so it does not consume or erase the frame.
+
+GTK 3.24.49's `GtkOverlay` itself is no-window, but it creates one
+`GDK_WINDOW_CHILD`, `GDK_INPUT_OUTPUT` GdkWindow for **every** overlay child and
+makes that the child's parent window
+([`gtkoverlay.c`:143-173,415-431,848-853](https://github.com/GNOME/gtk/blob/3.24.49/gtk/gtkoverlay.c#L143-L173)).
+Those are logical/client-side GdkWindows by default, not necessarily native X
+children. They share the native implementation window until somebody calls
+`gdk_window_ensure_native()`
+([`gdkwindow.c`:1493-1526,1820-1911](https://github.com/GNOME/gtk/blob/3.24.49/gdk/gdkwindow.c#L1493-L1526)).
+Consequently:
+
+- the old mapped icon adds an output child to GDK's clip, damage and stacking
+  tree even when `xwininfo` shows no extra X child;
+- the hidden panel and ghost have allocated output GdkWindows but are not
+  viewable, and GDK excludes hidden/input-only children from visible-region
+  subtraction; there is no evidence here that an **unmapped** child alone
+  triggers the real failure;
+- `GtkOverlay` uses the inherited parent visual, so an ARGB/visual mismatch is
+  not its normal construction path; and
+- a diagnostic must call `gdk_window_has_native()` before requesting an XID.
+  `gdk_x11_window_get_xid()` itself promotes a client-side window and would
+  perturb the topology being measured.
+
+This also narrows the relevance of WebKit bug 90085. That 2012 bug involved a
+WebView explicitly promoted to a native X window and direct accelerated
+rendering; the fix removed that requirement. It is useful historical evidence
+that WebView native-window topology and `GtkOverlay` have interacted badly,
+but it is not a source-level explanation for today's forced-SHM pipeline.
+
+### Xvfb evidence and the remaining causal boundary
+
+I ran the exact `fa0aa48` binary only under private Xvfb, with isolated profiles
+and no automation socket. External `xwininfo -root -tree` saw the 1024x768
+toplevel and its ordinary 1x1 helper but no overlay X children. A separate GTK
+3.24.49 probe confirmed why: the overlay wrapper began `INPUT_OUTPUT` and
+non-native; asking for its XID promoted it and then produced a real X child.
+Under Mesa llvmpipe, a `GtkGLArea` control kept correct pixels with the wrapper
+client-side, promoted and mapped, and promoted but unmapped.
+
+The browser's first-frame timing likewise showed no overlay-specific stall:
+
+| Exact `fa0aa48` Xvfb case | DOM complete | first blank sample | first page-colour sample |
+|---|---:|---:|---:|
+| drawer off, case J | 0.380 s | 0.380 s | 0.519 s |
+| old overlay, case J | 0.384 s | 0.384 s | 0.520 s |
+| old overlay, hardware never | 0.312 s | none | 0.312 s |
+| old overlay, Mesa EGL | 0.367 s | 0.367 s | 0.501 s |
+
+The approximately 130 ms post-DOM frame lag is the same accelerated-frame lag
+with or without `GtkOverlay`, not the persistent NVIDIA blank. A second run of
+the current authoritative pixel oracle on the old binary passed drawer-off,
+drawer-on, drawer-open, `GDK_GL=disable` and `GDK_GL=software-draw`; page colour
+was 99% and the icon 2,124 pixels in every closed case. `WEBKIT_DEBUG` names
+`AcceleratedBackingStore`/`AcceleratedSurface` were rejected as unknown, and
+`GDK_DEBUG=frames,opengl G_MESSAGES_DEBUG=all` produced no useful rendering
+rows in the packaged release. Every tree and profile was deleted immediately.
+
+The source plus matrix therefore establish a **two-condition failure**:
+
+1. NVIDIA's off-screen EGL producer/readback/fence route is required; replacing
+   it with CPU rendering or Mesa EGL removes the failure.
+2. The old output-window overlay topology is required; removing it in
+   `60ce3b6` removes the failure on the same NVIDIA route.
+
+The most specific defensible mechanism is that GTK's overlay-window topology
+changes clipping/damage/invalidation around a Cairo-presented WebView frame,
+and the NVIDIA-produced SHM frame then never reaches a visible committed paint.
+That blanks the whole content area, including the icon, because both are
+scheduled in the same GTK frame. Whether the lost frame is before GTK draw
+(producer/readback/fence or damage notification) or at a GDK GL-backed final
+present remains **not captured**. “NVIDIA GLX swaps a drawable with a native
+child and loses it,” “an unmapped child clips the parent,” and “ARGB mismatch”
+are not supported by the evidence currently available.
+
+The clean discriminator, for the orchestrator only and only with the user's
+permission, is the existing isolated manual matrix. It opens only a local
+solid-colour fixture, uses a throwaway profile, starts no automation socket and
+includes `on-gdk-gl-disable`:
+
+```sh
+python3 tests/manual/real_screen_check.py \
+  --confirm-user-permission \
+  --bin /tmp/claude-1000/-home-maceo-ntm-Dev-zigBrowser/2f282cd0-68cc-4a77-9345-4747f7fc7145/scratchpad/build-fa0aa48/zig-out/bin/zigBrowser \
+  --out /tmp/zb-overlay-mechanism-fa0aa48 --matrix
+```
+
+If default case J blanks but `on-gdk-gl-disable` draws, GTK's final GL-backed
+paint/present is implicated. If both blank, the final GLX-swap theory is
+falsified and instrumentation should compare a side-effect-free WebKit page
+screenshot with the root-window capture, plus raw counters for
+`WebKitWebViewBase::draw`, clip rectangles, frame receipt/fence completion and
+`gdk_window_has_native()` (without asking for XIDs). A good WebKit screenshot
+with a blank root localizes the loss to GTK/GDK presentation; a blank WebKit
+screenshot localizes it to NVIDIA rendering/readback/frame delivery.
+
+### Safe ways to float again
+
+| Design | Graphics risk | Product/implementation risk |
+|---|---|---|
+| Keep the accepted docked `ZbDrawerHost` | **Lowest; proven on the user's NVIDIA screen.** Output panel windows sit beside, never over, the page window. | Page viewport changes while open; already accepted, and action geometry is read at action time. |
+| Paint icon/fold or simple chrome in the host/page draw; use input-only windows only for hit testing | Low; this is the proven `60ce3b6` icon/fold pattern. | Visible pixels cannot live in an input-only window. A full chat editor would need custom drawing, focus, IME, selection, scrolling and accessibility. |
+| Custom no-window container with all painted descendants on the page/host window | Low only if **every** descendant remains no-window. Merely setting a child `has_window=FALSE` while retaining `GtkOverlay` is ineffective because `GtkOverlay` creates its own output wrapper. | High for stock `GtkTextView`/`GtkScrolledWindow` descendants, which create output windows; substantial event/layout/accessibility work. |
+| Separate transient or override-redirect ARGB toplevel | Isolates the drawer from the WebView's child/damage tree; medium risk. Prefer ordinary transient semantics over override-redirect. | Focus/IME, stacking, movement, resize, workspaces, multi-monitor/HiDPI, click-through, screenshots and accessibility are difficult; ARGB composition and another accelerated drawable introduce driver/compositor risk. |
+| Stock `GtkOverlay`, pass-through flag, or hidden/input-only wrapper alone | **Not a fix.** Pass-through changes event routing, not the mandatory output wrapper; input-only cannot display the stock panel. | Preserves the trigger or cannot render the UI. |
+
+The required red-first coverage for any future floating redesign has two parts:
+(1) a structural census that never calls `gdk_x11_window_get_xid()` on a
+non-native window and rejects every viewable output window overlapping the page,
+and (2) the authoritative root-pixel real-screen case on NVIDIA, paired with a
+WebKit screenshot so a recurrence is localized rather than merely labelled
+“blank.” The user has chosen the already-proven dock, so this is follow-up
+design evidence, not a reason to reopen `60ce3b6`.
+
+## S3a immutable-build simplification (`f262998`, plan rev 15.4)
+
+**Direction: ACCEPTED. Exact revision: BLOCKER (docs).** Replacing the
+multi-mutation journal with complete immutable builds and one `current`
+symlink swap is compatible with D6/D12 and is materially safer. It does not
+break the contracts behind the prior review: `HOME` stays the agent-home root;
+`CLAUDE_CONFIG_DIR=root/.claude` and `root/runtime` remain stable fixed paths;
+bwrap resolves their `current` target when the mount is created, so an already
+running helper retains its old build; workspace, scratchpad and secrets remain
+outside published configuration; and the per-session manifest can still guard
+the immutable configuration. The journal, reconciler, rollback and
+`renameat2` requirements can therefore be deleted once this design is exact.
+
+Six gaps remain in exact `f262998`:
+
+1. **The state table contradicts the user's decision and D12.** It puts
+   `.claude.json` in each `dist-<n>` and leaves `STATE_DIRS` symbolic
+   (`plan:1325-1328`). The user explicitly placed `.claude.json` and
+   `backups/` in `state/`. The exact layout should enumerate read-only
+   `state/.claude.json` and `state/backups/`, plus the reviewed writable union
+   `state/{projects,sessions,session-env,todos,statsig,debug,MEMORY}/`. Setup
+   creates each once when absent and later only reads/validates it. Each dist
+   has empty file/directory mount points; D12 read-only-binds the first pair
+   and writable-binds only the reviewed union. This preserves the existing
+   rule that CLI attempts to rewrite `.claude.json`/`backups` get `EROFS`.
+2. **The publish order omits the target-durability barrier.** The complete temp
+   tree must be fsynced, renamed to `dist-<n>`, and the root directory fsynced
+   before a temporary symlink can be renamed over `current`. The root is
+   fsynced again after that pointer swap. Tests must fault/kill both barriers;
+   a durable `current` may never name an unpersisted target.
+3. **Best-effort garbage deletion lacks a safe namespace contract.** Cleanup
+   must operate fd-relatively without following symlinks and delete only
+   validated, setup-owned build directories. A malformed `dist-*`,
+   `.dist-tmp-*` or `.current.tmp-*`, wrong type/owner/mode, absolute symlink
+   target or `..` target must refuse and preserve evidence. Failing-first
+   symlink and foreign-file cases are required; a prefix alone is not deletion
+   authority.
+4. **D6 still documents the superseded flat layout** (`plan:274-311`). Its tree
+   and provisioning bullets need `state/`, `dist-<n>`, `current` and the fixed
+   links, and must say that the setup route probe executes the staged wrapper
+   and writes staged metadata before publication.
+5. **The accepted drawer placement is still contradicted in section 6.** Item
+   4 remains `Floats over the page` (`plan:813`) instead of docked at the
+   bottom with the page resized above it.
+6. **First-install fixed-link repair is underspecified.** Missing `.claude` and
+   `runtime` links may be created under the root one component at a time; exact
+   relative targets are required. A wrong type/target refuses. A crash after
+   creating only one link must be repaired on rerun without altering any
+   state.
+
+With those corrections, two external kill cuts are sufficient:
+`swap:before` leaves old/no `current`, and `swap:after` leaves the new current;
+both retain every state inode. Build-step fault injection still belongs below
+the swap to prove incomplete builds are never published. Agent Mail 5390 sent
+these findings before implementation proceeds.
