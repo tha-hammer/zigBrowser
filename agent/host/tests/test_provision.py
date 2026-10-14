@@ -275,6 +275,44 @@ class SourceLinkTest(unittest.TestCase):
         self.assertIn("is not a regular file or a directory", str(cm.exception))
 
 
+class PinnedReadTest(unittest.TestCase):
+    """RoseCat db02324 SHOULD: a leaf swapped after classification is never
+    followed or blocked on (a reversion to Path.read_bytes() fails this)."""
+
+    def test_a_leaf_swapped_to_a_link_or_a_fifo_refuses_and_a_regular_file_reads(self):
+        tmp = Path(tempfile.mkdtemp(prefix="zb-pinned-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "secret").write_text("ZB-SWAP-CANARY")
+        (tmp / "plain").write_text("plain")
+        self.assertEqual(setup._read_regular(tmp / "plain"), b"plain")
+        (tmp / "swapped-link").symlink_to(tmp / "secret")
+        os.mkfifo(tmp / "swapped-fifo")
+        for name in ("swapped-link", "swapped-fifo"):
+            started = time.monotonic()
+            with self.assertRaises(setup.SetupError, msg=name):
+                setup._read_regular(tmp / name)
+            self.assertLess(time.monotonic() - started, 5, name)
+
+    def test_a_swap_between_classification_and_read_is_caught_in_the_copy(self):
+        box = Sandbox(self)
+        target = box.source / "SAI" / "README.md"
+        (box.tmp / "secret").write_text("ZB-SWAP-CANARY")
+        real_stat = os.stat
+
+        def swap_after_classify(path, *args, **kw):
+            st = real_stat(path, *args, **kw)
+            if str(path) == str(target) and not os.path.islink(target):
+                target.unlink()
+                target.symlink_to(box.tmp / "secret")  # the swap lands after classification
+            return st
+
+        with mock.patch.object(setup.os, "stat", side_effect=swap_after_classify):
+            with self.assertRaises(setup.SetupError) as cm:
+                box.provision()
+        self.assertIn("changed while setup read it", str(cm.exception))
+        self.assertFalse(box.home.root.exists())
+
+
 class StateModeTest(unittest.TestCase):
     """RoseCat 5431: existing state is never changed, so a wrong mode refuses."""
 
