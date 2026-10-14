@@ -1,347 +1,379 @@
 ---
 date: 2026-10-14T14:30:00-04:00
 planner: cc_3 / JadeBeacon (Opus 4.8)
-git_commit: 1df5dce502ae9a1433573e8ba5ba2e0506fbafcb
+git_commit: 21625eb26d15cda921aee3205f7034f81e5cc210
 branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
-tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, launch-critical]
-status: plan for review
+tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
+status: plan for review (rev 2)
+rev: 2
+last_updated: 2026-10-14
+last_updated_by: cc_3 / JadeBeacon
+last_updated_note: "Rev 2 answers RoseCat's 9 blockers + 5 open-question dispositions (review 21625eb); re-pinned to HEAD 21625eb"
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
 # macOS Launch Support for zigBrowser — TDD Implementation Plan
 
-> **PLAN ONLY.** No implementation, no live runs this turn. Every slice below is
-> red-first; agents prepare the e2e scripts and may run them on the **remote Macs**
-> over Tailscale SSH, never on the user's local `DISPLAY :0`, live profile, or live
-> sockets. Every UI slice ends with a real-screen check judged by the user's eyes,
-> coordinated by the orchestrator.
+> **PLAN ONLY.** No implementation, no live runs. Agents prepare e2e scripts and may run
+> them on the **remote Macs** over Tailscale SSH, never on the user's local `DISPLAY :0`,
+> live profile, or live sockets. Every UI slice ends with a real-screen check judged by the
+> user, coordinated by the orchestrator.
+
+## Revision history
+
+- **Rev 1** (`d857a03`): first plan, slices MS1–MS7.
+- **Rev 2** (this): answers RoseCat's review `21625eb` ("BLOCKED", 9 blockers + 5
+  open-question dispositions). Direction and user decisions were accepted; the plan was
+  blocked for not being safe/specific enough to start. Rev 2 re-pins to HEAD `21625eb`,
+  corrects the sandbox-interface layer, adds a pre-MS5 **Linux extraction slice (MS0)** and a
+  **macOS setup/provisioning slice (MS5)**, splits MS2's single closure map into **three
+  production chains**, gives native input a **capability spike contract**, makes the
+  **Seatbelt security proofs hard launch gates that select the VM fallback**, specifies the
+  **approval grant contract**, closes **Keychain + chat observability**, hardens the
+  **two-arch/packaging gates against false-green**, and makes the **signing contract
+  release-safe**. Slices are renumbered MS0–MS9.
+
+## Rev 2 — how each of RoseCat's 9 blockers is answered
+
+| # | Blocker (21625eb) | Resolution in rev 2 | Where |
+|---|---|---|---|
+| 1 | MS2 closure map is not the full production topology (list/health/dialog/recover branch before the router and take no FIFO turn) | Split into **three** production chains + closure e2es: (a) ordinary routed command, (b) out-of-band `page.list`/`page.health` while a named window's FIFO is stuck, (c) two-phase `recover`; plus an explicit ABI/test inventory and an async-completion ownership contract (copied input, exactly-once, no-dispatch-after-abandon) | MS2, Closure Maps A/B/C |
+| 2 | Multi-window / freeze / recovery contracts underspecified | New behaviors: two-hop related-popup chain, per-`window_id` FIFO independence, `page.close` **and** script `window.close()` with opener survival, popups use WebKit's supplied `WKWebViewConfiguration`; a **bounded responsiveness probe/watchdog** not behind the window FIFO; frozen window does not poison siblings; two-phase consent + blast-radius ack + exactly-once cancel + "recovering"; **if public WKWebView APIs can't recover a hung process, MS2c stops at a spike** | MS2b.*, MS2c.* |
+| 3 | "native input" has no proven capability contract | MS2b is a **red-first capability spike** (`isTrusted`, focus, click, key, text, contenteditable/`beforeinput` cancel, scroll, pointer move, navigation-during-input, partial typing, deadline abandonment) on **both** Macs; the capability table is updated **only after** it passes; CGEvent is an **explicit TCC-gated alternative capability**, never a silent fallback, and its runner proves it is frontmost before emitting | MS2b, disposition 1 |
+| 4 | Launch-critical setup / persistence / configuration have no owner | New **MS5 (macOS setup & provisioning)** ports `runAgentSetup` for macOS (immutable `dist-<n>/current/state`, Python runtime/helper, SAI rule (a), skipped linked skills, no real `~/.claude`/repos, FIFO→fd 3, Keychain onboarding); new **MS3 (config & persistence)** adds an isolated persistent `WKWebsiteDataStore` contract and a decided macOS mapping/explicit-unsupported for `--profile-dir`/`--hardware-acceleration`/`--renderer`/`--media-source` | MS3, MS5 |
+| 5 | Shared sandbox interface asserted at the wrong layer ("Zig, platform-neutral") | Corrected: the real seam is **Python** (`agent/host/zb_agent_host/sandbox.py` + `launch.py`, policy/argv) and **C/GLib** (`src/agent_host.c:1-73`, spawn/lifetime/`prctl`). New **MS0** extracts a behavior-preserving `SandboxBackend` seam on **Linux** with its own Linux gate, naming exact files/methods/ownership/wire contract; Seatbelt then implements the same semantic launch spec. Proxy/bridges are rev-16 WIP: MS6 **owns them or depends on a named green landed revision** | MS0, MS6, Shared contract, disposition 4 |
+| 6 | Seatbelt failure must block launch and select the VM fallback | The spike proofs (custom-profile acceptance, other-process-info denial, fd-3 reopen, orphan incl. double-fork/`setsid`) are **hard gates before MS8**; **any failure disables Mac agent launch until the shared interface's VM backend is implemented**; the unapproved dedicated-user `kill(-1)` scheme is **removed** as a shipping fallback. MS6 network tests traverse the **production proxy via an e2e-only allowlist seam** (removing the proxy → red); deterministic sacrificial canary | MS6, disposition 3 |
+| 7 | Approval / Keychain / chat observability not closed | **Approval grant contract** specified before flows (action+site+account+window+payload binding, one-use, expiry, cancel/refuse, only the native Approve handler mints; negative proofs that page worlds/iframes/popups/socket clients/prompts/hooks cannot approve; per-write confirmation; dry-run no-commit). **Keychain** tests use a disposable service/account + canary, prove the token reaches **only** helper fd 3. **Chat observability** is a gated `--e2e-protocol` native census or screen capture — **never** a production socket drawer-read | MS4, MS5, MS7 |
+| 8 | Two-arch and packaging gates can false-green | MS1 provisions **two distinct hosts**, asserts the Intel host is really `x86_64` and the Apple-Silicon host **executes the arm64 slice (not x86 under Rosetta)**, records the **executing arch in production build info**, covers **every bundled native component** (browser, helper, CLI, runtime) and compatible non-exec resources before `lipo`; the runner **fails closed** on no GUI session / wrong arch / missing runtime-SDK / zero assertions; every sub-slice gets a named red test + exact failing assertion + green files + refactor gate | MS1, Testing Strategy |
+| 9 | Signing is last but its contract is not release-safe | MS1 **derives and tests a least-privilege entitlement manifest**; MS9 signs nested code **inside-out** then verifies the whole universal bundle **under hardened runtime on both arches before notarization**; until the Developer ID exists the result is called an **ad-hoc development build, not a distributable artifact**; the missing credential is tracked via **Agent Mail / plan status**, not a bead (beads DB is migration-locked) | MS1.3, MS9 |
+
+## Open-question dispositions (accepted from the review)
+
+1. **Native input:** responder-chain `NSEvent` is a **spike result, not an assumption**; the
+   trusted-event matrix (MS2b) decides it; CGEvent is an explicit TCC-gated alternative only.
+2. **fd-3 reopen:** `/dev/fd/3` reopening is a **hard MS6 spike gate on both arches**.
+3. **sandbox-exec:** custom profiles are a **hard gate**; failure **selects the VM backend and
+   blocks MS8**.
+4. **Linux extraction:** **yes** — extract the backend interface in its own pre-MS5 slice
+   (**MS0**) and keep the Linux gate isolated.
+5. **MS2 split:** keep **MS2a/MS2b/MS2c as separate reviewed gates**, and split the out-of-band
+   health/recover closure from crash-page presentation if one commit cannot keep a single red
+   seam.
 
 ## Overview
 
-macOS is launch-critical: most of the userbase is on Mac. Today zigBrowser has a
-working macOS **app/window/render/IPC seam** only — `src/wkwebview_shim.m` (888 lines)
-implements 6 of ~76 C-ABI functions, and bead `zigBrowser-8g7` already proved
-render + ping/pong on a real Intel Mac. Everything a Mac *launch* needs beyond opening
-a window — automation (page/dom/input/dialogs/popups/crash/health/recover), site flows,
-the AppKit agent drawer, the OS-native sandbox, the agent helper, and signed/universal
-packaging — does not exist on macOS. See the research doc
-(`thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md`,
-commit 1df5dce) for the full as-is map; this plan turns that map into small,
-red-first, gated slices.
-
-This plan follows the house conventions of the drawer plan
-(`thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md`):
-small slices, **one gate each**, native work lands with its adapter in the same slice,
-every slice ends with a real-binary e2e, a UI slice is not approved until a real-screen
-check passes on the user's hardware, and a slice is not done until its closure e2e was
-**observed to execute** with nonzero assertions (a "SKIP" counts as UNCLOSED).
+macOS is launch-critical (most users on Mac). Today zigBrowser has a working macOS
+app/window/render/IPC seam only (`src/wkwebview_shim.m`, 6 of ~76 C-ABI functions; bead
+`zigBrowser-8g7` proved render + ping/pong on a real Intel Mac). Everything a launch needs
+beyond opening a window — automation, multi-window/freeze/recovery, native input, site
+flows, approval, the AppKit drawer, setup/persistence/config, the OS-native sandbox, the
+agent helper, and signed universal packaging — does not exist on macOS. This plan turns the
+research map (`…/research/2026-10-14-14-19-macos-launch-support-surface.md`, 1df5dce) into
+small, red-first, gated slices. House conventions follow the drawer plan: small slices, one
+gate each, native work lands with its adapter in the same slice, a real-binary e2e ends every
+slice, UI slices need a real-screen check on the user's hardware, and a slice is not done
+until its closure e2e was **observed to execute** with nonzero assertions (a "SKIP" is
+UNCLOSED).
 
 ## Current State Analysis
 
-### Key Discoveries (all from research 1df5dce, verified file:line)
+### Key discoveries (research 1df5dce + review 21625eb, verified file:line)
 
-- **One C ABI, three backends by OS.** `resolveBackend` (build.zig:1107-1114):
-  `.linux → gtk_backend`, `.windows → webview2_backend`, `.macos → macos_backend`.
-  `configureMacosBackend` (build.zig:1174-1184) compiles `src/wkwebview_shim.m`
-  `-fobjc-arc` and links `WebKit`/`Cocoa`/`Foundation`. `CheckMacosBackendStep`
-  (build.zig:79-105) fails the build if the shim is missing.
-- **macOS shim = 6 core fns only.** `zb_app_run` (wkwebview_shim.m:788), `zb_run_open`
-  (:834), `zb_run_screenshot` (:838), `zb_version_line` (:853), `zb_reload` (:872),
-  `zb_window_new` (:880); plus `zb_policy_decide` (nav_policy.zig:40) and
-  `zb_ipc_dispatch` (ipc.zig:41). **None** of the ~70 `zb_automation_*`/`zb_native_*`
-  functions.
-- **The single `PagePort` impl is Linux-gated.** `automation_gtk_port.supported =
-  builtin.os.tag == .linux` (automation_gtk_port.zig:22); `pagePort()` → null off Linux
-  (:39-41). The server/router/engine/queue/recover/flows/token-sidecar are
-  platform-neutral Zig.
-- **Capability table already models macOS.** `.wkwebview = { input: js_synthetic,
-  network: unsupported(no_platform_api) }` (automation_platform.zig:90-95).
-- **Native input on Linux is toolkit-path, not X11.** Events are built with `gdk_event_new`
-  and delivered via `gtk_main_do_event` (webkit_shim.c:3373) — no XTEST/uinput. This is
-  the pattern the macOS NSEvent path mirrors (in-app delivery, no TCC).
-- **Config apply is Linux-only.** `webkit.applyRender/applyMediaSource/applyProfileDir`
-  are `comptime os.tag != .linux` no-ops (webkit.zig:48/72/91; app.zig:166).
-- **Build is remote-native over Tailscale SSH**, not cross-compiled
-  (tests/mac/build-on-mac.sh:25-34; comments :29-33 — no `-Dtarget`). Linux only does a
-  no-link symbol cross-check (build.zig:241-272; `tools/check_cross_symbols.py`). The
-  cross-target no-backend integrity test `713587b` is green (review log line 135).
-- **Packaging ships an ad-hoc `.dmg`.** `codesign --force --sign - --deep`
-  (packaging/macos/build-dmg.sh:90); `Info.plist` `LSMinimumSystemVersion 13.0`
-  (Info.plist:21-22). No Developer ID, hardened runtime, entitlements, notarization, or
-  universal binary; M9 validation was Intel-only.
-- **Drawer is 100% GTK3 widgets** (`ZbDrawerHost` custom no-window container,
-  agent_drawer.c:277-415; fold driver via `gtk_widget_add_tick_callback` :628-695;
-  portable geometry/animation/persistence in agent_drawer.zig:16-181). Out of scope for
-  macOS in its own plan (drawer plan :804). Secrets use libsecret via `dlopen`
-  (agent_secrets.c). Drawer is isolated from page JS structurally (native widgets).
-- **The NVIDIA real-screen lesson.** An output window over the accelerated page blanked
-  the user's NVIDIA screen; the GTK fix was a windowless host that paints floats into the
-  page's window (drawer plan §7.1, review log R15.3c). **Every UI slice now needs a
-  real-hardware check on the user's screen** (drawer plan §7.1 lines 905-993).
-- **Sandbox is Linux-kernel-only** (bwrap, nested PID ns, seccomp-bpf, `/proc`,
-  `--die-with-parent`, `memfd_create`; sandbox.py/seccomp.py/hook_run.py). The token
-  route FIFO→socketpair→fd 3 is portable POSIX (token.py:63-134). No `--unshare-net`
-  yet (planned Linux rev 16). The macOS replacement is researched (Seatbelt first, VM
-  fallback) but not built: `thoughts/searchable/shared/research/2026-10-14-macos-sandbox-option.md`
-  and `2026-10-14-agent-sandbox-redteam.md`.
-- **e2e harness is Xvfb/X11-bound** (tests/e2e/xsession.py, xinput.py). macOS tests are
-  the three `m9_*` run remotely by `tests/mac/gate.sh:24-44`. Only
-  `tests/agent_protocol_test.zig` is platform-neutral.
+- One C ABI, three backends: `resolveBackend` build.zig:1107-1114;
+  `configureMacosBackend` build.zig:1174-1184 (compiles `wkwebview_shim.m` `-fobjc-arc`, links
+  WebKit/Cocoa/Foundation); `CheckMacosBackendStep` build.zig:79-105.
+- macOS shim = 6 core fns (wkwebview_shim.m:788/834/838/853/872/880) + `zb_policy_decide`
+  (nav_policy.zig:40) + `zb_ipc_dispatch` (ipc.zig:41). None of the ~70 `zb_automation_*`/
+  `zb_native_*`.
+- The single `PagePort` impl is Linux-gated (automation_gtk_port.zig:22); `pagePort()`→null off
+  Linux (:39-41). Server/router/engine/queue/recover/flows/token-sidecar are platform-neutral
+  Zig.
+- **Out-of-band server paths (review):** `page.list`/`page.health` branch **before** router
+  parsing at `automation_server.zig:480-487` and deliberately **take no FIFO turn**
+  (`automation_server.zig:686-691`); dialog discovery and two-phase recover have their own
+  server paths (`handleDialogs` :1123-1180; `handleRecover` :942-1106). The MS2 closure cannot
+  be a single chain.
+- Capability table models macOS: `.wkwebview = { js_synthetic, network unsupported
+  (no_platform_api) }` (automation_platform.zig:90-95). **Rev 2:** this entry is changed only
+  after MS2b's trusted-event matrix passes.
+- Native input on Linux is toolkit-path (`gdk_event_new` + `gtk_main_do_event`
+  webkit_shim.c:3373), not XTEST; the macOS NSEvent path is a **spike** (MS2b), not an assumed
+  equivalent.
+- **Config/persistence/setup are Linux-only (review):** `runAgentSetup` refuses every non-Linux
+  OS (`app.zig:41-47`) and uses `/proc/self/exe`; `--profile-dir` is discarded off Linux
+  (`app.zig:160-166`); render/media flags are silent no-ops (`webkit.zig:47-72`).
+- **The sandbox seam's real layer (review):** policy/argv is **Python**
+  (`agent/host/zb_agent_host/sandbox.py`, `launch.py`); the spawn/lifetime seam is **C/GLib**
+  with `prctl` (`src/agent_host.c:1-73`). There is **no** existing Zig sandbox abstraction. The
+  token route FIFO→socketpair→fd 3 is portable POSIX (token.py:63-134). `--unshare-net` + the
+  host allowlist proxy + the two bridges are **rev-16 WIP**, not built.
+- Packaging ships an ad-hoc `.dmg` (`codesign --force --sign - --deep`,
+  packaging/macos/build-dmg.sh:90); `Info.plist` `LSMinimumSystemVersion 13.0`. No Developer
+  ID, hardened runtime, entitlements, notarization, or universal binary; M9 was Intel-only.
+- Drawer is 100% GTK3 widgets (agent_drawer.c; portable logic agent_drawer.zig:16-181); secrets
+  via libsecret `dlopen` (agent_secrets.c); isolated from page JS structurally. The approval
+  card is **unimplemented** (research + review). The NVIDIA real-screen lesson (drawer plan
+  §7.1) applies to macOS GPU compositing too.
+- e2e harness is Xvfb/X11-bound (xsession.py, xinput.py); macOS tests are three `m9_*` run
+  remotely (tests/mac/gate.sh:24-44). The cross-target no-backend integrity test `713587b` is
+  green (review line 135). Baseline for this plan: a clean archive of the pin before the plan
+  passed **106/106 steps, 817/817 tests** under private Xvfb (review line 7200).
 
 ## Desired End State
 
-A Mac user can install a universal (arm64 + x86_64) zigBrowser, open pages, drive the
-full automation API over the socket, run the site flows with per-action approval, use the
-AppKit agent drawer (docked, movable "S" icon, fold animation, Keychain secrets), and run
-the Claude agent inside an OS-native Seatbelt sandbox behind the shared backend interface
-— verified by real-binary e2e on **both** remote Macs and by the user's eyes on screen.
-Developer-ID signing, hardened runtime, and notarization land as the final, small slice
-once the user has an Apple Developer ID; entitlement/hardened-runtime compatibility is
-designed in from MS1 so that last slice is small.
-
-### Observable end-state behaviors (one per slice, expanded below)
-
-- MS1: Given both Macs reachable, when the gate builds a **universal** binary and runs the
-  `m9_*` suite on each arch, then both pass and the artifact is a fat Mach-O.
-- MS2: Given a page loaded in the WKWebView build, when a client sends `dom.*`/`page.*`/
-  native-input/dialog/popup/health/recover over the socket, then the live page changes and
-  the result is observable through the production read — identical client contract to Linux.
-- MS3: Given a logged-in fixture, when a LinkedIn/Instagram/X flow runs on macOS, then it
-  behaves exactly as on Linux, including per-action approval and dry-run.
-- MS4: Given `--agent-drawer on` on macOS, when the user opens the drawer, then a native
-  AppKit drawer docks at the bottom (page resized above), the floating "S" icon hides while
-  open, the conversation scrolls with input at the bottom, and `-` animates into the icon's
-  last position; secrets store in Keychain; isolated from page worlds.
-- MS5: Given the Seatbelt backend behind the shared interface, when a malicious hook tries to
-  read the CLI's memory/args, reach a non-allowlisted host, or survive a browser `kill -9`,
-  then each attempt fails — proven by failing-first e2e on a Mac.
-- MS6: Given the agent helper on macOS, when the drawer opens a session, then the Claude CLI
-  runs inside the Seatbelt sandbox with the FIFO→fd-3 token route and streams replies.
-- MS7: Given an Apple Developer ID, when the release gate builds, then the `.dmg` is
-  Developer-ID-signed, hardened-runtime-enabled, and notarized/stapled — a small diff over
-  the ad-hoc path designed in MS1.
+A Mac user installs a **Developer-ID-signed, hardened-runtime, notarized universal** zigBrowser
+and can: open pages with an isolated persistent data store; drive the full automation API
+(including multi-window, freeze/recovery, dialogs, popups) with the same client contract and
+per-window FIFO semantics as Linux; use native input proven trusted by a capability matrix;
+run site flows with a fully specified per-action approval grant; use a native AppKit drawer
+(docked, movable "S" icon, fold animation, Keychain secrets) isolated from page worlds; and
+run the Claude agent inside an **OS-native Seatbelt sandbox** (behind one shared backend
+contract) whose security proofs are hard launch gates that select the VM backend on failure.
+Verified by real-binary e2e on **both** remote Macs and by the user's eyes on screen. The
+ad-hoc development build is explicitly **not** a distributable artifact; MS9 produces the
+distributable one once the user has a Developer ID.
 
 ## What We're NOT Doing
 
-- Not changing the Linux GTK behavior or its gate (except where the shared backend interface
-  is factored out of existing Linux code — behavior-preserving, Linux gate stays green).
-- Not building the VM sandbox fallback in this plan (kept as a researched pluggable backend
-  behind the same interface; a MS5 follow-up bead if the Seatbelt spike fails).
-- Not building a Windows drawer or Windows automation parity (separate track).
-- Not adding the token-swap proxy (keep the FIFO→fd-3 route; the host allowlist proxy is
-  shared infra carried over from the Linux rev-16 design).
+- Not changing Linux GTK behavior; MS0's extraction is behavior-preserving and the Linux gate
+  stays green.
+- Not shipping the VM sandbox in this plan **as the primary path** — but MS6 **requires** the VM
+  backend to exist behind the shared contract **before Mac agent launch** if any Seatbelt proof
+  fails (it is not deferred to a later bead when it gates launch).
+- Not shipping the unapproved dedicated-agent-user `kill(-1)` orphan scheme (removed from rev 1).
+- Not exposing native drawer text through a production automation socket read (chat observation
+  is `--e2e-protocol` native census / screen capture only).
+- Not calling any ad-hoc build a distributable artifact; not obtaining the Apple Developer ID
+  (user action); MS9 is gated on it and tracked via Agent Mail / plan status.
 - Not running anything on the user's local `DISPLAY :0`, live profile, or live sockets.
-- Not obtaining the Apple Developer ID (user action); MS7 is gated on it.
+- Not building a Windows drawer / Windows automation parity (separate track).
 
 ## Testing Strategy
 
-- **Frameworks:** Zig `std.testing` (unit, platform-neutral where possible); Python e2e
-  driving the real binary via the Python SDK over the automation Unix socket
-  (`sdk/python/src/zigbrowser/client.py`); ObjC behavior asserted through the C ABI from
-  the Zig/e2e side (no separate ObjC test runner).
-- **macOS harness (new):** extend `tests/mac/gate.sh` into a per-arch gate that (1) rsyncs
-  the tree to each remote Mac, (2) builds, (3) runs the macOS e2e suite, (4) copies back
-  artifacts (render PNGs, logs). A new `tests/e2e/mac_session.py` is the macOS analog of
-  `xsession.py`: it launches the real binary (a real `NSWindow`; **no Xvfb/DISPLAY on
-  macOS**), sets `ZIGBROWSER_SOCKET`, guards the process tree, and tears down. Agents run
-  this on the remote Macs; the user's local screen is never touched.
-- **Native input:** mirror the Linux toolkit-path approach — construct `NSEvent`s and deliver
-  through the responder chain (`[NSWindow sendEvent:]` / WKWebView), **not** `CGEventPost`
-  (which needs Accessibility TCC). `CGEvent` is a documented, TCC-gated fallback only; the
-  capability table entry `.wkwebview = js_synthetic` governs the default path.
-- **Real-screen check (UI slices):** add a macOS case to `tests/manual/real_screen_check.py`
-  (or a `mac_real_screen_check.py` sibling) per UI slice; the orchestrator runs it on the
-  user's Mac screen with permission. A UI slice is not approved until it passes there; a Xvfb-
-  equivalent/offscreen pass is necessary but not sufficient.
-- **Closure tests** are Tier-1 real-binary e2e over the socket; a skipped closure test is
-  UNVERIFIED (framework §4). Each ClosureMap below is pinned to HEAD 1df5dce.
-- **Both arches:** every e2e runs on the Intel Mac and the Apple Silicon Mac; MS1 makes that
-  the default matrix.
+- **Frameworks:** Zig `std.testing`; Python e2e driving the real binary via the Python SDK over
+  the automation Unix socket; ObjC behavior asserted through the C ABI / e2e (no separate ObjC
+  runner).
+- **macOS harness (new):** `tests/e2e/mac_session.py` (macOS analog of `xsession.py`; real
+  `NSWindow`, **no Xvfb/DISPLAY**; guards the process tree; sets `ZIGBROWSER_SOCKET`). A
+  two-host, two-arch `tests/mac/gate.sh`.
+- **Fail-closed runner (blocker 8):** the runner **exits nonzero** (never SKIP-to-green) when a
+  host lacks an active GUI session, is not the expected native architecture (not Rosetta),
+  lacks a required runtime/SDK, or when a test records zero assertions.
+- **Arch-execution proof (blocker 8):** assert the Intel host reports `x86_64` and the
+  Apple-Silicon host **executes the arm64 slice**; the running app records its **executing
+  arch in production build info**; `lipo -archs`/`--version` alone are insufficient.
+- **Native input (blocker 3):** a red-first trusted-event matrix on both Macs decides the
+  capability; the table is updated only after it passes; any real-screen input script proves its
+  own window is focused/viewable/topmost at the target and aborts under a server/grab-equivalent
+  guard (drawer plan §7.1, `test_real_screen_input.py` model).
+- **Network (blocker 6):** the fake Messages/Anthropic API is reached **through the production
+  proxy** via an `--e2e-protocol` allowlist seam; removing/bypassing the proxy turns the test
+  **red**. Direct loopback decoy, LAN, public IP, DNS, WindowServer/CGEvent/screen capture,
+  non-allowlisted host and workspace write must **fail**; only the proxy, `:51091`, `:31337`
+  succeed.
+- **Keychain (blocker 7):** disposable `Security.framework` service/account + canary token,
+  never a real credential; prove the token reaches **only** helper fd 3 — not env, argv, logs,
+  telemetry, hook env, or model context.
+- **Chat observability (blocker 7):** assert via a gated `--e2e-protocol` native drawer census
+  or screen capture, never a production socket drawer-read API.
+- **Real-screen (UI slices):** macOS cases in the real-screen check, run by the orchestrator on
+  the user's Mac; a UI slice is not approved until it passes there.
+- **Closure tests** are Tier-1 real-binary e2e; ClosureMaps pinned to HEAD 21625eb. **Both
+  arches every run.**
 
-## Shared Backend Interface (design spine, defined in MS5, referenced throughout)
+## Shared sandbox backend contract (corrected layer — blocker 5)
 
-One `SandboxBackend` interface (Zig, platform-neutral) with a launch spec: broker byte
-stream; token channel (FIFO then fd 3, never env); host allowlist-proxy endpoint
-(`api.anthropic.com` + census-proven CLI domains, fail-closed); bridge ports 51091 (voice)
-and 31337 only; shares (agent home read-only, workspace read-only, scratchpad read-write);
-a hook-launch hook (how one hook gets its own confinement); and a lifetime contract
-(everything dies with the browser). Implementations: Linux bwrap (existing pieces refactored
-behind the interface, behavior-preserving), macOS Seatbelt (new, MS5), VM fallback (later
-bead). The host proxy, port bridges, in-process broker, and approval logic are **shared
-code** across OSes. Carried-over decisions: SAI copy rule (a); every social write needs
-per-action user approval; token route FIFO→socketpair fd 3.
+The sandbox seam is **not** a Zig abstraction. Today it is:
 
----
+- **Policy/argv (Python):** `agent/host/zb_agent_host/sandbox.py` (`helper_argv`, the bwrap argv,
+  `STATE_DIRS`, binds) and `launch.py` (`build_argv`, `os.execv(bwrap, …)`); the per-hook nested
+  profile is `hook_run.py`; seccomp is `seccomp.py`.
+- **Spawn/lifetime (C/GLib):** `src/agent_host.c:1-73` (`g_spawn_sync` with the `die_with_browser`
+  child-setup hook and `prctl(PR_SET_PDEATHSIG)`).
 
-## MS1: Universal build + Mac CI/remote gate
+**MS0** defines a **`SandboxBackend` semantic launch spec** and refactors the Linux code behind
+it **without behavior change**, naming the exact files, methods, ownership, and wire contract:
 
-**Goal.** A reproducible universal (arm64 + x86_64) macOS build and a two-arch remote gate,
-with the ad-hoc-signed `.dmg` designed so hardened-runtime/entitlements drop in later (MS7).
-
-### Behavior MS1.1: universal fat Mach-O build on a Mac
-**Given** both remote Macs reachable over Tailscale SSH (one Intel, one Apple Silicon),
-**When** the build runs natively on each and the results are combined,
-**Then** `zig-out/bin/zigBrowser` (or the `.app` executable) is a fat Mach-O containing
-both `arm64` and `x86_64` slices (`lipo -info` lists both), each slice runs, and
-`zb_version_line` returns the WKWebView version on each arch.
-
-- **Files touched:** `build.zig` (a `mac-universal` step; no `-Dtarget`, per
-  build-on-mac.sh:29-33), `tests/mac/build-on-mac.sh` (per-arch build), `packaging/macos/build-dmg.sh`
-  (lipo the two slices before signing), `tests/mac/gate.sh` (two-arch matrix).
-- **Property:** none — fixed build artifact, nothing to generate over.
-- 🔴 Red: `tests/e2e/mac_universal_test.py` asserts `lipo -archs` lists `x86_64 arm64`
-  and that each extracted slice executes `--version`. Fails today (single-arch, no lipo).
-- 🟢 Green: build each arch on its native Mac, `lipo -create` the two executables, stamp the
-  bundle.
-- 🔵 Refactor: factor the per-arch build into one function reused by `gate.sh`; no duplicated
-  ssh/scp blocks.
-
-### Behavior MS1.2: the two-arch remote gate runs the macOS suite and fails closed
-**Given** the `m9_*` suite (render, reply-channel, load-fail) and `mac_session.py`,
-**When** `tests/mac/gate.sh` runs on each Mac,
-**Then** all `m9_*` pass on both arches, the gate returns nonzero if any Mac is unreachable or
-any test is skipped (no silent green), and a render PNG is copied back per arch.
-
-- **Files touched:** `tests/mac/gate.sh`, `tests/e2e/mac_session.py` (new), `build.zig`
-  (macOS gate aggregation step).
-- 🔴 Red: `gate.sh` run with one Mac unreachable must exit nonzero (today it has no two-arch
-  matrix). A `m9_*` that prints SKIP must fail the gate.
-- 🟢 Green: the matrix loop + fail-closed reachability check.
-- 🔵 Refactor: share the artifact-copyback and teardown with `build-on-mac.sh`.
-
-### Behavior MS1.3: the ad-hoc bundle is hardened-runtime-ready
-**Given** the current ad-hoc `codesign --sign -` path,
-**When** the bundle is built,
-**Then** an `entitlements.plist` and the `Info.plist` already carry the keys the agent
-features will need (so MS7 only swaps the signing identity and adds `--options runtime` +
-notarization), and the ad-hoc build still verifies (`codesign --verify`).
-
-- **Files touched:** `packaging/macos/entitlements.plist` (new, inert under ad-hoc),
-  `packaging/macos/Info.plist`, `packaging/macos/build-dmg.sh`.
-- **Design note (carry-over):** entitlements anticipated — network client, and (MS5) whatever
-  the Seatbelt launcher needs; `LSMinimumSystemVersion` stays 13.0 (WKContentWorld/
-  WKScriptMessageHandlerWithReply are macOS 11+/12+). No hardened runtime yet (would block
-  the ad-hoc agent paths during development); MS7 enables it.
-- 🔴 Red: a gate assertion that `entitlements.plist` exists and `codesign -d --entitlements -`
-  on the signed bundle lists the expected keys. Fails today (no entitlements file).
-- 🟢 Green: add the file, pass it to `codesign` (ad-hoc still works).
-- 🔵 Refactor: single source of the key list, referenced by MS7.
-
-**Gate (MS1):** the existing Linux gate is untouched; a new `mac-gate` runs MS1.1–MS1.3 on
-both Macs and fails closed. **Not a UI slice** (no real-screen check). Coordinate with
-BlueBeaver (build/gate) and BlackRobin (shim/version seam).
+- Launch spec (the contract both Linux and macOS satisfy): the broker byte stream; the token
+  channel (FIFO then fd 3, never env); the host allowlist-proxy endpoint (`api.anthropic.com` +
+  census-proven CLI domains, fail-closed) and the two bridge ports (51091, 31337); the shares
+  (agent home read-only, workspace read-only, scratchpad read-write); a per-hook confinement
+  launcher; and a lifetime contract (everything dies with the browser).
+- Ownership: the **Python** side owns policy/argv/profile generation; the **C** side owns spawn +
+  parent-death; the **host** side (shared, Linux+macOS) owns the proxy, bridges, in-process
+  broker, and approval logic.
+- Implementations: **Linux** = bwrap (MS0 extraction, behavior-preserving); **macOS Seatbelt** =
+  SBPL profile + app-side hook launcher (MS6); **VM** = the fallback behind the same spec,
+  required before Mac agent launch if Seatbelt's proofs fail (MS6).
+- Dependency note: the proxy/bridges are **rev-16 WIP**. MS6 either **owns** them or **depends on
+  a named, green, landed Linux revision** that provides them; the plan does not treat them as an
+  already-existing dependency.
 
 ---
 
-## MS2: WKWebView PagePort adapter + automation ABI
+## MS0: Extract the Linux sandbox-backend seam (pre-MS5, behavior-preserving, Linux gate)
 
-**Goal.** Implement the automation surface on macOS so the **same client contract** as Linux
-works over the socket: `page.*`, `dom.*`, native input, dialogs, popups, crash/health/recover.
-Native work (`wkwebview_shim.m` functions) lands with its `PagePort` adapter in this slice.
+**Goal (blocker 5, disposition 4).** Factor the Linux sandbox policy/argv (Python) and
+spawn/lifetime (C) behind the `SandboxBackend` launch spec with **no behavior change**, so
+Seatbelt can implement the same spec. Its gate is the existing Linux gate — it must stay green.
 
-This is the launch-critical core and the largest slice; it lands in **three gated parts**
-(MS2a dom/page + eval, MS2b native input + dialogs + popups, MS2c health/recover + crash),
-each with its own red/green/refactor/gate/review, mirroring the drawer plan's S3 split.
+### Behavior MS0.1: the Linux backend implements the spec with identical argv
+**Given** the current bwrap argv (`sandbox.py helper_argv`) and spawn (`agent_host.c`),
+**When** they are moved behind a `SandboxBackend` interface (a Python `LinuxBwrapBackend` +
+the parameterized C spawn seam),
+**Then** the generated argv, binds, seccomp fd, and spawn/parent-death behavior are **byte-for-
+byte** what they are today (golden-argv test), and the full Linux gate stays **106/106,
+817/817**.
+
+- **Files touched:** `agent/host/zb_agent_host/sandbox.py` (extract `SandboxBackend`
+  protocol + `LinuxBwrapBackend`), `launch.py`, `src/agent_host.c` (parameterize the spawn
+  seam), new `agent/host/tests/test_backend_contract.py`.
+- **Property:** oracle — for any `(home, workspace, route, extra_ro)` the new backend's argv
+  equals the pre-refactor `helper_argv` output (compare against a captured golden).
+- 🔴 Red: `test_backend_contract.py` asserts the `SandboxBackend` type exists and that
+  `LinuxBwrapBackend.launch_spec(...)` reproduces the golden argv; red today (no such type).
+- 🟢 Green: introduce the protocol + adapter with no argv change.
+- 🔵 Refactor: one argv builder, no duplication between `launch.py` and `sandbox.py`.
+- **Closure:** LEAF (pure argv/spec construction, platform-neutral Python; the real spawn is
+  already covered by the existing Linux contract e2es, unchanged).
+
+**Gate (MS0):** the existing Linux gate (`agent-host-unit`, `agent-host-contract`, all e2es) +
+the new golden-argv test. **No macOS work.** Coordinate with **BlueBeaver** (helper/sandbox).
+
+---
+
+## MS1: Universal build + two-arch remote gate (false-green-proof) + entitlement manifest
+
+**Goal (blockers 8, 9-part).** A universal (arm64 + x86_64) build, a two-host two-arch gate that
+cannot false-green, and a tested least-privilege entitlement manifest so MS9 is small.
+
+### Behavior MS1.1: universal fat Mach-O covering every bundled native component
+**Given** both Macs reachable,
+**When** each arch builds natively and the slices are combined,
+**Then** the browser executable **and every bundled native component** (the Python runtime, the
+Claude CLI, the helper launcher) are present per arch, their non-executable resources are
+verified compatible before `lipo -create`, and the result is a fat Mach-O with both slices.
+
+### Behavior MS1.2: real two-host identity + executing-arch proof (no Rosetta false-green)
+**Given** two distinct hosts,
+**When** the gate runs,
+**Then** it asserts the Intel host is really `x86_64` and the Apple-Silicon host **executes the
+arm64 slice** (not an x86 process under Rosetta — check `sysctl.proc_translated`/
+`NSBundle`/`mach` arch at runtime), and the running app records its **executing architecture in
+production build info** read back over the socket; `lipo -archs` + `--version` alone do not pass.
+
+### Behavior MS1.3: tested least-privilege entitlement manifest (release-safe seed for MS9)
+**Given** the features MS2–MS8 will need,
+**When** the bundle is built ad-hoc,
+**Then** `packaging/macos/entitlements.plist` holds an **exact least-privilege** manifest
+(network client; the specific keys the Seatbelt launcher and helper need — derived, not "whatever
+it needs"), `codesign -d --entitlements -` lists exactly those, and the ad-hoc build still
+verifies. The manifest is the single source MS9 signs with.
+
+### Behavior MS1.4: the runner fails closed
+**Given** the fail-closed conditions,
+**When** a host lacks a GUI session / the expected arch / a required runtime-SDK, or a test
+records zero assertions,
+**Then** the gate **exits nonzero** (never SKIP-to-green), per host and per arch.
+
+- **Files touched:** `build.zig` (`mac-universal`, no `-Dtarget`), `tests/mac/build-on-mac.sh`,
+  `packaging/macos/build-dmg.sh` (lipo + verify compatible resources), `packaging/macos/entitlements.plist`
+  (new), `packaging/macos/Info.plist`, `tests/mac/gate.sh` (two-host matrix + fail-closed),
+  `tests/e2e/mac_universal_test.py`, `src/*` build-info (record executing arch).
+- 🔴 Red: `mac_universal_test.py` asserts both slices exist, each component is fat, the executing
+  arch matches the host, build info reports it, and the entitlements file lists the exact keys —
+  red today. 🟢 Green: per-arch build + lipo + arch-record + entitlements. 🔵 Refactor: one
+  per-arch build fn shared by `gate.sh`/`build-dmg.sh`; one signing fn (ad-hoc now, Developer ID
+  in MS9) selected by flag.
+- **Closure:** LEAF (packaging/build-info assertions; no cross-process product behavior).
+
+**Gate (MS1):** two-host `mac-gate`, fail-closed; Linux gate untouched. Not a UI slice.
+Coordinate with **BlueBeaver** (build/gate) and **BlackRobin** (version/build-info seam).
+
+---
+
+## MS2: WKWebView PagePort adapter + automation ABI (three gated parts, three closure maps)
+
+**Goal (blockers 1, 2, 3; dispositions 1, 5).** Implement the automation surface on macOS with
+the **same client contract and per-window FIFO semantics** as Linux, proven by **three** distinct
+production chains. Native work lands with its adapter in the same part. Three separate reviewed
+gates: **MS2a** (routed dom/page + eval/readiness), **MS2b** (native-input capability spike +
+dialogs), **MS2c** (multi-window/popups + freeze/recovery; split crash-page presentation off if a
+single red seam can't hold).
 
 ### Design
-- New `src/automation_wk_port.zig` implements `PagePort` (page_port.zig:181-205), gated
-  `supported = builtin.os.tag == .macos`, wired in `buildAutomationConfig` (app.zig:220-237)
-  alongside the GTK port. `pagePort()` returns a real port on macOS.
-- `wkwebview_shim.m` gains the `zb_automation_*`/`zb_native_*` functions declared in
-  `webkit_shim.h`, implemented against WKWebView: `evaluateJavaScript:inContentWorld:` in a
-  **private `WKContentWorld`** (not `pageWorld`) for the automation script, `loadRequest:`/
-  `reload`, `URL`/`title`, `takeSnapshot` for screenshots, `WKUIDelegate` dialog callbacks,
-  `createWebViewWithConfiguration` popups, `webViewWebContentProcessDidTerminate:` for crash.
-- A macOS main-thread marshal mirrors Linux's `auto_queue_on_gtk`/`auto_job_wait`
-  (webkit_shim.c:1692-1812): `dispatch_async(dispatch_get_main_queue())` + a blocking wait on
-  a semaphore with a deadline; the automation server thread blocks like on Linux.
-- The automation script injection mirrors Linux's `zb_automation_set_script`
-  (automation_gtk_port.zig:30-33) into the private content world; the backend-marker script
-  (wkwebview_shim.m:387-391) stays.
+- New `src/automation_wk_port.zig` implements `PagePort` (gated `os.tag == .macos`), wired in
+  `buildAutomationConfig` (app.zig:220-237) beside the GTK port.
+- `wkwebview_shim.m` gains the `zb_automation_*`/`zb_native_*` functions against WKWebView, the
+  automation script in a **private `WKContentWorld`** (not `pageWorld`), and a main-thread marshal
+  mirroring Linux's `auto_queue_on_gtk`/`auto_job_wait` (webkit_shim.c:1692-1812):
+  `dispatch_async(main)` + a bounded, deadline-guarded wait.
+- **Async-completion ownership contract (blocker 1), asserted per function:** every asynchronous
+  Objective-C completion **copies its inputs** (no borrowed Zig memory after return), fires
+  **exactly once**, and a **no-dispatch / no-write guard** prevents any effect after the waiter
+  abandons on deadline (the macOS analog of the GTK generation/`auto_job` guard).
 
-### Behavior MS2a.1: `page.navigate` + `page.url`/`page.title` over the socket
-**Given** the WKWebView build running with `--automation-api`,
-**When** a client sends `page.navigate {url}` then `page.url`,
-**Then** the WKWebView loads the URL and `page.url` returns it — same JSON-RPC envelope,
-auth, and error codes as Linux (automation_server.zig:412-530).
+### Explicit ABI / test inventory (blocker 1) — each gets a named red test in its part
+`eval`/`wait` (MS2a), `navigate`/`navigate_guarded`/`reload`/`beforeunload` (MS2a), `url`/`title`
+(MS2a), **startup readiness** + **late-completion-after-timeout** + **result/error-string
+ownership** (MS2a); `native_click`/`native_key`/`native_text`/`native_move`/`native_scroll` +
+**pointer cache** (MS2b), `set_input_files` **incl. regular-file refusal** (MS2b), **full-page
+screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload (MS2b);
+`list_windows`/`close_window`/`recover_windows` + popups (MS2c).
 
-### Behavior MS2a.2: `dom.query`/`dom.get_text`/`dom.click`(synthetic) via the private world
-**Given** a fixture page,
-**When** a client sends `dom.*` commands,
-**Then** the injected `automation.js` (js_embed.zig) runs in the **private** WKContentWorld and
-returns DOM results; the page world cannot see or spoof the automation globals.
+### MS2a behaviors (routed commands)
+- **MS2a.1** `page.navigate` + `page.url`/`page.title` over the socket (same envelope/auth/errors
+  as automation_server.zig:412-530).
+- **MS2a.2** `dom.*` via the **private** WKContentWorld; the page world cannot see or spoof the
+  automation globals (**property: metamorphic** — a page that redefines `window.__zbAutomation`
+  does not change the result).
+- **MS2a.3** startup readiness, late completion after timeout (the guard drops it), and
+  result/error-string ownership (no use-after-free; strings owned by the caller side).
 
-- **Property (isolation):** metamorphic — for any page that defines `window.__zbAutomation`
-  itself, the automation calls still resolve against the private-world copy (page cannot
-  shadow it). Domain: fixture pages that redefine the global. Driven through the socket.
+### MS2b behaviors (native-input capability spike + dialogs) — red-first, both Macs (blocker 3)
+- **MS2b.1 (spike)** the trusted-event matrix: `event.isTrusted` true, focus, click, key, text,
+  contenteditable + `beforeinput` cancellation honored, scroll, pointer movement, navigation
+  during input, partial typing, and **deadline abandonment** (no dispatch after the waiter
+  leaves). Delivery via responder-chain `NSEvent`. **The capability table entry
+  (automation_platform.zig:90-95) is changed only after this passes.** If responder-chain fails
+  for an event type, document it and expose **CGEvent** as an explicit **TCC-gated alternative
+  capability** whose real-screen runner obtains permission and verifies its app is frontmost
+  before emitting — never a silent default.
+- **MS2b.2** dialogs (alert/confirm/prompt/beforeunload) captured by the `WKUIDelegate` and
+  answered via the ABI (analog of webkit_shim.c:4523-4625).
 
-### Behavior MS2b.1: native input via NSEvent responder-chain delivery
-**Given** `dom.click`/`dom.press`/`dom.type` with `input:"native"`,
-**When** the engine runs the native path (engine.zig:642 `runNative`, gated on
-`supportsNativeInput()`),
-**Then** `zb_native_click`/`_key`/`_text`/`_move`/`_scroll` build `NSEvent`s and deliver them
-through the window's responder chain (no `CGEventPost`, no TCC), the page observes the event,
-and the ack counters confirm it (mirroring automation_gtk_port.zig:450 `inputAck`).
+### MS2c behaviors (multi-window / freeze / recovery) — blocker 2
+- **MS2c.1** a **two-hop related-popup chain**: `window.open` twice; the popups use **WebKit's
+  supplied `WKWebViewConfiguration`** (process-pool/data-store/content-world intentional); each
+  gets its own `window_id`; routing a command to each proves **per-window FIFO independence**;
+  the opener's URL and DOM survive both `page.close` **and** script `window.close()`.
+- **MS2c.2** a **bounded responsiveness probe/watchdog** updates per-window state **without
+  waiting behind that window's FIFO**; one frozen window **does not poison siblings**
+  (`webViewWebContentProcessDidTerminate:` reports termination, not liveness, so a separate
+  bounded probe is named).
+- **MS2c.3** recovery of a **hung** WKWebView via a **named public-API mechanism**, retaining the
+  two-phase consent, blast-radius acknowledgement, exactly-once queued-job cancellation, and
+  "recovering" errors (automation_server.zig:810-1106); **no automatic kill**. **If no public
+  WKWebView API can recover a hung content process, MS2c stops at a documented spike** and the
+  plan does not assume a reload recovers it.
 
-- **Design note:** if responder-chain delivery proves insufficient for a given event type,
-  document the gap and fall back to `CGEventPost` gated on Accessibility TCC (a real-screen,
-  user-granted permission) — recorded as a MS2b risk, not a silent default.
+### Workflow Closure (three chains — blocker 1)
 
-### Behavior MS2b.2: dialogs (alert/confirm/prompt/beforeunload) and popups
-**Given** a page that opens a JS dialog or a popup,
-**When** `dialog.get`/`dialog.respond` or a `window.open` fires,
-**Then** the `WKUIDelegate` captures the dialog (held, answered via the ABI like
-webkit_shim.c:4523-4625) and popups open as new `ZBWindowHost`s tracked in the window list,
-with `page.list`/`page.close` working (automation_server.zig:554-664).
-
-### Behavior MS2c.1: `page.health` + `page.recover` + crash page on WKWebView
-**Given** a WKWebView whose web content process is hung or killed,
-**When** the client polls `page.health` and runs the two-phase `page.recover`
-(automation_server.zig:810-1106),
-**Then** health reports `responsive`/`crashed` from
-`webViewWebContentProcessDidTerminate:`/responsiveness, and recover reloads the view and
-shows a crash page via `loadAlternateHTML`-equivalent — same state machine, incident token,
-and 60 s TTL as Linux (all platform-neutral Zig; only the shim action is new).
-
-### Workflow Closure (MS2 — the launch-critical behavior)
-
-#### Production Operation Chain
-`client socket frame -> automation_server.handleRequestWith -> router.parse -> queue.acquire -> engine.executeWith -> PagePort(automation_wk_port) -> wkwebview_shim zb_automation_*/zb_native_* (dispatch to WK main thread) -> WKWebView effect on live page -> production read (zb_automation_eval_json / zb_automation_get_url) -> JSON-RPC result to client`
-
-#### Closure Test: "An automation command drives the live WKWebView page and its result is observable to the client."   [BLOCKING: crosses the Zig→ObjC ABI boundary and an async WK main-thread/`evaluateJavaScript` completion edge]
-- **SOURCE (seed only):** the page loaded into window 1 via `zb_automation_navigate_guarded`
-  (the macOS impl added in MS2a) — seed = navigate to a fixture over the socket.
-- **TRIGGER (start):** `automation_server.handleRequestWith` (automation_server.zig:412) — the
-  outermost production entrypoint. (boundary = outermost; it is above the
-  highest_new_connector, which is `automation_wk_port.pagePort()`, so starting at the socket
-  crosses every new seam.)
-- **DRIVERS (async edges):** the WK main-thread marshal + `evaluateJavaScript` completion →
-  the real `[NSApp run]` / main `NSRunLoop` (entered by `zb_app_run`, wkwebview_shim.m:823).
-  In the running browser the run loop runs continuously, so the edge self-drains before the
-  observe read; the test must not sleep or mock it.
-- **OBSERVE (assert via):** the production read `zb_automation_eval_json` (the macOS impl) or
-  `zb_automation_get_url`, returned as the JSON-RPC result and read by the Python SDK.
-- **FORBIDDEN SPAN:** `router.parse`, `queue.acquire`, `engine.executeWith`, `PagePort`
-  vtable, `automation_wk_port`, the shim marshal — the test calls/seeds/mocks none of them.
-- **RED-AT-SEAM proof:** before MS2a lands the adapter, `pagePort()` returns null on macOS and
-  the command returns the documented `unsupported` data (automation_platform.zig:90-95); the
-  closure e2e asserting a real DOM change is **red** until the adapter + shim fns exist.
-- **DRIVABILITY:** store seam = the socket navigate seeds the page (always available); the
-  async edge is driven by the real run loop (no injected clock needed — the loop is the
-  driver). No required seam missing.
-- **EXECUTION (must run):** `tests/e2e/mac_session.py` launches the real universal binary on a
-  remote Mac with `--automation-api`; the SDK connects over `ZIGBROWSER_SOCKET` and reads the
-  `<socket>.token` sidecar. If the binary or Mac is absent the test **exits nonzero** (fails
-  closed), never SKIP-to-green.
-
-#### ClosureMap (structured — derive() input), pinned to HEAD 1df5dce
+#### Closure A — ordinary routed command   [BLOCKING: Zig→ObjC boundary + async WK completion edge]
+- **Chain:** `socket -> handleRequestWith (:412) -> router.parse (:503) -> queue.acquire (:518) -> engine.executeWith (:526) -> PagePort(automation_wk_port) -> wk_shim zb_automation_eval_json (dispatch to WK main) -> WKWebView effect -> zb_automation_eval_json read -> JSON-RPC result`
+- **SOURCE (seed):** the page loaded via `zb_automation_navigate_guarded` (macOS, MS2a). **TRIGGER:**
+  `handleRequestWith` (automation_server.zig:412, outermost; above `highest_new_connector =
+  automation_wk_port`). **DRIVER:** the real `[NSApp run]` loop (`zb_app_run`
+  wkwebview_shim.m:788). **OBSERVE:** `zb_automation_eval_json`. **FORBIDDEN SPAN:** router,
+  queue, engine, port, adapter, shim. **RED-AT-SEAM:** with the adapter absent, `pagePort()`→null
+  returns the documented `unsupported` data; the DOM-change assertion is red until MS2a lands.
 
 ```json
 {
-  "behavior": "An automation command drives the live WKWebView page and its result is observable to the client.",
-  "git_commit": "1df5dce502ae9a1433573e8ba5ba2e0506fbafcb",
+  "behavior": "An ordinary routed automation command drives the live WKWebView page and its result is observable to the client.",
+  "git_commit": "21625eb26d15cda921aee3205f7034f81e5cc210",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "loaded_page",         "module": "src/wkwebview_shim.m",         "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                     "seedable_store": "zb_automation_navigate_guarded" },
@@ -365,347 +397,372 @@ and 60 s TTL as Linux (all platform-neutral Zig; only the shim action is new).
 }
 ```
 
-> `highest_new_connector` = `wk_port_adapter` (node 5). `zb_app_run` is the resolvable symbol
-> that enters the macOS main run loop (the real driver for the async WK edge); it resolves at
-> 1df5dce (wkwebview_shim.m:788). `seedable_store`/`read_path` name functions MS2 *adds* on
-> macOS — honest, since the whole chain below the socket is new on this platform; derive() runs
-> in build-time, and the adapter staged in the research doc is promoted here.
+#### Closure B — out-of-band `page.health`/`page.list` while a sibling window's FIFO is stuck   [BLOCKING: proves the no-FIFO-turn branch + sibling isolation]
+- **Chain:** `socket -> handleRequestWith (:412) -> handleWindows branch (:480-487, NO queue.acquire :686-691) -> ext.listWindows / responsiveness probe (MS2c bounded watchdog) -> wk_shim per-window state -> page.health JSON read`
+- **SOURCE (seed):** two loaded windows **and** a long-running routed command in flight on
+  window 1 (so window 1's FIFO is occupied). **TRIGGER:** `handleRequestWith` (:412). **DRIVER:**
+  the MS2c bounded probe/watchdog + the `[NSApp run]` loop (no sleep). **OBSERVE:** `page.health`/
+  `page.list` JSON for **both** windows. **FORBIDDEN SPAN:** the stuck window's FIFO/queue —
+  health/list must **not** wait behind it. **RED-AT-SEAM:** if health is implemented behind the
+  per-window FIFO, the stuck window makes the sibling's health time out → red; correct = both
+  return promptly.
 
-**Gate (MS2a/b/c):** three gates, each a real-binary macOS e2e on both arches. **MS2 is not a
-UI slice** (no visible chrome beyond the page), but MS2b native input should get a real-screen
-confirmation that a native click visibly actuates the page, coordinated by the orchestrator.
-Coordinate closely with **BlackRobin** (shim/ABI owner) and **BlueBeaver** (engine/router/port).
+```json
+{
+  "behavior": "page.health/page.list answer for all windows without waiting behind a sibling window's stuck FIFO.",
+  "git_commit": "21625eb26d15cda921aee3205f7034f81e5cc210",
+  "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
+  "nodes": [
+    { "id": "two_windows_one_stuck", "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,               "seedable_store": "zb_automation_navigate_guarded" },
+    { "id": "socket_health_request", "module": "src/automation_server.zig", "is_entrypoint": true,  "adds_or_changes": false, "read_path": null,               "seedable_store": null },
+    { "id": "handle_windows_branch", "module": "src/automation_server.zig", "is_entrypoint": false, "adds_or_changes": false, "read_path": null,               "seedable_store": null },
+    { "id": "wk_responsiveness",     "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,               "seedable_store": null },
+    { "id": "health_json",           "module": "src/automation_server.zig", "is_entrypoint": false, "adds_or_changes": false, "read_path": "handleWindows",    "seedable_store": null }
+  ],
+  "edges": [
+    { "is_async": false, "cross_boundary": false, "driver": null },
+    { "is_async": false, "cross_boundary": false, "driver": null },
+    { "is_async": true,  "cross_boundary": true,  "driver": "zb_app_run" },
+    { "is_async": false, "cross_boundary": false, "driver": null }
+  ]
+}
+```
+
+#### Closure C — two-phase recover of a hung window   [BLOCKING: cross-process terminate + reload, two-phase consent]
+- **Chain:** `socket -> handleRecover (:942-1106, NO queue turn) -> phase1 issue incident token -> phase2 consume + beginRecovery (exactly-once cancel) + recoverWindows -> wk_shim terminate+reload (named public API) -> page.health/page.url read`
+- **SOURCE (seed):** a frozen window + its process family. **TRIGGER:** `handleRecover` (:942).
+  **DRIVER:** the `[NSApp run]` loop + the bounded probe. **OBSERVE:** post-recover `page.url`/
+  `page.health`. **FORBIDDEN SPAN:** the recover state machine, the terminate/reload. **RED-AT-
+  SEAM:** a wrong incident token / stale blast-radius ack must return `unknown`/`mismatch`
+  (automation_server.zig:872-902); an automatic kill (no consent) must be **absent**. If no public
+  API recovers a hung process, this closure is **not green** and MS2c stops at a spike.
+
+```json
+{
+  "behavior": "A hung WKWebView window is recovered only via two-phase consent, with exactly-once job cancellation and no automatic kill.",
+  "git_commit": "21625eb26d15cda921aee3205f7034f81e5cc210",
+  "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
+  "nodes": [
+    { "id": "frozen_window",     "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                  "seedable_store": "zb_automation_navigate_guarded" },
+    { "id": "socket_recover",    "module": "src/automation_server.zig", "is_entrypoint": true,  "adds_or_changes": false, "read_path": null,                  "seedable_store": null },
+    { "id": "recover_statemach", "module": "src/automation_server.zig", "is_entrypoint": false, "adds_or_changes": false, "read_path": null,                  "seedable_store": null },
+    { "id": "wk_terminate_reload","module": "src/wkwebview_shim.m",     "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                  "seedable_store": null },
+    { "id": "post_recover_read", "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": "zb_automation_get_url","seedable_store": null }
+  ],
+  "edges": [
+    { "is_async": false, "cross_boundary": false, "driver": null },
+    { "is_async": false, "cross_boundary": false, "driver": null },
+    { "is_async": true,  "cross_boundary": true,  "driver": "zb_app_run" },
+    { "is_async": true,  "cross_boundary": true,  "driver": "zb_app_run" }
+  ]
+}
+```
+
+> Each map's `read_path`/`seedable_store`/`driver` resolves at 21625eb (the macOS impls are
+> added by MS2; `handleWindows`/`handleRecover`/`zb_app_run`/`zb_automation_*` resolve now). All
+> three e2es start at the authenticated socket and observe through production reads; **none** call
+> the WK port or shim directly (FORBIDDEN SPAN).
+
+**Gate (MS2):** three gates (MS2a/b/c), each a real-binary macOS e2e on both arches. MS2b gets a
+real-screen confirmation that a native click visibly actuates the page (orchestrator-run).
+Coordinate with **BlackRobin** (shim/ABI) and **BlueBeaver** (port/engine).
 
 ---
 
-## MS3: Site-flow parity on macOS
+## MS3: Config & persistence on macOS (blocker 4 — persistence/config half)
 
-**Goal.** LinkedIn/Instagram/X flows behave identically on macOS, including per-action approval
-and dry-run, now that MS2 provides the automation primitives.
+**Goal.** An isolated persistent data store and a decided meaning for the config flags, so logins
+and cookies do not fall into an implicit global store and the flags are not silent no-ops.
 
-### Behavior MS3.1: a committing flow runs end-to-end on macOS
-**Given** a logged-in fixture (session cookie present via the cookie port) and MS2 landed,
-**When** a client runs `linkedin.*`/`instagram.*`/`x.*` (social_flow_routes.zig:100-104),
-**Then** each step runs as an ordinary router command through the WK port, pacing/dry-run work
-(social_routes.zig, pacing_store.zig), and the login gate reads the session cookie via the
-macOS cookie port.
+### Behavior MS3.1: an isolated persistent `WKWebsiteDataStore` bound to the profile
+**Given** `--profile-dir <dir>` (today discarded off Linux, app.zig:160-166),
+**When** the WKWebView build launches,
+**Then** cookies/localStorage/logins persist to a **profile-scoped** `WKWebsiteDataStore` (not the
+default global store), isolated per profile, surviving restart — the macOS analog of the Linux
+persistent context (verified by a login→restart→still-logged-in e2e over the socket).
 
-### Behavior MS3.2: cookie port on macOS (WKHTTPCookieStore)
-**Given** the flows need cookie reads/writes,
-**When** `cookie.*` runs,
-**Then** a new `src/automation_wk_cookie_port.zig` (gated `os.tag == .macos`) implements
-`CookiePort` (cookie_port.zig) over `WKHTTPCookieStore` — same contract as
-`automation_gtk_cookie_port.zig`.
+### Behavior MS3.2: decided macOS semantics for `--hardware-acceleration`/`--renderer`/`--media-source`
+**Given** the Linux-only flag apply path (`webkit.zig:47-72`),
+**When** a flag is passed on macOS,
+**Then** each flag either has a **documented WKWebView mapping** (and the e2e proves the effect,
+e.g. `--media-source off` disables MSE via `WKPreferences`/a user script) **or returns an explicit
+"unsupported on macOS" error/documentation** — never a silent accept. (The MSE-off workaround
+mirrors the Instagram-deadlock rationale, media_config.zig:6-12.)
 
-### Behavior MS3.3: every social write still requires per-action approval
-**Given** the carried-over decision (per-action approval for all social writes),
-**When** a flow reaches a committing action,
-**Then** it is gated by the same approval path as Linux (the broker/approval logic is shared
-code) — no macOS-specific bypass. (Approval UI lands in MS4; MS3 asserts the gate exists and
-refuses un-approved writes.)
+- **Files touched:** `src/webkit.zig` (macOS apply path), `src/wkwebview_shim.m` (data store +
+  settings), `src/app.zig` (`--profile-dir` on macOS), `tests/e2e/mac_profile_persist_test.py`,
+  `tests/e2e/mac_config_flags_test.py`.
+- **Closure:** MS3.1 is **BLOCKING** (persistence across a restart crosses the process-lifetime
+  boundary) — SOURCE = a logged-in profile dir; TRIGGER = relaunch (production entrypoint); OBSERVE
+  = cookie/login present via `page.evaluate` over the socket; driver = the real relaunch. MS3.2 is
+  LEAF per flag (config apply + a single observable effect).
 
-- **Files touched:** `src/automation_wk_cookie_port.zig` (new), `src/app.zig` (wire the mac
-  cookie port), flow code unchanged (platform-neutral).
-- **Closure (MS3):** LEAF for most flow-step logic (platform-neutral Zig already covered by
-  Linux closure tests); **BLOCKING** for the cookie-gated login read → reuse the MS2 closure
-  pattern with the cookie store as SOURCE and the flow result as OBSERVABLE. ClosureMap
-  analogous to MS2 with `automation_wk_cookie_port` as the new connector; pinned to the then-
-  current HEAD at build time.
-
-**Gate (MS3):** real-binary macOS flow e2e (dry-run against a fixture; no live sites), both
-arches. Not a UI slice. Coordinate with **BlueBeaver** (flows owner).
+**Gate (MS3):** real-binary macOS persistence + config e2e, both arches. Not a UI slice.
+Coordinate with **BlueBeaver** (engine/config) and **BlackRobin** (shim data store).
 
 ---
 
-## MS4: AppKit agent drawer + Keychain + approval card
+## MS4: Site-flow parity + the approval grant contract (blocker 7 — approval half)
 
-**Goal.** A native AppKit drawer matching the Linux UX the user accepted, isolated from page
-worlds, with Keychain-backed secrets and the approval card. **UI slice** — real-screen check on
-the user's Mac required.
+**Goal.** Flows behave as on Linux, and the **approval grant authority** is fully specified before
+any committing flow, since no production approval exists at the pin.
+
+### Behavior MS4.1: the grant contract
+**Given** a committing social action,
+**When** the native Approve handler mints a grant,
+**Then** the grant binds **exact action + site + account + window_id + payload**, is **one-use**,
+has an **expiry**, supports **cancel/refuse**, and **only** the native Approve handler can mint it.
+
+### Behavior MS4.2: nothing else can approve (negative proofs)
+**Given** the grant authority,
+**When** a page world, iframe, related popup, automation-socket client, model prompt, or hook
+attempts to approve,
+**Then** each **fails** — proven by real-binary tests.
+
+### Behavior MS4.3: per-write confirmation + dry-run is inert
+**Given** a flow,
+**When** it reaches each `Send`/`Post`/`Follow`/`Connect`/`Like`/`Next` write,
+**Then** **each** gets a separate confirmation; a **dry-run** performs no committing click, no
+real-composer typing, and no pacing count (social_flow_routes.zig; flow_steps.zig:142-235).
+
+### Behavior MS4.4: cookie port + login gate on macOS
+A new `src/automation_wk_cookie_port.zig` (gated `os.tag == .macos`) implements `CookiePort` over
+`WKHTTPCookieStore` (same contract as the GTK cookie port); the flow login gate reads the session
+cookie through it.
+
+- **Closure (MS4):** **BLOCKING** for the committing-write belt — SOURCE = a logged-in fixture +
+  an approved one-use grant; TRIGGER = the flow route over the socket; OBSERVE = the fixture's
+  committed-state change read back; FORBIDDEN SPAN = the approval mint + the flow engine; RED-AT-
+  SEAM = without a valid grant the write is refused (no engine call, telemetry root-span count
+  unchanged). ClosureMap emitted when the approval authority symbols exist (MS4/MS7).
+- **Note:** the approval **UI** (the native card) is built in **MS7** (drawer); MS4 builds the
+  grant **authority** and asserts writes are refused without it. The two land in dependency order.
+
+**Gate (MS4):** real-binary macOS flow + approval e2e (dry-run against fixtures; no live sites),
+both arches. Not a UI slice (the card is MS7). Coordinate with **BlueBeaver** (flows/approval).
+
+---
+
+## MS5: macOS setup & provisioning + Keychain onboarding (blocker 4 setup half, blocker 7 Keychain half)
+
+**Goal.** Port provisioning to macOS so the helper/runtime/SAI can be installed, and onboard the
+Claude token into the Keychain. Today `runAgentSetup` refuses non-Linux (`app.zig:41-47`) and uses
+`/proc/self/exe`.
+
+### Behavior MS5.1: macOS `runAgentSetup` builds the immutable home
+**Given** a macOS build,
+**When** `--agent-setup` runs,
+**Then** it builds the accepted **immutable `dist-<n>/current/state`** layout, installs the Python
+runtime + helper, applies **SAI copy rule (a)** (executed-import-graph), skips outbound linked
+skills, and grants **no access to the real `~/.claude` or user repositories** — the macOS analog
+of the Linux provisioning (setup.py), replacing `/proc/self/exe` with a macOS executable-path API.
+
+### Behavior MS5.2: Keychain onboarding (disposable canary in tests)
+**Given** the Secrets flow,
+**When** the user onboards via **claude.ai callback and/or `claude setup-token`** (the accepted
+paths),
+**Then** the token is validated and stored in the **Keychain** (`Security.framework SecItem*`),
+and the test uses a **disposable service/account + canary**, never a real credential.
+
+### Behavior MS5.3: the token reaches only helper fd 3
+**Given** a stored token,
+**When** a session starts,
+**Then** the token reaches **only** helper fd 3 via FIFO→socketpair — **not** env, argv, logs,
+telemetry, hook environment, or model context (canary-scan proof, analog of
+agent_secrets_test.py:247-254).
+
+- **Closure (MS5.3):** **BLOCKING** (token crosses the store→helper process boundary) — SOURCE =
+  the Keychain-stored token; TRIGGER = session start (`zb_agent_run_sync`); OBSERVE = a canary scan
+  of env/argv/logs/hook-env showing **absence** + the helper confirming receipt on fd 3; FORBIDDEN
+  SPAN = the FIFO/socketpair plumbing; RED-AT-SEAM = route the token via env and the canary scan
+  goes red.
+
+**Gate (MS5):** real-binary macOS setup + Keychain e2e, both arches; `--agent-setup` needs no
+display. Not a UI slice (the Secrets window is MS7). Coordinate with **BlueBeaver** (helper/setup)
+and **BlackRobin** (Keychain/Secrets window later).
+
+---
+
+## MS6: Seatbelt sandbox backend (hard launch gates; VM fallback blocks launch) — blocker 6, dispositions 2/3
+
+**Goal.** Implement the macOS Seatbelt backend against the **MS0 launch spec**, and make the
+spike proofs **hard launch gates**. **If any mandatory proof fails, Mac agent launch stays
+disabled until the shared interface's VM backend is implemented** — Seatbelt-first is the choice,
+"Seatbelt even when its proof fails" is not.
+
+### Design (from `…/research/2026-10-14-macos-sandbox-option.md`)
+- `MacSeatbeltBackend` implements the MS0 `SandboxBackend` spec: `(deny default)`, deny-default
+  reads, **no `same-sandbox` task-port/process-info rights**, allow only `localhost:<proxy>`/
+  `:51091`/`:31337`, tiny mach-lookup (no WindowServer, no mDNSResponder), **profile file + `-D`
+  params** (not inline), fixed `/usr/bin/sandbox-exec`.
+- Hooks spawned **app-side**, each in its own profile (profiles don't nest); stdio over
+  `SCM_RIGHTS`.
+- Orphan cleanup via kqueue `NOTE_EXIT` + pipe EOF + PID tracking. **The dedicated-user `kill(-1)`
+  scheme from rev 1 is removed** (unapproved).
+- The proxy/bridges are owned here or depend on a named green Linux revision (per MS0/Shared
+  contract).
+
+### Hard-gate behaviors (all failing-first; failure ⇒ launch disabled + VM required)
+- **MS6.1 (gate):** a malicious hook's `task_for_pid(cli)`, `sysctl KERN_PROCARGS2`,
+  `proc_pidinfo`, and `lldb -p <cli>` **all fail**; the token-isolation mutant uses a
+  **deterministic sacrificial target** so removing Seatbelt actually **exposes the canary** (a
+  host/TCC denial that stays green does **not** prove the profile).
+- **MS6.2 (gate):** custom `sandbox-exec` profile is **accepted** on both arches' OS versions
+  (disposition 3; failure selects VM).
+- **MS6.3 (gate):** the **fd-3 reopen** (`/dev/fd/3`) works with the macOS CLI on **both** arches
+  (disposition 2).
+- **MS6.4 (gate):** network — the agent reaches the proxy, `:51091`, `:31337`; and **fails** to
+  reach a direct loopback decoy, LAN, public IP, DNS, WindowServer/CGEvent/screen capture, a
+  non-allowlisted host, and a workspace write. The fake Messages/Anthropic API is reached **through
+  the production proxy** via an `--e2e-protocol` allowlist seam; **removing/bypassing the proxy
+  turns the test red**.
+- **MS6.5 (gate):** **no survivors** after `kill -9` of the browser, **including a hook that
+  double-forks and `setsid`** — via the kqueue/pipe-EOF launcher. Failure ⇒ VM required.
+
+### Workflow Closure (MS6.1 — token isolation; the load-bearing security belt)   [BLOCKING]
+- **Chain:** `token stored -> helper reads fd 3 -> MacSeatbeltBackend spawns CLI under profile -> CLI holds token -> hook spawned app-side under its own profile -> hook attempts task_for_pid/KERN_PROCARGS2 -> kernel denies -> hook's recorded result = denied, no canary bytes`
+- **SOURCE (seed):** the stored token (Keychain/file) + the fixture SAI with the malicious hook +
+  a **deterministic sacrificial target**. **TRIGGER:** the browser launching the agent
+  (`zb_agent_run_sync`), boundary = `highest_new_connector = MacSeatbeltBackend`. **DRIVER:** none
+  async in the observed span (the read returns bytes or EPERM synchronously). **OBSERVE:** the
+  hook's recorded attempt file scanned for the canary + the syscall return codes. **FORBIDDEN
+  SPAN:** the launcher internals, the profile application, the CLI process. **RED-AT-SEAM:** remove
+  the task-port/process-info denies → the hook reads the canary → **red**. **EXECUTION:** real
+  binary on a Mac via `mac_session.py`; needs `/usr/bin/sandbox-exec` + the bundled CLI; missing ⇒
+  **exit nonzero**. (ClosureMap emitted at build time pinned to the then-current HEAD; its symbols
+  — `MacSeatbeltBackend`, the app-side hook spawn — are created here.)
+
+**Gate (MS6):** real-binary macOS sandbox e2e (MS6.1–MS6.5) on both arches; the one-day spike is
+run on a Mac by an agent, results recorded as red→green. **MS8 is blocked** until all MS6 gates are
+green **or** the VM backend lands behind the shared contract. Not a UI slice. Coordinate with
+**BlueBeaver** (sandbox/helper) and the orchestrator (spike scheduling).
+
+---
+
+## MS7: AppKit drawer + Keychain Secrets window + approval card + chat observability
+
+**Goal.** The native AppKit drawer matching the accepted Linux UX, the Secrets window, the approval
+**card** (authority from MS4), and **drawer observability that does not violate the threat model**.
+**UI slice** — real-screen check required.
 
 ### Design
-- New `src/agent_drawer_mac.m` (+ a thin `src/agent_drawer_mac.zig` for the portable geometry/
-  animation/persistence already in `agent_drawer.zig:16-181`, reused verbatim). Mounted from
-  `zb_window_new` (wkwebview_shim.m:880) when `zb_app_get_agent_drawer()` is true — the macOS
-  analog of `zb_drawer_attach`.
-- **Dock:** the drawer is a bottom `NSView` and the WKWebView's frame is resized **above** it
-  (the macOS analog of the `ZbDrawerHost` size-allocate; no overlay over the accelerated layer,
-  honoring the NVIDIA lesson — on macOS WKWebView is also GPU-composited).
-- **Floating "S" icon:** a borderless draggable `NSView`/child `NSWindow` button, hidden while
-  the drawer is open, with click-vs-drag (6 px, agent_drawer.zig:27-29), keyboard move, and
-  `agent-drawer.json` position persistence (agent_drawer.zig:148-181, reused).
-- **Fold:** the `-` button top-right animates the panel into the icon's last position over the
-  shared 180 ms cubic ease-out (agent_drawer.zig:86-103, reused), using `NSAnimationContext`/a
-  `CVDisplayLink`/timer as the macOS analog of the GTK frame-clock tick.
-- **Isolation:** the drawer is native AppKit views — structurally isolated from page JS worlds,
-  like the GTK drawer (no webview, no shared content world).
-- **Secrets:** a new macOS backend in `src/agent_secrets.zig`'s abstraction storing the token in
-  the **Keychain** (`Security.framework` `SecItem*`) instead of libsecret; token shape
-  validation (agent_secrets.zig:12-22) reused; token still reaches the helper only on fd 3.
-- **Approval card:** the native row specified in the drawer plan §D10 — only the Approve handler
-  mints grants (shared logic); AppKit presentation.
+- `src/agent_drawer_mac.m` (+ reuse portable `agent_drawer.zig:16-181` geometry/animation/
+  persistence). Mounted from `zb_window_new` (wkwebview_shim.m:880) when the drawer is on.
+- **Dock:** bottom `NSView`; the WKWebView frame is resized **above** it (no overlay over the
+  GPU-composited layer — the NVIDIA lesson applies to macOS). **"S" icon:** borderless draggable
+  view, hidden while open, click-vs-drag (6 px), keyboard move, `agent-drawer.json` persistence
+  (reused). **Fold:** `-` animates the panel into the icon's last position over the shared 180 ms
+  cubic ease-out via `NSAnimationContext`/`CVDisplayLink`. **Isolation:** native AppKit views, not
+  a webview — structurally isolated from page worlds. **Secrets:** Keychain (MS5 backend) in the
+  Secrets window.
+- **Approval card:** the native row; **only the Approve handler mints** the MS4 grant.
 
-### Behavior MS4.1: the drawer docks and resizes the page above it
-**Given** `--agent-drawer on`,
-**When** the user opens the drawer,
-**Then** a bottom AppKit panel appears and the WKWebView is laid out above it (page not
-overlaid), with the geometry from `drawerRect` (agent_drawer.zig:76-82, reused).
+### Behaviors
+- **MS7.1** dock resizes the page above it; **MS7.2** the "S" icon drags/persists/hides-while-open;
+  **MS7.3** `-` folds into the icon's last position (180 ms ease-out); **MS7.4** conversation
+  scrolls, input pinned at bottom, bubbles **inert text**; **MS7.5** the Secrets window stores to
+  Keychain; **MS7.6** the approval card mints a one-use grant on Approve and nothing on Deny.
+- **MS7.7 chat observability (blocker 7):** the chat round-trip and bubble text are asserted via a
+  gated **`--e2e-protocol` native drawer census** (the macOS analog of the `DRAWER windows` row) or
+  screen capture — **never** a production socket drawer-read API.
 
-### Behavior MS4.2: the floating "S" icon drags, persists, and hides while open
-**Given** the icon visible,
-**When** the user drags it (>6 px) or arrow-keys it, then opens the drawer,
-**Then** the icon moves and its center-ratio position is written to `agent-drawer.json`
-atomically (reused logic), and the icon is hidden while the drawer is open.
+- **Property (MS7.2):** roundtrip — `parse(write(ratios)) == ratios` (reuse the platform-neutral
+  `agent_drawer.zig` property).
+- **Real-screen (blocker 8):** add macOS `drawer-open`, `secrets-window`, `approval-card` cases to
+  the real-screen check; the orchestrator runs them on the user's Mac; **not approved until they
+  pass**. The input guard (if any real-screen input) proves its window is frontmost/topmost and
+  aborts under a grab-equivalent guard.
 
-### Behavior MS4.3: `-` folds the panel into the icon's last position
-**Given** the open drawer,
-**When** the user clicks `-` (or Escape / Ctrl+Shift+Space-equivalent),
-**Then** the panel animates into the icon's last position over 180 ms cubic ease-out and the
-icon reappears focused.
-
-### Behavior MS4.4: conversation scrolls with input pinned at the bottom; bubbles inert
-**Given** the open drawer,
-**When** messages arrive and the user types,
-**Then** bubbles render as inert text (no markup execution), the list sticks to bottom with a
-"new messages" affordance, and the multi-line input sits at the bottom (Enter sends,
-Shift+Enter newline) — matching agent_drawer.c:476-596.
-
-### Behavior MS4.5: secrets store in Keychain; token reaches the helper on fd 3 only
-**Given** the Secrets window,
-**When** the user saves a long-lived token,
-**Then** it is validated (shape), stored in the Keychain, never in env, and handed to the helper
-only on fd 3.
-
-- **Property (MS4.2 persistence):** roundtrip — `parse(write(ratios)) == ratios` for any clamped
-  position in [0,1]² (reuse the Linux property test; it is platform-neutral in `agent_drawer.zig`).
-- **Closure (MS4):** the drawer↔helper↔broker chat round-trip is **BLOCKING** but its helper side
-  is MS6; in MS4 the drawer shows "agent not available" until MS6 wires the helper (mirroring the
-  Linux S2 state). MS4's own closure is the UI render + icon-position persistence (LEAF for
-  persistence; the render is verified by the real-screen check, not a socket closure test).
-- **EXECUTION / real-screen:** add a macOS `drawer-open` case (and `secrets-window`,
-  `approval-card`) to the real-screen check; the orchestrator runs it on the user's Mac. **Not
-  approved until it passes on the user's screen.** The offscreen/snapshot pass is necessary but
-  not sufficient (the NVIDIA lesson applies to macOS GPU compositing too).
-
-**Gate (MS4):** real-binary macOS drawer e2e (snapshot + socket census of the view tree, the
-macOS analog of the `DRAWER windows` row) on both arches, **plus** the real-screen check.
-Coordinate with **BlackRobin** (drawer owner).
+**Gate (MS7):** real-binary macOS drawer e2e (native census + snapshot) on both arches **plus** the
+real-screen check. Coordinate with **BlackRobin** (drawer owner).
 
 ---
 
-## MS5: Seatbelt sandbox backend behind the shared interface
+## MS8: Agent helper on macOS (blocked on MS6 green or the VM backend)
 
-**Goal.** Define the `SandboxBackend` interface, refactor the Linux bwrap path behind it
-(behavior-preserving), implement the **macOS Seatbelt backend**, and encode the one-day spike's
-proofs as **failing-first** e2e on a Mac. Carries over all sandbox decisions.
+**Goal.** Run the Python helper + Claude Agent SDK **inside the Seatbelt sandbox** (MS6), wired to
+the drawer, streaming replies. **Blocked until MS6's gates are all green or the VM backend lands.**
 
-### Design (from `2026-10-14-macos-sandbox-option.md`, read fully)
-- `SandboxBackend` interface (see spine above). Linux impl = existing bwrap/seccomp/nested-PID
-  wrapped; macOS impl = SBPL profile + app-side launcher.
-- Seatbelt profile: `(deny default)`; deny-default reads; **no `same-sandbox` task-port or
-  process-info rights**; allow only `localhost:<proxy>`, `localhost:51091`, `localhost:31337`;
-  tiny mach-lookup (no WindowServer, no mDNSResponder); profile **file** + `-D` params (not
-  inline, avoid ARG_MAX); fixed `/usr/bin/sandbox-exec` path.
-- **Hooks spawned app-side**, each in its own profile (profiles don't nest): a macOS
-  `zb-hook-run` that asks the app (outside the sandbox) to spawn the hook under its own profile,
-  passing stdio over `SCM_RIGHTS`.
-- Orphan cleanup: a launcher watching the browser via kqueue `NOTE_EXIT` + pipe EOF + PID
-  tracking (the macOS analog of PDEATHSIG/PID-namespace teardown).
-- Token route unchanged (FIFO→socketpair→fd 3); on macOS the CLI reopens `/dev/fd/3` (verify in
-  the spike — research unverified item 11).
+### Behaviors
+- **MS8.1** the helper launches under the `MacSeatbeltBackend`, reads the token on fd 3, and emits
+  a `ready` frame validated by `agent_protocol.zig` (platform-neutral, already covered).
+- **MS8.2** a chat round-trip streams `assistant_delta`/`assistant_message` to the AppKit drawer.
 
-### Behavior MS5.1 (failing-first): a hook cannot read the CLI's memory or args
-**Given** a provisioned agent home with a malicious hook and the token in the file store,
-**When** the hook runs `task_for_pid(cli)`, `sysctl KERN_PROCARGS2` on the CLI, `proc_pidinfo`,
-and `lldb -p <cli>`,
-**Then** each fails (the macOS analog of the Linux S3.9 proof, drawer plan:829), proven in the
-real binary on a Mac. **Red first:** before the profile denies task-port/process-info, the reads
-succeed; the test asserts the denial.
+### Workflow Closure (MS8.2 — drawer↔helper↔broker chat)   [BLOCKING]
+- **Chain:** `drawer Send (AppKit) -> app frame on helper stdin -> chat.py Session -> ClaudeSDKClient (CLI under Seatbelt) -> assistant frames on stdout -> agent_protocol.zig validate -> drawer bubble`
+- **SOURCE (seed):** the prompt + a fake Anthropic API **reached through the production proxy**
+  (`--e2e-protocol` seam, per MS6.4). **TRIGGER:** the drawer Send handler (MS7), boundary =
+  highest_new_connector (the drawer→helper wiring, MS8). **DRIVER:** the real helper stdin/stdout
+  pump (`chat.py _pump`) + the 50 ms coalescer. **OBSERVE:** the rendered bubble via the
+  `--e2e-protocol` **native census** (not a production socket read). **FORBIDDEN SPAN:** the
+  Session, SDK client, frame validator. **RED-AT-SEAM:** disconnect the drawer→helper wiring → no
+  bubble → red. **EXECUTION:** real binary + helper venv on a Mac; missing venv ⇒ exit nonzero.
 
-### Behavior MS5.2 (failing-first): network rules hold
-**Given** the Seatbelt profile + host allowlist proxy,
-**When** the agent connects to the proxy port, `:51091`, `:31337`, then to `127.0.0.1:5432`,
-`1.1.1.1:443`, and a DNS lookup,
-**Then** the first three succeed and the last three fail; `api.anthropic.com` is allowed only via
-the host proxy's hostname check (shared code), not by the profile.
-
-### Behavior MS5.3 (failing-first): the fd-3 token hand-off works with the macOS CLI
-**Given** the FIFO→socketpair→fd-3 route,
-**When** the macOS CLI starts under the profile,
-**Then** it reads the token from `/dev/fd/3` and authenticates (probe against a loopback
-server, like `probe_r1` setup.py:722-758), and no live CLI process environment contains the
-token.
-
-### Behavior MS5.4 (failing-first): no survivors after `kill -9` of the browser
-**Given** the agent running with a hook that double-forks and `setsid`,
-**When** the browser is `kill -9`'d,
-**Then** within ~1 s no helper, CLI, or hook process remains (via the kqueue/pipe-EOF launcher;
-if a `setsid` escape survives, the dedicated-agent-user `kill(-1)` scheme is measured and
-recorded as the fallback).
-
-### Workflow Closure (MS5.1 — token isolation is the load-bearing security belt)
-
-#### Production Operation Chain
-`token stored (file/Keychain) -> helper reads on fd 3 -> Seatbelt launcher spawns CLI under profile -> CLI holds token in memory -> hook spawned app-side under its own profile -> hook attempts task_for_pid/KERN_PROCARGS2/proc_pidinfo on CLI -> kernel denies -> observable: the hook's recorded read result is "denied" and no token bytes appear`
-
-#### Closure Test: "A hook cannot read the CLI's token from memory or args under Seatbelt."   [BLOCKING: crosses the app↔sandbox spawn boundary and the kernel enforcement seam]
-- **SOURCE (seed only):** the stored token (file store `agent-home/secrets/claude-token`, or
-  Keychain in MS4) + the provisioned fixture SAI with the malicious hook.
-- **TRIGGER (start):** the real browser launching the agent (the production entrypoint
-  `zb_agent_run_sync`, agent_host.c) — boundary = highest_new_connector = the macOS
-  `SandboxBackend` launcher (new in MS5).
-- **DRIVERS:** none async in the observable path — the hook runs and its read either returns
-  bytes or EPERM synchronously; the launcher's kqueue watcher is exercised by MS5.4, not here.
-- **OBSERVE (assert via):** the hook's recorded attempt result (a file the hook writes under the
-  scratchpad) scanned for the canary token and for the syscall return codes — the production
-  read path the e2e uses, like the Linux canary scanner (agent_secrets_test.py:247-254).
-- **FORBIDDEN SPAN:** the sandbox launcher internals, the profile application, the CLI process —
-  the test seeds only the token + hook and observes only the hook's recorded result.
-- **RED-AT-SEAM proof:** disable the profile's task-port/process-info denies → the hook reads the
-  token → the test goes **red** (canary found). With the denies on, canary absent → green.
-- **DRIVABILITY:** store seam = the token store is seedable (always). No async driver needed in
-  this span. If the Seatbelt backend cannot deny the read without a dedicated user, that is a
-  BLOCKING finding → MS5.4's `kill(-1)` scheme / VM fallback bead.
-- **EXECUTION (must run):** runs the real binary on a Mac via `mac_session.py`; needs
-  `/usr/bin/sandbox-exec` and the bundled CLI. Missing → **exit nonzero** (fails closed).
-
-> ClosureMap for MS5.1 is emitted at build time pinned to the then-current HEAD (its symbols —
-> the `SandboxBackend` launcher, the hook-run app spawn — are created in MS5, so the map is
-> written when they resolve, per the derive() symbol-resolvability rule).
-
-**Gate (MS5):** real-binary macOS sandbox e2e (MS5.1–MS5.4) on both arches; the Linux bwrap gate
-stays green through the interface refactor. Not a UI slice. The one-day spike (research §"What a
-one-day spike must prove") is executed on a Mac by an agent and its results recorded as the red→
-green transitions. Coordinate with **BlueBeaver** (helper/sandbox) and the orchestrator (spike
-scheduling).
+**Gate (MS8):** real-binary macOS chat e2e on both arches **plus** a real-screen check of a streamed
+reply (orchestrator-run). Coordinate with **BlueBeaver** (helper) and **BlackRobin** (drawer).
 
 ---
 
-## MS6: Agent helper on macOS
+## MS9: Developer-ID signing + hardened runtime + notarization (gated on the Apple Developer ID)
 
-**Goal.** Run the Python agent helper and the Claude Agent SDK inside the Seatbelt sandbox, with
-the drawer wired to it, so a chat session streams replies — the macOS analog of the Linux P0+S5.
+**Goal (blocker 9).** Turn the ad-hoc **development** build into a Developer-ID-signed,
+hardened-runtime, notarized, stapled **universal** `.dmg`. **Blocked on the user obtaining the
+Developer ID**, tracked via **Agent Mail / plan status** (the beads DB is migration-locked).
 
-### Behavior MS6.1: the helper runs under Seatbelt and emits `ready`
-**Given** the Seatbelt backend (MS5) and a provisioned home,
-**When** the browser launches the helper (`launch`/`chat`, the macOS launch path replacing the
-bwrap `os.execv` with the `SandboxBackend` macOS impl),
-**Then** the helper starts under `sandbox-exec`, reads the token on fd 3, and emits a `ready`
-frame validated by `agent_protocol.zig` (platform-neutral, already covered by
-`agent_protocol_test.zig`).
+### Behaviors
+- **MS9.1 inside-out nested signing:** sign nested code in explicit **inside-out order** (helper,
+  CLI, embedded frameworks/runtimes, then the `.app`) with the **MS1.3 least-privilege entitlement
+  manifest** and `--options runtime`, per arch.
+- **MS9.2 whole-bundle hardened-runtime verify on both arches, then notarize:** `codesign --verify
+  --strict` passes on the universal bundle on **both** arches; then `xcrun notarytool submit
+  --wait` returns `Accepted`, `xcrun stapler staple` + `stapler validate` succeed, and `spctl
+  --assess --type execute` accepts the `.app`.
+- Until the Developer ID exists, the artifact is explicitly an **ad-hoc development build, not a
+  distributable launch artifact**.
 
-### Behavior MS6.2: a chat round-trip streams assistant deltas to the drawer
-**Given** the drawer open (MS4) and the helper ready,
-**When** the user sends a prompt,
-**Then** the helper drives the SDK/CLI and streams `assistant_delta`/`assistant_message` frames
-that render in the AppKit drawer (the macOS analog of the Linux S5 chat closure).
+- **Closure:** LEAF (packaging assertions) — assert via `codesign --verify --strict`, `spctl
+  --assess`, `stapler validate`, each per arch.
 
-### Workflow Closure (MS6.2 — drawer↔helper↔broker chat)
-
-#### Production Operation Chain
-`drawer send (AppKit) -> app frame on helper stdin -> chat.py Session -> ClaudeSDKClient (CLI under Seatbelt) -> assistant frames on stdout -> agent_protocol.zig validate -> drawer bubble (AppKit)`
-
-#### Closure Test: "A prompt typed in the macOS drawer produces an assistant reply rendered in the drawer."   [BLOCKING: crosses the app↔helper process boundary and the async SDK streaming edge]
-- **SOURCE (seed only):** the prompt text + a fixture/fake Claude API (the macOS e2e uses the
-  same `FakeAnthropicApi` seam as Linux, honored only under `--e2e-protocol`).
-- **TRIGGER (start):** the drawer Send action (the AppKit handler, new in MS4) — boundary =
-  highest_new_connector (the macOS drawer→helper wiring, new in MS6).
-- **DRIVERS (async edge):** the SDK streaming → the helper's real stdin/stdout pump
-  (chat.py `_pump`) and the 50 ms delta coalescer, driven by the real process, not mocked.
-- **OBSERVE (assert via):** the rendered drawer bubble text (read through the e2e's view-tree/
-  text census over the socket or a snapshot), not the raw frame stream.
-- **FORBIDDEN SPAN:** `chat.py` Session, the SDK client, the frame validator — seeded/mocked none
-  (only the upstream API is faked, as on Linux).
-- **RED-AT-SEAM proof:** disconnect the drawer→helper wiring → the prompt produces no bubble →
-  red. Wired → green.
-- **DRIVABILITY:** the fake-API seam is the injected upstream (present under `--e2e-protocol`);
-  the streaming driver is the real helper process. No required seam missing.
-- **EXECUTION (must run):** real binary + helper venv on a Mac via `mac_session.py`; missing venv
-  → **exit nonzero**.
-
-> ClosureMap emitted at build time pinned to then-current HEAD (symbols created in MS4/MS6).
-
-**Gate (MS6):** real-binary macOS chat e2e on both arches; **real-screen check** of a streamed
-reply in the drawer (UI-adjacent), orchestrator-run. Coordinate with **BlueBeaver** (helper) and
-**BlackRobin** (drawer render).
+**Gate (MS9):** release gate on both arches producing a distributable `.dmg`. Not a UI slice.
+**Blocked on:** the Apple Developer ID (Agent Mail / plan status).
 
 ---
 
-## MS7: Developer-ID signing + hardened runtime + notarization (gated on the Apple Developer ID)
+## Dependency order
 
-**Goal.** Turn the ad-hoc path into a Developer-ID-signed, hardened-runtime, notarized, stapled
-universal `.dmg`. **Deferred until the user has the Developer ID**; designed small by MS1.3.
-
-### Behavior MS7.1: the release bundle is Developer-ID-signed + hardened-runtime
-**Given** the Developer ID in the Mac keychain,
-**When** the release gate signs,
-**Then** `codesign --sign "Developer ID Application: …" --options runtime --entitlements
-packaging/macos/entitlements.plist --deep` succeeds and `codesign --verify --strict` passes on
-both slices.
-
-### Behavior MS7.2: the `.dmg` is notarized and stapled
-**Given** the signed bundle,
-**When** the release gate submits it,
-**Then** `xcrun notarytool submit --wait` returns `Accepted`, `xcrun stapler staple` succeeds,
-and `spctl --assess --type execute` accepts the `.app` — proven on a Mac.
-
-- **Files touched:** `packaging/macos/build-dmg.sh` (swap identity, add `--options runtime` +
-  entitlements + `notarytool`/`stapler`), `packaging/macos/entitlements.plist` (finalize).
-- **Closure:** LEAF (packaging assertion, no cross-process product behavior) — assert via
-  `codesign --verify --strict`, `spctl --assess`, and `stapler validate`.
-- 🔴 Red: the release gate asserting a Developer-ID identity + hardened runtime + notarization
-  ticket; red today (ad-hoc, unsigned-for-distribution). 🟢 Green: once the ID exists. 🔵 Refactor:
-  one signing function shared by MS1 (ad-hoc) and MS7 (Developer ID) selected by an env/flag.
-
-**Gate (MS7):** release gate on both arches; the result is a distributable `.dmg`. Not a UI slice.
-**Blocked on:** the user obtaining the Apple Developer ID (tracked as a bead dependency).
-
----
+`MS0 (Linux) → MS1 → MS2a → MS2b → MS2c → MS3 → MS4 → MS5 → MS6 (hard gates) → MS7 → MS8 (blocked
+on MS6) → MS9 (blocked on Developer ID)`. MS3/MS4/MS5 may proceed in parallel after MS2a; MS7
+needs MS4 (grant) + MS5 (Keychain); MS8 needs MS5 (setup) + MS6 (sandbox) + MS7 (drawer).
 
 ## Per-slice gate protocol (all slices)
 
-Mirrors the drawer plan §1102, adapted for macOS:
-1. Mail "taking the gate slot" only for the gate run itself (gate slot rules per
-   `[[gate-slot-from-mail]]`; docs-only commits are exempt).
-2. Write the slice's red tests; record the red runs (on a remote Mac for e2e).
-3. Green. 4. Refactor (apply the refactor checklist; remove duplication).
-5. Quiet gate from a clean `git archive HEAD` + the slice's files, through the macOS gate.
-6. Commit only the slice's files (shared-worktree rule: stage only your own files).
-7. Mail RoseCat (cod_1) for review.
-8. For a UI slice (MS4, and MS6's reply render): add the slice's case to the macOS real-screen
-   check; the orchestrator runs it on the user's Mac. **Not approved until it passes there.**
-A slice is not done until its closure e2e was **observed to execute** with nonzero assertions;
-"SKIP" counts as UNCLOSED.
-
-## Testing infrastructure summary
-
-- **New:** `tests/e2e/mac_session.py` (macOS launcher/guardian, no Xvfb), per-slice
-  `tests/e2e/mac_*_test.py`, macOS cases in `tests/manual/real_screen_check.py` (or a
-  `mac_real_screen_check.py` sibling), two-arch `tests/mac/gate.sh`.
-- **Reused platform-neutral:** `automation_server.zig`, `router.zig`, `engine.zig`,
-  `page_port.zig`, `agent_protocol.zig`, `agent_drawer.zig`, `agent_secrets.zig` (logic),
-  social-flow Zig, the Python SDK client.
-- **Both arches every run** (Intel + Apple Silicon over Tailscale SSH).
+1. Mail "taking the gate slot" only for the gate run (docs-only commits exempt). 2. Write the
+slice's red tests; record the red runs (on a remote Mac for e2e). 3. Green. 4. Refactor (remove
+duplication). 5. Quiet gate from a clean `git archive HEAD` + the slice's files. 6. Commit only the
+slice's files (stage only your own). 7. Mail RoseCat. 8. UI slice (MS7, MS8 reply render): add the
+macOS real-screen case; the orchestrator runs it on the user's Mac; **not approved until it passes
+there**. A slice is not done until its closure e2e was **observed to execute** with nonzero
+assertions; "SKIP" counts as UNCLOSED. Every MS2–MS8 sub-slice carries a **named red test, an exact
+failing assertion, named green production files, and a refactor gate**.
 
 ## References
 
-- Research: `thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md` (1df5dce) + its `.closure-adapter.py`
-- Sandbox: `thoughts/searchable/shared/research/2026-10-14-macos-sandbox-option.md`, `…/2026-10-14-agent-sandbox-redteam.md`
-- Drawer plan (conventions, real-screen check §7.1): `thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md`
-- Review log (NVIDIA/real-screen, cross-target integrity): `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
-- Prior WKWebView backend plan: `thoughts/searchable/shared/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md`
+- Review answered: `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
+  (§"macOS launch plan review (d857a03)", commit 21625eb)
+- Research: `…/research/2026-10-14-14-19-macos-launch-support-surface.md` (1df5dce) + its `.closure-adapter.py`
+- Sandbox: `…/research/2026-10-14-macos-sandbox-option.md`, `…/2026-10-14-agent-sandbox-redteam.md`
+- Drawer plan (conventions, real-screen §7.1): `…/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md`
+- Prior WKWebView backend plan: `…/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md`
 - Bead `zigBrowser-8g7` (M9 render + ping/pong DONE on Intel Mac)
-- Key code anchors: build.zig:1107-1184, 79-105, 241-272; src/wkwebview_shim.m:788-888; src/automation_gtk_port.zig:22; src/automation_platform.zig:90-95; src/webkit.zig:48/72/91; packaging/macos/build-dmg.sh:90; Info.plist:21-22; tests/mac/{build-on-mac,gate}.sh
+- Code anchors: build.zig:1107-1184/79-105/241-272; src/wkwebview_shim.m:788-888;
+  src/automation_server.zig:412-530/480-487/686-691/942-1106; src/automation_gtk_port.zig:22;
+  src/automation_platform.zig:90-95; src/app.zig:41-47/160-166; src/webkit.zig:47-72;
+  agent/host/zb_agent_host/sandbox.py; src/agent_host.c:1-73; packaging/macos/build-dmg.sh:90;
+  packaging/macos/Info.plist:21-22
 
-## Open Questions (for RoseCat's review)
+## Blocker status (not a code blocker, a process note)
 
-1. Native input: is responder-chain `NSEvent` delivery sufficient for all event types, or does
-   any require TCC-gated `CGEventPost`? (MS2b risk; prove in the slice.)
-2. Does the macOS Claude CLI reopen fd 3 via `/dev/fd/3` under Seatbelt as assumed? (research
-   unverified item 11; MS5.3 proves it.)
-3. Is `sandbox-exec` still accepted for custom profiles on the test Macs' OS versions? (research
-   flags SDK-27 kill risk; if not, MS5 pivots to the VM fallback bead.)
-4. Should the Linux bwrap refactor behind `SandboxBackend` be its own pre-MS5 Linux slice to keep
-   the Linux gate isolated from macOS churn?
-5. Slice sizing: is MS2's three-part split (a/b/c) the right cut, or should health/recover (MS2c)
-   be its own slice given the recover state machine's size?
+Tracking bead for this work **cannot be filed**: the shared bd DB has pending schema migrations
+(v49→v53) and refuses auto-apply on a remote-backed clone; `bd migrate`/`bd bootstrap` are
+destructive/coordination actions not taken unilaterally. Status is tracked via Agent Mail / this
+plan until the designated migrator resolves it.
