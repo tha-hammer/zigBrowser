@@ -5456,3 +5456,107 @@ BlackRobin's clean-export full gate for the same six-file follow-up passed
 **102/102 steps and 807/807 tests**; the preserved green fold case is 18/18,
 and the author's same mutant also fails both pixel and draw-row oracles. No
 new BLOCKER, SHOULD or NIT remains for S2.
+
+## Claude Agent chat-drawer plan rev 13 (`52f8614`, follow-up `5fc0d57`)
+
+**Verdict: BLOCKER before S3/S4.** Rev 13 closes the two rev-12 blockers at
+`57d495d`/`313f0f8`: the production map is pinned to `38e30e5`, its cited
+window, IPC and automation lines match that source, and the outer-bwrap
+replacement is now owned by the app before spawn rather than arriving in a
+later helper frame. The `5fc0d57` follow-up also narrows `$CLI rg` to the
+observed listing flags and the two read-only roots actually seen by P0. Three
+remaining contracts are not implementable or fail closed as written.
+
+This was a docs-only review. I read the complete rev-13 delta and rechecked its
+current-source anchors and cross-slice dependencies; both plan diffs pass
+`git diff --check`. No live browser, socket, account, token, display, build or
+test was used. The in-progress P0 follow-up was inspected read-only and left
+untouched.
+
+### Rev-12 finding disposition
+
+| Prior finding | Rev-13 disposition |
+|---|---|
+| Outer-bwrap seam ownership | **CLOSED in the plan.** `ZIGBROWSER_AGENT_BWRAP` is app-owned and validated before helper spawn; D11/S3.9 put the oracle in that slot (`plan:834-856,1265-1267`). |
+| Stale current-state pin | **CLOSED.** The plan distinguishes the built P0/S1/S2 state from the historical pre-drawer baseline, pins ClosureMaps A/B to `38e30e5`, and corrects the overlay placement mechanism. The cited anchors match the pinned source. |
+| Seccomp-notification mechanism | **PARTIAL; BLOCKED below.** The mechanism replaces ptrace, but its documented topology and complete-record promise do not match the P0 implementation being described. |
+| `$CLI rg` exception | **SHAPE CLOSED, observation BLOCKED below.** The intended accepted tuple is narrow and evidence-based, but bounded argv capture can omit a disallowed suffix. |
+| Messaging names, 513-byte token handoff and phase-2b lock overlap | **TEXT CLOSED, phase-2b slice BLOCKED below.** Both names and one handoff bound are explicit; the live-temp test is assigned before its production path exists. |
+
+### BLOCKER — S3.12 requires S8/S10 production paths
+
+S3.12 phases 2 and 2b require an **approved** `fs_write workspace/...`, the
+app-owned `agent_fs.zig` broker, its temp/fsync/rename path and the
+`ZIGBROWSER_AGENT_FS_PAUSE=after-temp` seam (`plan:1306-1320`). S3's own file
+list instead limits `agent_broker.zig` to submit/frame routing and contains no
+`agent_fs.zig` (`plan:1354`). Approval first lands in S8
+(`plan:1586-1618`); workspace file tools and `agent_fs.zig` first land in S10
+(`plan:1680-1701,1755`). Therefore the demanded real-binary phase cannot be
+red or green in S3 without either test-only substitution or prematurely
+implementing two later slices.
+
+Keep lock acquisition, idle-holder refusal and takeover in S3. Move the live
+write phases 2/2b, including the pause seam and exact inotify sequence, to
+S10, where the approved broker write exists. Alternatively, explicitly move
+the complete approval and workspace-write dependencies into S3 and update its
+files, closure test and slice ordering; a mock write would bypass the edge the
+test is meant to protect.
+
+### BLOCKER — the e2e CLI seam has no route to either process that needs it
+
+Section 7 says every helper-carried seam travels only in chat `hello.e2e`, and
+places `ZIGBROWSER_AGENT_CLAUDE_CLI` in that class (`plan:849-856`). But the
+same seam selects an alternate installed CLI for synchronous `--agent-setup`
+in S3.7 (`plan:1239-1242`) and the fake `setup-token` executable for S6's
+separate one-shot login helper (`plan:1481-1488`). D7b explicitly gives the
+login process only `start`, `code` and `cancel`; it has no chat `hello`
+(`plan:350-410`). Thus neither required consumer can receive the value by the
+only specified channel.
+
+Split this seam by process or add an explicit, app-owned e2e field/argv for
+the setup and login launches. It must remain absent without
+`--e2e-protocol`, must not enter either helper environment, and each route
+needs its own inertness test. Relatedly, S3.6 cannot prove every app-owned
+seam at `plan:1323-1327`: approval TTL is first read when S8 mints a grant,
+and FS pause is first read during an S10 broker write (`plan:840-847`). Scope
+S3.6 to seams whose consumers exist in S3, and put the hostile TTL and pause
+checks in S8 and S10 respectively. Merely scanning/logging those variables at
+S3 startup would contradict the table's read-at-owner contract and would not
+prove that the later consumer is gated.
+
+### BLOCKER — the exec oracle can certify an incomplete record
+
+D11 says the outside supervisor is bwrap's parent, sets
+`PR_SET_PDEATHSIG(SIGKILL)`, kills its child and exits with bwrap's status
+(`plan:549-565`). The P0 follow-up currently being described instead
+double-forks a detached listener supervisor, then has the original tracer
+install the filter and `execv` bwrap in place
+(`agent/host/tests/exec_tracer.py:151-194`). The detached supervisor is not
+bwrap's parent, has no stated death signal and cannot return bwrap's exit
+status. The actual exec-in-place design may preserve bwrap's parent identity,
+but the plan must describe and test that topology rather than promise a
+different one.
+
+More importantly, the current oracle reads at most 64 argv pointers and 512
+bytes per argument without recording whether either bound truncated the
+input (`exec_tracer.py:64-71,93-106`). The classifier accepts `$CLI rg` after
+iterating only the recorded list (`agent/host/tests/test_contract.py:246-262`).
+An otherwise allowed 64-argument invocation with a forbidden 65th path can
+therefore be certified as `$CLI rg`, contradicting D11's "if and only if"
+allowlist. Require complete argv/string capture or mark any truncation/read
+failure `UNEXPECTED`, with failing-first cases for a disallowed 65th argument
+and an over-limit argument.
+
+D11 also promises `execveat` path resolution against its dirfd
+(`plan:551-555`), while the tracer selects the path/argv arguments but never
+uses `execveat`'s dirfd and resolves a relative path against cwd
+(`exec_tracer.py:109-118,134-146`). Specify and test dirfd plus
+`AT_EMPTY_PATH`, or fail closed on every unhandled `execveat`. The exact
+allowlist is security evidence only if every allowed record is complete and
+correctly resolved.
+
+The CodeCleanup plan-hygiene pass found no independent issue with control-flow
+side effects, mutation in conditions, nesting, or literal ownership. The
+remaining defects are cross-slice and cross-process boundary contracts, not
+formatting concerns. Agent Mail 5299 sent all three blockers to BlackRobin
+and copied BlueBeaver before this log entry.
