@@ -158,7 +158,7 @@ class OuterRelayTest(unittest.TestCase):
         proc = subprocess.Popen(outer_argv(self.root / "egress", child), env=child_env())
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         wait_for(lambda: Path(str(marker) + ".ready").exists(), 20)
-        relay = only(p for p in tree_of(proc.pid) if b"zb_agent_host.relay" in cmdline(p))
+        relay = only(outer_relays(proc.pid))
         os.kill(relay, signal.SIGTERM)
         self.assertEqual(proc.wait(timeout=20), 5)
         self.assertEqual(marker.read_text(), "ok")
@@ -234,21 +234,18 @@ class InnerRelayTest(unittest.TestCase):
                 sealed = run(inner_argv(self.bridges, cmd), self).returncode
                 self.assertEqual(sealed, unsealed)
 
-    def test_stdio_passes_through_and_the_relay_keeps_no_copy_of_stdout(self):
+    def test_stdio_passes_through_and_stdout_eof_matches_plain_bwrap(self):
+        """bwrap itself keeps the child's fd 1 until it exits (BlueBeaver 5512,
+        RoseCat 5514), so EOF timing is compared with the same command under
+        plain bwrap; the descriptor census proves the relay's own fd 1 is /dev/null."""
         data = os.urandom(1 << 20)
         done = subprocess.run(inner_argv(self.bridges, ["/bin/cat"]), input=data, capture_output=True,
                               env=child_env(), timeout=60)
         self.assertEqual(done.returncode, 0)
         self.assertEqual(done.stdout, data)
-        # The hook closes its stdout and keeps running: the reader must see EOF
-        # at once, which it cannot if the relay still holds a copy of fd 1.
-        proc = subprocess.Popen(inner_argv(self.bridges, ["/bin/sh", "-c", "exec 1>&-; sleep 3"]),
-                                stdout=subprocess.PIPE, env=child_env())
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
-        started = time.monotonic()
-        self.assertEqual(proc.stdout.read(), b"")
-        self.assertLess(time.monotonic() - started, 1.5, "EOF came only when the relay exited")
-        proc.wait(timeout=20)
+        closes_stdout = ["/bin/sh", "-c", "exec 1>&-; sleep 2"]
+        plain, sealed = eof_after(sandboxed(closes_stdout)), eof_after(inner_argv(self.bridges, closes_stdout))
+        self.assertLess(abs(sealed - plain), 1.0, f"EOF after {sealed:.2f} s sealed, {plain:.2f} s under plain bwrap")
 
     def test_sigterm_to_the_relay_reaches_the_hook(self):
         marker = self.root / "trapped"
@@ -256,7 +253,7 @@ class InnerRelayTest(unittest.TestCase):
         proc = subprocess.Popen(inner_argv(self.bridges, child), env=child_env())
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         wait_for(lambda: Path(str(marker) + ".ready").exists(), 20)
-        relay = only(p for p in tree_of(proc.pid) if bridge_relay_file().encode() in cmdline(p))
+        relay = only(inner_relays(proc.pid))
         os.kill(relay, signal.SIGTERM)
         self.assertEqual(proc.wait(timeout=20), 9)
         self.assertEqual(marker.read_text().strip(), "ok")
@@ -285,7 +282,7 @@ class InnerRelayTest(unittest.TestCase):
                 self.addCleanup(lambda p=proc: p.poll() is None and p.kill())
                 wait_for(lambda: running(canary), 20)
                 if case == "relay killed":
-                    relay = only(p for p in tree_of(proc.pid) if bridge_relay_file().encode() in cmdline(p))
+                    relay = only(inner_relays(proc.pid))
                     os.kill(relay, signal.SIGKILL)
                 proc.wait(timeout=20)
                 wait_for(lambda: not running(canary), 1.0)
@@ -294,7 +291,7 @@ class InnerRelayTest(unittest.TestCase):
     def test_the_relay_holds_only_its_own_descriptors(self):
         proc = subprocess.Popen(inner_argv(self.bridges, ["/bin/sleep", "3"]), env=child_env(), stdout=subprocess.PIPE)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
-        relay = wait_for(lambda: [p for p in tree_of(proc.pid) if bridge_relay_file().encode() in cmdline(p)], 20)[0]
+        relay = only(wait_for(lambda: inner_relays(proc.pid), 20))
         time.sleep(0.5)
         fds = {int(n): os.readlink(f"/proc/{relay}/fd/{n}") for n in os.listdir(f"/proc/{relay}/fd")}
         self.assertEqual((fds.get(0), fds.get(1)), ("/dev/null", "/dev/null"), "the relay keeps no stdin/stdout pipe")
@@ -306,6 +303,43 @@ class InnerRelayTest(unittest.TestCase):
                          ["anon_inode:[eventpoll]", "anon_inode:[pidfd]"], kinds)
         self.assertEqual(len(kinds), 4, kinds)
         proc.wait(timeout=20)
+
+
+def eof_after(argv):
+    """Seconds until the reader of argv's stdout sees EOF."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, env=child_env())
+    started = time.monotonic()
+    try:
+        proc.stdout.read()
+        return time.monotonic() - started
+    finally:
+        proc.stdout.close()
+        proc.wait(timeout=20)
+
+
+def relays(root, interpreter, argv_has):
+    """The relay processes under `root`: the expected Python interpreter
+    (/proc/<pid>/exe) with the relay in its argv. bwrap's two processes carry
+    the same argv as arguments, but their executable is bwrap (RoseCat 5514)."""
+    want = os.path.realpath(interpreter)
+    found = []
+    for pid in tree_of(root):
+        try:
+            exe = os.path.realpath(f"/proc/{pid}/exe")
+        except OSError:
+            continue
+        if exe == want and argv_has(cmdline(pid).split(b"\0")):
+            found.append(pid)
+    return found
+
+
+def outer_relays(root):
+    return relays(root, sys.executable, lambda argv: argv[1:4] == [b"-m", b"zb_agent_host.relay", b"--egress"])
+
+
+def inner_relays(root):
+    return relays(root, "/usr/bin/python3",
+                  lambda argv: argv[1:5] == [b"-I", b"-S", bridge_relay_file().encode(), b"--bridges"])
 
 
 def cmdline(pid):
