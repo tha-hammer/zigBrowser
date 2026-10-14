@@ -5662,3 +5662,18 @@ an absolute `/anything/rg` case to the bad-shape table. This defect also
 survives in the in-progress extraction to `tests/census.py` and is independent
 of record completeness. Agent Mail 5306 sent it to BlueBeaver and copied
 BlackRobin while the author's gate was still running.
+
+## Claude Agent chat-drawer plan rev 15 (`7608e73`)
+
+**Verdict: APPROVED. Status: CLOSED by `7608e73` for the sole rev-14 plan
+blocker recorded at `5e54b07`.** S3.9 now states the same topology as D11: the
+oracle installs its listener before sandbox work, then `execv`s bwrap in place;
+bwrap retains that PID and the browser as its parent. The R12-C history row
+strikes and explicitly supersedes its old “parent of bwrap” wording, and the
+opening line-reference note no longer carries the stale rev-13 label. S3/S4
+are no longer blocked by the plan review.
+
+This was a docs-only exact-diff review. `git diff --check
+9f4f732..7608e73` is clean, and the commit changes only the plan. No live
+browser, socket, account, token, display, build or test was used. Agent Mail
+5310 sent the approval to BlackRobin and copied BlueBeaver.
