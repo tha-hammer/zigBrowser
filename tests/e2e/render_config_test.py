@@ -15,6 +15,8 @@ WebKitWebProcess and reads that process's environment:
   file and FORCE_SHM is not set (skipped when that file is not installed)
 - --screenshot: the same default reaches the screenshot's web process and
   the PNG is written; the same opt-out flags work there
+- first, the probe itself: it never takes a half-started (or exiting) web
+  process's empty environment as the real one (half_started_reads)
 
 Never uses the caller's DISPLAY. Exit 77 (skip) without the binary,
 Xvfb or xauth."""
@@ -26,6 +28,7 @@ import http.server
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -54,9 +57,35 @@ def web_process_env(pid: int) -> dict[str, str] | None:
                 raw = Path(f"/proc/{child}/environ").read_bytes()
             except OSError:
                 continue
+            if not raw:  # mid-exec or exiting: not its environment yet (half_started_reads)
+                continue
             pairs = (item.split(b"=", 1) for item in raw.split(b"\0") if b"=" in item)
             return {k.decode(errors="replace"): v.decode(errors="replace") for k, v in pairs}
     return None
+
+
+def half_started_reads(tmp: Path, spawns: int = 20) -> tuple[int, int]:
+    """(reads missing a variable the web process has, reads that had it).
+    A stand-in WebKitWebProcess (a link to sleep, so its name matches)
+    starts `spawns` times while web_process_env polls it with no pause.
+    The kernel renames a process during exec before it fills in the new
+    environment, and empties it again at exit, so a read in either gap sees
+    no variables at all (the 8058f97 gate flake: <unset> where 1 was set)."""
+    fake = tmp / "WebKitWebProcess"
+    fake.symlink_to(shutil.which("sleep") or "/bin/sleep")
+    parent = subprocess.Popen([sys.executable, "-I", "-c", (
+        "import subprocess, sys\n"
+        "for _ in range(int(sys.argv[2])):\n"
+        "    subprocess.run([sys.argv[1], '0.05'], env={'ZB_PROBE': '1'})\n"), str(fake), str(spawns)])
+    missing = had = 0
+    while parent.poll() is None:
+        env = web_process_env(parent.pid)
+        if env is not None:
+            if env.get("ZB_PROBE") == "1":
+                had += 1
+            else:
+                missing += 1
+    return missing, had
 
 
 def run_case(binary: Path, args: list[str], tmp: Path, extra_env: dict[str, str], timeout: float, exits: bool = False):
@@ -145,6 +174,10 @@ def main() -> int:
         page.write_text("<!doctype html><title>render</title><p>render config</p>", encoding="utf-8")
         uri = page.as_uri()
         counter = iter(range(1000))
+
+        missing, had = half_started_reads(tmp)
+        check(missing == 0 and had > 0,
+              f"the probe never reads a half-started web process ({missing} reads without its variables, {had} with)")
 
         def open_case(flags: list[str], extra_env: dict[str, str]):
             env, lines, _ = run_case(binary, [uri, "--profile-dir", str(tmp / f"profile-{next(counter)}")] + flags,
