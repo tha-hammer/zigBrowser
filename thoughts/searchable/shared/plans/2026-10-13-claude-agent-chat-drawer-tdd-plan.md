@@ -767,9 +767,10 @@ agent-home/
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
+| R15.4 | The orchestrator's simplification of S3a (the journal was in its fifth round) | Setup builds `dist-<n>` complete and publishes it with one symlink swap of `current`; `.claude` and `runtime` are fixed links into `current`; state lives outside every build and setup only creates it when absent. The commit point, first-install repair, journal, reconciler and `renameat2` are gone; the kill seam has two cuts. | S3, §7 |
 | R15.3g | RoseCat 5373.1: the dock contradicted answer 4 | The user chose to keep the dock (2026-10-14). §0 answer 4 and D2 now say the page is laid out above the open drawer. | §0, D2 |
 | R15.3c | The NVIDIA blank window (f72e63d, the orchestrator's matrix) | D1's GtkOverlay becomes a windowless host that paints its floats into the page's window; new row `DRAWER windows`; §7.1 records the cause, the red, the mutants and the `drawer-open` real-screen case. | D1, D7b, §7.1 |
-| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3d (RoseCat 5357): each pause step's side of its mutation and its on-disk state; a write-ahead journal makes a killed re-provision recoverable. Rev 15.3e (RoseCat 5373): two kill points per mutation, a journal of intents with inode identity reconciled from the disk, and the fsync order. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
+| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3d (RoseCat 5357): each pause step's side of its mutation and its on-disk state; a write-ahead journal makes a killed re-provision recoverable. Rev 15.3e (RoseCat 5373): two kill points per mutation, a journal of intents with inode identity reconciled from the disk, and the fsync order. Rev 15.4 (the orchestrator): all of that is replaced by a layout where setup publishes a complete build with one symlink swap and never touches state. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -878,7 +879,7 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 | `ZIGBROWSER_AGENT_ANIM_MS` | `agent_drawer.configure`, at startup | stretches the minimize animation so an `xwd` capture can sample the fold mid-flight (S2.2; rev 12) | 180–5000; the default is 180 |
 | `ZIGBROWSER_AGENT_FS_PAUSE` | the app broker `agent_fs.zig` (S10), at the named point of a workspace write | holds the write until the test writes `release\n` to the browser's stdin (S10.5; rev 11, moved from S3.12 in rev 14) | `after-temp` only. The wait is bounded at 30 s; on timeout the broker abandons that write (its temp is removed), refuses the tool call with "write paused too long", and prints one stderr line. |
 | `ZIGBROWSER_AGENT_SPAWN_DELAY_MS` | `agent_setup.zig`, before the setup helper's spawn (rev 15.2) | holds the spawned child before its `PR_SET_PDEATHSIG` and parent check, for the parent-death regression (S3.1) | 1–5000 |
-| `ZIGBROWSER_AGENT_SETUP_PAUSE` | `agent_setup.zig` passes it on as the helper's `--e2e-pause-at <step>` (rev 15.3b) | blocks setup at one named cut (`<step>:before` or `<step>:after`, rev 15.3e) after printing `SETUP paused <cut>`, for the interrupted-install kill test (S3.1) | one cut name; at most 30 s, then exit 1 |
+| `ZIGBROWSER_AGENT_SETUP_PAUSE` | `agent_setup.zig` passes it on as the helper's `--e2e-pause-at <cut>` (rev 15.4) | blocks setup at `swap:before` or `swap:after` after printing `SETUP paused <cut>`, for the kill tests of the home layout (S3.1) | `swap:before` or `swap:after`; at most 30 s, then exit 1 |
 | `ZIGBROWSER_AGENT_CLAUDE_CLI` | the app, when it **launches** `--agent-setup`'s synchronous helper run (S3.7) and the one-shot login helper (S6). It is passed **only as the launch argv option `--e2e-claude-cli <path>`**: never in either helper's environment, and never in the chat `hello` (rev 14, RoseCat rev-13 blocker 2) | an alternate Claude CLI: a CLI that ignores the token descriptor (S3.7), or the fake `claude setup-token` (S6) | an absolute path to a regular executable file |
 
 **Helper-carried seams.** The app reads these and passes them to the helper **inside `hello.e2e`**, because only the helper can apply them.
@@ -1317,63 +1318,29 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - on the R1 probe it starts a grandchild, writes both PIDs to a marker, and sleeps;
     - the test waits for the marker, SIGKILLs only the browser, and within 2 s checks that the helper, the CLI and the grandchild are all gone;
     - teardown then kills any survivor and fails the test.
-- **The live state never enters cleanup-owned staging.** The new `.claude` is swapped in first; the old tree's state directories then move into it. Any failure moves them back and swaps the old tree in again.
-- **One commit point (rev 15.3, RoseCat 5341).** The re-provision transaction runs up to and including the marker's `os.replace`: every step before it, the runtime exchange, the state moves, the `mkdir`s and the marker write included, rolls back on failure, and the old home is then byte-identical. The marker replace is the commit point. After it, only the removal of the old copies runs; a failure there is reported as `zigBrowser: agent-setup: old copy left at <path>` with exit 0, and setup never claims the old home is unchanged. Fault injection fails each step in turn, the marker replace included (red today: a failed marker replace leaves the new `CLAUDE.md` live).
-- **An interrupted first install is repaired by the next run (rev 15.3, RoseCat 5338).** A first install creates the root under `.zb-owner.lock`, moves the staged entries in one at a time and writes the marker last. A rerun that finds the owner lock and no marker treats the root as a partial first install: it moves only the setup-owned names (`.claude`, `runtime`, `workspace`, `scratchpad`, `secrets`) into cleanup-owned staging and installs again. Any other entry refuses with exit 2. The failing-first unit test fails the move of each entry k in turn. The e2e kills setup at each move through the install-step pause seam below. A plain rerun must then succeed (red today: `ENOTEMPTY` on `runtime/`).
-- **The install-step pause seam (rev 15.3b, RoseCat 5352), separate from the parent-death seam.**
-  - `ZIGBROWSER_AGENT_SETUP_PAUSE=<step>` is honoured only with `--e2e-protocol`; without it the app does not pass it on, so it is inert.
-  - The app passes it to the setup helper as `--e2e-pause-at <step>`. Steps: `<step>:before` or `<step>:after` for each of `first-move:<entry>`, `exchange-claude`, `state:<name>`, `exchange-runtime`, `mkdirs`, `marker`, `cleanup` (rev 15.3e).
-  - At that step the helper prints `SETUP paused <step>` (relayed as an e2e row) and blocks for at most 30 s, then exits 1. It never continues past the pause.
-  - **Two kill points per mutation (rev 15.3e, RoseCat 5357 and 5373).** Each mutation has a cut on each side:
-    - `<step>:before` pauses after that step's journal intent is durable and before the mutation;
-    - `<step>:after` pauses after the mutation, and its parent-directory fsync, and before the next intent.
+- **The home layout: setup never mutates live state in place (rev 15.4, the orchestrator's simplification; it supersedes rev 15.3's commit point, first-install repair, journal, reconciler and `renameat2`).**
 
-    | Step (mutation) | On disk at `:before` | On disk at `:after` |
-    |---|---|---|
-    | `first-move:<entry>` (rename staging/entry → root/entry) | the entries moved so far, without `<entry>`; no marker | with `<entry>`; no marker |
-    | `exchange-claude` (`renameat2` EXCHANGE) | old `.claude` live | new `.claude` live, old one at the journal's staging path |
-    | `state:<name>` (rename old/state → new/state) | `<name>` still in the old `.claude` | `<name>` in the live `.claude` |
-    | `exchange-runtime` (EXCHANGE) | old runtime live | new runtime live |
-    | `mkdirs` (`workspace`, `scratchpad`, `secrets`) | missing ones absent | all present |
-    | `marker` (rename staging marker → root marker): **the commit point** | old marker (not committed) | new marker (committed) |
-    | `cleanup` (delete the old copies) | committed; old copies present | old copies and journal gone |
+  | Path under the agent home | What it is | What setup does to it |
+  |---|---|---|
+  | `dist-<n>/` | one published build: `.claude/` (the SAI copy, sanitized `settings.json`, `.claude.json`, and **empty mount points** for `STATE_DIRS`) and `runtime/` | builds it complete in `.dist-tmp-*`, fsyncs every file and directory, renames it to `dist-<n>` |
+  | `current` | a symlink to the live `dist-<n>` | the **only** swap: a temp symlink renamed over it, then `root` fsynced |
+  | `.claude`, `runtime` | fixed symlinks to `current/.claude` and `current/runtime` | created once when absent; never changed; a different target refuses |
+  | `state/<STATE_DIRS>`, `workspace/`, `scratchpad/`, `scratchpad/tmp/`, `secrets/` | the agent's and the user's state | `mkdir` when absent, nothing else: never written into, moved or deleted |
+  | old `dist-*`, `.dist-tmp-*`, `.current.tmp-*` | garbage, never state | deleted after the swap, best-effort; a failure prints `zigBrowser: agent-setup: old build left at <path>` and setup still exits 0 |
 
-  - **The kill test** asserts the state in that table at the pause, so a build that skips or reorders a step fails. It then SIGKILLs the browser and runs a plain setup again.
-  - **A first install has no journal**, but it uses the same two pause states for each `first-move:<entry>`:
-    - `:before` is just before that entry's rename;
-    - `:after` is after the rename and the fsync of `root`.
+  - **Every path stays valid:** `CLAUDE_CONFIG_DIR` (`root/.claude`), the hook paths (`~/.claude/…`, `root/runtime/bin/zb-hook-run`) and the app's `runtime/host.json` all resolve through the fixed links.
+  - **The sandbox (D12):** binds `.claude` read-only and `state/<name>` writable at `.claude/<name>`. bwrap resolves `current` when it mounts, so a running helper keeps its build until it restarts.
+  - **A crash** at any point leaves either the old `current` or the new one, never a mix, and never touches state. A kill before the swap leaves only garbage, which the next run deletes. A first install is the same path with no old `current`.
+  - **An old-layout home** (`root/.claude` is a real directory: S3a as built at abbf0ea and 4e3b09c, never released) refuses with exit 2: `zigBrowser: agent-setup: <home> has the old layout; move it aside and run again`.
+  - **The kill seam:** `ZIGBROWSER_AGENT_SETUP_PAUSE=swap:before|swap:after` is honoured only with `--e2e-protocol` and passed on as `--e2e-pause-at`. The helper prints `SETUP paused <cut>`, blocks for at most 30 s, then exits 1.
+  - **Failing-first tests:**
+    - **unit:** a failure injected at every build step (copy, settings, runtime, fsync, rename to `dist-<n>`, the temp symlink) leaves `current`, its target's bytes and all state unchanged;
+    - **unit, after the swap:** a failed delete of an old build prints the warning and exits 0;
+    - **e2e:** SIGKILL the browser at `swap:before`. `current` is unchanged, and the seeded state files (`state/projects`, `state/MEMORY`, `workspace`) keep their content and inodes. A plain rerun publishes and leaves no garbage;
+    - **e2e:** the same at `swap:after`. `current` is new, the state is unchanged, and the rerun deletes the old build;
+    - **e2e, first install:** a kill at `swap:before` leaves no `current`; the rerun completes;
+    - **e2e:** the old layout refuses.
 
-    Its marker rename, followed by the fsync of `root`, is its durable commit point. A rerun that finds the owner lock and no marker repairs the root by the partial-first-install rule above, whichever cut it was killed at.
-- **A write-ahead journal makes a killed re-provision recoverable (rev 15.3d, made exact in rev 15.3e, RoseCat 5373).**
-  - **The gap:** after `exchange-claude`, the old `.claude` (with the agent's state) sits in staging, which the next run's cleanup would delete.
-  - **The record:** `root/.zb-setup-journal` holds `{staging, steps: [...]}`. Each entry is `{step, intent, identity}`:
-    - for a rename, the source's `(st_dev, st_ino)` and both paths;
-    - for an exchange, both entries' `(st_dev, st_ino)` before it;
-    - for the marker, the new marker's `(st_dev, st_ino)`;
-    - for `mkdirs`, the names that were absent.
-  - **Durability:**
-    - every journal write goes to a temp file in `root`, which is fsynced and renamed over the journal, and then `root` itself is fsynced;
-    - every mutation is followed by an fsync of each parent directory it touched, before the next intent is written.
-  - **Reconciling the last intent.** It is the only step whose outcome is unknown; every earlier step's mutation finished before the next intent was written. A rerun decides it from identity, never from the record alone:
-    - a rename is done when the destination holds the recorded inode, and not done when the source still does;
-    - an exchange of live path L (recorded inode A) with staging path S (recorded inode B) has exactly two accepted states: **not done** when L holds A and S holds B, **done** when L holds B and S holds A. A missing path, the same inode at both paths, or any other pairing refuses;
-    - the marker is done (committed) when the root marker holds the new marker's inode;
-    - `mkdirs` is done for every recorded name that now exists, so it is created again or removed.
-    - Any state outside these refuses with exit 2 and a message naming the journal and the step; the journal and staging are kept untouched.
-  - **Recovery:**
-    - **before the commit point:** the steps that are done are reversed in reverse order (renames back, exchanges again, created `mkdirs` removed). The old home is then byte-identical. Then the journal is removed and setup provisions as usual;
-    - **once committed:** the old copies and the journal are deleted.
-  - Cleanup never deletes a staging path that a journal names.
-  - **The kill e2e covers both cuts of every step in the table.** After the plain rerun:
-    - the home is a complete install;
-    - for every pre-commit cut, the agent's seeded state files (`projects/`, `MEMORY/`) are present with unchanged content and inodes;
-    - no journal or staging is left.
-  - **A failing-first unit test** is a table over every step kind. It feeds the reconciler forged disk states and checks each verdict:
-    - the two accepted states give not-done and done;
-    - every mixed state refuses with the journal and staging unchanged. For an exchange, the mixed states are: L missing, S missing, both missing, A at both paths, B at both paths, L=A with S=other, L=other with S=B, L=B with S=other, and L=other with S=A. For a rename: the inode at both paths, at neither, or another inode at the destination;
-    - a journal with a malformed entry or an unknown step refuses.
-  - The seam is listed in §7's seam table. A unit test shows that without `--e2e-protocol` the variable never reaches the helper.
-- **`renameat2` comes from libc** (glibc ≥ 2.28, every architecture), never a syscall number. Setup fails closed without it.
 - **Any absolute path refuses setup** in copied text, whatever its number of components. The only kept `/name` token is a known slash command: the CLI's built-in commands, or a copied `commands/*.md` or `skills/*`.
 - **The slash-command grammar (rev 15.3, RoseCat 5338).** A known `/name` is kept only as a slash-command invocation in Markdown prose:
   - it is in a `.md` file, outside fenced code blocks;
