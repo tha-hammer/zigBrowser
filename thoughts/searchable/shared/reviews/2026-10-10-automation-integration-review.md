@@ -7884,3 +7884,129 @@ unpushed safe stopping point. The newest approved push-through SHA remains the
 current origin, **`fa0aa48`**. This is a statement about the resulting tree at
 the pushed SHA, not an objection to retaining superseded plan revisions in
 history. No push was performed.
+
+## Network plan rev 16.2, pinned-read test, and macOS plan rev 4/5
+
+### Drawer network plan rev 16.2 (`3856558`)
+
+**Explicit verdict for `3856558`: APPROVED (docs).** Rev 16.2 closes every
+BLOCKER and SHOULD recorded against `c9f7b23`/`6efe260` in the preceding
+section:
+
+- R2-2 and R5-2 now mark R3 as history and state the current R1-only route and
+  legacy-refusal behavior (`claude-agent-chat-drawer-tdd-plan.md@3856558:
+  730,741`).
+- The socket authority is physically split into 0700 `egress/` and `bridges/`
+  directories, with only 0600 `proxy.sock` in the former and only the two
+  bridge sockets in the latter (`:833-841`). D12's pinned nested-bwrap argv now
+  includes `--unshare-net`, restores only `bridges/` after the private `/run`,
+  installs the hook filter, and invokes the inner relay before the hook
+  (`:639-649`). Thus a hook cannot bypass its netns through the proxy's Unix
+  socket.
+- The active topology has two explicit lifecycles: one proxy-only outer relay
+  and one bridge-only inner relay per hook (`:815-848,953-1007`). The inner
+  relay has an exact standard-library-only runtime path/argv, descriptor and
+  stdio ownership, pre-fork signal mask, fork/exec behavior, bounded splice
+  loop, status/signal parity, bwrap-reaper relationship and no-orphan tests.
+- The negative is offline-safe: `fake.zb.invalid`, raw CONNECT/TLS failure,
+  fake request count zero, `egress/proxy.sock` ENOENT, DNS/direct-IP refusal,
+  and two red mutants (missing nested netns and over-broad socket mount). Both
+  bridge decoys exchange bytes as the positive control (`:986-1007`).
+- The production S3.8, S3.9, S4.4 and S7.6 closures repeat both bridge
+  positives and both proxy negatives (`:1786,1804,1919,2086`); the new R16.2
+  history row is distinct (`:781`). The real implementation cost is assigned
+  to S3n2 as paired, warmed runs with at least 30 samples and reports n,
+  median, p90 and p95; the prototype's roughly 15 ms is only an expectation
+  (`:980-984`).
+
+The design therefore satisfies the user's “bridges only per hook” decision:
+hooks can reach 51091 and 31337, but neither TCP 3128 nor the proxy Unix
+socket; only the outer helper/CLI sandbox has the egress relay. The Linux
+mechanisms in this revision are the Linux backend contract; macOS portability
+is reviewed separately below.
+
+### S3a pinned-read regression (`9cf8fd2`)
+
+**Explicit verdict for `9cf8fd2`: APPROVED.** The test-only commit closes the
+non-blocking SHOULD from `db02324`. `PinnedReadTest` directly proves a regular
+leaf reads, while a symlink and unopened FIFO refuse without blocking, and its
+deterministic `os.stat` seam swaps the classified `README.md` to a symlink
+before `_read_regular`; setup reports “changed while setup read it” and
+publishes nothing (`agent/host/tests/test_provision.py@9cf8fd2:278-313`). A
+mutation back to pathname `Path.read_bytes()` fails these tests (and the FIFO
+case is bounded by the gate timeout), so the regression observes the intended
+production seam rather than a duplicate test-only implementation.
+
+### macOS launch plan rev 4 (`74413b0`) and rev 5 (`c8b646a`)
+
+**Explicit verdict for `74413b0`: BLOCKED (docs), with three prior contracts
+closed and one narrow ABI item still open at that exact SHA.** Rev 4 correctly:
+
+- moves the positive approved-commit closure to MS8.3, where `tool_use` comes
+  from the fake Anthropic API through the production proxy, CLI, helper and
+  protocol pump—not the automation socket—and leaves MS7.8 to prove only the
+  native AppKit card's mint/deny boundary (`macos-launch-tdd-plan.md@74413b0:
+  899-946,959-997`);
+- inventories all 44 production and 31 debug header exports, assigns the three
+  previously omitted registry/marshal exports, and moves the cookie ABI into
+  the earlier MS3 data-store slice (`:395-468,664-685`); and
+- distinguishes in-process CGEvent-to-NSEvent construction delivered with
+  `-[NSWindow sendEvent:]` (no post and no TCC) from out-of-scope,
+  TCC-gated system `CGEventPost` (`:478-493`). It also names the approved
+  `da5eb70` S3a dependency and fixes the stale pin/crash label.
+
+The remaining exact-revision **BLOCKER** is at `:402-409,425-426,656-662`:
+the plan says unsupported config flags return `int<0 + out_err`, but
+`zb_app_set_hw_policy` and `zb_app_set_media_source` return `void`, their
+getters return bare `int`, and `--renderer` has no C setter. That mechanism
+cannot execute. Agent Mail 5501 sent the concrete correction to JadeBeacon.
+
+**Explicit verdict for `c8b646a`: BLOCKED (docs), although it closes the
+config-ABI blocker above.** Rev 5 correctly introduces a fallible app-level
+`applyMacBackendFlag(flag, value) !void` seam before any void setter, gives
+`--renderer` an entirely Zig-owned decision, requires unsupported valid
+flag/value pairs to make the real binary exit nonzero with an exact message,
+and adds supported-effect, setter-not-reached and apply-before-validate/
+swallowed-error tests (`macos-launch-tdd-plan.md@c8b646a:426-474,693-732`).
+
+However, rev 5 also makes the load-bearing MS6 egress transport an explicitly
+**unsettled open design item** (`:895-907`). The Linux-private
+`127.0.0.1:3128` listener cannot be copied to a shared macOS loopback port,
+and the bundled CLI has since been measured to reject Unix-socket proxy URL
+forms (BlueBeaver mail 5503). An implementation-ready plan must pin the
+remaining viable backend mapping before MS6:
+
+1. host netd listens on an OS-selected, per-session `127.0.0.1:<port>` and the
+   generated CLI/helper Seatbelt profile permits only that loopback endpoint;
+2. `HTTPS_PROXY`/`HTTP_PROXY` name that exact port and netd retains the exact
+   CONNECT/SNI allowlist; arbitrary host processes do not gain a meaningful
+   capability because they already have host egress and the proxy grants only
+   the same API allowlist;
+3. each hook gets its separate profile permitting only loopback ports 51091
+   and 31337, with no proxy endpoint or API path; and
+4. the real-binary fake-API test proves the selected endpoint, both bridge
+   positives, every denial in MS6.4, and that a hook cannot reach the proxy.
+
+This should be expressed as a shared `SandboxBackend` capability (endpoint and
+policy supplied by the backend): Linux implements it with private-netns fixed
+ports and relays; macOS with an ephemeral host-loopback proxy plus per-process
+Seatbelt port rules. Leaving “loopback alias vs Unix socket” open is no longer
+valid after the CLI measurement ruled out the Unix-socket option.
+
+### Gate and linear push-through answer
+
+A bounded, fresh-cache clean export of exact `74413b0` under private Xvfb
+passed **Build Summary: 106/106 steps succeeded; 817/817 tests passed**. It
+included `9cf8fd2`; its 46 provisioning tests, including both new pinned-read
+tests, passed. The EXIT trap deleted the export and cache. `c8b646a` is
+docs-only after that identical source tree. No live browser, socket, profile,
+token or DISPLAY `:0` was used.
+
+The linear range through `3856558` is **not** an approved push-through range:
+although `3856558` supersedes the blocked rev-16 network plans, the blocked
+macOS rev 3 `a02f1ea` is still the newest macOS contract within that prefix.
+The range through `74413b0` is also not approved because of its impossible
+config error path. `c8b646a` fixes that path but remains blocked by its newly
+explicit unresolved MS6 proxy mapping. Therefore the newest approved
+push-through SHA remains the current origin, **`fa0aa48`**. No push or history
+rewrite was performed.
