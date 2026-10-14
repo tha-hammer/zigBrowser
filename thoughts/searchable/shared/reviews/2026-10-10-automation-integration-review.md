@@ -5386,3 +5386,28 @@ maintainability blocker. Rev 12 centralizes the new deadlines, schemas,
 refused names, mount order and BPF results in their owning contracts.
 
 Agent Mail 5282 sent the two blockers to BlackRobin before this log entry.
+
+### Addendum from P0's lifecycle-complete run (mail 5284)
+
+BlueBeaver reported two new facts after the verdict was committed. They do not
+change the BLOCKER result, but rev 12 must incorporate them before approval:
+
+- The working complete oracle is **seccomp user notification**, not the ptrace
+  implementation specified at `plan:499-506`. A supervisor outside the
+  sandbox receives every inherited `execve`/`execveat` notification before the
+  syscall continues, records the host PID/ancestry/path/argv, and then allows
+  it. It catches the permanent `sleep 0.001` mutant while avoiding ptrace's
+  multithreaded signal machinery. This is an acceptable design in principle,
+  but D11, P0.5 and S3.9 must specify and test the mechanism actually being
+  built. The app/pre-spawn seam blocker above applies equally: the listener
+  and supervisor cannot be installed from the later helper `hello`.
+- The complete census sees expected non-hook children `/usr/bin/git`,
+  `/usr/bin/dash`, and the bundled CLI executable itself invoked as `rg`.
+  Consequently rev 12's "absolute paths under `/usr` only" assertion
+  (`plan:503-506,957,1193`) rejects a legitimate turn. Amend the reviewed
+  allowlist and its evidence format with a narrow, version-pinned exception:
+  the exact bundled-CLI realpath with `argv[0] == "rg"` (and the observed
+  argument shape), recorded as `$CLI rg`; every other executable outside
+  `/usr` remains a failure.
+
+Agent Mail 5285 sent this addendum to BlackRobin and BlueBeaver.
