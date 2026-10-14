@@ -1,0 +1,21 @@
+"""python -m zb_agent_host <command> ..."""
+
+import importlib
+import sys
+
+COMMANDS = {
+    "contract-config": "contract",  # P0 contracts: one SDK turn under a token route
+    "provision-runtime": "provision",  # wrappers, hook-env allowlist, hook rewrite
+}
+
+
+def main(argv):
+    if not argv or argv[0] not in COMMANDS:
+        print(f"usage: python -m zb_agent_host <{'|'.join(COMMANDS)}> ...", file=sys.stderr)
+        return 2
+    module = importlib.import_module(f".{COMMANDS[argv[0]]}", __package__)
+    return module.main(argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

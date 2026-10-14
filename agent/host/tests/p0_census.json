@@ -1,0 +1,42 @@
+{
+  "cli_children": [],
+  "cli_version": "2.1.294",
+  "writes": [
+    ".claude.json",
+    "backups",
+    "projects",
+    "session-env",
+    "sessions"
+  ],
+  "hook_env": [
+    "AI_AGENT",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDECODE",
+    "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_EFFORT",
+    "CLAUDE_ENV_FILE",
+    "CLAUDE_PID",
+    "CLAUDE_PROJECT_DIR",
+    "COREPACK_ENABLE_AUTO_PIN",
+    "DISABLE_AUTOUPDATER",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "MCP_TOOL_TIMEOUT",
+    "NO_PROXY",
+    "NoDefaultCurrentDirectoryInExePath",
+    "PATH",
+    "PWD",
+    "TMPDIR"
+  ]
+}

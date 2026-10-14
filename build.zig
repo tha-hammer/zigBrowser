@@ -650,6 +650,21 @@ pub fn build(b: *std.Build) void {
     });
     page_recover_e2e.addArtifactArg(exe);
 
+    // Claude Agent helper (chat drawer P0): unit tests, and the boundary
+    // contracts that run the real SDK and bundled CLI against a fake Messages
+    // API. Both fail closed when the helper venv is missing (run
+    // tools/agent_host_env.sh first); neither starts the browser.
+    const agent_host_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_unit",
+    });
+    const agent_host_contract = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_contract",
+    });
+
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
     const automation_dialogs_e2e = b.addSystemCommand(&.{
@@ -877,6 +892,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&ipc_roundtrip_e2e.step);
     test_step.dependOn(&page_health_e2e.step);
     test_step.dependOn(&page_recover_e2e.step);
+    test_step.dependOn(&agent_host_unit.step);
+    test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);

@@ -1,0 +1,54 @@
+"""The helper's sandbox (D12): the exact bwrap argv every helper, CLI and hook runs under.
+
+Nothing else is mounted: no user home, no profile, no XDG_RUNTIME_DIR, no
+agent-home/secrets. `.claude` is read-only as a whole, with only the reviewed
+state directories (STATE_DIRS, from the P0.5 write census) bound writable on
+top; the workspace is read-only; the scratchpad is writable.
+"""
+
+import os
+
+BWRAP = "/usr/bin/bwrap"
+ETC_FILES = ("/etc/ssl", "/etc/ca-certificates", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
+             "/etc/passwd", "/etc/group", "/etc/localtime")
+USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("usr/lib64", "/lib64"))
+
+# Writable state under .claude: the P0.5 write census of the bundled CLI (2.1.294)
+# and the SAI hooks, reviewed. Data only: no hook may reference a path in here.
+# `.claude.json` (it lives in CLAUDE_CONFIG_DIR, not HOME) and `backups/` stay
+# read-only: the CLI tolerates it, and its configuration cannot drift.
+STATE_DIRS = ("projects", "sessions", "session-env", "todos", "statsig", "debug", "MEMORY")
+TOKEN_DIR = "/run/zb-token"
+
+
+def helper_argv(home, *, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=False):
+    """The bwrap prefix for a helper rooted at `home` (an options.AgentHome).
+
+    `ro_paths`: extra read-only binds (the venv, the hook command directories
+    from runtime/path.json). `claude_writable` binds all of .claude writable;
+    only the P0.5 write census uses it.
+    """
+    argv = [BWRAP, "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session",
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run",
+            "--ro-bind", "/usr", "/usr"]
+    for target, link in USR_LINKS:
+        argv += ["--symlink", target, link]
+    for path in ETC_FILES:
+        if os.path.exists(path):
+            argv += ["--ro-bind", path, path]
+    for path in (str(home.runtime), *map(str, ro_paths)):
+        argv += ["--ro-bind", path, path]
+    argv += ["--ro-bind", str(home.workspace), str(home.workspace)]
+    claude = str(home.claude_dir)
+    if claude_writable:
+        argv += ["--bind", claude, claude]
+    else:
+        argv += ["--ro-bind", claude, claude]
+        for name in state_dirs:
+            path = os.path.join(claude, name)
+            os.makedirs(path, mode=0o700, exist_ok=True)
+            argv += ["--bind", path, path]
+    argv += ["--bind", str(home.scratchpad), str(home.scratchpad),
+             "--perms", "0300", "--dir", TOKEN_DIR,
+             "--chdir", str(home.workspace), "--"]
+    return argv

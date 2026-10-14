@@ -33,3 +33,6 @@ __pycache__/
 
 # Dashboard visual-regression screenshots (generated)
 tools/dashboard-shots/
+
+# Python virtual environments (agent/host builds its venv in the cache; tools/agent_host_env.sh)
+.venv/
