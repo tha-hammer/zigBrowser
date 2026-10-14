@@ -207,7 +207,16 @@ These choices are made in the plan; RoseCat should challenge any of them.
 
 ### D1. The drawer, icon and Secrets window are native GTK widgets with no web content and no JavaScript
 
-- Each browsing `ZbWindow` gets a `GtkOverlay` as the toplevel's child. Its main child is the page's `WebKitWebView`. Its overlay children are:
+- Each browsing `ZbWindow` gets the drawer's **host** as the toplevel's child (rev 15.3c; it was a `GtkOverlay` until the blank window on the user's NVIDIA screen, §7.1). The host is a container with no GdkWindow, and it gives its children none:
+  - **Why:** GtkOverlay gave every overlay child an output child window, and an output child window over the accelerated page blanked the whole browser window there.
+  - **Layout:** the page fills the host. The icon and the fold stand-in float at the rects `on_child_position` used to compute.
+  - **The open panel docks:** while it is shown, the page is laid out above it (D2's rect is unchanged). The panel's `GtkScrolledWindow`, `GtkViewport` and `GtkTextView` have output windows that GTK makes itself, and no output window may lie over the page's. This changes the look: an open drawer now pushes the page up instead of covering its bottom 40%.
+  - **Painting:** the icon and the stand-in are painted into the page's own window, right after the page, from the page's `draw` handler. Painted on the toplevel's window, they would be covered whenever the page repaints alone. The host draws the docked panel itself.
+  - **Input:** the icon takes input through its button's input-only window. The panel sits in a `GtkEventBox` without a visible window (input-only).
+  - **The stand-in** is a plain `GtkBox`.
+  - **Structural check:** `DRAWER windows` (D7b), asserted by `agent_drawer_test.py --only windows`.
+
+  The host's main child is the page's `WebKitWebView`. Its floating children are:
   - the icon, a `GtkButton` labelled "S" with accessible name "Open Claude Agent";
   - the drawer, a `GtkBox` laid out as: header ("Claude Agent", status, account button, '-'; rev 12: S2 builds the header without the account button, which lands in **S4** with the Secrets window it opens); a `GtkScrolledWindow` holding a `GtkListBox` of message rows; and an input row with a `GtkTextView` plus Send/Stop.
 - Message text is set with `gtk_label_set_text`, never markup, so model output is inert text.
@@ -431,6 +440,7 @@ agent-home/
 | `DRAWER\t<win>\tapproval\t<id>\t<tool>\t<origin>\t<account>\t<digest>` | an approval card is shown |
 | `DRAWER\t<win>\tidles\t<n>` | every 250 ms while a stream is active (pending GTK idles) |
 | `DRAWER\t<win>\ttree\t<comma-separated GTK type names>` | the drawer subtree is built |
+| `DRAWER\t<win>\twindows\t<census>` | the GdkWindows under the toplevel's own changed (checked when the host draws): `-`, or comma-separated `<owner type or ->:<output\|input>:<viewable\|hidden>:<depth>:<x>:<y>:<w>:<h>`, depth first, x and y in the toplevel window's coordinates (rev 15.3c, the NVIDIA blank window, §7.1) |
 | `SECRETS\tstatus\t<empty\|connected-secret-service\|connected-file\|no-keyring\|rejected>` | the Secrets window state changes |
 | `SECRETS\ttree\t<GTK type names>` | the Secrets window is built |
 | `AUTH\tallowed\t<scheme://host:port>` | an auth-window navigation is allowed |
@@ -753,7 +763,8 @@ agent-home/
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
-| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
+| R15.3c | The NVIDIA blank window (f72e63d, the orchestrator's matrix) | D1's GtkOverlay becomes a windowless host that paints its floats into the page's window; new row `DRAWER windows`; §7.1 records the cause, the red, the mutants and the `drawer-open` real-screen case. | D1, D7b, §7.1 |
+| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3d (RoseCat 5357): each pause step's side of its mutation and its on-disk state; a write-ahead journal makes a killed re-provision recoverable. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -916,9 +927,32 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 - Exit 0 only when every case passes.
 - **Each UI slice adds its own case** for what it draws: for example, the open drawer for S2, the Secrets window for S4, and the approval card for S8. Its slice section names the case. Agents check the script itself only on their own private Xvfb, where a good build passes and a blank page or a missing binary fails.
 
-**The current blocker.** The blank window reopens S1 and S2. The fix lands as a red-first follow-up commit once the cause is known:
-- a Xvfb-checkable structural assertion on the chosen fix;
-- plus `drawer-on` passing on the user's screen.
+**The current blocker.** The blank window reopens S1 and S2.
+
+**Cause** (review f72e63d; the orchestrator's matrix on the user's screen): GtkOverlay's output child windows over the accelerated page.
+- With the drawer on, only the default (WebKit policy plus SHM) blanked.
+- `--hardware-acceleration never` and `--renderer mesa-egl` drew the page and the icon.
+- `WEBKIT_DISABLE_COMPOSITING_MODE=1` flickered for about 20 s.
+- None of these settings is shipped as a fallback.
+
+**The fix (rev 15.3c):** the windowless host described in D1.
+- **Red:** `agent_drawer_test.py --only windows` failed 3 of 9 checks on the overlay, each on a `GtkOverlay:output` window.
+- **Green:** that case (12 checks) passes, and the S1, S2 and T1 e2e suites pass on the host (56, 79, 25).
+- **The structural rule**, checked on every census row (closed, open and minimized):
+  - exactly one page window, a direct child of the toplevel's;
+  - every other output window belongs to an allowlisted panel widget (`GtkScrolledWindow`, `GtkViewport`, `GtkTextView`, `GtkListBox`), so an unknown owner fails;
+  - no viewable output window overlaps the viewable page window.
+
+  Closed, the page's window is the only output window, as with the drawer off. Open, the page window is exactly the area above the drawer.
+- **Mutants**, each caught:
+  - the page not shrunk under the docked panel makes the open check and the overlap rule fail;
+  - the stand-in as a windowed `GtkEventBox` makes the allowlist and overlap rule fail;
+  - floats not painted into the page's window make the icon and fold pixel checks fail.
+
+**Closing the blocker:** `drawer-on` and `drawer-open` must pass on the user's screen.
+- `drawer-open` clicks the icon inside its own test window. It checks the page above the panel and the panel, twice, a second apart. It then presses Escape and checks the page and the icon again.
+- A window that is not wholly on the screen fails its case.
+- `tests/manual/test_real_screen_check.py` runs in `zig build test` (step `real_screen_check_unit`).
 
 ## 8. Workflow closure
 
@@ -1285,7 +1319,29 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - `ZIGBROWSER_AGENT_SETUP_PAUSE=<step>` is honoured only with `--e2e-protocol`; without it the app does not pass it on, so it is inert.
   - The app passes it to the setup helper as `--e2e-pause-at <step>`. Steps: `first-move:<entry>`, `exchange-claude`, `state:<name>`, `exchange-runtime`, `mkdirs`, `marker`, `cleanup`.
   - At that step the helper prints `SETUP paused <step>` (relayed as an e2e row) and blocks for at most 30 s, then exits 1. It never continues past the pause.
-  - The kill test waits for the row, SIGKILLs the browser, and then runs a plain setup again.
+  - **Which side of each mutation the pause samples (rev 15.3d, RoseCat 5357).** Every step pauses **after** its mutation, except the two around the commit point:
+
+    | Step | Paused when | On disk at the pause |
+    |---|---|---|
+    | `first-move:<entry>` | after `<entry>` moved | owner lock, the entries moved so far including `<entry>`, no marker |
+    | `exchange-claude` | after the `.claude` exchange | new `.claude` live, old one at the journal's staging path, no state moved, old marker |
+    | `state:<name>` | after `<name>` moved into the new `.claude` | as above, plus the state dirs moved so far |
+    | `exchange-runtime` | after the runtime exchange | new runtime live, old one in staging |
+    | `mkdirs` | after the `mkdir`s | as above, plus `workspace`, `scratchpad`, `secrets` |
+    | `marker` | **before** the marker replace | everything new is in place, the old marker is still there (not committed) |
+    | `cleanup` | after the marker replace, **before** any old copy is deleted | committed; the old copies are still in staging |
+
+  - **The kill test** waits for the row and asserts that step's on-disk state from the table (so a build that skips or reorders the step fails). It then SIGKILLs the browser and runs a plain setup again.
+- **A write-ahead journal makes a killed re-provision recoverable (rev 15.3d).**
+  - **The gap:** after `exchange-claude`, the old `.claude` (with the agent's state) sits in staging, which the next run's cleanup would delete.
+  - **The journal:** before each re-provision step, setup atomically replaces `root/.zb-setup-journal` with `{staging, step, moved[]}` and fsyncs it. Cleanup never deletes a staging path that a journal names.
+  - **A rerun that finds a journal:**
+    - before the commit point, it reverses the recorded steps in reverse order: it moves the state dirs back, exchanges `runtime` and `.claude` back and removes the journal. The old home is then byte-identical. It then provisions as usual.
+    - at `cleanup`, it deletes the old copies and the journal.
+  - **The kill e2e covers every step in the table.** After the plain rerun:
+    - the home is a complete install;
+    - for a step before the commit point, the agent's state files (seeded in `projects/` and `MEMORY/`) are present and unchanged;
+    - no journal or staging is left.
   - The seam is listed in §7's seam table. A unit test shows that without `--e2e-protocol` the variable never reaches the helper.
 - **`renameat2` comes from libc** (glibc ≥ 2.28, every architecture), never a syscall number. Setup fails closed without it.
 - **Any absolute path refuses setup** in copied text, whatever its number of components. The only kept `/name` token is a known slash command: the CLI's built-in commands, or a copied `commands/*.md` or `skills/*`.
