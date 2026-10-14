@@ -6985,3 +6985,86 @@ only executable-path-bearing files, or a reduced instruction-only copy remains
 the user's open decision. The current strict policy is judged only for faithful
 implementation. Agent Mail 5405 sent the implementation findings to
 BlackRobin.
+
+## Rev-16 preparation and S3a WIP audit (`da24aba` HEAD)
+
+**No rev-16 verdict yet:** the committed plan still predates the user's
+2026-10-14 decision to keep bwrap but put the helper in a private network
+namespace, route all egress through an allowlist proxy, expose only the
+51091/31337 bridges, keep the token exclusively on the FIFO-to-fd-3 route,
+copy dependency trees without scanning them, and install the stricter filter
+inside each hook. BlackRobin's rev-16 edit is still in progress. Agent Mail
+5418-5424 gave the pre-review checklist: an exact relay/netd topology and
+lifecycle; a bounded fail-closed CONNECT parser; resolve-once/connect-the-
+vetted-address behavior; no sensitive proxy logs; literal-X0, host-loopback,
+LAN and direct-egress denials; positive fixed-port bridge tests; the complete
+per-hook namespace/mount/io_uring filter with `clone3` compatibility; and
+removal of every stale R3/environment-token contract.
+
+### BLOCKER: current WIP contradicts the selected copy rule
+
+The uncommitted plan and implementation currently check hook command words
+only and explicitly allow arbitrary path text in hook scripts and
+`settings.json` (`setup.py:110-175`, and the WIP plan's D6/S3 copy-rule
+paragraphs). The user's final rule is stricter: `settings.json`, hook commands
+and the scripts they run are the executed-path surface; HOME is merely
+rewritten elsewhere. The same decision names `node_modules`, `.git` and build
+output as copied-but-not-scanned dependency trees. The WIP instead omits
+`.git` via `SKIPPED_NAMES` and does not define build-output names. Rev 16 must
+state a syntax-aware rule and its precedence over dependency exclusions,
+instead of silently changing the user's decision to command-lines-only.
+
+The current word splitter is also bypassable. `sh -c 'cat /etc/passwd'`,
+`node -e "require('/srv/x')"` and `~root/x` are accepted because opaque code
+is treated as a relative workspace word and only `~`/`~/` is recognized as a
+home path. The plan must either parse a closed set of supported launch forms
+or refuse shell/eval/unknown embedded forms. It needs red cases for `sh -c`,
+`bash -lc`, `node`/`bun -e`, `~other`, `file:///...`, and `--x=/...`.
+Agent Mail 5425 and 5431 sent these findings before the corrected gate.
+
+### BLOCKER: source roots and private-state modes are under-specified
+
+`copy_sai` resolves every top-level allowlisted entry before it establishes
+the inside-item boundary (`setup.py:180-195`). Thus it follows a top-level
+file or directory symlink anywhere. BlueBeaver's read-only census shows why a
+blanket refusal is wrong: the user's real `settings.json`, `SAI`, `hooks`,
+`commands`, `skills` and `agents` are top-level links into the real SAI bundle.
+Rev 16 must preserve that layout while naming the authority explicitly—for
+example, literal source entries plus one canonical SAI bundle root—and keep
+links below an item confined to that item. It must not leave “realpath
+anywhere” implicit. Direct and chained file/directory link cases need tests.
+
+Independently, an allowlisted top-level FIFO reaches `Path.read_bytes()`
+(`setup.py:227-229`) and can block setup indefinitely. Every source object
+must be classified without following an uncontrolled link and only a regular
+file or real directory may be copied; FIFO, socket and device cases must fail
+closed in bounded tests. Agent Mail 5428-5430 sent this finding and the real-
+layout refinement.
+
+The immutable layout has a second independent privacy gap. `check_layout`
+accepts pre-existing state directories and `state/.claude.json` by type and
+uid only (`setup.py:372-378`), and does not enforce the agent-home root's 0700
+mode. World/group-readable or writable workspace, scratchpad, secrets and
+transcript state therefore survive setup despite D6's private layout. Because
+setup must not chmod existing state, it should fail closed unless the root and
+directories are 0700 and the state file is 0600, with no publish or state
+mutation. The C owner-lock object's required type/mode should also be explicit.
+
+### Unrelated docs commits `da24aba` / `9ca44c9`
+
+The macOS sandbox report is future-work research and introduces no production
+change. Its initial three **SHOULD** corrections were: stale “not committed”
+frontmatter; omission of the user's qualification that a P0 census may prove
+an additional strictly-required CLI endpoint; and a claim that the Linux
+netns/proxy/bridges were “built” when only the base bwrap/PID/seccomp
+implementation exists today. Agent Mail 5432 sent them to BlueBeaver.
+`9ca44c9` makes exactly those corrections (and fixes the RedTeam report's
+same stale frontmatter). **Explicit verdict for `9ca44c9`: APPROVED; the
+three documentation findings are CLOSED.**
+
+BlackRobin's clean-export gate of the S3a follow-up snapshot was green:
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**, and the
+throwaway tree was deleted. This is sufficient evidence for this review-log
+commit, but it does not approve that WIP: the hook-commands-only policy and
+the blockers above were the tested behavior and still require a corrected
+red-first implementation and a later gate.
