@@ -8,6 +8,7 @@ top; the workspace is read-only; the scratchpad is writable.
 
 import os
 
+
 BWRAP = "/usr/bin/bwrap"
 ETC_FILES = ("/etc/ssl", "/etc/ca-certificates", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
              "/etc/passwd", "/etc/group", "/etc/localtime")
@@ -20,10 +21,10 @@ USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("
 STATE_DIRS = ("projects", "sessions", "session-env", "todos", "statsig", "debug", "MEMORY")
 TOKEN_DIR = "/run/zb-token"
 
-
-def helper_argv(home, *, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=False):
+def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=False):
     """The bwrap prefix for a helper rooted at `home` (an options.AgentHome).
 
+    `seccomp_fd`: a descriptor holding seccomp.program() (seccomp.seccomp_fd()), inherited by bwrap.
     `ro_paths`: extra read-only binds (the venv, the hook command directories
     from runtime/path.json). `claude_writable` binds all of .claude writable;
     only the P0.5 write census uses it.
@@ -50,5 +51,8 @@ def helper_argv(home, *, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=Fal
             argv += ["--bind", path, path]
     argv += ["--bind", str(home.scratchpad), str(home.scratchpad),
              "--perms", "0300", "--dir", TOKEN_DIR,
-             "--chdir", str(home.workspace), "--"]
+             "--chdir", str(home.workspace)]
+    if seccomp_fd is not None:
+        argv += ["--seccomp", str(seccomp_fd)]
+    argv.append("--")
     return argv

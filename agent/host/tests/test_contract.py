@@ -18,7 +18,7 @@ from pathlib import Path
 import support
 from support import (DECOY_MARKER, HOOK_EVENTS, FakeAnthropicApi, Helper, Homes, Inotify, NotifyServer, canary,
                      host_python, install_dump_hooks, processes_holding, provision)
-from zb_agent_host import hook_run, options, provision as provisioning, sandbox
+from zb_agent_host import hook_run, options, provision as provisioning, sandbox, seccomp, token
 
 TURN_TIMEOUT = 90
 
@@ -43,9 +43,9 @@ class ContractCase(unittest.TestCase):
             helper.kill()
         self.homes.cleanup()
 
-    def run_turn(self, api, route, extra=(), env_extra=None, on_tool_call=None, argv_prefix=None):
+    def run_turn(self, api, route, extra=(), env_extra=None, on_tool_call=None, argv_prefix=None, pass_fds=()):
         helper = Helper(self.homes, "contract-config", turn_args(self.homes, api, route, extra), self.token, env_extra,
-                        argv_prefix=argv_prefix)
+                        argv_prefix=argv_prefix, pass_fds=pass_fds)
         self.helpers.append(helper)
         answered = set()
 
@@ -159,6 +159,10 @@ class P04HookEnvironment(ContractCase):
             self.assertEqual(notify.events.count(ev), 1, f"{ev}: notify POSTs {notify.events}")
         for path in self.dumps("env") + self.dumps("procenv"):
             self.assertNotIn(self.token.encode(), path.read_bytes(), f"canary in {path.name}")
+        for path in self.dumps("env"):
+            names = {item.split(b"=", 1)[0] for item in path.read_bytes().split(b"\0") if b"=" in item}
+            for refused in (b"CLAUDE_CODE_MESSAGING_SOCKET", b"CLAUDE_CODE_MESSAGING_TOKEN"):
+                self.assertNotIn(refused, names, f"{path.name}: the CLI's messaging capability reached a hook")
         for ev, entries in self.homes.read_settings()["hooks"].items():
             for entry in entries:
                 for hook in entry["hooks"]:
@@ -211,12 +215,68 @@ def descendants(root_pid):
     return out
 
 
+def seccomp_mode(pid):
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            return next((int(line.split()[1]) for line in f if line.startswith("Seccomp:")), None)
+    except OSError:
+        return None
+
+
 def cmdline(pid):
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             return [c.decode("utf-8", "replace") for c in f.read().split(b"\0") if c]
     except OSError:
         return []
+
+
+FILTERED = {"ptrace_attach": "EPERM", "ptrace_traceme": "EPERM", "process_vm_readv": "EPERM",
+            "process_vm_writev": "EPERM", "seccomp": 2}
+
+
+# The reviewed exception for the CLI's own binary (finding 7, RoseCat 5285): run as
+# argv[0] "rg" (its built-in ripgrep) only to list files, with these flags, and
+# with path operands only under these agent-home paths. Anything else is UNEXPECTED.
+CLI_RG_FLAGS = {"--version", "--no-config", "--files", "--hidden", "--no-ignore"}
+CLI_RG_VALUED = {"--max-depth": str.isdigit, "--glob": lambda v: v == ".orphaned_at"}
+CLI_RG_ROOTS = ("workspace", ".claude/plugins/cache")
+
+
+def cli_self_exec(argv, agent_home):
+    """Census entry for an exec of the CLI's own binary: "$CLI rg", or "$CLI UNEXPECTED ..."."""
+    if not argv or os.path.basename(argv[0]) != "rg":
+        return f"$CLI UNEXPECTED {argv[:4]}"
+    roots = [os.path.join(str(agent_home), r) for r in CLI_RG_ROOTS]
+    args = iter(argv[1:])
+    for arg in args:
+        if arg in CLI_RG_FLAGS:
+            continue
+        if arg in CLI_RG_VALUED:
+            if not CLI_RG_VALUED[arg](next(args, "")):
+                return f"$CLI UNEXPECTED rg {arg}"
+            continue
+        path = os.path.realpath(arg)
+        if arg.startswith("-") or not any(path == r or path.startswith(r + os.sep) for r in roots):
+            return f"$CLI UNEXPECTED rg {arg}"
+    return "$CLI rg"
+
+
+class CliSelfExecShape(unittest.TestCase):
+    """The exact `$CLI rg` tuple: only listing flags and agent-home roots pass."""
+
+    def test_the_observed_forms_pass_and_others_are_unexpected(self):
+        home = "/h/agent-home"
+        ok = [["rg", "--version"],
+              ["rg", "--no-config", "--files", "--hidden", "--no-ignore", "--max-depth", "4", "--glob", ".orphaned_at",
+               f"{home}/.claude/plugins/cache"],
+              ["rg", "--no-config", "--files", "--hidden", f"{home}/workspace"]]
+        for argv in ok:
+            self.assertEqual(cli_self_exec(argv, home), "$CLI rg", argv)
+        bad = [["rg", "--files", "/home/someone"], ["rg", "token", f"{home}/workspace"], ["rg", "--pre", "sh"],
+               ["rg", "--files", f"{home}/workspace/../secrets"], ["rg", "--glob", "*"], ["claude", "-p", "x"], []]
+        for argv in bad:
+            self.assertTrue(cli_self_exec(argv, home).startswith("$CLI UNEXPECTED"), argv)
 
 
 class P05Sandbox(ContractCase):
@@ -234,26 +294,32 @@ class P05Sandbox(ContractCase):
         for path in (self.homes.agent / ".claude" / ".claude.json", self.homes.agent / ".claude.json"):
             path.write_text(json.dumps({"mcpServers": {"planted": server}}))
         self.samples = []
+        self.census_log = self.homes.root / "exec-census.jsonl"  # outside the agent home and the sandbox
 
-    def prefix(self, claude_writable=False):
+    def prefix(self, seccomp_fd, claude_writable=False):
+        """The exec tracer (outside the sandbox, the parent of bwrap), then the D12 bwrap."""
         venv = os.path.dirname(os.path.dirname(host_python()))
-        return sandbox.helper_argv(options.AgentHome(self.homes.agent), ro_paths=[venv, str(support.HOST_DIR)],
-                                   claude_writable=claude_writable)
+        tracer = ["/usr/bin/python3", "-I", str(Path(__file__).with_name("exec_tracer.py")), str(self.census_log)]
+        return tracer + sandbox.helper_argv(options.AgentHome(self.homes.agent), seccomp_fd=seccomp_fd,
+                                            ro_paths=[venv, str(support.HOST_DIR)], claude_writable=claude_writable)
 
     def sandboxed_turn(self, route, claude_writable=False):
         def sample(_entry, _index):
             helper = self.helpers[-1]
-            self.samples.append([(pid, cmdline(pid)) for pid in descendants(helper.proc.pid)])
+            self.samples.append([(pid, cmdline(pid), seccomp_mode(pid)) for pid in descendants(helper.proc.pid)])
             return None
 
         def reply(helper, frame):
             sample(None, None)
             echo_reply(helper, frame)
 
+        filter_fd = seccomp.seccomp_fd()
+        self.addCleanup(os.close, filter_fd)
         with FakeAnthropicApi(list(ECHO_TURNS), responder=sample) as api:
-            helper = self.run_turn(api, route, extra=("--mcp", "--probe-workspace", "--fifo-dir", sandbox.TOKEN_DIR),
-                                   on_tool_call=reply,
-                                   argv_prefix=self.prefix(claude_writable))
+            helper = self.run_turn(api, route, extra=("--mcp", "--probe-workspace", "--probe-syscalls",
+                                                      "--fifo-dir", sandbox.TOKEN_DIR),
+                                   on_tool_call=reply, argv_prefix=self.prefix(filter_fd, claude_writable),
+                                   pass_fds=(filter_fd,))
         self.assertTrue(api.messages_requests())
         for r in api.messages_requests():
             self.assertEqual(r["headers"].get("authorization"), f"Bearer {self.token}")
@@ -265,15 +331,20 @@ class P05Sandbox(ContractCase):
         return sorted(p for p in self.homes.scratchpad.iterdir() if p.name.startswith(prefix))
 
     def check_enforced(self, helper):
-        probe = [f for f in helper.frames if f.get("type") == "probe"]
-        self.assertEqual(probe and probe[0].get("workspace_create"), "EROFS", helper.describe())
+        probes = {k: v for f in helper.frames if f.get("type") == "probe" for k, v in f.items()}
+        self.assertEqual(probes.get("workspace_create"), "EROFS", helper.describe())
+        # P0.6, the outer seccomp filter (D12): the helper, and every hook below it.
+        self.assertEqual(probes.get("syscalls"), FILTERED, helper.describe())
         for ev in HOOK_EVENTS:
             self.assertEqual(len(self.dumps("env", ev)), 1, f"{ev} did not run")
             self.assertEqual(self.notify.events.count(ev), 1, f"{ev}: {self.notify.events}")
             for path in self.dumps("cmdlines", ev):
                 seen = path.read_text()
-                self.assertNotIn("zb_agent_host", seen, f"{ev}: the helper is visible from the hook")
+                self.assertNotIn("-m zb_agent_host", seen, f"{ev}: the helper is visible from the hook")
                 self.assertNotIn("_bundled/claude", seen, f"{ev}: the CLI is visible from the hook")
+            sys_dumps = self.dumps("sys", ev)
+            self.assertEqual(len(sys_dumps), 1, f"{ev}: no syscall probe")
+            self.assertEqual(json.loads(sys_dumps[0].read_text()), FILTERED, f"{ev}: a hook escaped the outer seccomp filter")
             for path in self.dumps("ws", ev):
                 self.assertIn("Read-only file system", path.read_text(), f"{ev}: workspace write was not EROFS")
             for path in self.dumps("fds", ev):
@@ -288,26 +359,38 @@ class P05Sandbox(ContractCase):
                 self.assertNotIn(self.token.encode(), path.read_bytes(), f"canary in {path.name}")
         self.assertFalse(list(self.homes.workspace.iterdir()), "something wrote the workspace")
         self.assertFalse(self.planted.exists(), "a planted mcpServers entry ran")
-        cli = [argv for sample in self.samples for _pid, argv in sample if any(a.endswith("/claude") for a in argv[:2])]
+        cli = [(argv, mode) for sample in self.samples for _pid, argv, mode in sample
+               if any(a.endswith("/claude") for a in argv[:2])]
         self.assertTrue(cli, "the CLI was never sampled")
-        self.assertTrue(all("--strict-mcp-config" in argv for argv in cli), cli[:1])
+        self.assertTrue(all("--strict-mcp-config" in argv for argv, _mode in cli), cli[:1])
+        self.assertEqual({mode for _argv, mode in cli}, {2}, "the CLI runs without the outer seccomp filter")
+
+    def census_records(self):
+        with open(self.census_log) as f:
+            return [json.loads(line) for line in f]
 
     def non_hook_cli_children(self):
-        """Executables of CLI descendants outside every hook namespace: the walk stops at bwrap."""
-        found = set()
-        for sample in self.samples:
-            for root in [pid for pid, argv in sample if any(a.endswith("/claude") for a in argv[:2])]:
-                stack = [root]
-                while stack:
-                    for child in children_of(stack.pop()):
-                        argv = cmdline(child)
-                        if argv and argv[0].endswith("bwrap"):
-                            continue
-                        try:
-                            found.add(os.readlink(f"/proc/{child}/exe"))
-                        except OSError:
-                            pass
-                        stack.append(child)
+        """Programs run by the CLI and its descendants outside every hook, from the exec tracer
+        (lifecycle-complete: each exec waited for its record). The CLI process is the first exec
+        of the CLI binary; a hook is the zb-hook-run exec and everything below it (a namespace's
+        PID 1, bwrap's reaper, forks without exec, so the whole ancestor chain counts)."""
+        records = self.census_records()
+        cli = os.path.realpath(token.bundled_cli())
+        cli_pids = [r["pid"] for r in records if r["real"] == cli]
+        self.assertTrue(cli_pids, "the exec census never saw the CLI")
+        cli_pid = cli_pids[0]
+        hook_pids, found = set(), set()
+        for r in records:
+            chain = {r["pid"], *r["ancestors"]}
+            if hook_pids & chain or (r["real"] or "").endswith("/runtime/bin/zb-hook-run"):
+                hook_pids.add(r["pid"])
+                continue
+            if cli_pid not in r["ancestors"] or not r["exists"]:
+                continue  # not below the CLI (bwrap, the helper, zb-claude -> CLI), or a PATH miss
+            if r["real"] == cli:
+                found.add(cli_self_exec(r["argv"], self.homes.agent))  # its built-in rg, exact shape
+            else:
+                found.add(r["real"])
         return found
 
     def test_write_census_and_hook_env_census(self):
@@ -345,12 +428,23 @@ class P05Sandbox(ContractCase):
                          "the CLI gives hooks a variable that is neither allowed nor refused: review it")
         self.assertEqual(set(recorded["hook_env"]), set(hook_env))
 
+    def test_census_sees_a_child_that_lives_between_samples(self):
+        # RoseCat's mutant (66af9e0): the CLI wrapper spawns and reaps a 1 ms child
+        # before starting the CLI, between any two snapshot points.
+        wrapper = self.homes.agent / "runtime" / "bin" / "zb-claude"
+        lines = wrapper.read_text().splitlines(keepends=True)
+        lines.insert(1, 'import subprocess; subprocess.run(["/usr/bin/sleep", "0.001"])\n')
+        wrapper.write_text("".join(lines))
+        self.sandboxed_turn("R1")
+        self.assertIn("/usr/bin/sleep", self.non_hook_cli_children())
+
     def test_r1_enforced_sandbox(self):
         self.check_enforced(self.sandboxed_turn("R1"))
         self.check_census_children()
 
     def test_r3_enforced_sandbox(self):
         self.check_enforced(self.sandboxed_turn("R3"))
+        self.check_census_children()
         for ev in HOOK_EVENTS:
             procenv = self.dumps("procenv", ev)
             self.assertTrue(any(p.name.endswith("-1") for p in procenv), f"{ev}: PID 1 not read")
@@ -363,7 +457,8 @@ class P05Sandbox(ContractCase):
             CENSUS.write_text(json.dumps(recorded, indent=2) + "\n")
         recorded = json.loads(CENSUS.read_text())
         for exe in recorded["cli_children"]:
-            self.assertTrue(exe.startswith("/usr/"), exe)
+            # S3.9's allowlist: system programs under /usr, or exactly the reviewed "$CLI rg".
+            self.assertTrue(exe.startswith("/usr/") or exe == "$CLI rg", exe)
         self.assertLessEqual(set(children), set(recorded["cli_children"]), "an unrecorded CLI child ran")
 
 

@@ -102,7 +102,7 @@ def launch_env(homes, extra=None):
 class Helper:
     """One `python -m zb_agent_host <command>` run: token on fd 3, NDJSON on stdout."""
 
-    def __init__(self, homes, command, args, token, env_extra=None, argv_prefix=None, pass_token=True):
+    def __init__(self, homes, command, args, token, env_extra=None, argv_prefix=None, pass_token=True, pass_fds=()):
         self.frames = []
         self.stderr_lines = []
         self._stdout_done = False
@@ -120,7 +120,7 @@ class Helper:
         self.proc = subprocess.Popen(
             argv, env=launch_env(homes, env_extra), cwd=str(homes.root),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            pass_fds=(3,), preexec_fn=to_fd3, text=True, start_new_session=True)
+            pass_fds=(3, *pass_fds), preexec_fn=to_fd3, text=True, start_new_session=True)
         os.close(rfd)
         if pass_token:
             os.write(wfd, token.encode())
@@ -205,6 +205,7 @@ TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 DUMP_HOOK = r"""#!/bin/sh
 ev=$1
 port=$2
+probe=$3
 out="$HOME/scratchpad"
 cat >/dev/null
 cat /proc/self/environ > "$out/hook-env-$ev-$$"
@@ -218,6 +219,7 @@ done
 ls -l /proc/self/fd/ > "$out/hook-fds-$ev-$$" 2>&1
 for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' < "$f" 2>/dev/null; echo; done > "$out/hook-cmdlines-$ev-$$"
 touch "$HOME/workspace/hook-wrote-$ev" > "$out/hook-ws-$ev-$$" 2>&1
+/usr/bin/python3 -I "$probe" > "$out/hook-sys-$ev-$$" 2>&1
 curl -s -m 5 -X POST -H 'content-type: application/json' -d "{\"event\":\"$ev\"}" "http://127.0.0.1:$port/notify" >/dev/null
 exit 0
 """
@@ -259,9 +261,13 @@ def install_dump_hooks(homes, port):
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text(DUMP_HOOK)
     os.chmod(hook, 0o755)
+    # The probe ships beside the hook, inside the agent home: a hook sees the agent
+    # home, but not a checkout under /tmp (its /tmp is private).
+    probe = hook.parent / "probe.py"
+    shutil.copyfile(HOST_DIR / "zb_agent_host" / "probe.py", probe)
     hooks = {}
     for ev in HOOK_EVENTS:
-        entry = {"hooks": [{"type": "command", "command": f"{hook} {ev} {port}"}]}
+        entry = {"hooks": [{"type": "command", "command": f"{hook} {ev} {port} {probe}"}]}
         if ev in TOOL_EVENTS:
             entry["matcher"] = "*"
         hooks[ev] = [entry]

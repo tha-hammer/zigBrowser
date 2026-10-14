@@ -4,14 +4,17 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import http.client
 import json
+import struct
+import subprocess
 
 import support  # noqa: F401  (puts the helper package on sys.path)
 from support import FakeAnthropicApi
-from zb_agent_host import hook_run, options, provision, sandbox, token
+from zb_agent_host import files, hook_run, options, provision, sandbox, seccomp, token
 
 
 class OptionsBuilder(unittest.TestCase):
@@ -48,6 +51,11 @@ class OptionsBuilder(unittest.TestCase):
             self.assertNotIn(name, env)
         self.assertTrue(set(env) <= set(options.HELPER_ENV_NAMES))
 
+    def test_tool_budgets_are_the_reviewed_production_values(self):
+        self.assertEqual(options.MCP_TOOL_TIMEOUT_MS, 130_000)
+        self.assertEqual(options.TOOL_DEADLINE_S, 120)
+        self.assertEqual(self.build().env["MCP_TOOL_TIMEOUT"], "130000")
+
     def test_strict_mcp_config_is_always_passed(self):
         self.assertIn("strict-mcp-config", self.build().extra_args)
 
@@ -70,6 +78,33 @@ class TokenShape(unittest.TestCase):
         for bad in (b"short", b"a" * 513, b"abc def ghi jkl mno", b"a" * 20 + b"\x01", b""):
             with self.assertRaises(ValueError):
                 self.read(bad)
+
+
+class AtomicWrite(unittest.TestCase):
+    def test_short_writes_are_completed(self):
+        written = []
+
+        def one_byte(fd, data):
+            written.append(bytes(data[:1]))
+            return 1
+
+        files.write_all(-1, b"zb-hook-run", write=one_byte)
+        self.assertEqual(b"".join(written), b"zb-hook-run")
+
+    def test_atomic_write_installs_every_byte_through_short_writes(self):
+        real_write = os.write
+
+        def one_byte(fd, data):
+            return real_write(fd, bytes(data[:1]))
+
+        target = Path(tempfile.mkdtemp(prefix="zb-unit-")) / "zb-hook-run"
+        with mock.patch("zb_agent_host.files.os.write", one_byte):
+            files.atomic_write(target, "#!/usr/bin/python3 -I\nprint('hook')\n", 0o700)
+        self.assertEqual(target.read_text(), "#!/usr/bin/python3 -I\nprint('hook')\n")
+
+    def test_a_write_that_makes_no_progress_fails(self):
+        with self.assertRaises(OSError):
+            files.write_all(-1, b"abc", write=lambda fd, data: 0)
 
 
 class FifoHandoff(unittest.TestCase):
@@ -164,6 +199,25 @@ class HookIsolation(unittest.TestCase):
         self.assertLess(home, pairs.index(("--ro-bind", "/tmp/x/home/workspace")))
 
 
+def run_bpf(program, arch, nr):
+    """Interprets the classic-BPF subset the filters use (ld abs word, jeq/jge k, ret k)."""
+    insns = [struct.unpack_from("<HBBI", program, i) for i in range(0, len(program), 8)]
+    data = struct.pack("<iIQ6Q", nr, arch, 0, *([0] * 6))  # struct seccomp_data
+    acc, pc = 0, 0
+    while True:
+        code, jt, jf, k = insns[pc]
+        if code == 0x20:
+            acc = struct.unpack_from("<I", data, k)[0]
+            pc += 1
+        elif code in (0x15, 0x35):
+            hit = acc == k if code == 0x15 else acc >= k
+            pc += 1 + (jt if hit else jf)
+        elif code == 0x06:
+            return k
+        else:
+            raise AssertionError(f"unexpected BPF opcode {code:#x}")
+
+
 class SandboxArgv(unittest.TestCase):
     def setUp(self):
         self.home = options.AgentHome(Path(tempfile.mkdtemp(prefix="zb-unit-")))
@@ -177,6 +231,52 @@ class SandboxArgv(unittest.TestCase):
         self.assertIn(f"--ro-bind {claude} {claude}", self.joined)
         writable = [self.argv[i + 1] for i, a in enumerate(self.argv) if a == "--bind"]
         self.assertEqual(sorted(writable), sorted([f"{claude}/{d}" for d in sandbox.STATE_DIRS] + [str(self.home.scratchpad)]))
+
+    def test_the_outer_seccomp_filter_is_passed_to_bwrap(self):
+        argv = sandbox.helper_argv(self.home, seccomp_fd=17)
+        self.assertEqual(argv[argv.index("--seccomp") + 1], "17")
+        self.assertLess(argv.index("--seccomp"), argv.index("--"))
+
+    def test_seccomp_program_denies_ptrace_and_process_vm_but_not_namespaces(self):
+        # Installed for real in a child: the probe gets EPERM, and bwrap still
+        # creates its namespaces (the nested hooks need clone and unshare).
+        program = Path(tempfile.mkdtemp(prefix="zb-unit-")) / "filter.bpf"
+        program.write_bytes(seccomp.program())
+        probe = Path(sandbox.__file__).with_name("probe.py")
+        script = (
+            "import ctypes, subprocess, sys\n"
+            "libc = ctypes.CDLL(None, use_errno=True)\n"
+            "data = open(sys.argv[1], 'rb').read()\n"
+            "class F(ctypes.Structure): _fields_ = [('len', ctypes.c_ushort), ('filter', ctypes.c_char_p)]\n"
+            "u = ctypes.c_ulong\n"
+            "assert libc.prctl(ctypes.c_int(38), u(1), u(0), u(0), u(0)) == 0\n"
+            "assert libc.syscall(ctypes.c_long(317), u(1), u(0), ctypes.byref(F(len(data) // 8, data))) == 0, ctypes.get_errno()\n"
+            "print(subprocess.run(['/usr/bin/python3', '-I', sys.argv[2]], capture_output=True, text=True).stdout.strip())\n"
+            "print(subprocess.run(['/usr/bin/bwrap', '--unshare-pid', '--unshare-ipc', '--bind', '/', '/', '--dev', '/dev',"
+            " '--proc', '/proc', '/bin/true']).returncode)\n"
+        )
+        out = subprocess.run(["/usr/bin/python3", "-I", "-c", script, str(program), str(probe)],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        result, bwrap_rc = out.stdout.splitlines()
+        self.assertEqual(json.loads(result), {"ptrace_attach": "EPERM", "ptrace_traceme": "EPERM",
+                                              "process_vm_readv": "EPERM", "process_vm_writev": "EPERM", "seccomp": 2})
+        self.assertEqual(bwrap_rc, "0")
+
+    def test_seccomp_program_decision_table(self):
+        # P0.6 unit: the program run by a small classic-BPF interpreter over seccomp_data inputs.
+        allow, eperm, kill = seccomp.RET_ALLOW, seccomp.RET_ERRNO | seccomp.EPERM, seccomp.RET_KILL_PROCESS
+        x86 = seccomp.AUDIT_ARCH_X86_64
+        table = [
+            (x86, 101, eperm), (x86, 310, eperm), (x86, 311, eperm),            # ptrace, process_vm_*
+            (x86, 0x40000000 | 101, eperm), (x86, 0x40000000 | 0, eperm),       # x32 numbers
+            (0x40000003, 26, kill),                                             # i386 (a foreign arch)
+            (x86, 56, allow), (x86, 435, allow), (x86, 272, allow),             # clone, clone3, unshare
+            (x86, 165, allow), (x86, 155, allow), (x86, 308, allow),            # mount, pivot_root, setns
+            (x86, 0, allow), (x86, 1, allow), (x86, 59, allow),                 # read, write, execve
+        ]
+        for arch, nr, expected in table:
+            self.assertEqual(run_bpf(seccomp.program(), arch, nr), expected, (hex(arch), nr))
 
     def test_workspace_is_read_only_and_secrets_and_home_are_absent(self):
         ws = str(self.home.workspace)

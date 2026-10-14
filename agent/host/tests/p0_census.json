@@ -1,5 +1,9 @@
 {
-  "cli_children": [],
+  "cli_children": [
+    "$CLI rg",
+    "/usr/bin/dash",
+    "/usr/bin/git"
+  ],
   "cli_version": "2.1.294",
   "writes": [
     ".claude.json",

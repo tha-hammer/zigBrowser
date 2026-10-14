@@ -12,7 +12,7 @@ import sys
 
 from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, TextBlock
 
-from . import options, token
+from . import options, probe, token
 from .bridge import Bridge, deny_all
 from .frames import Emitter
 
@@ -29,6 +29,8 @@ def add_turn_args(parser):
     parser.add_argument("--tool-deadline-ms", type=int)
     parser.add_argument("--probe-workspace", action="store_true",
                         help="report what creating a file in the workspace gives (EROFS in the sandbox)")
+    parser.add_argument("--probe-syscalls", action="store_true",
+                        help="report what ptrace and process_vm_readv give (EPERM under the outer seccomp filter)")
 
 
 class Route:
@@ -66,6 +68,8 @@ async def run_turn(args, value, out):
     home = options.AgentHome(args.home)
     if args.probe_workspace:
         out.emit("probe", session="contract", workspace_create=probe_workspace(home))
+    if args.probe_syscalls:
+        out.emit("probe", session="contract", syscalls=probe.syscalls())
     route = Route(home, args.route, value, args.fifo_dir)
     try:
         mcp = {}
