@@ -7030,9 +7030,13 @@ file or directory symlink anywhere. BlueBeaver's read-only census shows why a
 blanket refusal is wrong: the user's real `settings.json`, `SAI`, `hooks`,
 `commands`, `skills` and `agents` are top-level links into the real SAI bundle.
 Rev 16 must preserve that layout while naming the authority explicitly—for
-example, literal source entries plus one canonical SAI bundle root—and keep
-links below an item confined to that item. It must not leave “realpath
-anywhere” implicit. Direct and chained file/directory link cases need tests.
+example, by treating each top-level allowlisted link in the user-selected
+source as explicitly authorized, or by requiring another explicit source
+root—and keep links below an item confined to that item. An inferred root
+from the `SAI` link is not a security boundary: that link could itself name
+`$HOME`. Rev 16 must not leave “realpath anywhere” implicit or claim that
+inference confines the source. Direct and chained file/directory link cases
+need tests. Agent Mail 5438 corrected the earlier inferred-root proposal.
 
 Independently, an allowlisted top-level FIFO reaches `Path.read_bytes()`
 (`setup.py:227-229`) and can block setup indefinitely. Every source object
@@ -7049,6 +7053,103 @@ transcript state therefore survive setup despite D6's private layout. Because
 setup must not chmod existing state, it should fail closed unless the root and
 directories are 0700 and the state file is 0600, with no publish or state
 mutation. The C owner-lock object's required type/mode should also be explicit.
+
+The first grammar follow-up does not yet close the command-string blocker.
+Claude launches hook strings through `/bin/sh -c`; after seeing one script
+path, the WIP accepts later shell composition. Commands such as
+`bun ~/.claude/hooks/X.ts; id`, `... && curl ...`, `... $(cat</etc/passwd)`
+and backtick substitution can therefore run an unchecked extra command.
+Attached eval forms such as `node -eCODE` also evade an exact `-e` token
+check. The grammar must reject shell control, substitution, redirection,
+variable expansion and attached eval forms, with a real e2e marker/process
+mutant in addition to parser units. Agent Mail 5438 sent the concrete matrix.
+
+The first top-level-link follow-up also needs an overlap guard. It derives the
+bundle root from the `SAI` link but does not compare that root with the output.
+`SAI -> $HOME` (or another ancestor of `agent_home`) is therefore accepted;
+copying it reaches the growing `.dist-tmp-*` destination and can recurse
+without bound while sweeping unrelated private trees. Every accepted source
+and item root must be disjoint from the agent home and staging tree, in both
+directions, before copying begins. A bounded source/output-overlap regression
+is required. Agent Mail 5439 sent the case.
+
+**SUPERSEDED/CLOSED by the user's 2026-10-14 decision:** linked skills that
+leave their containing item keep being skipped. The earlier paragraph and
+Agent Mail 5443 interpreted “copy everything” as requiring those 26 external
+links to be materialized; the user explicitly answered “Keep skipping them.”
+The remaining independent requirement is unchanged: ordinary `.git`,
+dependency-tree and named build-output directories that are physically inside
+an accepted item are copied byte-for-byte without scanning, and the tests must
+prove a skipped external link contributes no target bytes.
+
+A subsequent WIP revision closes the obvious shell-composition forms with a
+closed command character grammar and adds the source/output-disjoint check,
+but it exposes a different durable-execution gap. `_inside_home` accepts every
+path under the agent home and maps relative paths into `workspace/`. Thus
+`bun ~/scratchpad/run.ts`, a script in writable state, or a relative script in
+the workspace passes setup even though those bytes can be created or replaced
+after validation. This contradicts `sandbox.py`'s “data only: no hook may
+reference a path in here” contract. The parser must identify every code-bearing
+path (main script and preload/import/loader inputs), require it to exist in the
+immutable staged SAI/runtime, and refuse workspace, scratchpad, state and
+secrets. A real-browser marker mutant is needed in addition to unit cases.
+Agent Mail 5444 sent this blocker.
+
+The same WIP cites an earlier “Hook commands only” response as authoritative.
+The latest orchestrator instruction instead says strict refusal covers
+`settings.json`, hook commands **and the scripts they run**. Rev 16 must apply
+the latest decision or obtain an explicit clarification; it cannot silently
+retain the older command-line-only behavior.
+
+Three copy-shape cases remain underspecified. Each top-level allowlisted name
+needs its expected type (`CLAUDE.md`/`settings.json` files; configuration
+collections directories), rather than accepting either type and failing later
+with an arbitrary I/O error. A FIFO, socket or device nested below an item is
+currently silently omitted; every source object must instead be classified
+and such types refused without opening them. Finally, the copied-without-scan
+set needs an exact list grounded in the real SAI—`.git`, dependency trees and
+all named build-output/cache roots—not a partial set of examples. Agent Mail
+5445 sent these cases.
+
+### Rev-16 network/filter requirements found during pre-review
+
+The proposed proxy topology has a test-chain mismatch that the plan must
+resolve. P0's fake Messages API is plain HTTP at
+`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`. A CONNECT-only host proxy cannot
+carry that request, and the required
+`NO_PROXY=127.0.0.1,localhost` would bypass it. Rev 16 must define either a
+bounded absolute-form HTTP route for the e2e-only allowlisted fake target or a
+working test TLS origin/certificate route. A real-browser red mutation must
+prove that bypassing relay/netd prevents the fake API request; a unit proxy
+test is not evidence for the production chain.
+
+The inner hook filter's “no new namespaces/mounts” contract must cover the
+modern mount surface as well as the legacy calls: `mount`, `umount2`,
+`pivot_root`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `open_tree`,
+`move_mount`, `mount_setattr`, `unshare` and `setns`, plus all three
+`io_uring` calls. `clone` must inspect and refuse every namespace bit while
+ordinary Bun children remain usable; `clone3` returns `ENOSYS`. Because
+`zb-hook-run` currently closes every descriptor at and above 3, it must make
+the strict-filter descriptor only after that close, pass it to nested bwrap,
+then close it. Tests must cover FD hygiene and an ordinary Bun child.
+
+Finally, a relay inserted before the helper temporarily inherits helper fd 3,
+which is the token stream. Its parent side must close fd 3 immediately and
+must never inspect or log it. The plan needs exact readiness, signal/status
+propagation, active-splice shutdown and reaping, with kill-before-readiness and
+kill-after-readiness no-orphan cases. Agent Mail 5440 sent these requirements.
+
+The setup-time R1 route probe is another production CLI launch and currently
+bypasses the proposed boundary entirely. `setup.py:601-605` builds its
+`contained()` prefix with writable `--dev-bind / /`, no private network
+namespace and no proxy. `probe_r1` runs the real wrapper/CLI through that
+prefix (`:725-749`), so `--agent-setup` exposes the host filesystem, every
+loopback listener and abstract X11 before the drawer ever starts. `cli_version`
+uses the same prefix. Rev 16 must cover these one-shot executions with minimal
+read-only binds and a private netns; the R1 fake API must use the production
+relay/netd test route. A real-binary setup e2e needs filesystem, loopback, LAN
+and literal-X0 decoys plus a boundary-removal mutant. Agent Mail 5447 marked
+this a blocker.
 
 ### Unrelated docs commits `da24aba` / `9ca44c9`
 
@@ -7068,3 +7169,220 @@ throwaway tree was deleted. This is sufficient evidence for this review-log
 commit, but it does not approve that WIP: the hook-commands-only policy and
 the blockers above were the tested behavior and still require a corrected
 red-first implementation and a later gate.
+
+### Pending crash-page `about:blank` follow-up
+
+BlueBeaver's first clean-export gate of the comment-only shim clarification
+and initial `about:blank` reload e2e was **RED: 104/106 steps succeeded;
+817/817 tests passed**. `web-process-crash` passed, but `social-flows` failed
+with an intermittent `-32603 Evaluation failed`; that flow then passed 3/3 in
+isolation. The tested version also lacked the permanent no-click control, so
+there is no approval and no commit. The worktree now has two fresh-browser
+cases: a 12-second post-crash no-input hold and a clicked recovery bounded to
+10 seconds. The targeted private-Xvfb run is green **48/48**. The 3-second
+automatic-reload mutant is killed by exactly the new control (one failure:
+the crash DOM/list state disappears without input), while the clicked case
+stays green. This closes the blocker-for-tests. The overall verdict remains
+pending one green full clean-export gate and a resulting commit. Agent Mails
+5448-5449 record the disposition and mutant evidence.
+
+## macOS launch plan review (`d857a03`)
+
+**Verdict: BLOCKED.** The direction is right and the user decisions are
+visible: universal Intel/Apple-Silicon builds, Seatbelt first with a VM
+fallback, one semantic sandbox-backend contract, a docked AppKit drawer,
+Keychain secrets, per-action social-write approval, Developer-ID work last,
+and user-judged real-screen acceptance are all named. The implementation plan
+is not yet safe or specific enough to start MS1-MS6. The following are plan
+blockers, not requests to implement them now.
+
+Evidence baseline: a clean archive of the code pin immediately before the
+docs-only plan passed **Build Summary: 106/106 steps succeeded; 817/817 tests
+passed** under private Xvfb. The plan commit changes documentation only.
+
+### BLOCKER: MS2's closure map is not the full production topology
+
+The generic chain at plan lines 310-365 is valid for ordinary routed
+`dom.*`/`page.*` commands, but not for every operation claimed at lines
+240-242. `page.list` and `page.health` branch before router parsing at
+`automation_server.zig:480-487` and deliberately take no FIFO turn
+(`automation_server.zig:686-691`); dialog discovery and recovery also have
+special server paths. Therefore the single map cannot prove the out-of-band
+frozen-window behavior, per-window FIFO ordering, dialog path, or two-phase
+recovery. Add separate production chains/closure e2es for at least (a) an
+ordinary socket command, (b) out-of-band list/health while one named window's
+FIFO is stuck, and (c) recover. Tests must start at the authenticated socket
+and observe through production reads; none may call the WK port or shim
+directly.
+
+MS2a/b/c also needs an explicit ABI/test inventory. The current behaviors do
+not name `setInputFiles` (including regular-file refusal), native scroll/move
+and pointer cache, full-page screenshot, reload/beforeunload, wait/evaluate,
+startup readiness, late completion after timeout, or result/error-string
+ownership. For every asynchronous Objective-C completion the plan must specify
+copied input ownership, exactly-once completion, and a no-dispatch/no-write
+guard after the waiter abandons. One representative DOM mutation cannot close
+roughly 70 new C exports.
+
+### BLOCKER: multi-window, freeze and recovery contracts are underspecified
+
+Plan lines 292-306 say popups are tracked and crashes recover, but omit the
+failure modes already found on GTK. Require real-socket e2es which create a
+two-hop related popup chain, route commands to each `window_id`, prove FIFO
+independence, and exercise both `page.close` and script `window.close()` while
+the opener's URL and DOM state survive. The popup must use the
+`WKWebViewConfiguration` supplied by WebKit so process-pool/data-store/content-
+world behavior is intentional, not reconstructed accidentally.
+
+`webViewWebContentProcessDidTerminate:` reports termination; it does not by
+itself establish that a still-live content process is responsive. MS2c must
+name the bounded probe/watchdog that updates per-window state without waiting
+behind that window's FIFO, show one frozen window does not poison siblings,
+and name the public-API recovery mechanism for a hung WKWebView. Recovery must
+retain the existing two-phase consent, blast-radius acknowledgement,
+exactly-once queued-job cancellation and “recovering” errors; there is no
+automatic kill. If public WKWebView APIs cannot meet that contract, the plan
+must stop at a spike rather than assume a reload can recover a hung process.
+
+### BLOCKER: “native input” has no proven capability contract
+
+Lines 150-153 keep WKWebView classified as `js_synthetic`, while lines
+280-290 promise `input:"native"` through responder-chain `NSEvent`s. The
+engine defines native input as real platform input and the browser contract
+depends on trusted events, acknowledgements, atomic document guards and no
+dispatch after timeout. Before this can be the default, MS2b needs red-first
+real-WKWebView tests for `event.isTrusted`, focus, click, key, text,
+contenteditable/beforeinput cancellation, scroll, pointer movement, navigation
+during input, partial typing and deadline abandonment on both Macs. Update the
+capability table only after those pass. If responder-chain delivery fails,
+CGEvent/TCC is a user-visible alternative capability—not a silent fallback—and
+its real-screen runner must obtain permission and verify its own app is the
+frontmost target before emitting any input.
+
+### BLOCKER: launch-critical setup, persistence and configuration have no owner
+
+The plan adds the helper in MS6 but never ports provisioning. At the pin,
+`runAgentSetup` explicitly refuses every non-Linux OS (`app.zig:41-47`) and
+uses Linux paths including `/proc/self/exe`; the helper/runtime/SAI therefore
+cannot be installed on a Mac. Add a macOS setup slice/behavior for the accepted
+immutable `dist-<n>/current/state` layout, Python runtime/helper, SAI rule (a),
+skipped outbound linked skills, no access to the real `~/.claude` or user
+repositories, the FIFO-to-fd-3 route, and the accepted Claude login/setup-token
+onboarding into Keychain.
+
+Likewise `--profile-dir` is discarded off Linux (`app.zig:160-166`) and the
+render/media flags are silent no-ops (`webkit.zig:47-72`). A launch plan needs
+a persistent, isolated `WKWebsiteDataStore` contract so cookies/logins do not
+fall into an implicit global store. It must also decide and test the macOS
+meaning of `--hardware-acceleration`, `--renderer` and `--media-source`
+(supported mapping or explicit unsupported error/documentation), rather than
+silently accepting Linux-only behavior.
+
+### BLOCKER: the shared sandbox interface is asserted at the wrong layer
+
+Lines 163-174 call the interface “Zig, platform-neutral”, but the production
+sandbox policy/argv today lives in Python (`agent/host/zb_agent_host/sandbox.py`)
+and the Linux spawn/lifetime seam is GLib/C with `prctl`
+(`src/agent_host.c:1-73`). The plan must identify the actual interface files,
+methods, ownership and wire contract instead of implying an existing Zig
+abstraction. Split the behavior-preserving Linux extraction into a pre-MS5
+slice with its own Linux gate, then implement Seatbelt against exactly the
+same semantic launch spec. The proxy/bridges are also rev-16 work in progress,
+not an existing dependency; MS5 must either own them or depend on a named,
+green landed revision.
+
+### BLOCKER: Seatbelt failure must block launch and select the VM fallback
+
+The sandbox reports make custom-profile acceptance, other-process info denial,
+fd-3 reopening and orphan cleanup spike results, not assumptions. Yet lines
+130-131 defer the VM to a later bead even if Seatbelt fails, and lines 539-544
+offer a dedicated-user `kill(-1)` fallback that the user has not approved.
+Make these hard gates before MS6: if any mandatory proof fails—including the
+double-fork/`setsid` no-survivor proof—Mac agent launch remains disabled until
+the shared interface's VM backend is implemented. Seatbelt-first is the
+choice; “Seatbelt even when its security proof fails” is not.
+
+The tests also need the real network route. MS5.3's direct loopback fake API
+(lines 532-537) conflicts with MS5.2's rule that only the proxy and the two
+bridges are reachable. The fake Messages API must traverse the production
+proxy through an e2e-only allowlist seam, and removing/bypassing that proxy
+must turn the real-browser test red. A direct decoy loopback service, LAN
+address, public IP, DNS, WindowServer/CGEvent/screen capture, non-allowlisted
+host and workspace write must fail; only proxy, 51091 and 31337 succeed. The
+token-isolation mutant must use a deterministic sacrificial target so removing
+Seatbelt actually exposes the canary; a host/TCC denial that stays green does
+not prove the profile.
+
+### BLOCKER: approval, Keychain and chat observability are not closed
+
+MS3 says it reuses “the same approval path as Linux” at lines 400-405, but no
+production approval authority exists at the plan pin; the research itself
+says the approval card is unimplemented. Specify the grant contract before
+flows: exact action, site/account/window/payload binding, one use, expiry,
+cancel/refuse, and only the native Approve handler may mint it. Real-binary
+tests must prove page worlds, iframes, related popups, automation-socket
+clients, prompts and hooks cannot approve; each Send/Post/Follow/Connect/Like/
+Next write gets a separate confirmation; dry-run performs no committing click,
+real-composer typing or pacing count.
+
+Keychain tests must use a disposable service/account and canary, never a real
+user credential, and prove the token reaches only helper fd 3—not env, argv,
+logs, telemetry, hook environment or model context. The plan also needs the
+accepted claude.ai callback and/or `claude setup-token` acquisition path.
+Finally, MS6's proposed observation “through ... the socket” (lines 615-616)
+would violate the drawer threat model if it exposed native drawer text to an
+automation client. Observe through a gated `--e2e-protocol` native census or
+screen capture, never a production socket drawer-read API.
+
+### BLOCKER: the two-architecture and packaging gates can false-green
+
+MS1 must provision two distinct hosts and assert the Intel host is really
+`x86_64` and the Apple-Silicon host really executes the `arm64` slice, not an
+x86 process under Rosetta. Run the resulting universal app on each machine and
+record the executing architecture in production build info; `lipo -archs` and
+`--version` alone prove only that two Mach-O slices exist. The gate also needs
+to cover every bundled native component and the helper/CLI/runtime strategy,
+not only the top-level browser executable, and verify the two per-arch bundles
+have compatible non-executable resources before combining them.
+
+Every MS2-MS6 sub-slice needs a named red test, exact failing assertion, green
+production files and refactor gate. The current MS2-MS6 prose mostly states
+behaviors without the red/green/refactor evidence promised at lines 34-39.
+The macOS runner must fail closed when either host lacks an active GUI session,
+the expected native architecture, a required runtime/SDK, or a nonzero test
+assertion count. MS4 and MS6 correctly require the user's visual verdict; any
+script that sends real-screen input must first prove its own window is focused,
+viewable, topmost at the target and abort under a server/grab-equivalent guard
+if not.
+
+### BLOCKER: signing is last, but its contract is not release-safe yet
+
+Deferring Developer-ID signing/notarization to MS7 correctly follows the
+user's decision. However, “whatever the Seatbelt launcher needs” at lines
+223-226 is not an entitlement list, and signing the finished bundle with
+`codesign --deep` at lines 639-644 does not define the identity/entitlements of
+nested helpers, frameworks or executable runtimes. MS1 must derive and test an
+exact least-privilege entitlement manifest; MS7 must sign nested code in an
+explicit inside-out order and then verify the whole universal bundle under
+hardened runtime on both architectures before notarization. Until the user has
+a Developer ID, the plan should call the result an ad-hoc development build,
+not a distributable launch artifact. The line saying the missing credential is
+“tracked as a bead dependency” must instead use Agent Mail/plan status while
+the shared beads database remains migration-locked.
+
+### Open-question dispositions
+
+1. Responder-chain NSEvent is a spike result, not an assumption; the trusted-
+   event matrix above decides it. CGEvent is explicit TCC-gated fallback only.
+2. `/dev/fd/3` reopening is a hard MS5 spike gate on both architectures.
+3. Custom `sandbox-exec` profiles are a hard gate; failure selects VM and
+   blocks MS6.
+4. Yes: extract the Linux backend interface in its own pre-MS5 slice and keep
+   the Linux gate isolated.
+5. Keep MS2a, MS2b and MS2c as separate reviewed gates; also split the
+   out-of-band health/recover closure from crash-page presentation if one
+   commit cannot keep a single red seam.
+
+Agent Mail 5458 sent these findings to JadeBeacon, with BlackRobin and
+BlueBeaver copied for the cross-owned seams. No source implementation is
+authorized by this review.
