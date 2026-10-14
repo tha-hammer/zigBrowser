@@ -7657,3 +7657,134 @@ the first unpushed source commit is ultimately replaced by `cab60a1`, and that
 current implementation is still blocked. Later approved commits cannot be
 pushed as a prefix without also pushing the blocked S3a history. No push or
 history rewrite was performed.
+
+## macOS launch plan rev 3 (`a02f1ea`, with `5bebd42` follow-up)
+
+**Explicit verdict for `a02f1ea`: BLOCKED (docs).** **Explicit verdict for
+`5bebd42`: APPROVED as a narrow API-name correction; it does not approve the
+underlying plan.** Rev 3 correctly adopts the final Hook-commands-only copy
+policy and the drawer plan's full grant tuple; specifies per-popup drawer
+ownership and one detach-before-free destroy path; adds visible crash-page
+parity; keeps the docked drawer, Keychain, per-action approval, universal
+two-host gate, Seatbelt-first/VM-fallback rule and Developer-ID-last release
+gate; and requires the user's eyes for UI slices. Four implementation-blocking
+contracts remain.
+
+1. **BLOCKER — the positive approval closure still has no production source.**
+   MS7.8 says an automation-socket `tool_use` starts the chain
+   (`macos-launch-tdd-plan.md:780-785,805-811`). The accepted drawer
+   architecture explicitly makes the broker unreachable from that socket;
+   production `tool_use` arrives from the fake Anthropic API through the CLI,
+   helper and protocol pump (`claude-agent-chat-drawer-tdd-plan.md:1231-1232,
+   2013-2020`). Those components are not launched or wired until this Mac
+   plan's MS8 (`macos-launch-tdd-plan.md:819-840`). Thus MS7 cannot execute its
+   claimed end-to-end positive chain without either violating socket
+   separation or injecting inside the forbidden span. Move the positive
+   closure to MS8 after the production helper/broker path exists (MS7 can
+   close native-card mint/deny behavior), or reorder the production connector
+   before it. The Mac action must also say AppKit/native click, not “X click.”
+2. **BLOCKER — the production ABI inventory is still neither complete nor
+   executable in its stated order.** The pinned header also exports
+   `zb_main_invoke_sync`, `zb_automation_window_id_at` and
+   `zb_automation_run_generation`, none of which the alleged exhaustive list
+   at `:353-374` assigns to a slice. App/profile/render/drawer exports are
+   assigned elsewhere but not cross-referenced, so “every `webkit_shim.h`
+   export” is false as written. More importantly, the plan still says it will
+   *decide later* which debug seams exist and that every unsupported seam
+   returns an explicit unsupported error; several debug signatures are
+   `void` or return an ordinary count/boolean and have no such error channel.
+   Add a literal export-by-export table with implementing slice, exact
+   unsupported sentinel/error mechanism and named test. Finally, MS2c cannot
+   gate its cookie ABI “via MS3's `WKHTTPCookieStore` port” (`:368-369`) when
+   dependency order puts MS2c before MS3 (`:869-873`); move those exports/tests
+   to MS3 or reorder the slices.
+3. **BLOCKER — MS5 depends on corrections that `cab60a1` does not contain.**
+   MS5.1 and the references call `cab60a1` the corrected chain/alias/
+   malformed-quote implementation (`:647-659,892`), but the exact commit is
+   still blocked: a parent-component symlink chain is refused, the global
+   seen-set drops valid internal aliases, and an unterminated hook quote exits
+   zero. Require a named green follow-up before MS5, or make MS5 own the shared
+   fixes and the three red-first regressions before the Mac port reuses them.
+4. **BLOCKER — the native-input fallback still contradicts the folded
+   decision.** Rev 3 correctly says a CGEvent may be converted to an NSEvent
+   and delivered in-process with `-[NSWindow sendEvent:]`, with no system post
+   and no TCC (`:60-71`). The executable MS2b contract and the still-active
+   disposition instead call CGEvent a TCC-gated alternative (`:87-91,
+   385-393`). Distinguish in-process CGEvent-to-NSEvent construction from
+   `CGEventPost`: require the former to be spiked first, and leave system-wide
+   posting out unless a separately approved capability is genuinely needed.
+   `5bebd42` correctly replaces the nonexistent
+   `NSRunningApplication.activeApplication` idea with
+   `NSWorkspace.frontmostApplication`/`NSApp.isActive`, but it does not resolve
+   this delivery contradiction.
+
+Two documentation corrections are **SHOULD**: the testing strategy still says
+ClosureMaps are pinned to `21625eb` even though all three JSON maps correctly
+pin `833767e` (`:218-219,444-529`), and the crash control still says
+“real-X/no-input” on macOS (`:415-423`). The three maps' node/edge counts and
+their pinned production symbols otherwise check out. The six prior blockers
+therefore stand as: #2, #5 and #6 closed by rev 3; #1 semantically corrected
+but dependent on an unlanded green S3a fix; #3 and #4 still open for the
+reasons above.
+
+## S3a follow-up and prefix audit at `da5eb70`
+
+**Explicit verdict for `da5eb70`: APPROVED.** It closes all three production
+BLOCKERs reported against `cab60a1` without relaxing the selected copy policy:
+
+- `_link_target` now requires the normalized target to equal its `realpath`,
+  so a link hidden in any target component is treated as a chain and skipped
+  (`agent/host/zb_agent_host/setup.py:318-334`). The new canary exercises the
+  concrete `CLAUDE.md -> hop/CLAUDE.md`, `hop -> /outside` escape.
+- `_copy_tree` tracks only the real directories on the active recursion path,
+  preserving both names of a valid internal alias while still cutting a true
+  ancestor cycle (`setup.py:337-372`). The regression places the alias both
+  before and after the canonical name so lexical ordering cannot mask a global
+  seen-set bug.
+- `hook_tokens` applies the closed raw-string grammar before splitting, so an
+  unterminated quote produces the named `SetupError`/exit 2 rather than a
+  `shlex` exception or a successful setup (`setup.py:214-220`). Both the unit
+  path and the real binary exercise that production parser.
+
+The same commit replaces pathname rereads with one
+`O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC` descriptor, verifies it with `fstat`, and
+reads the bytes from that descriptor (`setup.py:378-399`). This is the right
+leaf-file pinning primitive. A **non-blocking SHOULD-for-tests** remains: add a
+deterministic swap seam proving `_copy_file` refuses a leaf changed to a link
+or FIFO. The current tests do not directly kill a mutation back to
+`Path.read_bytes()`. Full parent-component race resistance would require
+dirfd-relative traversal (the source is same-user input and this was not the
+selected hostile boundary), so it is not a new blocker on S3a.
+
+The TDD evidence is independently reproducible. On `da5eb70^`, transplanting
+only the three new unit regressions is red: the component-chain canary is
+copied, both alias orderings lose a name, and the malformed quote escapes as
+`ValueError`. At exact `da5eb70`, all 44 provisioning tests pass; the
+real-binary setup e2e passes **82 checks, 0 failed**, including exit 2, an
+unchanged home and no decoy event for the malformed quote. A fresh-cache,
+private-Xvfb clean-export full gate at exact `da5eb70` passed **Build Summary:
+106/106 steps succeeded; 817/817 tests passed**. Its EXIT trap deleted the
+export and cache. No live browser, socket, account, token or DISPLAY `:0` was
+used.
+
+This also closes macOS rev 3 finding 3 cumulatively: `da5eb70`, rather than
+the stale `cab60a1` citation, is now the named green dependency for MS5. The
+plan should correct that citation, but the implementation dependency is no
+longer missing. `a02f1ea` nevertheless remains **BLOCKED** by its three
+independent contracts: the MS7 positive approval chain starts from the
+forbidden automation-socket route before the production helper exists; the
+ABI inventory/order is incomplete and gives unsupported semantics to
+signatures with no error channel; and the executable CGEvent fallback still
+contradicts the accepted in-process, non-TCC delivery decision. `5bebd42`
+remains **APPROVED only as its narrow frontmost-application API correction**.
+
+The requested linear range `abbf0ea..da5eb70` is therefore **NOT fully
+approved**. Its cumulative S3a implementation is approved at `da5eb70`, and
+the previously approved UI/crash/manual-test/research/review commits retain
+their verdicts, but the range contains two current blocked plan artifacts:
+`cd59bb5` (the five rev-16 network-boundary/topology findings recorded above)
+and `a02f1ea` (the three remaining macOS findings just listed). The later
+`c9f7b23` rev-16.1 plan commit landed while this gate ran and is outside the
+requested range; it needs its own review and cannot retroactively make the
+exact range fully approved. There is no approved push-through SHA at
+`da5eb70`; no push or history rewrite was performed.
