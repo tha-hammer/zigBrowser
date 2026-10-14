@@ -6844,3 +6844,115 @@ was otherwise green: **Build Summary: 105/105 steps succeeded; 816/816 tests
 passed**. The gate tree was deleted immediately. The verdict remains BLOCKER
 because the production gate does not exercise the real-screen XTest safety
 boundary.
+
+## Real-screen input guard follow-up (`eef2ff6`)
+
+**Explicit verdict: BLOCKER.** The commit correctly moves the final
+viewability, active-window, geometry, stacking and post-motion pointer checks
+onto one X connection under `XGrabServer`, removes sleeps from the grabbed
+sequence, makes button/key release unconditional after a corresponding press,
+always ungrabs in `finally`, stops the remaining matrix after an input refusal,
+adds the private-Xvfb real-X test step, strengthens the Wikipedia-shaped local
+fixture, and orders the DMA-BUF drawer-off control before its treatment.
+Those are substantive improvements, but the requested last-moment input
+boundary is not complete.
+
+### BLOCKER: a click does not require focus inside the target
+
+`tests/manual/real_screen_check.py:495-515` checks `window_ready`, current
+geometry, the X window path, and the post-motion pointer path, but never calls
+`XGetInputFocus`. A target can therefore be viewable, active and on top while
+another window owns keyboard focus, and `safe_click` still emits XTest motion
+and a button click. An exact clean-export probe at `eef2ff6`, using the
+committed `FakeX11`, set `wm=True`, `active=OURS`, both point paths to
+`[FRAME, OURS]`, and `focus=TERMINAL`; `safe_click` returned `None` and
+recorded `[('move', 10, 10), ('button',)]`. The real-X suite's positive case
+sets focus correctly, but has no negative case with the target still active
+and on top while the decoy alone owns focus.
+
+The follow-up must apply the same focus/PointerRoot ownership rule before the
+first click motion, under the existing grab, and add both fake and private-Xvfb
+negative cases. This is the remaining requirement from the orchestrator's
+“topmost, viewable, focused” safety rule; changing the plan text in this commit
+to mention focus only for Escape does not waive it.
+
+### BLOCKER-for-tests: two refusals do not prove zero XTest motion
+
+`tests/manual/test_real_screen_input.py:168-187` uses
+`assert_nothing_reached`, which counts ButtonPress/KeyPress and checks that the
+button/escape wrappers were not called. The “decoy mapped just before input”
+and unmapped-target cases do not additionally assert `self.calls == []`, as
+the covered and inactive cases do. A mutant that moves the user's pointer and
+then refuses before the button can therefore survive those cases. “No input”
+includes XTest motion: every refusal must assert zero `move`, `button` and
+`escape` calls as well as zero canary events.
+
+**SHOULD:** `root_window_property` at `real_screen_check.py:362-378` requests
+`XA_WINDOW` and validates format/nitems, but should also test
+`actual_type_return == XA_WINDOW` explicitly. Xlib normally returns no data on
+a requested-type mismatch; the explicit test still makes the ctypes boundary
+and fail-closed intent auditable.
+
+The author's clean-export gate covering this commit and `69e6fc4` was green:
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**. All five
+private-Xvfb real-X tests ran. The green gate does not change the verdict
+because the missing focus state and surviving motion mutant are absent from
+the test matrix. Agent Mail 5403 and 5406 sent the findings to BlackRobin.
+
+## S3a immutable home implementation (`69e6fc4`)
+
+**Explicit verdict: BLOCKER, with the SAI copy-path policy separately PENDING
+USER DECISION.** The commit implements the central rev-15.5 topology correctly:
+complete `.dist-tmp-*` builds are checked and route-probed before publication;
+the tree and root are fsynced in the specified order; `current` is replaced by
+one temporary-symlink rename; both external kill cuts preserve a whole current
+and the state inodes; old/malformed build names refuse; validated garbage is
+removed fd-relatively without following it; state lives outside builds; and
+the route-probe CLI and its descendants run in a PID namespace that dies with
+the browser. The exact helper unit suite passed **30/30** in a deleted clean
+export, and the author's real-binary e2e/gate reported `agent-setup-e2e` 80/80
+and **106/106 steps, 817/817 tests**.
+
+### BLOCKER: the sandbox argv builder mutates a published build
+
+`agent/host/zb_agent_host/sandbox.py:49-64` creates missing state sources and
+missing mount-point targets. Under the new layout, `home.claude_dir` resolves
+through `.claude -> current/.claude`, so creation of a target writes into the
+already-published `dist-<n>`. An exact clean-export probe constructed a
+published build without the mount points and called `helper_argv`; it created
+`.claude/.claude.json`, `backups/`, and all seven `STATE_DIRS` inside that
+build. This contradicts D6's “never written after its publish” invariant and
+silently repairs a malformed home instead of failing closed.
+
+Setup must remain the sole creator. `helper_argv` should only validate the
+pre-existing state sources and mount-point targets (without following
+symlinks) and construct argv, or receive already-validated paths from the
+future runtime validator. A regression should delete one mount point from a
+published build, call this production path, require failure, and prove the
+tree's bytes/names are unchanged.
+
+### BLOCKER-for-contract/tests: a longer inline code span passes the slash grammar
+
+`agent/host/zb_agent_host/setup.py:163-173` tracks triple-backtick fences but
+does not track whether a slash-name match lies inside an inline code span. Its
+lead-word alternative therefore accepts a known name in a longer span. Exact
+probes at `69e6fc4` accepted both ``Text `some before /clear now` `` and
+``Text `x use /clear` ``. Rev 15.5 permits the special case only when the
+slash command *starts* the inline span, and explicitly says a known name in a
+longer code span refuses. Add these red cases and distinguish the span-leading
+form before applying the prose lead-word grammar.
+
+**SHOULD:** fixed-link creation at `setup.py:453-457` is path-based
+`os.symlink`, catches `FileExistsError`, and does not re-stat/readlink the
+result. Rev 15.5 calls for creation beneath the pinned root fd and requires
+that each name *then* be the exact relative symlink. An injected create race
+can otherwise replace an absent name with a different type/target after the
+only earlier layout check and be silently accepted. Use the root fd and
+validate the postcondition after success or `EEXIST`.
+
+The policy question discovered from the real SAI is deliberately **not** one
+of these blockers: whether strict scanning applies to the whole copied tree,
+only executable-path-bearing files, or a reduced instruction-only copy remains
+the user's open decision. The current strict policy is judged only for faithful
+implementation. Agent Mail 5405 sent the implementation findings to
+BlackRobin.
