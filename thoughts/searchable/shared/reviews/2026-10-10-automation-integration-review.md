@@ -5864,3 +5864,88 @@ close its production edge.
 
 Agent Mail 5328–5331 sent the blockers to BlackRobin during the review. The
 green gate result and free slot were mailed as 5333.
+
+## BLOCKER — accelerated WebKit plus the GTK3 drawer overlay blanks NVIDIA/X11
+
+**Status: OPEN (BlackRobin).** On the user's real X11/NVIDIA RTX 3080 screen,
+the exact `fa0aa48` build with the case-J default (WebKit policy plus
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`) draws only the GTK window background when
+`--agent-drawer on`; neither the loaded page nor the orange icon is presented.
+The same live page remains fully responsive through the read-only socket, and
+drawer-off draws normally. A repeat with `--hardware-acceleration never` draws
+both page and icon. This is therefore a presentation failure in the accelerated
+UI path, not a page load, WebProcess, automation-FIFO or GTK-main-loop failure.
+
+I reviewed the exact `fa0aa48` sources; `src/agent_drawer.c` is byte-identical at
+`7eab90f` (`sha256 1cadccf...579`). The local widget logic does not explain a
+zero-sized or opaque cover:
+
+- `zb_drawer_attach` makes the WebView the `GtkOverlay` main child and adds the
+  icon, panel and ghost only as overlay children (`agent_drawer.c:734-766`).
+- The position callback handles only those three overlay children and never the
+  main WebView (`agent_drawer.c:194-223`). GTK allocates the main child to the
+  full overlay allocation.
+- The panel and ghost have `no-show-all` before the toplevel's later
+  `gtk_widget_show_all`; both remain hidden initially (`agent_drawer.c:691-695,
+  749-752`; `webkit_shim.c:1239`).
+- The ghost draw callback returns `FALSE`, so it does not stop draw propagation
+  (`agent_drawer.c:438-453`). The CSS selectors are confined to named drawer
+  widgets (`agent_drawer.c:94-109`).
+
+The high-confidence root cause is the GTK3 `GtkOverlay` presentation topology,
+not the EventBox alone. GTK 3.24's own
+[`gtkoverlay.c`](https://raw.githubusercontent.com/GNOME/gtk/gtk-3-24/gtk/gtkoverlay.c)
+creates a `GDK_INPUT_OUTPUT` child `GdkWindow` for **every** overlay child and
+sets it as that child's parent window (upstream lines 133-160); hidden children
+still get these windows at realize, and visibility controls only whether each
+window is mapped (lines 277-299, 383-437). WebKit
+[`bug 90085`](https://bugs.webkit.org/show_bug.cgi?id=90085) documents the same
+architectural failure: an accelerated WebView behind GtkOverlay child windows
+breaks overlay composition; the reporter found that disabling accelerated
+compositing avoided it and traced the issue to transparency/native child-window
+composition. The user's live acceleration differential is consistent with
+that mechanism. Case J forces shared-memory frame transport, but it does not
+disable WebKit accelerated compositing or GTK's NVIDIA GL presentation.
+
+### Private-Xvfb attempt and coverage limit
+
+I verified that private Xvfb advertises GLX, Composite, DAMAGE and RENDER, then
+ran the existing real-binary pixel oracle with
+`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe` under the harness's private
+Xvfb. `agent_drawer_icon_test.py --only clicks` passed **15/15**: the known blue
+page pixels appeared outside the icon, the orange fill and white `S` appeared
+inside it, all 29 outside clicks reached the page, and icon clicks did not. The
+complete exact-`7eab90f` clean gate was also green: **104/104 steps succeeded;
+816/816 tests passed**. This confirms that the existing oracle checks the right
+pixels, but software GL cannot reproduce the proprietary-NVIDIA presentation
+path. No DISPLAY `:0`, live socket, account or live browser was touched.
+
+### Required fix and red-first proof
+
+Do not accept `gtk_event_box_set_visible_window(FALSE)` by itself: GtkOverlay
+still creates its own output parent window for that child, and also creates
+ones for the icon and panel. The durable product fix is a drawer host that does
+not introduce GtkOverlay output child windows around an accelerated WebView
+(for example, a proven no-window custom/fixed container), or an explicitly
+accepted acceleration-policy fallback while the drawer is enabled. A separate
+floating toplevel is another possible topology, but must preserve focus,
+stacking, pop-up ownership and click-through contracts.
+`--hardware-acceleration never` is a confirmed workaround, not yet an acceptable silent global policy
+change.
+
+Red first:
+
+1. Reuse the current X11 pixel oracle on the affected NVIDIA host: under the
+   default case J it must see both a distinctive page pixel outside the icon
+   and orange/white icon pixels. The current build is red; drawer-off and
+   `--hardware-acceleration never` are the controls.
+2. Add an e2e-only realized-surface census and a private-Xvfb structural test
+   that fails the current `GtkOverlay` hierarchy because it creates output
+   child GdkWindows, then passes only on the chosen no-child-window topology.
+   Keep the existing input and pixel assertions as the behavioral regression.
+3. The fixed scratch build must pass the real-screen default-J pixel case before
+   this blocker closes. A green llvmpipe gate alone cannot close it.
+
+Agent Mail 5345 sent the source evidence, the Xvfb result, the matrix correction
+(`--renderer shm` is already the failing default) and the test requirement to
+BlackRobin.
