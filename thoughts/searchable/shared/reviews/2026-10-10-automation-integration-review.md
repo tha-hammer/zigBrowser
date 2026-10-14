@@ -5867,7 +5867,11 @@ green gate result and free slot were mailed as 5333.
 
 ## BLOCKER — accelerated WebKit plus the GTK3 drawer overlay blanks NVIDIA/X11
 
-**Status: OPEN (BlackRobin).** On the user's real X11/NVIDIA RTX 3080 screen,
+**Status: CLOSED by `60ce3b6`.** The fixed build passed the required
+user-observed default-case-J NVIDIA/X11 check on 2026-10-14: the page and S
+icon drew, the icon dragged, the drawer opened at the bottom, and `-` folded it
+back into the icon. The original failure and evidence follow for provenance.
+On the user's real X11/NVIDIA RTX 3080 screen,
 the exact `fa0aa48` build with the case-J default (WebKit policy plus
 `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`) draws only the GTK window background when
 `--agent-drawer on`; neither the loaded page nor the orange icon is presented.
@@ -6181,3 +6185,303 @@ before harness cleanup. Agent Mail 5347 sent the exact repro to BlackRobin.
 - Check the return from `prctl(PR_SET_PDEATHSIG, SIGKILL)` and fail closed.
 - `test_provision.py:213` reads `setup.__file__` without closing it, producing a
   `ResourceWarning` during the otherwise-green gate.
+
+## Real-screen oracle follow-ups (`220af5a`, `607c3a3`)
+
+**Verdict: `220af5a` APPROVED as a diagnostic utility; `607c3a3` BLOCKER-for-test.**
+The page-only variant is correctly separate from normal drawer variants and is
+useful for the scratch topology bisect. The later commit fixes both substantive
+oracle defects from the `d9674c1` review:
+
+- `judge()` requires both the root/on-screen crop and the client buffer to show
+  the page and, when required, icon (`real_screen_check.py:119-131`);
+- `case_env()` removes the enumerated GDK/WebKit/EGL/GL overrides and every
+  `ZIGBROWSER_*`/`ZB_*` variable before applying a case (`:57-66,134-141`);
+- the window is activated before capture, the output reports both views, and a
+  failed drawer-off control invalidates the run (`:234-243,294-304`).
+
+The six fake-capture/environment tests pass directly in 0.077 s. Their two
+central cases are appropriate: a good client buffer over a blank screen fails,
+and planted render variables do not reach a case. However, the new test module
+is absent from `build.zig`, the gate script and every existing test runner.
+`rg real_screen_check build.zig tools tests` finds only the manual files and a
+doc reference. Consequently both reviewed mutants can regress while every
+required gate remains green. Add the module as a bounded `zig build test`/gate
+step and demonstrate both mutants fail through that step.
+
+**SHOULD:** require the root crop to equal the full captured window geometry,
+or fail the run explicitly. The current `min()` crop (`:239-243`) can judge a
+partially off-screen window over a smaller area; reporting both dimensions
+would make positioning/capture failures diagnosable.
+
+## Claude Agent chat-drawer plan rev 15.3b (`0524293`)
+
+**Verdict: BLOCKER (one drivability ambiguity).** The revision substantively
+closes the slash-name collision and descendant-death findings. It refuses names
+present under `/` or in a fixed reserved-root list, with copied `tmp`/`etc` and
+prose `/tmp` as red cases (`plan:1297-1301`). It specifies a complete browser →
+PDEATHSIG helper → bwrap PID namespace/`--die-with-parent` chain and waits until
+the fake CLI plus its grandchild are running before killing only the browser
+(`:1270-1280`). The direct `prctl` result is now required to be checked.
+
+The install-step seam is now separate from the parent-death seam and has a
+bounded, inert-without-e2e route (`:1284-1289`), but it does not say on which
+side of each filesystem mutation the `SETUP paused` row occurs. That is the
+test's entire causal contract. `first-move:<entry>` must sample after that entry
+has moved so the test observes a markerless partial install; `marker` must state
+which side of the commit-point replace it samples; `cleanup` must sample after
+commit and before deletion; and exchange/state/mkdir steps need equally exact
+pre/post states. The e2e should assert that expected intermediate state before
+SIGKILL, then assert that a plain rerun repairs it. Otherwise an implementation
+can emit every named row before its mutation and never exercise the advertised
+interruption states.
+
+Agent Mail 5356 and 5357 sent the two blockers to BlackRobin. Agent Mail 5358
+also pre-reviewed the uncommitted no-child-window host: the hardware oracle must
+test the **open** drawer, not only the initial icon, and the structural census
+must fail closed on unknown/new output-window owners and preserve ancestry.
+
+## Google Workspace WebProcess crash (`c0c1c18`, live evidence; private repro 2026-10-14)
+
+**Finding: the WebProcess root cause was not captured; the blank-after-crash UX
+is a confirmed product defect.** The only live evidence is one exact
+`zigBrowser: window 1: web process terminated (crashed)` line at 2026-10-13
+12:27:35 EDT while the window was in an authenticated Google
+Accounts-to-restricted-Sheet flow. There is no core, kernel/journal report or
+page state. WebKit's broad `WEBKIT_WEB_PROCESS_CRASHED` reason excludes the
+shim's explicit `memory_limit` and `terminated_by_api` reasons, but does not
+identify a signal, stack or subsystem. It is not enough to attribute the crash
+to Google, NVIDIA, Skia, JavaScriptCore or memory pressure.
+
+The 22-hour blank window is fully explained by the application code, independent
+of the unknown crash cause. At exact `c0c1c18`, the termination callback says
+the page is gone and the window “shows nothing until it loads again,” stores the
+reason, and only prints stderr (`src/webkit_shim.c:4155-4178`). A later real load
+commit is the only thing that clears the mark (`:968-979`); `page.list` merely
+exposes it (`:3843-3866`). There is no native crash document, automatic recovery
+or visible action for the person.
+
+### Private-Xvfb reproduction
+
+I built an exact clean export of `c0c1c18` against Debian's installed
+WebKitGTK/JSC 2.54.0, with a fresh HOME, XDG directories and profile for each
+case. Each browser used its own private Xvfb, the built-in case-J render
+configuration, `--automation-api` and `--media-source off`. `page.list` was
+sampled every 10 seconds; a read-only ready/title/URL/DOM probe ran at 15, 60
+and 105 seconds; native wheel requests ran every 20 seconds.
+
+| Public page | Observation over 120 s | Termination |
+|---|---|---|
+| Google Accounts `ServiceLogin` continuing to Sheets | redirected to `v3/signin/identifier`; `readyState=complete`, title `Sign in - Google Accounts` | none |
+| Google's official Sheets API sample `1Bxi…upms` | real editor loaded; title `Example Spreadsheet - Google Sheets`, responsive throughout | none |
+| Google's official Docs API sample `195j…djFE` | real editor loaded; title `Docs API Quickstart - Google Docs`, responsive throughout | none |
+
+Every read reported `MediaSource` as `undefined`, confirming the requested media
+setting. stderr contained `zigBrowser: media-source=off`, no GBM/DRM error and
+no termination line. The native wheel calls returned `scrollY: 0`, so this run
+did not move the editors' private inner scrollers. The result is therefore a
+**limited negative reproduction**, not a clearance: it had no authenticated
+account, could not enter the private document's second access gate, did not use
+the proprietary NVIDIA presentation path, and observed each page for only two
+minutes. I did not use an arbitrary person's restricted document as a fixture.
+The throwaway export, profiles and X server were deleted immediately.
+
+### Upstream search
+
+I found no current WebKitGTK 2.54 report specific to `docs.google.com` or
+`accounts.google.com`. Historical Google reports concern user-agent/site
+compatibility; for example [bug 171770](https://bugs.webkit.org/show_bug.cgi?id=171770)
+was a 2017 sign-in blank page fixed as a UA quirk, not a WebProcess death.
+
+The strongest **plausible, not proven** match is
+[bug 323049](https://bugs.webkit.org/show_bug.cgi?id=323049) (and duplicate
+[324333](https://bugs.webkit.org/show_bug.cgi?id=324333)): a Skia CPU worker
+destroys a deferred display list whose buffer release enters a GPU-thread-owned
+`GrResourceCache`. Debug builds abort on the ownership assertion; the report
+explicitly notes that the underlying thread-safety violation likely exists
+unchecked in Release. The fix landed on main on 2026-09-23 and was backported
+to `webkitglib/2.54` on 2026-09-28, after the 2.54.0 release. WebKitGTK 2.54 is
+the release that replaced the WebProcess compositor with Skia and made threaded
+tile painting mandatory, while the 2.54.1 release notes say it fixes several
+crashes and rendering issues. This makes a controlled 2.54.1 qualification
+worthwhile when available, but without the lost crash stack it cannot be called
+this incident's fix. The installed Debian candidate remains 2.54.0.
+
+The earlier `LayerTreeHost::updateRendering` race in
+[bug 309296](https://bugs.webkit.org/show_bug.cgi?id=309296) is a weaker match:
+it was triggered by load/scroll timing, but its fix (bug 311101) landed in March,
+well before 2.54.0. The known variable-font memory growth report, bug 319590,
+also does not establish this event: the live reason was `crashed`, there was no
+OOM record, and no process memory sample survives.
+
+### Required visible behavior and failing-first test
+
+On `crashed` or `memory_limit`, the same window should show an app-owned,
+non-privileged crash document naming the affected window and last committed URL,
+with an explicit Reload link/action. It must not auto-reload: that can repeat a
+crash loop and silently lose login/form state. `page.list.crashed` must remain
+set while the alternate document is visible and clear only when a real target
+load commits. `terminated_by_api`, normal quit, `page.close` and `page.recover`
+must not flash a crash page. Every related view affected by one process death
+needs its own visible crash document.
+
+The failing-first extension belongs in the existing real-binary
+`web-process-crash-e2e`: load a counted local fixture, SIGKILL its WebProcess,
+and assert (1) the same view visibly renders the native crash document, (2)
+`page.list` still reports `crashed`, and (3) the fixture request count does not
+increase automatically. Then activate Reload and require the original URL to
+load and the reason to clear only on its real commit. Repeat the visible-state
+assertion for all related views, and retain the existing checks that deliberate
+API termination and quiet shutdown produce no crash page. BlueBeaver's Agent
+Mail 5359 design follows this contract; Agent Mail 5362 delivered the private
+repro and upstream qualification to both implementers.
+
+## Push-prefix verdict audit through `22ff1f9`
+
+The orchestrator requested an explicit verdict for every unpushed S3a/drawer
+commit before any push. The table distinguishes an exact commit's historical
+verdict from a later follow-up that closes only that finding. A green gate does
+not override a correctness blocker.
+
+| Commit | Explicit verdict | Disposition |
+|---|---|---|
+| `abbf0ea` | **BLOCKER** | The original S3a implementation has the six findings recorded above; `4e3b09c` closes four, but committed production code still has five later findings. |
+| `4e3b09c` | **BLOCKER** | Interrupted first install, slash/path grammar, dot segments, late rollback and route-probe descendant lifetime remain unfixed in committed code (`69c7098`). |
+| `be46e05` | **BLOCKER at that revision; producer gap CLOSED by `7eab90f` + `4e3b09c`** | The exact plan omitted the shared-runtime producer. Its later plan/implementation follow-up closes that narrow finding, not the S3a transaction findings. |
+| `7eab90f` | **BLOCKER at that revision** | It overclaims rollback/descendant death and contains stale runtime/file inventory. Later plan revisions improve the contract, but the committed S3a implementation remains blocked. |
+| `d9674c1` | **BLOCKER at that revision** | Its real-screen oracle, inherited render environment, slash-name collision and interruption/death contracts were incomplete. |
+| `0524293` | **BLOCKER at that revision** | It closes the name/death issues but does not locate its pause seam on a defined side of each mutation. |
+| `46cdcf2` | **BLOCKER** | It gives the pause sides and records the drawer host, but the journal cannot distinguish all crash cuts and the dock contradicts the float/no-reflow requirement. `22ff1f9` narrows both rather than fully closing them. |
+| `220af5a` | **APPROVED** | The page-only scratch variant is isolated from ordinary cases and is a useful topology-bisect control. |
+| `607c3a3` | **APPROVED as completed by `60ce3b6`** | `60ce3b6` puts its nine oracle tests in `zig build test`, rejects partial/off-screen captures, and keeps the screen-plus-window judgment. |
+| `60ce3b6` | **APPROVED** | The structural red/green, retained behavioral checks, independent gate and the user's NVIDIA check all pass. The separate float-versus-dock product decision remains open in the plan. |
+| `ddc892e` | **APPROVED** | The crash document and Reload path satisfy the production-chain contract; one `about:blank` edge case is a non-blocking SHOULD below. |
+| `22ff1f9` | **BLOCKER** | The plan now has a credible write-ahead protocol, but exchange reconciliation is only half-specified and float versus dock is deliberately unresolved. |
+
+Therefore there is **no fully approved linear push prefix after `fa0aa48` yet**:
+the first unpushed implementation commit, `abbf0ea`, still has open production
+blockers. No push was performed.
+
+## Windowless drawer host and plan rev 15.3c/f (`60ce3b6`, `46cdcf2`, `22ff1f9`)
+
+### `60ce3b6`: APPROVED; NVIDIA blocker CLOSED
+
+The new `ZbDrawerHost` is a real no-window `GtkContainer`
+(`src/agent_drawer.c:291-437`). It allocates the WebView above the visible
+docked panel (`:364-388`), paints the icon/fold after the page in the page's
+own window (`:391-415`), and attaches the page and floating/input children
+without `GtkOverlay` (`:967-1003`). The e2e-only census guards an unknown
+GdkWindow owner with `G_IS_OBJECT` and reports kind, viewability, ancestry and
+geometry (`:189-224`). I found no ownership, teardown or native-window lifetime
+regression in the exact diff.
+
+`agent_drawer_test.py` fails closed on any unknown output-window owner and on
+any viewable output window overlapping the page; it checks closed, open and
+minimized topology (`tests/e2e/agent_drawer_test.py:176-264`). The author
+recorded the required red on the old host: 3/9 failures, all
+`GtkOverlay:output`, plus mutants for an unshrunk page, a windowed stand-in and
+unpainted floats. The existing S1 input/drag/pixel checks and S2 open,
+scroll/send and fold-pixel checks remain in their production-chain suites. The
+manual `drawer-open` case now uses XTest on its own icon, samples page plus
+panel twice, minimizes, and samples page plus icon; partial/off-screen geometry
+fails (`tests/manual/real_screen_check.py:306-361`). Its nine pure oracle tests
+are a dependency of `zig build test` (`build.zig:698-710,945-948`), closing the
+old `607c3a3` test-integration blocker.
+
+The final hardware condition also passed. On the user's NVIDIA/X11 screen with
+the default case-J graphics route, drawer on and MSE off, the exact clean build
+showed the page and icon, allowed dragging, opened the drawer, and folded it
+back. This closes the original blank-presentation blocker. It does not silently
+decide whether the final product should dock or float; that product-contract
+choice remains in the plan review below.
+
+### `46cdcf2`: BLOCKER; `22ff1f9`: BLOCKER
+
+Exact rev 15.3c/d both says the user's drawer floats without page reflow and
+specifies a dock which shrinks the WebView. It also writes a journal before a
+mutation but does not encode enough state to distinguish a crash before the
+mutation from a crash immediately after it. Those are blockers at exact
+`46cdcf2`.
+
+Rev 15.3e/f (`22ff1f9`) materially improves the transaction: every mutation
+has `:before` and `:after` cuts; intent publication is temp + file fsync +
+rename + root-directory fsync; mutations fsync their touched parent
+directories; and the journal records inode identities (`plan:1322-1364`). It
+also honestly marks float-versus-dock as pending (`:42,214-216,242`) and repins
+the drawer glue to `60ce3b6`.
+
+Two blockers remain:
+
+1. An exchange records both original inodes, but recovery calls it done merely
+   when the live path holds the staging inode (`plan:1342-1355`). The only
+   acceptable states must be fully specified: not done iff `(live=A,
+   staging=B)`, done iff `(live=B, staging=A)`; a missing path, duplicate inode
+   or one-sided/mismatched pair refuses and preserves the evidence. The
+   reconciler tests must cover those mixed states, not only “both/neither” for
+   one inode.
+2. A pending product decision is not an approved contract. The user must
+   explicitly choose the proven dock/reflow behavior or retest and accept a
+   float-preserving design on NVIDIA; then D1, D2 and the structural test must
+   say one thing consistently.
+
+Non-blocking plan cleanup: `plan:1339` says a first install has no journal,
+while `:1322-1326` defines every `:before` cut as following a durable journal
+intent. State that first-move uses the same observable cut positions without a
+journal and that its marker rename plus parent-directory fsync is the durable
+first-install commit point.
+
+### Independent gate and red evidence
+
+I ran a clean `git archive 46cdcf2` under private Xvfb with a fresh cache and a
+bounded timeout. The tree was deleted by its trap. Result:
+
+```text
+Build Summary: 105/105 steps succeeded; 816/816 tests passed
+```
+
+The run included 79/79 drawer S2 checks, the census case, 56/56 icon/S1 checks,
+25/25 isolation checks, and the nine real-screen-oracle unit tests. No live
+browser, live socket, account or DISPLAY `:0` was touched. Findings and the
+gate result were mailed as Agent Mail 5373, 5375 and 5377. I then ran a second
+clean-export gate at exact `22ff1f9`, independently covering the crash-page
+follow-up and the latest plan commit. It was also green:
+
+```text
+Build Summary: 105/105 steps succeeded; 816/816 tests passed
+```
+
+That tree was likewise deleted by its trap; Agent Mail 5379 released the gate
+slot.
+
+## Visible crash document (`ddc892e`)
+
+**Verdict: APPROVED.** The per-window `committed_uri` is duplicated on a real
+load commit and freed with the window; `crash_page` and `terminated` remain
+GTK-thread-owned (`src/webkit_shim.c:132-143,526-532,1096-1117`). A spontaneous
+crash or memory-limit termination loads static, escaped alternate HTML into the
+same WebView (`:984-1045,4483-4518`). Its own load events do not complete an
+automation job, emit a navigation row or clear the crash; only a later real
+commit does. `terminated_by_api` still shows no crash page. The sentinel
+intercept is active only while that window is showing its crash page
+(`:1191-1203`), so an ordinary page cannot obtain that navigation exception.
+
+The regression kills real WebKitWebProcesses, checks each affected window's
+own crash DOM and URL, waits with a no-store request counter to prove no
+automatic reload, then uses a real X click to reload. Related/shared and
+independent popup process groups, API termination and quiet shutdown are all
+covered (`tests/e2e/web_process_crash_test.py`, 40 checks;
+`tests/e2e/slow_load_watchdog_test.py`). This traverses the production
+termination callback and same WebView rather than calling the renderer helper
+from test code. The author recorded eight failing crash-page assertions before
+the implementation and five relevant killed mutants. Their clean-export gate
+was 105/105 steps and 816/816 tests. My independent exact-`22ff1f9` clean gate,
+which includes this commit, produced the same 105/105 and 816/816 result and
+ran all 40 crash-page checks.
+
+**SHOULD:** `src/webkit_shim.c:1004-1026` notes that string-loaded content
+cannot follow either `file:` or `about:blank`, but only `file:` is routed
+through the sentinel. A blank popup whose last committed URI is `about:blank`
+therefore receives a visible Reload link that does nothing. Route that scheme
+through the sentinel too, or omit the link, and add the blank-popup case when
+this path next changes. Agent Mail 5376 sent the approved verdict and this
+follow-up to BlueBeaver.
