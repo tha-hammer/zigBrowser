@@ -8066,3 +8066,85 @@ is architecturally approved, but there is no new contiguous approved
 push-through SHA yet: the newest approved push-through remains **`fa0aa48`**.
 No push or history rewrite was performed; no live browser, profile, token,
 socket or DISPLAY `:0` was used.
+
+## S3n1 red, harness corrections and green (`850f3da`, `fa7b804`, `9fb5a3c`)
+
+### Exact verdicts
+
+**Explicit verdict for `850f3da`: BLOCKED at that exact SHA, but valid as the
+initial failing-first artifact.** Its 31 new command-line tests do fail because
+the two production modules do not exist, so the red is genuine. The exact
+commit nevertheless contains two harness errors: its process lookup also
+matches bwrap's monitor/reaper, and its stdout-EOF deadline attributes bwrap's
+own retained stdout descriptor to the relay. It also does not observe two
+load-bearing mutations described below. The later `fa7b804` repairs the two
+false assertions without erasing the original missing-module red.
+
+**Explicit verdict for `fa7b804`: APPROVED as a narrow test correction.** The
+exact diff changes only `test_relay.py`. Matching `/proc/<pid>/exe` plus the
+exact argv prefix selects the Python relay rather than either bwrap process
+(`agent/host/tests/test_relay.py@fa7b804:320-342`). Comparing EOF timing with
+the same child under plain bwrap is the correct baseline, while the 1 MiB byte
+round trip and relay-fd census remain independent checks (`:237-248,291-304`).
+This commit closes the two harness errors in `850f3da`; it does not by itself
+close the cumulative S3n1 findings below.
+
+**Explicit verdict for `9fb5a3c`: BLOCKED.** Most of the production boundary
+is sound: the socket hierarchy and modes, exact production host set lookup,
+address vetting, SNI-before-connect rule, split egress/bridge authority,
+private netd filesystem, fixed bridge targets, relay signal/status parity,
+non-inheritance for hooks and the two gate registrations all match rev 16.2.
+However, one production deadline violation and two mutation-surviving coverage
+gaps prevent approval:
+
+1. **BLOCKER — a stalled writer defeats the idle deadline.** `splice()` puts
+   its sockets in blocking mode and calls unbounded `dst.sendall(data)`
+   (`agent/host/zb_agent_host/netd.py@9fb5a3c:223-261`, especially `:249`). If
+   a peer stops reading, execution never returns to the five-minute idle-clock
+   check. Sixteen such tunnels permanently consume the semaphore and all later
+   traffic receives 503. A direct socketpair reproduction used a 1 KiB send
+   buffer and `idle=0.2`: the splice thread was still alive after 0.8 s and
+   ended only when the non-reading peer was closed. BlueBeaver acknowledged
+   this in mail 5528 and has a failing-first nonblocking/back-pressure fix in
+   progress.
+2. **BLOCKER-for-tests — exact-host matching is masked by DNS failure.** The
+   production lookup is correctly exact (`netd.py:120`), but the lookalikes in
+   `test_netd.py:325-348` have no resolution seam. Replacing the check with
+   suffix matching still makes them end as 403 with zero connects after DNS
+   fails. I independently applied that mutant in a clean export: **all 19
+   netd tests passed**. The follow-up must resolve each lookalike to a global
+   test address and prove both 403 and zero recorded attempts. BlueBeaver's
+   mail 5525 reports that new test red on the mutant and green on the exact
+   lookup; it is not committed yet.
+3. **BLOCKER-for-tests — the outer-relay test never supplies numeric fd 3.**
+   `test_relay.py:139-148` opens its Unix fake first and then opens an arbitrary
+   canary descriptor. `pass_fds` preserves that descriptor's number; it does
+   not make it fd 3. Consequently removing the special fd-3 preservation at
+   `relay.py:227` is not observed, even though that mutation discards the only
+   token route in production. A follow-up must give the relay a real,
+   inheritable socket at numeric fd 3, prove the helper reads the same socket,
+   prove the relay parent closes its copy, and retain the stray-fd and inner
+   no-fd negatives. BlueBeaver's mail 5529 reports both relevant mutants red;
+   that test is also not committed yet.
+
+The accepted implementation deviation remains documented for the next plan
+touch: netd waits for bwrap as its only child, rather than execing bwrap in
+place, so the outer process can remove the emptied bind-mount directory. The
+spawned PID remains netd's PID and bwrap uses `--die-with-parent`; the existing
+ready-state death test passes. This does not close the three findings above.
+
+### Exact gate and push-through boundary
+
+A bounded, fresh-cache clean export of exact `9fb5a3c` under private Xvfb
+passed **Build Summary: 108/108 steps succeeded; 817/817 tests passed**. The
+new registered steps ran 19 netd tests and 12 relay tests. The EXIT trap
+deleted the export and cache. The green gate proves integration stability but
+does not override the reproduced deadline failure or the two surviving
+mutations. The netd tests also emit repeated unclosed-pipe `ResourceWarning`s;
+closing the `Popen` streams is a non-blocking test-hygiene SHOULD.
+
+Therefore the linear range from `fa0aa48` through `9fb5a3c` is **not** an
+approved push range. The newest approved push-through SHA remains
+**`fa0aa48`** until follow-up commits close all three S3n1 blockers and are
+reviewed. No push or history rewrite was performed; no live browser, profile,
+token, socket or DISPLAY `:0` was used.
