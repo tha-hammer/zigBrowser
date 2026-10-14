@@ -159,7 +159,7 @@ These choices are made in the plan; RoseCat should challenge any of them.
 
 - Each browsing `ZbWindow` gets a `GtkOverlay` as the toplevel's child. Its main child is the page's `WebKitWebView`. Its overlay children are:
   - the icon, a `GtkButton` labelled "S" with accessible name "Open Claude Agent";
-  - the drawer, a `GtkBox` laid out as: header ("Claude Agent", status, account button, '-'); a `GtkScrolledWindow` holding a `GtkListBox` of message rows; and an input row with a `GtkTextView` plus Send/Stop.
+  - the drawer, a `GtkBox` laid out as: header ("Claude Agent", status, account button, '-'; rev 12: S2 builds the header without the account button, which lands in **S4** with the Secrets window it opens); a `GtkScrolledWindow` holding a `GtkListBox` of message rows; and an input row with a `GtkTextView` plus Send/Stop.
 - Message text is set with `gtk_label_set_text`, never markup, so model output is inert text.
 - Why this is chosen over a WebView drawer with a custom scheme and its own UCM:
   - There is no bridge to secure, so threat test T2's drawer-JS variants are impossible by construction.
@@ -451,7 +451,7 @@ agent-home/
 
 **The Secrets window**
 - It is a native `GtkWindow`. It is not a `ZbWindow`, so it is not in the registry, `page.list` or the socket.
-- It opens from the drawer's account button, or automatically when Send is pressed with no stored token.
+- It opens from the drawer's account button (added to the header in S4; rev 12), or automatically when Send is pressed with no stored token.
 - It offers:
   - **"Sign in with Claude.ai"** (S6);
   - **"Paste a long-lived token"**: a `GtkEntry` with visibility FALSE and input-purpose PASSWORD, with Save and Remove;
@@ -672,7 +672,7 @@ agent-home/
 | R12-S | P0 ran without the outer seccomp filter (P0 blocker 2) | The filter is specified exactly and passed with `--seccomp`; new P0.6 proves it with the real CLI and nested hooks. | D12, P0.6 |
 | R12-V | CLI version and census artifact names | 2.1.294; one evidence file `agent/host/tests/p0_census.json` (`cli_version`, `cli_children`, `writes`, `hook_env`), from which the reviewed `runtime/writable.json` and `runtime/hook-env.json` are derived. | §2, P0.5 |
 | R12-A | `atomic_write` may write short (SHOULD) | It loops until every byte is written; a unit test injects a short write. | P0.7 |
-| R12-D | S2 as built (mail 5275) and S2 verdict 6fe538f | New rows `unread` and `fold`; the S2.2 area property is restricted to a componentwise shrink (the wider form is false); a mid-fold observation is added. | D7b, S2.2, S2.3 |
+| R12-D | S2 as built (mail 5275) and S2 verdict 6fe538f | New rows `unread` and `fold`; the S2.2 area property is restricted to a componentwise shrink (the wider form is false); a mid-fold observation is added, with an xwd point outside both end states; the header's account button is owned by S4. | D7b, S2.2, S2.3 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -1086,7 +1086,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Edge case:** a resize during the animation re-targets to the clamped R.
 - **Mid-fold observation (rev 12; RoseCat S2 verdict 6fe538f).** The rows above prove the start and the end only, so a stand-in hidden for the whole animation would still pass. The fold must be seen while it is on screen:
   - at the default 180 ms: at least 2 `DRAWER fold` rows whose rects lie strictly between the open rect and R, their frame numbers increasing, and each rect's width and height no larger than the previous one's and each edge moving toward R's;
-  - with `ZIGBROWSER_AGENT_ANIM_MS=3000`: an `xwd` capture taken mid-animation shows the stand-in's colour at the centre of the latest `fold` rect (a point outside R, where the page would show if the stand-in were not drawn), and the page colour just outside that rect;
+  - with `ZIGBROWSER_AGENT_ANIM_MS=3000`: an `xwd` capture taken mid-animation shows the stand-in's colour at a point inside the latest `fold` rect that is **outside both end states**: outside R and outside the open drawer's rect (with the seeded icon above the drawer, the fold passes over page area that neither end state covers). Without a drawn stand-in that point shows the page colour. The page colour also shows just outside the fold rect. The animation still runs on the real frame clock; the seam only lengthens it;
   - **red-at-seam:** hide the stand-in for the whole animation (`gtk_widget_hide` instead of `gtk_widget_show`). No `fold` row appears and the mid-flight pixel is the page colour, so red.
 - **Property (Zig):**
   - Invariant: `lerpRect(a,b,0)==a`, `lerpRect(a,b,1)==b`, and every component lies between a and b for t ∈ [0,1].
