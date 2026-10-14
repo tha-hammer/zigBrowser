@@ -6899,6 +6899,35 @@ private-Xvfb real-X tests ran. The green gate does not change the verdict
 because the missing focus state and surviving motion mutant are absent from
 the test matrix. Agent Mail 5403 and 5406 sent the findings to BlackRobin.
 
+### Focus and property-type correction (`cc9d135`)
+
+**Explicit verdict for `cc9d135`: APPROVED.** The commit closes the click-focus
+BLOCKER and the root-property type SHOULD above. `safe_click` now reads the
+focus under the same server grab as the final viewability, active-window,
+geometry and stacking checks (`tests/manual/real_screen_check.py:496-524`). A
+normal focus must be the target or its descendant; `PointerRoot` is accepted
+only when the already-sampled click-point path contains the target. The new
+fake and private-Xvfb cases keep the target active and uncovered while a
+side-window alone owns focus, and assert that no motion, button or key was
+sent (`tests/manual/test_real_screen_input.py:168-180`). The positive
+PointerRoot case remains covered.
+
+`root_window_property` now requests `AnyPropertyType` and explicitly requires
+`actual_type == XA_WINDOW`, format 32 and exactly one item before interpreting
+the value (`tests/manual/real_screen_check.py:362-379`). A real-X
+`XA_CARDINAL` mutant for `_NET_ACTIVE_WINDOW` is refused with zero recorded
+input (`tests/manual/test_real_screen_input.py:182-188`). This makes the type
+check observable instead of relying on Xlib's requested-type filtering.
+
+A quiet clean-export gate at exact `cc9d135`, under private Xvfb, was green:
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**. The export
+was deleted immediately after the run. The remaining `eef2ff6`
+BLOCKER-for-tests is still **OPEN (BlackRobin)**: at this commit the late-decoy
+and unmapped-target real-X refusals still omit `self.calls == []`, so they do
+not prove that a pointer-motion-only mutant is killed. That independent test
+gap does not invalidate the two corrections in `cc9d135`; the complete
+real-screen input-guard chain remains blocked until its queued follow-up lands.
+
 ## S3a immutable home implementation (`69e6fc4`)
 
 **Explicit verdict: BLOCKER, with the SAI copy-path policy separately PENDING
