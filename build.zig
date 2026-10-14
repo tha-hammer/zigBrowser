@@ -698,6 +698,14 @@ pub fn build(b: *std.Build) void {
         "agent-setup-e2e",
     });
     agent_setup_e2e.addArtifactArg(exe);
+    // Plan §7.1: the real-screen check's verdict and environment, with fake
+    // captures (no display, no browser). The check itself runs only on the
+    // user's screen, by the orchestrator.
+    const real_screen_check_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/manual && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_check",
+    });
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -937,6 +945,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_setup_e2e.step);
+    test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);

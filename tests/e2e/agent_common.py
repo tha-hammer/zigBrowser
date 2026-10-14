@@ -60,6 +60,7 @@ DRAWER_KINDS: dict[str, list[str]] = {
     "idles": [r"\d+"],
     "unread": [r"shown|hidden"],
     "tree": [r"[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*"],
+    "windows": [r"-|{w}(,{w})*".format(w=r"(-|[A-Za-z0-9_]+):(output|input):(viewable|hidden):[1-9]\d*:-?\d+:-?\d+:\d+:\d+")],
 }
 
 

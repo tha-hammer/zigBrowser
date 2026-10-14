@@ -15,7 +15,11 @@ For each case it starts the built binary with a throwaway profile (no
 automation socket, so the live browser and its socket are never touched),
 loads a solid-colour page, captures the window, and counts pixels:
   - the page colour must fill most of the window (the page is drawn);
-  - with the drawer on, the icon colour must be present (the "S" icon is drawn).
+  - with the drawer on, the icon colour must be present (the "S" icon is drawn);
+  - drawer-open then clicks that icon (XTest, inside our own window),
+    checks the page above the drawer and the drawer's panel twice, a
+    second apart, then presses Escape and checks the page and icon again.
+A window that is not wholly on the screen fails the case.
 The screen's pixels under the window are authoritative: a case passes only
 when both the screen and the window's own buffer show the page (and the
 icon). Rendering overrides in the shell (RENDER_ENV) are removed before each
@@ -53,6 +57,9 @@ ICON_RGB = (0xD9, 0x77, 0x57)   # #zb-agent-icon's background (src/agent_drawer.
 TOLERANCE = 8                   # per channel
 PAGE_MIN_FRACTION = 0.40        # of the window's pixels
 ICON_MIN_PIXELS = 400           # a 56 px circle has about 2400
+PANEL_RGB = (0xF4, 0xF1, 0xEA)  # #zb-agent-drawer's background
+OPEN_PAGE_MIN_FRACTION = 0.30   # the open drawer covers the bottom 40%
+OPEN_PANEL_MIN_FRACTION = 0.10
 
 # Rendering overrides a shell may carry. They are removed before each case,
 # so a case's label is the only thing that changes how it renders.
@@ -68,15 +75,17 @@ RENDER_ENV = (
 
 class Case:
     def __init__(self, name: str, drawer: bool, args: list[str] | None = None, env: dict[str, str] | None = None,
-                 binary: str | None = None, note: str = "", icon: bool | None = None) -> None:
+                 binary: str | None = None, note: str = "", icon: bool | None = None, open_drawer: bool = False) -> None:
         self.name, self.drawer, self.args, self.env = name, drawer, args or [], env or {}
         self.binary, self.note = binary, note
         self.icon = drawer if icon is None else icon  # whether the icon must be drawn
+        self.open_drawer = open_drawer  # then click the icon and check the open drawer too
 
 
 def cases(matrix: bool, variants: list[tuple[str, str]], page_only: list[tuple[str, str]]) -> list[Case]:
     out = [Case("drawer-off", False, note="control: the window without the drawer"),
-           Case("drawer-on", True, note="the slice check: defaults plus --agent-drawer on")]
+           Case("drawer-on", True, note="the slice check: defaults plus --agent-drawer on"),
+           Case("drawer-open", True, open_drawer=True, note="drawer-on, then a click on the icon opens the drawer")]
     if matrix:
         out += [
             Case("on-hw-never", True, ["--hardware-acceleration", "never"], note="no GPU compositing in WebKit"),
@@ -129,6 +138,81 @@ def judge(window: Capture, screen: Capture, crop: tuple[int, int, int, int], nee
         ok = fraction >= PAGE_MIN_FRACTION and (not need_icon or icon >= ICON_MIN_PIXELS)
         results.append((ok, f"{label} page {fraction:.0%}, icon {icon} px"))
     return all(ok for ok, _ in results), "; ".join(text for _, text in results)
+
+
+def judge_open(window: Capture, screen: Capture, crop: tuple[int, int, int, int]) -> tuple[bool, str]:
+    """The open drawer: the page above it and the panel, on the screen and
+    in the window's buffer (the screen is the authority, as in judge)."""
+    results = []
+    for label, cap, box in (("screen", screen, crop), ("window", window, (0, 0, window.width, window.height))):
+        area = max(1, box[2] * box[3])
+        page = count(cap, box, PAGE_RGB) / area
+        panel = count(cap, box, PANEL_RGB) / area
+        ok = page >= OPEN_PAGE_MIN_FRACTION and panel >= OPEN_PANEL_MIN_FRACTION
+        results.append((ok, f"open {label} page {page:.0%}, panel {panel:.0%}"))
+    return all(ok for ok, _ in results), "; ".join(text for _, text in results)
+
+
+def icon_centre(screen: Capture, crop: tuple[int, int, int, int]) -> tuple[int, int] | None:
+    """The centre of the icon's colour on the screen, in root coordinates."""
+    x0, y0, w, h = crop
+    hits = [(x, y) for y in range(y0, y0 + h, 2) for x in range(x0, x0 + w, 2)
+            if all(abs(screen.pixel(x, y)[i] - ICON_RGB[i]) <= TOLERANCE for i in range(3))]
+    if len(hits) * 4 < ICON_MIN_PIXELS:
+        return None
+    return sum(x for x, _ in hits) // len(hits), sum(y for _, y in hits) // len(hits)
+
+
+def xtest(action) -> None:
+    """Runs action(x11, xtst, display) on a fresh connection to $DISPLAY.
+    Used on our own window only: the caller found its target inside it."""
+    import ctypes
+    import ctypes.util
+
+    xlib, xtst = ctypes.util.find_library("X11"), ctypes.util.find_library("Xtst")
+    if xlib is None or xtst is None:
+        raise RuntimeError("libX11 or libXtst is missing")
+    x11, t = ctypes.CDLL(xlib), ctypes.CDLL(xtst)
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    t.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+    t.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    t.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    dpy = x11.XOpenDisplay(None)
+    if not dpy:
+        raise RuntimeError("cannot open the display")
+    try:
+        action(x11, t, dpy)
+    finally:
+        x11.XCloseDisplay(dpy)
+
+
+def click(x: int, y: int) -> None:
+    """One left click at root x, y."""
+    def act(x11, t, dpy):
+        t.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+        x11.XSync(dpy, 0)
+        time.sleep(0.2)
+        for down in (1, 0):
+            t.XTestFakeButtonEvent(dpy, 1, down, 0)
+            x11.XSync(dpy, 0)
+            time.sleep(0.05)
+    xtest(act)
+
+
+def press_escape() -> None:
+    """Escape, to the focused window (ours: it was just clicked)."""
+    def act(x11, t, dpy):
+        code = x11.XKeysymToKeycode(dpy, 0xFF1B)
+        for down in (1, 0):
+            t.XTestFakeKeyEvent(dpy, code, down, 0)
+            x11.XSync(dpy, 0)
+            time.sleep(0.05)
+    xtest(act)
 
 
 def case_env(base: dict[str, str], work: Path, extra: dict[str, str]) -> dict[str, str]:
@@ -197,6 +281,21 @@ def geometry(wid: int) -> tuple[int, int, int, int]:
     return field("Absolute upper-left X"), field("Absolute upper-left Y"), field("Width"), field("Height")
 
 
+def capture_both(wid: int, out: Path, name: str,
+                 crop: tuple[int, int, int, int] | None = None) -> tuple[Capture, Capture]:
+    """The window's own buffer and the whole screen, each saved as a PNG
+    (the screen cropped to the window, once its place is known)."""
+    window = xwd("-id", hex(wid))
+    write_png(window, (0, 0, window.width, window.height), out / f"{name}.window.png")
+    screen = xwd("-root")
+    if crop is None:
+        x, y, w, h = geometry(wid)
+        crop = (max(x, 0), max(y, 0), max(0, min(w, screen.width - max(x, 0))), max(0, min(h, screen.height - max(y, 0))))
+    if crop[2] > 0 and crop[3] > 0:
+        write_png(screen, crop, out / f"{name}.screen.png")
+    return window, screen
+
+
 def xwd(*args: str) -> Capture:
     done = subprocess.run(["xwd", "-silent", *args], capture_output=True, timeout=60)
     if done.returncode != 0:
@@ -234,13 +333,32 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
             activate(wid)
             time.sleep(settle)
             x, y, w, h = geometry(wid)
-            window = xwd("-id", hex(wid))
-            write_png(window, (0, 0, window.width, window.height), out / f"{case.name}.window.png")
-            screen = xwd("-root")
-            sx, sy = max(x, 0), max(y, 0)
-            crop = (sx, sy, min(w, screen.width - sx), min(h, screen.height - sy))
-            write_png(screen, crop, out / f"{case.name}.screen.png")
-            return judge(window, screen, crop, case.icon)
+            window, screen = capture_both(wid, out, case.name)
+            crop = (x, y, w, h)
+            if x < 0 or y < 0 or x + w > screen.width or y + h > screen.height or (window.width, window.height) != (w, h):
+                return False, (f"window {w}x{h}+{x}+{y} is not wholly on the {screen.width}x{screen.height} screen "
+                               f"(window capture {window.width}x{window.height}): move it and run again")
+            ok, detail = judge(window, screen, crop, case.icon)
+            detail = f"{w}x{h}+{x}+{y}: {detail}"
+            if not ok or not case.open_drawer:
+                return ok, detail
+            centre = icon_centre(screen, crop)
+            if centre is None:
+                return False, detail + "; no icon on screen to click"
+            click(*centre)
+            # The open drawer, twice, a second apart: it must draw and stay drawn.
+            for sample in (1, 2):
+                time.sleep(settle if sample == 1 else 1.0)
+                window, screen = capture_both(wid, out, f"{case.name}.open{sample}", crop)
+                ok, opened = judge_open(window, screen, crop)
+                detail += f"; open #{sample} {opened}"
+                if not ok:
+                    return False, detail
+            press_escape()
+            time.sleep(settle)
+            window, screen = capture_both(wid, out, f"{case.name}.minimized", crop)
+            ok, closed = judge(window, screen, crop, True)
+            return ok, detail + "; minimized " + closed
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)

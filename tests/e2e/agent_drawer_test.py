@@ -26,6 +26,18 @@ captures. The icon's start position is seeded in agent-drawer.json.
   jumping the view, and "New messages" appears until the list is back at
   the bottom; Enter on an empty input sends nothing; Shift+Enter is a
   newline; a pasted 50 KB message wraps and does not widen the drawer
+- windows (plan §7.1, the blank window on the user's NVIDIA screen): the
+  `windows` census of GdkWindows under the toplevel (owner, output or
+  input, viewable, depth, rect). An output child window over the
+  accelerated page blanked the whole window there, so: with the drawer
+  closed the page's window is the only output window, as with the drawer
+  off; open, the page is laid out above the drawer and the panel's own
+  output windows (scroller, text view) lie beside it, not over it;
+  minimized, the page fills the window again; and every census row, the
+  closed, open and minimized, has exactly one page window, only allowlisted panel
+  output windows besides it (an unknown owner fails), and no viewable
+  output window over the viewable page. The real-screen check
+  (tests/manual/real_screen_check.py) is the hardware half of this test.
 
 Exit 1 (never 77) when Xvfb, xauth, xwd, libXtst or the binary is missing."""
 
@@ -34,6 +46,7 @@ from __future__ import annotations
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from agent_common import WIN_H, WIN_W, Browser, Checks, centre, drawer_rect, near, rect_from_ratios, run_main
 from xinput import Clipboard
@@ -155,6 +168,97 @@ def case_open_minimize(binary: Path, tmp: Path, check: Checks) -> None:
             five = b.wait_row("open", 1, count=5)
             check(five is not None and five.rect() == drawer_rect(600, 200) and five.rect()[3] == 140,
                   f"a 200 px tall window gets a 140 px drawer ({five and five.rect()})", b)
+    finally:
+        b.stop()
+        check(b.gtk_complaints() == [], f"{b.label}: no GTK warning or critical ({b.gtk_complaints()[:3]})", b)
+
+
+# The only widgets that may own an output GdkWindow: the page, and the open
+# panel's scroller and text view (GTK makes those windows itself). Anything
+# else, an unknown owner included, fails.
+PANEL_OUTPUT = {"GtkScrolledWindow", "GtkViewport", "GtkTextView", "GtkListBox"}
+
+
+class Win(NamedTuple):
+    owner: str
+    output: bool
+    viewable: bool
+    depth: int
+    rect: tuple[int, int, int, int]
+
+
+def census(row) -> list[Win]:
+    if row.fields[0] == "-":
+        return []
+    out = []
+    for entry in row.fields[0].split(","):
+        owner, kind, state, depth, x, y, w, h = entry.split(":")
+        out.append(Win(owner, kind == "output", state == "viewable", int(depth), (int(x), int(y), int(w), int(h))))
+    return out
+
+
+def overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def topology_faults(row) -> list[str]:
+    """The structure every census must have, whatever the drawer's state:
+    exactly one page window, a direct child of the toplevel's; every other
+    output window is the panel's own; no viewable output window overlaps
+    the viewable page window."""
+    wins = census(row)
+    pages = [w for w in wins if w.owner == "WebKitWebView" and w.output]
+    faults = [] if len(pages) == 1 and pages[0].depth == 1 else [f"page windows {pages}"]
+    faults += [f"output window of {w.owner}" for w in wins
+               if w.output and w.owner != "WebKitWebView" and w.owner not in PANEL_OUTPUT]
+    if len(pages) == 1 and pages[0].viewable:
+        faults += [f"{w.owner} {w.rect} over the page {pages[0].rect}" for w in wins
+                   if w.output and w.viewable and w.owner != "WebKitWebView" and overlaps(w.rect, pages[0].rect)]
+    return faults
+
+
+def case_windows(binary: Path, tmp: Path, check: Checks) -> None:
+    b = Browser(binary, tmp, "windows", ["--agent-drawer", "on"], profile=seeded_profile(tmp, "p-windows"))
+    try:
+        icon = b.wait_row("icon", 1)
+        if not check(icon is not None and b.wait_page(), "icon row and page loaded", b):
+            return
+        R = icon.rect()
+        drawn = lambda: [r for r in b.rows("windows", 1)  # noqa: E731
+                         if any(w.owner == "GtkButton" and w.viewable and not w.output for w in census(r))]
+        if not check(b.wait(drawn, 10), "a windows row with the icon's input window viewable", b):
+            return
+        closed = drawn()[-1]
+        check([w.owner for w in census(closed) if w.output] == ["WebKitWebView"],
+              f"drawer closed: the page's window is the only output window, as with the drawer off ({closed.fields[0]})", b)
+        cx, cy = centre(R)
+        check(near(b.x.screen().pixel(cx - 12, cy - 12), ICON_RGB), "the icon is drawn over the page", b)
+
+        b.x.click(*centre(R))
+        opened = b.wait_row("open", 1)
+        if not check(opened is not None, "the icon click opens the drawer", b):
+            return
+        D = opened.rect()
+        page_above = lambda r: [w.rect for w in census(r) if w.owner == "WebKitWebView"] == [(0, 0, WIN_W, D[1])]  # noqa: E731
+        check(b.wait(lambda: page_above(b.rows("windows", 1)[-1]), 5),
+              f"drawer open: the page is laid out above the drawer, 0,0,{WIN_W},{D[1]} ({b.rows('windows', 1)[-1].fields[0]})", b)
+        panel = [w.owner for w in census(b.rows("windows", 1)[-1]) if w.output and w.viewable and w.owner in PANEL_OUTPUT]
+        check(panel != [], f"drawer open: the panel's own output windows are viewable ({panel})", b)
+        page_shot = b.x.screen().pixel(WIN_W // 2, D[1] // 2)
+        check(near(page_shot, PAGE_RGB), f"drawer open: the page is drawn above the drawer ({page_shot})", b)
+
+        b.x.key("Escape")
+        if not check(b.wait_row("minimized", 1) is not None and b.wait_row("icon", 1, count=2) is not None,
+                     "Escape minimizes it", b):
+            return
+        whole = lambda r: [w.rect for w in census(r) if w.owner == "WebKitWebView"] == [(0, 0, WIN_W, WIN_H)]  # noqa: E731
+        check(b.wait(lambda: whole(b.rows("windows", 1)[-1]), 5),
+              f"minimized: the page fills the window again ({b.rows('windows', 1)[-1].fields[0]})", b)
+        rows = b.rows("windows", 1)
+        faults = [(i, f) for i, r in enumerate(rows) for f in topology_faults(r)]
+        check(len(rows) >= 3 and faults == [],
+              f"every census row ({len(rows)}) has one page window, only panel output windows "
+              f"besides it, and none over the page ({faults[:3]})", b)
     finally:
         b.stop()
         check(b.gtk_complaints() == [], f"{b.label}: no GTK warning or critical ({b.gtk_complaints()[:3]})", b)
@@ -325,7 +429,8 @@ def case_scroll_send(binary: Path, tmp: Path, check: Checks) -> None:
 
 
 def main() -> int:
-    return run_main(__doc__, {"open": case_open_minimize, "fold": case_fold_pixels, "scroll": case_scroll_send})
+    return run_main(__doc__, {"open": case_open_minimize, "fold": case_fold_pixels, "scroll": case_scroll_send,
+                              "windows": case_windows})
 
 
 if __name__ == "__main__":

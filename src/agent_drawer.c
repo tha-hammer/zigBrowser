@@ -1,5 +1,5 @@
 /* The Claude Agent drawer's GTK glue (chat-drawer plan D1-D5; see
- * agent_drawer.h): the overlay over the page, the floating "S" icon (click,
+ * agent_drawer.h): the host that floats the drawer over the page, the floating "S" icon (click,
  * drag, keyboard, persistence) and the drawer it opens: a header with '-',
  * a scrolling message list and an input row. '-', Escape and
  * Ctrl+Shift+Space minimize it into the icon's last position with a short
@@ -50,9 +50,12 @@ struct ZbDrawer {
   guint32 win_id;
   int e2e;
   GtkWidget *toplevel;
-  GtkWidget *overlay;
+  GtkWidget *host; /* ZbDrawerHost: the page plus the floating children */
   GtkWidget *icon;
   GtkWidget *panel;
+  /* Holds the panel and takes the pointer over all of it (an input-only
+   * window), so no click or wheel on the drawer reaches the page below. */
+  GtkWidget *catcher;
   /* Stands in for the panel while it folds into the icon (D5), so the real
    * panel is never squeezed below its minimum size. */
   GtkWidget *ghost;
@@ -89,6 +92,7 @@ struct ZbDrawer {
   int anim_frames;
   ZbDrawerRect anim_from, anim_to, anim_rect;
   ZbDrawerRect fold_reported; /* the last `fold` row */
+  char *windows_reported;     /* the last `windows` row */
 };
 
 static const char *zb_drawer_css =
@@ -131,7 +135,7 @@ static void content_origin(ZbDrawer *d, int *ox, int *oy) {
     gdk_window_get_origin(window, ox, oy);
   }
   int tx = 0, ty = 0;
-  if (gtk_widget_translate_coordinates(d->overlay, d->toplevel, 0, 0, &tx, &ty)) {
+  if (gtk_widget_translate_coordinates(d->host, d->toplevel, 0, 0, &tx, &ty)) {
     *ox += tx;
     *oy += ty;
   }
@@ -164,7 +168,7 @@ static ZbDrawerRect widget_rect(ZbDrawer *d, GtkWidget *widget) {
   GtkAllocation a;
   gtk_widget_get_allocation(widget, &a);
   int x = 0, y = 0;
-  gtk_widget_translate_coordinates(widget, d->overlay, 0, 0, &x, &y);
+  gtk_widget_translate_coordinates(widget, d->host, 0, 0, &x, &y);
   ZbDrawerRect r = {x, y, a.width, a.height};
   return r;
 }
@@ -182,47 +186,270 @@ static void report_icon(ZbDrawer *d) {
   drawer_rect_row(d, "icon", &d->icon_rect);
 }
 
+/* `windows <census>`: every GdkWindow under the toplevel's own, depth first,
+ * as `<owner type>:<output|input>:<viewable|hidden>:<depth>:<x>:<y>:<w>:<h>`
+ * (viewable: it and every ancestor are mapped; depth 1 is a child of the
+ * toplevel's window; x, y in the toplevel window's coordinates). One row per change;
+ * e2e only (a structural check, plan §7.1: on the user's NVIDIA screen an
+ * output child window over the accelerated page blanked the whole window). */
+static void census_walk(GdkWindow *window, int depth, int ox, int oy, GString *out) {
+  for (GList *l = gdk_window_peek_children(window); l != NULL; l = l->next) {
+    GdkWindow *child = l->data;
+    gpointer owner = NULL;
+    gdk_window_get_user_data(child, &owner);
+    int x, y;
+    gdk_window_get_position(child, &x, &y);
+    g_string_append_printf(out, "%s%s:%s:%s:%d:%d:%d:%d:%d", out->len > 0 ? "," : "",
+                           owner != NULL && G_IS_OBJECT(owner) ? G_OBJECT_TYPE_NAME(owner) : "-",
+                           gdk_window_is_input_only(child) ? "input" : "output",
+                           gdk_window_is_viewable(child) ? "viewable" : "hidden", depth, ox + x, oy + y,
+                           gdk_window_get_width(child), gdk_window_get_height(child));
+    census_walk(child, depth + 1, ox + x, oy + y, out);
+  }
+}
+
+static void report_windows(ZbDrawer *d) {
+  GdkWindow *top = d->e2e ? gtk_widget_get_window(d->toplevel) : NULL;
+  if (top == NULL) {
+    return;
+  }
+  GString *out = g_string_new(NULL);
+  census_walk(top, 1, 0, 0, out);
+  if (g_strcmp0(out->str, d->windows_reported) != 0) {
+    g_free(d->windows_reported);
+    d->windows_reported = g_strdup(out->str);
+    drawer_row(d, "windows", out->len > 0 ? out->str : "-", NULL, NULL);
+  }
+  g_string_free(out, TRUE);
+}
+
+static gboolean on_host_drawn(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)widget;
+  (void)cr;
+  report_windows(data);
+  return FALSE;
+}
+
 /* --- placement ------------------------------------------------------------ */
 
 static void content_size(ZbDrawer *d, int *width, int *height) {
   GtkAllocation a;
-  gtk_widget_get_allocation(d->overlay, &a);
+  gtk_widget_get_allocation(d->host, &a);
   *width = a.width;
   *height = a.height;
 }
 
-/* The overlay places its children here (GtkOverlay::get-child-position): the
- * icon exactly at icon_rect, so its input region is the icon and nothing
- * else (D3); the panel at the bottom (D2); the stand-in where the animation
- * has it. */
-static gboolean on_child_position(GtkOverlay *overlay, GtkWidget *child, GdkRectangle *out, gpointer data) {
-  (void)overlay;
-  ZbDrawer *d = data;
+/* Where the host places a floating child, in content coordinates: the icon
+ * exactly at icon_rect, so its input region is the icon and nothing else
+ * (D3); the panel at the bottom (D2); the stand-in where the animation has it. */
+static void child_rect(ZbDrawer *d, GtkWidget *child, ZbDrawerRect *r) {
   int width, height;
   content_size(d, &width, &height);
-  ZbDrawerRect r;
   if (child == d->icon) {
     if ((width != d->width || height != d->height) && !d->pressing) {
       d->width = width;
       d->height = height;
       zb_drawer_place(d->has_ratios ? &d->ratios : NULL, width, height, &d->icon_rect);
     }
-    r = d->icon_rect;
-  } else if (child == d->panel) {
-    zb_drawer_panel_rect(width, height, &r);
-  } else if (child == d->ghost) {
-    r = d->anim_rect;
+    *r = d->icon_rect;
+  } else if (child == d->catcher) {
+    zb_drawer_panel_rect(width, height, r);
   } else {
-    return FALSE;
+    *r = d->anim_rect;
   }
-  out->x = r.x;
-  out->y = r.y;
-  out->width = r.w;
-  out->height = r.h;
-  return TRUE;
 }
 
-static void on_overlay_allocated(GtkWidget *widget, GdkRectangle *allocation, gpointer data) {
+/* --- the host ------------------------------------------------------------- */
+
+/* The drawer's container, in place of GtkOverlay. It has no window and
+ * makes none for its children: GtkOverlay gave each overlay child an output
+ * GdkWindow, and on the user's NVIDIA screen an output child window over the
+ * accelerated page blanked the whole browser window (review f72e63d; plan
+ * §7.1). The page fills the host; the icon and the fold's stand-in float
+ * over it and are painted into the page's own window, right after the page
+ * (on_page_drawn): painted on the toplevel's window, the page's window would
+ * cover them whenever the page repaints alone. Their input arrives through
+ * input-only windows, which lie above the page's. The open panel docks
+ * instead: the page is laid out above it, because the panel's scroller and
+ * text view have output windows of their own, and no output window may lie
+ * over the page's. The `windows` row checks this structure under Xvfb;
+ * tests/manual/real_screen_check.py checks the real screen. */
+typedef struct {
+  GtkContainer parent;
+  GtkWidget *page;
+  GList *floats;
+  /* The float that docks: while it is shown the page is laid out above it
+   * and the host draws it, so nothing of it lies over the page's window. */
+  GtkWidget *dock;
+  ZbDrawer *drawer;
+} ZbDrawerHost;
+
+typedef struct {
+  GtkContainerClass parent_class;
+} ZbDrawerHostClass;
+
+G_DEFINE_TYPE(ZbDrawerHost, zb_drawer_host, GTK_TYPE_CONTAINER)
+
+#define ZB_DRAWER_HOST(obj) ((ZbDrawerHost *)(obj))
+
+static gboolean on_page_drawn(GtkWidget *page, cairo_t *cr, gpointer data);
+
+/* The first child is the page; every later one floats over it. */
+static void zb_drawer_host_add(GtkContainer *container, GtkWidget *child) {
+  ZbDrawerHost *host = ZB_DRAWER_HOST(container);
+  if (host->page == NULL) {
+    host->page = child;
+    g_signal_connect_after(child, "draw", G_CALLBACK(on_page_drawn), host);
+  } else {
+    host->floats = g_list_append(host->floats, child);
+  }
+  gtk_widget_set_parent(child, GTK_WIDGET(container));
+}
+
+static void zb_drawer_host_remove(GtkContainer *container, GtkWidget *child) {
+  ZbDrawerHost *host = ZB_DRAWER_HOST(container);
+  if (child == host->page) {
+    g_signal_handlers_disconnect_by_func(child, on_page_drawn, host);
+    host->page = NULL;
+  } else if (child == host->dock) {
+    host->dock = NULL;
+    host->floats = g_list_remove(host->floats, child);
+  } else if (g_list_find(host->floats, child) != NULL) {
+    host->floats = g_list_remove(host->floats, child);
+  } else {
+    return;
+  }
+  gboolean was_visible = gtk_widget_get_visible(child);
+  gtk_widget_unparent(child);
+  if (was_visible) {
+    gtk_widget_queue_resize(GTK_WIDGET(container));
+  }
+}
+
+/* The page first, then the floats: this is also the drawing order. */
+static void zb_drawer_host_forall(GtkContainer *container, gboolean internals, GtkCallback callback, gpointer data) {
+  (void)internals;
+  ZbDrawerHost *host = ZB_DRAWER_HOST(container);
+  if (host->page != NULL) {
+    callback(host->page, data);
+  }
+  for (GList *l = host->floats; l != NULL;) {
+    GtkWidget *child = l->data;
+    l = l->next; /* the callback may remove it */
+    callback(child, data);
+  }
+}
+
+/* The page's size is the host's, as with GtkOverlay's main child. */
+static void zb_drawer_host_preferred_width(GtkWidget *widget, gint *minimum, gint *natural) {
+  GtkWidget *page = ZB_DRAWER_HOST(widget)->page;
+  *minimum = *natural = 0;
+  if (page != NULL && gtk_widget_get_visible(page)) {
+    gtk_widget_get_preferred_width(page, minimum, natural);
+  }
+}
+
+static void zb_drawer_host_preferred_height(GtkWidget *widget, gint *minimum, gint *natural) {
+  GtkWidget *page = ZB_DRAWER_HOST(widget)->page;
+  *minimum = *natural = 0;
+  if (page != NULL && gtk_widget_get_visible(page)) {
+    gtk_widget_get_preferred_height(page, minimum, natural);
+  }
+}
+
+static gboolean docked(ZbDrawerHost *host) {
+  return host->dock != NULL && gtk_widget_get_visible(host->dock);
+}
+
+static void zb_drawer_host_size_allocate(GtkWidget *widget, GtkAllocation *allocation) {
+  ZbDrawerHost *host = ZB_DRAWER_HOST(widget);
+  gtk_widget_set_allocation(widget, allocation);
+  if (host->page != NULL && gtk_widget_get_visible(host->page)) {
+    GtkAllocation page = *allocation;
+    if (docked(host)) {
+      ZbDrawerRect r;
+      child_rect(host->drawer, host->dock, &r);
+      page.height = MAX(1, r.y); /* the dock is at the bottom (D2) */
+    }
+    gtk_widget_size_allocate(host->page, &page);
+  }
+  for (GList *l = host->floats; l != NULL; l = l->next) {
+    GtkWidget *child = l->data;
+    if (!gtk_widget_get_visible(child)) {
+      continue;
+    }
+    GtkRequisition minimum;
+    gtk_widget_get_preferred_size(child, &minimum, NULL);
+    ZbDrawerRect r;
+    child_rect(host->drawer, child, &r);
+    /* A no-window parent: child allocations are in the parent window's space. */
+    GtkAllocation at = {allocation->x + r.x, allocation->y + r.y, r.w, r.h};
+    gtk_widget_size_allocate(child, &at);
+  }
+}
+
+/* The host draws the page and the dock; on_page_drawn draws the rest. */
+static gboolean zb_drawer_host_draw(GtkWidget *widget, cairo_t *cr) {
+  ZbDrawerHost *host = ZB_DRAWER_HOST(widget);
+  if (host->page != NULL) {
+    gtk_container_propagate_draw(GTK_CONTAINER(host), host->page, cr);
+  }
+  if (docked(host)) {
+    gtk_container_propagate_draw(GTK_CONTAINER(host), host->dock, cr);
+  }
+  return FALSE;
+}
+
+/* After the page has drawn itself: the other floats, over it, in the page's
+ * window. The page starts at the host's origin, so `cr` is in the host's
+ * coordinates too. */
+static gboolean on_page_drawn(GtkWidget *page, cairo_t *cr, gpointer data) {
+  (void)page;
+  ZbDrawerHost *host = data;
+  for (GList *l = host->floats; l != NULL; l = l->next) {
+    if (l->data != host->dock) {
+      gtk_container_propagate_draw(GTK_CONTAINER(host), l->data, cr);
+    }
+  }
+  return FALSE;
+}
+
+static void zb_drawer_host_finalize(GObject *object) {
+  g_list_free(ZB_DRAWER_HOST(object)->floats);
+  G_OBJECT_CLASS(zb_drawer_host_parent_class)->finalize(object);
+}
+
+static void zb_drawer_host_class_init(ZbDrawerHostClass *klass) {
+  GObjectClass *object_class = G_OBJECT_CLASS(klass);
+  GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass);
+  GtkContainerClass *container_class = GTK_CONTAINER_CLASS(klass);
+  object_class->finalize = zb_drawer_host_finalize;
+  widget_class->get_preferred_width = zb_drawer_host_preferred_width;
+  widget_class->get_preferred_height = zb_drawer_host_preferred_height;
+  widget_class->size_allocate = zb_drawer_host_size_allocate;
+  widget_class->draw = zb_drawer_host_draw;
+  container_class->add = zb_drawer_host_add;
+  container_class->remove = zb_drawer_host_remove;
+  container_class->forall = zb_drawer_host_forall;
+}
+
+static void zb_drawer_host_init(ZbDrawerHost *host) {
+  gtk_widget_set_has_window(GTK_WIDGET(host), FALSE);
+}
+
+static GtkWidget *drawer_host_new(ZbDrawer *d) {
+  ZbDrawerHost *host = g_object_new(zb_drawer_host_get_type(), NULL);
+  host->drawer = d;
+  return GTK_WIDGET(host);
+}
+
+/* Adds `child` as the float that docks (the panel's catcher). */
+static void drawer_host_add_dock(GtkWidget *widget, GtkWidget *child) {
+  gtk_container_add(GTK_CONTAINER(widget), child);
+  ZB_DRAWER_HOST(widget)->dock = child;
+}
+
+static void on_host_allocated(GtkWidget *widget, GdkRectangle *allocation, gpointer data) {
   (void)widget;
   (void)allocation;
   report_icon(data);
@@ -379,7 +606,7 @@ static void drawer_open(ZbDrawer *d) {
   d->stick_bottom = 1;
   d->scroll_reported[0] = '\0';
   gtk_widget_hide(d->icon);
-  gtk_widget_show(d->panel);
+  gtk_widget_show(d->catcher);
   gtk_widget_grab_focus(d->input);
 }
 
@@ -462,9 +689,9 @@ static void drawer_minimize(ZbDrawer *d) {
   d->anim_frames = 0;
   d->anim_start = 0;
   memset(&d->fold_reported, 0, sizeof d->fold_reported);
-  gtk_widget_hide(d->panel);
+  gtk_widget_hide(d->catcher);
   gtk_widget_show(d->ghost);
-  d->tick_id = gtk_widget_add_tick_callback(d->overlay, on_anim_tick, d, NULL);
+  d->tick_id = gtk_widget_add_tick_callback(d->host, on_anim_tick, d, NULL);
 }
 
 static void on_minus_clicked(GtkButton *button, gpointer data) {
@@ -688,11 +915,15 @@ static void build_panel(ZbDrawer *d) {
   gtk_box_pack_start(GTK_BOX(d->panel), d->unread, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(d->panel), row, FALSE, FALSE, 0);
 
-  /* Every part is shown inside the panel; the panel itself stays hidden
-   * until it is opened (the window's show_all must not show it). */
+  /* Every part is shown inside the panel; its catcher stays hidden until
+   * the drawer is opened (the window's show_all must not show it). The
+   * catcher's input-only window lies under the panel's own widgets. */
   gtk_widget_show_all(d->panel);
-  gtk_widget_hide(d->panel);
-  gtk_widget_set_no_show_all(d->panel, TRUE);
+  d->catcher = gtk_event_box_new();
+  gtk_event_box_set_visible_window(GTK_EVENT_BOX(d->catcher), FALSE);
+  gtk_widget_add_events(d->catcher, GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK | GDK_POINTER_MOTION_MASK);
+  gtk_container_add(GTK_CONTAINER(d->catcher), d->panel);
+  gtk_widget_set_no_show_all(d->catcher, TRUE);
 
   report_focus(d, d->input, "input");
   report_focus(d, d->send, "send");
@@ -706,7 +937,9 @@ static void build_panel(ZbDrawer *d) {
   g_signal_connect(d->vadj, "changed", G_CALLBACK(on_list_changed), d);
   g_signal_connect(d->vadj, "value-changed", G_CALLBACK(on_list_scrolled), d);
   g_signal_connect_after(d->scroller, "size-allocate", G_CALLBACK(on_scroller_allocated), d);
-  g_signal_connect_after(d->panel, "size-allocate", G_CALLBACK(on_panel_allocated), d);
+  /* On the catcher: shown again at the same size, it is allocated again,
+   * while GTK skips the unchanged panel inside it. */
+  g_signal_connect_after(d->catcher, "size-allocate", G_CALLBACK(on_panel_allocated), d);
 
   GString *types = g_string_new(NULL);
   collect_types(d->panel, types);
@@ -740,16 +973,18 @@ ZbDrawer *zb_drawer_attach(GtkWidget *toplevel, GtkWidget *view, guint32 win_id,
   d->has_ratios = zb_drawer_start_ratios(&d->ratios);
   d->stick_bottom = 1;
 
-  d->overlay = gtk_overlay_new();
-  gtk_container_add(GTK_CONTAINER(d->overlay), view);
+  /* The page, then the floats in drawing order (D2-D5). */
+  d->host = drawer_host_new(d);
+  gtk_container_add(GTK_CONTAINER(d->host), view);
   build_icon(d);
-  gtk_overlay_add_overlay(GTK_OVERLAY(d->overlay), d->icon);
+  gtk_container_add(GTK_CONTAINER(d->host), d->icon);
   build_panel(d);
-  gtk_overlay_add_overlay(GTK_OVERLAY(d->overlay), d->panel);
-  d->ghost = named(gtk_event_box_new(), "zb-agent-ghost", NULL);
+  drawer_host_add_dock(d->host, d->catcher);
+  /* A no-window box: the stand-in draws its CSS background only. */
+  d->ghost = named(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0), "zb-agent-ghost", NULL);
   gtk_widget_set_no_show_all(d->ghost, TRUE);
   g_signal_connect(d->ghost, "draw", G_CALLBACK(on_ghost_draw), d);
-  gtk_overlay_add_overlay(GTK_OVERLAY(d->overlay), d->ghost);
+  gtk_container_add(GTK_CONTAINER(d->host), d->ghost);
 
   /* The e2e-only seed (plan S2.3): system messages to scroll through. */
   unsigned int demo = zb_drawer_demo_messages();
@@ -759,11 +994,11 @@ ZbDrawer *zb_drawer_attach(GtkWidget *toplevel, GtkWidget *view, guint32 win_id,
     add_message(d, "system", text);
   }
 
-  g_signal_connect(d->overlay, "get-child-position", G_CALLBACK(on_child_position), d);
-  g_signal_connect_after(d->overlay, "size-allocate", G_CALLBACK(on_overlay_allocated), d);
+  g_signal_connect_after(d->host, "size-allocate", G_CALLBACK(on_host_allocated), d);
+  g_signal_connect_after(d->host, "draw", G_CALLBACK(on_host_drawn), d);
   g_signal_connect(toplevel, "key-press-event", G_CALLBACK(on_window_key), d);
 
-  gtk_container_add(GTK_CONTAINER(toplevel), d->overlay);
+  gtk_container_add(GTK_CONTAINER(toplevel), d->host);
   /* The page keeps the window's keyboard focus, as without the drawer; the
    * icon is reached with Tab (D4). */
   gtk_window_set_focus(GTK_WINDOW(toplevel), view);
@@ -776,9 +1011,10 @@ void zb_drawer_detach(ZbDrawer *d) {
     return;
   }
   if (d->tick_id != 0) {
-    gtk_widget_remove_tick_callback(d->overlay, d->tick_id);
+    gtk_widget_remove_tick_callback(d->host, d->tick_id);
   }
-  GObject *connected[] = {G_OBJECT(d->toplevel), G_OBJECT(d->overlay), G_OBJECT(d->icon),   G_OBJECT(d->panel),
+  GObject *connected[] = {G_OBJECT(d->toplevel), G_OBJECT(d->host), G_OBJECT(d->icon),   G_OBJECT(d->panel),
+                          G_OBJECT(d->catcher),
                           G_OBJECT(d->minus),    G_OBJECT(d->list),    G_OBJECT(d->unread), G_OBJECT(d->input),
                           G_OBJECT(d->send),     G_OBJECT(d->stop),    G_OBJECT(d->vadj),   G_OBJECT(d->scroller),
                           G_OBJECT(d->ghost)};
@@ -786,5 +1022,6 @@ void zb_drawer_detach(ZbDrawer *d) {
     g_signal_handlers_disconnect_by_data(connected[i], d);
   }
   g_atomic_int_add(&zb_drawer_live, -1);
+  g_free(d->windows_reported);
   g_free(d);
 }

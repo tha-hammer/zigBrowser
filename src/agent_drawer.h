@@ -11,7 +11,8 @@
 
 typedef struct ZbDrawer ZbDrawer;
 
-/* Wraps `view` in a GtkOverlay that becomes `toplevel`'s child, with the
+/* Wraps `view` in the drawer's host (a container with no window of its own,
+ * not a GtkOverlay) that becomes `toplevel`'s child, with the
  * floating "S" icon above the page and the (hidden) drawer panel. Called by
  * zb_window_new instead of adding the view directly, once that window has
  * passed its guards, and only when zb_app_get_agent_drawer() is on.

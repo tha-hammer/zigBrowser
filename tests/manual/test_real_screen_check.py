@@ -58,6 +58,27 @@ class VerdictTest(unittest.TestCase):
         self.assertTrue(rsc.judge(no_icon, screen, CROP, need_icon=False)[0])
 
 
+def opened(x, y):
+    """The page above, the panel over the bottom 40%."""
+    return rsc.PANEL_RGB if y >= 60 else rsc.PAGE_RGB
+
+
+class OpenDrawerTest(unittest.TestCase):
+    def test_the_page_above_the_panel_on_screen_passes(self):
+        screen = capture(W + 30, H + 40, lambda x, y: opened(x - 10, y - 20))
+        ok, detail = rsc.judge_open(capture(W, H, opened), screen, CROP)
+        self.assertTrue(ok, detail)
+
+    def test_a_blank_screen_with_the_drawer_open_fails(self):
+        ok, detail = rsc.judge_open(capture(W, H, opened), BLANK_SCREEN, CROP)
+        self.assertFalse(ok, detail)
+        self.assertIn("open screen page 0%, panel 0%", detail)
+
+    def test_the_icon_is_found_where_its_colour_is(self):
+        self.assertEqual(rsc.icon_centre(GOOD_SCREEN, CROP), (79, 89))
+        self.assertIsNone(rsc.icon_centre(BLANK_SCREEN, CROP))
+
+
 class EnvironmentTest(unittest.TestCase):
     def test_render_overrides_from_the_shell_never_reach_a_case(self):
         shell = {"DISPLAY": ":0", "XAUTHORITY": "/x/auth", "HOME": "/h", "PATH": "/usr/bin",
