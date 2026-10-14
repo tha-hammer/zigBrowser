@@ -14,7 +14,7 @@ inputs:
 
 # Claude Agent chat drawer for zigBrowser: TDD implementation plan
 
-**Line references.** Section 2.0, sections 8.1 and 8.2, and every behavior from S3 on cite HEAD `38e30e5`, where P0, S1 and S2 are built. Section 2.1 is the baseline before the drawer, at `b4c23a1`, and is kept as the historical design record; its `C:` lines are mapped to HEAD in the table at its start. The research pin `d9ad717` and the check's pin `7c9d68a` are both stale for line numbers. `C` means `src/webkit_shim.c`.
+**Line references.** Section 2.0, sections 8.1 and 8.2, and every behavior from S3 on cite HEAD `38e30e5`, where P0, S1 and S2 are built, except `src/agent_drawer.c`, which section 2.0 cites at `60ce3b6` (the NVIDIA fix replaced its overlay; rev 15.3f). Section 2.1 is the baseline before the drawer, at `b4c23a1`, and is kept as the historical design record; its `C:` lines are mapped to HEAD in the table at its start. The research pin `d9ad717` and the check's pin `7c9d68a` are both stale for line numbers. `C` means `src/webkit_shim.c`.
 
 ## 0. Requirements
 
@@ -39,7 +39,7 @@ inputs:
    - If env is the only working route, every copied hook command is wrapped as `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN <cmd>`. *(Rev 6 implements this intent more strongly: on every route, `zb-hook-run` builds each hook's environment from an allowlist before bwrap starts, so neither the hook nor its namespace PID 1 ever holds the token; see D12.)*
    - A failing-first test proves that a canary token is absent from every hook process environment, while every hook still runs. Hooks that talk to localhost services (for example the voice notify server on :51091) keep working.
 3. **Scratchpad:** free writes in `scratchpad/`, and approval required in `workspace/` (as planned).
-4. **The drawer floats over the page** (D2, as planned).
+4. **The drawer floats over the page** (D2, as planned). Rev 15.3f: the NVIDIA fix docks it instead; the user's decision is pending (D2).
 5. **Agent memory starts empty** (as planned).
 
 A fact recorded for the user, not a blocker: the Agent SDK docs say, "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK" (code.claude.com/docs/en/agent-sdk/overview). This build is the user's own tool on their own subscription, and the user chose this path. If zigBrowser is ever distributed to others, revisit that line before shipping.
@@ -62,7 +62,7 @@ A fact recorded for the user, not a blocker: the Agent SDK docs say, "Unless pre
 
 ## 1. Overview
 
-This plan adds a per-window **"S" icon** and a **conversation drawer**, both built from native GTK widgets in an overlay above the page. It also adds a **Python agent host** that the app spawns, supervises and confines to its own home. The agent drives the browser through an **in-process broker** that calls the same routing, queue and engine path as the socket, but is not reachable from the socket. A **Secrets window** holds the Claude login token.
+This plan adds a per-window **"S" icon** and a **conversation drawer**, both built from native GTK widgets in a windowless host around the page (D1; an overlay until rev 15.3c). It also adds a **Python agent host** that the app spawns, supervises and confines to its own home. The agent drives the browser through an **in-process broker** that calls the same routing, queue and engine path as the socket, but is not reachable from the socket. A **Secrets window** holds the Claude login token.
 
 The plan is **one prerequisite, P0, plus ten slices, S1–S10**. P0 changes no browser code. It lands the helper skeleton and the boundary contracts that later slices depend on, so it is not a product slice and has no browser e2e (rev 3, blocker 1). Its gate steps run in every later gate. Each of S1–S10 starts with its failing-first tests: the threat-model tests (T1–T8) and the four auth and hook tests from the user's decisions (A1–A4) are placed in the slice that creates their surface (section 9). Each of S1–S10 ends with a real-binary e2e on a private Xvfb.
 
@@ -74,13 +74,15 @@ The plan is **one prerequisite, P0, plus ten slices, S1–S10**. P0 changes no b
 - `zb_window_new` (`C:1147-1241`) attaches the drawer after its guards when `zb_app_get_agent_drawer()` is on: `win->drawer = zb_drawer_attach(...)` at `C:1187`; otherwise it adds the WebView directly (`C:1189`). The off path keeps the exact `GtkWindow → WebKitWebView` tree.
 - `on_window_destroy` (`C:892`) calls `zb_drawer_detach` (`C:970`) before `window_free`. `ZbWindow` has a `ZbDrawer *drawer` field.
 - Rows go through `zb_emit_protocol_row` (`C:230`), sanitized by `emit_safe_field` (`C:219`).
-- `src/agent_drawer.c` (790 lines) is the GTK glue:
-  - the overlay, icon, panel and stand-in, built in `zb_drawer_attach` (`:734`) and `build_panel` (`:640`);
-  - placement through `GtkOverlay::get-child-position` (`on_child_position`, `:198`), not margins;
-  - `drawer_open` (`:373`), `drawer_minimize` (`:456`), `on_anim_tick` (`:401`), `on_ghost_draw` (`:441`);
-  - messages and Send: `add_message` (`:314`), `send_input` (`:341`);
-  - window accelerators: `on_window_key` (`:477`);
-  - `zb_drawer_detach` (`:774`), and the test hook `zb_drawer_debug_live_count` (`:47`).
+- `src/agent_drawer.c` is the GTK glue. As of the NVIDIA fix `60ce3b6` (1027 lines; rev 15.3f repin of this list):
+  - the windowless host `ZbDrawerHost` (`G_DEFINE_TYPE` `:291`): `zb_drawer_host_size_allocate` (`:364`) docks the open panel, `zb_drawer_host_draw` (`:392`) draws the page and the dock, and `on_page_drawn` (`:406`) paints the icon and the stand-in into the page's window. It replaced the GtkOverlay of S1 and S2;
+  - the icon, panel (in its input-only catcher) and stand-in, built in `zb_drawer_attach` (`:967`) and `build_panel` (`:867`);
+  - placement through `child_rect` (`:245`), not margins;
+  - the e2e census `report_windows` (`:211`), which writes the `windows` row;
+  - `drawer_open` (`:600`), `drawer_minimize` (`:683`), `on_anim_tick` (`:628`), `on_ghost_draw` (`:668`);
+  - messages and Send: `add_message` (`:541`), `send_input` (`:568`);
+  - window accelerators: `on_window_key` (`:704`);
+  - `zb_drawer_detach` (`:1009`), and the test hook `zb_drawer_debug_live_count` (`:47`).
 - `src/agent_drawer.zig` is the pure logic and its C exports, `@export`ed on Linux only (`:242`): `drawerRect` (`:76`), `lerpRect` (`:86`), the e2e seam parsers (`:107`, `:125`), the store (`load` `:161`), and `configure` (`:224`).
 - `src/agent_config.zig`, `src/env_switch.zig` and `src/atomic_file.zig` hold the switch, the shared flag-or-env resolver and the shared atomic JSON save. `app.zig:50-54` applies the switch and configures the store and the seams; `webkit.zig:90` holds `applyAgentDrawer`.
 - Tests:
@@ -226,7 +228,7 @@ These choices are made in the plan; RoseCat should challenge any of them.
   - No web process, renderer or MSE policy applies to it.
   - Pages cannot cover, script or imitate it, because it is stacked above the WebView in the GTK tree.
 - Cost: chat styling is done with a `GtkCssProvider` (bubbles, colors) rather than HTML. There is no rich Markdown rendering (section 5, out of scope).
-- The overlay restructure happens only when the drawer is enabled. With `--agent-drawer off`, the widget tree stays exactly `GtkWindow → WebKitWebView`.
+- The host restructure happens only when the drawer is enabled. With `--agent-drawer off`, the widget tree stays exactly `GtkWindow → WebKitWebView`.
 
 ### D2. Per-window; default off until S5, then on
 
@@ -237,11 +239,11 @@ These choices are made in the plan; RoseCat should challenge any of them.
 - A consequence for review: from S7, the in-process automation core (`startCore` plus `installScript`) starts whenever the drawer is on. With the new default, that means in every normal launch. `automation.js` then runs in its isolated world on every page, as it does today with `--automation-api`. The socket still binds only with `--automation-api`.
 - When on, every browsing window built by `zb_window_new` gets its own icon and drawer, the primary and popups alike. Screenshot mode never does.
 - Each drawer has its own conversation session, **bound to its own window's `window_id`**. A drawer can never act on another window, and a popup's drawer never shares its opener's session.
-- The drawer **floats over** the bottom of the page: full width, 40% of the height, clamped to 220 px minimum and 70% maximum. The page is not resized, so opening the drawer never reflows pages or confuses automation coordinates in other windows. (Confirmed by the user, answer 4.)
+- The drawer **floats over** the bottom of the page: full width, 40% of the height, clamped to 220 px minimum and 70% maximum. The page is not resized, so opening the drawer never reflows pages or confuses automation coordinates in other windows. (Confirmed by the user, answer 4.) **Open conflict (rev 15.3f, RoseCat 5373):** the NVIDIA fix `60ce3b6` docks the open panel and lays the page out above it, which contradicts this answer. The user's decision is pending. Either answer 4 is changed and this paragraph says the page is resized while the drawer is open, or the float returns: the scratch build `float60` puts the panel's own output windows over the page and needs a real-screen pass first.
 
 ### D3. The icon never steals clicks
 
-- The icon's overlay child is placed through `GtkOverlay::get-child-position` at exactly its rect (rev 13: this is how S1 built it, `agent_drawer.c:198`; rev 11 said margins). Its allocation, and therefore its input region, is exactly the icon (56×56 logical px).
+- The icon is placed by the host's `child_rect` at exactly its rect (rev 15.3c; S1 built it with `GtkOverlay::get-child-position`, rev 11 said margins). Its allocation, and therefore its input region, is exactly the icon (56×56 logical px).
 - Pointer events outside that rectangle reach the WebView.
 - When the drawer is open, the icon is hidden (`gtk_widget_hide`), which removes its input region.
 - When the drawer is closed, the drawer is hidden too.
@@ -764,7 +766,7 @@ agent-home/
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
 | R15.3c | The NVIDIA blank window (f72e63d, the orchestrator's matrix) | D1's GtkOverlay becomes a windowless host that paints its floats into the page's window; new row `DRAWER windows`; §7.1 records the cause, the red, the mutants and the `drawer-open` real-screen case. | D1, D7b, §7.1 |
-| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3d (RoseCat 5357): each pause step's side of its mutation and its on-disk state; a write-ahead journal makes a killed re-provision recoverable. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
+| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3d (RoseCat 5357): each pause step's side of its mutation and its on-disk state; a write-ahead journal makes a killed re-provision recoverable. Rev 15.3e (RoseCat 5373): two kill points per mutation, a journal of intents with inode identity reconciled from the disk, and the fsync order. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -873,7 +875,7 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 | `ZIGBROWSER_AGENT_ANIM_MS` | `agent_drawer.configure`, at startup | stretches the minimize animation so an `xwd` capture can sample the fold mid-flight (S2.2; rev 12) | 180–5000; the default is 180 |
 | `ZIGBROWSER_AGENT_FS_PAUSE` | the app broker `agent_fs.zig` (S10), at the named point of a workspace write | holds the write until the test writes `release\n` to the browser's stdin (S10.5; rev 11, moved from S3.12 in rev 14) | `after-temp` only. The wait is bounded at 30 s; on timeout the broker abandons that write (its temp is removed), refuses the tool call with "write paused too long", and prints one stderr line. |
 | `ZIGBROWSER_AGENT_SPAWN_DELAY_MS` | `agent_setup.zig`, before the setup helper's spawn (rev 15.2) | holds the spawned child before its `PR_SET_PDEATHSIG` and parent check, for the parent-death regression (S3.1) | 1–5000 |
-| `ZIGBROWSER_AGENT_SETUP_PAUSE` | `agent_setup.zig` passes it on as the helper's `--e2e-pause-at <step>` (rev 15.3b) | blocks setup at one named install step after printing `SETUP paused <step>`, for the interrupted-install kill test (S3.1) | one step name; at most 30 s, then exit 1 |
+| `ZIGBROWSER_AGENT_SETUP_PAUSE` | `agent_setup.zig` passes it on as the helper's `--e2e-pause-at <step>` (rev 15.3b) | blocks setup at one named cut (`<step>:before` or `<step>:after`, rev 15.3e) after printing `SETUP paused <cut>`, for the interrupted-install kill test (S3.1) | one cut name; at most 30 s, then exit 1 |
 | `ZIGBROWSER_AGENT_CLAUDE_CLI` | the app, when it **launches** `--agent-setup`'s synchronous helper run (S3.7) and the one-shot login helper (S6). It is passed **only as the launch argv option `--e2e-claude-cli <path>`**: never in either helper's environment, and never in the chat `hello` (rev 14, RoseCat rev-13 blocker 2) | an alternate Claude CLI: a CLI that ignores the token descriptor (S3.7), or the fake `claude setup-token` (S6) | an absolute path to a regular executable file |
 
 **Helper-carried seams.** The app reads these and passes them to the helper **inside `hello.e2e`**, because only the helper can apply them.
@@ -1152,7 +1154,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 ---
 
-### S1 — Launch switch, overlay, and the floating "S" icon
+### S1 — Launch switch, the drawer's host, and the floating "S" icon (built with a GtkOverlay; host since rev 15.3c)
 
 #### Behavior S1.1: `--agent-drawer on|off` and `ZIGBROWSER_AGENT_DRAWER` resolve like `--media-source`
 - **Given / When / Then:** a flag wins over the env, which wins over the default (`off`). A bad env value gives `zigBrowser: ZIGBROWSER_AGENT_DRAWER=<v> ignored`. A duplicate or bad flag gives usage. Screenshot mode rejects the flag.
@@ -1170,9 +1172,9 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Given** off, **Then** there are no `DRAWER` rows at all, including no `DRAWER tree` row. The existing 94 steps stay green unchanged.
 - **Edge cases:**
   - the 16-window cap: the icon is created only after `zb_window_new`'s guards pass;
-  - a window that closes during load leaves no leaked overlay (S1.5).
+  - a window that closes during load leaves no leaked host (S1.5).
 - **Property:** none. This is UI glue with a fixed input.
-- **Files touched:** `src/agent_drawer.c` and `src/agent_drawer.h` (new); `src/webkit_shim.c` at three points: `zb_window_new` builds the overlay only when enabled (replacing the direct add at `:1166`), `on_window_destroy` calls `zb_drawer_detach` before `window_free` (`:955`), and the `ZbWindow` struct gains `ZbDrawer *drawer`; `build.zig` adds the C file to `configureGtkBackend` (`:979-986`).
+- **Files touched:** `src/agent_drawer.c` and `src/agent_drawer.h` (new); `src/webkit_shim.c` at three points: `zb_window_new` builds the host (an overlay until rev 15.3c) only when enabled (replacing the direct add at `:1166`), `on_window_destroy` calls `zb_drawer_detach` before `window_free` (`:955`), and the `ZbWindow` struct gains `ZbDrawer *drawer`; `build.zig` adds the C file to `configureGtkBackend` (`:979-986`).
 - Production callers and registration: `zb_window_new` (`C:1127`) calls `zb_drawer_attach(win->gtk_window, win->view, win->auto_id)` when `zb_app_agent_drawer()`, and `on_window_destroy` (`C:874`) calls `zb_drawer_detach`.
 
 #### Behavior S1.3: a click outside the icon reaches the page, and a click on the icon does not
@@ -1317,31 +1319,49 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **An interrupted first install is repaired by the next run (rev 15.3, RoseCat 5338).** A first install creates the root under `.zb-owner.lock`, moves the staged entries in one at a time and writes the marker last. A rerun that finds the owner lock and no marker treats the root as a partial first install: it moves only the setup-owned names (`.claude`, `runtime`, `workspace`, `scratchpad`, `secrets`) into cleanup-owned staging and installs again. Any other entry refuses with exit 2. The failing-first unit test fails the move of each entry k in turn. The e2e kills setup at each move through the install-step pause seam below. A plain rerun must then succeed (red today: `ENOTEMPTY` on `runtime/`).
 - **The install-step pause seam (rev 15.3b, RoseCat 5352), separate from the parent-death seam.**
   - `ZIGBROWSER_AGENT_SETUP_PAUSE=<step>` is honoured only with `--e2e-protocol`; without it the app does not pass it on, so it is inert.
-  - The app passes it to the setup helper as `--e2e-pause-at <step>`. Steps: `first-move:<entry>`, `exchange-claude`, `state:<name>`, `exchange-runtime`, `mkdirs`, `marker`, `cleanup`.
+  - The app passes it to the setup helper as `--e2e-pause-at <step>`. Steps: `<step>:before` or `<step>:after` for each of `first-move:<entry>`, `exchange-claude`, `state:<name>`, `exchange-runtime`, `mkdirs`, `marker`, `cleanup` (rev 15.3e).
   - At that step the helper prints `SETUP paused <step>` (relayed as an e2e row) and blocks for at most 30 s, then exits 1. It never continues past the pause.
-  - **Which side of each mutation the pause samples (rev 15.3d, RoseCat 5357).** Every step pauses **after** its mutation, except the two around the commit point:
+  - **Two kill points per mutation (rev 15.3e, RoseCat 5357 and 5373).** Each mutation has a cut on each side:
+    - `<step>:before` pauses after that step's journal intent is durable and before the mutation;
+    - `<step>:after` pauses after the mutation, and its parent-directory fsync, and before the next intent.
 
-    | Step | Paused when | On disk at the pause |
+    | Step (mutation) | On disk at `:before` | On disk at `:after` |
     |---|---|---|
-    | `first-move:<entry>` | after `<entry>` moved | owner lock, the entries moved so far including `<entry>`, no marker |
-    | `exchange-claude` | after the `.claude` exchange | new `.claude` live, old one at the journal's staging path, no state moved, old marker |
-    | `state:<name>` | after `<name>` moved into the new `.claude` | as above, plus the state dirs moved so far |
-    | `exchange-runtime` | after the runtime exchange | new runtime live, old one in staging |
-    | `mkdirs` | after the `mkdir`s | as above, plus `workspace`, `scratchpad`, `secrets` |
-    | `marker` | **before** the marker replace | everything new is in place, the old marker is still there (not committed) |
-    | `cleanup` | after the marker replace, **before** any old copy is deleted | committed; the old copies are still in staging |
+    | `first-move:<entry>` (rename staging/entry → root/entry) | the entries moved so far, without `<entry>`; no marker | with `<entry>`; no marker |
+    | `exchange-claude` (`renameat2` EXCHANGE) | old `.claude` live | new `.claude` live, old one at the journal's staging path |
+    | `state:<name>` (rename old/state → new/state) | `<name>` still in the old `.claude` | `<name>` in the live `.claude` |
+    | `exchange-runtime` (EXCHANGE) | old runtime live | new runtime live |
+    | `mkdirs` (`workspace`, `scratchpad`, `secrets`) | missing ones absent | all present |
+    | `marker` (rename staging marker → root marker): **the commit point** | old marker (not committed) | new marker (committed) |
+    | `cleanup` (delete the old copies) | committed; old copies present | old copies and journal gone |
 
-  - **The kill test** waits for the row and asserts that step's on-disk state from the table (so a build that skips or reorders the step fails). It then SIGKILLs the browser and runs a plain setup again.
-- **A write-ahead journal makes a killed re-provision recoverable (rev 15.3d).**
+  - **The kill test** asserts the state in that table at the pause, so a build that skips or reorders a step fails. It then SIGKILLs the browser and runs a plain setup again.
+  - A first install has no journal: its `first-move` cuts are repaired by the partial-first-install rule above.
+- **A write-ahead journal makes a killed re-provision recoverable (rev 15.3d, made exact in rev 15.3e, RoseCat 5373).**
   - **The gap:** after `exchange-claude`, the old `.claude` (with the agent's state) sits in staging, which the next run's cleanup would delete.
-  - **The journal:** before each re-provision step, setup atomically replaces `root/.zb-setup-journal` with `{staging, step, moved[]}` and fsyncs it. Cleanup never deletes a staging path that a journal names.
-  - **A rerun that finds a journal:**
-    - before the commit point, it reverses the recorded steps in reverse order: it moves the state dirs back, exchanges `runtime` and `.claude` back and removes the journal. The old home is then byte-identical. It then provisions as usual.
-    - at `cleanup`, it deletes the old copies and the journal.
-  - **The kill e2e covers every step in the table.** After the plain rerun:
+  - **The record:** `root/.zb-setup-journal` holds `{staging, steps: [...]}`. Each entry is `{step, intent, identity}`:
+    - for a rename, the source's `(st_dev, st_ino)` and both paths;
+    - for an exchange, both entries' `(st_dev, st_ino)` before it;
+    - for the marker, the new marker's `(st_dev, st_ino)`;
+    - for `mkdirs`, the names that were absent.
+  - **Durability:**
+    - every journal write goes to a temp file in `root`, which is fsynced and renamed over the journal, and then `root` itself is fsynced;
+    - every mutation is followed by an fsync of each parent directory it touched, before the next intent is written.
+  - **Reconciling the last intent.** It is the only step whose outcome is unknown; every earlier step's mutation finished before the next intent was written. A rerun decides it from identity, never from the record alone:
+    - a rename is done when the destination holds the recorded inode, and not done when the source still does;
+    - an exchange is done when the live path holds the staging entry's recorded inode;
+    - the marker is done (committed) when the root marker holds the new marker's inode;
+    - `mkdirs` is done for every recorded name that now exists, so it is created again or removed.
+    - Any other state (both or neither path holds the inode) refuses with exit 2 and a message naming the journal; the journal and staging are kept.
+  - **Recovery:**
+    - **before the commit point:** the steps that are done are reversed in reverse order (renames back, exchanges again, created `mkdirs` removed). The old home is then byte-identical. Then the journal is removed and setup provisions as usual;
+    - **once committed:** the old copies and the journal are deleted.
+  - Cleanup never deletes a staging path that a journal names.
+  - **The kill e2e covers both cuts of every step in the table.** After the plain rerun:
     - the home is a complete install;
-    - for a step before the commit point, the agent's state files (seeded in `projects/` and `MEMORY/`) are present and unchanged;
+    - for every pre-commit cut, the agent's seeded state files (`projects/`, `MEMORY/`) are present with unchanged content and inodes;
     - no journal or staging is left.
+  - **A failing-first unit test** gives the reconciler the forged both/neither states for each step; each must refuse.
   - The seam is listed in §7's seam table. A unit test shows that without `--e2e-protocol` the variable never reaches the helper.
 - **`renameat2` comes from libc** (glibc ≥ 2.28, every architecture), never a syscall number. Setup fails closed without it.
 - **Any absolute path refuses setup** in copied text, whatever its number of components. The only kept `/name` token is a known slash command: the CLI's built-in commands, or a copied `commands/*.md` or `skills/*`.
@@ -1607,7 +1627,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
   - every existing e2e step runs unchanged with the icon present, and passes;
   - no helper process exists in any existing e2e, because nothing presses Send (`agent_common.no_helper_processes()` is added to `stop_browser`'s final check);
   - with no `agent-home`, the drawer opens and shows "Agent runtime not set up: run zigBrowser --agent-setup".
-- **Why the existing tests stay valid:** native automation input is synthesized on the view's own `GdkWindow` (`C:3303-3790`), so the overlay icon cannot intercept it. `page.screenshot` snapshots the WebView only.
+- **Why the existing tests stay valid:** native automation input is synthesized on the view's own `GdkWindow` (`C:3303-3790`), so the floating icon cannot intercept it. `page.screenshot` snapshots the WebView only.
 - If an existing test still fails because the icon covers its target, the fix is a reviewed product decision, not a silent `--agent-drawer off` in the test.
 - **Files touched:** `src/agent_config.zig` (default), `src/main.zig` (usage), `docs/agent-drawer.md`, `docs/how-to-automate.md` (a note in "Start the browser"), `tests/e2e/slice2_common.py` (`stop_browser` helper check).
 
