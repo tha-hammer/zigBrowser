@@ -5677,3 +5677,48 @@ This was a docs-only exact-diff review. `git diff --check
 9f4f732..7608e73` is clean, and the commit changes only the plan. No live
 browser, socket, account, token, display, build or test was used. Agent Mail
 5310 sent the approval to BlackRobin and copied BlueBeaver.
+
+## Claude Agent helper prerequisite P0 closure (`de871e2`)
+
+**Verdict: APPROVED. Status: CLOSED by `77cbe96` plus `de871e2` for all P0
+blockers recorded at `66af9e0` and `5e54b07`.** The first follow-up supplied
+the lifecycle-complete notification oracle, real outer seccomp filter and
+complete writes. This second follow-up makes every accepted exec record
+complete, fails closed on non-plain `execveat`, requires a counted terminal
+`END` record, and enforces literal `argv[0] == "rg"`. P0 is now suitable as
+the test foundation for S3/S4.
+
+No live browser, socket, account, token or display was used. The exact
+three-file diff passes `git diff --check`; no helper/product file changed.
+BlueBeaver's clean-export full gate passed **102/102 steps and 807/807 tests**,
+with agent-host unit **26/26** and contract **23/23**. I independently ran
+those two suites from a clean archive of exact `de871e2`: unit **26/26** in
+1.05 s and real-SDK/real-CLI/fake-API contract **23/23** in 32.83 s. The
+throwaway tree was deleted immediately and left no process behind.
+
+### `5e54b07` blocker disposition
+
+| Blocker | Evidence at `de871e2` | Disposition |
+|---|---|---|
+| Truncated argv/string records and wrong `execveat` resolution | `tests/exec_tracer.py:80-155` reads pagewise strings and a NULL-terminated argv up to the named bounds, returns `complete: false` on read/bound failure, and resolves only `execve` or `execveat(AT_FDCWD, ..., flags=0)`. `tests/census.py:52-76` classifies every incomplete or unresolved CLI-descendant record as `UNEXPECTED` before considering existence or the allowlist. | **CLOSED.** |
+| No completion marker or dead-supervisor proof | `tests/exec_tracer.py:170-197` writes `START`, counts only still-valid notifications, writes `END <count>` on listener HUP, and records before `CONTINUE`. `tests/census.py:34-49` waits at most 10 s for `END` and validates its count. The real tests kill the supervisor and observe `ENOSYS` plus no `END`, and separately preserve command PID, parent and exit status (`test_contract.py:342-376`). | **CLOSED.** |
+| `$CLI rg` accepted a basename instead of literal argv zero | `tests/census.py:15-31` requires exact string equality. The bad table includes `/anything/rg`, `x/rg` and `rg `, while the real pinned CLI self-exec remains green (`test_contract.py:242-258,519-540`). | **CLOSED.** |
+
+### Test-chain assessment
+
+The nine `P05ExecOracle` cases are not helper-only assertions: they execute
+the real seccomp notification tracer around real child processes and cover the
+former 64-pointer/512-byte blind spots, both rejected `execveat` forms, log
+completion, supervisor loss and process identity (`test_contract.py:290-376`).
+The existing `P05Sandbox` cases then consume the same `census.load` and
+classification through the real SDK, pinned CLI, outer bwrap and all six hook
+events (`test_contract.py:379-540`). Against the `77cbe96` tracer, the author
+recorded six failures and one error, including both former `$CLI rg` bypasses;
+the topology identity case stayed green as expected.
+
+### NIT
+
+- `test_contract.py:396-401` still calls the tracer “the parent of bwrap” in
+  a docstring. The code and `test_the_traced_command_keeps_its_pid_parent_and_exit_status`
+  correctly prove that bwrap replaces it in place. Align the comment when this
+  test file next changes; it does not affect this approval.
