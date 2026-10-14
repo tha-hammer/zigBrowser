@@ -2,9 +2,10 @@
 date: 2026-10-13
 author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
-git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
+git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
+baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); see section 3b
+status: plan for review. Built so far (rev 13): P0 at e9b0cbf (its blocker follow-up is in review), S1 at 2e467c4, S2 at aca3e33 plus 38e30e5; S3 and later are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -13,7 +14,7 @@ inputs:
 
 # Claude Agent chat drawer for zigBrowser: TDD implementation plan
 
-All `path:line` references are at HEAD `b4c23a1`, re-derived for this plan. The research pin `d9ad717` and the check's pin `7c9d68a` are both stale for line numbers. `C` means `src/webkit_shim.c`.
+**Line references (rev 13).** Section 2.0, sections 8.1 and 8.2, and every behavior from S3 on cite HEAD `38e30e5`, where P0, S1 and S2 are built. Section 2.1 is the baseline before the drawer, at `b4c23a1`, and is kept as the historical design record; its `C:` lines are mapped to HEAD in the table at its start. The research pin `d9ad717` and the check's pin `7c9d68a` are both stale for line numbers. `C` means `src/webkit_shim.c`.
 
 ## 0. Requirements
 
@@ -65,7 +66,56 @@ This plan adds a per-window **"S" icon** and a **conversation drawer**, both bui
 
 The plan is **one prerequisite, P0, plus ten slices, S1–S10**. P0 changes no browser code. It lands the helper skeleton and the boundary contracts that later slices depend on, so it is not a product slice and has no browser e2e (rev 3, blocker 1). Its gate steps run in every later gate. Each of S1–S10 starts with its failing-first tests: the threat-model tests (T1–T8) and the four auth and hook tests from the user's decisions (A1–A4) are placed in the slice that creates their surface (section 9). Each of S1–S10 ends with a real-binary e2e on a private Xvfb.
 
-## 2. Current state analysis (HEAD b4c23a1)
+## 2. Current state
+
+### 2.0 Built so far (HEAD `38e30e5`; rev 13 repin)
+
+**S1 and S2: the drawer (built, gated, reviewed).**
+- `zb_window_new` (`C:1147-1241`) attaches the drawer after its guards when `zb_app_get_agent_drawer()` is on: `win->drawer = zb_drawer_attach(...)` at `C:1187`; otherwise it adds the WebView directly (`C:1189`). The off path keeps the exact `GtkWindow → WebKitWebView` tree.
+- `on_window_destroy` (`C:892`) calls `zb_drawer_detach` (`C:970`) before `window_free`. `ZbWindow` has a `ZbDrawer *drawer` field.
+- Rows go through `zb_emit_protocol_row` (`C:230`), sanitized by `emit_safe_field` (`C:219`).
+- `src/agent_drawer.c` (790 lines) is the GTK glue:
+  - the overlay, icon, panel and stand-in, built in `zb_drawer_attach` (`:734`) and `build_panel` (`:640`);
+  - placement through `GtkOverlay::get-child-position` (`on_child_position`, `:198`), not margins;
+  - `drawer_open` (`:373`), `drawer_minimize` (`:456`), `on_anim_tick` (`:401`), `on_ghost_draw` (`:441`);
+  - messages and Send: `add_message` (`:314`), `send_input` (`:341`);
+  - window accelerators: `on_window_key` (`:477`);
+  - `zb_drawer_detach` (`:774`), and the test hook `zb_drawer_debug_live_count` (`:47`).
+- `src/agent_drawer.zig` is the pure logic and its C exports, `@export`ed on Linux only (`:242`): `drawerRect` (`:76`), `lerpRect` (`:86`), the e2e seam parsers (`:107`, `:125`), the store (`load` `:161`), and `configure` (`:224`).
+- `src/agent_config.zig`, `src/env_switch.zig` and `src/atomic_file.zig` hold the switch, the shared flag-or-env resolver and the shared atomic JSON save. `app.zig:50-54` applies the switch and configures the store and the seams; `webkit.zig:90` holds `applyAgentDrawer`.
+- Tests:
+  - `tests/agent_drawer_test.zig`;
+  - `tests/e2e/agent_drawer_icon_test.py`, `agent_drawer_test.py`, `agent_isolation_test.py` and `ipc_roundtrip_test.py`;
+  - the harness `xinput.py` (real X input, xwd, CLIPBOARD) and `agent_common.py` (`parse_row`, `Browser`, `run_main`);
+  - `xsession.py --display-file`.
+  The gate is 102 steps.
+
+**P0: the helper (built at e9b0cbf; the follow-up for the census and the seccomp filter is in review).**
+- The package is `agent/host/zb_agent_host/`:
+  - `options.py`: the single options builder and the tool-budget constants;
+  - `token.py`: R1 and R3 and the `zb-claude` wrapper text;
+  - `sandbox.py`: the outer bwrap argv and `STATE_DIRS`;
+  - `hook_run.py`: `zb-hook-run`;
+  - `provision.py`, `bridge.py`, `files.py`.
+- Tests are in `agent/host/tests/`, and the gate steps are `agent-host-unit` and `agent-host-contract`.
+
+**Not built:** everything from S3 on. That covers the app-side helper spawn (`src/agent_host.c`), the frame validator, the broker, the Secrets window, the agent-home setup command and the file tools.
+
+### 2.1 Baseline before the drawer (`b4c23a1`; historical)
+
+The analysis below was made before any drawer code existed. The design decisions in section 3 rest on it. Its `webkit_shim.c` lines moved when S1 added the drawer hooks: lines before `zb_window_new` shift by +18, and later lines by +24. The anchors that later slices touch are:
+
+| Anchor | At `b4c23a1` | At `38e30e5` |
+|---|---|---|
+| `emit_protocol2` | `C:238` | `C:256` |
+| `install_ipc_handler` (NULL world; call in `zb_window_new`) | `C:674-692` (683; 1209) | `C:692-710` (701; 1233) |
+| `on_ipc_message_received`; reply value; reply error | `C:694-750`; 739; 744 | `C:712-768`; 757; 762 |
+| `on_window_destroy`; `window_free` | `C:874`; 955 | `C:892`; 975 |
+| `zb_window_new`; its WebView add | `C:1127-1217`; 1166 | `C:1147-1241`; 1187-1190 (drawer or direct) |
+| `auto_job_complete`, `auto_job_dispatch`, `auto_queue_on_gtk`, `auto_job_submit`, `auto_job_wait` | `C:1515`, `1544`, `1570`, `1586`, `1599` | `C:1539`, `1568`, `1594`, `1610`, `1623` |
+| `on_auto_eval_done`, `auto_start_eval` | `C:2187`, `2217` | `C:2211`, `2241` |
+| `auto_run_op`, `zb_automation_eval_json` | `C:2866-2912`, `2938` | `C:2890-2936`, `2962` |
+
 
 ### Key discoveries
 
@@ -182,7 +232,7 @@ These choices are made in the plan; RoseCat should challenge any of them.
 
 ### D3. The icon never steals clicks
 
-- The icon's overlay child is aligned START/START with margins, so its allocation, and therefore its input region, is exactly the icon (56×56 logical px).
+- The icon's overlay child is placed through `GtkOverlay::get-child-position` at exactly its rect (rev 13: this is how S1 built it, `agent_drawer.c:198`; rev 11 said margins). Its allocation, and therefore its input region, is exactly the icon (56×56 logical px).
 - Pointer events outside that rectangle reach the WebView.
 - When the drawer is open, the icon is hidden (`gtk_widget_hide`), which removes its input region.
 - When the drawer is closed, the drawer is hidden too.
@@ -318,8 +368,8 @@ agent-home/
 | login | stdout | login → app | NDJSON (`auth_url`, `need_code`, `done`, `error`) | 8 KiB per frame |
 | login | stderr | login → app | text log lines | 16 KiB ring, redacted |
 | login | fd 4 | **login → app only** | raw token bytes, then EOF | ≤ 512 bytes; one write, then close; never on stdout or stderr |
-| `zb-claude` (R1) | FIFO in `/run/zb-token` (0300) | **helper → wrapper only** | raw token bytes, then EOF | ≤ 512 bytes plus a newline; per session; the wrapper unlinks it when it opens it (rev 12) |
-| CLI (R1) | fd 3 in the CLI | **wrapper → CLI only** | one end of a `socketpair` holding the token bytes | ≤ 512 bytes; per session; the CLI reads it and closes it (rev 12, finding 1) |
+| `zb-claude` (R1) | FIFO in `/run/zb-token` (0300) | **helper → wrapper only** | raw token bytes, then EOF | ≤ 513 bytes: the token (≤ 512) and one newline; per session; the wrapper unlinks it when it opens it (rev 12) |
+| CLI (R1) | fd 3 in the CLI | **wrapper → CLI only** | one end of a `socketpair` holding the same bytes, unchanged | ≤ 513 bytes (rev 13: the wrapper does not strip the newline; the CLI reads the line); per session; the CLI reads it and closes it (rev 12, finding 1) |
 
 **Chat frames, app → helper**
 
@@ -472,7 +522,7 @@ agent-home/
   - For each session, the helper creates a FIFO with a random 128-bit name in a sandbox-private tmpfs directory `/run/zb-token` (mode **0300**: same-uid processes can open a known name, but cannot list the directory). It passes the path in `ZB_TOKEN_FIFO`, writes the token once, and closes its end. **The FIFO carries the token from the helper to the wrapper only** (rev 12, finding 1).
   - The wrapper `zb-claude` is a standard-library Python script (`#!/usr/bin/python3 -I`), not `sh`. In order, it:
     1. removes `ZB_TOKEN_FIFO` from its environment, opens the FIFO and unlinks it;
-    2. reads at most 513 bytes to end of stream, and refuses an empty or oversized token;
+    2. reads at most 513 bytes to end of stream (the token and its newline), and refuses an empty or oversized read. It passes those bytes on **unchanged**; it does not strip the newline (rev 13: one bound, 513, for the FIFO and the socket);
     3. creates a `socketpair`, writes the bytes into one end, closes that end and drops its own copy;
     4. puts the other end on **fd 3**, sets `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`, and `exec`s the bundled CLI. The CLI reads the socket and closes it.
   - **Why a socket and not the FIFO (P0 evidence):** the CLI reopens a non-socket token descriptor through `/proc/self/fd/3`. For a FIFO whose writer has already closed, that reopen blocks. The rev-11 wrapper (`exec 3<fifo`) therefore hung: the P0 red run waited about 66 s, and the SDK gave up. A socket descriptor is read directly.
@@ -496,14 +546,24 @@ agent-home/
 - `zb-hook-run` closes every inherited descriptor ≥ 3 (`close_range(3, ~0, 0)`) before `exec`, so no FIFO, socket or pipe of the CLI leaks into a hook.
 - The outer seccomp filter (deny `ptrace`, `process_vm_readv`, `process_vm_writev`) stays as defense in depth. It must **not** deny `clone`/`unshare` with namespace flags, because `zb-hook-run` needs them. **Rev 12:** the filter is part of the exact sandbox. It is passed to the outer bwrap with `--seccomp` (D12), and P0.6 proves it with the real CLI and nested hooks.
 - **Fail closed.** The chat helper runs `zb-hook-run --selfcheck` before `ready`. The self-check is a probe hook that must find (a) no `/proc` entry for its parent CLI or for the helper, (b) `EROFS` on a create in `workspace/`, and (c) every descriptor ≥ 3 closed. A failure reports `ready.selfcheck.ok = false`. The app then shows "Agent sandbox unavailable (hook isolation)" and starts no session. `--agent-setup` runs the same self-check and exits 2 when it fails.
-- **Other CLI children (rev 12: a lifecycle-complete census; RoseCat P0 blocker 1).** With built-in tools off and no stdio MCP servers, the only CLI children expected are hooks, plus any fixed system programs the CLI runs on its own.
+- **Other CLI children (rev 12: a lifecycle-complete census; rev 13: the oracle P0 built).** With built-in tools off and no stdio MCP servers, the only CLI children expected are hooks, plus any fixed programs the CLI runs on its own.
   - A census built from `/proc` snapshots can miss a child that starts and exits between two samples. RoseCat's mutant, a wrapper that spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, survived P0's first census.
-  - The census oracle is therefore **`agent/host/tests/exec_tracer.py`**: a test-only, standard-library `ctypes` ptrace tracer that is the **parent** of the sandbox's bwrap. Its child calls `PTRACE_TRACEME` before `exec`, and the tracer sets `PTRACE_O_TRACEFORK|TRACEVFORK|TRACECLONE|TRACEEXEC|EXITKILL`. So every descendant is attached at birth, and every `execve` stops it, whatever its lifetime.
-  - It records `(pid, ppid, exe)` for each exec, reading `exe` from `/proc/<pid>/exe` at the exec stop.
-  - A process is a **hook process** if it or an ancestor exec'd `runtime/bin/zb-hook-run`. Every other exec'd program is a **non-hook CLI child**, apart from bwrap, the helper's Python, `zb-claude` and the CLI itself.
-  - Tracing one's own descendants works under `ptrace_scope` 0 and 1, so the oracle needs no sysctl change. Under 2 or 3 the census fails closed (red), and the product is unaffected: the tracer exists only in tests. If the tracer cannot follow the sandbox on this host, P0.5 is red and the plan returns to review.
-  - P0.5 records the census in the build-host evidence file `agent/host/tests/p0_census.json`.
-  - S3.9 asserts it in the real binary, through the e2e-only `ZIGBROWSER_AGENT_BWRAP` seam pointing at a tracer shim. The shim `exec`s the real bwrap as its traced child, keeps the D7 death chain (`PR_SET_PDEATHSIG` on the shim, `PTRACE_O_EXITKILL` on the child), and writes its exec log outside the sandbox. Every non-hook CLI child must be on the allowlist (absolute paths under `/usr`); an unexpected child fails the test.
+  - **The oracle is a seccomp user-notification exec supervisor**, `agent/host/tests/exec_tracer.py` (test-only, standard-library `ctypes`; rev 13 replaces rev 12's ptrace design with the mechanism P0 built). It sits in the outer-bwrap slot and is the parent of the sandbox:
+    1. The supervisor process creates a `socketpair` and forks.
+    2. The child sets `PR_SET_NO_NEW_PRIVS`, installs a filter that returns `SECCOMP_RET_USER_NOTIF` for `execve` and `execveat` (`SECCOMP_FILTER_FLAG_NEW_LISTENER`), sends the listener fd to the supervisor (`SCM_RIGHTS`), and `exec`s the real bwrap with the unchanged argv. Every descendant inherits the filter: the helper, the CLI, the nested bwrap and every hook.
+    3. The supervisor stays outside the sandbox. For each notification it records the host PID, the full ancestor chain (from `/proc/<pid>/stat`), the path argument resolved against `/proc/<pid>/cwd` (or the `execveat` dirfd) with its real path, and argv. It confirms the notification is still valid (`SECCOMP_IOCTL_NOTIF_ID_VALID`), then answers `SECCOMP_USER_NOTIF_FLAG_CONTINUE`. **No exec runs before it is recorded, whatever the process's lifetime.**
+    4. Its log is written outside the sandbox, to a path fixed when the test generates the oracle. The supervisor exits with bwrap's status.
+  - The death chain is unchanged. bwrap is the supervisor's child (`--die-with-parent`); the supervisor sets `PR_SET_PDEATHSIG(SIGKILL)` and kills its child if it is itself told to stop.
+  - **Accepted limit:** a fork that never `exec`s runs no new program and is not recorded. The census is a census of programs.
+  - The oracle's filter stacks with the D12 outer filter, so `Seccomp: 2` alone proves nothing in a contract run. P0.6's proof is its `EPERM` probes.
+  - **Classification:** a process is a **hook process** if it or an ancestor exec'd `runtime/bin/zb-hook-run`. Every other exec'd program is a **non-hook CLI child**, apart from bwrap, the helper's Python, `zb-claude` and the CLI itself.
+  - **The reviewed allowlist (rev 13; P0 finding 7):** a non-hook CLI child is allowed if, and only if, it is one of:
+    - an absolute real path under `/usr`. P0 observed `/usr/bin/git` (probes with `core.hooksPath=/dev/null`) and `/usr/bin/dash` (the `/bin/sh -c "zb-hook-run -- …"` hook launcher);
+    - **`$CLI rg`**: the exact real path of the pinned bundled CLI (`runtime/token-route.json`'s `cli_path`, version 2.1.294), with `argv[0] == "rg"`, and every further argument either an option starting with `-` or a path inside the workspace or scratchpad. This is the CLI's built-in ripgrep listing the read-only workspace (`rg --files --hidden … <workspace>`).
+    Every other executable fails the test: any other path outside `/usr`, or the CLI binary under another `argv[0]` or with another argument.
+  - **Evidence:** `agent/host/tests/p0_census.json` records `cli_children` in this vocabulary (`/usr/...` paths and `$CLI rg`) and pins `cli_version`.
+  - Tracing needs no sysctl. If the user-notification API is unavailable, the census fails closed (red), and the product is unaffected: the oracle exists only in tests.
+  - **Where it is installed:** in P0, the contract launches the oracle in place of bwrap. In S3.9, the **app** launches it in the outer-bwrap slot through the app-owned, pre-spawn seam `ZIGBROWSER_AGENT_BWRAP` (section 7; rev 13, RoseCat rev-12 blocker 1). It cannot arrive through the helper's `hello`, which is sent only after bwrap and the helper exist.
 - If nested user and PID namespaces turn out not to work on a target host (P0.5 red), the agent is **unavailable** there. The orchestrator then takes the sysctl question to the user. That is the only path that leads to a host change.
 
 **Under every route, A4 must pass:** a canary token is absent from every hook process's environment, and every hook still runs.
@@ -578,7 +638,7 @@ agent-home/
     | anything else, including `fs_move`/`fs_delete` | anywhere | nobody: `is_error` "tool not available" (not registered) or "path outside the agent's folders" | — |
 
   - Both owners resolve every path with **`openat2(dir_fd, path, {RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV})`** beneath a directory fd held for their root (kernel 6.12 has syscall 437).
-  - **The descriptor invariant (rev 11; the only one):** every existing object is handled with **two descriptors that are proven to refer to one inode**.
+  - **The descriptor invariant (rev 11; the only one):** every accepted regular file or directory is handled with **two descriptors that are proven to refer to one inode** (rev 13 wording; any other existing object gets only the classification descriptor, below).
     1. A **classification descriptor**, opened with `O_PATH|O_NOFOLLOW`, is `fstat`ed for the type.
     2. Only for `S_ISREG` or `S_ISDIR`, an **I/O descriptor** is opened from the classification descriptor's `/proc/self/fd/<n>` link, never from the pathname.
     3. The I/O descriptor is accepted only if its `fstat` gives the same `st_dev`, `st_ino` and file type as the classification descriptor.
@@ -668,11 +728,16 @@ agent-home/
 | R12-4 | Nested mount order (finding 4) | `--bind / /`, then `--dev /dev`, then `--proc /proc`; pinned by a unit test. | D12 |
 | R12-5 | In-process tool budget (finding 5) | Production constants: `MCP_TOOL_TIMEOUT=130000` ms for the CLI, a 120 s helper deadline; the contract runs a scaled pair. | D7, P0.3, S3.2 |
 | R12-6 | Agent home under `/tmp` hidden from hooks (finding 6) | The agent home is mounted back after the private `/tmp`, `/run` and `/dev/shm`; the workspace is re-bound read-only last. | D12 |
-| R12-C | The child census samples, so it can miss a short-lived child (P0 blocker 1) | A test-only ptrace exec tracer, parent of bwrap, sees every exec of every descendant. RoseCat's `sleep 0.001` mutant must turn the census red. | D11, P0.5, S3.9 |
+| R12-C | The child census samples, so it can miss a short-lived child (P0 blocker 1) | ~~A test-only ptrace exec tracer~~ (rev 13: a seccomp user-notification exec oracle, R13-2), parent of bwrap, sees every exec of every descendant. RoseCat's `sleep 0.001` mutant must turn the census red. | D11, P0.5, S3.9 |
 | R12-S | P0 ran without the outer seccomp filter (P0 blocker 2) | The filter is specified exactly and passed with `--seccomp`; new P0.6 proves it with the real CLI and nested hooks. | D12, P0.6 |
 | R12-V | CLI version and census artifact names | 2.1.294; one evidence file `agent/host/tests/p0_census.json` (`cli_version`, `cli_children`, `writes`, `hook_env`), from which the reviewed `runtime/writable.json` and `runtime/hook-env.json` are derived. | §2, P0.5 |
 | R12-A | `atomic_write` may write short (SHOULD) | It loops until every byte is written; a unit test injects a short write. | P0.7 |
 | R12-D | S2 as built (mail 5275) and S2 verdict 6fe538f | New rows `unread` and `fold`; the S2.2 area property is restricted to a componentwise shrink (the wider form is false); a mid-fold observation is added, with an xwd point outside both end states; the header's account button is owned by S4. | D7b, S2.2, S2.3 |
+| R13-1 | `ZIGBROWSER_AGENT_BWRAP` could not install the census oracle through `hello` (rev-12 blocker 1) | The seam table is split by owner. App-owned, pre-spawn seams (`BWRAP`, `HOST_CMD`, `APPROVAL_TTL_MS`, `DRAWER_DEMO`, `ANIM_MS`, `FS_PAUSE`) are read by the browser before the thing they change exists. Only the helper-carried seams travel in `hello`. The app launches the oracle in the outer-bwrap slot. | §7, D11, S3.6, S3.9 |
+| R13-2 | The oracle P0 built is seccomp user notification, not ptrace (addendum 313f0f8) | D11 specifies it: listener via `SCM_RIGHTS`; every exec recorded before it continues; `NOTIF_ID_VALID`; log outside; unchanged death chain; a fork without exec is the accepted limit. | D11, P0.5 |
+| R13-3 | The CLI runs its own binary as `rg` (P0 finding 7) | The allowlist is real paths under `/usr` or exactly `$CLI rg`: the pinned CLI real path, `argv[0] == "rg"`, options or workspace/scratchpad paths only. Everything else is red. | D11, P0.5, S3.9 |
+| R13-4 | The plan claimed `b4c23a1` as current HEAD and "no implementation" (rev-12 blocker 2) | Repinned to `38e30e5`: the status lists what is built; §2.0 describes P0, S1 and S2 with current lines; §2.1 is the labelled historical baseline with a line-shift table; ClosureMaps A and B carry current `C:` lines and `git_commit`; D3 states the as-built `get-child-position` placement. | frontmatter, §2, D3, §8 |
+| R13-S | A4/S4.4 wording; the FIFO and socket bound; the live-temp lock overlap; rev-11 NITs | A4 and S4.4 assert both messaging names. One bound: ≤ 513 bytes through the FIFO and the socket, newline passed unchanged. New S3.12 phase 2b runs B against A's paused live temp. The inotify mask and cookie are fixed. The D12 lead sentence says "accepted regular file or directory". | D7b, D11, D12, §9, S3.12, S4.4 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -766,22 +831,29 @@ Residual risk, for the record (rev 4):
 - Holds the **canary scanner**: process environs and cmdlines, stdout/stderr (including every crash and error line), every file under the agent home and profile, the fake API's recorded requests, all `DRAWER` rows (including error bubbles), every `tool_result` error, every JSON-RPC error `data`, the full `telemetry.query` output, and every browsing window's DOM and `localStorage` read through the socket.
 - Holds the **inotify open-event oracle** (rev 3, blocker 11). It uses ctypes `inotify_init1` and recursive `inotify_add_watch` with `IN_OPEN|IN_ACCESS|IN_MODIFY|IN_CREATE|IN_DELETE|IN_ATTRIB|IN_MOVED_*` on a **decoy user home**, which contains a decoy `.claude/` (with its own CLAUDE.md, settings and hooks) and a decoy git repository `src/decoy-repo/`. Opens are kernel events, so relatime and noatime do not hide them. Any event in those trees during the test is a failure.
 
-### E2E-only seams (rev 3, blocker 10)
+### E2E-only seams (rev 3, blocker 10; rev 13: split by owner)
 
-These are the only non-production inputs. Each is honored **only when `--e2e-protocol` is set**. Each reaches the helper inside the `hello` frame, never through the helper's environment allowlist. Behavior S3.6 proves each one is ignored without `--e2e-protocol`.
+These are the only non-production inputs. Each is honored **only when `--e2e-protocol` is set**, never through the helper's environment allowlist. Rev 13 (RoseCat rev-12 blocker 1): each seam has exactly one owner, and the owner decides when it can take effect. Behavior S3.6 proves each one is ignored without `--e2e-protocol`. App-owned seams print `zigBrowser: <NAME> ignored without --e2e-protocol`; helper-carried seams are absent from `hello`.
+
+**App-owned seams.** The browser reads and validates these itself, **before** the thing they change exists. They never travel in `hello`.
+
+| Variable | Read by, and when | Purpose | Constraint |
+|---|---|---|---|
+| `ZIGBROWSER_AGENT_BWRAP` | `agent_host.c`, before the helper spawn (it replaces the outer-bwrap program; the argv is unchanged) | the bwrap path (S3.4 case f), and the exec-oracle supervisor of D11 (S3.9) | an absolute path to a regular executable file |
+| `ZIGBROWSER_AGENT_HOST_CMD` | `agent_host.c`, before the helper spawn | the fake helper for frame-validation tests (S3.3) | an absolute path |
+| `ZIGBROWSER_AGENT_APPROVAL_TTL_MS` | the native broker, when a grant is minted | a short approval TTL (S8.2) | 500–120000 |
+| `ZIGBROWSER_AGENT_DRAWER_DEMO` | `agent_drawer.configure`, at startup | seeded system messages (S2.3) | `messages:<1..5000>` |
+| `ZIGBROWSER_AGENT_ANIM_MS` | `agent_drawer.configure`, at startup | stretches the minimize animation so an `xwd` capture can sample the fold mid-flight (S2.2; rev 12) | 180–5000; the default is 180 |
+| `ZIGBROWSER_AGENT_FS_PAUSE` | the app broker `agent_fs.zig`, at the named point of a workspace write | holds the write until the test writes `release\n` to the browser's stdin (S3.12; rev 11) | `after-temp` only. The wait is bounded at 30 s; on timeout the broker abandons that write (its temp is removed), refuses the tool call with "write paused too long", and prints one stderr line. |
+
+**Helper-carried seams.** The app reads these and passes them to the helper **inside `hello.e2e`**, because only the helper can apply them.
 
 | Variable | Purpose | Constraint |
 |---|---|---|
 | `ZIGBROWSER_AGENT_TEST_BASE_URL` | the fake Messages API; the helper sets `ANTHROPIC_BASE_URL` for the CLI | must be `http://127.0.0.1:<port>` |
 | `ZIGBROWSER_AGENT_TEST_PROXY` | the CONNECT-refusing recorder (P0.2) | loopback only |
-| `ZIGBROWSER_AGENT_CLAUDE_CLI` | the fake `claude setup-token` (S6) | an absolute path |
-| `ZIGBROWSER_AGENT_HOST_CMD` | the fake helper for frame-validation tests (S3.3) | an absolute path |
-| `ZIGBROWSER_AGENT_BWRAP` | the bwrap path (S3.4 case f) | an absolute path |
-| `ZIGBROWSER_AGENT_APPROVAL_TTL_MS` | a short approval TTL (S8.2) | 500–120000 |
-| `ZIGBROWSER_AGENT_DRAWER_DEMO` | seeded system messages (S2.3) | `messages:<n≤5000>` |
+| `ZIGBROWSER_AGENT_CLAUDE_CLI` | the fake `claude setup-token` that the login helper runs (S6) | an absolute path |
 | `ZIGBROWSER_AGENT_FS_TRACE` | sets `hello.e2e.fs_trace`, so the helper emits `fs_trace` (S10.4; rev 10) | `1` only |
-| `ZIGBROWSER_AGENT_FS_PAUSE` | pauses the app broker at a named point of a workspace write until the test releases it on stdin (S3.12; rev 11) | `after-temp` only |
-| `ZIGBROWSER_AGENT_ANIM_MS` | stretches the minimize animation so an `xwd` capture can sample the fold mid-flight (S2.2; rev 12) | 180–5000; the default is 180 |
 
 **Social fixture.** The existing `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN` server shape from `tests/e2e/social_flows_test.py` gains a commit log (POST count per action).
 
@@ -800,38 +872,38 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 
 ## 8. Workflow closure
 
-### 8.1 ClosureMap A at HEAD (existing; the drawer adds nothing)
+### 8.1 ClosureMap A at HEAD `38e30e5` (existing; the drawer adds nothing; rev 13 repin)
 
 | Depth | Node | Location | Label | Drawer adds/changes |
 |---|---|---|---|---|
 | 0 | page `zbHost.postMessage('{"cmd","args"}')` | `tests/fixtures/app/zbhost.js:24-34,110-133`; `src/dashboard/content/index.html:132-154` | page script | no |
-| 1 | page-world registration `install_ipc_handler` | `C:674-692` (NULL world 683), called `C:1209` | production-called | no |
-| 2 | `on_ipc_message_received` validate | `C:694-731` | production-called | no |
+| 1 | page-world registration `install_ipc_handler` | `C:692-710` (NULL world 701), called `C:1233` | production-called | no |
+| 2 | `on_ipc_message_received` validate | `C:712-749` | production-called | no |
 | 3 | `zb_ipc_dispatch` → `dispatch` | `src/ipc.zig:41-73`, `:15-39` | production-called | no |
-| 4 | reply resolve/reject | `C:737-745` (`reply_return_value` 739, `return_error_message` 744) | production-called | no |
-| 5 | `IPC`/`IPCERR` row | `emit_protocol2 C:238`, called 741/745 | production-called (`--e2e-protocol`) | no |
+| 4 | reply resolve/reject | `C:755-763` (`reply_return_value` 757, `return_error_message` 762) | production-called | no |
+| 5 | `IPC`/`IPCERR` row | `emit_protocol2 C:256`, called 759/763 | production-called (`--e2e-protocol`) | no |
 | 6 | page promise settles | WebKit | external | no |
 
 - Edges:
   - 0→1 is cross-process async (web process to UI process, delivered by `gtk_main`).
   - 1→2→3→4 run synchronously on the GTK thread.
   - 4→6 is cross-process async.
-- The shared-UCM contract: popups share one `zbHost` handler, re-registered per `ZbWindow`, with stacked callbacks (`C:679-691`). Provenance is unreliable.
+- The shared-UCM contract: popups share one `zbHost` handler, re-registered per `ZbWindow`, with stacked callbacks (`C:697-709`). Provenance is unreliable.
 - The plan's only obligation here is **negative**: T1 proves no drawer, secrets or agent name is reachable through this chain or any other page-world handler.
 
 ```json
 {"behavior":"A page script's zbHost.postMessage of a {cmd,args} JSON string is dispatched to zb_ipc_dispatch and the JSON result resolves (or the error rejects) the page promise.",
- "git_commit":"b4c23a1a56deced7b3ab7c8a34a660b22ffca622",
+ "git_commit":"38e30e56d3c5e100282d7a1c3b66491662c0f5d2",
  "nodes":[
   {"id":"page_zbhost_postmessage","module":"tests/fixtures/app/zbhost.js","is_entrypoint":false,"adds_or_changes":false,"read_path":null,"seedable_store":"page script"},
-  {"id":"install_ipc_handler","module":"src/webkit_shim.c:674","is_entrypoint":false,"adds_or_changes":false},
-  {"id":"on_ipc_message_received","module":"src/webkit_shim.c:694","is_entrypoint":true,"adds_or_changes":false},
+  {"id":"install_ipc_handler","module":"src/webkit_shim.c:692","is_entrypoint":false,"adds_or_changes":false},
+  {"id":"on_ipc_message_received","module":"src/webkit_shim.c:712","is_entrypoint":true,"adds_or_changes":false},
   {"id":"zb_ipc_dispatch","module":"src/ipc.zig:41","is_entrypoint":false,"adds_or_changes":false},
-  {"id":"script_message_reply","module":"src/webkit_shim.c:739","is_entrypoint":false,"adds_or_changes":false,"read_path":"page promise / IPC row"}],
+  {"id":"script_message_reply","module":"src/webkit_shim.c:757","is_entrypoint":false,"adds_or_changes":false,"read_path":"page promise / IPC row"}],
  "edges":[{"is_async":true,"cross_boundary":true,"driver":"gtk_main"},{"is_async":false,"cross_boundary":false,"driver":null},{"is_async":false,"cross_boundary":true,"driver":null},{"is_async":true,"cross_boundary":true,"driver":"gtk_main"}]}
 ```
 
-### 8.2 ClosureMap B at HEAD (existing; the drawer changes the node marked ✱)
+### 8.2 ClosureMap B at HEAD `38e30e5` (existing; the drawer changes the node marked ✱; rev 13 repin: only the `C:` lines moved)
 
 | Depth | Node | Location | Edge to next |
 |---|---|---|---|
@@ -845,10 +917,10 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 | 7 | `queue.acquire(page-N)` (-32014 `recoveringReply` :521) | `:517-523`; `src/automation/queue.zig` | FIFO wait |
 | 8 | `Engine.executeWith` → `executeRun` → `evaluate` | `src/automation/engine.zig:339-362`, `:376-508` | sync |
 | 9 | `PagePort.evalJson` → GTK adapter | `src/automation/page_port.zig:325-327`; `src/automation_gtk_port.zig:364-383` | Zig→C ABI |
-| 10 | `zb_automation_eval_json` → `auto_run_op` | `C:2938-2953`, `C:2866-2912` | thread hop |
-| 11 | `auto_job_submit` → `auto_queue_on_gtk` → `auto_job_dispatch` → `auto_start_eval` | `C:1586`, `1570-1584`, `1544-1561`, `2217-2240` | async (driver: GTK idle) |
-| 12 | `on_auto_eval_done` → `auto_job_complete` | `C:2187-2215`, `1515-1529` | async (driver: WebKit callback) |
-| 13 | waiter returns (`auto_job_wait`) → `takeString` | `C:1599-1630`; `automation_gtk_port.zig:382` | cross-thread resume |
+| 10 | `zb_automation_eval_json` → `auto_run_op` | `C:2962-2976`, `C:2890-2936` | thread hop |
+| 11 | `auto_job_submit` → `auto_queue_on_gtk` → `auto_job_dispatch` → `auto_start_eval` | `C:1610`, `1594-1608`, `1568-1585`, `2241-2263` | async (driver: GTK idle) |
+| 12 | `on_auto_eval_done` → `auto_job_complete` | `C:2211-2239`, `1539-1553` | async (driver: WebKit callback) |
+| 13 | waiter returns (`auto_job_wait`) → `takeString` | `C:1623-1654`; `automation_gtk_port.zig:382` | cross-thread resume |
 | 14 | `parseScriptResult` → root span → JSON-RPC envelope | `engine.zig:498-508`, `:358-361`; `automation_server.zig:537-542` | sync |
 | 15 | `writeFrame` (u32 BE; replies not capped) | `:346`, `:1564-1570` | cross-process |
 
@@ -856,7 +928,7 @@ The ✱ change is at depth 4: it is split into the socket shell (parse, envelope
 
 ```json
 {"behavior":"An automation client's page.evaluate with window_id runs in that window and its JSON result returns in the reply frame.",
- "git_commit":"b4c23a1a56deced7b3ab7c8a34a660b22ffca622",
+ "git_commit":"38e30e56d3c5e100282d7a1c3b66491662c0f5d2",
  "nodes":[
   {"id":"sdk_client_call","module":"sdk/python/src/zigbrowser/client.py:572","is_entrypoint":false,"adds_or_changes":false,"seedable_store":"request params"},
   {"id":"handleStream","module":"src/automation_server.zig:316","is_entrypoint":true,"adds_or_changes":false},
@@ -864,9 +936,9 @@ The ✱ change is at depth 4: it is split into the socket shell (parse, envelope
   {"id":"dispatchParsed","module":"src/automation_server.zig (new, from :452-543)","is_entrypoint":false,"adds_or_changes":true},
   {"id":"queue_acquire","module":"src/automation_server.zig:517","is_entrypoint":false,"adds_or_changes":false},
   {"id":"executeWith","module":"src/automation/engine.zig:339","is_entrypoint":false,"adds_or_changes":false},
-  {"id":"zb_automation_eval_json","module":"src/webkit_shim.c:2938","is_entrypoint":false,"adds_or_changes":false},
-  {"id":"auto_job_dispatch","module":"src/webkit_shim.c:1544","is_entrypoint":false,"adds_or_changes":false},
-  {"id":"auto_job_complete","module":"src/webkit_shim.c:1515","is_entrypoint":false,"adds_or_changes":false},
+  {"id":"zb_automation_eval_json","module":"src/webkit_shim.c:2962","is_entrypoint":false,"adds_or_changes":false},
+  {"id":"auto_job_dispatch","module":"src/webkit_shim.c:1568","is_entrypoint":false,"adds_or_changes":false},
+  {"id":"auto_job_complete","module":"src/webkit_shim.c:1539","is_entrypoint":false,"adds_or_changes":false},
   {"id":"jsonrpc_envelope","module":"src/automation_server.zig:537","is_entrypoint":false,"adds_or_changes":false},
   {"id":"writeFrame","module":"src/automation_server.zig:1564","is_entrypoint":false,"adds_or_changes":false,"read_path":"reply frame"}],
  "edges":[{"is_async":false,"cross_boundary":true,"driver":null},{"is_async":false,"cross_boundary":false,"driver":null},{"is_async":false,"cross_boundary":false,"driver":null},{"is_async":false,"cross_boundary":false,"driver":"queue FIFO"},{"is_async":false,"cross_boundary":false,"driver":null},{"is_async":false,"cross_boundary":true,"driver":null},{"is_async":true,"cross_boundary":true,"driver":"auto_job_dispatch (GTK idle)"},{"is_async":true,"cross_boundary":true,"driver":"auto_job_complete (WebKit callback)"},{"is_async":false,"cross_boundary":true,"driver":null},{"is_async":false,"cross_boundary":true,"driver":null}]}
@@ -901,7 +973,7 @@ The closure-test specs follow, per slice. Every chain above is **BLOCKING**: eac
 | A1 | The canary token appears only in the subprocess env | S4 | `tests/e2e/agent_secrets_test.py` | See G. |
 | A2 | The callback is accepted only from the expected origin and state | S6 | `tests/e2e/agent_login_test.py` | The cases are: wrong state, missing state, another port, http versus https, a host lookalike, and a replayed callback after success. Each gives an `AUTH blocked` row, the fake CLI receives no code, and the store is unchanged. |
 | A3 | The Secrets window is unreachable from the page world and the socket | S4 | `tests/e2e/agent_secrets_test.py` + T1/T3 files | It is not in `page.list`, has no handler name, and has no socket method. It contains no `WebKitWebView` (asserted with the GTK widget-tree debug row `SECRETS tree`). |
-| A4 | A canary token is absent from every hook environment, while every hook runs (user answer 2) | P0 (contract, all six events), S4 (product: `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`), S7 (product: `PreToolUse`, `PostToolUse` on the first real MCP tools; rev 4, blocker 3) | `agent/host/tests/test_contract.py`, `tests/e2e/agent_secrets_test.py`, `tests/e2e/agent_tools_test.py` | Fixture hooks dump their env and POST to a fake localhost notify server. Every event's dump must exist, and no dump may contain the canary. Every hook command starts with `zb-hook-run --`, and under R3 no visible `/proc/*/environ` (PID 1 included) holds the canary (rev 6). The product runs are already inside the S3 sandbox. **Unconditionally** (rev 5), the S3.9 malicious hook tries `/proc/<cli>/mem`, `environ`, ptrace and `process_vm_readv` on every PID it can name, and every attempt must fail. |
+| A4 | A canary token is absent from every hook environment, while every hook runs (user answer 2) | P0 (contract, all six events), S4 (product: `SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`), S7 (product: `PreToolUse`, `PostToolUse` on the first real MCP tools; rev 4, blocker 3) | `agent/host/tests/test_contract.py`, `tests/e2e/agent_secrets_test.py`, `tests/e2e/agent_tools_test.py` | Fixture hooks dump their env and POST to a fake localhost notify server. Every event's dump must exist, and no dump may contain the canary. No dump may contain `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN` either, checked by name (rev 13). Every hook command starts with `zb-hook-run --`, and under R3 no visible `/proc/*/environ` (PID 1 included) holds the canary (rev 6). The product runs are already inside the S3 sandbox. **Unconditionally** (rev 5), the S3.9 malicious hook tries `/proc/<cli>/mem`, `environ`, ptrace and `process_vm_readv` on every PID it can name, and every attempt must fail. |
 
 ## 10. Slices
 
@@ -954,7 +1026,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - inside each hook, `/proc` lists only the hook's own processes, and neither the CLI's nor the helper's PID exists;
   - a create in `workspace/` from the hook and from the helper gets `EROFS`, and a scratchpad write succeeds;
   - descriptors ≥ 3 in the hook are closed;
-  - (rev 12) the census of non-hook CLI descendants comes from the exec tracer (D11), which sees every exec of every descendant whatever its lifetime, and is recorded as `cli_children` in `agent/host/tests/p0_census.json`, as absolute paths under `/usr` only. **Red first:** RoseCat's mutant wrapper, which spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, passes the snapshot census and must fail the traced one (`/usr/bin/sleep` is not on the allowlist);
+  - (rev 12; rev 13) the census of non-hook CLI descendants comes from the seccomp user-notification exec oracle (D11), which records every exec of every descendant before it runs, whatever its lifetime. It is recorded as `cli_children` in `agent/host/tests/p0_census.json`, in the allowlist vocabulary of D11: real paths under `/usr` (observed: `/usr/bin/git`, `/usr/bin/dash`) and `$CLI rg`. **Red first:** RoseCat's mutant wrapper, which spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, passes the snapshot census. The oracle must report it, and a permanent test asserts that it does. A second red: the CLI binary run under any `argv[0]` other than `rg`, or with an argument outside the workspace and scratchpad, fails the allowlist check;
   - (rev 6) the **write census**: every path the CLI and the SAI hooks write under `.claude` during the turn, from the inotify oracle, recorded as `writes` in `p0_census.json`. Rev 12: these are the **observed writes**. `runtime/writable.json` is the **reviewed union** in D12, which is not a copy of them;
   - (rev 6) the **hook-environment census**: the variable names the CLI sets for hooks, recorded as `hook_env` in `p0_census.json`. It becomes `runtime/hook-env.json`, minus the refused names (D12 step 2, which now includes both messaging names);
   - (rev 6) `--strict-mcp-config` passed through the SDK's `extra_args` is accepted, and an `mcpServers` entry planted in `.claude/.claude.json` is ignored;
@@ -1046,7 +1118,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Given** the existing fixture `tests/fixtures/app/index.html#auto=echo` and `#auto=echo-bad`, extended so that the fixture sets `document.title` to `resolved:<value>` in the `then` branch and to `rejected:<message>` in the `catch` branch,
 - **When** the real binary runs each case with `--print-title --e2e-protocol`,
 - **Then** the `TITLE` row reads `resolved:hi-42` for the success case and `rejected:BadArgs…` for the error case. The `IPC`/`IPCERR` rows are still emitted.
-- This characterizes existing behavior, so the test may be green on first run. Its proof is **red-at-seam**: in a scratch export, remove the `webkit_script_message_reply_return_value` call (`C:739`), and the title stays `pending`, so red. The red run is recorded.
+- This characterizes existing behavior, so the test may be green on first run. Its proof is **red-at-seam**: in a scratch export, remove the `webkit_script_message_reply_return_value` call (`C:739` at `b4c23a1`; `C:757` at HEAD), and the title stays `pending`, so red. The red run is recorded.
 - **Files touched:** `tests/fixtures/app/index.html`, `tests/e2e/ipc_roundtrip_test.py`.
 
 **Closure Test S1: "clicking the S icon opens the drawer, and clicks elsewhere reach the page" — BLOCKING (X server → GTK async; registration in `zb_window_new`)
@@ -1190,7 +1262,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - the canary is absent from `attack.json` and from every file the hook wrote. Under R3 (a second run with `--agent-token-route env`), the hook also reads `/proc/1/environ`, its own `/proc/self/environ` and every other visible `/proc/*/environ`, and none holds the canary (rev 6, blocker 2). **Red-at-seam** for this case: have `zb-hook-run` pass its own environment to bwrap, and `/proc/1/environ` shows the canary, so red;
   - `workspace/keep.txt` is still "original" (hash checked from outside), and `workspace/new.txt` does not exist;
   - the hook's positive controls succeed: a scratchpad write, and a localhost POST to the fake notify server;
-  - the census holds: every CLI descendant is in a `zb-hook-run` namespace or on the allowlist. Rev 12: the census comes from the exec tracer shim behind `ZIGBROWSER_AGENT_BWRAP` (D11), so a child that lives between two samples is still seen. **Red-at-seam:** a `zb-claude` that spawns and reaps `/usr/bin/sleep 0.001` before the CLI turns this check red;
+  - the census holds: every CLI descendant is in a `zb-hook-run` namespace or on the D11 allowlist (`/usr` real paths, or exactly `$CLI rg`). Rev 13: the census comes from the exec oracle, which the **app** launches in the outer-bwrap slot through the app-owned, pre-spawn seam `ZIGBROWSER_AGENT_BWRAP`. So it is bwrap's parent before the helper exists, and a child that lives between two samples is still seen. **Red-at-seam:** a `zb-claude` that spawns and reaps `/usr/bin/sleep 0.001` before the CLI turns this check red;
   - (rev 12, finding 2) the hook's own environment holds neither `CLAUDE_CODE_MESSAGING_SOCKET` nor `CLAUDE_CODE_MESSAGING_TOKEN`, checked by name, independently of the canary. **Red-at-seam:** drop both from the refused set, and they appear in `attack.json`'s environment dump.
 - **Fail-closed case:** with `ZIGBROWSER_AGENT_BWRAP` pointing at a bwrap shim that ignores `--unshare-pid` for nested calls (e2e-only seam), the self-check fails. `DRAWER status unavailable hook-isolation` is shown, and no session starts.
 - **Red-at-seam:** remove the `zb-hook-run` prefix from the provisioned hooks, and the hook reads the canary from `/proc/<cli>/environ` under R3, or from `/proc/<cli>/mem` under R1, so red. Bind the workspace writable, and `keep.txt` changes, so red.
@@ -1238,13 +1310,20 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
   - no new process appears with B as an ancestor (`/proc` census by ppid chain);
   - the inotify watches on `.zb-broker-tmp/` and `workspace/` record **zero** events during the whole phase. A is idle, so any event would be B's.
 - **Phase 2, A writing, B absent.** B is quit first. An approved `fs_write workspace/y.txt` in A is held in flight by a deterministic pause after its temp is created (the e2e-only seam `ZIGBROWSER_AGENT_FS_PAUSE=after-temp`, gated by `--e2e-protocol`). Then it is released. The inotify sequence is exactly: `IN_CREATE` and `IN_CLOSE_WRITE` of one temp in `.zb-broker-tmp/`, then `IN_MOVED_FROM` there and `IN_MOVED_TO` of `y.txt` in `workspace/`. The final state is `y.txt` with the approved SHA-256 and an empty temp directory.
+- **Phase 2b, B while A holds a live temp (rev 13; RoseCat's rev-11 SHOULD).** This is the dangerous interleaving: a buggy B that cleans `.zb-broker-tmp/` before checking the lock would delete A's live temp.
+  - A's approved `fs_write workspace/z.txt` is held at `after-temp` (the temp is written, synced and closed).
+  - The test drains A's events so far and records the temp's name, inode and SHA-256.
+  - It then starts B with the same `XDG_DATA_HOME` and sends B's prompt (as in phase 1).
+  - **Then:** B shows `DRAWER status unavailable home-locked`; no process has B as an ancestor; inotify records **no** event in `.zb-broker-tmp/` or `workspace/` while B runs; and A's temp still has the same name, inode and SHA-256.
+  - Only then is A released. Its rename lands `z.txt` with the approved SHA-256, and the temp directory is empty.
+- **The inotify mask for the exact sequences (rev 13 NIT):** the watches use only `IN_CREATE|IN_CLOSE_WRITE|IN_MOVED_FROM|IN_MOVED_TO|IN_DELETE`, so ordinary `IN_OPEN` and `IN_MODIFY` events cannot make the comparison ambiguous. An `IN_MOVED_FROM`/`IN_MOVED_TO` pair counts as one rename only when both events carry the same cookie.
 - **Phase 3, B takes over.** After A quits, B's next Send takes the lock and starts the agent (`DRAWER status ready -`).
 - **Property:** none. The input is fixed.
 
 #### Behavior S3.6: the e2e-only seams are inert in production (rev 3, blocker 10)
 - **Given** every variable in the section 7 seam table, set to hostile values (a remote base URL, `/bin/sh` as the CLI, a TTL of 1 ms),
 - **When** the browser runs **without** `--e2e-protocol` and a prompt is sent,
-- **Then** the `hello` frame recorded by the real helper's debug log (written to `scratchpad/`) carries none of them, and no request reaches the hostile base URL (a listener on it records 0 connections).
+- **Then** the `hello` frame recorded by the real helper's debug log (written to `scratchpad/`) carries none of the helper-carried seams, no request reaches the hostile base URL (a listener on it records 0 connections), and each app-owned seam is refused before it can act (rev 13): stderr has one `zigBrowser: <NAME> ignored without --e2e-protocol` line per app-owned seam, the real bwrap and helper are spawned, the animation is 180 ms, and no demo message appears.
 - **With** `--e2e-protocol`, a non-loopback base URL is refused with `zigBrowser: agent: test base URL must be loopback`.
 
 #### Behavior S3.4: quit, browser death and helper crash leave no processes, and a crash is reported
@@ -1305,9 +1384,9 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 #### Behavior S4.4 (A4): every real hook runs, and none sees the token
 - **Given** an agent home provisioned by the real `--agent-setup` from the fixture SAI tree (all hooks on), and the canary token stored through the Secrets window,
 - **When** a prompt with no tool call runs end to end through the browser (there are no browser tools before S7, and built-in tools are off),
-- **Then** `SessionStart`, `UserPromptSubmit`, `Stop` and `SessionEnd` each fired, inside the sandbox: one env dump per event, and one POST per event at the fake localhost notify server. No dump contains the canary. Every hook command line starts with `zb-hook-run --`. Under R3, each hook also reads every `/proc/*/environ` it can see, PID 1 included, and finds no canary (rev 6).
+- **Then** `SessionStart`, `UserPromptSubmit`, `Stop` and `SessionEnd` each fired, inside the sandbox: one env dump per event, and one POST per event at the fake localhost notify server. No dump contains the canary, and no dump holds `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN` (checked by name, independently of the canary; rev 13). Every hook command line starts with `zb-hook-run --`. Under R3, each hook also reads every `/proc/*/environ` it can see, PID 1 included, and finds no canary (rev 6).
 - `PreToolUse` and `PostToolUse` are proven in S7.6, when the first real MCP tools exist (rev 4, blocker 3).
-- **Red-at-seam:** force R3 without the wrapper, and the canary appears in the `UserPromptSubmit` dump, so red.
+- **Red-at-seam:** force R3 without the wrapper, and the canary appears in the `UserPromptSubmit` dump, so red. Drop the two messaging names from the refused set, and both appear in every dump, so red.
 
 #### Behavior S4.3 (A3): the Secrets window is unreachable
 - It is not in `page.list` and gets no `DRAWER` window id.
