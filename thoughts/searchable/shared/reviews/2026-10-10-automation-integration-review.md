@@ -5950,6 +5950,111 @@ Agent Mail 5345 sent the source evidence, the Xvfb result, the matrix correction
 (`--renderer shm` is already the failing default) and the test requirement to
 BlackRobin.
 
+### Real-screen differential update
+
+The orchestrator's first controlled real-screen variant is decisive within the
+limits of the current matrix: exact `fa0aa48`, drawer on and
+`--hardware-acceleration never` presents both the page and the S icon on the
+same NVIDIA/X11 host where default case J presents neither. This closes the
+generic GTK visibility, show/realize, zero-allocation and opaque-cover
+hypotheses. It strengthens the class-level diagnosis to **WebKit accelerated
+composition interacting with the drawer's GTK child-window topology**. It does
+not yet identify which child window is necessary: the pending empty-overlay,
+icon-only and no-ghost variants must distinguish “any overlay output window”
+from the ghost EventBox's additional descendant window.
+
+The second controlled variant, `--renderer mesa-egl`, also presents both the
+page and the S icon. On that passing variant the user moved the icon, opened the
+drawer and left it open without instability. The failing intersection is thus
+more specific: the proprietary-NVIDIA GL presentation route plus the
+accelerated WebView/overlay child-window topology. Accelerated presentation via
+Mesa EGL is good; WebKit acceleration disabled is good. The interaction and
+lifetime behaviors are good wherever pixels are presented. The pending
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` result is a final mechanism cross-check, not
+needed to distinguish page/widget logic from the NVIDIA presentation defect.
+
+That final cross-check eventually presented the page and icon, but only after
+roughly 20 seconds of severe load-time jitter and flicker. The complete
+user-observed NVIDIA matrix is therefore: drawer off good; drawer on with
+default case J permanently blank; hardware acceleration never good; Mesa EGL
+good; WebKit compositing disabled eventually good but operationally unusable.
+None of the environment/policy variants is an acceptable silent product
+fallback. BlackRobin owns the no-child-window drawer-host fix; closure requires
+the structural GdkWindow census to kill the old topology and the corrected
+on-screen pixel oracle to pass the fixed build on the user's NVIDIA screen.
+
+One correction to the proposed fix space: a generic no-window parent cannot
+paint the drawer above a WebKitWebView that owns a native child `GdkWindow`;
+the native child wins stacking over parent painting. If only `no-ghost` passes,
+remove the EventBox's extra window and retain the overlay parent window. If
+`icon-only` fails, the realistic candidates are separately shaped native child
+windows or a separate app-owned transient surface, with focus, stacking,
+click-through and circular-shape tests. Disabling acceleration remains a proven
+workaround but conflicts with the media/rendering reason case J exists, so it
+is not a silent product fix.
+
+## Claude Agent chat-drawer plan rev 15.3 and hardware check (`d9674c1`)
+
+**Verdict: BLOCKER.** This docs/manual-test commit makes useful progress: it
+removes the stale per-home-venv claim, defines marker publication as the setup
+commit point, explicitly repairs markerless first installs, rejects dot
+segments, reopens S1/S2 for the real NVIDIA failure, and requires a real-screen
+check for every UI slice. It touches no product code, and `git diff --check
+d9674c1^..d9674c1` is clean. Its independent exact clean-export gate under
+private Xvfb is **GREEN: 104/104 steps succeeded; 816/816 tests passed**. Four
+contracts remain insufficient.
+
+### BLOCKER-for-test — the real-screen verdict ignores the real screen
+
+`tests/manual/real_screen_check.py:152-163` captures both the client window and
+the root window, but computes `page_px`, `icon_px` and the pass/fail result only
+from `xwd -id`. A compositing failure can leave a correct client backing pixmap
+while presenting blank pixels on the root window—the exact distinction this
+test was introduced to catch. The root crop is merely written to disk. Make the
+root/on-screen crop authoritative, or require both captures to pass, and add a
+unit/fake-capture mutant where the client capture is correct but the root crop
+is blank. It must fail.
+
+### BLOCKER-for-test — matrix cases inherit stale rendering overrides
+
+`real_screen_check.py:129-133` copies all of `os.environ`, removes only the
+automation socket and then overlays the case environment. A caller's stale
+`GDK_GL`, `WEBKIT_DISABLE_COMPOSITING_MODE`,
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM`, `WEBKIT_DISABLE_DMABUF_RENDERER`,
+`__EGL_VENDOR_LIBRARY_FILENAMES`, `LIBGL_ALWAYS_SOFTWARE` or `GALLIUM_DRIVER`
+can silently change every labelled matrix case. Clear all app/WebKit/GDK/GL
+render overrides before applying a case's explicit values; preserve only the
+display/authentication environment needed to reach the user-approved screen.
+
+### BLOCKER — copied names can still turn OS paths into slash commands
+
+The new prose-position grammar (`plan:1270-1275`) closes the exact `rm`, `open`
+and assignment examples, but it still trusts arbitrary copied command and skill
+names. A copied skill named `tmp` makes ordinary prose such as `stored in /tmp`
+match both a known name and the allowed lead word `in`; `etc` and `proc` are
+equally dangerous. The untrusted copied tree must not expand an absolute-path
+exception into root-filesystem names. Define a fixed non-path namespace or
+refuse copied names that collide with reserved/root path components, with
+failing-first `/tmp`, `/etc` and `/proc` collision cases.
+
+### BLOCKER — the interrupted-install and descendant-death tests are not closed
+
+The first-install paragraph says it SIGKILLs setup at each entry move “through
+the spawn-delay seam” (`plan:1268`), but the seam is defined only before the
+child's `prctl`/parent check (`plan:864`). It cannot synchronize any install
+move. Add a separate bounded, e2e-only per-step pause/fault seam (and prove it
+is inert outside `--e2e-protocol`) or name another concrete synchronization
+mechanism.
+
+Rev 15.3 also predates the exact route-probe result in the companion S3a
+review: the CLI survives browser SIGKILL after the real R1 probe begins. The
+plan still needs a complete helper-descendant death contract and a regression
+that synchronizes after a sleeping probe CLI starts, kills the browser, and
+observes both helper and CLI gone before harness cleanup. Protecting only the
+immediate setup child is insufficient.
+
+Agent Mail 5350 and 5352 sent these test and plan findings to BlackRobin.
+
 ## Claude Agent chat-drawer plan rev 15.2 (`7eab90f`)
 
 **Verdict: BLOCKER.** The revision correctly assigns the production runtime to
