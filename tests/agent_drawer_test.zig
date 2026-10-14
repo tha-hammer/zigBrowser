@@ -294,3 +294,12 @@ test "property (invariant): the kept prefix is valid UTF-8, at most 4 KiB, and a
         if (text.len > drawer.row_text_max) try std.testing.expect(kept > drawer.row_text_max - 4);
     }
 }
+
+test "the animation-length seam is exactly 180..5000 ms in decimal digits" {
+    try std.testing.expectEqual(@as(?u32, 3000), drawer.parseAnimMs("3000"));
+    try std.testing.expectEqual(@as(?u32, 180), drawer.parseAnimMs("180"));
+    try std.testing.expectEqual(@as(?u32, 5000), drawer.parseAnimMs("5000"));
+    for ([_][]const u8{ "", "179", "5001", "0", "-1", "3000ms", " 3000", "3e3", "99999999999" }) |text| {
+        try std.testing.expectEqual(@as(?u32, null), drawer.parseAnimMs(text));
+    }
+}

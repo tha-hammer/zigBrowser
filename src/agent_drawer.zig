@@ -107,14 +107,28 @@ pub const anim_ms: i64 = 180;
 pub fn parseDemo(text: []const u8) ?u32 {
     const prefix = "messages:";
     if (!std.mem.startsWith(u8, text, prefix)) return null;
-    const digits = text[prefix.len..];
+    return parseBounded(text[prefix.len..], 1, max_demo_messages);
+}
+
+/// Decimal digits only (at most 4), within [lo, hi].
+fn parseBounded(digits: []const u8, lo: u32, hi: u32) ?u32 {
     if (digits.len == 0 or digits.len > 4) return null;
     for (digits) |ch| if (!std.ascii.isDigit(ch)) return null;
     const n = std.fmt.parseInt(u32, digits, 10) catch return null;
-    return if (n >= 1 and n <= max_demo_messages) n else null;
+    return if (n >= lo and n <= hi) n else null;
 }
 
 pub const demo_env_name = "ZIGBROWSER_AGENT_DRAWER_DEMO";
+
+/// The e2e-only seam `ZIGBROWSER_AGENT_ANIM_MS` (plan S2.2, rev 12): the
+/// minimize animation's length, exactly 180..5000 ms in decimal digits.
+pub fn parseAnimMs(text: []const u8) ?u32 {
+    return parseBounded(text, @intCast(anim_ms), max_anim_ms);
+}
+
+pub const max_anim_ms: u32 = 5000;
+
+pub const anim_env_name = "ZIGBROWSER_AGENT_ANIM_MS";
 pub const max_demo_messages: u32 = 5000;
 
 /// A DRAWER row's text field holds at most this many bytes, then "…".
@@ -176,25 +190,41 @@ const Store = struct {
     last: ?Ratios = null,
     /// The e2e-only seed: system messages each new drawer starts with.
     demo_messages: u32 = 0,
+    /// The minimize animation's length (the e2e-only seam can stretch it).
+    anim_ms: u32 = @intCast(anim_ms),
 };
+
+/// The e2e-only seams this module reads (plan section 7): honoured only
+/// with --e2e-protocol.
+pub const Seams = struct {
+    demo: ?[]const u8 = null,
+    anim_ms: ?[]const u8 = null,
+};
+
+/// An e2e-only seam's value: parsed with --e2e-protocol, else refused; a
+/// bad value is refused. Either refusal is reported on stderr.
+fn honour(name: []const u8, text: ?[]const u8, e2e_protocol: bool, parse: *const fn ([]const u8) ?u32) ?u32 {
+    const value = text orelse return null;
+    if (!e2e_protocol) {
+        std.debug.print("zigBrowser: {s} ignored without --e2e-protocol\n", .{name});
+        return null;
+    }
+    return parse(value) orelse {
+        std.debug.print("zigBrowser: {s}={s} ignored\n", .{ name, value });
+        return null;
+    };
+}
 var store: Store = .{};
 
 /// Startup: where agent-drawer.json lives (`profile_dir` null: nowhere,
 /// nothing is persisted), and the position it holds. A corrupt file means
 /// the default, and stderr says so. `gpa` must outlive the process's
-/// windows (the path is kept). `demo`: ZIGBROWSER_AGENT_DRAWER_DEMO's
-/// value, honoured only with `e2e_protocol` (plan section 7).
-pub fn configure(io: std.Io, gpa: std.mem.Allocator, profile_dir: ?[]const u8, demo: ?[]const u8, e2e_protocol: bool) void {
+/// windows (the path is kept). `seams`: the e2e-only variables' values,
+/// honoured only with `e2e_protocol`.
+pub fn configure(io: std.Io, gpa: std.mem.Allocator, profile_dir: ?[]const u8, seams: Seams, e2e_protocol: bool) void {
     store = .{ .io = io };
-    if (demo) |text| {
-        if (!e2e_protocol) {
-            std.debug.print("zigBrowser: {s} ignored without --e2e-protocol\n", .{demo_env_name});
-        } else if (parseDemo(text)) |n| {
-            store.demo_messages = n;
-        } else {
-            std.debug.print("zigBrowser: {s}={s} ignored\n", .{ demo_env_name, text });
-        }
-    }
+    if (honour(demo_env_name, seams.demo, e2e_protocol, parseDemo)) |n| store.demo_messages = n;
+    if (honour(anim_env_name, seams.anim_ms, e2e_protocol, parseAnimMs)) |ms| store.anim_ms = ms;
     const dir = profile_dir orelse return;
     const path = std.fs.path.join(gpa, &.{ dir, file_name }) catch return;
     store.path = path;
@@ -223,6 +253,7 @@ comptime {
         @export(&zb_drawer_ease, .{ .name = "zb_drawer_ease" });
         @export(&zb_drawer_row_text_len, .{ .name = "zb_drawer_row_text_len" });
         @export(&zb_drawer_demo_messages, .{ .name = "zb_drawer_demo_messages" });
+        @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
     }
 }
 
@@ -280,4 +311,10 @@ fn zb_drawer_row_text_len(text: [*]const u8, len: usize) callconv(.c) usize {
 /// How many seeded system messages a new drawer starts with (0: none).
 fn zb_drawer_demo_messages() callconv(.c) c_uint {
     return store.demo_messages;
+}
+
+/// The minimize animation's length in ms (180 unless the e2e-only seam
+/// stretched it).
+fn zb_drawer_anim_ms() callconv(.c) c_uint {
+    return store.anim_ms;
 }

@@ -13,7 +13,10 @@ captures. The icon's start position is seeded in agent-drawer.json.
   message list, input row
 - minimize (S2.2): '-' animates (>= 3 frames) from the drawer to the
   icon's last rect R, then `minimized R`, `icon R`, focus on the icon, the
-  icon drawn at R; Escape and Ctrl+Shift+Space do the same; a resize
+  icon drawn at R; the stand-in is drawn (`fold` rows) at >= 2 rects between
+  the two, shrinking toward R; stretched to 3 s (ZIGBROWSER_AGENT_ANIM_MS,
+  e2e only), an xwd capture shows it mid-flight over page area neither end
+  state covers; Escape and Ctrl+Shift+Space do the same; a resize
   during the animation re-targets it; a 200 px tall window gets a drawer
   70% tall
 - scroll and send (S2.3, S2.4): 200 seeded messages
@@ -38,6 +41,9 @@ from xinput import Clipboard
 SEED = (0.5, 0.2)  # the icon sits above the drawer's area
 ICON_RGB = (0xD9, 0x77, 0x57)
 DEMO = "ZIGBROWSER_AGENT_DRAWER_DEMO"
+ANIM = "ZIGBROWSER_AGENT_ANIM_MS"
+GHOST_RGB = (0xF4, 0xF1, 0xEA)
+PAGE_RGB = (0x20, 0x60, 0xA0)
 NO_AGENT = "Agent not available yet"
 
 
@@ -110,6 +116,7 @@ def case_open_minimize(binary: Path, tmp: Path, check: Checks) -> None:
             check(frames >= 3 and anim.rect(1) == D and anim.rect(2) == R,
                   f"anim: >= 3 frames from the drawer {D} to R {R} (got {anim.fields})", b)
             check(minimized.rect() == R, f"minimized at R ({minimized.rect()})", b)
+            check_fold_rows(check, b, b.rows("fold", 1), D, R)
         again = b.wait_row("icon", 1, count=2)
         check(again is not None and again.rect() == R, f"the icon is back at R ({again and again.rect()})", b)
         check(b.wait(lambda: kinds(b, "focus")[-1:] == [("focus", ("icon",))], 5), "focus returns to the icon", b)
@@ -148,6 +155,89 @@ def case_open_minimize(binary: Path, tmp: Path, check: Checks) -> None:
             five = b.wait_row("open", 1, count=5)
             check(five is not None and five.rect() == drawer_rect(600, 200) and five.rect()[3] == 140,
                   f"a 200 px tall window gets a 140 px drawer ({five and five.rect()})", b)
+    finally:
+        b.stop()
+        check(b.gtk_complaints() == [], f"{b.label}: no GTK warning or critical ({b.gtk_complaints()[:3]})", b)
+
+
+def toward(prev: int, now: int, end: int) -> bool:
+    """`now` is no further from `end` than `prev` was, give or take the one
+    pixel of rounding: x and w are rounded separately, so a right or bottom
+    edge (x + w) can step 1 px back between two frames."""
+    return abs(end - now) <= abs(end - prev) + 1
+
+
+def check_fold_rows(check: Checks, b: Browser, folds: list, D, R) -> None:
+    """S2.2 mid-fold (rev 12): the stand-in was drawn at least twice strictly
+    between the open rect D and R, shrinking toward R frame by frame."""
+    rects = [f.rect(1) for f in folds]
+    frames = [int(f.fields[0]) for f in folds]
+    between = [r for r in rects if r not in (D, R)]
+    check(len(between) >= 2, f"the fold was drawn at >= 2 intermediate rects ({len(between)}: {between[:4]})", b)
+    check(frames == sorted(frames) and len(set(frames)) == len(frames), f"fold frames increase ({frames})", b)
+    pairs = list(zip(rects, rects[1:]))
+    check(all(q[2] <= p[2] and q[3] <= p[3] for p, q in pairs), "each fold rect is no larger than the one before", b)
+    check(all(toward(p[0], q[0], R[0]) and toward(p[1], q[1], R[1]) and
+              toward(p[0] + p[2], q[0] + q[2], R[0] + R[2]) and toward(p[1] + p[3], q[1] + q[3], R[1] + R[3])
+              for p, q in pairs), "every fold edge moves toward R's (within 1 px of rounding)", b)
+    if rects:
+        first, last = rects[0], rects[-1]
+        check(all(abs(R[i] - last[i]) < abs(R[i] - first[i]) or R[i] == first[i] for i in range(4)),
+              f"over the whole fold every coordinate gets closer to R ({first} -> {last})", b)
+
+
+def case_fold_pixels(binary: Path, tmp: Path, check: Checks) -> None:
+    """With the animation stretched to 3 s (e2e-only seam), the fold is seen
+    on screen mid-flight, over page area neither end state covers."""
+    b = Browser(binary, tmp, "fold-pixels", ["--agent-drawer", "on"], env_extra={ANIM: "3000"},
+                profile=seeded_profile(tmp, "p-fold"))
+    try:
+        icon = b.wait_row("icon", 1)
+        if not check(icon is not None, "icon row", b):
+            return
+        R = icon.rect()
+        check(b.wait_page(), "page loaded", b)
+        b.x.click(*centre(R))
+        opened, minus = b.wait_row("open", 1), b.wait_row("minus", 1)
+        if not check(opened is not None and minus is not None, "the drawer opens", b):
+            return
+        D = opened.rect()
+        time.sleep(0.5)
+        # A fixed point between R and the open drawer's top edge: the fold
+        # must pass over it, and neither end state covers it. Watched with
+        # xwd alone, independent of any row.
+        corridor = (R[0] + R[2] // 2, (R[1] + R[3] + D[1]) // 2)
+        check(near(b.x.screen().pixel(*corridor), PAGE_RGB), f"the corridor point {corridor} shows the page while open", b)
+        b.x.click(*centre(minus.rect()))
+        seen_fold = False
+        deadline = time.monotonic() + 1.6
+        while time.monotonic() < deadline and not seen_fold:
+            seen_fold = near(b.x.screen().pixel(*corridor), GHOST_RGB)
+        check(seen_fold, f"xwd sees the fold pass over the corridor point {corridor}", b)
+        time.sleep(0.4)
+        before = b.rows("fold", 1)
+        shot = b.x.screen()
+        after = b.rows("fold", 1)
+        check(b.rows("minimized", 1) == [], "the stretched fold is still running at the capture", b)
+        if not check(len(before) >= 1 and len(after) > len(before), "fold rows straddle the capture", b):
+            return
+        a, c = before[-1].rect(1), after[len(before)].rect(1)
+        x0, y0 = max(a[0], c[0]), max(a[1], c[1])
+        x1, y1 = min(a[0] + a[2], c[0] + c[2]), min(a[1] + a[3], c[1] + c[3])
+        # A point the stand-in covers both just before and just after the
+        # capture, above the drawer (outside D) and outside R.
+        points = [(x, y) for x in range(x0 + 4, x1 - 4, 8) for y in range(y0 + 4, min(y1, D[1]) - 4, 8)
+                  if not (R[0] <= x < R[0] + R[2] and R[1] <= y < R[1] + R[3])]
+        if check(bool(points), f"the fold passes over page area outside both end states ({a}, {c})", b):
+            px, py = points[len(points) // 2]
+            check(near(shot.pixel(px, py), GHOST_RGB), f"the fold is on screen at {px},{py} ({shot.pixel(px, py)})", b)
+            out_x = x0 - 6
+            if out_x >= 0:
+                check(near(shot.pixel(out_x, py), PAGE_RGB), f"the page shows just outside the fold ({shot.pixel(out_x, py)})", b)
+        check(b.wait_row("minimized", 1, timeout=10) is not None, "the stretched fold ends in R", b)
+        time.sleep(0.3)
+        check(near(b.x.screen().pixel(*corridor), PAGE_RGB), "the corridor point shows the page again after the fold", b)
+        check_fold_rows(check, b, b.rows("fold", 1), D, R)
     finally:
         b.stop()
         check(b.gtk_complaints() == [], f"{b.label}: no GTK warning or critical ({b.gtk_complaints()[:3]})", b)
@@ -235,7 +325,7 @@ def case_scroll_send(binary: Path, tmp: Path, check: Checks) -> None:
 
 
 def main() -> int:
-    return run_main(__doc__, {"open": case_open_minimize, "scroll": case_scroll_send})
+    return run_main(__doc__, {"open": case_open_minimize, "fold": case_fold_pixels, "scroll": case_scroll_send})
 
 
 if __name__ == "__main__":

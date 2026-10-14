@@ -32,9 +32,9 @@ void zb_drawer_lerp(const ZbDrawerRect *a, const ZbDrawerRect *b, double t, ZbDr
 double zb_drawer_ease(double t);
 size_t zb_drawer_row_text_len(const char *text, size_t len);
 unsigned int zb_drawer_demo_messages(void);
+unsigned int zb_drawer_anim_ms(void);
 
 enum { ZB_GESTURE_DRAG = 1 };
-#define ZB_DRAWER_ANIM_US (180 * 1000)
 #define ZB_NO_AGENT_TEXT "Agent not available yet"
 
 static gint zb_agent_drawer_enabled = 0;
@@ -88,6 +88,7 @@ struct ZbDrawer {
   gint64 anim_start;
   int anim_frames;
   ZbDrawerRect anim_from, anim_to, anim_rect;
+  ZbDrawerRect fold_reported; /* the last `fold` row */
 };
 
 static const char *zb_drawer_css =
@@ -404,7 +405,7 @@ static gboolean on_anim_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer d
   if (d->anim_start == 0) {
     d->anim_start = now;
   }
-  double t = (double)(now - d->anim_start) / ZB_DRAWER_ANIM_US;
+  double t = (double)(now - d->anim_start) / (zb_drawer_anim_ms() * 1000.0);
   /* The target follows the window: a resize re-targets the fold. */
   int width, height;
   content_size(d, &width, &height);
@@ -434,6 +435,23 @@ static gboolean on_anim_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer d
   return G_SOURCE_REMOVE;
 }
 
+/* The stand-in was drawn: `fold <frame> <rect>` for each new place it is
+ * drawn at. Emitted here, not from the tick, so a stand-in that is not on
+ * screen reports nothing (plan S2.2, rev 12). */
+static gboolean on_ghost_draw(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)cr;
+  ZbDrawer *d = data;
+  ZbDrawerRect r = widget_rect(d, widget);
+  if (memcmp(&r, &d->fold_reported, sizeof r) != 0) {
+    d->fold_reported = r;
+    char frame[16], rect[64];
+    g_snprintf(frame, sizeof frame, "%d", d->anim_frames);
+    root_rect_text(d, &r, rect, sizeof rect);
+    drawer_row(d, "fold", frame, rect, NULL);
+  }
+  return FALSE;
+}
+
 /* Fold the drawer into the icon's last position (D5): 180 ms, ease-out. */
 static void drawer_minimize(ZbDrawer *d) {
   if (!d->open || d->tick_id != 0) {
@@ -443,6 +461,7 @@ static void drawer_minimize(ZbDrawer *d) {
   d->anim_rect = d->anim_from;
   d->anim_frames = 0;
   d->anim_start = 0;
+  memset(&d->fold_reported, 0, sizeof d->fold_reported);
   gtk_widget_hide(d->panel);
   gtk_widget_show(d->ghost);
   d->tick_id = gtk_widget_add_tick_callback(d->overlay, on_anim_tick, d, NULL);
@@ -729,6 +748,7 @@ ZbDrawer *zb_drawer_attach(GtkWidget *toplevel, GtkWidget *view, guint32 win_id,
   gtk_overlay_add_overlay(GTK_OVERLAY(d->overlay), d->panel);
   d->ghost = named(gtk_event_box_new(), "zb-agent-ghost", NULL);
   gtk_widget_set_no_show_all(d->ghost, TRUE);
+  g_signal_connect(d->ghost, "draw", G_CALLBACK(on_ghost_draw), d);
   gtk_overlay_add_overlay(GTK_OVERLAY(d->overlay), d->ghost);
 
   /* The e2e-only seed (plan S2.3): system messages to scroll through. */
@@ -760,7 +780,8 @@ void zb_drawer_detach(ZbDrawer *d) {
   }
   GObject *connected[] = {G_OBJECT(d->toplevel), G_OBJECT(d->overlay), G_OBJECT(d->icon),   G_OBJECT(d->panel),
                           G_OBJECT(d->minus),    G_OBJECT(d->list),    G_OBJECT(d->unread), G_OBJECT(d->input),
-                          G_OBJECT(d->send),     G_OBJECT(d->stop),    G_OBJECT(d->vadj),   G_OBJECT(d->scroller)};
+                          G_OBJECT(d->send),     G_OBJECT(d->stop),    G_OBJECT(d->vadj),   G_OBJECT(d->scroller),
+                          G_OBJECT(d->ghost)};
   for (size_t i = 0; i < G_N_ELEMENTS(connected); ++i) {
     g_signal_handlers_disconnect_by_data(connected[i], d);
   }

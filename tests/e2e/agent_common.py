@@ -50,6 +50,7 @@ DRAWER_KINDS: dict[str, list[str]] = {
     "minus": [RECT],
     "anim": [r"\d+", RECT, RECT],
     "minimized": [RECT],
+    "fold": [r"\d+", RECT],
     "focus": [r"icon|input|send|stop|minus|list|approve|deny"],
     "scroll": [r"bottom|\d+(\.\d+)?"],
     "msg": [r"user|assistant|system|approval|error", TEXT],
@@ -287,4 +288,3 @@ def run_main(doc: str, cases: dict) -> int:
                 check(False, f"{name}: error {exc!r}")
     print(f"{check.count} checks, {len(check.failures)} failed", flush=True)
     return 1 if check.failures or check.count == 0 else 0
-
