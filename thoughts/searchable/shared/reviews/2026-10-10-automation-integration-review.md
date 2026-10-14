@@ -8010,3 +8010,59 @@ config error path. `c8b646a` fixes that path but remains blocked by its newly
 explicit unresolved MS6 proxy mapping. Therefore the newest approved
 push-through SHA remains the current origin, **`fa0aa48`**. No push or history
 rewrite was performed.
+
+## macOS launch plan rev 6 and S3n1 red boundary (`16c822e`)
+
+**Explicit verdict for `16c822e`: APPROVED (docs).** Rev 6 closes the sole
+open finding from `ed13e5e`. The shared `SandboxBackend` contract now owns both
+the egress endpoint and its reachability policy: Linux supplies the fixed
+private-netns endpoint, while macOS supplies an OS-selected per-session
+`127.0.0.1:<port>` listener plus per-process Seatbelt rules
+(`macos-launch-tdd-plan.md@16c822e:328-355`). On macOS, the generated
+CLI/helper profile permits only that exact endpoint, `HTTPS_PROXY` and
+`HTTP_PROXY` name it, and netd retains the exact CONNECT/SNI allowlist
+(`:932-957`). Each hook has a separate profile that permits only loopback
+ports 51091 and 31337, with no proxy endpoint and no API path.
+
+MS6.4 is an executable hard gate rather than a prose-only promise. Its
+real-binary fake-API test exercises the selected endpoint through the
+production proxy, both bridge positives, direct-loopback/LAN/public-IP/DNS/
+non-allowlisted negatives, and a hook's failed attempt to the actual ephemeral
+proxy port. Removing the proxy or widening the hook profile must turn the test
+red (`:959-978`). This matches BlueBeaver's measured constraint that the
+bundled CLI needs a TCP proxy URL and closes the old “loopback alias versus
+Unix socket” design fork. The prior config-ABI correction, two-arch gates,
+Seatbelt-failure-to-VM rule, fd-3 token route, per-action approvals, native
+drawer isolation and real-screen UI gates remain intact.
+
+Implementation review should still verify the natural race-free reading of
+“netd listens on an OS-selected port”: netd must bind port zero and retain that
+listening socket before publishing the chosen port into the Seatbelt profile
+and proxy environment, never discover a free port by closing and rebinding it.
+That is an implementation check, not a remaining plan blocker; the plan makes
+netd itself the listener and endpoint owner.
+
+### S3n1 red commit and push-through boundary
+
+`850f3da` is a valid failing-first, test-only commit, but it is **not an
+approved push milestone**. In a clean export of exact `850f3da`, the named
+black-box seam
+`test_netd.SocketDirTest.test_the_layout_is_egress_and_bridges_with_exact_modes_and_a_ready_line`
+failed in 0.012 s because `zb_agent_host.netd` does not exist. The complete
+new test pair is deliberately not registered in `zig build test` until the
+green commit: `build.zig` still names its Python unittest modules individually.
+Consequently the ordinary gate cannot certify this slice yet.
+
+A bounded clean export of exact HEAD `16c822e` under private Xvfb passed
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**; its trap
+deleted the export and cache. This establishes that the pre-existing suite is
+unchanged, but it does not override the independently observed S3n1 red.
+
+Because `850f3da` is the parent of `16c822e`, every linear push through rev 6
+would include the incomplete red slice. It therefore **blocks the push until
+the green S3n1 production commit lands, registers `test_netd` and
+`test_relay` in the normal gate, and the resulting clean gate passes**. Rev 6
+is architecturally approved, but there is no new contiguous approved
+push-through SHA yet: the newest approved push-through remains **`fa0aa48`**.
+No push or history rewrite was performed; no live browser, profile, token,
+socket or DISPLAY `:0` was used.
