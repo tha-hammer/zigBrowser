@@ -43,6 +43,19 @@ def canary():
     return "sk-ant-oat01-ZBCANARY-" + secrets.token_hex(24)
 
 
+
+def lay_out_state(root):
+    """What --agent-setup leaves for the sandbox (plan rev 15.5), in a
+    hand-built home: state/ sources and the matching mount points in .claude."""
+    from zb_agent_host import sandbox
+    root = Path(root)
+    for base in (root / "state", root / ".claude"):
+        base.mkdir(parents=True, exist_ok=True)
+        for name in ("backups", *sandbox.STATE_DIRS):
+            (base / name).mkdir(mode=0o700, exist_ok=True)
+        if not (base / ".claude.json").exists():
+            (base / ".claude.json").write_text("{}\n")
+
 class Homes:
     """A temp agent home (with its own SAI marker) and a decoy user home."""
 
@@ -55,6 +68,7 @@ class Homes:
         for d in ("workspace", "scratchpad/tmp", "runtime/bin", ".claude"):
             (self.agent / d).mkdir(parents=True, exist_ok=True)
         os.chmod(self.agent, 0o700)
+        lay_out_state(self.agent)
         (self.agent / ".claude" / "CLAUDE.md").write_text(f"{self.marker}\n")
         (self.decoy / ".claude" / "hooks").mkdir(parents=True)
         (self.decoy / ".claude" / "CLAUDE.md").write_text(f"{DECOY_MARKER}\n")

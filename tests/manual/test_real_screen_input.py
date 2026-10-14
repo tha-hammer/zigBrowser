@@ -142,10 +142,11 @@ class GuardOnRealX(unittest.TestCase):
         return call
 
     def assert_nothing_reached(self):
+        """No XTest event at all (no motion either: RoseCat 5406), and no
+        button or key event delivered to either window."""
+        self.assertEqual(self.calls, [], "the guard sent input")
         for w in (self.target, self.decoy):
             self.assertEqual((self.canary.got(w, BUTTON_PRESS), self.canary.got(w, KEY_PRESS)), (0, 0), hex(w))
-        self.assertNotIn("button", self.calls)
-        self.assertNotIn("escape", self.calls)
 
     def test_a_decoy_on_top_gets_nothing_and_no_input_is_sent(self):
         self.canary.show(self.decoy)

@@ -15,8 +15,10 @@ event there. The SAI source is the fixture tree, copied with its
   the bundled CLI after the real probe
 - idempotent: a second run leaves `.claude` as it was
 - refusals (exit 2, the home unchanged): an absolute hook outside the agent
-  home; an outside path in a `.md`, a `.ts` hook and a JSON file; a hook
-  script symlinked outside
+  home; a hook script symlinked outside its item; a hook script in the
+  scratchpad; shell syntax in a hook command. Paths in copied text (a
+  `.md`, a hook script, a JSON file) are copied and do not refuse (plan rev
+  15.6, the user's decision)
 - an e2e-only CLI that ignores the token descriptor: exit 2, "no safe token
   route", nothing written
 - inertness: the CLI seam without --e2e-protocol is refused on stderr, never
@@ -206,7 +208,7 @@ def refused(binary: Path, tmp: Path, check: Checks, label: str, mutate, want: st
     code, _out, err, events, _ = run_setup(binary, w)
     check(code == 2 and want in err, f"{label}: exit 2 with {want!r} (exit {code}; {err.strip()[-300:]!r})")
     check(digest(w.agent) == before, f"{label}: the agent home is unchanged")
-    check(events == [], f"{label}: no event in the decoy trees")
+    check(events == [], f"{label}: no event in the decoy trees ({events[:6]})")
 
 
 def case_refusals(binary: Path, tmp: Path, check: Checks) -> None:
@@ -231,12 +233,39 @@ def case_refusals(binary: Path, tmp: Path, check: Checks) -> None:
         (w.source / "hooks" / "X.hook.ts").symlink_to(outside)
 
     refused(binary, tmp, check, "absolute hook", evil_hook, "zigBrowser: agent-setup: hook path outside agent home: Stop/0")
-    refused(binary, tmp, check, "outside path in .md", append("commands/hello.md", "Also /srv/elsewhere/notes.\n"),
-            "zigBrowser: agent-setup: outside path in commands/hello.md:3")
-    refused(binary, tmp, check, "outside path in .ts hook", append("hooks/X.hook.ts", 'const log = "/var/log/x.log";\n'),
-            "zigBrowser: agent-setup: outside path in hooks/X.hook.ts:5")
-    refused(binary, tmp, check, "outside path in JSON", json_file, "zigBrowser: agent-setup: outside path in skills/demo/meta.json:2")
-    refused(binary, tmp, check, "hook symlinked outside", symlinked, "zigBrowser: agent-setup: outside path in hooks/X.hook.ts")
+    refused(binary, tmp, check, "hook symlinked outside", symlinked,
+            "zigBrowser: agent-setup: hook script links outside its item: hooks/X.hook.ts")
+
+    def writable_hook(w: World) -> None:  # RoseCat 5444: bytes the agent could change later
+        s = w.settings()
+        s["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": "bun ~/scratchpad/run.ts"})
+        w.write_settings(s)
+
+    refused(binary, tmp, check, "hook in the scratchpad", writable_hook,
+            "zigBrowser: agent-setup: hook path is not in the copied SAI: Stop/0")
+
+    def shell_hook(w: World) -> None:  # RoseCat 5438: no shell syntax reaches a hook
+        s = w.settings()
+        marker = w.root / "shell-marker"
+        s["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": f"bun ~/.claude/hooks/X.hook.ts; touch {marker}"})
+        w.write_settings(s)
+
+    refused(binary, tmp, check, "shell syntax in a hook", shell_hook,
+            "zigBrowser: agent-setup: hook command has shell syntax: Stop/0")
+
+    # Plan rev 15.6 (the user's decision): only hook command lines refuse;
+    # a path in copied text, hook scripts included, is copied as it is.
+    w = World(tmp, "text-paths")
+    for mutate in (append("commands/hello.md", "Also /srv/elsewhere/notes.\n"),
+                   append("hooks/X.hook.ts", 'const log = "/var/log/x.log";\n'), json_file):
+        mutate(w)
+    code, _o, err, events, _ = run_setup(binary, w)
+    copied = {rel: (w.agent / ".claude" / rel).read_text() if code == 0 else ""
+              for rel in ("commands/hello.md", "hooks/X.hook.ts", "skills/demo/meta.json")}
+    check(code == 0 and "/srv/elsewhere/notes" in copied["commands/hello.md"]
+          and "/var/log/x.log" in copied["hooks/X.hook.ts"] and "/srv/data/file" in copied["skills/demo/meta.json"],
+          f"text paths: paths in a .md, a hook script and a JSON file are copied, setup succeeds ({code}; {err.strip()[-200:]!r})")
+    check(events == [], "text paths: no event in the decoy trees")
 
 
 def fake_cli(dir_: Path, name: str, body: str) -> Path:

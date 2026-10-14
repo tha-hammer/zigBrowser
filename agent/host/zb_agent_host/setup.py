@@ -44,34 +44,26 @@ from .files import atomic_write, write_all
 REMOVED_KEYS = ("mcpServers", "enabledMcpjsonServers", "enableAllProjectMcpServers", "enabledPlugins",
                 "extraKnownMarketplaces", "statusLine", "skipDangerousModePermissionPrompt", "apiKeyHelper", "env")
 WIDENING_PERMISSIONS = ("allow", "defaultMode")
-# The top-level SAI items copied into .claude; nothing else is.
+# The top-level SAI items copied into .claude; nothing else is. These two are
+# files, the rest directories (RoseCat 5445: a mismatch refuses).
+FILE_ITEMS = ("CLAUDE.md", "settings.json")
 COPY_ALLOWLIST = ("CLAUDE.md", "settings.json", "SAI", "hooks", "commands", "skills", "agents")
-SKIPPED_NAMES = (".git", "__pycache__")
-# Absolute paths a copied text file may keep (S3.1); the source HOME is rewritten.
-ALLOWED_ROOTS = ("/usr", "/bin", "/lib", "/etc", "/opt", "/proc/self")
-# An absolute path: not part of a URL, `~/x`, `$X/y`, a `${x}/y` or `$(x)/y`
-# concatenation, or a relative path. A one-component `/name` is a path too,
-# unless it names a known slash command (KNOWN_COMMANDS, or a copied
-# commands/ or skills/ entry): the only grammar that keeps a `/x` token.
+# Dependency trees, version control and build output are copied byte for
+# byte: no rewrite (plan rev 15.6). Skills keep working in the sandbox.
+DEPENDENCY_DIRS = (
+    "node_modules", ".venv", "venv", "site-packages",                      # dependency trees
+    ".git",                                                              # version control
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",  # caches
+    ".cache", ".zig-cache", "zig-cache", ".gradle", "coverage", ".nyc_output",
+    "dist", "build", "out", "target", "zig-out", ".next", ".turbo",     # build output
+)
+# An absolute path in copied text: not part of a URL, `~/x`, `$X/y`, a
+# `${x}/y` or `$(x)/y` concatenation, or a relative path. Only the source
+# HOME prefix is rewritten; nothing in copied text refuses setup (rev 15.6,
+# the user's decision: only hook command lines are checked, by check_hooks).
 PATH_RE = re.compile(r"(?<![\w:/.~$@})-])(?:/[A-Za-z0-9._@+-]+)+")
-KNOWN_COMMANDS = frozenset((
-    "add-dir", "agents", "bug", "clear", "compact", "config", "context", "cost", "doctor", "export", "fast", "help",
-    "hooks", "ide", "init", "login", "logout", "loop", "mcp", "memory", "model", "permissions", "plugin",
-    "pr-comments", "release-notes", "resume", "review", "rewind", "status", "terminal-setup", "upgrade", "vim"))
 PROBE_TIMEOUT_S = 30
 LAYOUT_VERSION = 2
-# A copied command or skill may not take a name that is also a top-level path
-# (RoseCat 5352): then a prose `/name` could certify that path.
-RESERVED_ROOT_NAMES = frozenset((
-    "bin", "boot", "dev", "etc", "home", "lib", "lib32", "lib64", "libx32", "media", "mnt", "nix", "opt", "proc",
-    "root", "run", "sbin", "snap", "srv", "sys", "tmp", "usr", "var", "agent"))
-# A known `/name` is kept only as a slash-command invocation in Markdown prose
-# (RoseCat 5338): at the start of a line, as a whole inline code span, or
-# after one of these words; and followed by the end, a space or `',.;:)` + "`".
-LEAD_WORDS = ("run", "type", "use", "after", "before", "with", "via", "in", "for", "then", "and", "or", "been")
-_LINE_START_RE = re.compile(r"\s*(?:(?:[-*+]|\d+\.)\s+|>\s*|#{1,6}\s+|\|\s*)*")
-_LEAD_RE = re.compile(r"(?:^|\s)(?:" + "|".join(LEAD_WORDS) + r")\s+$", re.IGNORECASE)
-_SLASH_FOLLOW = "',.;:)`"
 # Published builds, and the leftovers of interrupted runs (never state).
 DIST_RE = re.compile(r"dist-([1-9][0-9]*)")
 GARBAGE_PREFIXES = ("dist-", ".dist-tmp-", ".current.tmp-")
@@ -107,70 +99,19 @@ def sanitize_settings(node):
     return clean
 
 
-def rewrite_text(text, source_home, agent_home, rel, strict=True, commands=frozenset()):
-    """The source HOME prefix becomes the agent home. With `strict`, any other
-    absolute path outside ALLOWED_ROOTS and the agent home refuses setup with
-    `outside path in <rel>:<line>`. `source_home` must be an absolute
-    directory other than `/` (RoseCat 5328: an empty one rewrote every path)."""
+def rewrite_text(text, source_home, agent_home):
+    """Every absolute path under the source HOME is moved to the agent home;
+    nothing else changes. `source_home` must be an absolute directory other
+    than `/` (RoseCat 5328: an empty one rewrote every path)."""
     if not os.path.isabs(source_home) or source_home.rstrip("/") == "":
         raise SetupError("the source HOME is not an absolute directory")
-    known = known_commands(commands)
-    markdown = rel.endswith(".md")
 
-    def under(path, root):
-        return path == root or path.startswith(root + "/")
-
-    out = []
-    fenced = False
-    for lineno, line in enumerate(text.splitlines(keepends=True), 1):
-        if markdown and line.lstrip().startswith("```"):
-            fenced = not fenced
-
-        def fix(match):
-            path = match.group(0)
-            if strict and any(part in (".", "..") for part in path.split("/")):
-                # Checked before any prefix test or rewrite (RoseCat 5340).
-                raise SetupError(f"path with a dot segment in {rel}:{lineno}")
-            if under(path, source_home):
-                return agent_home + path[len(source_home):]
-            if not strict or under(path, agent_home) or any(under(path, root) for root in ALLOWED_ROOTS):
-                return path
-            name = path.rstrip(".")  # a sentence's full stop is not part of the name
-            if (markdown and not fenced and name.count("/") == 1 and name[1:] in known
-                    and slash_invocation(line, match.start(), match.start() + len(name))):
-                return path
-            raise SetupError(f"outside path in {rel}:{lineno}")
-        out.append(PATH_RE.sub(fix, line))
-    return "".join(out)
-
-
-def known_commands(copied=frozenset()):
-    """The `/name` tokens that may be slash commands: the CLI's built-ins and
-    the copied commands and skills. A built-in that is also a top-level path
-    on this host is dropped (then `/name` is a path); a copied one refuses
-    setup in `slash_commands`."""
-    roots = _root_names()
-    return frozenset(n for n in KNOWN_COMMANDS if n not in roots) | frozenset(copied)
-
-
-def _root_names():
-    try:
-        return RESERVED_ROOT_NAMES | frozenset(os.listdir("/"))
-    except OSError:
-        return RESERVED_ROOT_NAMES
-
-
-def slash_invocation(line, start, end):
-    """Whether the `/name` at line[start:end] is written as a slash command."""
-    follow = line[end:end + 1]
-    if follow and not (follow.isspace() or follow in _SLASH_FOLLOW):
-        return False
-    before = line[:start]
-    if _LINE_START_RE.fullmatch(before):
-        return True
-    if before.endswith("`") and (follow == "`" or follow.isspace()):
-        return True  # it starts an inline code span: `/clear` or `/cw9_plan <doc>`
-    return _LEAD_RE.search(before) is not None
+    def fix(match):
+        path = match.group(0)
+        if path == source_home or path.startswith(source_home + "/"):
+            return agent_home + path[len(source_home):]
+        return path
+    return PATH_RE.sub(fix, text)
 
 
 def check_hooks(settings, home_root, staging_root, source_path):
@@ -188,6 +129,9 @@ def check_hooks(settings, home_root, staging_root, source_path):
                 if hook.get("type") != "command" or not isinstance(command, str) or not command.strip():
                     raise SetupError(f"hook cannot be wrapped: {event}/{index}")
                 tokens = shlex.split(command)
+                reason = hook_grammar_refusal(tokens, command)
+                if reason:
+                    raise SetupError(f"hook command {reason}: {event}/{index}")
                 first = tokens[0]
                 if "/" not in first and not first.startswith("~"):
                     found = shutil.which(first, path=source_path)
@@ -195,11 +139,95 @@ def check_hooks(settings, home_root, staging_root, source_path):
                         raise SetupError(f"hook command not found: {event}/{index}")
                     dirs.add(os.path.dirname(found))
                     tokens = tokens[1:]
-                for tok in tokens:
-                    if "/" in tok or tok.startswith("~"):
-                        if not _inside_home(tok, home_root, staging_root, real_staging):
-                            raise SetupError(f"hook path outside agent home: {event}/{index}")
+                for part in (p for tok in tokens for p in path_parts(tok)):
+                    if not _inside_home(part, home_root, staging_root, real_staging):
+                        raise SetupError(f"hook path outside agent home: {event}/{index}")
+                    if not _in_copy(part, home_root, staging_root):
+                        raise SetupError(f"hook path is not in the copied SAI: {event}/{index}")
     return sorted(dirs)
+
+
+def _in_copy(part, home_root, staging_root):
+    """Whether a hook's path names an existing file or directory of the copy
+    setup publishes (.claude or runtime). Never the workspace, scratchpad,
+    state or secrets, whose bytes the agent can change after setup checked
+    them (RoseCat 5444), and never a missing path or a relative one (those
+    resolve against the writable workspace)."""
+    if not (part == "~" or part.startswith("~/") or part.startswith("/")):
+        return False
+    path = os.path.normpath(home_root + part[1:] if part.startswith("~") else part)
+    rel = os.path.relpath(path, home_root)
+    if rel.split("/", 1)[0] not in (".claude", "runtime"):
+        return False
+    staged = os.path.realpath(os.path.join(staging_root, rel))
+    copy_roots = [os.path.realpath(os.path.join(staging_root, top)) for top in (".claude", "runtime")]
+    inside = any(staged == r or staged.startswith(r + "/") for r in copy_roots)
+    return inside and os.path.exists(staged)
+
+
+# The hook command forms setup understands (RoseCat 5416, 5431): a script
+# path, or one of these launchers followed by options and then a script path.
+# Anything that could carry code or paths opaquely refuses.
+LAUNCHERS = ("bun", "node", "deno", "python3", "python", "sh", "bash")
+EVAL_FLAGS = ("-c", "-lc", "-ic", "-e", "--eval", "-p", "--print", "-m", "-")
+
+
+# A hook command is a shell string: only words of these characters, one space
+# apart, so no shell syntax (`;`, `&&`, `|`, `$(…)`, backticks, redirection,
+# quoting, variables, newlines) can hide in it (RoseCat 5438).
+HOOK_COMMAND_RE = re.compile(r"[A-Za-z0-9_./~=:@%+,-]+( [A-Za-z0-9_./~=:@%+,-]+)*")
+
+
+def hook_grammar_refusal(tokens, command=None):
+    """Why a hook command is outside the supported grammar (None: it is not)."""
+    if command is not None and not HOOK_COMMAND_RE.fullmatch(command):
+        return "has shell syntax"
+    if not tokens:
+        return "is empty"
+    for tok in tokens:
+        if any(ch.isspace() for ch in tok):
+            return "has an embedded command or text with spaces"
+        if tok.startswith("~") and not (tok == "~" or tok.startswith("~/")):
+            return "names another user's home"
+        if "://" in tok and tok.split("://", 1)[0].lower() not in ("http", "https"):
+            return "has a non-http URL"
+    first = tokens[0]
+    if "/" in first or first.startswith("~"):
+        return None
+    if first not in LAUNCHERS:
+        return f"launcher is not supported ({first})"
+    for tok in tokens[1:]:
+        if tok.split("=", 1)[0] in EVAL_FLAGS or (tok[:1] == "-" and tok[1:2] in "celpm" and tok[1:2] != "-"):
+            return "evaluates code given on the command line"  # also -eCODE, -pCODE, -cCODE
+        if not tok.startswith("-"):
+            return None if ("/" in tok or tok.startswith("~")) else "runs no script path"
+    return "runs no script path"
+
+
+def path_parts(tok):
+    """The path-like pieces of one hook command word: the word itself, or
+    each side of an `=` (`--preload=/x/pre.ts`: RoseCat 5416, an embedded path
+    is checked like any other)."""
+    return [p for p in tok.split("=") if ("/" in p or p.startswith("~")) and "://" not in p]
+
+
+def check_hook_links(settings, home_root):
+    """A hook that names a file setup skipped (a link outside its item) would
+    not run as written: that refuses setup (rev 15.6)."""
+    home_root = str(home_root)
+    for entries in (settings.get("hooks") or {}).values():
+        for entry in entries:
+            for hook in entry.get("hooks", []):
+                for part in (p for tok in shlex.split(hook.get("command") or "") for p in path_parts(tok)):
+                    path = home_root + part[1:] if part == "~" or part.startswith("~/") else part
+                    if not os.path.isabs(path):
+                        continue
+                    rel = os.path.relpath(os.path.normpath(path), home_root)
+                    shown = rel[len(".claude/"):] if rel.startswith(".claude/") else rel
+                    # The skipped link itself, or anything below it (RoseCat 5416).
+                    ancestors = [shown] + [str(a) for a in Path(shown).parents if str(a) != "."]
+                    if any(a in _SKIPPED_LINKS for a in ancestors):
+                        raise SetupError(f"hook script links outside its item: {shown}")
 
 
 def _inside_home(tok, home_root, staging_root, real_staging):
@@ -218,70 +246,119 @@ def _inside_home(tok, home_root, staging_root, real_staging):
 
 # --- copying -------------------------------------------------------------------
 
-def slash_commands(source):
-    """The names a copied `/name` may refer to: commands/*.md stems and
-    skills/* names. A name that is also a top-level path refuses setup."""
-    names = set()
-    for sub, take in (("commands", lambda p: p.stem if p.suffix == ".md" else None), ("skills", lambda p: p.name)):
-        root = Path(source) / sub
-        if root.exists():
-            names.update(n for n in (take(p) for p in Path(os.path.realpath(root)).iterdir()) if n)
-    roots = _root_names()
-    for name in sorted(names):
-        if name in roots:
-            raise SetupError(f"slash command /{name} collides with a root path")
-    return frozenset(names)
-
-
 def copy_sai(source, claude, source_home, agent_home):
-    """The allowlisted items of `source` into `claude`: text rewritten, modes
-    0700 (executable) or 0600, symlinks followed only inside their own item."""
+    """The allowlisted items of `source` into `claude`: the source HOME
+    rewritten in text (nothing in copied text refuses setup; rev 15.6),
+    dependency trees byte for byte, modes 0700 (executable) or 0600, symlinks
+    followed only inside their own item (others are skipped)."""
     source = Path(source)
-    global _COMMANDS
-    _COMMANDS = slash_commands(source)
-    for name in COPY_ALLOWLIST:
-        item = source / name
-        if not item.exists():
-            continue
-        real = Path(os.path.realpath(item))
-        if real.is_dir():
+    _SKIPPED_LINKS.clear()
+    for name, real in top_level_items(source, agent_home):
+        if real is None:
+            _SKIPPED_LINKS.add(name)
+            print(f"zigBrowser: agent-setup: skipped {name}: its link is a chain or not this user's", file=sys.stderr)
+        elif real.is_dir():
             _copy_tree(real, real, claude / name, name, source_home, agent_home, set())
         else:
-            _copy_file(real, claude / name, name, source_home, agent_home)
+            _copy_file(real, claude / name, source_home, agent_home)
 
 
-def _copy_tree(root, directory, target, rel, source_home, agent_home, seen):
+def top_level_items(source, agent_home):
+    """(name, its real root or None to skip) for each allowlisted item that
+    exists (RoseCat 5428, 5438). An item that is a link is followed once,
+    never through a chain, to a real file or directory of this user: the user
+    chose it by choosing the SAI source (each is logged). Every root must be
+    disjoint from the agent home (RoseCat 5439: else the copy would read its
+    own output). Anything that is not a regular file or a directory refuses
+    setup: a FIFO would block it."""
+    home = os.path.realpath(agent_home)
+    check_disjoint("the SAI source", os.path.realpath(source), home)
+    out = []
+    for name in COPY_ALLOWLIST:
+        item = source / name
+        if not os.path.lexists(item):
+            continue
+        if os.path.islink(item):
+            target = _link_target(item)
+            if target is not None:
+                check_disjoint(name, os.path.realpath(target), home)
+                print(f"zigBrowser: agent-setup: {name} comes from {target}", file=sys.stderr)
+            out.append((name, Path(target) if target is not None else None))
+            continue
+        st = os.lstat(item)
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+            raise SetupError(f"{name} in the SAI source is not a regular file or a directory")
+        out.append((name, Path(os.path.realpath(item))))
+    for name, real in out:
+        if real is not None and real.is_dir() != (name not in FILE_ITEMS):
+            want = "a regular file" if name in FILE_ITEMS else "a directory"
+            raise SetupError(f"{name} in the SAI source is not {want}")
+    return out
+
+
+def check_disjoint(label, path, home):
+    """`path` may be neither the agent home, nor inside it, nor contain it."""
+    if path == home or path.startswith(home + "/") or home.startswith(path.rstrip("/") + "/"):
+        raise SetupError(f"{label} overlaps the agent home: {path}")
+
+
+def _link_target(link):
+    """The absolute target of `link` when it is a real file or directory of
+    this user, not another link; else None."""
+    target = os.path.normpath(os.path.join(os.path.dirname(link), os.readlink(link)))
+    try:
+        st = os.lstat(target)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode) or st.st_uid != os.getuid():
+        return None
+    if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+        raise SetupError(f"{os.path.basename(link)} in the SAI source is not a regular file or a directory")
+    return target
+
+
+def _copy_tree(root, directory, target, rel, source_home, agent_home, seen, verbatim=False):
     seen.add(str(directory))
     target.mkdir(mode=0o700, exist_ok=True)
     os.chmod(target, 0o700)
     for entry in sorted(os.scandir(directory), key=lambda e: e.name):
-        if entry.name in SKIPPED_NAMES:
-            continue
         path, entry_rel = Path(entry.path), f"{rel}/{entry.name}"
         if entry.is_symlink():
             resolved = Path(os.path.realpath(path))
             if not (resolved == root or str(resolved).startswith(str(root) + "/")):
-                raise SetupError(f"outside path in {entry_rel}")
+                # Never followed: it could name any file of the user's. Skipped,
+                # not refused (rev 15.6); a hook that names it refuses.
+                _SKIPPED_LINKS.add(entry_rel)
+                print(f"zigBrowser: agent-setup: skipped {entry_rel}: it links outside {rel.split('/')[0]}",
+                      file=sys.stderr)
+                continue
             path = resolved
-        if path.is_dir():
+        try:
+            mode = os.stat(path, follow_symlinks=False).st_mode  # never opened: a FIFO would block
+        except FileNotFoundError:
+            print(f"zigBrowser: agent-setup: skipped {entry_rel}: a broken link", file=sys.stderr)
+            continue
+        if stat.S_ISDIR(mode):
             if str(path) not in seen:
-                _copy_tree(root, path, target / entry.name, entry_rel, source_home, agent_home, seen)
-        elif path.is_file():
-            _copy_file(path, target / entry.name, entry_rel, source_home, agent_home)
+                _copy_tree(root, path, target / entry.name, entry_rel, source_home, agent_home, seen,
+                           verbatim or entry.name in DEPENDENCY_DIRS)
+        elif stat.S_ISREG(mode):
+            _copy_file(path, target / entry.name, source_home, agent_home, verbatim)
+        else:
+            # Copy everything means nothing vanishes silently (RoseCat 5445).
+            raise SetupError(f"{entry_rel} in the SAI source is not a regular file or a directory")
 
 
-_COMMANDS = frozenset()
+_SKIPPED_LINKS = set()  # copied-tree paths (rel to .claude) not copied: links outside their item
 
 
-def _copy_file(path, target, rel, source_home, agent_home):
-    """settings.json is only rewritten here: its paths are checked after its
-    hooks are (stage), so a hook path gets the hook-specific refusal."""
+def _copy_file(path, target, source_home, agent_home, verbatim=False):
+    """Text gets the source-HOME rewrite only; nothing refuses here."""
     data = path.read_bytes()
-    if b"\0" not in data:
+    if not verbatim and b"\0" not in data:
         try:
             text = data.decode("utf-8")
-            data = rewrite_text(text, source_home, agent_home, rel, strict=rel != "settings.json",
-                                commands=_COMMANDS).encode("utf-8")
+            data = rewrite_text(text, source_home, agent_home).encode("utf-8")
         except UnicodeDecodeError:
             pass
     mode = 0o700 if os.access(path, os.X_OK) else 0o600
@@ -327,12 +404,12 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
         (claude / name).mkdir(mode=0o700, exist_ok=True)
     settings_path = claude / "settings.json"
     settings = sanitize_settings(json.loads(settings_path.read_text())) if settings_path.exists() else {}
+    check_hook_links(settings, root)  # first: the more specific reason
     dirs = check_hooks(settings, root, staging, source_path)
     runtime_provision.wrap_hooks(settings, f"{shlex.quote(root + '/runtime/bin/zb-hook-run')} -- ")
     if settings_path.exists():
         settings_path.unlink()
     final = json.dumps(settings, indent=2) + "\n"
-    rewrite_text(final, str(source_home), root, "settings.json", commands=_COMMANDS)
     atomic_write(settings_path, final, 0o600)
     # The mount point of state/.claude.json; `{}` so the CLI can read it even unmounted.
     atomic_write(claude / ".claude.json", "{}\n", 0o600)
@@ -420,13 +497,16 @@ def check_layout(root):
         for name in os.listdir(fd):
             if name.startswith(GARBAGE_PREFIXES) and not _valid_garbage(name, lstat(name)):
                 raise SetupError(f"{root / name} is not something setup made; remove it and run again")
+        # Existing state is never changed, so a wrong mode refuses (RoseCat 5431).
+        if not _owned(os.fstat(fd), stat.S_ISDIR, 0o700):
+            raise SetupError(f"{root} is not a mode-0700 directory of this user")
         for name in STATE_DIR_PATHS:
             st = lstat(name)
-            if st is not None and not _owned(st, stat.S_ISDIR):
-                raise SetupError(f"{root / name} is not a directory of this user")
+            if st is not None and not _owned(st, stat.S_ISDIR, 0o700):
+                raise SetupError(f"{root / name} is not a mode-0700 directory of this user")
         st = lstat(STATE_FILE)
-        if st is not None and not _owned(st, stat.S_ISREG):
-            raise SetupError(f"{root / STATE_FILE} is not a file of this user")
+        if st is not None and not _owned(st, stat.S_ISREG, 0o600):
+            raise SetupError(f"{root / STATE_FILE} is not a mode-0600 file of this user")
         return live
     finally:
         os.close(fd)
@@ -450,11 +530,19 @@ def ensure_home(root):
             os.fsync(fd)
         finally:
             os.close(fd)
-    for name, target in FIXED_LINKS:
-        try:
-            os.symlink(target, root / name)
-        except FileExistsError:
-            pass
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for name, target in FIXED_LINKS:
+            try:
+                os.symlink(target, name, dir_fd=fd)
+            except FileExistsError:
+                pass
+            # Whoever made it, it must now be exactly the link setup makes (rev 15.5).
+            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISLNK(st.st_mode) or os.readlink(name, dir_fd=fd) != target:
+                raise SetupError(f"{root / name} is not the link setup made")
+    finally:
+        os.close(fd)
     fsync_dir(root / "state")
     fsync_dir(root)
 

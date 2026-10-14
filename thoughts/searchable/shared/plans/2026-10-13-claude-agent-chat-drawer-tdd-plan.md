@@ -306,7 +306,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
     - The directories of the resolved commands (for example `bun`'s directory) are recorded in `agent-home/runtime/path.json`. They are appended to the helper's `PATH` allowlist and bound read-only by bwrap **from S3** (D12), so the hooks still run.
   - **Every hook command is rewritten as `<agent-home>/runtime/bin/zb-hook-run -- <original command>`** (rev 5), on every route. `zb-hook-run` puts the hook in its own PID namespace with a read-only workspace, and **builds the hook's environment from an allowlist before it starts bwrap** (D12, "Hook isolation"; rev 6). No `env -u` prefix is used. A hook whose rewritten form cannot be produced makes setup exit 2.
   - The rewritten definitions live in the **read-only** part of `.claude` inside the sandbox, so no hook can rewrite them (D12, "Immutable configuration"; rev 6).
-  - It rejects any other remaining absolute path outside the agent home.
+  - **Copied text** gets only the source-HOME rewrite (rev 15.6, the user's decision 2026-10-14). No path in copied text refuses setup, hook scripts and `settings.json` included; only hook command lines are checked, as above. Dependency trees (`node_modules`, `.venv`, `venv`, `site-packages`) are copied byte for byte. A symlink that leads outside its item is never followed: it is skipped with `zigBrowser: agent-setup: skipped <path>: it links outside <item>`, and a hook command that names a skipped file refuses (`hook script links outside its item: <path>`).
   - It never copies `.credentials.json`, `projects/`, `history.jsonl`, `todos/`, `shell-snapshots/` or the user's `MEMORY/` contents. The agent starts with an empty memory (user answer 5).
 - The setup command itself never touches the user's `~/.claude`.
 - **Publishing (rev 15.5):** setup builds `dist-<n>` complete, probes the token route against it, and only then swaps `current` (S3 gives the exact order). A refused or failed build leaves `current` and all state as they were.
@@ -775,6 +775,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
+| R15.6 | The user's decision on the path rule (2026-10-14): (a) "check only run paths", then, measured on the real SAI, "hook commands only" | Only hook command lines refuse setup; copied text gets the HOME rewrite; dependency trees are copied byte for byte; links outside their item are skipped (a hook naming one refuses). The strict scan, slash grammar, collision and dot-segment rules are gone. The real SAI provisions. | D6, S3, S3.1 |
 | R15.5 | RoseCat 5390 (six docs gaps in rev 15.4) and 5386 | Exact state placement (`state/.claude.json` and `backups/` read-only, `STATE_DIRS` writable, all outside every build); the durable publish order with an fsync of `root` before and after the swap; fd-relative, no-follow garbage rules that refuse anything malformed; fixed links made one at a time; D6's tree; section 6 item 4 says docked. | D6, §6, S3 |
 | R15.4 | The orchestrator's simplification of S3a (the journal was in its fifth round) | Setup builds `dist-<n>` complete and publishes it with one symlink swap of `current`; `.claude` and `runtime` are fixed links into `current`; state lives outside every build and setup only creates it when absent. The commit point, first-install repair, journal, reconciler and `renameat2` are gone; the kill seam has two cuts. | S3, §7 |
 | R15.3g | RoseCat 5373.1: the dock contradicted answer 4 | The user chose to keep the dock (2026-10-14). §0 answer 4 and D2 now say the page is laid out above the open drawer. | §0, D2 |
@@ -1355,7 +1356,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - writable state, the reviewed union `STATE_DIRS`: `state/{projects,sessions,session-env,todos,statsig,debug,MEMORY}/`;
     - `workspace/`, `scratchpad/`, `scratchpad/tmp/`, `secrets/`.
     - Each is created with `mkdir` (or `O_EXCL` for the file) only when absent, mode 0700 (0600 for the file). An existing one must be a real directory (or regular file) owned by the user, else setup refuses.
-  - **The build** holds a mount point for each state name: a placeholder file `.claude/.claude.json` holding `{}` (so the CLI can read it even when it is not mounted), and empty directories `.claude/backups/` and `.claude/<STATE_DIRS>`. **D12 binds** `state/.claude.json` and `state/backups` **read-only** and `state/<STATE_DIRS>` **writable** over them; nothing else of `.claude` is writable.
+  - **The build** holds a mount point for each state name: a placeholder file `.claude/.claude.json` holding `{}` (so the CLI can read it even when it is not mounted), and empty directories `.claude/backups/` and `.claude/<STATE_DIRS>`. **D12 binds** `state/.claude.json` and `state/backups` **read-only** and `state/<STATE_DIRS>` **writable** over them; nothing else of `.claude` is writable. The sandbox builder (`sandbox.helper_argv`) only checks that every source and mount point exists with the right type. It never creates one, so a published build is never written after its publish (RoseCat 5405). Anything missing refuses with `<path> is missing ...: run zigBrowser --agent-setup`.
   - **The publish order** (each step durable before the next):
     1. build into `.dist-tmp-<random>` (mkdtemp in `root`), check it, probe the token route against its `runtime/`;
     2. fsync every file and directory of the build;
@@ -1370,7 +1371,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - **Valid names:** `dist-<n>` (`n` decimal without a leading zero) and `.dist-tmp-<suffix>` must be real directories owned by the user with mode 0700. `.current.tmp-<suffix>` must be a symlink owned by the user. `current` must be a symlink whose target is exactly a valid `dist-<n>` name: relative, one component, no `/` and no `..`.
     - **Anything else with those prefixes refuses setup before it builds:** a malformed name such as `dist-01` or `dist-x`, the wrong type (a symlink named `dist-3`), the wrong owner or mode, or a `current` aimed anywhere else.
     - **Deletion:** only validated entries other than `current`'s target are deleted, directories with fd-relative `rmtree` (`dir_fd`; it never follows a symlink inside). A failure prints `zigBrowser: agent-setup: old build left at <path>`, and setup still exits 0.
-  - **The fixed links** `.claude` → `current/.claude` and `runtime` → `current/runtime` are created one at a time under `root`, each only when absent (`symlinkat` fails if the name exists). Each must then be a symlink with exactly that relative target; any other type or target refuses. A crash between the two is repaired by the next run, which creates the missing one; no state is touched.
+  - **The fixed links** `.claude` → `current/.claude` and `runtime` → `current/runtime` are created one at a time with `symlinkat` on the pinned `root` fd, each only when absent (it fails if the name exists). After the create, or after finding it already there, each is `lstat`ed and `readlink`ed again and must be a symlink with exactly that relative target; any other type or target refuses, whoever made it (RoseCat 5405: a create race is not accepted silently). A crash between the two is repaired by the next run, which creates the missing one; no state is touched.
   - **An old-layout home** (`root/.claude` is a real directory: S3a as built at abbf0ea and 4e3b09c, never released) refuses with exit 2: `zigBrowser: agent-setup: <home> has the old layout; move it aside and run again`.
   - **The kill seam:** `ZIGBROWSER_AGENT_SETUP_PAUSE=swap:before|swap:after` is honoured only with `--e2e-protocol` and passed on as `--e2e-pause-at`. The helper prints `SETUP paused <cut>`, blocks for at most 30 s, then exits 1.
   - **Failing-first tests:**
@@ -1383,32 +1384,72 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - **e2e, first install:** a kill at `swap:before` leaves no `current`; the rerun completes;
     - **e2e:** the old layout refuses.
 
-- **Any absolute path refuses setup** in copied text, whatever its number of components. The only kept `/name` token is a known slash command: the CLI's built-in commands, or a copied `commands/*.md` or `skills/*`.
-- **The slash-command grammar (rev 15.3, RoseCat 5338).** A known `/name` is kept only as a slash-command invocation in Markdown prose:
-  - it is in a `.md` file, outside fenced code blocks;
-  - it is at the start of a line (after indentation, a list marker, `>`, a heading's `#`s or a table's `|`), or it starts an inline code span (`` `/clear` `` or `` `/cw9_plan <doc>` ``), or it follows one of the lead words `run`, `type`, `use`, `after`, `before`, `with`, `via`, `in`, `for`, `then`, `and`, `or`, `been` (rev 15.5: headings, table cells and code spans with arguments are how the real SAI writes its commands);
-  - it is followed by the end of the line, whitespace, `'` or one of `` ,.;:)` ``.
-  Anything else is a path: `rm /clear`, `open /help` and `path=/status` refuse (red today), and so does a known name in a `.ts`, `.py`, `.sh` or `.json` file, in a fenced block, or in a longer code span. The real SAI's prose forms stay green: "First run /clear, then", "after /clear", "you have been /clear'd", "shown in /help".
-- **Slash names never shadow a root path (rev 15.3b, RoseCat 5352).** The known set is the CLI's fixed built-in list plus the copied `commands/*.md` and `skills/*` names. Setup refuses (exit 2, `zigBrowser: agent-setup: slash command /<name> collides with a root path`) when any name in that set:
-  - is an entry of the host's `/`, read at setup time;
-  - or is in the reserved list `bin boot dev etc home lib lib32 lib64 libx32 media mnt nix opt proc root run sbin snap srv sys tmp usr var agent`.
+- **What refuses setup in copied content (rev 15.6; it supersedes rev 15.3-15.5's strict text scan, the slash-command grammar, the root-name collision rule and the dot-segment rule).**
+  - **Open with the orchestrator (RoseCat 5444):** RoseCat quotes a later orchestrator instruction with (a)'s wording (settings.json, hook commands and the scripts they run, strict). The user's direct answer below was given with the measured data, and it is what is built. If the orchestrator means (a) as worded, the real SAI cannot set up (95 + ~60 false hits) and the decision must be reopened with the user.
+  - **The user's two answers (2026-10-14, AskUserQuestion, verbatim):**
+    1. To "How should setup treat copied files?": **"(a) Check only run paths"**, described as "Refuse only paths that get executed: settings.json, hook commands and their scripts".
+    2. Measured on the real SAI, that still refused it. To "Option (a) as written still refuses your real SAI: the path scanner misreads your TypeScript hook scripts (95 hits) and settings.json text (about 60). Which rule should setup use?", the user answered **"Hook commands only"**: "Refuse only when a hook command line points outside the agent home. Everything else gets your HOME rewritten and is copied. Your real SAI sets up (tested: 15 s, 2.7 GB). The sandbox stays the real boundary."
 
-  The exception therefore can never certify a real top-level path. Failing-first cases: a copied skill `tmp` and a copied command `etc.md` each refuse; prose "stored in /tmp" refuses as a path.
-- **Dot segments refuse (rev 15.3, RoseCat 5340).** Any absolute path with a `.` or `..` segment refuses setup, before any prefix check or rewrite: `cat /usr/../secret`, `/proc/self/../../secret`, `/agent/../secret` and `/home/u/../other` (red today). The containment checks then run on the lexically normal path.
+    The second answer is the authoritative rule.
+  - **Only a hook command line refuses**, under a fixed grammar (RoseCat 5416, 5431, 5438). `hook_grammar_refusal` refuses:
+    - any character outside `[A-Za-z0-9_./~=:@%+,-]`, or anything but single spaces between words. So no shell syntax can hide in the command string: `;`, `&&`, `|`, `$(…)`, backticks, redirection, quoting, variables, newlines;
+    - a word containing whitespace (embedded code or text);
+    - `~user` (only `~` and `~/…` mean the agent home);
+    - any non-http(s) URL (`file://`);
+    - a first word that is neither a path nor one of the launchers `bun`, `node`, `deno`, `python3`, `python`, `sh`, `bash`;
+    - a launcher with a code-evaluating option (`-c`, `-lc`, `-ic`, `-e`, `--eval`, `-p`, `--print`, `-m`, `-`), or a short option attached to its code (`-eCODE`, `-pCODE`, `-cCODE`);
+    - a launcher whose first non-option word is not a script path.
+  - **Path words.** Every path-like word, and each side of an `=` (`--preload=/x`), must lie inside the agent home after `~` → agent home, `normpath`, and `realpath` in the staged copy (`check_hooks`).
+  - **Path words must also name an existing file or directory of the published copy**, `.claude/` or `runtime/` (RoseCat 5444). That rules out:
+    - the workspace, scratchpad, state and secrets, whose bytes the agent can change after setup checked them;
+    - a missing path;
+    - a relative path, which resolves against the writable workspace.
+
+    The refusal is `hook path is not in the copied SAI: <event>/<index>`. http(s) URLs are data, not paths.
+  - A hook that names a skipped file, or anything below a skipped link, refuses.
+  - The user's real hooks are 40 script paths and one `bun <script>`, all inside this grammar.
+  - **Everything else** gets the source-HOME prefix rewritten and is copied as it is. That covers `.md`, hook scripts, `settings.json` beyond its hooks, and JSON.
+  - **Why:** a path scanner reads source code wrongly. The user's real SAI holds:
+    - 95 false hits in its 33 TypeScript hook scripts (regex literals, comments, tags);
+    - about 60 in `settings.json` (a permission rule `Bash(dd if=/dev/zero:*)`, tip texts listing slash commands);
+    - 11,929 files with such paths in all (mostly skills' `node_modules`).
+
+    The scan was only ever hygiene (D6); D12's sandbox is the boundary, and a path that is not bound in does not exist in it.
+  - **Dependency trees** (`node_modules`, `.venv`, `venv`, `site-packages`) are copied byte for byte, so skills keep working in the sandbox.
+  - **A symlink that leads outside its item** is never followed, because it could name any of the user's files. It is skipped with a warning. On the user's real SAI that is 26 skills linked in from elsewhere.
+  - **Top-level items that are links** (RoseCat 5428, 5438; 5430's inferred bundle root is withdrawn, because it was not a boundary). The user's real `settings.json`, `SAI`, `hooks`, `commands`, `skills` and `agents` are links into `~/Dev/silmari-agent-memory/SAI`.
+    - **Follow rule:** each top-level link counts as chosen by the user, who chose the SAI source. It is followed **once**, never through a chain, and only to a real file or directory owned by this user.
+    - **Logging:** it is logged as `<item> comes from <target>`.
+    - **Other links:** a chain, or another owner, is skipped with `skipped <item>: its link is a chain or not this user's`, and its content never reaches a build.
+    - **Special files:** a top-level item that is not a regular file or a directory (a FIFO, socket or device) refuses before anything reads it. So does such an entry anywhere inside an item; it is `lstat`ed, never opened (RoseCat 5445: nothing vanishes silently). A broken link inside an item is skipped with a warning.
+    - **Types:** `CLAUDE.md` and `settings.json` must be regular files and the other items directories, else setup refuses (RoseCat 5445).
+  - **No overlap with the agent home** (RoseCat 5439). The SAI source and every top-level target must be neither the agent home, nor inside it, nor an ancestor of it. Otherwise setup refuses with `<item> overlaps the agent home` before it copies anything; `SAI -> $HOME` would copy its own output.
+  - **Links inside an item that lead outside it are skipped** (the user's decision, 2026-10-14, AskUserQuestion: "Keep skipping them", over an allowed-folders list or following all links with a deny list). Each is reported with a warning, and a hook that names one, or a file below one, refuses. On the real SAI that is 13 skills, reached through 26 links: 12 Remotion skills in `~/.agents/skills` and `composio-cli`. The agent does not get them, by the user's choice (RoseCat 5443).
+  - **Copied byte for byte, never rewritten or dropped** (RoseCat 5443, 5445), by this named list (`DEPENDENCY_DIRS`):
+    - dependency trees: `node_modules`, `.venv`, `venv`, `site-packages`;
+    - version control: `.git`;
+    - caches: `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.cache`, `.zig-cache`, `zig-cache`, `.gradle`, `coverage`, `.nyc_output`;
+    - build output: `dist`, `build`, `out`, `target`, `zig-out`, `.next`, `.turbo`.
+
+    A unit test copies one file under each name.
+  - **Existing state keeps its modes or refuses** (RoseCat 5431). Setup never changes state, so it refuses when any of these has another mode or owner, and then nothing is published:
+    - the agent-home root (must be 0700);
+    - an existing state directory (0700);
+    - `state/.claude.json` (0600).
+  - **Acceptance:** a read-only run against the user's real `~/.claude` into a throwaway home (route probe off) published one build. It took 15 s and holds 83,421 files (2.7 GB), with 41 hooks wrapped and 26 links skipped.
+  - **Tests:**
+    - unit: only the HOME prefix is rewritten (`/tmp`, `/home/other`, `rm /clear`, `/srv/../x` stay as they are);
+    - unit: a hook script's text may hold any path;
+    - unit: a dependency tree is copied byte for byte;
+    - unit: an outside link that no hook runs is skipped, and its target's content never reaches the build;
+    - kept: a hook command outside the agent home refuses, and a hook naming a skipped link (or a file below one) refuses;
+    - unit: every refused grammar form (`sh -c '…'`, `bash -lc`, `node -e`, `bun --eval=`, `python3 -m`, `~root/x`, `file://`, `curl …`, `bun --watch`, `--preload=/srv/…`), and the accepted forms of the fixture and the real SAI;
+    - unit: the real layout of links into a bundle is followed; a top-level link elsewhere, or through a chain, is skipped and its canary never copied; a top-level FIFO refuses without blocking (at HEAD it blocked until killed);
+    - unit: a loose root, state directory or state file refuses, and the home is unchanged;
+    - e2e (`refusals`): paths in a `.md`, a hook script and a JSON file are copied, and setup succeeds.
+
+
 - **An empty, relative or `/` HOME refuses setup** (exit 2) instead of being used as the rewrite prefix.
-
-**Open decision (rev 15.5): the user's real SAI cannot pass the path rule.** A read-only scan of the user's real `~/.claude` found a mismatch. The copy allowlist (`CLAUDE.md`, `settings.json`, `SAI`, `hooks`, `commands`, `skills`, `agents`) reaches 82,561 text files. 11,929 of them hold at least one absolute path outside the allowed roots, so `--agent-setup` refuses on the first one.
-- **Where most of them are:** skills' `node_modules` (`.xsd`, `.mdx`, `.js`, `.map`, `.ts`).
-- **The rest are ordinary documentation:** `> /dev/null`, `--output /tmp/image.png`, `/path/to/output`.
-
-This rule has been part of S3a since rev 15.2. The fixture passes; the real source never will.
-
-The choice belongs to the user (asked through the orchestrator). The candidates:
-- **(a)** skip dependency trees (`node_modules`, `.git`, build output) and refuse only where a path is executed: `settings.json`, hook commands and their scripts. Other copied text gets the source-HOME rewrite but no refusal; D12's sandbox is the boundary, and the scan was only ever hygiene (D6);
-- **(b)** copy only instruction files (`CLAUDE.md`, `SAI/*.md`, `commands`, `agents`, each skill's `SKILL.md`) under the strict rule, and leave out skill code and assets;
-- **(c)** keep the strict rule and ask the user to clean their SAI.
-
-S3a's code keeps the strict rule until the user decides.
 
 **Three gated parts (rev 15.1).** S3 is larger than one gate, so it lands in three parts. Each has its own red, green, refactor, gate, commit and review:
 - **S3a:** S3.1 and S3.7 (`--agent-setup`, the route probe, the CLI seam);
@@ -1432,7 +1473,7 @@ S3a's code keeps the strict rule until the user decides.
   - `settings.json` has none of the removed keys, and **every** fixture hook is present (user answer 2), with `~/.claude/...` paths unchanged (they resolve inside the agent home because HOME is the agent home) and each command prefixed with `zb-hook-run --` on every route (rev 6);
   - `.credentials.json`, `projects/` and `MEMORY/` contents are absent;
   - the inotify oracle records **zero** events in the decoy home's `.claude/` and in the decoy repository, during setup and during the later S5, S7 and S10 turns. The browser runs with `HOME` set to the decoy home;
-  - **every copied text file**, not just `settings.json`, is scanned for absolute paths. The source user's HOME prefix is rewritten to the agent home. Other absolute paths are allowed only under `/usr`, `/bin`, `/lib`, `/etc`, `/opt` and `/proc/self`. Anything else makes setup exit 2 with `zigBrowser: agent-setup: outside path in <file>:<line>`. The fixture SAI has such paths in a `.md`, a `.ts` hook and a JSON file;
+  - copied text gets the source-HOME rewrite only; no path in it refuses setup (rev 15.6; the earlier strict scan of every text file is gone, see S3's "What refuses setup in copied content");
   - a second run is idempotent;
   - the fixture's absolute hook `/home/u/evil.sh` makes `--agent-setup` exit 2 with `zigBrowser: agent-setup: hook path outside agent home: <event>/<index>`, and the agent home is unchanged (the staging directory is discarded);
   - a hook such as `bun ~/.claude/hooks/X.hook.ts` is accepted, and `bun`'s directory is recorded in `runtime/path.json`;

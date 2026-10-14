@@ -11,6 +11,10 @@ import os
 
 
 BWRAP = "/usr/bin/bwrap"
+
+
+class SandboxError(Exception):
+    """The agent home is not laid out as setup leaves it."""
 ETC_FILES = ("/etc/ssl", "/etc/ca-certificates", "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
              "/etc/passwd", "/etc/group", "/etc/localtime")
 USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("usr/lib64", "/lib64"))
@@ -47,20 +51,17 @@ def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, cl
         argv += ["--bind", claude, claude]
     else:
         argv += ["--ro-bind", claude, claude]
-        # The state lives outside the published build (plan rev 15.4); the
-        # build holds an empty mount point for each name.
-        # Setup made every source and mount point; a hand-built home may not have.
-        os.makedirs(str(home.state), mode=0o700, exist_ok=True)
-        state_json, target = os.path.join(str(home.state), ".claude.json"), os.path.join(claude, ".claude.json")
-        for path, data in ((state_json, b"{}\n"), (target, b"{}\n")):
-            if not os.path.lexists(path):
-                with open(path, "xb") as f:
-                    f.write(data)
-        argv += ["--ro-bind", state_json, target]
-        for name, flag in (("backups", "--ro-bind"), *((n, "--bind") for n in state_dirs)):
+        # The state lives outside the published build (plan rev 15.5): setup
+        # made every source and every mount point; a published build is never
+        # written after its publish, so anything missing refuses.
+        for name, flag, is_dir in ((".claude.json", "--ro-bind", False), ("backups", "--ro-bind", True),
+                                   *((n, "--bind", True) for n in state_dirs)):
             source, target = os.path.join(str(home.state), name), os.path.join(claude, name)
-            os.makedirs(source, mode=0o700, exist_ok=True)
-            os.makedirs(target, mode=0o700, exist_ok=True)
+            for path in (source, target):
+                ok = os.path.isdir(path) if is_dir else os.path.isfile(path)
+                if os.path.islink(path) or not ok:
+                    raise SandboxError(f"{path} is missing or not a {'directory' if is_dir else 'file'}: "
+                                       "run zigBrowser --agent-setup")
             argv += [flag, source, target]
     argv += ["--bind", str(home.scratchpad), str(home.scratchpad),
              "--perms", "0300", "--dir", TOKEN_DIR,

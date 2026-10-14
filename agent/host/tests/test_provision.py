@@ -12,6 +12,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -113,76 +114,149 @@ class SanitizeTest(unittest.TestCase):
 
 
 class RewriteTest(unittest.TestCase):
-    def test_source_home_is_rewritten_allowed_roots_pass_and_others_fail_with_file_and_line(self):
-        out = setup.rewrite_text("see /home/u/.claude/x and /usr/share/y\n", "/home/u", "/data/agent-home", "a.md")
+    """Plan rev 15.6 (the user's decision): copied text only gets the source
+    HOME moved to the agent home; no path in it refuses setup."""
+
+    def test_only_the_source_home_prefix_is_rewritten(self):
+        out = setup.rewrite_text("see /home/u/.claude/x and /usr/share/y\n", "/home/u", "/data/agent-home")
         self.assertEqual(out, "see /data/agent-home/.claude/x and /usr/share/y\n")
-        for ok in ("run /create_tdd_plan", "https://example.com/a/b", "/etc/ssl/certs", "/proc/self/fd/3",
-                   "`${home}/.claude/hooks`", "$(pwd)/a/b",
-                   "/opt/x/y", "/bin/sh -c", "/lib/x/y", "relative/a/b", "~/.claude/hooks/a"):
-            self.assertEqual(setup.rewrite_text(ok, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), ok)
-        with self.assertRaises(setup.SetupError) as cm:
-            setup.rewrite_text("one\ntwo /tmp/evil/x\n", "/home/u", "/h", "dir/b.ts")
-        self.assertEqual(str(cm.exception), "outside path in dir/b.ts:2")
-        with self.assertRaises(setup.SetupError):
-            setup.rewrite_text('{"p": "/home/other/x"}', "/home/u", "/h", "c.json")
+        for same in ("run /create_tdd_plan", "https://example.com/a/b", "`${home}/.claude/hooks`", "$(pwd)/a/b",
+                     "relative/a/b", "~/.claude/hooks/a", "/tmp/evil/x", "/home/other/x", "/home/user2/x",
+                     "rm /clear", "Bash(dd if=/dev/zero:*)", "/srv/../x"):
+            self.assertEqual(setup.rewrite_text(same, "/home/u", "/h"), same, same)
 
-
-class RewriteBlockerTest(unittest.TestCase):
-    """RoseCat 5328 (2, 3): one-component paths and an empty source HOME."""
-
-    def test_a_one_component_absolute_path_is_refused_unless_it_names_a_known_slash_command(self):
-        for bad in ("read /secret now", "cd /tmp", '"/srv"'):
-            with self.assertRaises(setup.SetupError):
-                setup.rewrite_text(bad, "/home/u", "/h", "a.md", commands={"create_tdd_plan"})
-        for ok in ("run /create_tdd_plan", "use /clear first", "/usr", "/etc"):  # .md prose
-            self.assertEqual(setup.rewrite_text(ok, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), ok)
-
-    def test_a_known_name_is_kept_only_as_a_slash_command_invocation_in_markdown_prose(self):
-        """RoseCat 5338: the exception may not certify an OS path."""
-        ok = ("First run /clear, then read.", "submits after /clear and", "you have been /clear'd", "shown in /help",
-              "/clear", "- /compact now", "> /help", "1. /status", "type `/clear` here", "Use /create_tdd_plan.")
-        for text in ok:
-            self.assertEqual(setup.rewrite_text(text, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), text, text)
-        bad = ("rm /clear", "open /help", "path=/status", "see /clear/x", "`rm /clear`")
-        for text in bad:
-            with self.assertRaises(setup.SetupError, msg=text):
-                setup.rewrite_text(text, "/home/u", "/h", "a.md")
-        for rel in ("hooks/x.ts", "a.py", "b.sh", "c.json"):
-            with self.assertRaises(setup.SetupError, msg=rel):
-                setup.rewrite_text("run /clear", "/home/u", "/h", rel)
-        with self.assertRaises(setup.SetupError):
-            setup.rewrite_text("text\n```\n/clear\n```\n", "/home/u", "/h", "a.md")
-
-    def test_a_copied_command_or_skill_named_like_a_root_path_refuses_setup(self):
-        """RoseCat 5352."""
-        for make in (lambda s: (s / "skills" / "tmp").mkdir(), lambda s: (s / "commands" / "etc.md").write_text("x")):
-            box = Sandbox(self)
-            make(box.source)
-            with self.assertRaises(setup.SetupError) as cm:
-                box.provision()
-            self.assertIn("collides with a root path", str(cm.exception))
-            self.assertFalse(box.home.root.exists())
-        with self.assertRaises(setup.SetupError):
-            setup.rewrite_text("stored in /tmp", "/home/u", "/h", "a.md")
-
-    def test_a_dot_segment_refuses_before_any_prefix_check_or_rewrite(self):
-        """RoseCat 5340."""
-        for text in ("cat /usr/../secret", "/proc/self/../../secret", "/agent/../secret", "/home/u/../other",
-                     "/usr/./bin/x"):
-            with self.assertRaises(setup.SetupError, msg=text) as cm:
-                setup.rewrite_text(text, "/home/u", "/agent", "a.md")
-            self.assertEqual(str(cm.exception), "path with a dot segment in a.md:1")
-
-    def test_an_empty_or_relative_source_home_is_refused(self):
+    def test_an_empty_relative_or_root_source_home_is_refused(self):
         for home in ("", "relative", "/"):
             with self.assertRaises(setup.SetupError):
-                setup.rewrite_text("/srv/private/x", home, "/agent", "a.md")
+                setup.rewrite_text("/srv/private/x", home, "/agent")
 
     def test_setup_refuses_an_empty_source_home(self):
         box = Sandbox(self)
         with self.assertRaises(setup.SetupError):
             box.provision(source_home="")
         self.assertFalse(box.home.root.exists())
+
+
+class SourceLinkTest(unittest.TestCase):
+    """RoseCat 5428, 5430: top-level items that are links."""
+
+    def bundle_layout(self):
+        """The user's real layout: every item is a link into one SAI bundle
+        directory outside ~/.claude."""
+        box = Sandbox(self)
+        bundle = box.tmp / "Dev" / "sai-bundle" / "SAI"
+        bundle.parent.mkdir(parents=True)
+        shutil.move(str(box.source / "SAI"), bundle)
+        os.symlink(bundle, box.source / "SAI")
+        for name in ("settings.json", "hooks", "commands", "skills", "agents"):
+            shutil.move(str(box.source / name), bundle / name)
+            os.symlink(bundle / name, box.source / name)
+        return box, bundle
+
+    def test_the_real_layout_of_links_into_the_sai_bundle_is_followed(self):
+        box, _bundle = self.bundle_layout()
+        box.provision()
+        for kept in ("hooks/X.hook.ts", "commands/hello.md", "skills/demo/SKILL.md", "SAI/README.md", "settings.json"):
+            self.assertTrue((box.home.root / ".claude" / kept).is_file(), kept)
+
+    def test_a_top_level_link_is_followed_once_and_logged_a_chain_is_skipped(self):
+        """RoseCat 5438: the user chose each top-level link by choosing the
+        SAI source; a chain of links, or another user's target, is skipped."""
+        box = Sandbox(self)
+        elsewhere = box.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "CLAUDE.md").write_text("ZB-LINKED-CLAUDE\n")
+        (box.source / "CLAUDE.md").unlink()
+        (box.source / "CLAUDE.md").symlink_to(elsewhere / "CLAUDE.md")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            box.provision()
+        self.assertIn(f"CLAUDE.md comes from {elsewhere / 'CLAUDE.md'}", err.getvalue())
+        self.assertEqual((box.home.root / ".claude/CLAUDE.md").read_text(), "ZB-LINKED-CLAUDE\n")
+
+        box = Sandbox(self)
+        (box.tmp / "secret").write_text("ZB-SECRET-CANARY")
+        os.symlink(box.tmp / "secret", box.tmp / "hop")
+        (box.source / "CLAUDE.md").unlink()
+        (box.source / "CLAUDE.md").symlink_to(box.tmp / "hop")  # a link to a link
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            box.provision()
+        self.assertIn("skipped CLAUDE.md: its link is a chain", err.getvalue())
+        text = "".join(p.read_text(errors="replace") for p in (box.home.root / "current").rglob("*") if p.is_file())
+        self.assertNotIn("ZB-SECRET-CANARY", text)
+
+    def test_a_source_or_item_overlapping_the_agent_home_refuses_before_copying(self):
+        """RoseCat 5439: `SAI -> an ancestor of the agent home` would copy its own output."""
+        box = Sandbox(self)
+        shutil.rmtree(box.source / "SAI")
+        (box.source / "SAI").symlink_to(box.tmp)  # an ancestor of the agent home
+        started = time.monotonic()
+        with self.assertRaises(setup.SetupError) as cm:
+            box.provision()
+        self.assertIn("SAI overlaps the agent home", str(cm.exception))
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertFalse(box.home.root.exists())
+        box = Sandbox(self)
+        with self.assertRaises(setup.SetupError) as cm:
+            setup.provision(home=box.home, source=box.tmp, source_home=box.source_home, source_path=box.source_path,
+                            python="/usr/bin/python3", route=None)
+        self.assertIn("the SAI source overlaps the agent home", str(cm.exception))
+
+    def test_each_item_must_have_its_type(self):
+        """RoseCat 5445: CLAUDE.md and settings.json are files, the rest directories."""
+        for name, make in (("CLAUDE.md", lambda p: p.mkdir()), ("hooks", lambda p: p.write_text("x"))):
+            with self.subTest(name):
+                box = Sandbox(self)
+                path = box.source / name
+                shutil.rmtree(path) if path.is_dir() else path.unlink()
+                make(path)
+                with self.assertRaises(setup.SetupError) as cm:
+                    box.provision()
+                self.assertIn(f"{name} in the SAI source is not a", str(cm.exception))
+
+    def test_a_nested_fifo_or_socket_refuses_without_blocking(self):
+        """RoseCat 5445: nothing inside an item vanishes silently, and nothing is opened."""
+        import socket
+        for kind in ("fifo", "socket"):
+            with self.subTest(kind):
+                box = Sandbox(self)
+                path = box.source / "skills" / "demo" / f"special-{kind}"
+                if kind == "fifo":
+                    os.mkfifo(path)
+                else:
+                    sock = socket.socket(socket.AF_UNIX)
+                    self.addCleanup(sock.close)
+                    sock.bind(str(path))
+                started = time.monotonic()
+                with self.assertRaises(setup.SetupError) as cm:
+                    box.provision()
+                self.assertIn(f"skills/demo/special-{kind} in the SAI source is not a regular file", str(cm.exception))
+                self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_top_level_fifo_refuses_without_blocking(self):
+        box = Sandbox(self)
+        (box.source / "CLAUDE.md").unlink()
+        os.mkfifo(box.source / "CLAUDE.md")
+        with self.assertRaises(setup.SetupError) as cm:
+            box.provision()
+        self.assertIn("is not a regular file or a directory", str(cm.exception))
+
+
+class StateModeTest(unittest.TestCase):
+    """RoseCat 5431: existing state is never changed, so a wrong mode refuses."""
+
+    def test_a_loose_root_state_directory_or_state_file_refuses_and_nothing_changes(self):
+        for rel, mode in ((".", 0o755), ("state/projects", 0o755), ("workspace", 0o777), ("secrets", 0o750),
+                          ("state/.claude.json", 0o644)):
+            with self.subTest(rel):
+                box = Sandbox(self)
+                box.provision()
+                path = box.home.root / rel
+                os.chmod(path, mode)
+                before = tree_digest(box.home.root)
+                with self.assertRaises(setup.SetupError):
+                    box.provision()
+                self.assertEqual(tree_digest(box.home.root), before)
+                os.chmod(path, 0o600 if rel.endswith(".json") else 0o700)
 
 
 class RuntimeRecordTest(unittest.TestCase):
@@ -387,6 +461,23 @@ class PublishTest(unittest.TestCase):
             self.box.provision()
         self.assertEqual(os.readlink(self.root / "current"), before)
 
+    def test_a_fixed_link_made_by_someone_else_in_a_race_is_checked_after_creation(self):
+        """RoseCat 5405: the link must be the exact one after create-or-exists."""
+        (self.root / "runtime").unlink()
+        real_symlink = os.symlink
+
+        def racer(target, name, *args, **kw):
+            if name == "runtime":
+                real_symlink("/tmp/elsewhere", name, *args, **kw)  # another process won the race
+            real_symlink(target, name, *args, **kw)
+
+        with mock.patch.object(setup.os, "symlink", side_effect=racer):
+            with self.assertRaises(setup.SetupError) as cm:
+                self.box.provision()
+        self.assertIn("is not the link setup made", str(cm.exception))
+        self.assertEqual(os.readlink(self.root / "current"), self.current_before)
+        self.assert_state_untouched()
+
     def test_a_failed_removal_of_an_old_build_is_reported_and_setup_succeeds(self):
         with mock.patch.object(setup.shutil, "rmtree", side_effect=OSError("injected")), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
@@ -449,6 +540,112 @@ class HookTest(unittest.TestCase):
             self.box.provision()
         self.assertIn("outside", str(cm.exception))
         self.assertFalse(self.box.home.root.exists())
+
+    def test_a_link_outside_its_item_that_no_hook_runs_is_skipped_with_a_warning(self):
+        """Plan rev 15.6: never followed (it could name any user file), but
+        it no longer refuses setup (the user's real SAI has such skills)."""
+        secret = self.box.tmp / "secret"
+        secret.mkdir()
+        (secret / "key").write_text("ZB-SECRET-CANARY")
+        (self.box.source / "skills" / "elsewhere").symlink_to(secret)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.box.provision()
+        self.assertIn("skipped skills/elsewhere: it links outside skills", err.getvalue())
+        self.assertFalse((self.box.home.root / ".claude/skills/elsewhere").exists())
+        text = "".join(p.read_text(errors="replace") for p in (self.box.home.root / "current").rglob("*") if p.is_file())
+        self.assertNotIn("ZB-SECRET-CANARY", text)
+
+    def test_a_hook_naming_a_file_below_a_skipped_link_refuses(self):
+        """RoseCat 5416: the skipped link or any of its descendants."""
+        foreign = self.box.tmp / "foreign"
+        foreign.mkdir()
+        (foreign / "run.ts").write_text("// foreign\n")
+        (self.box.source / "skills" / "outside").symlink_to(foreign)
+        settings = json.loads((self.box.source / "settings.json").read_text())
+        settings["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": "bun ~/.claude/skills/outside/run.ts"})
+        (self.box.source / "settings.json").write_text(json.dumps(settings))
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(setup.SetupError) as cm:
+                self.box.provision()
+        self.assertEqual(str(cm.exception), "hook script links outside its item: skills/outside/run.ts")
+        self.assertFalse(self.box.home.root.exists())
+
+    def test_a_path_embedded_in_an_option_is_checked_like_any_other(self):
+        """RoseCat 5416: `--preload=/x` names an executed file."""
+        for command, refused in (("bun --preload=/srv/evil.ts ~/.claude/hooks/X.hook.ts", True),
+                                 ("bun --preload=~/.claude/hooks/X.hook.ts ~/.claude/hooks/X.hook.ts", False)):
+            with self.subTest(command):
+                box = Sandbox(self)
+                settings = json.loads((box.source / "settings.json").read_text())
+                settings["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": command})
+                (box.source / "settings.json").write_text(json.dumps(settings))
+                if refused:
+                    with self.assertRaises(setup.SetupError) as cm:
+                        box.provision()
+                    self.assertIn("hook path outside agent home: Stop/0", str(cm.exception))
+                else:
+                    box.provision()
+
+    def test_hook_commands_outside_the_supported_grammar_refuse(self):
+        """RoseCat 5431: opaque forms could carry code or paths unchecked."""
+        cases = {
+            "sh -c 'cat /etc/passwd'": "has shell syntax",
+            "bash -lc ~/.claude/hooks/X.hook.ts": "evaluates code",
+            "node -e ~/.claude/hooks/X.hook.ts": "evaluates code",
+            "bun --eval=x ~/.claude/hooks/X.hook.ts": "evaluates code",
+            "python3 -m http.server": "evaluates code",
+            "~root/x.sh": "names another user's home",
+            "bun file:///srv/x.ts": "has a non-http URL",
+            "curl http://localhost:51091/notify": "launcher is not supported (curl)",
+            "bun --watch": "runs no script path",
+            "bun --preload=/srv/evil.ts ~/.claude/hooks/X.hook.ts": "hook path outside agent home",
+            # RoseCat 5438: shell syntax anywhere, and attached eval flags.
+            "bun ~/.claude/hooks/X.hook.ts; id": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts && curl http://127.0.0.1:51091/x": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts | sh": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts > /tmp/x": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts $(cat</etc/passwd)": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts `id`": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts $HOME": "has shell syntax",
+            "bun ~/.claude/hooks/X.hook.ts\nid": "has shell syntax",
+            "node -eCODE ~/.claude/hooks/X.hook.ts": "evaluates code",
+            "bun -pCODE ~/.claude/hooks/X.hook.ts": "evaluates code",
+        }
+        for command, want in cases.items():
+            with self.subTest(command):
+                box = Sandbox(self)
+                settings = json.loads((box.source / "settings.json").read_text())
+                settings["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": command})
+                (box.source / "settings.json").write_text(json.dumps(settings))
+                with self.assertRaises(setup.SetupError) as cm:
+                    box.provision()
+                self.assertIn(want, str(cm.exception))
+                self.assertFalse(box.home.root.exists())
+        for command in ("~/.claude/hooks/X.hook.ts", "bun ~/.claude/hooks/X.hook.ts",
+                        "bun --smol ~/.claude/hooks/X.hook.ts arg", "python3 ~/.claude/hooks/notify.py stop"):
+            with self.subTest(ok=command):
+                box = Sandbox(self)
+                settings = json.loads((box.source / "settings.json").read_text())
+                settings["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": command})
+                (box.source / "settings.json").write_text(json.dumps(settings))
+                box.provision()
+
+    def test_a_hook_path_must_name_an_existing_file_of_the_published_copy(self):
+        """RoseCat 5444: never the workspace, scratchpad or state, whose bytes
+        the agent can change after setup checked them; never missing or
+        relative (relative resolves against the writable workspace)."""
+        for command in ("bun ~/scratchpad/run.ts", "bun ~/workspace/run.ts", "bun ~/state/MEMORY/run.ts",
+                        "bun ~/secrets/run.ts", "bun workspace/run.ts", "bun ~/.claude/hooks/missing.ts",
+                        "~/.claude/hooks/X.hook.ts --preload=~/scratchpad/pre.ts"):
+            with self.subTest(command):
+                box = Sandbox(self)
+                settings = json.loads((box.source / "settings.json").read_text())
+                settings["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": command})
+                (box.source / "settings.json").write_text(json.dumps(settings))
+                with self.assertRaises(setup.SetupError) as cm:
+                    box.provision()
+                self.assertIn("hook path is not in the copied SAI: Stop/0", str(cm.exception))
+                self.assertFalse(box.home.root.exists())
 
     def test_a_non_command_hook_cannot_be_wrapped(self):
         settings = json.loads((self.box.source / "settings.json").read_text())
@@ -535,13 +732,44 @@ class LayoutTest(unittest.TestCase):
         self.assertTrue((self.box.home.root / ".zb-owner.lock").exists())
         self.assertTrue((self.box.home.root / ".claude" / "CLAUDE.md").is_file())
 
-    def test_an_outside_path_in_a_copied_text_file_refuses_setup(self):
-        with open(self.box.source / "SAI" / "README.md", "a") as f:
-            f.write("And /srv/elsewhere/x.\n")
-        with self.assertRaises(setup.SetupError) as cm:
-            self.box.provision()
-        self.assertEqual(str(cm.exception), "outside path in SAI/README.md:3")
-        self.assertFalse(self.box.home.root.exists())
+    def test_only_what_runs_is_checked_strictly_other_text_is_rewritten_only(self):
+        """Plan rev 15.6: documentation may mention any path."""
+        readme = self.box.source / "SAI" / "README.md"
+        with open(readme, "a") as f:
+            f.write(f"Pipe to /dev/null, write /tmp/x.png, see {self.box.source_home}/notes and /usr/../odd.\n")
+        self.box.provision()
+        copied = (self.box.home.root / ".claude/SAI/README.md").read_text()
+        self.assertIn("/dev/null", copied)
+        self.assertIn(f"{self.box.home.root}/notes", copied)
+        self.assertNotIn(str(self.box.source_home), copied)
+
+    def test_a_hook_scripts_text_may_hold_any_path_its_command_line_is_what_is_checked(self):
+        """Plan rev 15.6: hook scripts are source code (regex literals and
+        comments read as paths); the hook command line is checked instead
+        (test_an_absolute_hook_outside_the_agent_home_is_refused...)."""
+        hook = self.box.source / "hooks" / "X.hook.ts"
+        hook.write_text(hook.read_text() + "const out = '/srv/elsewhere/x'; s.replace(/[^a-z]/g, '');\n")
+        self.box.provision()
+        self.assertIn("/srv/elsewhere/x", (self.box.home.root / ".claude/hooks/X.hook.ts").read_text())
+
+    def test_version_control_and_build_output_are_copied_byte_for_byte(self):
+        """RoseCat 5443: copied, not dropped and not rewritten."""
+        named = [f"skills/demo/{d}/x" for d in setup.DEPENDENCY_DIRS]
+        for rel in named:
+            path = self.box.source / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"{self.box.source_home}/kept\n".encode())
+        self.box.provision()
+        for rel in named:
+            self.assertEqual((self.box.home.root / ".claude" / rel).read_bytes(), f"{self.box.source_home}/kept\n".encode())
+
+    def test_dependency_trees_are_copied_byte_for_byte(self):
+        module = self.box.source / "skills" / "demo" / "node_modules" / "pkg" / "index.js"
+        module.parent.mkdir(parents=True)
+        body = f"require('/usr/../x'); const home = '{self.box.source_home}/y'; // /srv/z\n".encode()
+        module.write_bytes(body)
+        self.box.provision()
+        self.assertEqual((self.box.home.root / ".claude/skills/demo/node_modules/pkg/index.js").read_bytes(), body)
 
 
 if __name__ == "__main__":

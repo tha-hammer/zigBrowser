@@ -13,7 +13,7 @@ import struct
 import subprocess
 
 import support  # noqa: F401  (puts the helper package on sys.path)
-from support import FakeAnthropicApi
+from support import FakeAnthropicApi, lay_out_state
 from zb_agent_host import files, hook_run, options, provision, sandbox, seccomp, token
 
 
@@ -223,6 +223,7 @@ class SandboxArgv(unittest.TestCase):
         self.home = options.AgentHome(Path(tempfile.mkdtemp(prefix="zb-unit-")))
         for d in (".claude", "workspace", "scratchpad", "runtime"):
             (self.home.root / d).mkdir()
+        lay_out_state(self.home.root)
         self.argv = sandbox.helper_argv(self.home)
         self.joined = " ".join(self.argv)
 
@@ -236,6 +237,18 @@ class SandboxArgv(unittest.TestCase):
         # The CLI's state file and backups are state too, but read-only (plan rev 15.5).
         for name in (".claude.json", "backups"):
             self.assertIn(f"--ro-bind {state}/{name} {claude}/{name}", self.joined)
+
+    def test_a_missing_mount_point_or_state_source_refuses_and_writes_nothing(self):
+        """RoseCat 5405: a published build is never written after its publish."""
+        for rel in (".claude/projects", ".claude/.claude.json", "state/MEMORY", "state/backups"):
+            with self.subTest(rel):
+                path = self.home.root / rel
+                (path.rmdir if path.is_dir() else path.unlink)()
+                before = sorted(p.relative_to(self.home.root) for p in self.home.root.rglob("*"))
+                with self.assertRaises(sandbox.SandboxError):
+                    sandbox.helper_argv(self.home)
+                self.assertEqual(sorted(p.relative_to(self.home.root) for p in self.home.root.rglob("*")), before)
+                lay_out_state(self.home.root)
 
     def test_the_outer_seccomp_filter_is_passed_to_bwrap(self):
         argv = sandbox.helper_argv(self.home, seccomp_fd=17)
