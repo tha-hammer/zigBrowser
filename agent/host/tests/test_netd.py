@@ -380,6 +380,27 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(status_of(response_head(s)), 403)
         self.assertEqual(d.connects(), [])
 
+    def test_lookalike_names_get_no_attempt_even_when_they_resolve_to_a_global_address(self):
+        """Only an exact allowlist entry passes the parser (RoseCat 5522). Each
+        lookalike here resolves to a global address, so a parser that let it
+        through would dial it: sealed, the attempt reaches nothing but is
+        recorded, and must not happen."""
+        lookalikes = ("evil-api.anthropic.com", "api.anthropic.com.evil.com",
+                      f"evil-{FAKE}", f"{FAKE}.evil", f"{FAKE}-evil.invalid")
+        resolve = [arg for name in lookalikes for arg in ("--test-resolve", f"{name}=1.1.1.1")]
+        d = Netd(self, "--test-allow", f"{FAKE}={self.upstream.port}", *resolve, sealed=True)
+        self.assertTrue(d.ready())
+        for name in lookalikes:
+            with self.subTest(name):
+                s = d.proxy()
+                s.sendall(f"CONNECT {name}:443 HTTP/1.1\r\n\r\n".encode())
+                head = response_head(s)
+                if status_of(head) == 200:
+                    s.sendall(client_hello(name))  # what a client would send next
+                self.assertEqual(status_of(head), 403)
+        self.assertEqual(d.connects(), [], "no lookalike may reach an upstream attempt")
+        self.assertEqual(self.upstream.accepted, [])
+
 
 class VettingTest(unittest.TestCase):
     """§3c.3: resolve once; refuse unless every address is global; connect only
