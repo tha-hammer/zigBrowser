@@ -6739,3 +6739,108 @@ With those corrections, two external kill cuts are sufficient:
 both retain every state inode. Build-step fault injection still belongs below
 the swap to prove incomplete builds are never published. Agent Mail 5390 sent
 these findings before implementation proceeds.
+
+## Real-screen matrix safety and compositor-fixture audit (`1be5169`)
+
+**Verdict: BLOCKER. Do not run another input-injecting case on the user's
+screen yet.** The repainting fixture and drawer-off DMA-BUF control are useful,
+but the committed input guard does not satisfy the requested fail-closed
+boundary.
+
+The supplied `fa0aa48` artifacts also need one factual correction. The
+`drawer-open.screen.png` capture is the user's terminal and
+`drawer-open.window.png` is the browser's still-closed blue page plus icon, so
+the sample is not a drawer-open rendering result. However, this particular
+case did **not** inject a click or Escape: there are no `open1`, `open2` or
+`minimized` captures, and the old runner returned after the initial screen
+pixel judgment failed, before its click branch. The incident demonstrates
+failed activation/capture identity, while the unsafe-input path remains a
+latent time-of-check/time-of-use bug rather than an observed misdirected click.
+
+### BLOCKER: the last-moment XTest boundary is incomplete
+
+At `1be5169`, `tests/manual/real_screen_check.py:391-401` checks only whether
+the client id is somewhere in the X window ancestry at the intended point,
+then emits synthetic pointer motion, sleeps 200 ms, and checks pointer ancestry
+before emitting button events. It does not establish `IsViewable`, current
+geometry containment, `_NET_ACTIVE_WINDOW == wid`, or input focus inside the
+client before that first XTest event. It also leaves a race between the final
+check and the button down/up, including sleeps inside that sequence. If the
+post-motion check refuses, the caller at `:497-499` nevertheless reports “no
+input sent”, even though pointer motion was already sent. `raise_window()` at
+`:381-388` checks only nine stacking samples, not whether activation and focus
+succeeded. Escape has a useful focus/PointerRoot guard at `:404-409`, but no
+active-window/viewability/anchor recheck.
+
+Required follow-up:
+
+- Resolve and validate the client and its root-frame ancestry; require the
+  client/frame to be viewable, the point inside fresh geometry,
+  `_NET_ACTIVE_WINDOW` to name the client, and `XGetInputFocus` to be the
+  client or a descendant before **any** XTest event.
+- Use `XTranslateCoordinates(root, root, x, y, ..., &child)` to require that
+  the topmost root child at the point is the target frame. Immediately before
+  button down, repeat the checks under a short server grab, move, then use
+  `XQueryPointer` to prove the exact root coordinates and root-child path.
+  Release the grab in `finally`; if button down was emitted, always emit button
+  up. Do not sleep inside the grabbed input sequence.
+- Repeat the viewable/active/focus check immediately before Escape. Any absent
+  property, failed X query or disagreement aborts the entire matrix before a
+  button/key event.
+- Add a private-Xvfb decoy-window regression with mouse and key canaries. A
+  decoy that steals focus or covers the target immediately before injection
+  must receive nothing, and a safety refusal must stop later cases. Fake-unit
+  tests alone do not exercise the ctypes/Xlib boundary. Correct their current
+  docstring: this artifact did not send the click or Escape.
+
+Agent Mail 5393 and 5395 sent the early finding and the exact follow-up contract
+to BlackRobin.
+
+### Source correction: page content is not the 2.54 compositor switch
+
+The proposed explanation “the solid page never entered accelerated
+compositing” is false for WebKitGTK 2.54.0 when hardware acceleration is
+available. GTK initializes `AcceleratedCompositingEnabled`,
+`ForceCompositingMode` and threaded scrolling together
+([`WebPreferencesGtk.cpp`:34-42](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebKit/UIProcess/gtk/WebPreferencesGtk.cpp#L34-L42)).
+The compositor caches that force flag and enters mode from it, independently
+of page content
+([`RenderLayerCompositor.cpp`:610-645,1041-1073](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebCore/rendering/RenderLayerCompositor.cpp#L610-L645)).
+Thus the solid fixture and Wikipedia both used the coordinated/accelerated
+path in default case J. Their discriminating difference can be layer topology,
+backing-store tiling/damage and repaint cadence, not compositor-off versus
+compositor-on.
+
+`1be5169` moves the fixture in the right direction, but its guarantees should
+be stronger. Intrinsic layer reasons include 3D transforms, running
+animations, canvas and `will-change`
+([`RenderLayerCompositor.cpp`:3283-3322](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebCore/rendering/RenderLayerCompositor.cpp#L3283-L3322)).
+On GTK, `will-change` is suppressed under conservative memory policy, and the
+current 60-by-60 canvas is below WebKit's 5,000-pixel canvas threshold
+([`:3848-4023`](https://github.com/WebKit/WebKit/blob/5220e80b97a253c60ed899361654142ab5021998/Source/WebCore/rendering/RenderLayerCompositor.cpp#L3848-L4023)).
+A deterministic local discriminator should therefore use a self-painting,
+multi-viewport article wrapper with nonzero
+`transform: translate3d(0,0,1px)`, a continuously running transform animation,
+dense local text/cards and a sticky header; any canvas intended as a separate
+trigger should be at least 96-by-96 (preferably 128-by-128). This exercises
+coordinated layers, tiles, dirty regions and repeated paints while preserving
+the blue pixel oracle.
+
+### Renderer control
+
+Adding `off-renderer-default` is correct. It should precede the corresponding
+drawer-on treatment, or the summary must explicitly classify a drawer-on
+failure as non-diagnostic when the off control also fails. The supplied
+drawer-on/default log already contains the NVIDIA GBM/KMS allocation errors,
+and both its root capture and window capture lack WebKit content while the
+app-painted icon remains. That result is the known DMA-BUF producer failure,
+not evidence against the old overlay. `GDK_GL=disable` is also not a narrow
+final-presentation discriminator here: its stderr says WebKit disabled
+hardware acceleration because GTK GL initialization failed.
+
+The display-free unit suite passes 15/15 at exact `1be5169`, but those tests do
+not close either blocker above. A quiet clean-export gate at exact `1be5169`
+was otherwise green: **Build Summary: 105/105 steps succeeded; 816/816 tests
+passed**. The gate tree was deleted immediately. The verdict remains BLOCKER
+because the production gate does not exercise the real-screen XTest safety
+boundary.
