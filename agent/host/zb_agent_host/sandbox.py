@@ -26,16 +26,24 @@ USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("
 # them live in agent-home/state/, outside every published build (plan rev 15.5).
 STATE_DIRS = ("projects", "sessions", "session-env", "todos", "statsig", "debug", "MEMORY")
 TOKEN_DIR = "/run/zb-token"
+# netd's socket directories inside the sandbox (plan rev 16.2 §3c.2): egress/
+# holds proxy.sock (the outer relay's only target), bridges/ the two fixed
+# bridge sockets, which zb-hook-run binds on into each sealed hook.
+NET_DIR = "/run/zb-net"
 
-def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=False):
+def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=False, net_dir=None):
     """The bwrap prefix for a helper rooted at `home` (an options.AgentHome).
 
     `seccomp_fd`: a descriptor holding seccomp.program() (seccomp.seccomp_fd()), inherited by bwrap.
     `ro_paths`: extra read-only binds (the venv, the hook command directories
     from runtime/path.json). `claude_writable` binds all of .claude writable;
-    only the P0.5 write census uses it.
+    only the P0.5 write census uses it. `net_dir` (§3c.2): netd's socket
+    directory; the sandbox then gets a network namespace of its own and sees
+    only netd's egress/ and bridges/, read-only, under /run/zb-net.
     """
-    argv = [BWRAP, "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session",
+    net = _net_binds(net_dir) if net_dir is not None else []
+    argv = [BWRAP, "--unshare-pid", "--unshare-ipc", "--unshare-uts", *(["--unshare-net"] if net else []),
+            "--die-with-parent", "--new-session",
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run",
             "--ro-bind", "/usr", "/usr"]
     for target, link in USR_LINKS:
@@ -63,10 +71,24 @@ def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, cl
                     raise SandboxError(f"{path} is missing or not a {'directory' if is_dir else 'file'}: "
                                        "run zigBrowser --agent-setup")
             argv += [flag, source, target]
+    argv += net
     argv += ["--bind", str(home.scratchpad), str(home.scratchpad),
              "--perms", "0300", "--dir", TOKEN_DIR,
              "--chdir", str(home.workspace)]
     if seccomp_fd is not None:
         argv += ["--seccomp", str(seccomp_fd)]
     argv.append("--")
+    return argv
+
+
+def _net_binds(net_dir):
+    """Read-only binds of netd's egress/ and bridges/ (each a real directory, not
+    a link), after the /run tmpfs. connect() works through a read-only bind;
+    create, rename and unlink get EROFS (BlueBeaver 5472)."""
+    argv = []
+    for name in ("egress", "bridges"):
+        source = os.path.join(str(net_dir), name)
+        if os.path.islink(source) or not os.path.isdir(source):
+            raise SandboxError(f"{source} is missing or not a directory: netd is not running")
+        argv += ["--ro-bind", source, f"{NET_DIR}/{name}"]
     return argv
