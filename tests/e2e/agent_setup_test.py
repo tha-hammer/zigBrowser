@@ -94,12 +94,13 @@ class World:
 
 
 def run_setup(binary: Path, world: World, args: list[str] = (), extra: dict[str, str] | None = None,
-              watch_helper: bool = False):
+              watch_helper: bool = False, drop: tuple[str, ...] = (), timeout: float = 180):
     """Runs --agent-setup; with `watch_helper`, also samples the setup
     helper's argv and environment while it runs."""
     oracle = Inotify(world.home / ".claude", world.home / "src" / "decoy-repo")
     proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--sai-source", str(world.source), *args],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=world.env(extra))
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                            env={k: v for k, v in world.env(extra).items() if k not in drop})
     seen: list[tuple[list[str], list[str]]] = []
     if watch_helper:
         deadline = time.monotonic() + 120
@@ -115,10 +116,36 @@ def run_setup(binary: Path, world: World, args: list[str] = (), extra: dict[str,
                 except OSError:
                     continue
             time.sleep(0.05)
-    out, err = proc.communicate(timeout=180)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        out, err = "", "TIMEOUT"
+    finally:
+        reap(proc)
     events = oracle.events()
     oracle.close()
     return proc.returncode, out, err, events, seen
+
+
+def reap(proc: subprocess.Popen) -> None:
+    """The setup run's whole process group ends here: TERM, then KILL, then
+    reaped, so a timed-out run leaves no helper or CLI behind (RoseCat d7527bb)."""
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            proc.wait(timeout=5)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
 
 
 def bundled_cli() -> str:
@@ -249,8 +276,100 @@ def case_cli_seam(binary: Path, tmp: Path, check: Checks) -> None:
           f"R3: --agent-token-route env writes R3 and prints the risk line ({code}; {route})")
 
 
+def helpers_for(home: Path) -> list[int]:
+    """Live processes running the setup helper for this agent home."""
+    pids = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except OSError:
+            continue
+        if b"zb_agent_host" in argv and str(home).encode() in argv and state != "Z":
+            pids.append(int(pid))
+    return pids
+
+
+def case_parent_death(binary: Path, tmp: Path, check: Checks) -> None:
+    """RoseCat 5330: the browser dies between fork() and PR_SET_PDEATHSIG; the
+    setup child must not survive it. The e2e-only spawn delay holds the child
+    inside that window."""
+    import signal
+    for round_ in range(3):
+        w = World(tmp, f"parent-death-{round_}")
+        proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--e2e-protocol", "--sai-source", str(w.source)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=w.env({"ZIGBROWSER_AGENT_SPAWN_DELAY_MS": "500"}))
+        time.sleep(0.15)
+        proc.send_signal(signal.SIGKILL)
+        proc.wait()
+        # The child leaves its 500 ms window about 0.35 s from now; by 1 s an
+        # orphan is running setup, and a correct child has already exited.
+        time.sleep(1.0)
+        left = helpers_for(w.agent)
+        check(left == [], f"parent death {round_}: no setup helper outlives the browser ({left})")
+        for pid in left:
+            os.kill(pid, signal.SIGKILL)
+
+
+def case_timeout_teardown(binary: Path, tmp: Path, check: Checks) -> None:
+    """A run that times out is torn down with its descendants (d7527bb SHOULD):
+    the setup child is held 5 s by the e2e-only spawn delay; the run's 1 s
+    timeout must still leave no helper behind."""
+    w = World(tmp, "timeout")
+    _code, _o, err, _e, _s = run_setup(binary, w, ["--e2e-protocol"], {"ZIGBROWSER_AGENT_SPAWN_DELAY_MS": "5000"},
+                                       timeout=1.0)
+    time.sleep(6.0)
+    check(err == "TIMEOUT" and helpers_for(w.agent) == [], f"timeout: the run timed out and no helper outlived it ({helpers_for(w.agent)})")
+
+
+def case_bad_home(binary: Path, tmp: Path, check: Checks) -> None:
+    """RoseCat 5328 (3): an empty or missing HOME is refused, never rewritten."""
+    for label, extra in (("empty HOME", {"HOME": ""}), ("relative HOME", {"HOME": "rel"})):
+        w = World(tmp, label.replace(" ", "-"))
+        code, _o, err, _e, _s = run_setup(binary, w, [], extra)
+        check(code == 2 and "HOME must be an absolute directory" in err and not (w.agent / ".claude").exists(),
+              f"{label}: refused with exit 2 and nothing written ({code}; {err.strip()[-200:]!r})")
+
+
+def case_clean_install(binary: Path, tmp: Path, check: Checks) -> None:
+    """RoseCat 5331: the production route, with no developer override. The
+    runtime is installed beside a copy of the binary, as `zig build
+    agent-runtime` does for the install prefix."""
+    prefix = tmp / "prefix"
+    done = subprocess.run(["sh", str(REPO / "tools" / "install_agent_runtime.sh"), str(prefix)],
+                          capture_output=True, text=True, timeout=900)
+    if not check(done.returncode == 0, f"clean install: the runtime installs ({done.stderr.strip()[-300:]!r})"):
+        return
+    (prefix / "bin").mkdir()
+    shutil.copy2(binary, prefix / "bin" / "zigBrowser")
+    w = World(tmp, "clean-install")
+    overrides = ("ZB_AGENT_HOST_PYTHON", "ZB_AGENT_HOST_DIR")
+    code, _o, err, _e, _s = run_setup(prefix / "bin" / "zigBrowser", w, drop=overrides)
+    if not check(code == 0, f"clean install: setup succeeds with no override ({code}; {err.strip()[-300:]!r})"):
+        return
+    runtime = prefix / "lib" / "zigbrowser" / "agent-host"
+    host = json.loads((w.agent / "runtime" / "host.json").read_text())
+    lock = hashlib.sha256((REPO / "agent" / "host" / "uv.lock").read_bytes()).hexdigest()
+    check(host == {"python": str(runtime / "venv" / "bin" / "python"), "runtime_lock": lock},
+          f"clean install: host.json names the installed runtime and its lock ({host})")
+    route = json.loads((w.agent / "runtime" / "token-route.json").read_text())
+    check(route["route"] == "R1", f"clean install: the probe selected R1 through the installed runtime ({route})")
+    bare = tmp / "bare"
+    (bare / "bin").mkdir(parents=True)
+    shutil.copy2(binary, bare / "bin" / "zigBrowser")
+    w2 = World(tmp, "no-runtime")
+    code, _o, err, _e, _s = run_setup(bare / "bin" / "zigBrowser", w2, drop=overrides)
+    want = f"zigBrowser: agent-setup: agent runtime missing at {bare}/lib/zigbrowser/agent-host/venv/bin/python"
+    check(code == 1 and want in err, f"no runtime: setup names where the runtime is missing ({code}; {err.strip()[-300:]!r})")
+
+
 def main() -> int:
-    return run_main(__doc__, {"provision": case_provision, "refusals": case_refusals, "cli": case_cli_seam})
+    return run_main(__doc__, {"provision": case_provision, "refusals": case_refusals, "cli": case_cli_seam,
+                              "parent": case_parent_death, "home": case_bad_home, "install": case_clean_install,
+                              "timeout": case_timeout_teardown})
 
 
 if __name__ == "__main__":

@@ -45,9 +45,15 @@ COPY_ALLOWLIST = ("CLAUDE.md", "settings.json", "SAI", "hooks", "commands", "ski
 SKIPPED_NAMES = (".git", "__pycache__")
 # Absolute paths a copied text file may keep (S3.1); the source HOME is rewritten.
 ALLOWED_ROOTS = ("/usr", "/bin", "/lib", "/etc", "/opt", "/proc/self")
-# An absolute path of two or more components: not part of a URL, `~/x`, `$X/y`,
-# a `${x}/y` or `$(x)/y` concatenation, or a relative path.
-PATH_RE = re.compile(r"(?<![\w:/.~$@})-])(?:/[A-Za-z0-9._@+-]+){2,}")
+# An absolute path: not part of a URL, `~/x`, `$X/y`, a `${x}/y` or `$(x)/y`
+# concatenation, or a relative path. A one-component `/name` is a path too,
+# unless it names a known slash command (KNOWN_COMMANDS, or a copied
+# commands/ or skills/ entry): the only grammar that keeps a `/x` token.
+PATH_RE = re.compile(r"(?<![\w:/.~$@})-])(?:/[A-Za-z0-9._@+-]+)+")
+KNOWN_COMMANDS = frozenset((
+    "add-dir", "agents", "bug", "clear", "compact", "config", "context", "cost", "doctor", "export", "fast", "help",
+    "hooks", "ide", "init", "login", "logout", "loop", "mcp", "memory", "model", "permissions", "plugin",
+    "pr-comments", "release-notes", "resume", "review", "rewind", "status", "terminal-setup", "upgrade", "vim"))
 PROBE_TIMEOUT_S = 30
 LAYOUT_VERSION = 1
 
@@ -75,10 +81,15 @@ def sanitize_settings(node):
     return clean
 
 
-def rewrite_text(text, source_home, agent_home, rel, strict=True):
+def rewrite_text(text, source_home, agent_home, rel, strict=True, commands=frozenset()):
     """The source HOME prefix becomes the agent home. With `strict`, any other
     absolute path outside ALLOWED_ROOTS and the agent home refuses setup with
-    `outside path in <rel>:<line>`."""
+    `outside path in <rel>:<line>`. `source_home` must be an absolute
+    directory other than `/` (RoseCat 5328: an empty one rewrote every path)."""
+    if not os.path.isabs(source_home) or source_home.rstrip("/") == "":
+        raise SetupError("the source HOME is not an absolute directory")
+    known = KNOWN_COMMANDS | frozenset(commands)
+
     def under(path, root):
         return path == root or path.startswith(root + "/")
 
@@ -89,6 +100,8 @@ def rewrite_text(text, source_home, agent_home, rel, strict=True):
             if under(path, source_home):
                 return agent_home + path[len(source_home):]
             if not strict or under(path, agent_home) or any(under(path, root) for root in ALLOWED_ROOTS):
+                return path
+            if path.count("/") == 1 and path[1:] in known:
                 return path
             raise SetupError(f"outside path in {rel}:{lineno}")
         out.append(PATH_RE.sub(fix, line))
@@ -140,10 +153,22 @@ def _inside_home(tok, home_root, staging_root, real_staging):
 
 # --- copying -------------------------------------------------------------------
 
+def slash_commands(source):
+    """The names a copied `/name` may refer to: commands/*.md stems and skills/* names."""
+    names = set()
+    for sub, take in (("commands", lambda p: p.stem if p.suffix == ".md" else None), ("skills", lambda p: p.name)):
+        root = Path(source) / sub
+        if root.exists():
+            names.update(n for n in (take(p) for p in Path(os.path.realpath(root)).iterdir()) if n)
+    return frozenset(names)
+
+
 def copy_sai(source, claude, source_home, agent_home):
     """The allowlisted items of `source` into `claude`: text rewritten, modes
     0700 (executable) or 0600, symlinks followed only inside their own item."""
     source = Path(source)
+    global _COMMANDS
+    _COMMANDS = slash_commands(source)
     for name in COPY_ALLOWLIST:
         item = source / name
         if not item.exists():
@@ -175,6 +200,9 @@ def _copy_tree(root, directory, target, rel, source_home, agent_home, seen):
             _copy_file(path, target / entry.name, entry_rel, source_home, agent_home)
 
 
+_COMMANDS = frozenset()
+
+
 def _copy_file(path, target, rel, source_home, agent_home):
     """settings.json is only rewritten here: its paths are checked after its
     hooks are (stage), so a hook path gets the hook-specific refusal."""
@@ -182,7 +210,8 @@ def _copy_file(path, target, rel, source_home, agent_home):
     if b"\0" not in data:
         try:
             text = data.decode("utf-8")
-            data = rewrite_text(text, source_home, agent_home, rel, strict=rel != "settings.json").encode("utf-8")
+            data = rewrite_text(text, source_home, agent_home, rel, strict=rel != "settings.json",
+                                commands=_COMMANDS).encode("utf-8")
         except UnicodeDecodeError:
             pass
     mode = 0o700 if os.access(path, os.X_OK) else 0o600
@@ -206,7 +235,16 @@ def manifest(claude):
     return out
 
 
-def stage(home, source, source_home, source_path, python, cli, staging):
+def runtime_lock(package_dir):
+    """The installed runtime's lock hash (runtime.json beside the package,
+    written by tools/install_agent_runtime.sh); None for a checkout."""
+    try:
+        return json.loads((Path(package_dir) / "runtime.json").read_text())["lock_sha256"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def stage(home, source, source_home, source_path, python, cli, staging, package_dir):
     """A complete agent home in `staging`, laid out for `home`."""
     root = str(home.root)
     claude, runtime = staging / ".claude", staging / "runtime"
@@ -221,7 +259,7 @@ def stage(home, source, source_home, source_path, python, cli, staging):
     if settings_path.exists():
         settings_path.unlink()
     final = json.dumps(settings, indent=2) + "\n"
-    rewrite_text(final, str(source_home), root, "settings.json")
+    rewrite_text(final, str(source_home), root, "settings.json", commands=_COMMANDS)
     atomic_write(settings_path, final, 0o600)
     atomic_write(claude / ".claude.json", "{}\n", 0o600)
 
@@ -233,26 +271,36 @@ def stage(home, source, source_home, source_path, python, cli, staging):
     atomic_write(runtime / "hook-env.json", json.dumps(list(runtime_provision.HOOK_ENV_NAMES)), 0o600)
     atomic_write(runtime / "writable.json", json.dumps(list(sandbox.STATE_DIRS)), 0o600)
     atomic_write(runtime / "path.json", json.dumps(dirs), 0o600)
-    atomic_write(runtime / "host.json", json.dumps({"python": str(python)}), 0o600)
-    shutil.copytree(Path(__file__).resolve().parent, runtime / "host" / "zb_agent_host",
+    atomic_write(runtime / "host.json", json.dumps({"python": str(python), "runtime_lock": runtime_lock(package_dir)}), 0o600)
+    shutil.copytree(Path(package_dir) / "zb_agent_host", runtime / "host" / "zb_agent_host",
                     ignore=shutil.ignore_patterns("__pycache__"))
     atomic_write(runtime / "config-manifest.json", json.dumps(manifest(claude), indent=1), 0o600)
     atomic_write(staging / ".zb-agent-home", json.dumps({"layout": LAYOUT_VERSION}), 0o600)
 
 
-_RENAME_EXCHANGE = 2
+_RENAME_EXCHANGE = 2  # <linux/fs.h>
+_AT_FDCWD = -100  # <fcntl.h>
 _libc = ctypes.CDLL(None, use_errno=True)
-_libc.syscall.restype = ctypes.c_long
 
 
 def exchange(a, b):
-    """Atomically swaps two paths (renameat2 RENAME_EXCHANGE, syscall 316)."""
-    at_fdcwd = ctypes.c_long(-100)
-    rc = _libc.syscall(ctypes.c_long(316), at_fdcwd, os.fsencode(str(a)), at_fdcwd, os.fsencode(str(b)),
-                       ctypes.c_ulong(_RENAME_EXCHANGE))
-    if rc != 0:
+    """Atomically swaps two paths with libc's renameat2(RENAME_EXCHANGE)
+    (glibc 2.28+, every architecture). Fails closed when libc lacks it."""
+    renameat2 = getattr(_libc, "renameat2", None)
+    if renameat2 is None:
+        raise SetupError("renameat2 is not available in this libc")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(_AT_FDCWD, os.fsencode(str(a)), _AT_FDCWD, os.fsencode(str(b)), _RENAME_EXCHANGE) != 0:
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err), str(a))
+
+
+def move_state(src, dst):
+    """One state directory into place, replacing the empty one there."""
+    if dst.exists():
+        shutil.rmtree(dst)
+    os.rename(src, dst)
 
 
 def install(home, staging):
@@ -270,31 +318,43 @@ def install(home, staging):
         os.chmod(root, 0o700)
         staging.rmdir()
         return
-    for name in sandbox.STATE_DIRS:
-        old = root / ".claude" / name
-        if old.is_dir():
-            new = staging / ".claude" / name
-            if new.exists():
-                shutil.rmtree(new)
-            os.rename(old, new)
-    for name in (".claude", "runtime"):
-        exchange(staging / name, root / name)
+    # The live state never enters cleanup-owned staging (RoseCat 5328): the
+    # new .claude goes live first, then the old tree's state directories
+    # move into it; any failure moves them back and swaps the old tree in.
+    exchange(staging / ".claude", root / ".claude")
+    moved = []
+    try:
+        for name in sandbox.STATE_DIRS:
+            if (staging / ".claude" / name).is_dir():
+                move_state(staging / ".claude" / name, root / ".claude" / name)
+                moved.append(name)
+        exchange(staging / "runtime", root / "runtime")
+    except BaseException:
+        for name in reversed(moved):
+            move_state(root / ".claude" / name, staging / ".claude" / name)
+        exchange(staging / ".claude", root / ".claude")
+        raise
     for name in ("workspace", "scratchpad", "scratchpad/tmp", "secrets"):
         (root / name).mkdir(mode=0o700, exist_ok=True)
     os.replace(staging / ".zb-agent-home", root / ".zb-agent-home")
     shutil.rmtree(staging)
 
 
-def provision(home, source, source_home, source_path, python, route, cli=None, probe=None):
+PACKAGE_DIR = Path(__file__).resolve().parent.parent
+
+
+def provision(home, source, source_home, source_path, python, route, cli=None, probe=None, package_dir=PACKAGE_DIR):
     """Stages, checks, selects the token route (when `route` is given) and
     installs. Raises SetupError, leaving the home unchanged."""
     root = home.root
+    if not os.path.isabs(str(source_home)) or str(source_home).rstrip("/") == "":
+        raise SetupError("the source HOME is not an absolute directory")
     root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".agent-home.staging-", dir=root.parent))
     try:
         os.chmod(staging, 0o700)
         cli = cli or token.bundled_cli()
-        stage(home, source, source_home, source_path, python, cli, staging)
+        stage(home, source, source_home, source_path, python, cli, staging, package_dir)
         if route is not None:
             select_route(staging / "runtime", route, cli, probe or probe_r1)
         install(home, staging)
@@ -324,10 +384,11 @@ def select_route(runtime, route, cli, probe):
     if route == "env":
         print(RISK_LINE, file=sys.stderr)
         chosen = "R3"
-    elif probe(runtime / "bin" / "zb-claude", cli):
-        chosen = "R1"
     else:
-        raise SetupError("no safe token route for this Claude CLI")
+        descriptor_route_works = probe(runtime / "bin" / "zb-claude", cli)
+        if not descriptor_route_works:
+            raise SetupError("no safe token route for this Claude CLI")
+        chosen = "R1"
     record = {"route": chosen, "cli_path": str(cli), "cli_version": cli_version(cli),
               "probed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     atomic_write(runtime / "token-route.json", json.dumps(record), 0o600)

@@ -167,6 +167,11 @@ pub fn build(b: *std.Build) void {
     exe.step.dependOn(pkg_guard);
     b.installArtifact(exe);
 
+    // The Claude Agent helper runtime beside the binary (chat-drawer plan
+    // D6, rev 15.2): <prefix>/lib/zigbrowser/agent-host.
+    const agent_runtime = b.addSystemCommand(&.{ "sh", "tools/install_agent_runtime.sh", b.install_prefix });
+    b.step("agent-runtime", "Install the Claude Agent helper runtime into the install prefix").dependOn(&agent_runtime.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

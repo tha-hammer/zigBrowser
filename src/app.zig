@@ -51,7 +51,11 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
         std.debug.print("zigBrowser: agent-setup: neither XDG_DATA_HOME nor HOME is usable\n", .{});
         return 1;
     };
-    const python = getenvOwned(arena, "ZB_AGENT_HOST_PYTHON") orelse agent_setup.default_python;
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_len = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+    if (exe_len <= 0) return error.WriteFailed;
+    const runtime = agent_setup.defaultRuntime(arena, exe_buf[0..@intCast(exe_len)]) catch return error.WriteFailed;
+    const python = getenvOwned(arena, "ZB_AGENT_HOST_PYTHON") orelse runtime.python;
     const python_z = arena.dupeZ(u8, python) catch return error.WriteFailed;
     if (std.c.access(python_z.ptr, std.c.X_OK) != 0) {
         std.debug.print("zigBrowser: agent-setup: agent runtime missing at {s}\n", .{python});
@@ -62,7 +66,7 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
     const setup_run = agent_setup.launch(arena, .{
         .home = home,
         .python = python,
-        .package_dir = getenvOwned(arena, "ZB_AGENT_HOST_DIR") orelse agent_setup.default_package_dir,
+        .package_dir = getenvOwned(arena, "ZB_AGENT_HOST_DIR") orelse runtime.package_dir,
         .sai_source = source,
         .source_home = user_home orelse "",
         .source_path = getenvOwned(arena, "PATH") orelse "/usr/bin:/bin",
@@ -71,9 +75,14 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
         .claude_cli = getenvOwned(arena, agent_setup.claude_cli_env),
         .lang = getenvOwned(arena, "LANG"),
         .lc_all = getenvOwned(arena, "LC_ALL"),
+        .spawn_delay = getenvOwned(arena, agent_setup.spawn_delay_env),
     }) catch |err| switch (err) {
         error.RelativeCliPath => {
             std.debug.print("zigBrowser: {s} must be an absolute path\n", .{agent_setup.claude_cli_env});
+            return 2;
+        },
+        error.BadSourceHome => {
+            std.debug.print("zigBrowser: agent-setup: HOME must be an absolute directory\n", .{});
             return 2;
         },
         error.OutOfMemory => return error.WriteFailed,
@@ -94,7 +103,7 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
     }
     const argv = toCStrings(arena, setup_run.argv) catch return error.WriteFailed;
     const envp = toCStrings(arena, setup_run.env) catch return error.WriteFailed;
-    const status = c.zb_agent_run_sync(argv.ptr, envp.ptr);
+    const status = c.zb_agent_run_sync(argv.ptr, envp.ptr, setup_run.spawn_delay_ms);
     return if (status < 0) 1 else @intCast(@min(status, 255));
 }
 

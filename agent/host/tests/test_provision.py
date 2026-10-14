@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HOST_DIR = Path(__file__).resolve().parents[1]
 REPO = HOST_DIR.parents[1]
@@ -116,12 +117,105 @@ class RewriteTest(unittest.TestCase):
         for ok in ("run /create_tdd_plan", "https://example.com/a/b", "/etc/ssl/certs", "/proc/self/fd/3",
                    "`${home}/.claude/hooks`", "$(pwd)/a/b",
                    "/opt/x/y", "/bin/sh -c", "/lib/x/y", "relative/a/b", "~/.claude/hooks/a"):
-            self.assertEqual(setup.rewrite_text(ok, "/home/u", "/h", "a.md"), ok)
+            self.assertEqual(setup.rewrite_text(ok, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), ok)
         with self.assertRaises(setup.SetupError) as cm:
             setup.rewrite_text("one\ntwo /tmp/evil/x\n", "/home/u", "/h", "dir/b.ts")
         self.assertEqual(str(cm.exception), "outside path in dir/b.ts:2")
         with self.assertRaises(setup.SetupError):
             setup.rewrite_text('{"p": "/home/other/x"}', "/home/u", "/h", "c.json")
+
+
+class RewriteBlockerTest(unittest.TestCase):
+    """RoseCat 5328 (2, 3): one-component paths and an empty source HOME."""
+
+    def test_a_one_component_absolute_path_is_refused_unless_it_names_a_known_slash_command(self):
+        for bad in ("read /secret now", "cd /tmp", '"/srv"'):
+            with self.assertRaises(setup.SetupError):
+                setup.rewrite_text(bad, "/home/u", "/h", "a.md", commands={"create_tdd_plan"})
+        for ok in ("run /create_tdd_plan", "use /clear first", "/usr", "/etc"):
+            self.assertEqual(setup.rewrite_text(ok, "/home/u", "/h", "a.md", commands={"create_tdd_plan"}), ok)
+
+    def test_an_empty_or_relative_source_home_is_refused(self):
+        for home in ("", "relative", "/"):
+            with self.assertRaises(setup.SetupError):
+                setup.rewrite_text("/srv/private/x", home, "/agent", "a.md")
+
+    def test_setup_refuses_an_empty_source_home(self):
+        box = Sandbox(self)
+        with self.assertRaises(setup.SetupError):
+            box.provision(source_home="")
+        self.assertFalse(box.home.root.exists())
+
+
+class RuntimeRecordTest(unittest.TestCase):
+    """RoseCat 5331: host.json records which installed runtime set this home up."""
+
+    def test_host_json_records_the_runtime_lock_beside_the_package(self):
+        box = Sandbox(self)
+        runtime = box.tmp / "prefix" / "lib" / "zigbrowser" / "agent-host"
+        shutil.copytree(HOST_DIR / "zb_agent_host", runtime / "zb_agent_host")
+        (runtime / "runtime.json").write_text(json.dumps({"lock_sha256": "ab" * 32}))
+        box.provision(package_dir=runtime)
+        host = json.loads((box.home.runtime / "host.json").read_text())
+        self.assertEqual(host, {"python": "/usr/bin/python3", "runtime_lock": "ab" * 32})
+
+    def test_a_development_checkout_has_no_lock_record(self):
+        box = Sandbox(self)
+        box.provision()
+        self.assertIsNone(json.loads((box.home.runtime / "host.json").read_text())["runtime_lock"])
+
+
+class InstallFaultTest(unittest.TestCase):
+    """RoseCat 5328 (1): a failure at any install boundary keeps the live state."""
+
+    def setUp(self):
+        self.box = Sandbox(self)
+        self.box.provision()
+        root = self.box.home.root
+        (root / ".claude" / "projects").mkdir(exist_ok=True)
+        (root / ".claude" / "projects" / "keep.jsonl").write_text("transcript")
+        self.before = tree_digest(root)
+
+    def assert_unchanged(self):
+        root = self.box.home.root
+        self.assertEqual((root / ".claude" / "projects" / "keep.jsonl").read_text(), "transcript")
+        self.assertEqual(tree_digest(root), self.before)
+        self.assertEqual([p for p in root.parent.iterdir() if ".staging" in p.name], [])
+
+    def test_a_failed_first_exchange_keeps_everything(self):
+        with mock.patch.object(setup, "exchange", side_effect=OSError("injected")):
+            with self.assertRaises(OSError):
+                self.box.provision()
+        self.assert_unchanged()
+
+    def test_a_failed_second_exchange_rolls_back(self):
+        real = setup.exchange
+        calls = []
+
+        def flaky(a, b):
+            calls.append((a, b))
+            if len(calls) == 2:
+                raise OSError("injected")
+            real(a, b)
+
+        with mock.patch.object(setup, "exchange", side_effect=flaky):
+            with self.assertRaises(OSError):
+                self.box.provision()
+        self.assert_unchanged()
+
+    def test_a_failed_state_move_rolls_back(self):
+        with mock.patch.object(setup, "move_state", side_effect=OSError("injected")):
+            with self.assertRaises(OSError):
+                self.box.provision()
+        self.assert_unchanged()
+
+    def test_the_exchange_uses_libc_renameat2_not_a_syscall_number(self):
+        self.assertNotIn("316", open(setup.__file__).read())
+        a, b = self.box.tmp / "a", self.box.tmp / "b"
+        a.write_text("A")
+        b.write_text("B")
+        setup.exchange(a, b)
+        self.assertEqual((a.read_text(), b.read_text()), ("B", "A"))
 
 
 class HookTest(unittest.TestCase):

@@ -13,10 +13,35 @@ const xdg = @import("xdg.zig");
 
 pub const home_subpath = "zigbrowser/agent-home";
 pub const claude_cli_env = "ZIGBROWSER_AGENT_CLAUDE_CLI";
-/// Where the helper's runtime is installed unless ZB_AGENT_HOST_PYTHON /
-/// ZB_AGENT_HOST_DIR say otherwise (development checkouts, the gate).
-pub const default_python = "/usr/lib/zigbrowser/agent-host/bin/python";
-pub const default_package_dir = "/usr/lib/zigbrowser/agent-host";
+/// e2e-only (app-owned): the setup child sleeps this long before it sets
+/// PR_SET_PDEATHSIG, so the parent-death race is reproducible (RoseCat 5330).
+pub const spawn_delay_env = "ZIGBROWSER_AGENT_SPAWN_DELAY_MS";
+/// The helper runtime lives beside the binary: <prefix>/lib/zigbrowser/
+/// agent-host/{venv, zb_agent_host, runtime.json}, installed by
+/// tools/install_agent_runtime.sh (`zig build agent-runtime`). For
+/// /usr/bin/zigBrowser that is /usr/lib/zigbrowser/agent-host.
+/// ZB_AGENT_HOST_PYTHON / ZB_AGENT_HOST_DIR override it (developer checkouts).
+pub const runtime_subpath = "lib/zigbrowser/agent-host";
+
+pub const Runtime = struct { python: []u8, package_dir: []u8 };
+
+/// The runtime for the binary at `exe_path` (its real path).
+pub fn defaultRuntime(gpa: std.mem.Allocator, exe_path: []const u8) !Runtime {
+    const bin = std.fs.path.dirname(exe_path) orelse "/";
+    const prefix = std.fs.path.dirname(bin) orelse "/";
+    const package_dir = try std.fs.path.join(gpa, &.{ prefix, runtime_subpath });
+    return .{ .python = try std.fs.path.join(gpa, &.{ package_dir, "venv/bin/python" }), .package_dir = package_dir };
+}
+
+test "the runtime sits at <prefix>/lib/zigbrowser/agent-host beside <prefix>/bin/zigBrowser" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const rt = try defaultRuntime(arena.allocator(), "/usr/bin/zigBrowser");
+    try std.testing.expectEqualStrings("/usr/lib/zigbrowser/agent-host/venv/bin/python", rt.python);
+    try std.testing.expectEqualStrings("/usr/lib/zigbrowser/agent-host", rt.package_dir);
+    const local = try defaultRuntime(arena.allocator(), "/opt/zb/bin/zigBrowser");
+    try std.testing.expectEqualStrings("/opt/zb/lib/zigbrowser/agent-host/venv/bin/python", local.python);
+}
 
 pub const Route = enum { r1, env };
 
@@ -35,6 +60,8 @@ pub const Inputs = struct {
     claude_cli: ?[]const u8 = null,
     lang: ?[]const u8 = null,
     lc_all: ?[]const u8 = null,
+    /// ZIGBROWSER_AGENT_SPAWN_DELAY_MS's value (null: unset).
+    spawn_delay: ?[]const u8 = null,
 };
 
 pub const Launch = struct {
@@ -42,11 +69,17 @@ pub const Launch = struct {
     env: []const []const u8,
     /// One line for stderr when a seam was refused.
     warning: ?[]const u8 = null,
+    /// The e2e-only spawn delay in ms (0: none).
+    spawn_delay_ms: u32 = 0,
 };
 
-pub const Error = error{ RelativeCliPath, OutOfMemory };
+pub const Error = error{ RelativeCliPath, BadSourceHome, OutOfMemory };
 
 pub fn launch(gpa: std.mem.Allocator, in: Inputs) Error!Launch {
+    // An empty or relative HOME would make every absolute path look like it
+    // lives under it (RoseCat 5328).
+    if (!std.fs.path.isAbsolute(in.source_home) or std.mem.trimEnd(u8, in.source_home, "/").len == 0)
+        return error.BadSourceHome;
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(gpa, &.{
         in.python,        "-m",           "zb_agent_host", "setup",
@@ -55,6 +88,14 @@ pub fn launch(gpa: std.mem.Allocator, in: Inputs) Error!Launch {
         "--python",       in.python,      "--route",       @tagName(in.route),
     });
     var warning: ?[]const u8 = null;
+    var spawn_delay_ms: u32 = 0;
+    if (in.spawn_delay) |text| {
+        if (!in.e2e_protocol) {
+            warning = "zigBrowser: " ++ spawn_delay_env ++ " ignored without --e2e-protocol";
+        } else if (std.fmt.parseInt(u32, text, 10)) |ms| {
+            if (ms >= 1 and ms <= 5000) spawn_delay_ms = ms;
+        } else |_| {}
+    }
     if (in.claude_cli) |cli| {
         if (!in.e2e_protocol) {
             warning = "zigBrowser: " ++ claude_cli_env ++ " ignored without --e2e-protocol";
@@ -76,7 +117,7 @@ pub fn launch(gpa: std.mem.Allocator, in: Inputs) Error!Launch {
     });
     if (in.lang) |v| try env.append(gpa, try std.fmt.allocPrint(gpa, "LANG={s}", .{v}));
     if (in.lc_all) |v| try env.append(gpa, try std.fmt.allocPrint(gpa, "LC_ALL={s}", .{v}));
-    return .{ .argv = try argv.toOwnedSlice(gpa), .env = try env.toOwnedSlice(gpa), .warning = warning };
+    return .{ .argv = try argv.toOwnedSlice(gpa), .env = try env.toOwnedSlice(gpa), .warning = warning, .spawn_delay_ms = spawn_delay_ms };
 }
 
 test "the setup run gets exactly the allowlisted environment" {
@@ -156,6 +197,34 @@ test "property: no input reaches the environment except the fixed names and the 
             try std.testing.expect(known);
         }
     }
+}
+
+test "the source HOME must be an absolute directory other than /" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "", "relative", "/" }) |home| {
+        try std.testing.expectError(error.BadSourceHome, launch(arena.allocator(), .{
+            .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = home,
+            .source_path = "/usr/bin", .route = .r1, .e2e_protocol = false,
+        }));
+    }
+}
+
+test "the spawn-delay seam counts only with --e2e-protocol and within 1..5000 ms" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var in: Inputs = .{ .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = "/u",
+        .source_path = "/usr/bin", .route = .r1, .e2e_protocol = true, .spawn_delay = "500" };
+    try std.testing.expectEqual(@as(u32, 500), (try launch(arena.allocator(), in)).spawn_delay_ms);
+    in.spawn_delay = "0";
+    try std.testing.expectEqual(@as(u32, 0), (try launch(arena.allocator(), in)).spawn_delay_ms);
+    in.spawn_delay = "9999";
+    try std.testing.expectEqual(@as(u32, 0), (try launch(arena.allocator(), in)).spawn_delay_ms);
+    in.spawn_delay = "500";
+    in.e2e_protocol = false;
+    const off = try launch(arena.allocator(), in);
+    try std.testing.expectEqual(@as(u32, 0), off.spawn_delay_ms);
+    try std.testing.expectEqualStrings("zigBrowser: ZIGBROWSER_AGENT_SPAWN_DELAY_MS ignored without --e2e-protocol", off.warning.?);
 }
 
 test "the agent home sits beside the profile: XDG_DATA_HOME, then HOME/.local/share" {

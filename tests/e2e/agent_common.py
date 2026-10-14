@@ -342,4 +342,3 @@ class Inotify:
 
     def close(self) -> None:
         os.close(self._fd)
-

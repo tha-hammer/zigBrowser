@@ -36,15 +36,30 @@ int zb_agent_home_lock(const char *home) {
   return 0;
 }
 
+typedef struct {
+  pid_t parent;
+  unsigned int delay_ms;
+} ZbChildSetup;
+
+/* In the child, before exec: die with the browser. If the browser already
+ * died between fork() and prctl(), the child was reparented and the death
+ * signal would never come, so it exits at once instead. */
 static void die_with_browser(gpointer data) {
-  (void)data;
+  const ZbChildSetup *setup = data;
+  if (setup->delay_ms > 0) {
+    usleep(setup->delay_ms * 1000u);
+  }
   prctl(PR_SET_PDEATHSIG, SIGKILL);
+  if (getppid() != setup->parent) {
+    _exit(127);
+  }
 }
 
-int zb_agent_run_sync(const char *const *argv, const char *const *envp) {
+int zb_agent_run_sync(const char *const *argv, const char *const *envp, unsigned int spawn_delay_ms) {
   int wait_status = 0;
   GError *error = NULL;
-  if (!g_spawn_sync(NULL, (char **)argv, (char **)envp, G_SPAWN_DEFAULT, die_with_browser, NULL,
+  ZbChildSetup setup = {getpid(), spawn_delay_ms};
+  if (!g_spawn_sync(NULL, (char **)argv, (char **)envp, G_SPAWN_DEFAULT, die_with_browser, &setup,
                     NULL, NULL, &wait_status, &error)) {
     g_printerr("zigBrowser: agent: cannot start %s: %s\n", argv[0], error != NULL ? error->message : "?");
     g_clear_error(&error);
