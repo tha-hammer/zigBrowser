@@ -731,6 +731,14 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_relay",
     });
+    // Chat drawer S3n2 (plan rev 16.2 §3c.8b): each hook's own sealed network, from a
+    // real outer sandbox through the real zb-hook-run. The module runs in a disposable
+    // network namespace with only loopback (it fails rather than skips elsewhere).
+    const agent_host_hook_net = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" /usr/bin/bwrap --unshare-net --die-with-parent --dev-bind / / --proc /proc -- \"$py\" -m unittest -v test_hook_net",
+    });
 
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
@@ -966,6 +974,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
+    test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&real_screen_input_xvfb.step);

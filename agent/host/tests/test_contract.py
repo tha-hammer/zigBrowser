@@ -3,6 +3,13 @@ run by the real helper, against a fake Messages API (the only mock).
 
 Canary tokens only; ANTHROPIC_BASE_URL is the fake and HTTPS_PROXY/HTTP_PROXY
 point at its refusing proxy, so no request can leave for a real host.
+
+Hooks run sealed (S3n2, plan §3c.8b): each one has its own network, reaching only
+the bridges 127.0.0.1:51091 and :31337 through zb-net-relay. A real netd serves
+those bridges here, both pointed at the NotifyServer, and its bridges/ is bound
+at /run/zb-net/bridges where hooks start. The helper and the CLI keep the
+host's loopback for the fake API; the CLI's own path through relay and netd is
+the S3.8/S4.4 closure (§3c.4).
 """
 
 import ctypes
@@ -22,6 +29,7 @@ import census
 import support
 from support import (DECOY_MARKER, HOOK_EVENTS, FakeAnthropicApi, Helper, Homes, Inotify, NotifyServer, canary,
                      host_python, install_dump_hooks, processes_holding, provision)
+from test_netd import Netd
 from zb_agent_host import hook_run, options, provision as provisioning, sandbox, seccomp, token
 
 TURN_TIMEOUT = 90
@@ -30,6 +38,14 @@ TURN_TIMEOUT = 90
 def turn_args(homes, api, route, extra=()):
     return ["--home", str(homes.agent), "--base-url", api.base_url, "--proxy", api.base_url,
             "--route", route, "--fifo-dir", str(homes.root / "token-fifo"), "--prompt", "Say hello.", *extra]
+
+
+def hook_bridges(tc, notify):
+    """A real netd whose two bridges reach `notify`; returns its bridges/ directory,
+    to be bound at hook_run.BRIDGES where hooks start."""
+    netd = Netd(tc, "--test-bridge", f"51091={notify.port}", "--test-bridge", f"31337={notify.port}")
+    tc.assertTrue(netd.ready(), netd.err)
+    return str(netd.dir / "bridges")
 
 
 def body_text(request):
@@ -145,11 +161,14 @@ class P04HookEnvironment(ContractCase):
     def run_hooked_turn(self, route):
         notify = NotifyServer()
         self.addCleanup(notify.close)
-        install_dump_hooks(self.homes, notify.port)
+        install_dump_hooks(self.homes, 51091)
         rc, out = provision(self.homes)
         self.assertEqual(rc, 0, out)
+        # Only what hooks need from the outer sandbox: netd's bridges at /run/zb-net/bridges.
+        prefix = [sandbox.BWRAP, "--dev-bind", "/", "/", "--tmpfs", "/run",
+                  "--ro-bind", hook_bridges(self, notify), hook_run.BRIDGES]
         with FakeAnthropicApi(list(ECHO_TURNS)) as api:
-            helper = self.run_turn(api, route, extra=("--mcp",), on_tool_call=echo_reply)
+            helper = self.run_turn(api, route, extra=("--mcp",), on_tool_call=echo_reply, argv_prefix=prefix)
         self.assertTrue(any(f.get("type") == "tool_call" for f in helper.frames), helper.describe())
         return notify
 
@@ -383,7 +402,8 @@ class P05Sandbox(ContractCase):
         super().setUp()
         self.notify = NotifyServer()
         self.addCleanup(self.notify.close)
-        install_dump_hooks(self.homes, self.notify.port)
+        install_dump_hooks(self.homes, 51091)
+        self.bridges = hook_bridges(self, self.notify)
         rc, out = provision(self.homes)
         self.assertEqual(rc, 0, out)
         self.planted = self.homes.scratchpad / "planted-mcp-ran"
@@ -397,8 +417,10 @@ class P05Sandbox(ContractCase):
         """The exec tracer (outside the sandbox, the parent of bwrap), then the D12 bwrap."""
         venv = os.path.dirname(os.path.dirname(host_python()))
         tracer = ["/usr/bin/python3", "-I", str(Path(__file__).with_name("exec_tracer.py")), str(self.census_log)]
-        return tracer + sandbox.helper_argv(options.AgentHome(self.homes.agent), seccomp_fd=seccomp_fd,
-                                            ro_paths=[venv, str(support.HOST_DIR)], claude_writable=claude_writable)
+        argv = sandbox.helper_argv(options.AgentHome(self.homes.agent), seccomp_fd=seccomp_fd,
+                                   ro_paths=[venv, str(support.HOST_DIR)], claude_writable=claude_writable)
+        # Only netd's bridges/, for the hooks (the module docstring), before the closing "--".
+        return tracer + argv[:-1] + ["--ro-bind", self.bridges, hook_run.BRIDGES, "--"]
 
     def sandboxed_turn(self, route, claude_writable=False):
         def sample(_entry, _index):
@@ -479,7 +501,10 @@ class P05Sandbox(ContractCase):
         for entries in settings["hooks"].values():
             for entry in entries:
                 for hook in entry["hooks"]:
-                    hook["command"] = hook["command"].removeprefix(prefix)
+                    # Unwrapped, a hook shares the host's loopback, where 51091 is the
+                    # real voice server: it talks to the NotifyServer directly.
+                    hook["command"] = hook["command"].removeprefix(prefix).replace(" 51091 ", f" {self.notify.port} ")
+        self.assertNotIn(" 51091 ", json.dumps(settings), "an unwrapped hook would reach the real :51091")
         self.homes.write_settings(settings)
         watch = Inotify(self.homes.agent / ".claude")
         try:

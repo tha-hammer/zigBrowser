@@ -9,7 +9,7 @@ import argparse
 import json
 import sys
 
-from . import hook_run, options, token
+from . import hook_run, options, relay, token
 from .files import atomic_write
 
 # The variables the bundled CLI sets for hooks (P0 census, CLI 2.1.294), minus
@@ -20,7 +20,7 @@ HOOK_ENV_NAMES = (
     "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CONFIG_DIR", "CLAUDE_EFFORT", "CLAUDE_ENV_FILE", "CLAUDE_PID", "CLAUDE_PROJECT_DIR",
-    "COREPACK_ENABLE_AUTO_PIN", "DISABLE_AUTOUPDATER", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+    "COREPACK_ENABLE_AUTO_PIN", "DISABLE_AUTOUPDATER",
     "MCP_TOOL_TIMEOUT", "NoDefaultCurrentDirectoryInExePath",
 )
 
@@ -54,6 +54,8 @@ def provision_runtime(home, hook_env_names=HOOK_ENV_NAMES):
     token.write_wrapper(bindir / "zb-claude", token.bundled_cli())
     with open(hook_run.__file__) as f:
         atomic_write(hook_run_path(home), f.read(), 0o700)
+    with open(relay.BRIDGE_RELAY_FILE) as f:  # each hook's bridge-only relay (§3c.8b)
+        atomic_write(bindir / "zb-net-relay", f.read(), 0o555)
     atomic_write(home.runtime / "hook-env.json", json.dumps(list(hook_env_names)), 0o600)
     settings_path = home.claude_dir / "settings.json"
     if settings_path.exists():
