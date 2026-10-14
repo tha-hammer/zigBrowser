@@ -121,6 +121,10 @@ int zb_app_get_media_source(void);
 void zb_app_set_agent_drawer(int enabled);
 int zb_app_get_agent_drawer(void);
 
+/* Test hook: how many windows have a drawer attached right now (each
+ * attach counts one up, each detach one down). */
+int zb_drawer_debug_live_count(void);
+
 /* Test hook: window `id`'s media source: 1 on (setting on, no hiding
  * script), 0 off (setting off and the hiding script installed), 2 when the
  * two disagree, -1 without that window or loop. */

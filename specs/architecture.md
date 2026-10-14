@@ -51,3 +51,5 @@ Harness references:
 ## 5. Product boundary
 
 Slice 2 is an app-shell pivot. Active docs/specs should not present address bar, tabs, or bookmarks as shipping features.
+
+The agent drawer (Linux, opt-in, `--agent-drawer on`) is part of the product: a native GTK icon and drawer per browsing window, unreachable from pages and from the automation socket (`docs/agent-drawer.md`).

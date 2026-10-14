@@ -1910,6 +1910,90 @@ test "the startup media-source setting (off) reaches the main window and its pop
     c.zb_automation_loop_mark(1);
 }
 
+const DrawerCountDriver = struct {
+    uri_b: [:0]const u8,
+    with_popup: c_int = -1,
+    after_close: c_int = -1,
+    after_close_during_load: c_int = -1,
+    primary_alive: bool = false,
+
+    fn open(self: *DrawerCountDriver, index: c_int) u32 {
+        var buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrintZ(&buf, "window.open('{s}'); return 0;", .{self.uri_b}) catch return 0;
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(0, body.ptr, null, null, 5000, null, &err);
+        c.zb_automation_free(err);
+        var waited: u32 = 0;
+        while (c.zb_automation_window_id_at(index) == 0 and waited < 5000) : (waited += 5) sleepMs(5);
+        return c.zb_automation_window_id_at(index);
+    }
+
+    fn run(self: *DrawerCountDriver) void {
+        defer _ = c.zb_main_invoke_sync(LiveDriver.quit, null, 5000);
+        var err: [*c]u8 = null;
+        _ = c.zb_automation_eval_json(0, "return 1;", null, null, 15_000, null, &err);
+        c.zb_automation_free(err);
+        // A popup that loads, then closes while its opener's process lives on.
+        const child = self.open(1);
+        if (child == 0) return;
+        err = null;
+        _ = c.zb_automation_eval_json(child, "return 1;", null, null, 10_000, null, &err);
+        c.zb_automation_free(err);
+        self.with_popup = c.zb_drawer_debug_live_count();
+        _ = c.zb_automation_close_window(child, 5000);
+        self.after_close = c.zb_drawer_debug_live_count();
+        // A popup closed at once, while its first load is still running.
+        const early = self.open(1);
+        if (early != 0) _ = c.zb_automation_close_window(early, 5000);
+        self.after_close_during_load = c.zb_drawer_debug_live_count();
+        err = null;
+        self.primary_alive = c.zb_automation_eval_json(0, "return 1;", null, null, 5000, null, &err) == c.ZB_AUTO_OK;
+        c.zb_automation_free(err);
+    }
+};
+
+test "agent drawer: a popup's drawer is freed when it closes, during its load too; quitting frees the rest" {
+    try skipUnlessGtk();
+    if (std.c.getenv("DISPLAY") == null) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const dir = gfile.g_dir_make_tmp("zb-drawer-count-XXXXXX", null) orelse return error.TmpDirFailed;
+    defer gfile.g_free(dir);
+    defer removeTree(dir);
+    const path_a = try std.fmt.allocPrintSentinel(arena, "{s}/a.html", .{dir}, 0);
+    const path_b = try std.fmt.allocPrintSentinel(arena, "{s}/b.html", .{dir}, 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_a, fixture_a.ptr, fixture_a.len, null) != 0);
+    try std.testing.expect(gfile.g_file_set_contents(path_b, fixture_b.ptr, fixture_b.len, null) != 0);
+    const raw_a = gfile.g_filename_to_uri(path_a, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_a);
+    const raw_b = gfile.g_filename_to_uri(path_b, null, null) orelse return error.UriFailed;
+    defer gfile.g_free(raw_b);
+    const uri_a = try arena.dupeZ(u8, std.mem.span(raw_a));
+    var driver: DrawerCountDriver = .{ .uri_b = try arena.dupeZ(u8, std.mem.span(raw_b)) };
+
+    gtk_port.installScript();
+    defer c.zb_automation_set_script(null, 0);
+    c.zb_app_set_agent_drawer(1);
+    defer c.zb_app_set_agent_drawer(0);
+    c.zb_automation_loop_mark(1);
+    var watchdog: Watchdog = .{};
+    const w = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, @as(u64, 60_000) });
+    defer {
+        watchdog.done.store(true, .release);
+        w.join();
+    }
+    const t = try std.Thread.spawn(.{}, DrawerCountDriver.run, .{&driver});
+    _ = c.zb_app_run(uri_a.ptr, 0, 0);
+    t.join();
+    try std.testing.expectEqual(@as(c_int, 2), driver.with_popup);
+    try std.testing.expectEqual(@as(c_int, 1), driver.after_close);
+    try std.testing.expectEqual(@as(c_int, 1), driver.after_close_during_load);
+    try std.testing.expect(driver.primary_alive);
+    try std.testing.expectEqual(@as(c_int, 0), c.zb_drawer_debug_live_count());
+    c.zb_automation_loop_mark(1);
+}
+
 const SelfCloseDriver = struct {
     uri_b: [:0]const u8,
     failures: u32 = 0,

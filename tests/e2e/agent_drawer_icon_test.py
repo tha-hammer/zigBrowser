@@ -32,184 +32,36 @@ these are hard requirements of a drawer slice."""
 
 from __future__ import annotations
 
-import argparse
-import ctypes.util
 import json
-import math
 import os
 import random
-import shutil
-import signal
 import subprocess
-import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[1]
-sys.path.insert(0, str(REPO / "sdk/python/src"))
+from agent_common import (
+    CLICK_GRID,
+    ENV,
+    ICON,
+    WIN_H,
+    WIN_W,
+    Browser,
+    Checks,
+    centre,
+    clamp_rect,
+    close_rect,
+    default_rect,
+    near,
+    rect_from_ratios,
+    run_main,
+)
+from zigbrowser.errors import ProtocolError
 
-from agent_common import Row, drawer_rows  # noqa: E402
-from slice2_common import isolate_profile_env, stop_browser  # noqa: E402
-from xinput import XInput  # noqa: E402
-from zigbrowser import ZigBrowser  # noqa: E402
-from zigbrowser.errors import ProtocolError  # noqa: E402
-
-ENV = "ZIGBROWSER_AGENT_DRAWER"
-FIXTURE = (REPO / "tests/fixtures/agent/click-grid.html").resolve().as_uri()
-ICON = 56
-MARGIN = 24
-WIN_W, WIN_H = 1024, 768
+FIXTURE = CLICK_GRID
 PAGE_RGB = (0x20, 0x60, 0xA0)
 ICON_RGB = (0xD9, 0x77, 0x57)
 GLYPH_RGB = (0xFF, 0xFF, 0xFF)
-
-
-# --- the expected geometry (mirrors src/agent_drawer.zig) -----------------
-def clamp_rect(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
-    return max(0, min(x, w - ICON)), max(0, min(y, h - ICON)), ICON, ICON
-
-
-def default_rect(w: int, h: int) -> tuple[int, int, int, int]:
-    return clamp_rect(w - MARGIN - ICON, h - MARGIN - ICON, w, h)
-
-
-def rect_from_ratios(rx: float, ry: float, w: int, h: int) -> tuple[int, int, int, int]:
-    return clamp_rect(math.floor(rx * w - ICON / 2 + 0.5), math.floor(ry * h - ICON / 2 + 0.5), w, h)
-
-
-def centre(r: tuple[int, int, int, int]) -> tuple[int, int]:
-    return r[0] + r[2] // 2, r[1] + r[3] // 2
-
-
-def close_rect(a, b, tol: int = 1) -> bool:
-    return a[2:] == b[2:] and abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
-
-
-class Browser:
-    """One zigBrowser on its own Xvfb, with its stdout/stderr collected."""
-
-    def __init__(self, binary: Path, tmp: Path, label: str, args: list[str], env_extra: dict[str, str] | None = None,
-                 profile: Path | None = None, automation: bool = True, env: dict[str, str] | None = None) -> None:
-        self.label = label
-        self.dir = Path(tempfile.mkdtemp(prefix="run-", dir=tmp))
-        self.display_file = self.dir / "display"
-        self.socket = self.dir / "automation.sock"
-        self.env = env if env is not None else isolate_profile_env(dict(os.environ))
-        for name in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "ZIGBROWSER_SOCKET", ENV):
-            self.env.pop(name, None)
-        self.env.update(env_extra or {})
-        self.env["ZIGBROWSER_SOCKET"] = str(self.socket)
-        cmd = [sys.executable, str(HERE / "xsession.py"), "--xvfb", "--display-file", str(self.display_file), "--",
-               str(binary.resolve()), FIXTURE, "--e2e-protocol"]
-        if automation:
-            cmd.append("--automation-api")
-        if profile is not None:
-            cmd += ["--profile-dir", str(profile)]
-        self.out: list[str] = []
-        self.err: list[str] = []
-        self.proc = subprocess.Popen(cmd + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                     env=self.env, cwd=self.dir)
-        threading.Thread(target=self._drain, args=(self.proc.stdout, self.out), daemon=True).start()
-        threading.Thread(target=self._drain, args=(self.proc.stderr, self.err), daemon=True).start()
-        self._x: XInput | None = None
-        self._zb: ZigBrowser | None = None
-
-    @staticmethod
-    def _drain(stream, sink: list[str]) -> None:
-        for line in stream:
-            sink.append(line.rstrip("\n"))
-
-    def rows(self, kind: str | None = None, win: int | None = None) -> list[Row]:
-        return [r for r in drawer_rows(list(self.out)) if (kind is None or r.kind == kind) and (win is None or r.win == win)]
-
-    def wait(self, predicate, timeout: float = 20.0) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            if self.proc.poll() is not None:
-                return bool(predicate())
-            time.sleep(0.05)
-        return bool(predicate())
-
-    def wait_row(self, kind: str, win: int = 1, count: int = 1, timeout: float = 20.0) -> Row | None:
-        if self.wait(lambda: len(self.rows(kind, win)) >= count, timeout):
-            return self.rows(kind, win)[count - 1]
-        return None
-
-    @property
-    def x(self) -> XInput:
-        if self._x is None:
-            if not self.wait(self.display_file.exists, 20):
-                raise RuntimeError(f"{self.label}: no display file (browser exit {self.proc.poll()})")
-            self._x = XInput.from_display_file(self.display_file)
-        return self._x
-
-    @property
-    def zb(self) -> ZigBrowser:
-        if self._zb is None:
-            if not self.wait(self.socket.exists, 20):
-                raise RuntimeError(f"{self.label}: no automation socket (browser exit {self.proc.poll()})")
-            self._zb = ZigBrowser(socket_path=str(self.socket))
-            self._zb.__enter__()
-        return self._zb
-
-    def ev(self, expression: str, window: str = "window-1"):
-        return self.zb.call("page.evaluate", {"expression": expression, "window_id": window})["result"]
-
-    def wait_page(self, window: str = "window-1") -> bool:
-        def ready() -> bool:
-            try:
-                return self.ev("window.__ready === true", window) is True
-            except Exception:  # noqa: BLE001 - still loading
-                return False
-        return self.wait(ready, 20)
-
-    def clicks(self) -> list[list[int]]:
-        return json.loads(self.ev("JSON.stringify(window.__clicks)"))
-
-    def open_popup(self) -> bool:
-        self.ev(f"(window.open({json.dumps(FIXTURE + '#popup')}), 1)")
-        return self.wait(lambda: len(self.zb.page.list()["pages"]) == 2, 15)
-
-    def stop(self) -> int | None:
-        if self._zb is not None:
-            try:
-                self._zb.__exit__(None, None, None)
-            except Exception:  # noqa: BLE001 - the browser may be gone
-                pass
-            self._zb = None
-        if self._x is not None:
-            self._x.close()
-            self._x = None
-        code = stop_browser(self.proc)
-        time.sleep(0.2)
-        return code
-
-    def tail(self) -> str:
-        return "stdout:\n" + "\n".join(self.out[-25:]) + "\nstderr:\n" + "\n".join(self.err[-25:])
-
-
-class Checks:
-    def __init__(self) -> None:
-        self.failures: list[str] = []
-        self.count = 0
-
-    def __call__(self, ok: bool, label: str, browser: Browser | None = None) -> bool:
-        self.count += 1
-        print(f"{'ok  ' if ok else 'FAIL'} {label}", flush=True)
-        if not ok:
-            self.failures.append(label)
-            if browser is not None:
-                print(browser.tail(), file=sys.stderr, flush=True)
-        return ok
-
-
-def near(rgb: tuple[int, int, int], want: tuple[int, int, int], tol: int = 24) -> bool:
-    return all(abs(a - b) <= tol for a, b in zip(rgb, want))
 
 
 # --- cases ------------------------------------------------------------------
@@ -267,6 +119,9 @@ def case_clicks(binary: Path, tmp: Path, check: Checks) -> None:
         # S1.5: the drawer adds no window and no method to the automation surface.
         pages = b.zb.page.list()["pages"]
         check(len(pages) == 1, f"clicks: page.list sees exactly the one browsing window ({len(pages)})", b)
+        health = b.zb.call("page.health", {})["pages"]
+        check(len(health) == 1 and health[0]["window_id"] == "window-1" and health[0]["responsive"] is True,
+              f"clicks: page.health sees exactly the one browsing window, responsive ({health})", b)
         for method in ("agent.ping", "drawer.open", "secrets.get"):
             try:
                 b.zb.call(method, {})
@@ -454,34 +309,8 @@ def case_keyboard(binary: Path, tmp: Path, check: Checks) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
-    parser.add_argument("--only", default="", help="comma-separated case names")
-    args = parser.parse_args()
-
-    binary = Path(args.binary)
-    missing = [name for name, ok in (("binary", binary.is_file()), ("Xvfb", shutil.which("Xvfb")),
-                                     ("xauth", shutil.which("xauth")), ("xwd", shutil.which("xwd")),
-                                     ("libXtst", ctypes.util.find_library("Xtst"))) if not ok]
-    if missing:
-        print(f"FAIL: missing hard requirements: {', '.join(missing)}", file=sys.stderr)
-        return 1
-
-    cases = {"off": case_off, "popup": case_popup_icons, "clicks": case_clicks, "drag": case_drag,
-             "keyboard": case_keyboard}
-    chosen = [c for c in args.only.split(",") if c] or list(cases)
-    check = Checks()
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
-    with tempfile.TemporaryDirectory(prefix="zb-agent-drawer-e2e-") as tmp_name:
-        for name in chosen:
-            try:
-                cases[name](binary, Path(tmp_name), check)
-            except Exception as exc:  # noqa: BLE001 - every failure reported the same way
-                check(False, f"{name}: error {exc!r}")
-    print(f"{check.count} checks, {len(check.failures)} failed", flush=True)
-    if check.count == 0:
-        return 1
-    return 1 if check.failures else 0
+    return run_main(__doc__, {"off": case_off, "popup": case_popup_icons, "clicks": case_clicks, "drag": case_drag,
+                               "keyboard": case_keyboard})
 
 
 if __name__ == "__main__":

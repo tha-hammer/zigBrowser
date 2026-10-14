@@ -620,6 +620,24 @@ pub fn build(b: *std.Build) void {
     });
     agent_drawer_icon_e2e.addArtifactArg(exe);
 
+    // Chat drawer S2: the drawer shell (layout, '-' minimize animation,
+    // keyboard, scrolling, Send with no agent) and threat test T1 (hostile
+    // pages cannot reach or cover it). Real X input; never skips to green.
+    const agent_drawer_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_drawer_test.py --binary \"$1\"",
+        "agent-drawer-e2e",
+    });
+    agent_drawer_e2e.addArtifactArg(exe);
+    const agent_isolation_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_isolation_test.py --binary \"$1\"",
+        "agent-isolation-e2e",
+    });
+    agent_isolation_e2e.addArtifactArg(exe);
+
     // zbHost: the IPC rows, and the page's own promise settling (chat drawer
     // S1.6), on a private Xvfb.
     const ipc_roundtrip_e2e = b.addSystemCommand(&.{
@@ -889,6 +907,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&slow_load_watchdog_e2e.step);
     test_step.dependOn(&media_source_e2e.step);
     test_step.dependOn(&agent_drawer_icon_e2e.step);
+    test_step.dependOn(&agent_drawer_e2e.step);
+    test_step.dependOn(&agent_isolation_e2e.step);
     test_step.dependOn(&ipc_roundtrip_e2e.step);
     test_step.dependOn(&page_health_e2e.step);
     test_step.dependOn(&page_recover_e2e.step);

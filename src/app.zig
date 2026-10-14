@@ -47,7 +47,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     const profile_dir = try applyProfileDir(arena, spec);
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
-    if (webkit.applyAgentDrawer(spec.agent_drawer)) agent_drawer.configure(io, arena, profile_dir);
+    if (webkit.applyAgentDrawer(spec.agent_drawer)) {
+        agent_drawer.configure(io, arena, profile_dir, getenvOwned(arena, agent_drawer.demo_env_name), spec.e2e_protocol);
+    }
 
     if (spec.automation_api) {
         // automation.js must be registered before zb_app_run builds the window.

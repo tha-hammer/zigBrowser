@@ -9,7 +9,9 @@ xsession.py's two lines. Events go through the X server (libXtst's
 XTestFake*), so GTK receives them the way it receives a person's hand: not
 through zigBrowser's automation, and not through GDK synthesis.
 
-`screen()` reads the root window with `xwd` (an XWD dump, parsed here)."""
+`screen()` reads the root window with `xwd` (an XWD dump, parsed here).
+`Clipboard` owns the private display's CLIPBOARD selection, so a test can
+paste real text (Ctrl+V) the way a person would."""
 
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import os
 import re
 import struct
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -127,6 +130,15 @@ class XInput:
         self.button(True, button)
         time.sleep(settle)
         self.button(False, button)
+        time.sleep(settle)
+
+    def wheel(self, x: int, y: int, up: bool, notches: int = 1, settle: float = 0.05) -> None:
+        """Mouse-wheel notches at (x, y): X buttons 4 (up) and 5 (down)."""
+        self.move(x, y)
+        for _ in range(notches):
+            time.sleep(settle)
+            self.button(True, 4 if up else 5)
+            self.button(False, 4 if up else 5)
         time.sleep(settle)
 
     def drag(self, x0: int, y0: int, x1: int, y1: int, steps: int = 12, settle: float = 0.02) -> None:
@@ -240,3 +252,97 @@ class Capture:
             shift = (mask & -mask).bit_length() - 1
             out.append((value & mask) >> shift)
         return out[0], out[1], out[2]
+
+
+class _SelectionRequest(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p), ("owner", ctypes.c_ulong), ("requestor", ctypes.c_ulong),
+                ("selection", ctypes.c_ulong), ("target", ctypes.c_ulong), ("property", ctypes.c_ulong),
+                ("time", ctypes.c_ulong)]
+
+
+class _SelectionNotify(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p), ("requestor", ctypes.c_ulong), ("selection", ctypes.c_ulong),
+                ("target", ctypes.c_ulong), ("property", ctypes.c_ulong), ("time", ctypes.c_ulong)]
+
+
+class Clipboard:
+    """Owns CLIPBOARD on the private display (its own connection and thread)
+    and answers TARGETS, UTF8_STRING and STRING requests with `text`.
+
+        with Clipboard(xi, text):
+            xi.key("v", ("Control_L",))
+    """
+
+    SELECTION_CLEAR, SELECTION_REQUEST, SELECTION_NOTIFY = 29, 30, 31
+
+    def __init__(self, owner: XInput, text: str) -> None:
+        self._data = text.encode("utf-8")
+        self._x = owner._x
+        x = self._x
+        x.XInternAtom.restype = ctypes.c_ulong
+        x.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        x.XCreateSimpleWindow.restype = ctypes.c_ulong
+        x.XCreateSimpleWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+                                          ctypes.c_uint, ctypes.c_uint, ctypes.c_ulong, ctypes.c_ulong]
+        x.XSetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        x.XGetSelectionOwner.restype = ctypes.c_ulong
+        x.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x.XPending.argtypes = [ctypes.c_void_p]
+        x.XNextEvent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        x.XChangeProperty.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int,
+                                      ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        x.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
+        x.XDestroyWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self._conn = XInput(owner.display_name, owner.xauth)
+        dpy = self._conn._dpy
+        atom = lambda name: x.XInternAtom(dpy, name.encode(), 0)  # noqa: E731
+        self._clipboard, self._targets = atom("CLIPBOARD"), atom("TARGETS")
+        self._utf8, self._string, self._atom = atom("UTF8_STRING"), 31, 4
+        root = x.XDefaultRootWindow(dpy)
+        self._window = x.XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0)
+        x.XSetSelectionOwner(dpy, self._clipboard, self._window, 0)
+        x.XSync(dpy, 0)
+        if x.XGetSelectionOwner(dpy, self._clipboard) != self._window:
+            raise XInputError("could not own CLIPBOARD")
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        x, dpy = self._x, self._conn._dpy
+        event = ctypes.create_string_buffer(192)
+        while not self._stop.is_set():
+            if not x.XPending(dpy):
+                time.sleep(0.01)
+                continue
+            x.XNextEvent(dpy, event)
+            kind = ctypes.c_int.from_buffer(event).value
+            if kind != self.SELECTION_REQUEST:
+                continue
+            req = _SelectionRequest.from_buffer_copy(event.raw[:ctypes.sizeof(_SelectionRequest)])
+            prop = req.property or req.target
+            if req.target == self._targets:
+                atoms = (ctypes.c_ulong * 3)(self._targets, self._utf8, self._string)
+                x.XChangeProperty(dpy, req.requestor, prop, self._atom, 32, 0, atoms, 3)
+            elif req.target in (self._utf8, self._string):
+                x.XChangeProperty(dpy, req.requestor, prop, req.target, 8, 0, self._data, len(self._data))
+            else:
+                prop = 0
+            reply = _SelectionNotify(type=self.SELECTION_NOTIFY, send_event=1, display=dpy, requestor=req.requestor,
+                                     selection=req.selection, target=req.target, property=prop, time=req.time)
+            x.XSendEvent(dpy, req.requestor, 0, 0, ctypes.byref(reply))
+            x.XFlush(dpy)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+        self._x.XDestroyWindow(self._conn._dpy, self._window)
+        self._conn.close()
+
+    def __enter__(self) -> "Clipboard":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()

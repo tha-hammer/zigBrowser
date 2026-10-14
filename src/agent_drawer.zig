@@ -81,6 +81,56 @@ pub fn drawerRect(width: c_int, height: c_int) Rect {
     return .{ .x = 0, .y = height - tall, .w = width, .h = tall };
 }
 
+/// The minimize animation (D5): `t` in [0,1] from `a` to `b`, each edge
+/// rounded to the nearest pixel.
+pub fn lerpRect(a: Rect, b: Rect, t: f64) Rect {
+    const u = std.math.clamp(t, 0, 1);
+    return .{ .x = lerp(a.x, b.x, u), .y = lerp(a.y, b.y, u), .w = lerp(a.w, b.w, u), .h = lerp(a.h, b.h, u) };
+}
+
+fn lerp(a: c_int, b: c_int, t: f64) c_int {
+    const fa: f64 = @floatFromInt(a);
+    const fb: f64 = @floatFromInt(b);
+    return @intFromFloat(@floor(fa + (fb - fa) * t + 0.5));
+}
+
+/// Ease-out over [0,1] (cubic): fast start, gentle stop.
+pub fn ease(t: f64) f64 {
+    const u = 1 - std.math.clamp(t, 0, 1);
+    return 1 - u * u * u;
+}
+
+pub const anim_ms: i64 = 180;
+
+/// The e2e-only seed `ZIGBROWSER_AGENT_DRAWER_DEMO` (plan section 7):
+/// exactly `messages:<n>` with 1 <= n <= 5000; anything else is null.
+pub fn parseDemo(text: []const u8) ?u32 {
+    const prefix = "messages:";
+    if (!std.mem.startsWith(u8, text, prefix)) return null;
+    const digits = text[prefix.len..];
+    if (digits.len == 0 or digits.len > 4) return null;
+    for (digits) |ch| if (!std.ascii.isDigit(ch)) return null;
+    const n = std.fmt.parseInt(u32, digits, 10) catch return null;
+    return if (n >= 1 and n <= max_demo_messages) n else null;
+}
+
+pub const demo_env_name = "ZIGBROWSER_AGENT_DRAWER_DEMO";
+pub const max_demo_messages: u32 = 5000;
+
+/// A DRAWER row's text field holds at most this many bytes, then "…".
+pub const row_text_max: usize = 4096;
+
+/// How many bytes of `text` a row keeps: all of it up to `row_text_max`,
+/// else the longest prefix that ends on a UTF-8 character boundary.
+pub fn rowTextLen(text: []const u8) usize {
+    if (text.len <= row_text_max) return text.len;
+    var end = row_text_max;
+    // Back up over continuation bytes (10xxxxxx) to the start of the
+    // character the cut would split.
+    while (end > 0 and (text[end] & 0xC0) == 0x80) end -= 1;
+    return end;
+}
+
 pub const file_name = "agent-drawer.json";
 pub const max_file_bytes: usize = 1024;
 pub const version: u32 = 1;
@@ -124,15 +174,27 @@ const Store = struct {
     io: ?std.Io = null,
     path: ?[]const u8 = null,
     last: ?Ratios = null,
+    /// The e2e-only seed: system messages each new drawer starts with.
+    demo_messages: u32 = 0,
 };
 var store: Store = .{};
 
 /// Startup: where agent-drawer.json lives (`profile_dir` null: nowhere,
 /// nothing is persisted), and the position it holds. A corrupt file means
 /// the default, and stderr says so. `gpa` must outlive the process's
-/// windows (the path is kept).
-pub fn configure(io: std.Io, gpa: std.mem.Allocator, profile_dir: ?[]const u8) void {
+/// windows (the path is kept). `demo`: ZIGBROWSER_AGENT_DRAWER_DEMO's
+/// value, honoured only with `e2e_protocol` (plan section 7).
+pub fn configure(io: std.Io, gpa: std.mem.Allocator, profile_dir: ?[]const u8, demo: ?[]const u8, e2e_protocol: bool) void {
     store = .{ .io = io };
+    if (demo) |text| {
+        if (!e2e_protocol) {
+            std.debug.print("zigBrowser: {s} ignored without --e2e-protocol\n", .{demo_env_name});
+        } else if (parseDemo(text)) |n| {
+            store.demo_messages = n;
+        } else {
+            std.debug.print("zigBrowser: {s}={s} ignored\n", .{ demo_env_name, text });
+        }
+    }
     const dir = profile_dir orelse return;
     const path = std.fs.path.join(gpa, &.{ dir, file_name }) catch return;
     store.path = path;
@@ -157,6 +219,10 @@ comptime {
         @export(&zb_drawer_panel_rect, .{ .name = "zb_drawer_panel_rect" });
         @export(&zb_drawer_start_ratios, .{ .name = "zb_drawer_start_ratios" });
         @export(&zb_drawer_remember, .{ .name = "zb_drawer_remember" });
+        @export(&zb_drawer_lerp, .{ .name = "zb_drawer_lerp" });
+        @export(&zb_drawer_ease, .{ .name = "zb_drawer_ease" });
+        @export(&zb_drawer_row_text_len, .{ .name = "zb_drawer_row_text_len" });
+        @export(&zb_drawer_demo_messages, .{ .name = "zb_drawer_demo_messages" });
     }
 }
 
@@ -197,4 +263,21 @@ fn zb_drawer_remember(ratios: *const Ratios) callconv(.c) void {
     const io = store.io orelse return;
     const path = store.path orelse return;
     save(io, path, ratios.*) catch |err| std.debug.print("zigBrowser: {s} not saved: {s}\n", .{ file_name, @errorName(err) });
+}
+
+fn zb_drawer_lerp(a: *const Rect, b: *const Rect, t: f64, out: *Rect) callconv(.c) void {
+    out.* = lerpRect(a.*, b.*, t);
+}
+
+fn zb_drawer_ease(t: f64) callconv(.c) f64 {
+    return ease(t);
+}
+
+fn zb_drawer_row_text_len(text: [*]const u8, len: usize) callconv(.c) usize {
+    return rowTextLen(text[0..len]);
+}
+
+/// How many seeded system messages a new drawer starts with (0: none).
+fn zb_drawer_demo_messages() callconv(.c) c_uint {
+    return store.demo_messages;
 }

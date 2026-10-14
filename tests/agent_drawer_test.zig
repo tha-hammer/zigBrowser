@@ -180,3 +180,117 @@ test "property (roundtrip): load(save(p)) == p for every ratio pair in [0,1]^2" 
         try std.testing.expectEqual(p, drawer.load(io, gpa, d.path).ok);
     }
 }
+
+// --- S2: the minimize animation, the demo seed, row text --------------------
+
+fn between(v: c_int, a: c_int, b: c_int) bool {
+    return v >= @min(a, b) and v <= @max(a, b);
+}
+
+fn area(r: Rect) i64 {
+    return @as(i64, r.w) * @as(i64, r.h);
+}
+
+test "lerpRect: t=0 is the start, t=1 the end, halfway is the midpoint" {
+    const a = Rect{ .x = 0, .y = 461, .w = 1024, .h = 307 };
+    const b = Rect{ .x = 944, .y = 688, .w = 56, .h = 56 };
+    try std.testing.expectEqual(a, drawer.lerpRect(a, b, 0));
+    try std.testing.expectEqual(b, drawer.lerpRect(a, b, 1));
+    try std.testing.expectEqual(Rect{ .x = 472, .y = 575, .w = 540, .h = 182 }, drawer.lerpRect(a, b, 0.5));
+}
+
+test "ease: 0 -> 0, 1 -> 1, an ease-out (ahead of linear inside)" {
+    try std.testing.expectEqual(@as(f64, 0), drawer.ease(0));
+    try std.testing.expectEqual(@as(f64, 1), drawer.ease(1));
+    try std.testing.expect(drawer.ease(0.5) > 0.5);
+    try std.testing.expectEqual(@as(f64, 0), drawer.ease(-1));
+    try std.testing.expectEqual(@as(f64, 1), drawer.ease(2));
+}
+
+test "property (invariant): every lerpRect component lies between the ends for t in [0,1]" {
+    var prng = std.Random.DefaultPrng.init(0xD1A3_0004);
+    const random = prng.random();
+    var i: usize = 0;
+    while (i < 10_000) : (i += 1) {
+        const a = Rect{ .x = random.intRangeAtMost(c_int, -2000, 4000), .y = random.intRangeAtMost(c_int, -2000, 4000), .w = random.intRangeAtMost(c_int, 0, 4000), .h = random.intRangeAtMost(c_int, 0, 4000) };
+        const b = Rect{ .x = random.intRangeAtMost(c_int, -2000, 4000), .y = random.intRangeAtMost(c_int, -2000, 4000), .w = random.intRangeAtMost(c_int, 0, 4000), .h = random.intRangeAtMost(c_int, 0, 4000) };
+        const r = drawer.lerpRect(a, b, random.float(f64));
+        try std.testing.expect(between(r.x, a.x, b.x) and between(r.y, a.y, b.y) and between(r.w, a.w, b.w) and between(r.h, a.h, b.h));
+    }
+}
+
+test "property (metamorphic): shrinking to a rect no larger each way, the area never grows as t grows" {
+    // Domain: b.w <= a.w and b.h <= a.h (the drawer folding into the icon).
+    // With only area(b) <= area(a), a tall-thin -> wide-flat pair grows
+    // in the middle, so the plan's wider statement does not hold.
+    var prng = std.Random.DefaultPrng.init(0xD1A3_0005);
+    const random = prng.random();
+    var i: usize = 0;
+    while (i < 2_000) : (i += 1) {
+        const a = Rect{ .x = random.intRangeAtMost(c_int, 0, 2000), .y = random.intRangeAtMost(c_int, 0, 2000), .w = random.intRangeAtMost(c_int, 1, 4000), .h = random.intRangeAtMost(c_int, 1, 4000) };
+        const b = Rect{ .x = random.intRangeAtMost(c_int, 0, 2000), .y = random.intRangeAtMost(c_int, 0, 2000), .w = random.intRangeAtMost(c_int, 0, a.w), .h = random.intRangeAtMost(c_int, 0, a.h) };
+        var previous = area(a);
+        var step: usize = 1;
+        while (step <= 50) : (step += 1) {
+            const now = area(drawer.lerpRect(a, b, drawer.ease(@as(f64, @floatFromInt(step)) / 50)));
+            try std.testing.expect(now <= previous);
+            previous = now;
+        }
+    }
+}
+
+test "property (invariant): ease is monotone on [0,1] (10k seeded samples)" {
+    var prng = std.Random.DefaultPrng.init(0xD1A3_0006);
+    const random = prng.random();
+    var i: usize = 0;
+    while (i < 10_000) : (i += 1) {
+        const p = random.float(f64);
+        const q = random.float(f64);
+        const lo = @min(p, q);
+        const hi = @max(p, q);
+        try std.testing.expect(drawer.ease(lo) <= drawer.ease(hi));
+        try std.testing.expect(drawer.ease(lo) >= 0 and drawer.ease(hi) <= 1);
+    }
+}
+
+test "the demo seed is exactly messages:<1..5000>" {
+    try std.testing.expectEqual(@as(?u32, 200), drawer.parseDemo("messages:200"));
+    try std.testing.expectEqual(@as(?u32, 1), drawer.parseDemo("messages:1"));
+    try std.testing.expectEqual(@as(?u32, 5000), drawer.parseDemo("messages:5000"));
+    for ([_][]const u8{ "", "messages:", "messages:0", "messages:5001", "messages:-1", "messages:2x", "messages: 2", "message:2", "MESSAGES:2", "messages:200 " }) |text| {
+        try std.testing.expectEqual(@as(?u32, null), drawer.parseDemo(text));
+    }
+}
+
+test "row text keeps everything up to 4 KiB, else the longest prefix ending on a character" {
+    try std.testing.expectEqual(@as(usize, 5), drawer.rowTextLen("hello"));
+    const exact = "a" ** 4096;
+    try std.testing.expectEqual(@as(usize, 4096), drawer.rowTextLen(exact));
+    try std.testing.expectEqual(@as(usize, 4096), drawer.rowTextLen(exact ++ "b"));
+    // "é" is 2 bytes: a cut at 4096 would split the one starting at 4095.
+    const split = "a" ** 4095 ++ "\u{e9}" ++ "z";
+    try std.testing.expectEqual(@as(usize, 4095), drawer.rowTextLen(split));
+}
+
+test "property (invariant): the kept prefix is valid UTF-8, at most 4 KiB, and all of short text" {
+    var prng = std.Random.DefaultPrng.init(0xD1A3_0007);
+    const random = prng.random();
+    const pieces = [_][]const u8{ "a", "\u{e9}", "\u{2193}", "\u{1f600}", " ", "\n" };
+    var buf: [6000]u8 = undefined;
+    var i: usize = 0;
+    while (i < 2_000) : (i += 1) {
+        var len: usize = 0;
+        const target = random.uintAtMost(usize, 5990);
+        while (len < target) {
+            const piece = pieces[random.uintLessThan(usize, pieces.len)];
+            @memcpy(buf[len..][0..piece.len], piece);
+            len += piece.len;
+        }
+        const text = buf[0..len];
+        const kept = drawer.rowTextLen(text);
+        try std.testing.expect(kept <= drawer.row_text_max);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(text[0..kept]));
+        if (text.len <= drawer.row_text_max) try std.testing.expectEqual(text.len, kept);
+        if (text.len > drawer.row_text_max) try std.testing.expect(kept > drawer.row_text_max - 4);
+    }
+}

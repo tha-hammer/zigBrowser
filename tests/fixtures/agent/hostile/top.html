@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>hostile top</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #2060a0; }
+      /* A page trying to cover everything, the drawer included. */
+      #cover { position: fixed; inset: 0; z-index: 2147483647; background: rgba(255, 0, 0, 0.01); }
+      iframe { width: 200px; height: 100px; border: 0; }
+    </style>
+  </head>
+  <body>
+    <iframe id="same"></iframe>
+    <iframe id="cross"></iframe>
+    <div id="cover"></div>
+    <script>
+      // ?cross=<origin>: where the cross-origin frame comes from.
+      window.__overlay_clicks = 0;
+      document.getElementById("cover").addEventListener("mousedown", () => { window.__overlay_clicks++; }, true);
+      window.__frames = {};
+      window.addEventListener("message", (e) => {
+        if (e.data && e.data.zbProbe) window.__frames[e.origin === location.origin ? "same" : "cross"] = e.data.result;
+      });
+      const cross = new URLSearchParams(location.search).get("cross");
+      document.getElementById("same").src = "frame.html";
+      if (cross) document.getElementById("cross").src = cross + "/frame.html";
+      window.__ready = true;
+    </script>
+    <script src="probe.js"></script>
+  </body>
+</html>
