@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Built so far (rev 15.2): P0 approved (e9b0cbf, 77cbe96, de871e2; review fa0aa48); S1 at 2e467c4 (approved e29d25b) and S2 at aca3e33 plus 38e30e5 (approved 5678ab5), both reopened by the blank window on the user's NVIDIA screen (§7.1); S3a at abbf0ea plus its rev-15.2 follow-up (in review); S3b, S3c and S4 onward are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; rev 15 aligns S3.9 and R12-C with D11's exec-in-place topology (review log 5e54b07); rev 15.1 (docs, mail 5316) gives S3 the read-only token-file loader, moves S3.11's `get_text` continuation to S7.6, splits S3 into three gated parts and records S3a's as-built runtime; rev 15.2 (docs, RoseCat's S3a findings 5328-5331) owns the production runtime, closes the spawn parent-death race, and tightens the setup path rules; rev 15.3 (docs, RoseCat 5338 and 5340-5342, and the user's blank-window report) removes the stale venv line, sets S3's commit point, first-install repair, slash-command grammar and dot-segment rule, and adds the real-hardware check for UI slices (§7.1), which reopens S1 and S2 until the blank-window fix passes it; see section 3b
+status: plan for review. Built so far (rev 15.2): P0 approved (e9b0cbf, 77cbe96, de871e2; review fa0aa48); S1 at 2e467c4 (approved e29d25b) and S2 at aca3e33 plus 38e30e5 (approved 5678ab5), both reopened by the blank window on the user's NVIDIA screen (§7.1); S3a at abbf0ea plus its rev-15.2 follow-up (in review); S3b, S3c and S4 onward are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; rev 15 aligns S3.9 and R12-C with D11's exec-in-place topology (review log 5e54b07); rev 15.1 (docs, mail 5316) gives S3 the read-only token-file loader, moves S3.11's `get_text` continuation to S7.6, splits S3 into three gated parts and records S3a's as-built runtime; rev 15.2 (docs, RoseCat's S3a findings 5328-5331) owns the production runtime, closes the spawn parent-death race, and tightens the setup path rules; rev 16 (docs, the user's sandbox decisions on the red-team report 86ddf01) adds §3c: the outer bwrap's own netns, the host proxy and two bridges, the per-hook seccomp filter, setup's own sandboxed executions, and R3's removal; rev 15.3 (docs, RoseCat 5338 and 5340-5342, and the user's blank-window report) removes the stale venv line, sets S3's commit point, first-install repair, slash-command grammar and dot-segment rule, and adds the real-hardware check for UI slices (§7.1), which reopens S1 and S2 until the blank-window fix passes it; see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -28,15 +28,15 @@ inputs:
    - (a) a claude.ai login run by the app, with the callback captured and checked against the expected origin and `state` nonce;
    - (b) a long-lived token the user creates (`claude setup-token`) and pastes;
    - (c) a dedicated privileged **Secrets window**, unreachable from sites and from the automation socket.
-   - The secret is stored by the app and handed only to the Claude subprocess environment. It never reaches the model, prompts, tool results, transcripts, logs, other pages' DOM, or an agent's context.
+   - The secret is stored by the app and handed only to the Claude CLI, on fd 3 (rev 16, §3c: FIFO → socketpair → fd 3, never an environment). It never reaches the model, prompts, tool results, transcripts, logs, other pages' DOM, or an agent's context.
 2. **Helper language: Python** (`claude-agent-sdk`).
 
 ### 0.2b User answers to the plan's open items (2026-10-13, rev 2)
 
 1. **`--agent-drawer` default switches to ON after S5.** Before S8, act-on-page tools must not exist at all. So "on" after S5 means chat only, then chat plus read-only tools (S7).
 2. **"All hooks on."** Every SAI hook is copied into the agent home and resolves inside it, because HOME is the agent home. A hook path that still resolves outside it is rejected.
-   - The token is still kept away from hooks. The env route is **not** used if any non-env route works.
-   - If env is the only working route, every copied hook command is wrapped as `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN <cmd>`. *(Rev 6 implements this intent more strongly: on every route, `zb-hook-run` builds each hook's environment from an allowlist before bwrap starts, so neither the hook nor its namespace PID 1 ever holds the token; see D12.)*
+   - The token is still kept away from hooks. **Rev 16 (§3c.1): the env route is removed;** the token reaches the CLI only on fd 3.
+   - *(History, superseded by rev 16:)* If env is the only working route, every copied hook command is wrapped as `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN <cmd>`. *(Rev 6 implements this intent more strongly: on every route, `zb-hook-run` builds each hook's environment from an allowlist before bwrap starts, so neither the hook nor its namespace PID 1 ever holds the token; see D12.)*
    - A failing-first test proves that a canary token is absent from every hook process environment, while every hook still runs. Hooks that talk to localhost services (for example the voice notify server on :51091) keep working.
 3. **Scratchpad:** free writes in `scratchpad/`, and approval required in `workspace/` (as planned).
 4. **The drawer docks at the bottom: the page is laid out above it while it is open** (D2). The user first chose a drawer floating over the page. On 2026-10-14, after testing the NVIDIA fix `60ce3b6` on their screen, they chose to keep it docked (rev 15.3g).
@@ -336,7 +336,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
   - `setting_sources=["user"]`, `cwd=workspace`, `permission_mode="default"`;
   - `tools=[]` until S10, then file tools only;
   - `mcp_servers={"zigbrowser": <in-process server>}`;
-  - the token delivered by the route `--agent-setup` selected on the installed CLI (D11: R1 fd by default; R3 env only on explicit opt-in);
+  - the token delivered by R1, which `--agent-setup` probed on the installed CLI (D11; rev 16 removed R3: fd 3 only);
   - `include_partial_messages=True`;
   - **the in-process tool budget (rev 12, finding 5):** `MCP_TOOL_TIMEOUT=130000` (ms) in the CLI's environment, because the CLI enforces that limit on in-process MCP tools too (its default is 10^8 ms). The helper answers every `tool_call` it has not resolved within **120 s** with an `is_error` "tool timed out", so the CLI never reaches its own limit. These two values are fixed production constants (`agent/host/zb_agent_host/options.py`). The P0.3 contract runs a scaled pair with the same 10 s margin, so the gate stays bounded;
   - `can_use_tool` that denies everything: no built-in tool is registered (`tools=[]`), and all file access goes through the app-owned `fs_*` MCP tools (D12, S10).
@@ -399,7 +399,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 
 | type | fields (exact; unknown fields reject) |
 |---|---|
-| `hello` | `agent_home`, `workspace`, `scratchpad` (absolute paths inside the sandbox), `route` (`R1`\|`R3`), `e2e` (object or null; only the section 7 e2e-only seams) |
+| `hello` | `agent_home`, `workspace`, `scratchpad` (absolute paths inside the sandbox), `route` (`R1`; rev 16 removed `R3`, and a legacy `R3` refuses), `e2e` (object or null; only the section 7 e2e-only seams) |
 | `open_session` | `session` (`s-<win>-<k>`), `window_id` (`window-<n>`) |
 | `prompt` | `session`, `text` (≤ 64 KiB UTF-8) |
 | `interrupt` | `session` |
@@ -555,13 +555,13 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
   - A wrapper is needed because the Python SDK starts the CLI with `close_fds`.
   - Under R1, no process environment holds the token, and a hook inherits no descriptor at all (`zb-hook-run` closes every descriptor ≥ 3).
 - **R2 is removed** (rev 4, blocker 2). A credentials file inside the agent's `CLAUDE_CONFIG_DIR` would be readable by every hook, which contradicts A4 and the Secrets-window boundary.
-- **R3 — env, explicit opt-in only.** It is used only when `--agent-setup --agent-token-route env` was given. Setup prints the risk: any process in the sandbox, hooks included, can read the CLI's `/proc/<pid>/environ` as the same user.
+- **R3 — removed in rev 16 (§3c.1).** The text below is history. `--agent-token-route env` and a legacy `"route": "R3"` now refuse with exit 2. *(History:)* It was used only when `--agent-setup --agent-token-route env` was given. Setup prints the risk: any process in the sandbox, hooks included, can read the CLI's `/proc/<pid>/environ` as the same user.
   - The token goes through the SDK `env` option. Every hook still starts through `zb-hook-run`, which passes bwrap a **fresh environment built only from the hook-environment allowlist** (D12; rev 6). bwrap's namespace PID 1, the hook and every hook descendant therefore never receive the token. `zb-hook-run`'s own pre-exec process sits in the outer namespace, which the hook cannot see.
 
 **Route selection happens on the installed CLI, never from a build-host artifact** (rev 4, blocker 5).
 - `--agent-setup` runs the R1 probe against the **installed** bundled CLI: a one-shot loopback probe server inside the setup process, a random probe token through the real wrapper, FIFO and socket handoff, then a check that the probe server received `Authorization: Bearer <probe>` and that `/proc/<cli>/environ` lacks it.
 - It writes `agent-home/runtime/token-route.json` = `{route, cli_path, cli_version, probed_at}`.
-- If R1 fails and no explicit `--agent-token-route env` was given, setup **exits 2** with `zigBrowser: agent-setup: no safe token route for this Claude CLI`, and the agent stays unavailable.
+- If R1 fails, setup **exits 2** (rev 16: there is no env alternative) with `zigBrowser: agent-setup: no safe token route for this Claude CLI`, and the agent stays unavailable.
 - At each helper start, the CLI's `--version` is compared with `cli_version`. A mismatch gives "Claude CLI changed: run zigBrowser --agent-setup again", and nothing is spawned.
 - P0's contracts are developer evidence only.
 
@@ -653,7 +653,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
     - Inside, the hook sees the same files as the outer view (workspace read-only, `.claude` read-only apart from the state directories, scratchpad writable), but its own PID namespace and `/proc`.
   - File operations follow the single routing table below (rev 6, blocker 3). No process inside the sandbox can write the workspace.
   - The user's home, the profile, `XDG_RUNTIME_DIR` and `/run/user` are not mounted.
-  - It uses `--unshare-pid`, `--die-with-parent` and `--new-session`. The network is shared, because HTTPS to the API is needed. That also keeps localhost hooks working, such as the voice notify server on :51091 (user answer 2).
+  - It uses `--unshare-pid`, `--die-with-parent`, `--new-session` and, from rev 16, **`--unshare-net`** (§3c). Egress goes only through the host proxy (`api.anthropic.com:443`), and localhost hooks reach only the two named bridges, `:51091` and `:31337`. The earlier shared network is superseded.
   - The hook command directories from `runtime/path.json` (for example `bun`'s) are bound read-only, so every copied hook still runs inside the sandbox.
 - There is no unsandboxed mode. If bwrap fails, the drawer shows "Agent sandbox unavailable" and does **not** fall back.
 - **File tools are app-owned MCP tools, not the SDK's built-in Read/Write/Edit (rev 3, blocker 3).** Built-in tools stay `tools=[]` for the whole plan.
@@ -775,6 +775,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
+| R16 | The user's sandbox decisions (red-team report 86ddf01) and RoseCat 5418-5447, BlueBeaver 5417/5420/5422 | §3c: `--unshare-net`, netd plus relay over a pathname-socket directory, exact allowlist `api.anthropic.com:443`, bridges 51091/31337, the fake API through the real proxy path, the per-hook seccomp filter and its descriptor order, setup's probe and `--version` sandboxed, R3 removed everywhere, X0 in a disposable parent netns (fails rather than skips), slices S3n1 (BlueBeaver), S3n2 and S3b (BlackRobin). | §0.2, D7b, D11, D12, §3c, S3, S4 |
 | R15.6 | The user's decision on the path rule (2026-10-14): (a) "check only run paths", then, measured on the real SAI, "hook commands only" | Only hook command lines refuse setup; copied text gets the HOME rewrite; dependency trees are copied byte for byte; links outside their item are skipped (a hook naming one refuses). The strict scan, slash grammar, collision and dot-segment rules are gone. The real SAI provisions. | D6, S3, S3.1 |
 | R15.5 | RoseCat 5390 (six docs gaps in rev 15.4) and 5386 | Exact state placement (`state/.claude.json` and `backups/` read-only, `STATE_DIRS` writable, all outside every build); the durable publish order with an fsync of `root` before and after the swap; fd-relative, no-follow garbage rules that refuse anything malformed; fixed links made one at a time; D6's tree; section 6 item 4 says docked. | D6, §6, S3 |
 | R15.4 | The orchestrator's simplification of S3a (the journal was in its fifth round) | Setup builds `dist-<n>` complete and publishes it with one symlink swap of `current`; `.claude` and `runtime` are fixed links into `current`; state lives outside every build and setup only creates it when absent. The commit point, first-install repair, journal, reconciler and `renameat2` are gone; the kill seam has two cuts. | S3, §7 |
@@ -782,6 +783,161 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 | R15.3c | The NVIDIA blank window (f72e63d, the orchestrator's matrix) | D1's GtkOverlay becomes a windowless host that paints its floats into the page's window; new row `DRAWER windows`; §7.1 records the cause, the red, the mutants and the `drawer-open` real-screen case. | D1, D7b, §7.1 |
 | R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. Rev 15.3d (RoseCat 5357): each pause step's side of its mutation and its on-disk state; a write-ahead journal makes a killed re-provision recoverable. Rev 15.3e (RoseCat 5373): two kill points per mutation, a journal of intents with inode identity reconciled from the disk, and the fsync order. Rev 15.4 (the orchestrator): all of that is replaced by a layout where setup publishes a complete build with one symlink swap and never touches state. Rev 15.3b (RoseCat 5347, 5350, 5352): slash names may not shadow a root path; an install-step pause seam separate from the parent-death seam; setup's descendants die with the browser through bwrap's PID namespace; the real-screen script judges the screen pixels and strips shell render overrides. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
+
+## 3c. Rev 16: the network boundary, hook hardening, and the token route (user decisions 2026-10-14)
+
+**Sources.**
+- The user's decision on the red-team report: `thoughts/searchable/shared/research/2026-10-14-agent-sandbox-redteam.md` (86ddf01, wording corrected in 9ca44c9). Its status line reads "the user decided on it 2026-10-14 (bwrap with its own netns, proxy, two bridges)".
+- The token decision, as RoseCat quotes it (mail 5423): "FIFO -> socketpair fd 3 into the CLI, never env".
+- RoseCat's pre-review mails 5418, 5419, 5421, 5423, 5424, 5440 and 5447.
+- BlueBeaver's slice proposal and its acceptance: 5417, 5420, 5422.
+
+This section **overrides** every earlier section where they disagree; the consistency edits below point here.
+
+### 3c.1 The decisions
+
+1. **The sandbox stays OS-native (bwrap) and is hardened.** It is never Docker-based, and a VM is not used on Linux now.
+2. **The outer bwrap gets its own network namespace (`--unshare-net`).**
+   - Egress goes only through a host-side HTTP CONNECT proxy, reached as a Unix socket bound into the sandbox.
+   - The allowlist is **exactly** `api.anthropic.com:443`. Another endpoint is admitted only by a recorded P0 network census of the bundled CLI over this same proxy path; there is no "common Claude domains" list (5440.4).
+3. **Two named localhost bridges:** the sandbox's `127.0.0.1:51091` (voice) and `127.0.0.1:31337` reach the host's `127.0.0.1` ports of the same number, and nothing else. Other localhost hooks are off in the drawer.
+4. **A stricter seccomp filter inside each hook** (3c.6). The outer filter is unchanged.
+5. **The token reaches the CLI only as FIFO → `socketpair` → fd 3, never through an environment.**
+   - **R3 is removed:** the `--agent-token-route env` flag, the `R3` route value, and every R3 assertion. A legacy `token-route.json` with `"route": "R3"`, or the flag itself, refuses with exit 2.
+   - The token-outside-the-sandbox proxy (a placeholder token, with the host proxy swapping the header) is **not** adopted. It is a later spike: undocumented, unverified, and with usage-policy questions (report §"Cross-cutting finding").
+6. **The SAI path rule** is S3's rev 15.6 rule. The report's "(a) with the transitive import graph" is superseded by the user's later, direct answer, "Hook commands only", given with the real-SAI measurements. The wording question with the orchestrator stays open there (RoseCat 5444).
+
+### 3c.2 Topology and lifecycle (5418.1, 5419.2, 5440.3; BlueBeaver 5417, 5420)
+
+```
+sandbox (outer bwrap, --unshare-net, own loopback)                  host (the browser's user)
+  CLI ── HTTPS_PROXY=http://127.0.0.1:3128 ──▶ zb-net-relay          zb-agent-netd (under its own bwrap,
+  hook ── http://127.0.0.1:51091 ────────────▶   (PID 1 of the  ──▶   --unshare-all --share-net, sees
+  hook ── http://127.0.0.1:31337 ────────────▶   outer namespace)     only its socket directory)
+                                       binds 127.0.0.1:{3128,51091,31337},   proxy.sock ──▶ api.anthropic.com:443
+                                       relays each to a pathname socket      port-51091.sock ──▶ host 127.0.0.1:51091
+                                       in the bound socket directory         port-31337.sock ──▶ host 127.0.0.1:31337
+```
+
+- **Who owns what:**
+  - The browser (`agent_host.c`, through the existing `die_with_browser` spawn) starts `zb-agent-netd` first. It waits until the three socket paths exist (`netd ready` on its stdout, bounded at 5 s), then starts the helper's bwrap.
+  - **The socket directory:**
+    - it is `$XDG_RUNTIME_DIR/zigbrowser-agent-<pid>/`, mode 0700, created with `mkdir` (it must not exist; refuse otherwise);
+    - netd creates the sockets with mode 0600;
+    - the outer bwrap binds only that directory, read-write, at `/run/zb-net`;
+    - nothing else of `XDG_RUNTIME_DIR` is bound.
+  - **`zb-net-relay`** (standard-library Python, `-I`) is the outer bwrap's command. In this order, it:
+    1. binds its three listeners;
+    2. forks and execs the helper **before** starting any thread (never fork a multithreaded Python);
+    3. closes its own copy of fd 3 at once, so the token socket is held only by the helper (5440.3);
+    4. starts the relay threads.
+
+    It never reads, copies or logs fd 3. It reaps every child, passes the helper's exit status and SIGTERM/SIGINT on, stops accepting and closes active splices when the helper exits, and unlinks nothing.
+  - **Death chain:** the browser dies → the helper's bwrap (`--die-with-parent`) → the relay (PID 1) and every process in the namespace. netd dies with the browser (PDEATHSIG plus the parent check, as the setup child). No orphan: tested with a kill before readiness and after it.
+- **Environment:**
+  - `HTTPS_PROXY=HTTP_PROXY=http://127.0.0.1:3128` and `NO_PROXY=127.0.0.1,localhost`, exactly, with no wildcard (5419.1). The relay binds IPv4 only, so not `::1`.
+  - The hook-environment allowlist (`runtime/hook-env.json`) gains `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`.
+- **No DNS inside:** the namespace has no resolver route. Name resolution happens only in netd (5418.3).
+
+### 3c.3 The proxy's parser and allowlist (5418.2, 5419.3)
+
+- **Accepted request:** only `CONNECT <host>:443 HTTP/1.1`, with `host` exactly an allowlisted lowercase ASCII DNS name.
+- **Refused:** userinfo, IP literals, a trailing dot, IDNA/punycode ambiguity, suffix matches, any other port, any other method, and absolute-form requests (except the e2e seam, 3c.4).
+- **Bounds:**
+  - one request line of at most 1 KiB, at most 32 header lines and 8 KiB of headers;
+  - a 10 s header timeout, a 10 s connect timeout and a 5 min idle timeout;
+  - at most 16 concurrent tunnels.
+- **Resolution:** resolve once on the host; refuse if **any** result is loopback, private, link-local, multicast or unspecified; then connect to that vetted address, never to the name again (no DNS rebinding).
+- **Logging:** a refusal logs `zigBrowser: agent: network refused <host>:<port>` once per host. The host is cut to 64 bytes with control characters removed. No header, body, token or Authorization value is ever logged or kept.
+- **Separate handlers:** the egress CONNECT handler and the two bridge handlers are separate code paths. A bridge takes no input that chooses its target.
+
+### 3c.4 The e2e seam and the fake API through the real path (5418.3, 5440.1)
+
+- **The seam:** `ZIGBROWSER_AGENT_NET_TEST` is app-owned, honoured only with `--e2e-protocol` and passed to netd as an argument, never an environment variable. Without `--e2e-protocol` it is inert.
+- **What it allows:** one extra allowlist entry, `fake.zb.invalid:443`, which netd connects to `127.0.0.1:<fake port>` instead of resolving it. The fake Messages API serves TLS there with a test certificate. The CLI trusts that certificate through `NODE_EXTRA_CA_CERTS`, set by the test seam only.
+- **The real path:** the CLI therefore reaches the fake API **through** relay → netd → CONNECT, exactly as in production.
+- **Red mutation:** bypass the relay or netd (for example, set `NO_PROXY=*`), and the fake's request count stays 0, so red.
+- **Census:** any CONNECT to a host outside the allowlist during a test turns the test red.
+
+### 3c.5 The bridges (5418.4)
+
+- Inside the sandbox the ports are always 51091 and 31337.
+- Tests point the host side at random ports through the same app-owned seam (`--e2e-protocol` only), so real services that hold the production ports are never touched.
+
+### 3c.6 The hook seccomp filter (5418.5, 5424, 5440.2)
+
+- **Order** in `zb-hook-run`:
+  1. read and validate its config, and build the fresh hook environment;
+  2. close **every** inherited descriptor ≥ 3 (the token guarantee is unchanged);
+  3. only then create the filter memfd at a fresh descriptor ≥ 10, and mark only it inheritable;
+  4. exec the nested bwrap with `--seccomp <fd>` before `--`. bwrap finishes its namespace and mount setup, installs the filter and closes the descriptor, then execs the hook.
+- **The filter** denies:
+  - `unshare` and `setns`;
+  - `mount`, `umount2` and `pivot_root`;
+  - `fsopen`, `fsconfig`, `fsmount`, `fspick`, `open_tree`, `move_mount` and `mount_setattr`;
+  - `io_uring_setup`, `io_uring_enter` and `io_uring_register`.
+
+  `clone3` returns ENOSYS, and legacy `clone` with any `CLONE_NEW*` bit fails. Ordinary threads and child processes still work.
+- **Tests:**
+  - the hook's visible descriptors after bwrap are exactly 0, 1 and 2;
+  - a real Bun hook still spawns an allowed subprocess;
+  - `unshare(CLONE_NEWUSER)`, `mount` and `io_uring_setup` from a hook fail;
+  - **mutants:** creating the filter before the close-all fails (bwrap gets EBADF, so the hook never runs), and exempting inherited descriptors fails the token-descriptor census.
+
+### 3c.7 Setup's own executions (5447)
+
+- `cli --version` and the R1 route probe run in the same kind of sandbox as the helper, not under `--dev-bind / /`:
+  - a private network namespace;
+  - read-only binds of only `/usr`, the few `/etc` files, the runtime and the throwaway probe home;
+  - no X11, no `XDG_RUNTIME_DIR`, no user home, no repository;
+  - the same death chain.
+- **`--version`** needs no network at all, so it runs with no bridge and no proxy.
+- **The probe** reaches its loopback probe server through the production relay and netd test route (3c.4), with the probe server standing in for the fake API.
+- **Real-binary `--agent-setup` e2e:** decoy listeners on host loopback, on the host LAN address and on an abstract `X0` socket, and filesystem canaries in `$HOME` and the repository. None is reachable or read during setup. A bypass mutant (the old `--dev-bind / /`) turns it red.
+
+### 3c.8 The X0 and LAN tests (5421, 5422)
+
+- **The literal `@/tmp/.X11-unix/X0`** is tested only inside a disposable parent network namespace with its own `/tmp` (`unshare -rn`). A private Xvfb serves `:0` there, and the production bwrap then makes its inner namespace. The live `:0` is never touched.
+- **If the parent namespace cannot be created,** the build step **fails** with the exact missing prerequisite; it never skips.
+- **Host-LAN denial** is a separate test on the normal host, with a decoy listener on the host's LAN address.
+
+### 3c.9 Slices and owners (BlueBeaver 5417 and 5420, accepted)
+
+| Slice | Owner | Files | Depends on |
+|---|---|---|---|
+| **S3n1** netd and relay | BlueBeaver | new `agent/host/zb_agent_host/netd.py`, `relay.py`, their unit and chain tests; one call site in `agent_host.c` that BlackRobin names | rev 16 approved |
+| **S3n2** sandbox wiring | BlackRobin | `sandbox.py` (`--unshare-net`, the `/run/zb-net` bind), `hook_run.py` (filter, environment), `setup.py` (3c.7), R3 removal (flag, enum, P0 contracts), `agent_host.c` spawn order | S3n1's socket contract |
+| **S3b** helper lifecycle | BlackRobin | as planned, now over S3n2 | S3n2 |
+
+Each slice has its own red, green, gate and review. No S3n code is written before rev 16 is approved.
+
+### 3c.10 Failing-first tests (each must be observed red first)
+
+| Test | Red before the fix |
+|---|---|
+| From inside the real outer bwrap: `@/tmp/.X11-unix/X0` (3c.8), host `127.0.0.1` decoys, the host LAN decoy, a public IP and any DNS lookup all fail | today's shared network reaches them |
+| CONNECT to a non-allowlisted host gets 403; an allowlisted name that resolves to `127.0.0.1` is refused | no proxy |
+| The bridges carry bytes to the host decoys on 51091/31337, and nothing else | no bridges |
+| The fake API is reached only through relay → netd; the `NO_PROXY=*` mutant is red | the direct `ANTHROPIC_BASE_URL` path |
+| No token in any environment, argv or log of netd, relay, helper, CLI or hook; the relay holds no fd 3 | R3 exists |
+| `--agent-token-route env`, and a legacy `"route": "R3"`, refuse with exit 2 | R3 accepted |
+| The hook filter's denials, descriptor hygiene and Bun subprocess (3c.6) | no inner filter |
+| Setup's probe and `--version` sandbox with decoys and canaries (3c.7) | `--dev-bind / /` |
+| Kill the browser before and after netd readiness: no netd, relay, helper, CLI or hook survives | new processes |
+
+### 3c.11 Consistency edits made in rev 16 (5423)
+
+Sections that described R3 or a shared network now point here:
+- §0.2 (the auth line);
+- D7b `hello`;
+- D11 (R3, `--agent-token-route env`);
+- D12 (network);
+- the threat table;
+- P0.2/P0.5 (the R3 contracts become the refusal test);
+- S3.7, S3.9, S4.2, S4.4.
+
+Where a section's older text survives as history, this section wins.
+
 
 ## 4. Desired end state and observable behaviors
 
@@ -1125,7 +1281,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Edge case:** with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, no other host is contacted. The contract run sets `HTTPS_PROXY`/`HTTP_PROXY` to the fake server, whose CONNECT handler records and refuses every tunnel. The recorded tunnel list must be empty.
 - **Token-route contracts (D11), one per route, in order:**
   - **R1 (rev 12):** the helper → wrapper FIFO, then the wrapper → CLI `socketpair` end on fd 3, plus `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3` (D11). The contract also asserts that the FIFO directory is 0300 and empty afterwards. **Red-at-seam:** the rev-11 `sh` wrapper (`exec 3<fifo`) gets no reply before the SDK gives up.
-  - **R3:** the SDK `env` option.
+  - **R3:** the SDK `env` option. *(Rev 16: R3 is removed; this contract becomes the refusal test of §3c.10, a legacy R3 refuses.)*
   - Each contract asserts the fake API received `Authorization: Bearer <canary>`, and, for R1, that `/proc/<claude-cli>/environ` does **not** contain the canary.
   - The suite is red if R1 fails on the build host. That is developer evidence only; the installed runtime's route is chosen by `--agent-setup` (S3.1).
 
@@ -1135,7 +1291,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then**:
   - every event's hook ran (one env file per event, and one POST per event at the fake notify server);
   - no env file contains the canary;
-  - every recorded hook command line starts with `zb-hook-run --` (rev 6). Under R3, the canary is absent from **every** `/proc/*/environ` visible inside the hook's namespace, **PID 1 included**, read by the hook itself;
+  - every recorded hook command line starts with `zb-hook-run --` (rev 6). *(Rev 16: no R3 run.)* Under R3, the canary is absent from **every** `/proc/*/environ` visible inside the hook's namespace, **PID 1 included**, read by the hook itself;
   - (rev 12, finding 2) no env file holds `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`. This is checked by name, independently of the canary, because the real CLI sets both for hooks (the census shows them).
 - **Red first:** before the wrapper and route selection exist, the R3-only run shows the canary in the hook env files. Without the refused names, both messaging names appear in every env file.
 - **Property:** none. The input is fixed.
@@ -1524,7 +1680,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - create, overwrite, rename and unlink of `workspace/keep.txt` and `workspace/new.txt` (`EROFS`);
   - reading any descriptor ≥ 3.
 - And:
-  - the canary is absent from `attack.json` and from every file the hook wrote. Under R3 (a second run with `--agent-token-route env`), the hook also reads `/proc/1/environ`, its own `/proc/self/environ` and every other visible `/proc/*/environ`, and none holds the canary (rev 6, blocker 2). **Red-at-seam** for this case: have `zb-hook-run` pass its own environment to bwrap, and `/proc/1/environ` shows the canary, so red;
+  - the canary is absent from `attack.json` and from every file the hook wrote. *(Rev 16: the R3 run is removed.)* Under R3 (a second run with `--agent-token-route env`), the hook also reads `/proc/1/environ`, its own `/proc/self/environ` and every other visible `/proc/*/environ`, and none holds the canary (rev 6, blocker 2). **Red-at-seam** for this case: have `zb-hook-run` pass its own environment to bwrap, and `/proc/1/environ` shows the canary, so red;
   - `workspace/keep.txt` is still "original" (hash checked from outside), and `workspace/new.txt` does not exist;
   - the hook's positive controls succeed: a scratchpad write, and a localhost POST to the fake notify server;
   - the census holds: every CLI descendant is in a `zb-hook-run` namespace or on the D11 allowlist (`/usr` real paths, or exactly `$CLI rg`). Rev 13: the census comes from the exec oracle, which the **app** launches in the outer-bwrap slot through the app-owned, pre-spawn seam `ZIGBROWSER_AGENT_BWRAP`. The oracle installs its listener before anything in the sandbox runs, then `execv`s bwrap **in place** (D11, rev 15). bwrap keeps the oracle's PID and the browser as its parent, and every descendant's exec is recorded before it runs, so a child that lives between two samples is still seen. **Red-at-seam:** a `zb-claude` that spawns and reaps `/usr/bin/sleep 0.001` before the CLI turns this check red;
@@ -1582,7 +1738,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **Given** the seams whose consumers exist in S3 (rev 14 scope): `BWRAP` and `HOST_CMD` (app-owned), and `TEST_BASE_URL` and `TEST_PROXY` (helper-carried), set to hostile values (a remote base URL, a marker-writing script as bwrap and as the helper command). `DRAWER_DEMO` and `ANIM_MS` are already proved by S2; the other seams are proved by the slices that read them (section 7).
 - **When** the browser runs **without** `--e2e-protocol` and a prompt is sent,
 - **Then** the `hello` frame recorded by the real helper's debug log (written to `scratchpad/`) carries none of the helper-carried seams, no request reaches the hostile base URL (a listener on it records 0 connections), and each app-owned seam in scope is refused before it can act (rev 13; rev 14 scope): stderr has one `zigBrowser: <NAME> ignored without --e2e-protocol` line for `BWRAP` and for `HOST_CMD`, the real bwrap and the real helper are spawned, and neither marker file appears.
-- **With** `--e2e-protocol`, a non-loopback base URL is refused with `zigBrowser: agent: test base URL must be loopback`.
+- **With** `--e2e-protocol`, a non-loopback base URL is refused with `zigBrowser: agent: test base URL must be loopback`. *(Rev 16: the fake API is reached through relay → netd with the `ZIGBROWSER_AGENT_NET_TEST` seam, §3c.4, not a direct base URL.)*
 
 #### Behavior S3.4: quit, browser death and helper crash leave no processes, and a crash is reported
 - **Given** the helper running with a live Claude CLI child (a session open against the fake API),
@@ -1635,7 +1791,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **When** a prompt is sent (the fake API scripts a reply),
 - **Then**:
   - the fake API records `authorization: Bearer <canary>`;
-  - under R1 the scanner finds it in **no** process environment, and under the opt-in R3 **only** in `/proc/<claude-cli>/environ`;
+  - under R1 the scanner finds it in **no** process environment, and *(history; rev 16 removed R3)* under the opt-in R3 **only** in `/proc/<claude-cli>/environ`;
   - it is **not** in the browser's, the helper's or any WebKit child's environ or cmdline; not in stdout or stderr; not in any file under the agent home except the store; not in `projects/*.jsonl`; not in any recorded request body; not in any `DRAWER` row; not in any page's DOM or `localStorage`; not in the profile directory.
 - **Edge case:** removing the token while a session runs ends the session (`end_session`), so the Claude CLI exits, and the next Send reopens the Secrets window.
 
@@ -1644,7 +1800,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **When** a prompt with no tool call runs end to end through the browser (there are no browser tools before S7, and built-in tools are off),
 - **Then** `SessionStart`, `UserPromptSubmit`, `Stop` and `SessionEnd` each fired, inside the sandbox: one env dump per event, and one POST per event at the fake localhost notify server. No dump contains the canary, and no dump holds `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN` (checked by name, independently of the canary; rev 13). Every hook command line starts with `zb-hook-run --`. Under R3, each hook also reads every `/proc/*/environ` it can see, PID 1 included, and finds no canary (rev 6).
 - `PreToolUse` and `PostToolUse` are proven in S7.6, when the first real MCP tools exist (rev 4, blocker 3).
-- **Red-at-seam:** force R3 without the wrapper, and the canary appears in the `UserPromptSubmit` dump, so red. Drop the two messaging names from the refused set, and both appear in every dump, so red.
+- **Red-at-seam (rev 16: through a forced env token, which the product no longer has):** force R3 without the wrapper, and the canary appears in the `UserPromptSubmit` dump, so red. Drop the two messaging names from the refused set, and both appear in every dump, so red.
 
 #### Behavior S4.3 (A3): the Secrets window is unreachable
 - It is not in `page.list` and gets no `DRAWER` window id.
