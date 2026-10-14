@@ -8291,3 +8291,39 @@ test-process cleanup blocker. Therefore the newest approved linear
 push-through SHA from `fa0aa48` is **`f82228c`**. No push or history rewrite
 was performed; no live browser, profile, token, socket or DISPLAY `:0` was
 used.
+
+## Render-config probe race (`49e1420`)
+
+**Explicit verdict for `49e1420`: APPROVED. Root cause PROVEN, not merely made
+less likely.** The failure recorded in `8058f97` was in the test probe, not the
+browser's startup configuration. The old probe returned the first descendant
+whose `/proc/<pid>/comm` matched `WebKitWebProces`, even when that process's
+`/proc/<pid>/environ` was temporarily zero bytes during exec or exit. It
+therefore converted a transient empty read into `{}` and reported the expected
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` as `<unset>`. The fix treats only a
+zero-byte environment as “not ready” and keeps walking/polling; a non-empty
+environment that legitimately lacks a queried variable remains observable
+(`tests/e2e/render_config_test.py@49e1420:44-64`). This also prevents the two
+opt-out cases from falsely passing on an empty read.
+
+The new `half_started_reads` check is a causal failing-first reproducer, not a
+sleep or enlarged timeout. It repeatedly execs a stand-in named
+`WebKitWebProcess` with `ZB_PROBE=1`, polls the production probe without a
+pause, and requires zero returned environments missing that variable plus at
+least one complete observation (`render_config_test.py@49e1420:67-88,175-178`).
+I independently ran five trials against each behavior in a clean exact-
+`49e1420` export. With the fixed probe the results were **0 missing** and
+16,886–17,435 complete reads per trial. Replacing only `web_process_env` with
+the exact pre-fix implementation made every trial red, with **17–21 empty/
+missing reads** while still observing 16,684–17,269 complete environments.
+That isolates the changed predicate as the cause of the failure mechanism.
+
+BlackRobin's real-binary evidence closes the remaining applicability gap:
+under private Xvfb, the old probe reported `<unset>` in 10/20 screenshot-
+default runs, while the fixed probe reported `1` in 20/20; separate first-
+sighting instrumentation saw an empty environment in 7/20 runs and every
+non-empty observation had `SHM=1`. Thus the app's pre-WebKit `setenv` was not
+lost. A clean-export full gate of the final test blob passed **Build Summary:
+108/108 steps succeeded; 817/817 tests passed**. No production file changed.
+No live browser, profile, socket or DISPLAY `:0` was used, and all throwaway
+reproducer exports were deleted.
