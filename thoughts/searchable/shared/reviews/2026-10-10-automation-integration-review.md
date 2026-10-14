@@ -7386,3 +7386,274 @@ the shared beads database remains migration-locked.
 Agent Mail 5458 sent these findings to JadeBeacon, with BlackRobin and
 BlueBeaver copied for the cross-owned seams. No source implementation is
 authorized by this review.
+
+## S3a rev 15.6 implementation review (`cab60a1`)
+
+**Explicit verdict: BLOCKED.** The revision now follows the user's latest,
+direct policy choice: only hook command lines receive strict path/grammar
+validation; copied text gets the HOME rewrite; physical dependency, VCS,
+cache and build trees copy without inspection; and links leaving an item are
+skipped with a warning. The immutable `dist-<n>/current/state` split is also
+preserved, `helper_argv` no longer repairs a published build, the state modes
+fail closed, and the remaining real-screen refusal cases now assert zero
+XTest motion. Those changes close the earlier policy, published-build and
+input-guard findings, but three uncovered production failures remain.
+
+### BLOCKER: a top-level link can traverse a link chain in a parent component
+
+`_link_target` normalizes the textual target and calls `os.lstat(target)`
+(`agent/host/zb_agent_host/setup.py:305-317`). `lstat` refuses a symlink only
+when it is the final component; the kernel follows symlinks in all parent
+components. A read-only throwaway probe made
+`source/CLAUDE.md -> hop/CLAUDE.md`, `source/hop -> /outside`, and a regular
+`/outside/CLAUDE.md`. Setup logged that target and copied its
+`CHAIN_CANARY`. That is a two-link chain despite the “followed once” contract.
+The existing chain test makes the final target itself a link, so it does not
+cover this path shape. Resolve the path component-by-component without
+following links, or reject an intermediate link, and add this exact canary
+case.
+
+### BLOCKER: the global cycle set silently drops internal aliases
+
+`_copy_tree` shares one `seen` set across the complete item and never removes
+an entry on return (`setup.py:320-344`). A throwaway `skills/alias -> real`
+fixture produced only `alias/payload.txt`; the later canonical `real` name was
+silently omitted. Reversing lexical order would omit the alias instead. This
+is especially unsafe for pnpm/node_modules-style internal aliases and violates
+the stated rule that nothing vanishes silently. Cycle detection must be based
+on the active recursion ancestry, or aliases must be deliberately
+materialized; a regression must preserve both names and separately bound a
+real cycle.
+
+### BLOCKER: malformed hook quoting escapes the refusal/error contract
+
+Both `check_hooks` and `check_hook_links` call `shlex.split` before the closed
+grammar can reject quoting (`setup.py:117-147,214-230`). The probe command
+`python3 "unterminated` raised raw `ValueError: No closing quotation` in both
+paths. `main` maps `ValueError` to generic exit 1 (`setup.py:817-825`), while
+an unsupported hook grammar is a setup refusal and must exit 2 without
+publishing. Convert this parser error to `SetupError` (or reject the raw
+string before splitting) and cover it in both the unit suite and real-binary
+setup e2e.
+
+### SHOULD: pin source objects between classification and read
+
+The recursive copier still classifies a pathname and later reads it by a new
+pathname lookup (`setup.py:324-369`). A same-user concurrent change can swap
+a checked regular file for a symlink or FIFO before `Path.read_bytes()`.
+This is outside the primary hostile-model boundary but is avoidable setup
+TOCTOU: prefer directory-fd traversal and an `O_NOFOLLOW` regular-file fd.
+
+BlackRobin's clean-export gate for the committed slice was green:
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**, including
+78/78 setup e2e, 74/74 helper unit and 23/23 P0 contract checks. The gate tree
+was deleted. Green coverage does not waive the three missing cases. Agent Mail
+5468 sent the findings and exact probe results to BlackRobin, with BlueBeaver
+copied.
+
+## macOS launch plan rev 2 and 2.1 (`c3d7217`, `9c2b2c3`)
+
+**Explicit verdict for both commits: BLOCKED (docs).** Rev 2 substantially
+closes the nine findings against `d857a03`: it splits the socket topology into
+ordinary, out-of-band and recovery closure maps; gives multi-window/freeze and
+async ownership explicit contracts; makes native input a two-host capability
+spike; owns persistent WebKit configuration and setup; identifies the real
+Python/C sandbox seam; makes failed Seatbelt proofs select the VM fallback;
+requires two actually executing architectures; and keeps signing last. Rev
+2.1 adds the requested no-target-bytes proof for a skipped linked skill. Three
+contracts remain inconsistent.
+
+1. **BLOCKER — MS5 still names the superseded SAI rule.** The summary and
+   MS5.1 call rule (a) an “executed-import-graph”
+   (`macos-launch-tdd-plan.md:45,552-558`). The final user decision is **Hook
+   commands only**. The Mac port must reuse the corrected Linux behavior:
+   copy dependency/VCS/cache/build trees unscanned, HOME-rewrite other copied
+   text, validate only hook command lines, and warn/skip outbound links. It
+   must also inherit the chain, alias and malformed-quote corrections required
+   above rather than port today's defects.
+2. **BLOCKER — the grant tuple is weaker than the accepted threat contract.**
+   MS4.1 binds action/site/account/window/payload (`:510-514`) but does not
+   explicitly bind `origin`, `target_fp`, `load_serial` and each argument.
+   Reuse the drawer plan's exact grant schema and its navigation,
+   selector-retarget and one-field-at-a-time mutants.
+3. **BLOCKER — the positive closure precedes the only grant minter.** MS4's
+   closure/gate requires an approved grant to commit through a real flow
+   (`:533-542`) while the only permitted native Approve handler is not built
+   until MS7 (`:653-687`). MS4 may close the authority and all negative,
+   refusal and dry-run paths. Move the positive
+   socket-to-card-to-grant-to-flow closure to MS7, or move the production
+   handler earlier; a test-only mint would bypass the forbidden span.
+4. **BLOCKER — the “explicit ABI inventory” is not the production ABI.** The
+   MS2 list at `:318-324` omits `zb_automation_set_script` (private-world
+   injection before the first load), `zb_automation_free` (the allocator
+   paired with every returned C string), `zb_automation_loop_mark` (ENDED,
+   queued-job cancellation and waiter wake-up on app quit),
+   `zb_automation_window_alive`, `zb_native_pointer`, protocol-row field
+   sanitization, and the cookie ABI. It also does not decide which of the
+   roughly 35 deterministic `zb_automation_debug_*` seams exist on macOS or
+   require unsupported seams to fail closed instead of silently returning
+   zero. Add these to the inventory and tests; at minimum prove private-world
+   installation, allocator pairing, immediate quit cancellation and the
+   late-completion mutants through real seams.
+5. **BLOCKER — window destruction does not close drawer ownership.** MS2c
+   covers `page.close` and script `window.close()`, and MS7 says it mounts
+   from `zb_window_new`, but the plan never requires every popup to receive
+   its own drawer bound to its `window_id`, nor one shared destroy path for
+   `webViewDidClose:`, the NSWindow close button and automation close. Specify
+   detach before automation notification/free, exact reuse of WebKit's
+   supplied configuration, and a live-drawer count of zero after all windows
+   close.
+6. **BLOCKER — crash presentation parity is absent.** The current Linux
+   product reports per-window termination and shows a static crash document,
+   keeps the committed URL, excludes API-driven termination, clears
+   `crashed` only on a real commit and never auto-reloads (`ddc892e`,
+   `44d0d0f`). MS2c names termination and recovery but no visible crash
+   contract. Add the macOS analog (for example
+   `webViewWebContentProcessDidTerminate:` plus a public simulated-request
+   crash document) with real-X/no-input and clicked-Reload controls.
+
+The docked drawer, disposable Keychain canary, callback/setup-token routes,
+real Intel plus native arm64 execution, real-Mac visual acceptance and
+Developer-ID-last policy are otherwise faithful. Before implementation, the
+plan should also make several **SHOULD** details explicit: no main-thread
+caller may synchronously wait on a main-queue marshal; dialogs hold completion
+handlers rather than running a modal loop; health/list snapshots are
+lock/atomic-backed and never `dispatch_sync` to a hung main queue; the public
+recover spike should try replacement of the WKWebView while retaining its
+window id rather than private SPI; scroll events can be built from a CGEvent
+and delivered in-process with `-[NSWindow sendEvent:]` without posting to the
+system or asking for TCC; icon/fold views intentionally overlap the page and
+need exact hit-testing even though the dock does not; keyboard/fold-row and
+Secrets-exclusion parity need named tests; and the real-screen runner must
+fail closed when Screen Recording/window-order evidence is unavailable.
+Agent Mail 5469 sent the first three findings to JadeBeacon and copied
+BlackRobin; the ABI-owner follow-up arrived as mail 5475 and is incorporated
+here.
+
+## Chat-drawer plan rev 16 (`cd59bb5`)
+
+**Explicit verdict: BLOCKED (docs).** The selected architecture matches the
+user and RedTeam decisions: bwrap remains the Linux backend; the outer helper
+gets a private network namespace; host egress is an exact CONNECT allowlist;
+only ports 51091 and 31337 cross explicit bridges; hooks get the stricter
+post-namespace seccomp filter; and the token remains FIFO to socketpair fd 3,
+never environment. The bounded parser, resolve-once rule, sensitive-log
+prohibition, fixed bridge handlers and fake API through the production proxy
+are sound requirements. Five blockers prevent S3n1/S3n2 from starting.
+
+### BLOCKER: the production setup probe has no usable network route
+
+Section 3c.4 gates `ZIGBROWSER_AGENT_NET_TEST` and its fake TLS mapping on
+`--e2e-protocol` (`plan:854-860`), but section 3c.7 says the ordinary
+production R1 setup probe reaches its one-shot loopback server through that
+same route (`:887-896`). Normal `--agent-setup` has no e2e capability, and the
+current probe server is plain loopback HTTP (`setup.py:765-798`). Define a
+separate app-owned internal production probe route/capability, not a user env
+seam, or put the one-shot server inside the private namespace. If it traverses
+CONNECT, specify its TLS name and trust root. A normal setup e2e without
+`--e2e-protocol` must prove R1 succeeds while the decoys remain unreachable.
+
+### BLOCKER: “R3 removed everywhere” is contradicted by active requirements
+
+The new section says the flag, route and every assertion are gone, but active
+text still permits or tests R3: the decision row at `plan:977`, T6 and A4 at
+`:1248,1254`, P0.4 at `:1294-1296`, S3.7 at `:1662`, S3.9 at
+`:1683,1689`, S4.2 at `:1794`, and S4.4 at `:1801-1803`. Convert these to
+R1-only behavior or explicit legacy-refusal/red-mutant wording. D6 also still
+offers bare `curl`/`env` (`:302`) although the final grammar refuses them, and
+D12 still describes import scanning (`:629`) despite Hook-commands-only.
+The override paragraph does not make mutually executable slice instructions
+safe.
+
+### BLOCKER: netd's executable, filesystem and resolver closure is absent
+
+The topology says the netd bwrap “sees only its socket directory”
+(`plan:815-819`). A standard-library Python service also needs its interpreter,
+runtime/shared libraries and the minimal resolver configuration used by
+`getaddrinfo`. Specify the exact read-only binds and environment, including
+the deliberately selected `/etc` resolver files, then prove the allowlisted
+name resolves while HOME, repository, profile and secrets remain absent.
+
+### BLOCKER: deterministic socket-directory lifetime fails after a crash
+
+`$XDG_RUNTIME_DIR/zigbrowser-agent-<pid>` must not already exist
+(`plan:824-827`) and no owner removes it. A SIGKILL followed by PID reuse makes
+that PID unable to launch an agent and leaves a predictable stale-path denial.
+Use an exclusively created private random-suffix directory with ownership,
+mode and no-follow validation; clean it on normal exit and test the stale
+crash/PID-reuse case without deleting arbitrary neighbors.
+
+### BLOCKER: the stated PID-1 topology is not the specified bwrap topology
+
+The plan calls the relay namespace PID 1 (`plan:829-836`) but never requests
+`--as-pid-1`. By default bwrap's reaper is PID 1 and the command is its child.
+Retain that safer, already-used reaper and correct the lifecycle language and
+tests, or explicitly add and justify `--as-pid-1`; do not base orphan or
+signal claims on an impossible topology.
+
+Two hardening items are **SHOULD**: bind the pre-created socket directory
+read-only into the untrusted outer sandbox unless a tested mutation need is
+identified, and require the relay/launcher to close every inherited fd at or
+above 3 except explicitly owned listener/control descriptors, not fd 3 alone.
+BlueBeaver subsequently proved in a throwaway bwrap that `connect()` through
+the read-only bind succeeds while create, rename and unlink get `EROFS`, so
+the plan should make that read-only bind mandatory. It must also validate the
+complete Unix-socket paths against `sun_path`'s 108-byte storage (107 usable
+bytes) and use short e2e directories; a long session scratchpad is not a valid
+test socket root.
+Agent Mail 5470 sent this verdict to BlackRobin and BlueBeaver. BlueBeaver's
+independent interface note 5466 agrees on the PID-1 correction, random suffix
+and complete inherited-fd census.
+
+## `about:blank` crash-page closure (`44d0d0f`)
+
+**Explicit verdict: APPROVED.** The only production-file change corrects a
+comment; behavior is unchanged. The new real-binary private-Xvfb test uses two
+fresh browsers: its control sends no post-crash X input for 12 seconds and
+requires both the crash DOM and `page.list.crashed` to remain; its action case
+uses a real X click and requires a plain `about:blank` Reload link to clear the
+crash within 10 seconds. Dropping the link fails both cases, while a delayed
+three-second automatic reload fails only the no-input control. That proves the
+click rather than a timer causes recovery and closes the prior SHOULD.
+
+BlueBeaver's clean archive plus the two subsequently committed blobs passed
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**; both blobs
+are identical to the gated copies and the tree/cache were deleted. The later
+commits before `44d0d0f` consist of the separately gated `cab60a1` source and
+docs-only plans. This approves `44d0d0f` itself; it does not approve the
+blocked S3a or plans beneath it.
+
+I then ran one independent bounded clean-export gate at exact `44d0d0f`, with
+a fresh cache under private Xvfb. It passed the combined committed tree:
+**Build Summary: 106/106 steps succeeded; 817/817 tests passed**. The EXIT
+trap deleted the export and cache immediately. No live browser, live socket,
+account, token or DISPLAY `:0` was used.
+
+## Explicit unpushed-prefix audit at `44d0d0f`
+
+Every commit after `origin/zb-automation-integration-2026-10-10-11-59` is
+classified here. “Superseded” records an exact historical revision; it is not
+an approval of that old snapshot.
+
+| Commits | Explicit verdict |
+|---|---|
+| `abbf0ea`, `4e3b09c`, `69e6fc4` | **BLOCKED at each exact implementation revision; superseded by `cab60a1`.** |
+| `cab60a1` | **BLOCKED** by the three production findings above. Its hook-only policy, published-build validation and final zero-motion assertion are accepted. |
+| `220af5a` | **APPROVED.** |
+| `607c3a3` | **APPROVED as completed by `60ce3b6`.** |
+| `60ce3b6` | **APPROVED**, including the user's real NVIDIA “All works” verdict and accepted docked contract. |
+| `ddc892e`, `44d0d0f` | **APPROVED.** The latter closes the former's `about:blank` SHOULD. |
+| `1be5169`, `eef2ff6` | **BLOCKED at the exact revisions; superseded.** `cc9d135` plus `cab60a1` close their focus, property-type and zero-motion test gaps. |
+| `cc9d135` | **APPROVED.** |
+| `be46e05`, `7eab90f`, `d9674c1`, `0524293`, `46cdcf2`, `22ff1f9`, `ce275ab`, `f73296b`, `f262998`, `159c48a` | **BLOCKED at the exact plan revisions; superseded by later revisions/decisions.** Their durable accepted results are folded into the current plan. |
+| `c3d7217`, `9c2b2c3` | **BLOCKED** by the three macOS-plan findings above. |
+| `cd59bb5` | **BLOCKED** by the five rev-16 plan findings above. |
+| `d7527bb`, `f72e63d`, `69c7098`, `7ae9b64`, `a915d44`, `cdc88d2`, `b5886ce`, `120dc57`, `9380c32`, `bcc721d`, `21625eb` | **APPROVED as review/evidence documentation.** Later entries supersede their status conclusions where stated. |
+| `ac94248`, `86ddf01`, `da24aba`, `9ca44c9`, `1df5dce` | **APPROVED as research documentation.** `9ca44c9` is the authoritative decision/status correction. |
+| `d857a03` | **BLOCKED at rev 1; superseded by rev 2/2.1**, which remain blocked above. |
+
+There is therefore **no approved linear push prefix after the current origin**:
+the first unpushed source commit is ultimately replaced by `cab60a1`, and that
+current implementation is still blocked. Later approved commits cannot be
+pushed as a prefix without also pushing the blocked S3a history. No push or
+history rewrite was performed.
