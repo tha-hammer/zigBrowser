@@ -5949,3 +5949,130 @@ Red first:
 Agent Mail 5345 sent the source evidence, the Xvfb result, the matrix correction
 (`--renderer shm` is already the failing default) and the test requirement to
 BlackRobin.
+
+## Claude Agent chat-drawer plan rev 15.2 (`7eab90f`)
+
+**Verdict: BLOCKER.** The revision correctly assigns the production runtime to
+S3a, gives it an executable-relative location and clean-install closure case,
+and records the direct fork-to-`prctl` race, typed `renameat2`, expanded path
+scan and invalid-HOME rules. It does not close the complete contracts it says
+the implementation satisfies, and two old passages now contradict the new
+runtime design.
+
+This was an exact docs-diff review against rev 15.1. `git diff --check
+7eab90f^..7eab90f` is clean. The implementation findings below were reproduced
+against the plan's companion commit `4e3b09c`; the independent clean-export
+gate at exact `7eab90f` was **GREEN: 104/104 steps succeeded; 816/816 tests
+passed** under private Xvfb.
+
+### BLOCKER — rev 15.2 overclaims setup rollback and descendant death
+
+The new hardening contract says any failure restores the old home
+(`plan:1234-1239`). The implementation catches failures only through the second
+exchange, not later marker/cleanup work, and first install is still a sequence
+of unrelated renames. The exact failure probes in the S3a review below leave
+partial or new state live. Likewise, the parent-death regression says no setup
+helper may survive, but the security contract that prompted it included its
+route-probe CLI descendant; that child demonstrably survives browser SIGKILL.
+Name and test the complete process tree, not only an argv pattern for the direct
+helper.
+
+### BLOCKER — the runtime and file inventory contradict the new design
+
+The production-runtime section says `install_agent_runtime.sh`/`zig build
+agent-runtime` creates one locked shared venv (`plan:1225-1232`). The out-of-scope
+section still says packaging/shipping the venv is excluded and
+`--agent-setup` creates it with uv (`plan:783`); S3a does neither. Replace that
+stale sentence with the actual shared-runtime/package boundary. S3.1's files
+list also still names nonexistent `provision.py` and omits `setup.py`, the
+installer and runtime build target (`plan:1269`). A TDD ownership list cannot
+route a fix to the wrong module.
+
+## Claude Agent drawer S3a follow-up (`4e3b09c`)
+
+**Verdict: BLOCKER despite a green gate.** Four prior findings are genuinely
+closed: a normal clean install now has a real locked runtime producer and no
+developer override; empty/relative/root HOME refuses; `renameat2` uses the
+typed libc symbol; and timeout teardown, `select_route` control flow and the
+EOF whitespace NIT are fixed. The direct child now also closes the narrow
+fork-to-`prctl` race. Five correctness/security failures remain.
+
+I reviewed all 11 changed files, ran exact function-level fault/path probes,
+ran a real-binary browser-death probe, and ran the bounded clean-export gate
+reported above. The real-binary probe used only a canary sleeping fake CLI; it
+was killed and the throwaway tree was deleted immediately. No live browser,
+socket, account, token or DISPLAY `:0` was touched.
+
+### BLOCKER 1 — interrupted first install is neither atomic nor recoverable
+
+The browser creates the home and owner lock before setup, so production always
+takes `install()`'s per-entry first-install branch (`setup.py:306-320`), never
+the advertised one-rename branch. Injecting failure on its second destination
+rename left the home containing `.zb-owner.lock` and `runtime` but no marker.
+An ordinary retry then failed `ENOTEMPTY` on the existing runtime. No committed
+test kills or faults this branch. Stage a complete sibling and install it with
+one recoverable directory operation, or explicitly detect and replace a
+markerless partial home while preserving only the validated owner lock.
+
+### BLOCKER 2 — slash-command exceptions still certify filesystem paths
+
+`rewrite_text` accepts a known `/name` wherever it occurs
+(`setup.py:84-108`). Exact probes accepted `rm /clear`, `open /help` and
+`path=/status`. More seriously, arbitrary copied `commands/*.md` stems and
+`skills/*` names join that allowlist (`setup.py:156-163`), so a copied skill
+named `tmp` certifies `/tmp`. This does not meet the earlier requirement that a
+slash-command exception cannot also bless an OS path. Restrict the exception
+to an unambiguous command grammar and reject command/skill names colliding with
+root filesystem entries.
+
+### BLOCKER 3 — raw-prefix containment accepts dot-segment escapes
+
+`under()` compares the unnormalised matched string (`setup.py:93-105`). Exact
+probes accepted `/usr/../secret`, `/proc/self/../../secret` and
+`/agent/../secret`; `/home/u/../other` was rewritten to
+`/agent/../other`. Normalize lexically before containment/rewrite, then apply
+the root rule to the normalized path. Add all four cases as red tests.
+
+### BLOCKER 4 — late re-provision failure leaves an uncommitted new home live
+
+The rollback `try` ends after the runtime exchange (`setup.py:324-336`). The
+following mkdirs, marker replacement and staging cleanup are outside it
+(`setup.py:337-340`). Injecting failure at the marker replacement after changing
+the source `CLAUDE.md` raised from setup but left the changed configuration and
+runtime live (`home_unchanged=False`). The old swapped trees were then deleted
+by `provision()` cleanup. Extend the transaction/rollback through every
+fallible post-swap operation; test marker replacement and cleanup failures, not
+only the two exchanges and one state move.
+
+### BLOCKER 5 — the route-probe CLI survives browser death
+
+`die_with_browser` arms PDEATHSIG only for the direct setup child
+(`agent_host.c:39-56`). Its CLI subprocess does not inherit that contract. In
+the exact real-binary repro, the fake CLI returned its version, wrote its PID
+only when the actual R1 probe started, and slept. After the browser was
+SIGKILLed and one second elapsed, the result was:
+
+```
+BROWSER_KILLED cli_pid=2645604 state=S cli_survived=True
+```
+
+The committed regression cannot see this: it kills during the pre-exec delay,
+and `helpers_for()` only reports argv containing `zb_agent_host setup`
+(`agent_setup_test.py:279-314`). Start setup and its probe in a process
+group/PID namespace whose lifetime is tied to the browser, then synchronize the
+test after a sleeping probe CLI starts and assert both helper and CLI are gone
+before harness cleanup. Agent Mail 5347 sent the exact repro to BlackRobin.
+
+### SHOULD / NIT
+
+- `install_agent_runtime.sh:13-20` updates the shared venv and package in place
+  and publishes `runtime.json` last, with no lock or atomic directory swap. A
+  concurrent browser/setup or interrupted upgrade can observe a mixed runtime.
+  Install into a sibling staging directory, fsync/publish atomically, and lock
+  writers/readers before this becomes a packaging path.
+- `runtime_lock()` silently turns a missing or malformed runtime manifest into
+  `null` (`setup.py:238-244`). S3b's promised compatibility check must refuse
+  that state; it must not treat two unknown hashes as compatible.
+- Check the return from `prctl(PR_SET_PDEATHSIG, SIGKILL)` and fail closed.
+- `test_provision.py:213` reads `setup.__file__` without closing it, producing a
+  `ResourceWarning` during the otherwise-green gate.
