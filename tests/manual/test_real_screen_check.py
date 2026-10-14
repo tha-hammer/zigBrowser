@@ -80,17 +80,38 @@ class OpenDrawerTest(unittest.TestCase):
 
 
 class FakeX11:
-    """Stands in for real_screen_check.X11: records input instead of sending it."""
+    """Stands in for real_screen_check.X11: records input instead of sending
+    it, and the server grab around it."""
 
-    def __init__(self, path, pointer, focus, parents):
-        self._path, self._pointer, self._focus, self._parents = path, pointer, focus, parents
-        self.sent = []
+    def __init__(self, path, pointer_path, focus, parents, rect=(0, 0, 100, 100), wm=False, active=None,
+                 lands=None):
+        self._path, self._pointer_path, self._focus, self._parents = path, pointer_path, focus, parents
+        self._rect, self._wm, self._active, self._lands = rect, wm, active, lands
+        self.sent, self.grabs = [], []
+
+    def grab(self):
+        self.grabs.append("grab")
+
+    def ungrab(self):
+        self.grabs.append("ungrab")
+
+    def viewable_rect(self, wid):
+        return self._rect
+
+    def wm_running(self):
+        return self._wm
+
+    def active(self):
+        return self._active
 
     def path_at(self, x, y):
         return self._path(x, y)
 
     def pointer_path(self):
-        return self._pointer
+        return self._pointer_path
+
+    def pointer(self):
+        return self._lands or (self.sent[-1][1:] if self.sent and self.sent[-1][0] == "move" else (-1, -1))
 
     def focus(self):
         return self._focus
@@ -109,26 +130,55 @@ class FakeX11:
 
 
 OURS, TERMINAL, FRAME = 0x400001, 0x700001, 0x300001
+ON_TOP = staticmethod(lambda px, py: [FRAME, OURS])
 
 
 class SafetyTest(unittest.TestCase):
-    """The orchestrator's run sent a click and Escape to the user's terminal:
-    input goes only to our own window, on top, holding the focus."""
+    """Input goes only to our own window: viewable, active (with a window
+    manager), on top at the point, holding the focus, all checked under one
+    server grab before any XTest event (RoseCat 5393, 5395)."""
 
-    def test_a_covered_click_point_sends_nothing(self):
-        x = FakeX11(lambda px, py: [FRAME, TERMINAL], [FRAME, TERMINAL], OURS, {})
-        self.assertIsNotNone(rsc.safe_click(x, OURS, 10, 10))
-        self.assertEqual(x.sent, [])
+    def ready(self, **kw):
+        args = dict(path=lambda px, py: [FRAME, OURS], pointer_path=[FRAME, OURS], focus=OURS, parents={})
+        args.update(kw)
+        return FakeX11(**args)
 
-    def test_a_pointer_that_lands_elsewhere_moves_but_never_clicks(self):
-        x = FakeX11(lambda px, py: [FRAME, OURS], [FRAME, TERMINAL], OURS, {})
-        self.assertIsNotNone(rsc.safe_click(x, OURS, 10, 10))
-        self.assertNotIn(("button",), x.sent)
+    def assert_refused(self, x, refused, sent=()):
+        self.assertIsNotNone(refused)
+        self.assertEqual(x.sent, list(sent))
+        self.assertEqual(x.grabs, ["grab", "ungrab"], "the grab is always released")
 
-    def test_our_window_on_top_gets_the_click(self):
-        x = FakeX11(lambda px, py: [FRAME, OURS, OURS + 5], [FRAME, OURS], OURS, {})
+    def test_our_window_ready_gets_the_click_inside_one_grab(self):
+        x = self.ready(wm=True, active=OURS)
         self.assertIsNone(rsc.safe_click(x, OURS, 10, 10))
         self.assertEqual(x.sent, [("move", 10, 10), ("button",)])
+        self.assertEqual(x.grabs, ["grab", "ungrab"])
+
+    def test_a_covered_click_point_sends_nothing(self):
+        x = self.ready(path=lambda px, py: [FRAME, TERMINAL])
+        refused = rsc.safe_click(x, OURS, 10, 10)
+        self.assert_refused(x, refused)
+        self.assertTrue(refused.endswith("no input sent"), refused)
+
+    def test_an_inactive_unmapped_or_unreadable_window_sends_nothing(self):
+        for label, kw in (("another window is active", dict(wm=True, active=TERMINAL)),
+                          ("the active property is unreadable", dict(wm=True, active=None)),
+                          ("unmapped", dict(rect=None)),
+                          ("the point is outside the window", dict(rect=(50, 50, 10, 10)))):
+            with self.subTest(label):
+                x = self.ready(**kw)
+                self.assert_refused(x, rsc.safe_click(x, OURS, 10, 10))
+                x = self.ready(**kw)
+                if label != "the point is outside the window":
+                    self.assert_refused(x, rsc.safe_escape(x, OURS))
+
+    def test_a_pointer_that_lands_elsewhere_moves_but_never_clicks_and_says_so(self):
+        x = self.ready(lands=(11, 10))
+        refused = rsc.safe_click(x, OURS, 10, 10)
+        self.assert_refused(x, refused, [("move", 10, 10)])
+        self.assertIn("it moved, no click sent", refused)
+        x = self.ready(pointer_path=[FRAME, TERMINAL])
+        self.assert_refused(x, rsc.safe_click(x, OURS, 10, 10), [("move", 10, 10)])
 
     def test_escape_only_with_the_focus_inside_our_window(self):
         for focus, pointer, parents, allowed in (
@@ -136,10 +186,11 @@ class SafetyTest(unittest.TestCase):
                 (OURS, [], {}, True), (OURS + 7, [], {OURS + 7: OURS}, True),
                 (1, [FRAME, TERMINAL], {}, False),  # PointerRoot: keys go where the pointer is
                 (1, [FRAME, OURS], {}, True)):
-            x = FakeX11(lambda px, py: [], pointer, focus, parents)
+            x = self.ready(pointer_path=pointer, focus=focus, parents=parents)
             refused = rsc.safe_escape(x, OURS)
             self.assertEqual(refused is None, allowed, (hex(focus), refused))
             self.assertEqual(x.sent, [("escape",)] if allowed else [])
+            self.assertEqual(x.grabs, ["grab", "ungrab"])
 
     def test_a_window_covered_at_any_sample_point_is_not_judged(self):
         crop = (100, 50, 600, 300)

@@ -62,27 +62,44 @@ OPEN_PAGE_MIN_FRACTION = 0.30   # the open drawer covers the bottom 40%
 OPEN_PANEL_MIN_FRACTION = 0.10
 BLANK_MAX_FRACTION = 0.90       # --url: one colour over this much of the page is blank
 PASS, FAIL, INVALID = "PASS", "FAIL", "INVALID"
+# A drawer case and the drawer-off case that must pass for it to mean anything.
+CONTROLS = {"on-renderer-default": "off-renderer-default"}
 
-# The fixture keeps repainting small parts of the page, as a real page does
-# (fonts, images, animation), and forces composited layers: a static page
-# drew where Wikipedia blanked (the orchestrator's fa0aa48 matrix). The moving
-# parts are small, so the page colour still covers most of the window.
+# The fixture is shaped like the page the user saw blank (Wikipedia): a tall
+# document of text cards with small images under a sticky header, plus
+# layers WebKit 2.54 must composite even under its conservative memory
+# policy (RoseCat 5395, RenderLayerCompositor.cpp: a nonzero 3D transform on
+# a self-painting wrapper with a running transform animation; a canvas of at
+# least 5000 px) and continuous small repaints (canvas, ticking text). Every
+# surface is the page blue or white text, so the page colour still covers
+# most of the window. 2.54 forces compositing mode whenever acceleration is
+# on: this changes layer topology, tiling and damage, not the mode.
+_CARD = ("<div class=card><img alt='' src=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+         "width='48' height='48'%3E%3Ccircle cx='24' cy='24' r='20' fill='%23ffffff'/%3E%3C/svg%3E\">"
+         "<p>A web browser is an application for accessing websites. It retrieves content from a web server and "
+         "displays the page on the screen.</p></div>")
 FIXTURE_HTML = """<!doctype html><title>zb real screen check</title>
 <style>
-html,body{margin:0;height:100%;background:#1e6fb4;color:#fff;font:32px sans-serif}
-#spin{position:absolute;left:40px;top:120px;width:60px;height:60px;background:#f2c94c;
-  will-change:transform;animation:spin 1s linear infinite}
-#layer{position:absolute;left:140px;top:120px;width:60px;height:60px;background:#27ae60;transform:translateZ(0)}
-@keyframes spin{to{transform:rotate(360deg)}}
-canvas{position:absolute;left:240px;top:120px}
+html,body{margin:0;background:#1e6fb4;color:#fff;font:16px sans-serif}
+header{position:sticky;top:0;background:#1e6fb4;padding:12px 40px;font-size:28px;border-bottom:1px solid #fff}
+main{padding:20px 40px 20px 360px}
+.card{border-top:1px solid #fff;padding:8px 0;display:flex;gap:12px;align-items:center}
+.card img{width:48px;height:48px}
+#layer3d{position:fixed;left:40px;top:90px;width:120px;height:120px;background:#1e6fb4;
+  transform:translate3d(0,0,1px)}
+#spin{width:40px;height:40px;margin:40px;background:#f2c94c;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg) translate3d(0,0,1px)}}
+canvas{position:fixed;left:200px;top:90px}
 </style>
-<body><p style='padding:40px'>zigBrowser real-screen check <span id=tick>0</span></p>
-<div id=spin></div><div id=layer></div><canvas id=c width=60 height=60></canvas>
+<body><header>zigBrowser real-screen check <span id=tick>0</span></header>
+<div id=layer3d><div id=spin></div></div><canvas id=c width=128 height=128></canvas>
+<main>""" + _CARD * 40 + """</main>
 <script>
 let n = 0;
 const ctx = document.getElementById('c').getContext('2d');
 (function frame() {
-  ctx.fillStyle = `hsl(${n % 360},80%,50%)`; ctx.fillRect(0, 0, 60, 60);
+  ctx.fillStyle = '#1e6fb4'; ctx.fillRect(0, 0, 128, 128);
+  ctx.fillStyle = `hsl(${n % 360},80%,50%)`; ctx.fillRect(48, 48, 32, 32);
   if (n++ % 30 === 0) document.getElementById('tick').textContent = n;
   requestAnimationFrame(frame);
 })();
@@ -116,10 +133,11 @@ def cases(matrix: bool, variants: list[tuple[str, str]], page_only: list[tuple[s
     if matrix:
         out += [
             Case("on-hw-never", True, ["--hardware-acceleration", "never"], note="no GPU compositing in WebKit"),
-            Case("on-renderer-default", True, ["--renderer", "default"], note="DMA-BUF GPU buffers, not SHM"),
             Case("off-renderer-default", False, ["--renderer", "default"], note="control: DMA-BUF without the drawer"),
+            Case("on-renderer-default", True, ["--renderer", "default"], note="DMA-BUF GPU buffers, not SHM"),
             Case("on-renderer-mesa-egl", True, ["--renderer", "mesa-egl"], note="Mesa EGL instead of NVIDIA EGL"),
-            Case("on-gdk-gl-disable", True, env={"GDK_GL": "disable"}, note="GDK paints the window without GL"),
+            Case("on-gdk-gl-disable", True, env={"GDK_GL": "disable"},
+                 note="GDK without GL; WebKit then turns its acceleration off too, so this is not a narrow test"),
             # Not WEBKIT_DISABLE_COMPOSITING_MODE=1: on Xvfb it leaves the page unpainted
             # at random even with the drawer off, so it separates nothing.
         ]
@@ -268,6 +286,21 @@ class X11:
         x.XFree.argtypes = [ptr]
         x.XCloseDisplay.argtypes = [ptr]
         x.XKeysymToKeycode.restype, x.XKeysymToKeycode.argtypes = ctypes.c_ubyte, [ptr, ul]
+        x.XGrabServer.argtypes = x.XUngrabServer.argtypes = [ptr]
+        x.XGetWindowProperty.argtypes = [ptr, ul, ul, ctypes.c_long, ctypes.c_long, i, ul, ctypes.POINTER(ul),
+                                         ctypes.POINTER(i), ctypes.POINTER(ctypes.c_ulong),
+                                         ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte))]
+
+        class Attributes(ctypes.Structure):  # XWindowAttributes (Xlib.h)
+            _fields_ = [("x", i), ("y", i), ("width", i), ("height", i), ("border_width", i), ("depth", i),
+                        ("visual", ptr), ("root", ul), ("c_class", i), ("bit_gravity", i), ("win_gravity", i),
+                        ("backing_store", i), ("backing_planes", ul), ("backing_pixel", ul), ("save_under", i),
+                        ("colormap", ul), ("map_installed", i), ("map_state", i), ("all_event_masks", ctypes.c_long),
+                        ("your_event_mask", ctypes.c_long), ("do_not_propagate_mask", ctypes.c_long),
+                        ("override_redirect", i), ("screen", ptr)]
+
+        self.Attributes = Attributes
+        x.XGetWindowAttributes.argtypes = [ptr, ul, ctypes.POINTER(Attributes)]
         t.XTestFakeMotionEvent.argtypes = [ptr, i, i, i, ul]
         t.XTestFakeButtonEvent.argtypes = [ptr, ctypes.c_uint, i, ul]
         t.XTestFakeKeyEvent.argtypes = [ptr, ctypes.c_uint, i, ul]
@@ -306,6 +339,57 @@ class X11:
             path.append(child.value)
             window = child.value
 
+    def grab(self) -> None:
+        """No other client's request runs until ungrab: nothing can restack,
+        map or refocus between the last check and the input."""
+        self.x.XGrabServer(self.dpy)
+        self.x.XSync(self.dpy, 0)
+
+    def ungrab(self) -> None:
+        self.x.XUngrabServer(self.dpy)
+        self.x.XSync(self.dpy, 0)
+
+    def viewable_rect(self, wid: int) -> tuple[int, int, int, int] | None:
+        """`wid`'s rect in root coordinates while it is viewable, else None."""
+        c, attrs = self.c, self.Attributes()
+        if not self.x.XGetWindowAttributes(self.dpy, wid, c.byref(attrs)) or attrs.map_state != 2:  # IsViewable
+            return None
+        rx, ry, child = c.c_int(), c.c_int(), c.c_ulong()
+        if not self.x.XTranslateCoordinates(self.dpy, wid, self.root, 0, 0, c.byref(rx), c.byref(ry), c.byref(child)):
+            return None
+        return rx.value, ry.value, attrs.width, attrs.height
+
+    def root_window_property(self, name: bytes) -> int | None:
+        """A WINDOW-typed property of the root (None: absent or unreadable)."""
+        c = self.c
+        atom = self.x.XInternAtom(self.dpy, name, 1)
+        if not atom:
+            return None
+        actual, fmt, n, after = c.c_ulong(), c.c_int(), c.c_ulong(), c.c_ulong()
+        data = c.POINTER(c.c_ubyte)()
+        if self.x.XGetWindowProperty(self.dpy, self.root, atom, 0, 1, 0, 33, c.byref(actual), c.byref(fmt),  # XA_WINDOW
+                                     c.byref(n), c.byref(after), c.byref(data)) != 0 or not data:
+            return None
+        try:
+            if fmt.value != 32 or n.value != 1:
+                return None
+            return c.cast(data, c.POINTER(c.c_ulong))[0]
+        finally:
+            self.x.XFree(data)
+
+    def wm_running(self) -> bool:
+        return self.root_window_property(b"_NET_SUPPORTING_WM_CHECK") is not None
+
+    def active(self) -> int | None:
+        return self.root_window_property(b"_NET_ACTIVE_WINDOW")
+
+    def pointer(self) -> tuple[int, int]:
+        c, r, child = self.c, self.c.c_ulong(), self.c.c_ulong()
+        rx, ry, wx, wy, m = c.c_int(), c.c_int(), c.c_int(), c.c_int(), c.c_uint()
+        self.x.XQueryPointer(self.dpy, self.root, c.byref(r), c.byref(child), c.byref(rx), c.byref(ry), c.byref(wx),
+                             c.byref(wy), c.byref(m))
+        return rx.value, ry.value
+
     def focus(self) -> int:
         c, w, revert = self.c, self.c.c_ulong(), self.c.c_int()
         self.x.XGetInputFocus(self.dpy, c.byref(w), c.byref(revert))
@@ -341,17 +425,22 @@ class X11:
         self.x.XSync(self.dpy, 0)
 
     def button(self) -> None:
-        for down in (1, 0):
-            self.t.XTestFakeButtonEvent(self.dpy, 1, down, 0)
+        """Left button down and up; up is sent whenever down was."""
+        self.t.XTestFakeButtonEvent(self.dpy, 1, 1, 0)
+        try:
             self.x.XSync(self.dpy, 0)
-            time.sleep(0.05)
+        finally:
+            self.t.XTestFakeButtonEvent(self.dpy, 1, 0, 0)
+            self.x.XSync(self.dpy, 0)
 
     def escape(self) -> None:
         code = self.x.XKeysymToKeycode(self.dpy, 0xFF1B)
-        for down in (1, 0):
-            self.t.XTestFakeKeyEvent(self.dpy, code, down, 0)
+        self.t.XTestFakeKeyEvent(self.dpy, code, 1, 0)
+        try:
             self.x.XSync(self.dpy, 0)
-            time.sleep(0.05)
+        finally:
+            self.t.XTestFakeKeyEvent(self.dpy, code, 0, 0)
+            self.x.XSync(self.dpy, 0)
 
 
 # --- safety: input goes only to our own window, which must be on top ------------
@@ -378,41 +467,70 @@ def focus_inside(wid: int, focus: int, parent_of) -> bool:
     return False
 
 
-def raise_window(x11: X11, wid: int, tries: int = 3) -> bool:
-    """Asks for our window on top; True once it is on top at every sample point."""
+POINTER_ROOT = 1  # X's focus mode in which keys go to the window under the pointer
+
+
+def window_ready(x11, wid: int) -> str | None:
+    """Why `wid` may not take input now (None: it may): it must be viewable,
+    and, when a window manager runs, its active window."""
+    if x11.viewable_rect(wid) is None:
+        return "our window is not viewable"
+    if x11.wm_running() and x11.active() != wid:
+        return "our window is not the active window"
+    return None
+
+
+def raise_window(x11, wid: int, tries: int = 3) -> bool:
+    """Asks for our window on top and active; True once it is viewable,
+    active (with a window manager) and on top at every sample point."""
     for _ in range(tries):
         x11.activate(wid)
         time.sleep(0.7)
-        if not covered_points(wid, geometry(wid), x11.path_at):
+        rect = x11.viewable_rect(wid)
+        if rect and window_ready(x11, wid) is None and not covered_points(wid, rect, x11.path_at):
             return True
     return False
 
 
 def safe_click(x11, wid: int, px: int, py: int) -> str | None:
-    """Clicks at px, py only if our window is on top there, before and after
-    the pointer moves. Returns why it refused (nothing was sent), or None."""
-    if wid not in x11.path_at(px, py):
-        return "our window is not on top at the click point"
-    x11.move(px, py)
-    time.sleep(0.2)
-    if wid not in x11.pointer_path():
-        return "the pointer is not over our window"
-    x11.button()
-    return None
-
-
-POINTER_ROOT = 1  # X's focus mode in which keys go to the window under the pointer
+    """Clicks at px, py only if, under a server grab, our window is viewable,
+    active, contains the point and is on top there. Returns why it refused
+    (saying whether the pointer had moved), or None."""
+    x11.grab()
+    try:
+        reason = window_ready(x11, wid)
+        rect = x11.viewable_rect(wid)
+        if reason is None and not (rect and rect[0] <= px < rect[0] + rect[2] and rect[1] <= py < rect[1] + rect[3]):
+            reason = "the click point is outside our window"
+        if reason is None and wid not in x11.path_at(px, py):
+            reason = "our window is not on top at the click point"
+        if reason:
+            return reason + "; no input sent"
+        x11.move(px, py)
+        if x11.pointer() != (px, py) or wid not in x11.pointer_path():
+            return "the pointer did not land on our window; it moved, no click sent"
+        x11.button()
+        return None
+    finally:
+        x11.ungrab()
 
 
 def safe_escape(x11, wid: int) -> str | None:
-    """Escape only while the keyboard focus is inside our window (or, with
-    PointerRoot focus, the pointer is over our window)."""
-    focus = x11.focus()
-    ours = wid in x11.pointer_path() if focus == POINTER_ROOT else focus_inside(wid, focus, x11.parent)
-    if not ours:
-        return "the keyboard focus is not in our window"
-    x11.escape()
-    return None
+    """Escape only if, under a server grab, our window is viewable, active,
+    and holds the keyboard focus (or, with PointerRoot focus, the pointer)."""
+    x11.grab()
+    try:
+        reason = window_ready(x11, wid)
+        if reason is None:
+            focus = x11.focus()
+            ours = wid in x11.pointer_path() if focus == POINTER_ROOT else focus_inside(wid, focus, x11.parent)
+            reason = None if ours else "the keyboard focus is not in our window"
+        if reason:
+            return reason + "; no input sent"
+        x11.escape()
+        return None
+    finally:
+        x11.ungrab()
 
 
 def our_window(pid: int) -> int | None:
@@ -502,7 +620,7 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float, url: str | 
                     return FAIL, detail + "; no icon on screen to click"
                 refused = safe_click(x11, wid, *centre)
                 if refused:
-                    return INVALID, detail + f"; {refused}: no input sent"
+                    return INVALID, detail + f"; click refused: {refused}"
                 # The open drawer, twice, a second apart: it must draw and stay drawn.
                 for sample in (1, 2):
                     time.sleep(settle if sample == 1 else 1.0)
@@ -516,7 +634,7 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float, url: str | 
                         return FAIL, detail
                 refused = safe_escape(x11, wid)
                 if refused:
-                    return INVALID, detail + f"; {refused}: Escape not sent"
+                    return INVALID, detail + f"; Escape refused: {refused}"
                 time.sleep(settle)
                 window, screen = capture_both(wid, out, f"{case.name}.minimized", crop)
                 ok, closed = judge(window, screen, crop, True)
@@ -578,10 +696,19 @@ def main(argv: list[str]) -> int:
     print("Keep the screen free while this runs: each window is raised, and the screen under it is captured.",
           flush=True)
     tally = {PASS: 0, FAIL: 0, INVALID: 0}
+    statuses: dict[str, str] = {}
     for case in cases(args.matrix, variants["variant"], variants["variant_page_only"]):
         status, detail = run_case(case, args.bin, out, args.settle, args.url)
         tally[status] += 1
+        statuses[case.name] = status
+        control = CONTROLS.get(case.name)
+        if control and statuses.get(control) not in (None, PASS):
+            detail += f"; NOT DIAGNOSTIC: its control {control} did not pass, so this fails without the drawer too"
         print(f"{status:<7} {case.name:<22} {detail}  ({case.note})", flush=True)
+        if status == INVALID and " refused: " in detail:
+            print("STOPPED: an input was refused, so no further case runs. Nothing was sent to another window.",
+                  flush=True)
+            return 3
         if case.name == "drawer-off" and status != PASS:
             print("INVALID RUN: the drawer-off control did not pass, so the capture itself is not trusted "
                   "(a covered window, or a broken build). Fix that and run again.", flush=True)

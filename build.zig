@@ -706,6 +706,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "cd tests/manual && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_check",
     });
+    // The same check's input guard against a real X server: decoy windows on
+    // a private Xvfb (xsession.py) must receive no click or key.
+    const real_screen_input_xvfb = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/manual && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY python3 ../e2e/xsession.py --xvfb -- env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_input",
+    });
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -946,6 +953,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
+    test_step.dependOn(&real_screen_input_xvfb.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
