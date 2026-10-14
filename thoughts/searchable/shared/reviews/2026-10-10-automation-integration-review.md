@@ -5411,3 +5411,48 @@ change the BLOCKER result, but rev 12 must incorporate them before approval:
   `/usr` remains a failure.
 
 Agent Mail 5285 sent this addendum to BlackRobin and BlueBeaver.
+
+## Chat drawer S2 visible-fold follow-up (`38e30e5`)
+
+**Verdict: APPROVED. Status: CLOSED by `38e30e5` for the S2
+BLOCKER-for-tests at `6fe538f`.** The minimize animation now has both a
+production-chain draw observation and an independent on-screen pixel oracle;
+the exact invisible-stand-in mutation that previously survived is red. No
+live browser, socket, account, token or `DISPLAY :0` was used.
+
+The code keeps the 180 ms production default and adds only a bounded,
+e2e-protocol-gated duration seam. `src/agent_drawer.c:401-435` still drives
+the real GDK frame clock. `src/agent_drawer.c:438-452` emits a `fold` row from
+the stand-in's own `draw` handler, so a hidden widget cannot self-report a
+visible frame; `src/agent_drawer.c:455-467` resets the observation state and
+shows the stand-in before registering the tick. `src/agent_drawer.zig:113-132,
+187-227,312-319` restricts `ZIGBROWSER_AGENT_ANIM_MS` to decimal 180--5000,
+resets the process store to 180 at configure time and honours the value only
+with `--e2e-protocol`; `src/app.zig:48-54` reads it before the first window.
+Unset, refused and invalid values therefore leave the production duration
+unchanged.
+
+The closure case checks at least two actually drawn intermediate rectangles,
+unique increasing frame numbers, non-growing dimensions and motion of every
+edge toward the saved icon rectangle (`tests/e2e/agent_drawer_test.py:163-186`).
+The new 3 s case first polls XWD at a fixed corridor point outside both the
+open drawer and icon endpoint, then brackets a capture with adjacent draw
+rows and samples a point inside both observed rectangles but outside both end
+states; it also requires page colour immediately outside and again after the
+fold (`tests/e2e/agent_drawer_test.py:189-243`). This is not merely a
+self-reporting oracle.
+
+Independent clean-export evidence at exact `38e30e5`:
+
+- unmodified `agent_drawer_test.py --only fold` on its private Xvfb: **18/18
+  checks, exit 0**;
+- with only `gtk_widget_show(d->ghost)` changed to
+  `gtk_widget_hide(d->ghost)`: **8 checks, 2 failed, exit 1**. The
+  row-independent `xwd sees the fold pass over the corridor point` assertion
+  failed, and no draw rows could straddle the capture. The throwaway export
+  was then deleted with `find -delete`.
+
+BlackRobin's clean-export full gate for the same six-file follow-up passed
+**102/102 steps and 807/807 tests**; the preserved green fold case is 18/18,
+and the author's same mutant also fails both pixel and draw-row oracles. No
+new BLOCKER, SHOULD or NIT remains for S2.
