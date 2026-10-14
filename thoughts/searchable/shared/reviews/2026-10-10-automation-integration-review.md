@@ -5287,3 +5287,102 @@ gap.
   disclosed deviations, not extra S2 implementation blockers.
 - NIT: `git diff --check e9b0cbf..aca3e33` reports a new blank line at EOF in
   `tests/e2e/agent_common.py:290`.
+
+## Claude Agent chat-drawer plan rev 12 (`f035e47`, follow-up `2f363fd`)
+
+**Verdict: BLOCKER before S3/S4.** Rev 12 correctly incorporates the six
+accepted P0 discoveries, specifies failing-first replacements for both P0
+blockers, and repairs the S2 plan contract. The new ptrace census itself is a
+reasonable lifecycle-complete oracle, and the outer seccomp contract now has
+both a real-CLI/nested-hook proof and an independent instruction-table proof.
+Two documentation defects still prevent this from being an executable plan:
+the S3 census seam is assigned to a channel that cannot install the tracer at
+the required process boundary, and the plan still labels the pre-S1 baseline
+as current HEAD after P0, S1 and S2 have landed.
+
+This review covers the current two-commit revision: `f035e47` plus BlackRobin's
+docs-only `2f363fd` follow-up. The latter correctly assigns the account button
+to S4 and strengthens the mid-fold pixel oracle to sample page area outside
+both endpoint rectangles. No live browser, socket, site, token, display,
+build or test was used. Both docs diffs are clean under `git diff --check`.
+All in-progress P0/S2 working-tree files were left untouched.
+
+### Rev-12 amendment disposition
+
+| Prior finding | Rev-12 disposition |
+|---|---|
+| R1 FIFO hang | **CLOSED in the plan.** D7b/D11 now make the FIFO helper-to-wrapper only, give the CLI a socketpair end on fd 3, disclose the wrapper-memory interval, retain the installed-CLI probe and make the old FIFO-as-fd-3 wrapper the red seam (`plan:311-322,466-490,927-936,1164-1168`). |
+| Hook messaging capability | **CLOSED for the enforcing tests.** Both messaging names are unconditionally refused, and P0.4 plus the real-binary S3.9 test assert their absence by name independently of the token canary (`plan:565-569,938-946,1189-1195`). See the wording SHOULD below. |
+| Live `.claude.json` path/writes | **CLOSED.** The live file is `.claude/.claude.json`; it and `backups/` remain read-only, `sessions/` joins the reviewed writable union, and observed writes are kept distinct from that union. S3.10 tests an outside change while S3.11 requires exact `EROFS` inside (`plan:141-143,214-223,536-552,1199-1238`). |
+| Nested mount order | **CLOSED.** D12 fixes root, `/dev`, `/proc`, private tmpfs, agent-home remount and final read-only workspace order, explains why, and pins it with a unit red (`plan:570-586,949-964`). |
+| Tool-call timeout | **CLOSED.** The CLI gets 130,000 ms, the helper resolves at 120 s, `ready` publishes the deadline, P0.3 keeps a scaled 10 s-margin contract and S3.2 observes the production values (`plan:263-270,336-346,980-985,1144-1155`). |
+| Agent home under private tmpfs | **CLOSED.** The nested order remounts the confined agent home after private `/tmp`, `/run` and `/dev/shm`, then reasserts the workspace read-only (`plan:576-584`). |
+| Sampled child census | **DESIGN CLOSED; test wiring BLOCKED below.** TRACEFORK/VFORK/CLONE/EXEC with the tracer as bwrap's parent can see the 1 ms mutant, fails closed when tracing is unavailable, and is re-proved in S3.9 (`plan:499-506,949-964,1193`). |
+| Missing outer seccomp | **CLOSED in the plan.** D12 specifies arch/x32/syscall results and nested-namespace allowances; P0.6 runs the real CLI and hooks with the filter and has the no-filter `process_vm_readv` red (`plan:529-539,966-975`). |
+| Short regular-file write | **CLOSED in the plan.** P0.7 injects one-byte writes and requires the complete content before fsync/rename (`plan:977-978`). |
+| S2 visible fold and as-built drift | **CLOSED in the plan.** D7b gains `fold` and `unread`; S2.2 corrects the area domain and requires both draw-handler rows and a stretched real-XWD mid-flight pixel outside the open drawer and icon endpoints. The hidden-stand-in mutant must be red (`plan:364-375,1077-1101`). The implementation follow-up remains a separate code review/gate. |
+
+### BLOCKER — the census shim cannot arrive through `hello`
+
+D11 requires the test tracer to be the **parent of the outer bwrap**, with its
+child calling `PTRACE_TRACEME` before `exec` (`plan:499-506`). S3.9 selects
+that tracer through `ZIGBROWSER_AGENT_BWRAP` (`plan:1193-1195`). But the sole
+e2e-seam contract says every listed variable, including that one, reaches the
+helper inside its `hello` frame (`plan:769-779`). By then outer bwrap has
+already launched and the helper exists inside it; a helper-delivered value
+cannot retroactively install the helper's parent tracer. Following the seam
+contract therefore loses the lifecycle-complete ancestry that is meant to
+close the `sleep 0.001` blocker.
+
+Split the seam table by owner. The app must consume and validate the absolute
+tracer-shim/bwrap path only under `--e2e-protocol`, before spawn, and launch
+the shim in the outer-bwrap slot. Specify that the still-running shim parent
+forks a traced child which execs the real bwrap, preserves PDEATHSIG/EXITKILL,
+and owns the outside log. Helper-carried values may continue through `hello`.
+`ZIGBROWSER_AGENT_ANIM_MS` and `ZIGBROWSER_AGENT_FS_PAUSE` are also app/native
+seams rather than helper frames and should be classified accurately.
+
+### BLOCKER — the claimed current-state pin predates the built product
+
+The frontmatter and opening claim every citation and current-state fact is at
+HEAD `b4c23a1` and say "no implementation" (`plan:5-16,68`). At the reviewed
+revision, committed P0, S1 and S2 precede it. The current production
+`zb_window_new` already attaches `ZbDrawer` through a `GtkOverlay`
+(`src/webkit_shim.c:1147-1240` at committed HEAD), while the plan's "Current
+state analysis" still says the window has one direct WebView child and no
+overlay (`plan:72-77`). ClosureMap A calls its table "at HEAD" but cites the
+old registration/reply lines (`plan:803-813`); at committed HEAD those nodes
+are `src/webkit_shim.c:692-769`. The semantic zbHost chain remains unchanged,
+but its status and evidence citations do not.
+
+The earlier requirement was that the ClosureMaps be pinned to current HEAD.
+Before S3/S4, repin the plan to the latest committed product baseline, update
+the built/current-state section for P0/S1/S2, and correct A/B citations (or
+label the `b4c23a1` material explicitly historical and add a current map).
+Also remove the false "no implementation" status. This matters directly to
+S3/S4 because they extend the already-built drawer/window lifecycle.
+
+### SHOULD and retained debt
+
+- Section 3b says P0.4, A4 and S3.9 all assert the two CLI messaging names,
+  but the A4 row and S4.4 still mention only the token canary
+  (`plan:895-903,1288-1296`). P0.4 and S3.9 already protect the real boundary,
+  so this is not another blocker; make the A4 wording match the claimed
+  matrix.
+- D7b permits a 512-byte token plus newline in the FIFO but labels the CLI
+  socket payload as at most 512 bytes, while D11 reads up to 513 and does not
+  state that it strips the newline (`plan:321-322,469-478`). Pin whether the
+  wrapper strips the delimiter or passes at most 513 bytes so the protocol and
+  implementation have one bound.
+- Rev 11's cross-instance lock SHOULD remains open: exercise B's refusal while
+  A has a fully written live broker temp, not only while A is idle.
+- D3 still describes margins as the icon-placement mechanism, whereas the
+  built S1/S2 code uses `GtkOverlay::get-child-position`. Fold that factual
+  correction into the current-state repin.
+
+The CodeCleanup plan-hygiene pass found no new side effect in a condition,
+mutation in a control expression, nesting, magic-literal ownership or
+maintainability blocker. Rev 12 centralizes the new deadlines, schemas,
+refused names, mount order and BPF results in their owning contracts.
+
+Agent Mail 5282 sent the two blockers to BlackRobin before this log entry.
