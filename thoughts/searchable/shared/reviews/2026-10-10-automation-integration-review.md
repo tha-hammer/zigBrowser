@@ -8234,3 +8234,60 @@ The newest approved linear push-through SHA from `fa0aa48` therefore remains
 linear range cannot cross the blocked `971ede0`, and exact `40ad263` is also
 blocked. No push or history rewrite was performed; no live browser, profile,
 token, socket or DISPLAY `:0` was used.
+
+## S3n1 bounded-buffer and reaping closures (`489dcd1`, `5f84a59`, `f82228c`)
+
+### Exact verdicts
+
+**Explicit verdict for `489dcd1`: APPROVED.** Netd now calculates the current
+room in the destination queue and passes exactly that value to `recv`, guarded
+by `room > 0` so a full queue cannot turn `recv(0)` into a false EOF
+(`agent/host/zb_agent_host/netd.py@489dcd1:253-265`). This preserves the
+nonblocking idle-deadline fix while making its 64 KiB per-direction claim
+true. The failing-first test uses real socketpairs and a counting socket to
+measure bytes read from one side but not yet written to the other. It forces
+more than 64 KiB through a deliberately slow destination before requiring the
+peak to stay at or below `SPLICE_BUFFER`
+(`agent/host/tests/test_netd.py@489dcd1:446-492`). BlueBeaver recorded a
+126,592-byte peak on `40ad263` and at most 65,536 after the fix. This closes
+the netd half of the buffer-cap blocker in `8058f97`.
+
+**Explicit verdict for `5f84a59`: APPROVED.** `Pair.handle` applies the same
+current-room calculation and positive-room guard before reading
+(`agent/host/zb_agent_host/relay.py@5f84a59:84-95`). `PairBufferTest` drives a
+real production `Pair` and selector with a non-reading sink, proves that it
+received more than one buffer's worth, and measures the outstanding peak
+against `BUFFER_MAX` (`agent/host/tests/test_relay.py@5f84a59:342-368`). The
+same test was red at 126,592 bytes before the fix and green at no more than
+65,536 afterward. Because both directions use the same peer-indexed code, the
+one-way slow-reader drive exercises the condition shared by either direction.
+This closes the relay half of the buffer-cap blocker.
+
+**Explicit verdict for `f82228c`: APPROVED.** Every remaining process created
+with `Popen` by `test_relay.py` now registers the shared `reap` cleanup: the
+fd-3 boundary test, outer relay signal test, common bwrap-termination helper,
+inner relay signal test and both no-orphan loop instances
+(`agent/host/tests/test_relay.py@f82228c:170-206,283-320`). The descriptor
+census already used the same cleanup, and `eof_after` explicitly closes its
+pipe and waits. Thus each started process is waited and every owned pipe is
+closed, including when an assertion aborts a test. The exact full gate emitted
+no `ResourceWarning`, closing the cleanup blocker from `8058f97`. The separate
+non-blocking SHOULD about Python `preexec_fn` in the fd-3 test remains deferred
+as previously agreed; it does not invalidate this reaping closure.
+
+### Gate and push-through boundary
+
+A bounded independent clean export of exact `f82228c`, with a fresh cache
+under private Xvfb, passed **Build Summary: 108/108 steps succeeded; 817/817
+tests passed**. The registered S3n1 steps ran `test_netd` **22/22** and
+`test_relay` **14/14**, with no `ResourceWarning` in the output. The EXIT trap
+deleted the export and cache immediately afterward.
+
+The three findings that blocked `9fb5a3c` are now all closed by the reviewed
+chain: exact-host mutation coverage by `9391611`, the idle-deadline fix plus
+bounded netd splice by `971ede0`/`489dcd1`, and the real-fd-3 boundary by
+`998062f`; `5f84a59` closes the sibling relay bound, while `f82228c` closes the
+test-process cleanup blocker. Therefore the newest approved linear
+push-through SHA from `fa0aa48` is **`f82228c`**. No push or history rewrite
+was performed; no live browser, profile, token, socket or DISPLAY `:0` was
+used.
