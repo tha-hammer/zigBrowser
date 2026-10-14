@@ -21,7 +21,7 @@ prints one line per case. Exit 0 only when every expected case passes.
 
     python3 tests/manual/real_screen_check.py --confirm-user-permission \\
         --bin zig-out/bin/zigBrowser --out /tmp/zb-real-screen [--matrix] \\
-        [--variant no-ghost=/path/to/other/zigBrowser]
+        [--variant no-ghost=/path/to/build] [--variant-page-only empty=/path/to/build]
 """
 
 from __future__ import annotations
@@ -52,12 +52,13 @@ ICON_MIN_PIXELS = 400           # a 56 px circle has about 2400
 
 class Case:
     def __init__(self, name: str, drawer: bool, args: list[str] | None = None, env: dict[str, str] | None = None,
-                 binary: str | None = None, note: str = "") -> None:
+                 binary: str | None = None, note: str = "", icon: bool | None = None) -> None:
         self.name, self.drawer, self.args, self.env = name, drawer, args or [], env or {}
         self.binary, self.note = binary, note
+        self.icon = drawer if icon is None else icon  # whether the icon must be drawn
 
 
-def cases(matrix: bool, variants: list[tuple[str, str]]) -> list[Case]:
+def cases(matrix: bool, variants: list[tuple[str, str]], page_only: list[tuple[str, str]]) -> list[Case]:
     out = [Case("drawer-off", False, note="control: the window without the drawer"),
            Case("drawer-on", True, note="the slice check: defaults plus --agent-drawer on")]
     if matrix:
@@ -69,6 +70,7 @@ def cases(matrix: bool, variants: list[tuple[str, str]]) -> list[Case]:
             Case("on-no-compositing", True, env={"WEBKIT_DISABLE_COMPOSITING_MODE": "1"}, note="WebKit without compositing"),
         ]
     out += [Case(name, True, binary=path, note=f"variant build {path}") for name, path in variants]
+    out += [Case(name, True, binary=path, icon=False, note=f"page-only variant {path}") for name, path in page_only]
     return out
 
 
@@ -159,7 +161,7 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
             page_px = count(window, box, PAGE_RGB)
             icon_px = count(window, box, ICON_RGB)
             fraction = page_px / max(1, window.width * window.height)
-            ok = fraction >= PAGE_MIN_FRACTION and (not case.drawer or icon_px >= ICON_MIN_PIXELS)
+            ok = fraction >= PAGE_MIN_FRACTION and (not case.icon or icon_px >= ICON_MIN_PIXELS)
             return ok, f"page {fraction:.0%} of {window.width}x{window.height}, icon {icon_px} px"
         finally:
             if proc.poll() is None:
@@ -183,6 +185,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--matrix", action="store_true", help="also run the rendering experiment cases")
     ap.add_argument("--variant", action="append", default=[], metavar="NAME=PATH",
                     help="also run a drawer-on case with another build")
+    ap.add_argument("--variant-page-only", action="append", default=[], metavar="NAME=PATH",
+                    help="like --variant, for a build that draws no icon: only the page is checked")
     ap.add_argument("--settle", type=float, default=4.0, help="seconds between the window appearing and capture")
     args = ap.parse_args(argv)
     if not args.confirm_user_permission:
@@ -192,13 +196,14 @@ def main(argv: list[str]) -> int:
     if not os.environ.get("DISPLAY"):
         print("refusing: DISPLAY is not set", file=sys.stderr)
         return 2
-    variants = []
-    for item in args.variant:
-        name, sep, path = item.partition("=")
-        if not sep or not name or not path:
-            print(f"bad --variant {item!r}: want NAME=PATH", file=sys.stderr)
-            return 2
-        variants.append((name, path))
+    variants: dict[str, list[tuple[str, str]]] = {"variant": [], "variant_page_only": []}
+    for key, items in variants.items():
+        for item in getattr(args, key):
+            name, sep, path = item.partition("=")
+            if not sep or not name or not path:
+                print(f"bad --{key.replace('_', '-')} {item!r}: want NAME=PATH", file=sys.stderr)
+                return 2
+            items.append((name, path))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
@@ -209,7 +214,7 @@ def main(argv: list[str]) -> int:
         info = subprocess.run([glx, "-B"], capture_output=True, text=True, timeout=30)
         (out / "glxinfo.txt").write_text(info.stdout + info.stderr)
     failed = 0
-    for case in cases(args.matrix, variants):
+    for case in cases(args.matrix, variants["variant"], variants["variant_page_only"]):
         ok, detail = run_case(case, args.bin, out, args.settle)
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {case.name:<22} {detail}  ({case.note})", flush=True)
