@@ -557,6 +557,17 @@ runtime + helper, applies **SAI copy rule (a)** (executed-import-graph), skips o
 skills, and grants **no access to the real `~/.claude` or user repositories** — the macOS analog
 of the Linux provisioning (setup.py), replacing `/proc/self/exe` with a macOS executable-path API.
 
+### Behavior MS5.1b: skipped linked skills leave no bytes; dependency trees copy unscanned (RoseCat, linked-skills resolution)
+**Given** the user's decision **"keep skipping"** outbound linked skills (RoseCat mail 5458),
+**When** setup runs on macOS,
+**Then** a symlink that resolves **outside** its item root is skipped and the test proves the
+**target's bytes are absent** from the built home (not merely that the link is gone), while the
+internal dependency/build trees (`node_modules`, `.venv`, `venv`, `site-packages` —
+`setup.py DEPENDENCY_DIRS`) still copy **verbatim and unscanned** — matching the Linux
+`_copy_tree` skip-link + verbatim-dependency behavior. Red-first: a fixture SAI with an
+out-of-root linked skill whose target holds a canary string; the test asserts the canary is
+**not present** anywhere in `dist-<n>/`.
+
 ### Behavior MS5.2: Keychain onboarding (disposable canary in tests)
 **Given** the Secrets flow,
 **When** the user onboards via **claude.ai callback and/or `claude setup-token`** (the accepted
