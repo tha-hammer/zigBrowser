@@ -5040,3 +5040,69 @@ documentation only for this project.
 The CodeCleanup review found no new conditional-side-effect, mutation,
 nesting, literal or maintainability blocker in the docs-only diff. Agent Mail
 5257 sent the approval, SHOULD and NITs to BlackRobin.
+
+## Claude Agent drawer S1 (`2e467c4`)
+
+**Verdict at exact `2e467c4`: APPROVED.** S1 implements the launch switch,
+native GTK overlay and movable floating icon without adding a privileged page
+or socket surface. The default remains off until S5. The closure e2e uses real
+XTest input on a private Xvfb, proves the icon's allocation is its input region
+rather than the full overlay, and drives primary-window, popup, persistence,
+resize, pointer and keyboard paths through the real binary. Two narrow test
+coverage SHOULDs remain below; neither exposes a production defect in the
+reviewed implementation.
+
+### Contract trace
+
+| S1 contract | Evidence at `2e467c4` | Verdict |
+|---|---|---|
+| Flag/env/default and screenshot exclusion | `src/agent_config.zig:14-32` resolves flag > env > built-in `off`; its oracle property spans flag/env combinations (`:34-101`). `src/cli.zig:168-197,424-438` validates one exact `on|off` flag and keeps it out of screenshot mode. `src/app.zig:37-50` applies the setting before the first window. | PASS |
+| One native overlay per accepted browsing window; off tree unchanged | `src/webkit_shim.c:1147-1190` performs the null, 16-window and id-exhaustion guards before the one attach call, and keeps the former direct `GtkWindow -> WebKitWebView` add when off. Popups traverse the same `zb_window_new`. `src/webkit_shim.c:970-975` detaches before the window record is removed/freed. | PASS |
+| Movable icon and click pass-through | `src/agent_drawer.c:124-179` gives the icon exactly its 56x56 allocation, keeps resize placement in ratios and reports each new position; `:195-287` distinguishes a <=6 px click from a drag and implements clamped 16/64 px keyboard moves. `tests/e2e/agent_drawer_icon_test.py:255-316` sends four one-pixel-edge plus 25 seeded outside clicks and six inside clicks through libXtst; `:327-453` drives drag, clamp, popup inheritance, relaunch persistence and keyboard movement. | PASS |
+| Page-world and socket isolation | The overlay contains only GTK widgets (`src/agent_drawer.c:298-340`) and is never installed into a `WebKitUserContentManager`, page DOM, script world or automation router. The real socket test sees only the browsing window and gets `-32601` for `agent.ping`, `drawer.open` and `secrets.get` (`tests/e2e/agent_drawer_icon_test.py:267-275`). | PASS |
+| Default off until S5 | `src/agent_config.zig:16-17` fixes the built-in value to `off`; `src/webkit.zig:90-101,116-119` applies and checks it. The real-binary off case opens a popup and observes no `DRAWER` row (`tests/e2e/agent_drawer_icon_test.py:216-236`). | PASS |
+| Existing zbHost promise settles both ways | `tests/fixtures/app/index.html:84-109` records the page-side promise branch in `document.title`; `tests/e2e/ipc_roundtrip_test.py:77-123` observes it independently through `page.evaluate`. This is an acceptable deviation from the plan's `--print-title` observer because that mode emits only the first title. The production zbHost chain is still the trigger. | PASS |
+
+### Red-first and gate evidence
+
+BlackRobin's timestamped S1 scratch logs precede the green runs and contain
+real failures: `agent_config` and CLI rejected the new switch, all 11 drawer
+unit stubs failed, and the unchanged binary produced no icon rows. Four
+throwaway mutants were also killed: removing `zb_drawer_attach`, expanding the
+icon allocation to the full window (0/29 outside clicks reached the page), and
+removing either the success or rejection WebKit reply. Thus the new tests do
+not merely characterize a permanently green seam.
+
+The author's clean-export full gate log is green: **98/98 steps succeeded;
+797/797 tests passed**. I independently ran a bounded clean export, deleted it
+immediately afterward, and obtained:
+
+- build: **5/5 steps succeeded**;
+- `tests/agent_drawer_test.zig`: **11/11 passed**;
+- real-binary private-Xvfb icon closure: **55 checks, 0 failed**;
+- real-binary private-Xvfb zbHost round trip: **PASS** for success and bad-args
+  rejection.
+
+The X-input helper refuses `:0`, `:1` and any display outside its private
+`:200-:399` range (`tests/e2e/xinput.py:34-53`); missing Xvfb, xauth, xwd,
+libXtst or the binary is a hard failure rather than a skip
+(`tests/e2e/agent_drawer_icon_test.py:456-484`). No live browser or live socket
+was touched.
+
+### Non-blocking test-completeness findings
+
+- **SHOULD — drive `page.health` with the drawer on.** S1.5 names both
+  `page.list` and `page.health`, but the new closure test only calls
+  `page.list` before probing the three forbidden methods
+  (`tests/e2e/agent_drawer_icon_test.py:267-275`). Source review shows the
+  overlay does not enter either registry path, and the full gate keeps the
+  existing health suite green, so this is missing direct coverage rather than
+  a product blocker.
+- **SHOULD — make close-during-load teardown observable.** The plan's S1.2
+  edge asks for no leaked overlay when a loading window closes. Production
+  calls `zb_drawer_detach` and frees the per-window allocation
+  (`src/webkit_shim.c:970-975`; `src/agent_drawer.c:343-350`), and the private
+  Xvfb harness leaves no browser or Xvfb process behind, but the S1 e2e never
+  closes one popup while the process remains alive or asserts a live-drawer
+  count. Add that lifecycle oracle when the next drawer slice extends the
+  debug rows.
