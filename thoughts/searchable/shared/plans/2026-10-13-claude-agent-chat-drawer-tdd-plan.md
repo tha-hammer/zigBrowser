@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Built so far (rev 13): P0 at e9b0cbf (its blocker follow-up is in review), S1 at 2e467c4, S2 at aca3e33 plus 38e30e5; S3 and later are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; see section 3b
+status: plan for review. Built so far (rev 14): P0 at e9b0cbf (its blocker follow-up is in review), S1 at 2e467c4 (approved e29d25b), S2 at aca3e33 plus 38e30e5 (approved 5678ab5); S3 and later are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -356,6 +356,8 @@ agent-home/
 | chat helper `python -m zb_agent_host chat` | the app, on the first Send | until quit, crash or `shutdown` | sessions, SDK, MCP tools |
 | login helper `python -m zb_agent_host login` | the app, on "Sign in with Claude.ai" (S6) | **one-shot**: exits after `done`, `error` or `cancel`, or after 10 min | runs `claude setup-token` under a pty |
 
+**Launch argv (rev 14).** Both helper kinds are started with fixed argv. Only under `--e2e-protocol`, the app appends `--e2e-claude-cli <path>` to the `--agent-setup` helper run and to the login helper's launch (section 7). The chat helper never gets it, and no helper gets it through its environment.
+
 **Pipes and descriptors.** Each has exactly one direction, owner and limit.
 
 | Process | Channel | Direction | Format | Limit and lifetime |
@@ -548,12 +550,18 @@ agent-home/
 - **Fail closed.** The chat helper runs `zb-hook-run --selfcheck` before `ready`. The self-check is a probe hook that must find (a) no `/proc` entry for its parent CLI or for the helper, (b) `EROFS` on a create in `workspace/`, and (c) every descriptor ≥ 3 closed. A failure reports `ready.selfcheck.ok = false`. The app then shows "Agent sandbox unavailable (hook isolation)" and starts no session. `--agent-setup` runs the same self-check and exits 2 when it fails.
 - **Other CLI children (rev 12: a lifecycle-complete census; rev 13: the oracle P0 built).** With built-in tools off and no stdio MCP servers, the only CLI children expected are hooks, plus any fixed programs the CLI runs on its own.
   - A census built from `/proc` snapshots can miss a child that starts and exits between two samples. RoseCat's mutant, a wrapper that spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, survived P0's first census.
-  - **The oracle is a seccomp user-notification exec supervisor**, `agent/host/tests/exec_tracer.py` (test-only, standard-library `ctypes`; rev 13 replaces rev 12's ptrace design with the mechanism P0 built). It sits in the outer-bwrap slot and is the parent of the sandbox:
-    1. The supervisor process creates a `socketpair` and forks.
-    2. The child sets `PR_SET_NO_NEW_PRIVS`, installs a filter that returns `SECCOMP_RET_USER_NOTIF` for `execve` and `execveat` (`SECCOMP_FILTER_FLAG_NEW_LISTENER`), sends the listener fd to the supervisor (`SCM_RIGHTS`), and `exec`s the real bwrap with the unchanged argv. Every descendant inherits the filter: the helper, the CLI, the nested bwrap and every hook.
-    3. The supervisor stays outside the sandbox. For each notification it records the host PID, the full ancestor chain (from `/proc/<pid>/stat`), the path argument resolved against `/proc/<pid>/cwd` (or the `execveat` dirfd) with its real path, and argv. It confirms the notification is still valid (`SECCOMP_IOCTL_NOTIF_ID_VALID`), then answers `SECCOMP_USER_NOTIF_FLAG_CONTINUE`. **No exec runs before it is recorded, whatever the process's lifetime.**
-    4. Its log is written outside the sandbox, to a path fixed when the test generates the oracle. The supervisor exits with bwrap's status.
-  - The death chain is unchanged. bwrap is the supervisor's child (`--die-with-parent`); the supervisor sets `PR_SET_PDEATHSIG(SIGKILL)` and kills its child if it is itself told to stop.
+  - **The oracle is a seccomp user-notification exec supervisor**, `agent/host/tests/exec_tracer.py` (test-only, standard-library `ctypes`; rev 13 replaced rev 12's ptrace design with the mechanism P0 built). **Topology (rev 14: the one P0 built, RoseCat rev-13 blocker 3).** The oracle program is started in the outer-bwrap slot, and **bwrap replaces it in place**:
+    1. The oracle process creates a `socketpair`, then double-forks a **detached supervisor** that keeps one end.
+    2. The original process sets `PR_SET_NO_NEW_PRIVS` and installs a filter that returns `SECCOMP_RET_USER_NOTIF` for `execve` and `execveat` (`SECCOMP_FILTER_FLAG_NEW_LISTENER`). It sends the listener fd to the supervisor (`SCM_RIGHTS`), waits for the supervisor's acknowledgement, and then `execv`s the real bwrap with the unchanged argv. Every descendant inherits the filter: the helper, the CLI, the nested bwrap and every hook.
+    3. Because bwrap replaces the oracle process, it keeps the PID, the parent (the browser, or the contract), the `PR_SET_PDEATHSIG` set at spawn, `--die-with-parent`, and the exit status the parent waits for. **The D7 death chain is literally unchanged.**
+    4. The supervisor stays outside the sandbox. For each notification it records the host PID, the full ancestor chain (from `/proc/<pid>/stat`), the resolved path with its real path, argv, and a `complete` flag (below). It confirms the notification is still valid (`SECCOMP_IOCTL_NOTIF_ID_VALID`), then answers `SECCOMP_USER_NOTIF_FLAG_CONTINUE`. **No exec runs before it is recorded, whatever the process's lifetime.**
+    5. **The supervisor's lifetime.** When every filtered process has exited, the listener reports `POLLHUP`. The supervisor then appends `END <record count>` to its log and exits. If the supervisor dies early, the kernel fails every later filtered exec with `ENOSYS`, so no exec can run unrecorded. A log without its `END` line is incomplete, and the census is red. The test reads the log only after `END` (bounded wait: 10 s after the sandbox exits, else red). The log path is fixed outside the sandbox when the test generates the oracle.
+  - **Complete records (rev 14).** A record certifies an exec only if it is complete:
+    - argv is read pointer by pointer until its terminating NULL, up to 4,096 pointers;
+    - each string is read until its NUL, up to 131,072 bytes (`MAX_ARG_STRLEN`); the path up to 4,096 bytes (`PATH_MAX`);
+    - if any bound is reached, or any memory read fails, the record is written with `complete: false` and is classified **UNEXPECTED**, whatever its path. So an allowed prefix can never certify a call whose unread rest is forbidden.
+  - **`execveat` (rev 14).** P0 observed none. An `execveat` with `dirfd == AT_FDCWD` and `flags == 0` is resolved exactly like `execve`, against `/proc/<pid>/cwd`. Every other `execveat` is recorded with `complete: false` and is UNEXPECTED (fail closed): another `dirfd`, `AT_EMPTY_PATH` or `AT_SYMLINK_NOFOLLOW`.
+  - **Accepted limit (rev 14):** another thread of the exec'ing process could rewrite its argv memory between the supervisor's read and the kernel's copy. The census checks what the CLI itself runs; it is not the security boundary against a hostile process. The sandbox (D12) and seccomp (P0.6) are.
   - **Accepted limit:** a fork that never `exec`s runs no new program and is not recorded. The census is a census of programs.
   - The oracle's filter stacks with the D12 outer filter, so `Seccomp: 2` alone proves nothing in a contract run. P0.6's proof is its `EPERM` probes.
   - **Classification:** a process is a **hook process** if it or an ancestor exec'd `runtime/bin/zb-hook-run`. Every other exec'd program is a **non-hook CLI child**, apart from bwrap, the helper's Python, `zb-claude` and the CLI itself.
@@ -738,6 +746,9 @@ agent-home/
 | R13-3 | The CLI runs its own binary as `rg` (P0 finding 7) | The allowlist is real paths under `/usr` or exactly `$CLI rg`: the pinned CLI real path, `argv[0] == "rg"`, only the observed listing flags, and path operands only under `workspace/` or `.claude/plugins/cache/`. Everything else is red. | D11, P0.5, S3.9 |
 | R13-4 | The plan claimed `b4c23a1` as current HEAD and "no implementation" (rev-12 blocker 2) | Repinned to `38e30e5`: the status lists what is built; §2.0 describes P0, S1 and S2 with current lines; §2.1 is the labelled historical baseline with a line-shift table; ClosureMaps A and B carry current `C:` lines and `git_commit`; D3 states the as-built `get-child-position` placement. | frontmatter, §2, D3, §8 |
 | R13-S | A4/S4.4 wording; the FIFO and socket bound; the live-temp lock overlap; rev-11 NITs | A4 and S4.4 assert both messaging names. One bound: ≤ 513 bytes through the FIFO and the socket, newline passed unchanged. New S3.12 phase 2b runs B against A's paused live temp. The inotify mask and cookie are fixed. The D12 lead sentence says "accepted regular file or directory". | D7b, D11, D12, §9, S3.12, S4.4 |
+| R14-1 | S3.12's write phases need S8 approval and the S10 broker (rev-13 blocker 1) | S3.12 keeps lock acquisition, the idle holder's refusal and the takeover. Phases 2 and 2b, the `FS_PAUSE` seam, its bound and the exact inotify sequence move to the new S10.5, with a red-at-seam. | S3.12, S10.5, §7 |
+| R14-2 | The fake-CLI seam reached neither the setup run nor the login helper (rev-13 blocker 2) | `ZIGBROWSER_AGENT_CLAUDE_CLI` is app-owned and passed only as the launch argv option `--e2e-claude-cli <path>` to the setup run and the login helper. Each route has its own inertness test (S3.7, S6.1). S3.6 covers only seams whose consumers exist in S3; TTL, pause and trace inertness move to S8.2, S10.5 and S10.4. | §7, S3.6, S3.7, S6.1, S8.2, S10.4, S10.5 |
+| R14-3 | The exec oracle's topology and record completeness (rev-13 blocker 3) | D11 describes P0's real topology: a detached supervisor, and bwrap exec'd in place, so the death chain and exit status are bwrap's own; plus an `END` line, and `ENOSYS` when the supervisor is gone. Records are complete or UNEXPECTED (NULL-terminated argv up to 4,096 pointers, strings up to `MAX_ARG_STRLEN`). `execveat` is plain-form only, else UNEXPECTED. P0.5 adds the failing-first cases: the 65th argument, an over-limit string, `execveat`, and a dead supervisor. | D11, P0.5 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -833,7 +844,7 @@ Residual risk, for the record (rev 4):
 
 ### E2E-only seams (rev 3, blocker 10; rev 13: split by owner)
 
-These are the only non-production inputs. Each is honored **only when `--e2e-protocol` is set**, never through the helper's environment allowlist. Rev 13 (RoseCat rev-12 blocker 1): each seam has exactly one owner, and the owner decides when it can take effect. Behavior S3.6 proves each one is ignored without `--e2e-protocol`. App-owned seams print `zigBrowser: <NAME> ignored without --e2e-protocol`; helper-carried seams are absent from `hello`.
+These are the only non-production inputs. Each is honored **only when `--e2e-protocol` is set**, never through the helper's environment allowlist. Rev 13 (RoseCat rev-12 blocker 1): each seam has exactly one owner, and the owner decides when it can take effect. **Rev 14:** each seam's inertness is proved in the slice that builds its consumer: S2 for `DRAWER_DEMO` and `ANIM_MS` (already gated), S3.6 for `BWRAP`, `HOST_CMD`, `TEST_BASE_URL` and `TEST_PROXY`, S3.7 and S6.1 for `CLAUDE_CLI`, S8.2 for `APPROVAL_TTL_MS`, and S10.4 and S10.5 for `FS_TRACE` and `FS_PAUSE`. `--agent-setup` accepts `--e2e-protocol` for this purpose (rev 14). App-owned seams print `zigBrowser: <NAME> ignored without --e2e-protocol`; helper-carried seams are absent from `hello`.
 
 **App-owned seams.** The browser reads and validates these itself, **before** the thing they change exists. They never travel in `hello`.
 
@@ -841,10 +852,11 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 |---|---|---|---|
 | `ZIGBROWSER_AGENT_BWRAP` | `agent_host.c`, before the helper spawn (it replaces the outer-bwrap program; the argv is unchanged) | the bwrap path (S3.4 case f), and the exec-oracle supervisor of D11 (S3.9) | an absolute path to a regular executable file |
 | `ZIGBROWSER_AGENT_HOST_CMD` | `agent_host.c`, before the helper spawn | the fake helper for frame-validation tests (S3.3) | an absolute path |
-| `ZIGBROWSER_AGENT_APPROVAL_TTL_MS` | the native broker, when a grant is minted | a short approval TTL (S8.2) | 500–120000 |
+| `ZIGBROWSER_AGENT_APPROVAL_TTL_MS` | the native broker (S8), when a grant is minted | a short approval TTL (S8.2) | 500–120000 |
 | `ZIGBROWSER_AGENT_DRAWER_DEMO` | `agent_drawer.configure`, at startup | seeded system messages (S2.3) | `messages:<1..5000>` |
 | `ZIGBROWSER_AGENT_ANIM_MS` | `agent_drawer.configure`, at startup | stretches the minimize animation so an `xwd` capture can sample the fold mid-flight (S2.2; rev 12) | 180–5000; the default is 180 |
-| `ZIGBROWSER_AGENT_FS_PAUSE` | the app broker `agent_fs.zig`, at the named point of a workspace write | holds the write until the test writes `release\n` to the browser's stdin (S3.12; rev 11) | `after-temp` only. The wait is bounded at 30 s; on timeout the broker abandons that write (its temp is removed), refuses the tool call with "write paused too long", and prints one stderr line. |
+| `ZIGBROWSER_AGENT_FS_PAUSE` | the app broker `agent_fs.zig` (S10), at the named point of a workspace write | holds the write until the test writes `release\n` to the browser's stdin (S10.5; rev 11, moved from S3.12 in rev 14) | `after-temp` only. The wait is bounded at 30 s; on timeout the broker abandons that write (its temp is removed), refuses the tool call with "write paused too long", and prints one stderr line. |
+| `ZIGBROWSER_AGENT_CLAUDE_CLI` | the app, when it **launches** `--agent-setup`'s synchronous helper run (S3.7) and the one-shot login helper (S6). It is passed **only as the launch argv option `--e2e-claude-cli <path>`**: never in either helper's environment, and never in the chat `hello` (rev 14, RoseCat rev-13 blocker 2) | an alternate Claude CLI: a CLI that ignores the token descriptor (S3.7), or the fake `claude setup-token` (S6) | an absolute path to a regular executable file |
 
 **Helper-carried seams.** The app reads these and passes them to the helper **inside `hello.e2e`**, because only the helper can apply them.
 
@@ -852,7 +864,6 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 |---|---|---|
 | `ZIGBROWSER_AGENT_TEST_BASE_URL` | the fake Messages API; the helper sets `ANTHROPIC_BASE_URL` for the CLI | must be `http://127.0.0.1:<port>` |
 | `ZIGBROWSER_AGENT_TEST_PROXY` | the CONNECT-refusing recorder (P0.2) | loopback only |
-| `ZIGBROWSER_AGENT_CLAUDE_CLI` | the fake `claude setup-token` that the login helper runs (S6) | an absolute path |
 | `ZIGBROWSER_AGENT_FS_TRACE` | sets `hello.e2e.fs_trace`, so the helper emits `fs_trace` (S10.4; rev 10) | `1` only |
 
 **Social fixture.** The existing `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN` server shape from `tests/e2e/social_flows_test.py` gains a commit log (POST count per action).
@@ -1027,6 +1038,12 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - a create in `workspace/` from the hook and from the helper gets `EROFS`, and a scratchpad write succeeds;
   - descriptors ≥ 3 in the hook are closed;
   - (rev 12; rev 13) the census of non-hook CLI descendants comes from the seccomp user-notification exec oracle (D11), which records every exec of every descendant before it runs, whatever its lifetime. It is recorded as `cli_children` in `agent/host/tests/p0_census.json`, in the allowlist vocabulary of D11: real paths under `/usr` (observed: `/usr/bin/git`, `/usr/bin/dash`) and `$CLI rg`. **Red first:** RoseCat's mutant wrapper, which spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, passes the snapshot census. The oracle must report it, and a permanent test asserts that it does. A second red: the CLI binary run under any `argv[0]` other than `rg`, with a flag outside the observed listing set, or with a path operand outside `workspace/` and `.claude/plugins/cache/`, fails the allowlist check;
+  - (rev 14) **complete records, failing first:**
+    - a fixture runs the pinned CLI binary as `rg` with 64 allowed arguments and a forbidden 65th path. The 64-pointer reader certifies it as `$CLI rg`, which is red. The complete reader marks it UNEXPECTED;
+    - one argument longer than the old 512-byte string bound gives `complete: false`, so UNEXPECTED;
+    - a fixture child that `exec`s through `execveat(dirfd, "true", …)` or with `AT_EMPTY_PATH` is UNEXPECTED;
+    - killing the supervisor mid-run makes the next filtered exec fail with `ENOSYS`, and the log has no `END` line, so the census is red;
+    - bwrap's PID and parent equal those of the process the contract spawned (exec in place), and the contract receives bwrap's exit status;
   - (rev 6) the **write census**: every path the CLI and the SAI hooks write under `.claude` during the turn, from the inotify oracle, recorded as `writes` in `p0_census.json`. Rev 12: these are the **observed writes**. `runtime/writable.json` is the **reviewed union** in D12, which is not a copy of them;
   - (rev 6) the **hook-environment census**: the variable names the CLI sets for hooks, recorded as `hook_env` in `p0_census.json`. It becomes `runtime/hook-env.json`, minus the refused names (D12 step 2, which now includes both messaging names);
   - (rev 6) `--strict-mcp-config` passed through the SDK's `extra_args` is accepted, and an `mcpServers` entry planted in `.claude/.claude.json` is ignored;
@@ -1238,7 +1255,8 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 #### Behavior S3.7: `--agent-setup` selects the token route on the installed CLI, and fails closed (rev 4, blocker 5)
 - **Given** the real bundled CLI, **When** setup runs, **Then** `runtime/token-route.json` says `R1` with the CLI's version, and the probe server saw the probe bearer. The probe goes through the real `zb-claude`, the FIFO and the socket handoff (rev 12, finding 1). **Red-at-seam:** install the rev-11 `sh` wrapper (`exec 3<fifo`); the probe gets no request within its 30 s limit, and setup exits 2 with "no safe token route".
-- **Given** an e2e-only CLI that ignores `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` (through the S3.6 seam table), **Then** setup exits 2 with "no safe token route", and nothing is written. With `--agent-token-route env`, setup writes `R3`, wraps every hook, and prints the risk line.
+- **Given** an e2e-only CLI that ignores `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, selected by `ZIGBROWSER_AGENT_CLAUDE_CLI` with `zigBrowser --agent-setup --e2e-protocol` (rev 14: the app passes it to the setup helper only as `--e2e-claude-cli <path>`), **Then** setup exits 2 with "no safe token route", and nothing is written.
+- **Inertness (rev 14):** **Given** the same variable pointing at a marker-writing script, and `--agent-setup` **without** `--e2e-protocol`, **Then** stderr says `zigBrowser: ZIGBROWSER_AGENT_CLAUDE_CLI ignored without --e2e-protocol`, the setup helper's argv (its `/proc/<pid>/cmdline`, sampled while it runs) has no `--e2e-claude-cli`, its environment holds no such variable, the marker never appears, and `token-route.json` names the bundled CLI. With `--agent-token-route env`, setup writes `R3`, wraps every hook, and prints the risk line.
 - **Given** `cli_version` in `token-route.json` differs from the installed CLI, **When** Send is pressed, **Then** the drawer says "Claude CLI changed: run zigBrowser --agent-setup again", and nothing is spawned.
 
 #### Behavior S3.8: hooks run inside the sandbox from the first prompt (rev 4, blockers 1 and 4)
@@ -1304,26 +1322,19 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Property:** none. The input is fixed.
 
 #### Behavior S3.12: only one browser instance owns the agent home (rev 10, SHOULD)
-Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
-- **Phase 1, A idle.** **Given** browser A with its agent started and holding `agent-home/.zb-owner.lock`, but doing nothing (no prompt, no tool call), **When** browser B starts with the same `XDG_DATA_HOME` and a prompt asking for `fs_write workspace/x.txt` is sent in B's drawer, **Then**:
+Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD). Rev 14: S3 keeps the parts whose production code S3 builds, the lock acquisition (`agent_host.c`, before the first spawn), the idle holder's refusal of B, and the takeover.
+- **Phase 1, A idle.** **Given** browser A with its agent started and holding `agent-home/.zb-owner.lock`, but doing nothing (no prompt, no tool call), **When** browser B starts with the same `XDG_DATA_HOME` and a prompt is sent in B's drawer, **Then**:
   - B shows `DRAWER status unavailable home-locked`;
   - no new process appears with B as an ancestor (`/proc` census by ppid chain);
-  - the inotify watches on `.zb-broker-tmp/` and `workspace/` record **zero** events during the whole phase. A is idle, so any event would be B's.
-- **Phase 2, A writing, B absent.** B is quit first. An approved `fs_write workspace/y.txt` in A is held in flight by a deterministic pause after its temp is created (the e2e-only seam `ZIGBROWSER_AGENT_FS_PAUSE=after-temp`, gated by `--e2e-protocol`). Then it is released. The inotify sequence is exactly: `IN_CREATE` and `IN_CLOSE_WRITE` of one temp in `.zb-broker-tmp/`, then `IN_MOVED_FROM` there and `IN_MOVED_TO` of `y.txt` in `workspace/`. The final state is `y.txt` with the approved SHA-256 and an empty temp directory.
-- **Phase 2b, B while A holds a live temp (rev 13; RoseCat's rev-11 SHOULD).** This is the dangerous interleaving: a buggy B that cleans `.zb-broker-tmp/` before checking the lock would delete A's live temp.
-  - A's approved `fs_write workspace/z.txt` is held at `after-temp` (the temp is written, synced and closed).
-  - The test drains A's events so far and records the temp's name, inode and SHA-256.
-  - It then starts B with the same `XDG_DATA_HOME` and sends B's prompt (as in phase 1).
-  - **Then:** B shows `DRAWER status unavailable home-locked`; no process has B as an ancestor; inotify records **no** event in `.zb-broker-tmp/` or `workspace/` while B runs; and A's temp still has the same name, inode and SHA-256.
-  - Only then is A released. Its rename lands `z.txt` with the approved SHA-256, and the temp directory is empty.
-- **The inotify mask for the exact sequences (rev 13 NIT):** the watches use only `IN_CREATE|IN_CLOSE_WRITE|IN_MOVED_FROM|IN_MOVED_TO|IN_DELETE`, so ordinary `IN_OPEN` and `IN_MODIFY` events cannot make the comparison ambiguous. An `IN_MOVED_FROM`/`IN_MOVED_TO` pair counts as one rename only when both events carry the same cookie.
+  - inotify watches on the agent home's `workspace/` and `.claude/` (and on `.zb-broker-tmp/` once S10 creates it) record **zero** events during the whole phase. A is idle, so any event would be B's.
+- **Phases 2 and 2b move to S10.5 (rev 14, RoseCat rev-13 blocker 1).** They need an approved workspace write through the app broker (S8 approval, S10 `agent_fs.zig`) and the `FS_PAUSE` seam, which do not exist in S3. A stub write would bypass the edge they protect.
 - **Phase 3, B takes over.** After A quits, B's next Send takes the lock and starts the agent (`DRAWER status ready -`).
 - **Property:** none. The input is fixed.
 
 #### Behavior S3.6: the e2e-only seams are inert in production (rev 3, blocker 10)
-- **Given** every variable in the section 7 seam table, set to hostile values (a remote base URL, `/bin/sh` as the CLI, a TTL of 1 ms),
+- **Given** the seams whose consumers exist in S3 (rev 14 scope): `BWRAP` and `HOST_CMD` (app-owned), and `TEST_BASE_URL` and `TEST_PROXY` (helper-carried), set to hostile values (a remote base URL, a marker-writing script as bwrap and as the helper command). `DRAWER_DEMO` and `ANIM_MS` are already proved by S2; the other seams are proved by the slices that read them (section 7).
 - **When** the browser runs **without** `--e2e-protocol` and a prompt is sent,
-- **Then** the `hello` frame recorded by the real helper's debug log (written to `scratchpad/`) carries none of the helper-carried seams, no request reaches the hostile base URL (a listener on it records 0 connections), and each app-owned seam is refused before it can act (rev 13): stderr has one `zigBrowser: <NAME> ignored without --e2e-protocol` line per app-owned seam, the real bwrap and helper are spawned, the animation is 180 ms, and no demo message appears.
+- **Then** the `hello` frame recorded by the real helper's debug log (written to `scratchpad/`) carries none of the helper-carried seams, no request reaches the hostile base URL (a listener on it records 0 connections), and each app-owned seam in scope is refused before it can act (rev 13; rev 14 scope): stderr has one `zigBrowser: <NAME> ignored without --e2e-protocol` line for `BWRAP` and for `HOST_CMD`, the real bwrap and the real helper are spawned, and neither marker file appears.
 - **With** `--e2e-protocol`, a non-loopback base URL is refused with `zigBrowser: agent: test base URL must be loopback`.
 
 #### Behavior S3.4: quit, browser death and helper crash leave no processes, and a crash is reported
@@ -1351,7 +1362,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **DRIVABILITY:** the helper command is injectable only for the frame-validation fake (S3.3). The lifecycle cases run the real helper.
 - **EXECUTION:** the helper venv (fails closed), `xsession`, the fake API.
 
-**Files touched:** `src/agent_host.c` and `src/agent_host.h` (new), `src/agent_protocol.zig` (new), `src/agent_broker.zig` (new; submit and frame routing only), `src/agent_drawer.c` (Send/Stop wiring, status), `tests/agent_protocol_test.zig`, `agent/host/zb_agent_host/{protocol,host,session}.py`, `agent/host/tests/test_protocol.py`, `tests/fixtures/agent/fake_host.py`, `tests/e2e/agent_host_lifecycle_test.py`, `tests/e2e/agent_setup_test.py`, `build.zig`. Production caller: `on_drawer_send` → `agent_broker.submitPrompt` → `agent_host_ensure_started`.
+**Files touched:** `src/agent_host.c` and `src/agent_host.h` (new; they also take and hold the owner lock of S3.12 before the first spawn), `src/agent_protocol.zig` (new), `src/agent_broker.zig` (new; submit and frame routing only), `src/agent_drawer.c` (Send/Stop wiring, status), `tests/agent_protocol_test.zig`, `agent/host/zb_agent_host/{protocol,host,session}.py`, `agent/host/tests/test_protocol.py`, `tests/fixtures/agent/fake_host.py`, `tests/e2e/agent_host_lifecycle_test.py`, `tests/e2e/agent_setup_test.py`, `build.zig`. Production caller: `on_drawer_send` → `agent_broker.submitPrompt` → `agent_host_ensure_started`.
 
 ---
 
@@ -1479,13 +1490,19 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 ### S6 — Capturing the claude.ai login (A2)
 
 #### Behavior S6.1: "Sign in with Claude.ai" stores a token from a captured callback
-- **Given** `ZIGBROWSER_AGENT_CLAUDE_CLI=<fake_claude_setup_token.py>` (accepted only with `--e2e-protocol`; production always uses the venv's bundled CLI), and a fake provider page on the fixture server,
+- **Given** `ZIGBROWSER_AGENT_CLAUDE_CLI=<fake_claude_setup_token.py>` (accepted only with `--e2e-protocol`; the app passes it to the one-shot login helper only as `--e2e-claude-cli <path>` in that launch's argv, rev 14; production always uses the venv's bundled CLI), and a fake provider page on the fixture server,
 - **When** "Sign in" is clicked, the auth window opens the authorize URL, and the user clicks Authorize (X input),
 - **Then**:
   - the callback with the matching `state` passes;
   - the fake CLI prints the token, the login helper writes it to its fd 4, and the store holds it;
   - `SECRETS status connected-secret-service` appears (the token came over the login helper's fd 4, D7b), and the auth window closes;
   - the token appears nowhere else (scanner).
+
+- **Inertness of the login route (rev 14):** the browser runs **without** `--e2e-protocol`, inside a fresh network namespace (`unshare --user --map-current-user --net`, so nothing can leave the host), with `ZIGBROWSER_AGENT_CLAUDE_CLI` pointing at a marker-writing script. "Sign in" is clicked, and within 5 s:
+  - stderr says `zigBrowser: ZIGBROWSER_AGENT_CLAUDE_CLI ignored without --e2e-protocol`;
+  - the login helper's `/proc/<pid>/cmdline` has no `--e2e-claude-cli`, and its environment holds no such variable;
+  - the marker never appears.
+  The test then cancels. No auth page can load, because the namespace has no network.
 
 #### Behavior S6.2 (A2): callbacks are rejected unless origin and state match
 - See the section 9 cases. Each gives an `AUTH blocked` row plus the stderr reason. The fake CLI records 0 codes, and the store is unchanged.
@@ -1602,6 +1619,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 #### Behavior S8.2: Deny, timeout, close and crash dispatch nothing
 - Deny → 0 commits, and pacing is unchanged.
 - The 120 s timeout (the test runs with `ZIGBROWSER_AGENT_APPROVAL_TTL_MS=1500`, accepted only with `--e2e-protocol`) gives the same result.
+- **Inertness (rev 14):** without `--e2e-protocol`, `APPROVAL_TTL_MS=1` prints `zigBrowser: ZIGBROWSER_AGENT_APPROVAL_TTL_MS ignored without --e2e-protocol`. A card shown for 2 s is still approvable, and the approval commits once. So the grant used the 120 s default.
 - Closing the window or crashing its web process while the card is shown → the card shows "expired", and there are 0 commits.
 
 #### Behavior S8.3 (T5): the grant binds the exact tuple
@@ -1701,6 +1719,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **Property:** Invariant (seeded generator of path strings with `..`, `//`, absolute paths, NUL, unicode and symlink components created in a temp tree, run against both owners). An operation succeeds iff the reference resolver (no symlinks, beneath the root) accepts the path and the target is regular or absent. Every success touches only inodes under that owner's root, plus the broker's own temp directory.
 
 #### Behavior S10.4: a racing writer cannot redirect, block or poison a read or a write (rev 9; rev 10 oracles; failing-first)
+- **`FS_TRACE` inertness (rev 14):** without `--e2e-protocol`, `ZIGBROWSER_AGENT_FS_TRACE=1` gives a `hello` with no `e2e` object (the helper's debug log), and no `FSTRACE` row appears while the scripted file tools run.
 - **The concurrent writer is a production-representative hook in a second session (rev 10, blocker 4).**
   - Hooks are awaited by the CLI, and `zb-hook-run`'s nested bwrap (`--die-with-parent`, reaper PID 1) kills anything a hook leaves behind when the hook exits. So no hook process can outlive its own event, which is itself asserted below.
   - The real concurrency in production is **between sessions**: every drawer session shares the one helper sandbox and its scratchpad. The racer is therefore window 2's `UserPromptSubmit` hook. The fixture sets its hook timeout to 60 s, and the hook races for 40 s and then exits. Meanwhile window 1's session runs the file operations under test. The helper runs sessions concurrently (one `ClaudeSDKClient` per session on its event loop).
@@ -1744,6 +1763,20 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - `fs_write` and `fs_edit` in `scratchpad/` run with no card.
 - A denied card writes nothing.
 - A malicious hook that tries the same workspace write directly at the same moment gets `EROFS` (S3.9, re-run with tools present).
+
+#### Behavior S10.5: the owner lock holds while a workspace write is in flight (moved from S3.12 in rev 14)
+The approved broker write (S8 approval, `agent_fs.zig`) and the `FS_PAUSE` seam exist from this slice on. Inotify carries no PID, so the observations are kept apart.
+- **Phase 2, A writing, B absent.** An approved `fs_write workspace/y.txt` in A is held after its temp is created (`ZIGBROWSER_AGENT_FS_PAUSE=after-temp`, gated by `--e2e-protocol`), then released. The inotify sequence is exactly: `IN_CREATE` and `IN_CLOSE_WRITE` of one temp in `.zb-broker-tmp/`, then `IN_MOVED_FROM` there and `IN_MOVED_TO` of `y.txt` in `workspace/`, paired by cookie. The final state is `y.txt` with the approved SHA-256, and an empty temp directory.
+- **Phase 2b, B while A holds a live temp (RoseCat's rev-11 SHOULD).** This is the dangerous interleaving: a buggy B that cleans `.zb-broker-tmp/` before checking the lock would delete A's live temp.
+  - A's approved `fs_write workspace/z.txt` is held at `after-temp`; the temp is written, synced and closed.
+  - The test drains A's events so far and records the temp's name, inode and SHA-256. It then starts B with the same `XDG_DATA_HOME` and sends B's prompt.
+  - **Then:** B shows `DRAWER status unavailable home-locked`; no process has B as an ancestor; inotify records no event in `.zb-broker-tmp/` or `workspace/` while B runs; and A's temp still has the same name, inode and SHA-256.
+  - Only then is A released. Its rename lands `z.txt` with the approved SHA-256, and the temp directory is empty.
+- **The inotify mask:** only `IN_CREATE|IN_CLOSE_WRITE|IN_MOVED_FROM|IN_MOVED_TO|IN_DELETE`, so ordinary `IN_OPEN` and `IN_MODIFY` events cannot make the comparison ambiguous. An `IN_MOVED_FROM`/`IN_MOVED_TO` pair counts as one rename only when both carry the same cookie.
+- **The pause bound:** a pause not released within 30 s abandons that write (its temp is removed), refuses the tool call with "write paused too long", and prints one stderr line.
+- **Inertness:** without `--e2e-protocol`, `FS_PAUSE=after-temp` prints `zigBrowser: ZIGBROWSER_AGENT_FS_PAUSE ignored without --e2e-protocol`, and an approved write completes with no pause (the full inotify sequence arrives at once).
+- **Red-at-seam:** let B empty `.zb-broker-tmp/` before it takes the lock. In phase 2b, A's temp disappears, and the check is red.
+- **Property:** none. The input is fixed.
 
 #### Behavior S10.3: the helper runs in bwrap
 - `/proc/<claude-cli>/root` mount namespace check: `$HOME` (the real one) does not exist inside, `XDG_RUNTIME_DIR` does not exist, and the profile does not exist.
