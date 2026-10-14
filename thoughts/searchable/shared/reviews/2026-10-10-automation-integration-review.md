@@ -8148,3 +8148,89 @@ approved push range. The newest approved push-through SHA remains
 **`fa0aa48`** until follow-up commits close all three S3n1 blockers and are
 reviewed. No push or history rewrite was performed; no live browser, profile,
 token, socket or DISPLAY `:0` was used.
+
+## S3n1 follow-ups (`9391611`, `971ede0`, `998062f`, `40ad263`)
+
+### Exact verdicts
+
+**Explicit verdict for `9391611`: APPROVED.** The new test removes the DNS
+failure that masked an allowlist-suffix mutant. Five API and test-host
+lookalikes are deliberately resolved to a global address in a sealed netd;
+each must still receive 403, and both the recorded-connect list and fake
+upstream must remain empty
+(`agent/host/tests/test_netd.py@9391611:383-402`). If a mutant answers 200,
+the test sends the matching ClientHello so the otherwise latent upstream
+attempt becomes observable. BlueBeaver's recorded failing-first run saw two
+200 responses and two attempts under the suffix mutant. This is the missing
+production-chain negative from finding 5522, with no production change.
+
+**Explicit verdict for `971ede0`: BLOCKED.** The nonblocking poll loop does
+fix finding 5526: the new socketpair test proves a non-reading peer cannot hold
+the splice beyond its idle deadline (`test_netd.py@971ede0:406-427`), the idle
+clock advances only when a byte moves, and a checked ClientHello is queued
+rather than written by a blocking `sendall`. However, its advertised 64 KiB
+per-direction bound is false. A direction is eligible for `POLLIN` whenever
+its destination queue is merely *below* 65,536 bytes, but the subsequent read
+still asks for a full 65,536 bytes (`netd.py@971ede0:246-264`). After a partial
+write left 65,535 bytes queued, a deterministic fake-socket/poll reproduction
+made the next read grow that queue to **131,071 bytes**. The cumulative relay
+has the same condition/read mismatch at
+`agent/host/zb_agent_host/relay.py@971ede0:84-95`; BlueBeaver independently
+measured a 126,592-byte peak in both implementations. Both need failing-first
+buffer-bound tests and reads limited to the actual remaining room, including
+an explicit greater-than-zero guard so `recv(0)` is never mistaken for EOF.
+
+**Explicit verdict for `998062f`: APPROVED as the focused test follow-up.**
+The test now installs the token socket at numeric fd 3, passes fd 3 plus an
+unrelated descriptor through the real outer relay, and has the helper prove
+the token bytes, socket inode and exact open-fd set `[3]`
+(`agent/host/tests/test_relay.py@998062f:150-178`). It separately inspects the
+running relay and proves the relay parent retained no copy of the token socket
+(`:179-181`). BlueBeaver recorded both load-bearing mutants red: removing the
+fd-3 exception prevents the helper report, while retaining the parent copy is
+caught by the inode census. A non-blocking test-hygiene SHOULD remains: the
+test process already owns daemon server threads when it uses `preexec_fn`; a
+later cleanup should prefer a small exec wrapper or another route that avoids
+Python's documented threaded-parent `preexec_fn` hazard. That does not weaken
+the fd boundary this test observes. Approval of this focused diff does not
+make its exact SHA releasable while its parent `971ede0` remains blocked.
+
+**Explicit verdict for `40ad263`: BLOCKED.** Its shared `reap()` correctly
+fixes the original netd-pipe warnings and the relay descriptor-census cleanup,
+but the commit's “no ResourceWarning” claim is not true for its complete test
+suite. The new fd-3 test still registers a kill-only cleanup
+(`agent/host/tests/test_relay.py@40ad263:171-174`) and never waits for that
+process. The exact full gate emitted
+`ResourceWarning: subprocess <pid> is still running` at `subprocess.py:1140`.
+The process was gone after cleanup, so this is a wait/reap defect rather than
+a surviving orphan, but it directly refutes this test-hygiene milestone.
+BlueBeaver acknowledged the missed warning class and has changed all six
+kill-only relay cleanups to the common reaper in the pending follow-up.
+
+The 64 KiB finding is release-significant, not merely cosmetic. A producer can
+make every pair consume almost twice the configured bound, so the explicit
+memory/capacity contract used to size concurrent tunnels is not enforced.
+Accordingly the later focused test approval cannot skip over `971ede0`, and
+`40ad263` also requires its promised complete cleanup before the range is
+approved.
+
+### Exact gate and push-through boundary
+
+My bounded clean export of exact `40ad263`, with a fresh cache under private
+Xvfb, finished **Build Summary: 106/108 steps succeeded (1 failed); 817/817
+tests passed**. The one failed system-test step was unrelated render-config
+coverage: only the screenshot-default child reported
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM=<unset>`. A second fresh exact-`40ad263`
+export running only `tests/e2e/render_config_test.py` passed all 18 checks,
+including screenshot default observing the expected value `1` and producing a
+PNG. Thus the rendering failure is recorded as an intermittent, non-reproduced
+gate flake; these four commits do not touch rendering or application startup.
+The exact full gate nevertheless supplied independent evidence for the
+`40ad263` subprocess-reaping blocker above. Both disposable exports and caches
+were deleted by their EXIT traps.
+
+The newest approved linear push-through SHA from `fa0aa48` therefore remains
+**`fa0aa48`**. `9391611` and the focused `998062f` diff are approved, but the
+linear range cannot cross the blocked `971ede0`, and exact `40ad263` is also
+blocked. No push or history rewrite was performed; no live browser, profile,
+token, socket or DISPLAY `:0` was used.
