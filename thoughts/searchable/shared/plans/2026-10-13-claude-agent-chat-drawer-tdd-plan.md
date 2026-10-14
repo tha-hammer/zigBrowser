@@ -1339,7 +1339,11 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     | `cleanup` (delete the old copies) | committed; old copies present | old copies and journal gone |
 
   - **The kill test** asserts the state in that table at the pause, so a build that skips or reorders a step fails. It then SIGKILLs the browser and runs a plain setup again.
-  - A first install has no journal: its `first-move` cuts are repaired by the partial-first-install rule above.
+  - **A first install has no journal**, but it uses the same two pause states for each `first-move:<entry>`:
+    - `:before` is just before that entry's rename;
+    - `:after` is after the rename and the fsync of `root`.
+
+    Its marker rename, followed by the fsync of `root`, is its durable commit point. A rerun that finds the owner lock and no marker repairs the root by the partial-first-install rule above, whichever cut it was killed at.
 - **A write-ahead journal makes a killed re-provision recoverable (rev 15.3d, made exact in rev 15.3e, RoseCat 5373).**
   - **The gap:** after `exchange-claude`, the old `.claude` (with the agent's state) sits in staging, which the next run's cleanup would delete.
   - **The record:** `root/.zb-setup-journal` holds `{staging, steps: [...]}`. Each entry is `{step, intent, identity}`:
@@ -1352,10 +1356,10 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - every mutation is followed by an fsync of each parent directory it touched, before the next intent is written.
   - **Reconciling the last intent.** It is the only step whose outcome is unknown; every earlier step's mutation finished before the next intent was written. A rerun decides it from identity, never from the record alone:
     - a rename is done when the destination holds the recorded inode, and not done when the source still does;
-    - an exchange is done when the live path holds the staging entry's recorded inode;
+    - an exchange of live path L (recorded inode A) with staging path S (recorded inode B) has exactly two accepted states: **not done** when L holds A and S holds B, **done** when L holds B and S holds A. A missing path, the same inode at both paths, or any other pairing refuses;
     - the marker is done (committed) when the root marker holds the new marker's inode;
     - `mkdirs` is done for every recorded name that now exists, so it is created again or removed.
-    - Any other state (both or neither path holds the inode) refuses with exit 2 and a message naming the journal; the journal and staging are kept.
+    - Any state outside these refuses with exit 2 and a message naming the journal and the step; the journal and staging are kept untouched.
   - **Recovery:**
     - **before the commit point:** the steps that are done are reversed in reverse order (renames back, exchanges again, created `mkdirs` removed). The old home is then byte-identical. Then the journal is removed and setup provisions as usual;
     - **once committed:** the old copies and the journal are deleted.
@@ -1364,7 +1368,10 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - the home is a complete install;
     - for every pre-commit cut, the agent's seeded state files (`projects/`, `MEMORY/`) are present with unchanged content and inodes;
     - no journal or staging is left.
-  - **A failing-first unit test** gives the reconciler the forged both/neither states for each step; each must refuse.
+  - **A failing-first unit test** is a table over every step kind. It feeds the reconciler forged disk states and checks each verdict:
+    - the two accepted states give not-done and done;
+    - every mixed state refuses with the journal and staging unchanged. For an exchange, the mixed states are: L missing, S missing, both missing, A at both paths, B at both paths, L=A with S=other, L=other with S=B, L=B with S=other, and L=other with S=A. For a rename: the inode at both paths, at neither, or another inode at the destination;
+    - a journal with a malformed entry or an unknown step refuses.
   - The seam is listed in §7's seam table. A unit test shows that without `--e2e-protocol` the variable never reaches the helper.
 - **`renameat2` comes from libc** (glibc ≥ 2.28, every architecture), never a syscall number. Setup fails closed without it.
 - **Any absolute path refuses setup** in copied text, whatever its number of components. The only kept `/name` token is a known slash command: the CLI's built-in commands, or a copied `commands/*.md` or `skills/*`.
