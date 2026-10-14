@@ -33,7 +33,7 @@ BWRAP = "/usr/bin/bwrap"
 sys.path.insert(0, str(HOST_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_netd import alive, child_env, reap, short_root, tree_of  # noqa: E402
+from test_netd import _Counting, alive, child_env, reap, short_root, tree_of  # noqa: E402
 
 
 def bridge_relay_file():
@@ -337,6 +337,35 @@ class InnerRelayTest(unittest.TestCase):
                          ["anon_inode:[eventpoll]", "anon_inode:[pidfd]"], kinds)
         self.assertEqual(len(kinds), 4, kinds)
         proc.wait(timeout=20)
+
+
+class PairBufferTest(unittest.TestCase):
+    def test_each_direction_of_a_relayed_connection_holds_at_most_buffer_max_bytes(self):
+        """The relays' per-direction bound (BlueBeaver 5496) holds after a partial
+        write to a slow reader, as netd's does (RoseCat 5535)."""
+        from zb_agent_host import relay
+        a0, writer = socket.socketpair()
+        b0, sink = socket.socketpair()  # `sink` never reads
+        sink.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        b0.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+        a, b = _Counting(fileno=a0.detach()), _Counting(fileno=b0.detach())
+        a.partner, b.partner = b, a
+        for sock in (writer, sink, a, b):
+            self.addCleanup(sock.close)
+        loop = relay.Relay("bridges", "/nonexistent")
+        self.addCleanup(loop.selector.close)
+        relay.Pair(loop, a, b)
+        writer.setblocking(False)
+        until = time.monotonic() + 0.5
+        while time.monotonic() < until:
+            try:
+                writer.send(b"y" * 65536)
+            except BlockingIOError:
+                pass
+            for key, mask in loop.selector.select(0.005):
+                key.data.handle(key.fileobj, mask)
+        self.assertGreater(a.received, relay.BUFFER_MAX, "the test must fill the buffer to mean anything")
+        self.assertLessEqual(a.peak, relay.BUFFER_MAX, f"buffered {a.peak} bytes in one direction")
 
 
 def eof_after(argv):

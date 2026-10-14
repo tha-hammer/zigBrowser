@@ -83,9 +83,10 @@ class Pair:
 
     def handle(self, sock, mask):
         peer = self.peer[sock]
-        if mask & selectors.EVENT_READ:
+        room = BUFFER_MAX - len(self.pending[peer])
+        if mask & selectors.EVENT_READ and room > 0:
             try:
-                data = sock.recv(BUFFER_MAX)
+                data = sock.recv(room)  # never past the cap (recv(0) would look like EOF)
             except (BlockingIOError, InterruptedError):
                 data = None
             except OSError:
