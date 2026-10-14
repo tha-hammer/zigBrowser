@@ -1,16 +1,16 @@
 ---
 date: 2026-10-14T14:30:00-04:00
 planner: cc_3 / JadeBeacon (Opus 4.8)
-git_commit: 21625eb26d15cda921aee3205f7034f81e5cc210
+git_commit: 833767e76193743ad5832895bcea2dc133de93c4
 branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 2)
-rev: 2
+status: plan for review (rev 3)
+rev: 3
 last_updated: 2026-10-14
 last_updated_by: cc_3 / JadeBeacon
-last_updated_note: "Rev 2 answers RoseCat's 9 blockers + 5 open-question dispositions (review 21625eb); re-pinned to HEAD 21625eb"
+last_updated_note: "Rev 3 answers RoseCat's 6 rev-2 blockers (review 833767e) + folds the SHOULD items; re-pinned to HEAD 833767e"
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
@@ -34,6 +34,41 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   **approval grant contract**, closes **Keychain + chat observability**, hardens the
   **two-arch/packaging gates against false-green**, and makes the **signing contract
   release-safe**. Slices are renumbered MS0–MS9.
+- **Rev 3** (this): answers RoseCat's review `833767e` ("BLOCKED (docs)", 6 remaining
+  blockers + a SHOULD list). Rev 2 "substantially closes the nine findings"; three contracts
+  remained inconsistent and three more surfaced. Rev 3 re-pins to HEAD `833767e`, corrects
+  MS5 to the final **"Hook commands only"** SAI rule (and inherits the S3a chain/alias/
+  malformed-quote corrections), binds the **exact drawer grant schema**, moves the **positive
+  approval closure to MS7** (where the only grant minter is built), makes the **ABI inventory
+  the real production ABI** (adds `set_script`/`free`/`loop_mark`/`window_alive`/
+  `native_pointer`/row-sanitization/cookie ABI + a debug-seam fail-closed decision), gives
+  **every popup its own drawer bound to its `window_id` with one shared destroy path and a
+  live-drawer-count-of-zero** proof, and adds the **crash-presentation parity** contract. The
+  SHOULD items are folded into MS2/MS7.
+
+## Rev 3 — how each of RoseCat's 6 rev-2 blockers is answered (review 833767e)
+
+| # | Blocker (833767e) | Resolution in rev 3 | Where |
+|---|---|---|---|
+| 1 | MS5 still names the superseded SAI rule ("executed-import-graph") | Corrected to the final **"Hook commands only"**: copy dependency/VCS/cache/build trees **unscanned**, HOME-rewrite other copied text, **validate only hook command lines**, warn/skip outbound links; and **inherit** the S3a chain/alias/malformed-quote corrections (cab60a1, BlackRobin) rather than port today's defects | MS5.1, MS5.1b, rev-2 table note |
+| 2 | Grant tuple weaker than the threat contract | Reuse the drawer plan's **exact** schema: `sha256(tool, window_id, origin, account, target_fp, load_serial, normalized_args)`, 120 s expiry, pre-dispatch revalidation of origin/`load_serial`/`crashed`/`recovering`, `options.expect={account,target_fp}` checked **atomically in the same FIFO ticket** (error **−32015 expectation_mismatch**); add the navigation (`load_serial` change), selector-retarget and one-field-at-a-time mutants (drawer T5) | MS4.1 |
+| 3 | Positive closure precedes the only grant minter | MS4 closes the **authority + all negative/refusal/dry-run** paths only; the **positive socket→card→grant→flow** closure **moves to MS7**, where the native Approve handler is built — no test-only mint bypasses the forbidden span | MS4 (closure), MS7.8 |
+| 4 | "ABI inventory" is not the production ABI | Added `zb_automation_set_script` (private-world injection before first load), `zb_automation_free` (allocator paired with every returned C string), `zb_automation_loop_mark` (ENDED + queued-job cancellation + waiter wake-up on quit), `zb_automation_window_alive`, `zb_native_pointer`, protocol-row field sanitization, and the cookie ABI; **decided** which `zb_automation_debug_*` seams exist on macOS and required unsupported seams to **fail closed** (not silently return zero); added the private-world-install, allocator-pairing, immediate-quit-cancellation and late-completion tests | MS2 inventory, MS2a/b |
+| 5 | Window destruction does not close drawer ownership | **Every popup gets its own drawer bound to its `window_id`**; **one shared destroy path** for `webViewDidClose:`, the NSWindow close button and automation close, which **detaches before** the automation notification/free; exact reuse of WebKit's supplied configuration; a **live-drawer count of zero** after all windows close (macOS analog of `zb_drawer_debug_live_count`) | MS2c.5, MS7.9 |
+| 6 | Crash-presentation parity absent | Added the macOS crash contract: `webViewWebContentProcessDidTerminate:` + a **public simulated-request crash document** that reports per-window termination, shows a **static** crash document, **keeps the committed URL**, **excludes API-driven termination**, clears `crashed` **only on a real commit**, and **never auto-reloads** (parity with Linux `ddc892e`/`44d0d0f`); with **real-X/no-input** and **clicked-Reload** controls | MS2c.4 |
+
+### SHOULD items folded in (833767e)
+
+No main-thread caller may synchronously wait on a main-queue marshal (MS2); dialogs **hold
+completion handlers** rather than running a modal loop (MS2b); health/list snapshots are
+**lock/atomic-backed** and never `dispatch_sync` to a hung main queue (MS2c.2); the public
+recover spike **tries replacing the WKWebView while retaining its window id** rather than
+private SPI (MS2c.3); scroll events may be built from a CGEvent and delivered **in-process**
+with `-[NSWindow sendEvent:]` **without** posting to the system or asking for TCC (MS2b);
+icon/fold views **intentionally overlap** the page and need **exact hit-testing** even though
+the dock does not (MS7); keyboard/fold-row and Secrets-exclusion parity need **named tests**
+(MS7); the real-screen runner **fails closed** when Screen-Recording/window-order evidence is
+unavailable (MS7, MS8).
 
 ## Rev 2 — how each of RoseCat's 9 blockers is answered
 
@@ -42,7 +77,7 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
 | 1 | MS2 closure map is not the full production topology (list/health/dialog/recover branch before the router and take no FIFO turn) | Split into **three** production chains + closure e2es: (a) ordinary routed command, (b) out-of-band `page.list`/`page.health` while a named window's FIFO is stuck, (c) two-phase `recover`; plus an explicit ABI/test inventory and an async-completion ownership contract (copied input, exactly-once, no-dispatch-after-abandon) | MS2, Closure Maps A/B/C |
 | 2 | Multi-window / freeze / recovery contracts underspecified | New behaviors: two-hop related-popup chain, per-`window_id` FIFO independence, `page.close` **and** script `window.close()` with opener survival, popups use WebKit's supplied `WKWebViewConfiguration`; a **bounded responsiveness probe/watchdog** not behind the window FIFO; frozen window does not poison siblings; two-phase consent + blast-radius ack + exactly-once cancel + "recovering"; **if public WKWebView APIs can't recover a hung process, MS2c stops at a spike** | MS2b.*, MS2c.* |
 | 3 | "native input" has no proven capability contract | MS2b is a **red-first capability spike** (`isTrusted`, focus, click, key, text, contenteditable/`beforeinput` cancel, scroll, pointer move, navigation-during-input, partial typing, deadline abandonment) on **both** Macs; the capability table is updated **only after** it passes; CGEvent is an **explicit TCC-gated alternative capability**, never a silent fallback, and its runner proves it is frontmost before emitting | MS2b, disposition 1 |
-| 4 | Launch-critical setup / persistence / configuration have no owner | New **MS5 (macOS setup & provisioning)** ports `runAgentSetup` for macOS (immutable `dist-<n>/current/state`, Python runtime/helper, SAI rule (a), skipped linked skills, no real `~/.claude`/repos, FIFO→fd 3, Keychain onboarding); new **MS3 (config & persistence)** adds an isolated persistent `WKWebsiteDataStore` contract and a decided macOS mapping/explicit-unsupported for `--profile-dir`/`--hardware-acceleration`/`--renderer`/`--media-source` | MS3, MS5 |
+| 4 | Launch-critical setup / persistence / configuration have no owner | New **MS5 (macOS setup & provisioning)** ports `runAgentSetup` for macOS (immutable `dist-<n>/current/state`, Python runtime/helper, the final **"Hook commands only"** SAI rule — see rev 3 blocker 1, skipped linked skills, no real `~/.claude`/repos, FIFO→fd 3, Keychain onboarding); new **MS3 (config & persistence)** adds an isolated persistent `WKWebsiteDataStore` contract and a decided macOS mapping/explicit-unsupported for `--profile-dir`/`--hardware-acceleration`/`--renderer`/`--media-source` | MS3, MS5 |
 | 5 | Shared sandbox interface asserted at the wrong layer ("Zig, platform-neutral") | Corrected: the real seam is **Python** (`agent/host/zb_agent_host/sandbox.py` + `launch.py`, policy/argv) and **C/GLib** (`src/agent_host.c:1-73`, spawn/lifetime/`prctl`). New **MS0** extracts a behavior-preserving `SandboxBackend` seam on **Linux** with its own Linux gate, naming exact files/methods/ownership/wire contract; Seatbelt then implements the same semantic launch spec. Proxy/bridges are rev-16 WIP: MS6 **owns them or depends on a named green landed revision** | MS0, MS6, Shared contract, disposition 4 |
 | 6 | Seatbelt failure must block launch and select the VM fallback | The spike proofs (custom-profile acceptance, other-process-info denial, fd-3 reopen, orphan incl. double-fork/`setsid`) are **hard gates before MS8**; **any failure disables Mac agent launch until the shared interface's VM backend is implemented**; the unapproved dedicated-user `kill(-1)` scheme is **removed** as a shipping fallback. MS6 network tests traverse the **production proxy via an e2e-only allowlist seam** (removing the proxy → red); deterministic sacrificial canary | MS6, disposition 3 |
 | 7 | Approval / Keychain / chat observability not closed | **Approval grant contract** specified before flows (action+site+account+window+payload binding, one-use, expiry, cancel/refuse, only the native Approve handler mints; negative proofs that page worlds/iframes/popups/socket clients/prompts/hooks cannot approve; per-write confirmation; dry-run no-commit). **Keychain** tests use a disposable service/account + canary, prove the token reaches **only** helper fd 3. **Chat observability** is a gated `--e2e-protocol` native census or screen capture — **never** a production socket drawer-read | MS4, MS5, MS7 |
@@ -315,13 +350,28 @@ single red seam can't hold).
   **exactly once**, and a **no-dispatch / no-write guard** prevents any effect after the waiter
   abandons on deadline (the macOS analog of the GTK generation/`auto_job` guard).
 
-### Explicit ABI / test inventory (blocker 1) — each gets a named red test in its part
-`eval`/`wait` (MS2a), `navigate`/`navigate_guarded`/`reload`/`beforeunload` (MS2a), `url`/`title`
-(MS2a), **startup readiness** + **late-completion-after-timeout** + **result/error-string
-ownership** (MS2a); `native_click`/`native_key`/`native_text`/`native_move`/`native_scroll` +
-**pointer cache** (MS2b), `set_input_files` **incl. regular-file refusal** (MS2b), **full-page
-screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload (MS2b);
-`list_windows`/`close_window`/`recover_windows` + popups (MS2c).
+### Explicit ABI / test inventory (blockers 1, 4) — each gets a named red test in its part
+This is the **production** ABI (every `webkit_shim.h` export the macOS shim must implement or
+explicitly fail closed), not a representative subset — rev 3 blocker 4:
+
+- **MS2a (routed + infrastructure):** `zb_automation_set_script` (**private-world injection before
+  the first load** — proven, not assumed), `eval`/`wait`, `navigate`/`navigate_guarded`/`reload`/
+  `beforeunload`, `url`/`title`, `zb_automation_free` (**the allocator paired with every returned
+  C string** — allocator-pairing test), `zb_automation_loop_mark` (**ENDED + queued-job
+  cancellation + waiter wake-up on app quit** — an immediate-quit-cancellation test),
+  `zb_automation_window_alive`, **protocol-row field sanitization**, **startup readiness**,
+  **late-completion-after-timeout**, **result/error-string ownership**.
+- **MS2b (input + dialogs):** `native_click`/`native_key`/`native_text`/`native_move`/
+  `native_scroll` + `zb_native_pointer` + **pointer cache**, `set_input_files` **incl.
+  regular-file refusal**, **full-page screenshot** `screenshot_png`, dialog `list`/`respond`
+  incl. beforeunload.
+- **MS2c (windows/cookies):** `list_windows`/`close_window`/`recover_windows` + popups; the
+  **cookie ABI** (`zb_cookies_get_all`/`_add`/`_delete`, via MS3's `WKHTTPCookieStore` port).
+- **Debug seams (decision):** the ~35 `zb_automation_debug_*`/`zb_drawer_debug_*` seams are
+  **not** all ported; MS2 **decides per seam** which exist on macOS (the ones its e2es need —
+  e.g. a `live_count` analog for MS2c.5, world/input-ack/media/hw-policy debug reads where the
+  feature exists) and **requires every unsupported seam to fail closed** (return an explicit
+  `unsupported` error), **never** silently return zero — a silent zero would false-green a gate.
 
 ### MS2a behaviors (routed commands)
 - **MS2a.1** `page.navigate` + `page.url`/`page.title` over the socket (same envelope/auth/errors
@@ -352,12 +402,33 @@ screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload
 - **MS2c.2** a **bounded responsiveness probe/watchdog** updates per-window state **without
   waiting behind that window's FIFO**; one frozen window **does not poison siblings**
   (`webViewWebContentProcessDidTerminate:` reports termination, not liveness, so a separate
-  bounded probe is named).
+  bounded probe is named). **SHOULD:** the health/list snapshot is **lock/atomic-backed** and
+  **never `dispatch_sync`** to a possibly-hung main queue; no main-thread caller synchronously
+  waits on the main-queue marshal.
 - **MS2c.3** recovery of a **hung** WKWebView via a **named public-API mechanism**, retaining the
   two-phase consent, blast-radius acknowledgement, exactly-once queued-job cancellation, and
-  "recovering" errors (automation_server.zig:810-1106); **no automatic kill**. **If no public
-  WKWebView API can recover a hung content process, MS2c stops at a documented spike** and the
-  plan does not assume a reload recovers it.
+  "recovering" errors (automation_server.zig:810-1106); **no automatic kill**. **SHOULD:** the
+  spike first tries **replacing the WKWebView while retaining its `window_id`** (new view, same
+  id, re-mount its drawer per MS2c.5) rather than private SPI. **If no public WKWebView API can
+  recover a hung content process, MS2c stops at a documented spike** and the plan does not assume
+  a reload recovers it.
+- **MS2c.4 (crash-presentation parity — blocker 6):** on `webViewWebContentProcessDidTerminate:`,
+  the macOS shim **reports per-window termination**, shows a **static crash document** via a
+  **public simulated-request** load (not a private reload), **keeps the committed URL**,
+  **excludes API-driven termination** (`terminated_by_api` is not a crash), clears the `crashed`
+  flag **only on a real load commit**, and **never auto-reloads** — parity with the Linux product
+  (`ddc892e`, `44d0d0f`; the about:blank crash-page follow-up). Controls: a **real-X/no-input**
+  case (the crash DOM + list state persist with no input for a bounded hold) and a **clicked-
+  Reload** case (recovery only on the user's click). A 3-second automatic-reload mutant must be
+  **killed** by the no-input control.
+- **MS2c.5 (drawer ownership on window destruction — blocker 5):** **every popup receives its own
+  drawer bound to its `window_id`** (when the drawer is on), built on WebKit's **supplied**
+  `WKWebViewConfiguration`. There is **one shared destroy path** for `webViewDidClose:`, the
+  NSWindow close button, and an automation `page.close`, which **detaches the drawer and frees it
+  before** the automation close notification/C-struct free (detach-before-notify/free ordering).
+  After **all** windows close, a **live-drawer count of zero** is asserted (the macOS analog of
+  `zb_drawer_debug_live_count`, per the MS2 debug-seam decision). The opener's URL and DOM survive
+  a child's destruction (ties to MS2c.1).
 
 ### Workflow Closure (three chains — blocker 1)
 
@@ -373,7 +444,7 @@ screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload
 ```json
 {
   "behavior": "An ordinary routed automation command drives the live WKWebView page and its result is observable to the client.",
-  "git_commit": "21625eb26d15cda921aee3205f7034f81e5cc210",
+  "git_commit": "833767e76193743ad5832895bcea2dc133de93c4",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "loaded_page",         "module": "src/wkwebview_shim.m",         "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                     "seedable_store": "zb_automation_navigate_guarded" },
@@ -410,7 +481,7 @@ screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload
 ```json
 {
   "behavior": "page.health/page.list answer for all windows without waiting behind a sibling window's stuck FIFO.",
-  "git_commit": "21625eb26d15cda921aee3205f7034f81e5cc210",
+  "git_commit": "833767e76193743ad5832895bcea2dc133de93c4",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "two_windows_one_stuck", "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,               "seedable_store": "zb_automation_navigate_guarded" },
@@ -440,7 +511,7 @@ screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload
 ```json
 {
   "behavior": "A hung WKWebView window is recovered only via two-phase consent, with exactly-once job cancellation and no automatic kill.",
-  "git_commit": "21625eb26d15cda921aee3205f7034f81e5cc210",
+  "git_commit": "833767e76193743ad5832895bcea2dc133de93c4",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "frozen_window",     "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                  "seedable_store": "zb_automation_navigate_guarded" },
@@ -458,7 +529,7 @@ screenshot** `screenshot_png` (MS2b), dialog `list`/`respond` incl. beforeunload
 }
 ```
 
-> Each map's `read_path`/`seedable_store`/`driver` resolves at 21625eb (the macOS impls are
+> Each map's `read_path`/`seedable_store`/`driver` resolves at 833767e (the macOS impls are
 > added by MS2; `handleWindows`/`handleRecover`/`zb_app_run`/`zb_automation_*` resolve now). All
 > three e2es start at the authenticated socket and observe through production reads; **none** call
 > the WK port or shim directly (FORBIDDEN SPAN).
@@ -507,11 +578,30 @@ Coordinate with **BlueBeaver** (engine/config) and **BlackRobin** (shim data sto
 **Goal.** Flows behave as on Linux, and the **approval grant authority** is fully specified before
 any committing flow, since no production approval exists at the pin.
 
-### Behavior MS4.1: the grant contract
+### Behavior MS4.1: the grant contract (the drawer plan's exact schema — blocker 2)
 **Given** a committing social action,
 **When** the native Approve handler mints a grant,
-**Then** the grant binds **exact action + site + account + window_id + payload**, is **one-use**,
-has an **expiry**, supports **cancel/refuse**, and **only** the native Approve handler can mint it.
+**Then** the grant is **single-use**, expires after **120 s**, and is bound to the drawer plan's
+**exact tuple**
+`sha256(tool, window_id, origin, account, target_fp, load_serial, normalized_args)`
+(drawer plan rev 16 :507-514), where:
+- `origin` = the bound window's committed origin; `account` = the platform's logged-in identity
+  (`x.login_check`/`linkedin.selfcheck`/`instagram.selfcheck`); `target_fp` = for a raw DOM tool
+  the resolved element's tag/id/name/role/accessible-name/text-hash/frame-URL/rect, for a flow the
+  dry-run trial target description + target URL/recipient; `load_serial` = a **per-window counter**
+  that increments on load-commit, published through `WindowInfo`/the list JSON.
+- **Before dispatch** the broker **revalidates** the window's `origin`, `load_serial`, `crashed`
+  and `recovering`; any difference **revokes** the grant and dispatches nothing.
+- The check is **atomic with the commit**, inside the same FIFO ticket: the real run carries
+  `options.expect = {account, target_fp}`; a mismatch returns **−32015 `expectation_mismatch`**
+  and commits nothing (so a same-document account switch or a selector that now resolves to a
+  different element commits nothing even when `load_serial` is unchanged).
+- **Mutants (reuse drawer T5):** a **navigation** that bumps `load_serial`, a **selector-retarget**
+  to a different element, a **wrong-account** switch, and **one-field-at-a-time** tuple tampering
+  — each must refuse (no engine call; telemetry root-span count unchanged).
+- **Only** the native Approve button's handler mints; text from the model or a page can never
+  approve. Deny/timeout/window-close/crash/navigation/session-end dispatch nothing and consume
+  neither the grant nor pacing.
 
 ### Behavior MS4.2: nothing else can approve (negative proofs)
 **Given** the grant authority,
@@ -530,16 +620,21 @@ A new `src/automation_wk_cookie_port.zig` (gated `os.tag == .macos`) implements 
 `WKHTTPCookieStore` (same contract as the GTK cookie port); the flow login gate reads the session
 cookie through it.
 
-- **Closure (MS4):** **BLOCKING** for the committing-write belt — SOURCE = a logged-in fixture +
-  an approved one-use grant; TRIGGER = the flow route over the socket; OBSERVE = the fixture's
-  committed-state change read back; FORBIDDEN SPAN = the approval mint + the flow engine; RED-AT-
-  SEAM = without a valid grant the write is refused (no engine call, telemetry root-span count
-  unchanged). ClosureMap emitted when the approval authority symbols exist (MS4/MS7).
-- **Note:** the approval **UI** (the native card) is built in **MS7** (drawer); MS4 builds the
-  grant **authority** and asserts writes are refused without it. The two land in dependency order.
+- **Closure (MS4) — authority + negatives only (blocker 3):** MS4 closes the **negative,
+  refusal and dry-run** belts: without a valid grant the write is refused (no engine call,
+  telemetry root-span count unchanged); the T5 mutants above all refuse; a dry-run performs no
+  committing click, no real-composer typing, and no pacing count; page worlds/iframes/popups/
+  socket clients/prompts/hooks cannot approve. **The positive socket→card→grant→flow commit
+  closure is NOT in MS4** — the only permitted native Approve minter is built in **MS7**, and a
+  test-only mint would bypass the forbidden span. That positive closure lives in **MS7.8**.
+- **Why:** at the plan pin there is **no production approval authority** (the card is
+  unimplemented). MS4 builds the grant **authority and its revalidation/`options.expect` seam**
+  and proves everything **refuses** without a real grant; MS7 wires the native Approve handler and
+  proves the one positive path once per approval.
 
-**Gate (MS4):** real-binary macOS flow + approval e2e (dry-run against fixtures; no live sites),
-both arches. Not a UI slice (the card is MS7). Coordinate with **BlueBeaver** (flows/approval).
+**Gate (MS4):** real-binary macOS flow + approval-refusal e2e (dry-run against fixtures; no live
+sites), both arches. Not a UI slice (the card and the positive closure are MS7). Coordinate with
+**BlueBeaver** (flows/approval authority).
 
 ---
 
@@ -553,9 +648,15 @@ Claude token into the Keychain. Today `runAgentSetup` refuses non-Linux (`app.zi
 **Given** a macOS build,
 **When** `--agent-setup` runs,
 **Then** it builds the accepted **immutable `dist-<n>/current/state`** layout, installs the Python
-runtime + helper, applies **SAI copy rule (a)** (executed-import-graph), skips outbound linked
-skills, and grants **no access to the real `~/.claude` or user repositories** — the macOS analog
-of the Linux provisioning (setup.py), replacing `/proc/self/exe` with a macOS executable-path API.
+runtime + helper, applies the **final SAI rule — "Hook commands only"** (rev 3 blocker 1): copy
+dependency/VCS/cache/build trees **unscanned**, HOME-rewrite other copied text, **validate only
+hook command lines** (not a whole import graph), and warn/skip outbound links — and grants **no
+access to the real `~/.claude` or user repositories** — the macOS analog of the **corrected**
+Linux provisioning (setup.py), replacing `/proc/self/exe` with a macOS executable-path API. It
+**inherits** the S3a corrections (cab60a1, BlackRobin): a top-level link resolved through a
+parent-component link **chain**, the global cycle set keeping **internal aliases**, and the
+**malformed-hook-quote** refusal — the Mac port must reuse the corrected behavior, not port
+today's defects.
 
 ### Behavior MS5.1b: skipped linked skills leave no bytes; dependency trees copy unscanned (RoseCat, linked-skills resolution)
 **Given** the user's decision **"keep skipping"** outbound linked skills (RoseCat mail 5458),
@@ -676,16 +777,42 @@ green **or** the VM backend lands behind the shared contract. Not a UI slice. Co
 - **MS7.7 chat observability (blocker 7):** the chat round-trip and bubble text are asserted via a
   gated **`--e2e-protocol` native drawer census** (the macOS analog of the `DRAWER windows` row) or
   screen capture — **never** a production socket drawer-read API.
+- **MS7.8 positive approval closure (blocker 3):** the one end-to-end commit path —
+  **socket `tool_use` → broker preview (dry run) → native approval card → X click Approve →
+  `on_approve` mints the MS4 grant → revalidate → real flow commits exactly once** (the macOS
+  analog of the drawer plan's "F — approved commit runs once"). The grant minter is the **real**
+  native handler built here, so the forbidden span is never bypassed by a test-only mint. Deny
+  mints nothing and commits nothing.
+- **MS7.9 drawer ownership / window-destroy parity (blocker 5):** the drawer honors MS2c.5 —
+  every window (incl. popups) has its own drawer bound to its `window_id`, the shared destroy path
+  detaches/frees the drawer before the automation close notification, and the live-drawer count is
+  **zero** after all windows close. **SHOULD:** the icon/fold views **intentionally overlap** the
+  page, so they need **exact hit-testing** (a click on the icon/`-` hits the drawer, a click
+  elsewhere reaches the page) even though the docked panel does not overlap.
 
 - **Property (MS7.2):** roundtrip — `parse(write(ratios)) == ratios` (reuse the platform-neutral
   `agent_drawer.zig` property).
+- **SHOULD named tests (833767e):** keyboard/fold-row parity (Enter/Shift-Enter/Escape/
+  Ctrl+Shift+Space-equivalent + arrow-key icon move) and **Secrets-exclusion** parity (the Secrets
+  window is not in the window registry and is unreachable from the automation socket) each get a
+  **named** macOS test.
 - **Real-screen (blocker 8):** add macOS `drawer-open`, `secrets-window`, `approval-card` cases to
   the real-screen check; the orchestrator runs them on the user's Mac; **not approved until they
-  pass**. The input guard (if any real-screen input) proves its window is frontmost/topmost and
-  aborts under a grab-equivalent guard.
+  pass**. The input guard proves its window is frontmost/topmost and aborts under a grab-equivalent
+  guard, and the runner **fails closed when Screen-Recording / window-order evidence is
+  unavailable**.
+
+#### Workflow Closure (MS7.8 — positive approved commit)   [BLOCKING]
+- **Chain:** `socket tool_use -> broker preview (dry run) -> native approval card -> X Approve -> on_approve mints grant -> revalidate (origin/load_serial/crashed/recovering) -> real flow commit (options.expect checked in-ticket) -> fixture records exactly 1 commit`
+- **SOURCE (seed):** a logged-in fixture + a loaded bound window. **TRIGGER:** the socket
+  `tool_use` (outermost). **DRIVER:** the real `[NSApp run]` loop + the real native Approve click
+  (real-screen case, orchestrator-run). **OBSERVE:** the social fixture's commit log = exactly 1.
+  **FORBIDDEN SPAN:** the broker, the grant minter, the flow engine. **RED-AT-SEAM:** Deny / an
+  expired or retargeted grant commits 0.
 
 **Gate (MS7):** real-binary macOS drawer e2e (native census + snapshot) on both arches **plus** the
-real-screen check. Coordinate with **BlackRobin** (drawer owner).
+real-screen check (incl. the MS7.8 Approve click). Coordinate with **BlackRobin** (drawer owner)
+and **BlueBeaver** (grant authority from MS4).
 
 ---
 
@@ -758,8 +885,11 @@ failing assertion, named green production files, and a refactor gate**.
 
 ## References
 
-- Review answered: `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
-  (§"macOS launch plan review (d857a03)", commit 21625eb)
+- Reviews answered: `thoughts/searchable/shared/reviews/2026-10-10-automation-integration-review.md`
+  — §"macOS launch plan review (d857a03)" (rev-1 blockers, commit 21625eb) and §"macOS launch
+  plan rev 2 and 2.1 (c3d7217, 9c2b2c3)" (rev-2 blockers, commit 833767e)
+- Drawer grant schema reused (rev 3 blocker 2): `…/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md:503-519` (grant tuple, `load_serial`, `options.expect`, −32015, T5 mutants)
+- S3a corrections inherited by MS5 (rev 3 blocker 1): cab60a1 (chain / internal-alias / malformed-quote), owned by BlackRobin
 - Research: `…/research/2026-10-14-14-19-macos-launch-support-surface.md` (1df5dce) + its `.closure-adapter.py`
 - Sandbox: `…/research/2026-10-14-macos-sandbox-option.md`, `…/2026-10-14-agent-sandbox-redteam.md`
 - Drawer plan (conventions, real-screen §7.1): `…/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md`
