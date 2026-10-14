@@ -8327,3 +8327,121 @@ lost. A clean-export full gate of the final test blob passed **Build Summary:
 108/108 steps succeeded; 817/817 tests passed**. No production file changed.
 No live browser, profile, socket or DISPLAY `:0` was used, and all throwaway
 reproducer exports were deleted.
+
+## S3n2 hook-network slice (`1331a4d`, `063a1ce`, `3b217b2`)
+
+### Exact verdicts
+
+**Explicit verdict for `1331a4d`: BLOCKED at that exact SHA, but valid as the
+failing-first artifact for this network sub-slice.** The new chain is not a
+mock of the decision boundary: it provisions the real runtime, starts the real
+S3n1 netd against private decoys, enters the real outer
+`sandbox.helper_argv`, runs the real outer relay, and invokes the hook through
+the installed `zb-hook-run` exactly as the CLI does
+(`agent/host/tests/test_hook_net.py@1331a4d:62-101`). The probe exchanges a
+nonce with both 51091 and 31337, attempts raw CONNECT and TLS through 3128,
+attempts the Unix egress socket, recursively censuses `proxy.sock`, attempts
+DNS and a public IP, and records environment names and its network namespace
+(`tests/fixtures/agent/hook_net_probe.py@1331a4d:34-150`). The shared verdict
+requires both bridge replies and both decoys' exact received bytes, no 3128,
+ENOENT plus no view-visible `proxy.sock`, no DNS/public IP, no fake-API
+connection and no upper- or lower-case proxy environment name
+(`tests/e2e/agent_hook_net.py@1331a4d:102-130`).
+
+The original targeted run was genuinely red: three errors because
+`helper_argv` had no `net_dir` seam and one failure because the inner relay was
+not installed. That is coarse API/provisioning red rather than guard-by-guard
+red, but the tests are load-bearing: BlackRobin re-ran two one-line mutants on
+the committed green chain. Removing nested `--unshare-net` exposed 3128 and
+raised the fake API count; binding all of `/run/zb-net` exposed
+`egress/proxy.sock` and likewise reached the fake. Both made the reach test
+red. The frozen unsealed runner is also a permanent non-vacuity control: it
+must share the outer namespace and reach 3128/fake API
+(`test_hook_net.py@1331a4d:121-129`). As with S3n1's red commit, however, the
+module is deliberately not in the normal gate at this exact SHA, so this is
+not by itself an approved push milestone.
+
+**Explicit verdict for `063a1ce`: APPROVED as the focused outer-sandbox
+change.** `helper_argv(..., net_dir=)` adds `--unshare-net` only when a netd
+directory was supplied and, after the private `/run`, read-only binds exactly
+its real, non-symlink `egress/` and `bridges/` directories at the two planned
+paths (`agent/host/zb_agent_host/sandbox.py@063a1ce:34-48,84-94`). Missing,
+non-directory or symlink sources fail closed with `SandboxError`; omitting
+`net_dir` leaves the old argv byte-for-byte unchanged. This is the §3c.2
+mount/namespace seam and gives the later outer relay only `proxy.sock` while
+retaining the bridge sockets solely for nested hooks. BlueBeaver's clean gate
+for this exact blob passed **108/108 steps and 817/817 tests**; the targeted
+S3n2 chain progressed from three API errors to its intended production-side
+red. Approval is limited to this inert optional seam: browser/netd startup and
+the production call site are later S3n2 work, not claimed by this commit.
+
+**Explicit verdict for `3b217b2`: BLOCKED.** The declared production network
+portion is correct. `zb-hook-run` creates a distinct network namespace after
+building a fresh proxy-free environment, replaces `/run`, binds back only
+`/run/zb-net/bridges` read-only, then executes the hook behind the installed
+standard-library bridge relay (`agent/host/zb_agent_host/hook_run.py@3b217b2:24-60`).
+`provision_runtime` installs that relay from `relay.BRIDGE_RELAY_FILE` at mode
+0555 and refuses proxy names in the hook allowlist
+(`agent/host/zb_agent_host/provision.py@3b217b2:15-25,48-59`). The registered
+reach test passed in the full gate, and BlackRobin's two committed-chain
+mutations prove that both the namespace and the bridges-only mount are
+necessary. This satisfies the network-only part of §3c.8b: both bridge
+positives, both `fake.zb.invalid` negatives, zero fake-upstream attempts,
+ENOENT and a whole-view absence for `proxy.sock`, and no proxy environment.
+
+The blocker is a deterministic clean-export placement dependency introduced
+while migrating P0.4 to sealed hooks. Its minimal prefix performs
+`--dev-bind / / --tmpfs /run` and binds only the bridge directory
+(`agent/host/tests/test_contract.py@3b217b2:161-172`). When the clean export
+is itself under `/run/user/1000`, that tmpfs hides both the checkout supplied
+through `PYTHONPATH` and the test agent home. The cached interpreter remains
+visible under `/home`, starts, and then exits with
+`No module named zb_agent_host`. Consequently both
+`test_r1_hooks_never_see_the_token` and `test_r3_hooks_never_see_the_token`
+fail before exercising their contracts. This contradicts D12's explicit
+requirement that the agent home may live under `/tmp` or `/run` and makes the
+registered gate outcome depend on the throwaway root. The fix must remount the
+required checkout and agent-home paths after the `/run` tmpfs (preferably by
+using the production-shaped prefix) and add a regression whose checkout/home
+actually live below `/run` or `/tmp`; merely moving the acceptance export is
+not a fix. Mail 5559 assigned this to BlackRobin before the gate completed.
+
+The other §3c.8b work that BlackRobin explicitly lists as subsequent S3n2
+sub-slices remains open and is not approved by this verdict: hook seccomp,
+status/stdio/signal/orphan/descriptor parity, R3 removal, the setup probe and
+native browser spawn wiring. This review does not mislabel this network green
+as completion of all S3n2.
+
+### Per-hook cost and exact gate
+
+The committed measurement is well formed: five warm-ups per arm, 40 samples
+per arm, alternating arm order, the same `/bin/true` hook, paired deltas, and
+nearest-rank p90/p95 (`test_hook_net.py@3b217b2:132-188`). Every sample must
+exit zero, the sealed namespace must differ from the outer one, and the
+unsealed namespace must equal it. There is deliberately no pass/fail budget.
+BlackRobin reported these values from the registered gate:
+
+| arm | n | median | p90 | p95 |
+|---|---:|---:|---:|---:|
+| sealed | 40 | 35.9 ms | 37.7 ms | 38.3 ms |
+| unsealed | 40 | 19.7 ms | 20.5 ms | 20.8 ms |
+| paired overhead | 40 | 16.0 ms | 18.2 ms | 18.3 ms |
+
+A separate standalone run reported sealed 33.8/35.0/35.8 ms,
+unsealed 18.3/19.6/20.4 ms and paired overhead 15.5/16.6/16.9 ms
+(median/p90/p95), consistent with the plan's approximately 15 ms expectation.
+
+My independent bounded clean export of exact `3b217b2`, under private Xvfb
+with the export and fresh cache below `/run/user/1000`, finished
+**Build Summary: 107/109 steps succeeded (1 failed); 817/817 tests passed**.
+The only failed build step was `test_contract`, for the two import failures
+above; the registered hook-network step and all Zig tests passed. The EXIT
+trap deleted the export and cache immediately, and mail 5561 announced the
+free gate slot with the exact summary.
+
+Because `1331a4d` is an intentionally incomplete red milestone and its green
+`3b217b2` is blocked by a registered clean-gate failure, the newest approved
+linear push-through SHA from `1a425a7` remains **`1a425a7`**. The focused
+`063a1ce` diff is approved, but it cannot be selected without crossing the
+unclosed red milestone. No push or history rewrite was performed; no live
+browser, profile, token, socket or DISPLAY `:0` was used.
