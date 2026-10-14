@@ -33,7 +33,7 @@ BWRAP = "/usr/bin/bwrap"
 sys.path.insert(0, str(HOST_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_netd import alive, child_env, short_root, tree_of  # noqa: E402
+from test_netd import alive, child_env, reap, short_root, tree_of  # noqa: E402
 
 
 def bridge_relay_file():
@@ -322,8 +322,9 @@ class InnerRelayTest(unittest.TestCase):
                 self.assertEqual(running(canary), [], f"{case}: an orphan survived")
 
     def test_the_relay_holds_only_its_own_descriptors(self):
+        # stdout stays a pipe: the census must see the relay replace it with /dev/null.
         proc = subprocess.Popen(inner_argv(self.bridges, ["/bin/sleep", "3"]), env=child_env(), stdout=subprocess.PIPE)
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(reap, proc)
         relay = only(wait_for(lambda: inner_relays(proc.pid), 20))
         time.sleep(0.5)
         fds = {int(n): os.readlink(f"/proc/{relay}/fd/{n}") for n in os.listdir(f"/proc/{relay}/fd")}

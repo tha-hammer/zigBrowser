@@ -52,6 +52,22 @@ def child_env():
     return {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONPATH": str(HOST_DIR), "PYTHONDONTWRITEBYTECODE": "1"}
 
 
+def reap(proc, *threads):
+    """Kill `proc` if it still runs, wait for it and its reader threads, and
+    close every pipe to it (no ResourceWarning)."""
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+    for thread in threads:
+        thread.join(5)
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
 def short_root(tc):
     root = Path(tempfile.mkdtemp(prefix="zbn-", dir="/tmp"))
     tc.addCleanup(lambda: subprocess.run(["find", str(root), "-delete"], check=False))
@@ -131,7 +147,8 @@ class Netd:
     def start(self, pass_fds=()):
         self.proc = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      env=child_env(), text=True, pass_fds=pass_fds)
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self.drain = threading.Thread(target=self._drain_stderr, daemon=True)
+        self.drain.start()
         self.tc.addCleanup(self.kill)
         return self
 
@@ -156,9 +173,8 @@ class Netd:
         return self.proc.wait(timeout=timeout)
 
     def kill(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.kill()
-            self.proc.wait()
+        if self.proc:
+            reap(self.proc, self.drain)
 
     def connects(self, settle=0.3):
         """Each recorded upstream attempt as `<addr> <port>`."""
