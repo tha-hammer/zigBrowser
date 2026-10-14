@@ -775,7 +775,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
-| R16.1 | RoseCat 833767e (rev 16 blockers) and BlueBeaver 5466, 5471, 5472, 5480 | The setup probe runs entirely inside its own private netns with no host route. R3 remnants are rewritten to R1-only or legacy-refusal wording, and D6 and D12 match the hook grammar. netd's sandbox is exact (§3c.2b). The socket directory has a random suffix, a single exclusive `mkdir`, fd-relative cleanup, a `sun_path` bound and a read-only outer bind. bwrap's reaper stays PID 1 and the relay is its command. The relay is single-threaded `selectors` and closes every inherited descriptor ≥ 3. Added: SNI check, `ipaddress` vetting, retry/log bounds and the failure contract. The per-hook netns is an open user decision. | §3c, D6, D12, S3, S4 |
+| R16.1 | RoseCat 833767e (rev 16 blockers) and BlueBeaver 5466, 5471, 5472, 5480 | The setup probe runs entirely inside its own private netns with no host route. R3 remnants are rewritten to R1-only or legacy-refusal wording, and D6 and D12 match the hook grammar. netd's sandbox is exact (§3c.2b). The socket directory has a random suffix, a single exclusive `mkdir`, fd-relative cleanup, a `sun_path` bound and a read-only outer bind. bwrap's reaper stays PID 1 and the relay is its command. The relay is single-threaded `selectors` and closes every inherited descriptor ≥ 3. Added: SNI check, `ipaddress` vetting, retry/log bounds and the failure contract. Each hook gets its own sealed network (the user's decision, §3c.8b). | §3c, D6, D12, S3, S4 |
 | R16 | The user's sandbox decisions (red-team report 86ddf01) and RoseCat 5418-5447, BlueBeaver 5417/5420/5422 | §3c: `--unshare-net`, netd plus relay over a pathname-socket directory, exact allowlist `api.anthropic.com:443`, bridges 51091/31337, the fake API through the real proxy path, the per-hook seccomp filter and its descriptor order, setup's probe and `--version` sandboxed, R3 removed everywhere, X0 in a disposable parent netns (fails rather than skips), slices S3n1 (BlueBeaver), S3n2 and S3b (BlackRobin). | §0.2, D7b, D11, D12, §3c, S3, S4 |
 | R15.6 | The user's decision on the path rule (2026-10-14): (a) "check only run paths", then, measured on the real SAI, "hook commands only" | Only hook command lines refuse setup; copied text gets the HOME rewrite; dependency trees are copied byte for byte; links outside their item are skipped (a hook naming one refuses). The strict scan, slash grammar, collision and dot-segment rules are gone. The real SAI provisions. | D6, S3, S3.1 |
 | R15.5 | RoseCat 5390 (six docs gaps in rev 15.4) and 5386 | Exact state placement (`state/.claude.json` and `backups/` read-only, `STATE_DIRS` writable, all outside every build); the durable publish order with an fsync of `root` before and after the swap; fd-relative, no-follow garbage rules that refuse anything malformed; fixed links made one at a time; D6's tree; section 6 item 4 says docked. | D6, §6, S3 |
@@ -850,7 +850,7 @@ sandbox (outer bwrap, --unshare-net, own loopback)                  host (the br
     - a relay bind failure exits 2 before the helper starts.
 - **Environment:**
   - `HTTPS_PROXY=HTTP_PROXY=http://127.0.0.1:3128` and `NO_PROXY=127.0.0.1,localhost`, exactly, with no wildcard (5419.1). The relay binds IPv4 only, so not `::1`.
-  - The hook-environment allowlist (`runtime/hook-env.json`) gains `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`.
+  - These go to the helper and the CLI only. Hooks get none of them and run in their own sealed network (§3c.8b, the user's decision).
 - **No DNS inside:** the namespace has no resolver route; `getaddrinfo` fails at once (BlueBeaver measured 0.00 s, ENETUNREACH). Name resolution happens only in netd (5418.3).
 
 ### 3c.2b netd's own sandbox, exactly (rev 16.1, RoseCat 833767e; BlueBeaver 5471)
@@ -944,13 +944,24 @@ sandbox (outer bwrap, --unshare-net, own loopback)                  host (the br
 - **If the parent namespace cannot be created,** the build step **fails** with the exact missing prerequisite; it never skips.
 - **Host-LAN denial** is a separate test on the normal host, with a decoy listener on the host's LAN address.
 
-### 3c.8b Open decision for the user (BlueBeaver 5480; not a blocker)
+### 3c.8b Each hook gets its own sealed network (the user's decision, 2026-10-14)
 
-The allowlist lets any process in the sandbox, hooks included, reach `api.anthropic.com`. A compromised hook dependency could use **its own** API key there, which makes Anthropic's API a possible exfiltration sink.
+**Decision.** AskUserQuestion: "Should each hook get its own sealed network (only local ports 51091 and 31337, no internet)…?", answered **"Yes, seal each hook"**.
 
-The option: give each hook its own network namespace. `zb-hook-run`'s nested bwrap would add `--unshare-net` plus a per-hook bridge-only relay without port 3128. That costs one more Python start per hook, an estimated 30–50 ms (not measured). Hooks don't need the API, because their keys are stripped.
+**The risk it closes** (BlueBeaver 5480): the outer allowlist lets any process in the sandbox reach `api.anthropic.com`, so a compromised hook dependency could use its own API key there to send data out.
 
-This goes to the user through the orchestrator. Until they decide, hooks share the outer namespace's proxy.
+**Design** (in S3n2's `hook_run.py`, with S3n1's relay code):
+- `zb-hook-run`'s nested bwrap adds `--unshare-net`, so each hook runs in a fresh network namespace.
+- Its command is a **per-hook bridge-only relay**: the same `relay.py` in bridge-only mode. It binds only `127.0.0.1:51091` and `:31337` and forwards them to the outer namespace's bridges at `/run/zb-net/port-51091.sock` and `port-31337.sock`. There is no port 3128.
+- **No proxy:** the hook's environment gets no `HTTPS_PROXY`, `HTTP_PROXY` or `NO_PROXY`. The hook-environment allowlist does **not** gain them, which reverses §3c.2's line for hooks. So a hook has no route to the API at all.
+- **Descriptors and filter:** the per-hook relay closes every inherited descriptor ≥ 3 except its listeners, as the outer relay does. The hook seccomp filter (§3c.6) is installed by the nested bwrap as before. The relay is the nested bwrap's command; the hook is its child.
+- **Cost:** one more Python start per hook, an estimated 30–50 ms. The P0 census measures it and records it in the S3n2 review; no budget is set before it is measured.
+
+**Tests (S3n2, failing-first):**
+- from inside a real hook: `CONNECT api.anthropic.com:443` to `127.0.0.1:3128` fails (nothing listens), a direct public IP fails, and DNS fails;
+- the bridges reach the host decoys on 51091 and 31337;
+- the hook's environment holds no proxy variable;
+- **red without the per-hook netns:** a mutant that drops the nested `--unshare-net` lets the hook reach the outer relay's 3128.
 
 ### 3c.9 Slices and owners (BlueBeaver 5417 and 5420, accepted)
 
