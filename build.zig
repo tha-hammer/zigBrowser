@@ -718,6 +718,19 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_contract",
     });
+    // Chat drawer S3n1 (plan rev 16.2 §3c): the host-side network helper and the
+    // two relays, driven through their command lines, offline (private fakes on
+    // 127.0.0.1 and short /tmp/zbn-* socket directories only).
+    const agent_host_netd = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_netd",
+    });
+    const agent_host_relay = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_relay",
+    });
 
     // Page dialogs (alert/confirm/prompt/beforeunload) in the primary window
     // and a popup: dialog.get / dialog.respond, page.navigate onBeforeUnload.
@@ -951,6 +964,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_unit.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_provision_unit.step);
+    test_step.dependOn(&agent_host_netd.step);
+    test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&real_screen_input_xvfb.step);
