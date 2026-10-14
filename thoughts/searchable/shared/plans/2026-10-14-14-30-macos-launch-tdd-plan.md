@@ -1,16 +1,16 @@
 ---
 date: 2026-10-14T14:30:00-04:00
 planner: cc_3 / JadeBeacon (Opus 4.8)
-git_commit: 176782f7d558d51eae12e5520e4f0ca99c2f0814
+git_commit: 74413b0ccbde6f6b1fe1d4532170f0a1e0391d76
 branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 4)
-rev: 4
+status: plan for review (rev 5)
+rev: 5
 last_updated: 2026-10-14
 last_updated_by: cc_3 / JadeBeacon
-last_updated_note: "Rev 4 answers RoseCat's 3 rev-3 blockers (review db02324): positive approval closure moved to MS8 (real helper path); literal export-by-export ABI table with link-time fail-closed; CGEvent in-process vs CGEventPost split; cab60a1→da5eb70 dependency; re-pinned to HEAD 176782f"
+last_updated_note: "Rev 5 answers RoseCat's one remaining rev-4 blocker (5501): config flags have no C-ABI error channel (void setters, no out_err, --renderer has no setter), so the unsupported decision moves to a named fallible Zig validate/apply seam (applyMacBackendFlag in webkit.zig/app.zig) that refuses before the void setter and exits nonzero with an exact message; out_err claim dropped. Also adds the F2 loopback-proxy open design item to MS6. Re-pinned to HEAD 74413b0"
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
@@ -64,6 +64,37 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   dependency from the superseded `cab60a1` to the approved green `da5eb70`, and fixes the two
   SHOULD items (the stale `21625eb` pin prose and the Linux-idiom "real-X" crash control
   label).
+- **Rev 5** (this): answers RoseCat's **one remaining rev-4 blocker** (mail `5501`), which
+  confirmed three of the four db02324 blockers closed and left a narrow one: the rev-4 ABI
+  table claimed the config flags' unsupported mechanism was `int<0 + out_err`, but the pinned
+  ABI has **`void` setters, bare-`int` getters, and no setter at all for `--renderer`** — that
+  error path is not executable. Rev 5 moves the unsupported decision to a **named fallible
+  app-level Zig seam, `applyMacBackendFlag(flag, value) !void` in `src/webkit.zig` (called from
+  `src/app.zig`)**, which validates each flag/value **before** any void C setter and, on an
+  unsupported value, **refuses — the real binary exits nonzero with an exact message and never
+  touches the C ABI**; a supported value is applied (void setter and/or `WKPreferences`).
+  `--renderer` is handled entirely by this Zig seam (no C ABI). The impossible `out_err` claim is
+  dropped from the table and MS3.2, and `mac_config_flags_test.py` is named for both the
+  supported-applies and unsupported-exits-nonzero cases. Rev 5 also records the advisory **F2**
+  finding (macOS has no per-sandbox loopback for the `127.0.0.1:3128` proxy hop) as an **open
+  design item in MS6** that points at the shared sandbox interface, to be settled by BlackRobin
+  and RoseCat in the drawer plan — not here. Re-pinned to HEAD `74413b0`.
+
+## Rev 5 — RoseCat's one remaining rev-4 blocker, answered (review mail 5501)
+
+RoseCat's exact review of `74413b0` (mail `5501`) confirmed the MS8.3 approval-source move, the
+in-process CGEvent/CGEventPost split, and the complete 75-export inventory + cookie-move as
+**closed**, and left **one** narrow blocker.
+
+| # | Blocker (5501) | Resolution in rev 5 | Where |
+|---|---|---|---|
+| 1 | The config-flag ABI names an impossible error path: the table/MS3.2 say flags return `int<0 + out_err`, but `zb_app_set_hw_policy`/`zb_app_set_media_source` are **`void`**, their getters are bare `int`, and `--renderer` has **no C setter** — so no such channel exists (same class as rev-3 #2) | Moved the unsupported decision to a **named fallible Zig seam `applyMacBackendFlag(flag, value) !void`** (`src/webkit.zig`, called from `src/app.zig`): it validates each flag/value **before** any void C setter; a supported value is applied (void setter and/or `WKPreferences`), an unsupported value is **refused** so the **real binary exits nonzero with an exact message** and the C ABI is never touched. `--renderer` is handled entirely by this Zig seam. The void setters/int getters are simply **always implemented** (no error channel claimed). Dropped the `out_err` claim from the ABI table and MS3.2; named `mac_config_flags_test.py` for the supported-applies and unsupported-exits-nonzero cases (with a before-validate / swallow-error mutant) | ABI table (config rows + uniform-mechanism note), MS3.2 |
+
+**Also in rev 5 (advisory F2, orchestrator-directed):** the MS6 open-design item below records that
+the rev-16.2 `127.0.0.1:3128` localhost proxy hop is isolated on Linux only by the per-sandbox
+netns loopback, which macOS lacks; the macOS answer (a per-sandbox loopback alias vs a unix-socket
+proxy the CLI dials) is left to the shared sandbox interface and will be settled by BlackRobin and
+RoseCat in the drawer plan.
 
 ## Rev 4 — how each of RoseCat's 3 rev-3 blockers is answered (review db02324)
 
@@ -257,7 +288,7 @@ distributable one once the user has a Developer ID.
   or screen capture, never a production socket drawer-read API.
 - **Real-screen (UI slices):** macOS cases in the real-screen check, run by the orchestrator on
   the user's Mac; a UI slice is not approved until it passes there.
-- **Closure tests** are Tier-1 real-binary e2e; ClosureMaps pinned to HEAD 176782f (all three
+- **Closure tests** are Tier-1 real-binary e2e; ClosureMaps pinned to HEAD 74413b0 (all three
   JSON maps re-pinned in rev 4). **Both arches every run.**
 
 ## Shared sandbox backend contract (corrected layer — blocker 5)
@@ -395,18 +426,27 @@ single red seam can't hold).
 ### Explicit ABI / test inventory (blockers 1, 4; rev 4 — literal export-by-export table)
 
 This is the **complete production ABI** — **all 75 `webkit_shim.h` exports** at the pin
-`176782f`, each assigned an implementing slice, an **on-macOS status / unsupported mechanism**,
-and a **named test**. "Every `webkit_shim.h` export" is now literal, not a representative subset
-(rev 3 blocker 4; rev 4 completeness).
+`74413b0` (the `webkit_shim.h` surface is byte-identical across 833767e→176782f→74413b0), each
+assigned an implementing slice, an **on-macOS status / unsupported mechanism**, and a **named
+test**. "Every `webkit_shim.h` export" is now literal, not a representative subset (rev 3
+blocker 4; rev 4 completeness; rev 5 corrects the config-flag mechanism).
 
 **Unsupported mechanism (uniform, rev 4):** a seam that is **not implemented on macOS is absent
 from the macOS shim at link time** — it is simply not compiled into `wkwebview_shim.m`, so any
 test or caller that references it **fails to link** (a build failure = fail-closed). This is the
 *exact* mechanism, and it is what resolves the rev-3 "no error channel" objection: a `void`,
 count- or `bool`-returning seam cannot carry a runtime "unsupported" sentinel, but it *can* be
-absent, and absence fails the build louder than any sentinel. The only exports with a runtime
-unsupported path are the **config flags** (MS3.2), which return an explicit negative error +
-`out_err` "unsupported on macOS" rather than a silent accept. No seam silently returns zero.
+absent, and absence fails the build louder than any sentinel.
+
+**Config flags have no C-ABI error channel either (rev 5 — RoseCat 5501).** The flag setters
+`zb_app_set_hw_policy`/`zb_app_set_media_source` are **`void`**, their getters are bare `int`, and
+`--renderer` has **no C setter at all** — so there is no `int<0 + out_err` path to return (the
+rev-4 claim was not executable). The unsupported decision therefore lives **one layer up**, in a
+**fallible app-level Zig validate/apply seam** (MS3.2, `src/webkit.zig` + `src/app.zig`): it
+validates each flag/value **before** any void C setter is called, and for an unsupported
+flag/value it **refuses** — the real binary **exits nonzero with an exact message** and never
+touches the C ABI. A supported value is simply applied (the void setter and/or `WKPreferences`).
+No seam silently returns zero and no config export fakes an error channel it does not have.
 
 #### Production (non-debug) exports — 44, all implemented on macOS
 
@@ -422,8 +462,8 @@ unsupported path are the **config flags** (MS3.2), which return an explicit nega
 | `zb_policy_decide` | int | exists; MS2a consumer | impl (`nav_policy.zig`) | mac nav-policy e2e |
 | `zb_ipc_dispatch` | int | exists (core) | impl (`ipc.zig`) — ping/pong (bead 8g7) | existing `m9_*` e2e |
 | `zb_app_set_profile_dir` | int+err | MS3.1 | impl | `mac_profile_persist_test` |
-| `zb_app_set_hw_policy` / `zb_app_get_hw_policy` | void / int | MS3.2 | WKWebView mapping **or** explicit unsupported-on-macOS error (int<0 + `out_err`) | `mac_config_flags_test` |
-| `zb_app_set_media_source` / `zb_app_get_media_source` | void / int | MS3.2 | mapping (MSE-off via `WKPreferences`) **or** explicit unsupported | `mac_config_flags_test` |
+| `zb_app_set_hw_policy` / `zb_app_get_hw_policy` | void / int | MS3.2 | **always implemented** (void setter, int getter — no error channel); the supported/unsupported decision is upstream in the fallible Zig `applyMacBackendFlag` seam, which refuses an unsupported value **before** calling the void setter | `mac_config_flags_test` (supported value applies; unsupported value → binary exits nonzero, exact message, setter not called) |
+| `zb_app_set_media_source` / `zb_app_get_media_source` | void / int | MS3.2 | **always implemented**; `--media-source off` maps to MSE-off via `WKPreferences`/user script; any unsupported value is refused by the Zig seam before the void setter | `mac_config_flags_test` |
 | `zb_app_set_agent_drawer` / `zb_app_get_agent_drawer` | void / int | MS7 | impl — drawer on/off | mac drawer e2e |
 | `zb_automation_set_script` | void | MS2a | impl — private `WKContentWorld`, before first load | MS2a.2 |
 | `zb_automation_eval_json` | int+out | MS2a | impl | Closure A / MS2a.1 |
@@ -545,7 +585,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 ```json
 {
   "behavior": "An ordinary routed automation command drives the live WKWebView page and its result is observable to the client.",
-  "git_commit": "176782f7d558d51eae12e5520e4f0ca99c2f0814",
+  "git_commit": "74413b0ccbde6f6b1fe1d4532170f0a1e0391d76",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "loaded_page",         "module": "src/wkwebview_shim.m",         "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                     "seedable_store": "zb_automation_navigate_guarded" },
@@ -582,7 +622,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 ```json
 {
   "behavior": "page.health/page.list answer for all windows without waiting behind a sibling window's stuck FIFO.",
-  "git_commit": "176782f7d558d51eae12e5520e4f0ca99c2f0814",
+  "git_commit": "74413b0ccbde6f6b1fe1d4532170f0a1e0391d76",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "two_windows_one_stuck", "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,               "seedable_store": "zb_automation_navigate_guarded" },
@@ -612,7 +652,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 ```json
 {
   "behavior": "A hung WKWebView window is recovered only via two-phase consent, with exactly-once job cancellation and no automatic kill.",
-  "git_commit": "176782f7d558d51eae12e5520e4f0ca99c2f0814",
+  "git_commit": "74413b0ccbde6f6b1fe1d4532170f0a1e0391d76",
   "repo": "/home/maceo/ntm_Dev/zb-automation-integration-2026-10-10-11-59",
   "nodes": [
     { "id": "frozen_window",     "module": "src/wkwebview_shim.m",      "is_entrypoint": false, "adds_or_changes": true,  "read_path": null,                  "seedable_store": "zb_automation_navigate_guarded" },
@@ -630,7 +670,7 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
 }
 ```
 
-> Each map's `read_path`/`seedable_store`/`driver` resolves at 176782f (the macOS impls are
+> Each map's `read_path`/`seedable_store`/`driver` resolves at 74413b0 (the macOS impls are
 > added by MS2; `handleWindows`/`handleRecover`/`zb_app_run`/`zb_automation_*` resolve now). All
 > three e2es start at the authenticated socket and observe through production reads; **none** call
 > the WK port or shim directly (FORBIDDEN SPAN).
@@ -653,13 +693,32 @@ and cookies do not fall into an implicit global store and the flags are not sile
 default global store), isolated per profile, surviving restart — the macOS analog of the Linux
 persistent context (verified by a login→restart→still-logged-in e2e over the socket).
 
-### Behavior MS3.2: decided macOS semantics for `--hardware-acceleration`/`--renderer`/`--media-source`
-**Given** the Linux-only flag apply path (`webkit.zig:47-72`),
+### Behavior MS3.2: decided macOS semantics via a fallible Zig validate/apply seam (rev 5 — RoseCat 5501)
+**Given** the Linux-only flag apply path (`webkit.zig:47-72`) and that the C setters are **`void`**
+(`zb_app_set_hw_policy`/`zb_app_set_media_source`), their getters bare `int`, and `--renderer` has
+**no C setter at all**,
 **When** a flag is passed on macOS,
-**Then** each flag either has a **documented WKWebView mapping** (and the e2e proves the effect,
-e.g. `--media-source off` disables MSE via `WKPreferences`/a user script) **or returns an explicit
-"unsupported on macOS" error/documentation** — never a silent accept. (The MSE-off workaround
-mirrors the Instagram-deadlock rationale, media_config.zig:6-12.)
+**Then** a **named fallible app-level Zig seam — `applyMacBackendFlag(flag, value) !void` in
+`src/webkit.zig`, called from the arg-apply path in `src/app.zig`** — decides each flag/value
+**before** any void C setter runs:
+- a **supported** value is **applied** (it calls the void C setter and/or sets `WKPreferences`),
+  e.g. `--media-source off` → MSE off via `WKPreferences`/a user script (mirrors the
+  Instagram-deadlock rationale, media_config.zig:6-12), and `--hardware-acceleration <v>` →
+  `zb_app_set_hw_policy(policy)`;
+- an **unsupported** flag/value makes the seam **return an error**; `app.zig` prints an **exact
+  message** (e.g. `zigBrowser: --renderer=<v> is not supported on macOS`) and the **real binary
+  exits nonzero**, **without** calling the void C setter — never a silent accept.
+
+`--renderer` is handled **entirely** by this Zig seam (there is no C ABI to reach): a recognized
+value maps to its documented WKWebView behavior, any other value is refused as above. This is the
+rev-5 fix for RoseCat 5501: the error channel is the fallible Zig seam, not a non-existent
+`out_err` on a void C setter.
+
+- **Test (`mac_config_flags_test.py`, named in the ABI table):** (a) a **supported** value applies
+  and the single observable effect is asserted over the socket; (b) an **unsupported** value makes
+  the **real binary exit nonzero with the exact message** and apply nothing (the void C setter is
+  not reached — proven by a debug read showing the policy unchanged). A mutant that applies before
+  validating, or swallows the error to exit zero, turns (b) red.
 
 ### Behavior MS3.3: the cookie ABI + `CookiePort` over `WKHTTPCookieStore` (moved here in rev 4)
 **Given** the profile-scoped `WKWebsiteDataStore` MS3.1 builds,
@@ -832,6 +891,20 @@ disabled until the shared interface's VM backend is implemented** — Seatbelt-f
   scheme from rev 1 is removed** (unapproved).
 - The proxy/bridges are owned here or depend on a named green Linux revision (per MS0/Shared
   contract).
+
+> **Open design item — the egress proxy's localhost hop on macOS (rev 5; advisory F2, mail 5502).**
+> The accepted Linux network design (drawer plan rev 16.2 §3c, `3856558`) has the CLI reach egress
+> via `HTTPS_PROXY=http://127.0.0.1:3128`, where the `127.0.0.1:3128` listener is isolated **only
+> because each sandbox has its own netns loopback**. **macOS has no per-sandbox loopback**, so a
+> `127.0.0.1:3128` listener would be host-global (collides with the host, reachable by any process)
+> and the isolation is lost. The egress path is already a filesystem **unix socket**
+> (`egress/proxy.sock`); the TCP hop exists only because the CLI wants a `host:port` proxy. The
+> macOS answer — a **per-sandbox loopback alias** the backend provides, or a **unix-socket proxy
+> the CLI dials directly** (if the bundled CLI/Bun supports one) — is a property of the **shared
+> sandbox interface (MS0 launch spec)**, not of Seatbelt alone. **This plan does not settle it:**
+> per the orchestrator, BlackRobin and RoseCat decide it in the drawer plan; MS6 then implements
+> whatever the shared interface specifies. The bridges' inner `127.0.0.1:51091`/`:31337` listeners
+> have the same shape and the same resolution.
 
 ### Hard-gate behaviors (all failing-first; failure ⇒ launch disabled + VM required)
 - **MS6.1 (gate):** a malicious hook's `task_for_pid(cli)`, `sysctl KERN_PROCARGS2`,
