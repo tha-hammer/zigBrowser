@@ -16,8 +16,13 @@ automation socket, so the live browser and its socket are never touched),
 loads a solid-colour page, captures the window, and counts pixels:
   - the page colour must fill most of the window (the page is drawn);
   - with the drawer on, the icon colour must be present (the "S" icon is drawn).
-It writes a PNG of every capture and the browser's stderr to --out, and
-prints one line per case. Exit 0 only when every expected case passes.
+The screen's pixels under the window are authoritative: a case passes only
+when both the screen and the window's own buffer show the page (and the
+icon). Rendering overrides in the shell (RENDER_ENV) are removed before each
+case. It writes a PNG of every capture and the browser's stderr (with the
+case's argv and render environment) to --out, and prints one line per case.
+Exit 0 only when every case passes; exit 3 when the drawer-off control
+fails, because then the capture itself is not trusted.
 
     python3 tests/manual/real_screen_check.py --confirm-user-permission \\
         --bin zig-out/bin/zigBrowser --out /tmp/zb-real-screen [--matrix] \\
@@ -49,6 +54,17 @@ TOLERANCE = 8                   # per channel
 PAGE_MIN_FRACTION = 0.40        # of the window's pixels
 ICON_MIN_PIXELS = 400           # a 56 px circle has about 2400
 
+# Rendering overrides a shell may carry. They are removed before each case,
+# so a case's label is the only thing that changes how it renders.
+RENDER_ENV = (
+    "GDK_GL", "GDK_DEBUG", "GDK_BACKEND", "GDK_SCALE", "GDK_DPI_SCALE", "GSK_RENDERER",
+    "WEBKIT_DISABLE_COMPOSITING_MODE", "WEBKIT_FORCE_COMPOSITING_MODE", "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+    "WEBKIT_DISABLE_DMABUF_RENDERER", "WEBKIT_SKIA_ENABLE_CPU_RENDERING", "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS",
+    "__EGL_VENDOR_LIBRARY_FILENAMES", "__EGL_VENDOR_LIBRARY_DIRS", "__GLX_VENDOR_LIBRARY_NAME",
+    "__GL_SYNC_TO_VBLANK", "__NV_PRIME_RENDER_OFFLOAD", "LIBGL_ALWAYS_SOFTWARE", "LIBGL_ALWAYS_INDIRECT",
+    "GALLIUM_DRIVER", "MESA_LOADER_DRIVER_OVERRIDE", "EGL_PLATFORM", "LD_PRELOAD", "LD_LIBRARY_PATH",
+)
+
 
 class Case:
     def __init__(self, name: str, drawer: bool, args: list[str] | None = None, env: dict[str, str] | None = None,
@@ -67,7 +83,8 @@ def cases(matrix: bool, variants: list[tuple[str, str]], page_only: list[tuple[s
             Case("on-renderer-default", True, ["--renderer", "default"], note="DMA-BUF GPU buffers, not SHM"),
             Case("on-renderer-mesa-egl", True, ["--renderer", "mesa-egl"], note="Mesa EGL instead of NVIDIA EGL"),
             Case("on-gdk-gl-disable", True, env={"GDK_GL": "disable"}, note="GDK paints the window without GL"),
-            Case("on-no-compositing", True, env={"WEBKIT_DISABLE_COMPOSITING_MODE": "1"}, note="WebKit without compositing"),
+            # Not WEBKIT_DISABLE_COMPOSITING_MODE=1: on Xvfb it leaves the page unpainted
+            # at random even with the drawer off, so it separates nothing.
         ]
     out += [Case(name, True, binary=path, note=f"variant build {path}") for name, path in variants]
     out += [Case(name, True, binary=path, icon=False, note=f"page-only variant {path}") for name, path in page_only]
@@ -99,6 +116,72 @@ def count(capture: Capture, box: tuple[int, int, int, int], rgb: tuple[int, int,
     return n
 
 
+def judge(window: Capture, screen: Capture, crop: tuple[int, int, int, int], need_icon: bool) -> tuple[bool, str]:
+    """Pass only when both the window's own pixels and the screen's pixels
+    under it show the page (and the icon when required). The screen is the
+    authority: a presentation failure leaves the window's buffer drawn and
+    the screen blank."""
+    results = []
+    for label, cap, box in (("screen", screen, crop), ("window", window, (0, 0, window.width, window.height))):
+        area = max(1, box[2] * box[3])
+        fraction = count(cap, box, PAGE_RGB) / area
+        icon = count(cap, box, ICON_RGB)
+        ok = fraction >= PAGE_MIN_FRACTION and (not need_icon or icon >= ICON_MIN_PIXELS)
+        results.append((ok, f"{label} page {fraction:.0%}, icon {icon} px"))
+    return all(ok for ok, _ in results), "; ".join(text for _, text in results)
+
+
+def case_env(base: dict[str, str], work: Path, extra: dict[str, str]) -> dict[str, str]:
+    """The shell's environment without rendering overrides, the browser's
+    own variables or its socket; throwaway XDG directories; then the case's."""
+    env = {k: v for k, v in base.items() if k not in RENDER_ENV and not k.startswith(("ZIGBROWSER_", "ZB_"))}
+    for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        env[name] = str(work / name.lower())
+    env.update(extra)
+    return env
+
+
+def activate(wid: int) -> None:
+    """Ask the window manager to raise and focus our window
+    (_NET_ACTIVE_WINDOW), so the screen capture sees it, not what covers it."""
+    import ctypes
+    import ctypes.util
+
+    path = ctypes.util.find_library("X11")
+    if path is None:
+        return
+    x = ctypes.CDLL(path)
+    x.XOpenDisplay.restype = ctypes.c_void_p
+    x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x.XDefaultRootWindow.restype = ctypes.c_ulong
+    x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x.XInternAtom.restype = ctypes.c_ulong
+    x.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
+    x.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+
+    class ClientMessage(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                    ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                    ("format", ctypes.c_int), ("data", ctypes.c_long * 5)]
+
+    dpy = x.XOpenDisplay(None)
+    if not dpy:
+        return
+    try:
+        root = x.XDefaultRootWindow(dpy)
+        ev = ClientMessage(type=33, send_event=1, display=dpy, window=wid,
+                           message_type=x.XInternAtom(dpy, b"_NET_ACTIVE_WINDOW", 0), format=32)
+        ev.data[0], ev.data[1] = 2, 0  # source: a pager (direct user request); time: current
+        x.XSendEvent(dpy, root, 0, (1 << 19) | (1 << 20), ctypes.byref(ev))  # SubstructureRedirect|Notify
+        x.XRaiseWindow(dpy, wid)
+        x.XSync(dpy, 0)
+    finally:
+        x.XCloseDisplay(dpy)
+
+
 def our_window(pid: int) -> int | None:
     tree = subprocess.run(["xwininfo", "-root", "-tree"], capture_output=True, text=True, timeout=30).stdout
     for wid in re.findall(r"^\s*(0x[0-9a-f]+) \"zigBrowser\"", tree, re.M):
@@ -128,14 +211,13 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
         page.write_text("<!doctype html><title>zb real screen check</title>"
                         "<style>html,body{margin:0;height:100%;background:#1e6fb4;color:#fff;"
                         "font:32px sans-serif}</style><body><p style='padding:40px'>zigBrowser real-screen check</p>")
-        env = dict(os.environ)
-        env.pop("ZIGBROWSER_SOCKET", None)
-        for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
-            env[name] = str(work / name.lower())
-        env.update(case.env)
+        env = case_env(dict(os.environ), work, case.env)
         argv = [case.binary or default_bin, "--profile-dir", str(work / "profile"),
                 "--agent-drawer", "on" if case.drawer else "off", *case.args, page.as_uri()]
         log = (out / f"{case.name}.stderr.txt").open("wb")
+        log.write(("argv: " + " ".join(argv) + "\nrender env: " + repr({k: v for k, v in env.items() if k in RENDER_ENV})
+                   + "\n").encode())
+        log.flush()
         try:
             proc = subprocess.Popen(argv, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         except OSError as err:
@@ -149,6 +231,7 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
                 wid = our_window(proc.pid)
             if wid is None:
                 return False, f"no window (browser exit {proc.poll()})"
+            activate(wid)
             time.sleep(settle)
             x, y, w, h = geometry(wid)
             window = xwd("-id", hex(wid))
@@ -157,12 +240,7 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
             sx, sy = max(x, 0), max(y, 0)
             crop = (sx, sy, min(w, screen.width - sx), min(h, screen.height - sy))
             write_png(screen, crop, out / f"{case.name}.screen.png")
-            box = (0, 0, window.width, window.height)
-            page_px = count(window, box, PAGE_RGB)
-            icon_px = count(window, box, ICON_RGB)
-            fraction = page_px / max(1, window.width * window.height)
-            ok = fraction >= PAGE_MIN_FRACTION and (not case.icon or icon_px >= ICON_MIN_PIXELS)
-            return ok, f"page {fraction:.0%} of {window.width}x{window.height}, icon {icon_px} px"
+            return judge(window, screen, crop, case.icon)
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -213,11 +291,17 @@ def main(argv: list[str]) -> int:
     if glx:
         info = subprocess.run([glx, "-B"], capture_output=True, text=True, timeout=30)
         (out / "glxinfo.txt").write_text(info.stdout + info.stderr)
+    print("Keep the screen free while this runs: each window is raised, and the screen under it is captured.",
+          flush=True)
     failed = 0
     for case in cases(args.matrix, variants["variant"], variants["variant_page_only"]):
         ok, detail = run_case(case, args.bin, out, args.settle)
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {case.name:<22} {detail}  ({case.note})", flush=True)
+        if case.name == "drawer-off" and not ok:
+            print("INVALID RUN: the drawer-off control failed, so the capture itself is not trusted "
+                  "(a covered window, or a broken build). Fix that and run again.", flush=True)
+            return 3
     print(f"{failed} failed; captures and logs in {out}")
     return 1 if failed else 0
 

@@ -901,14 +901,17 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 - It starts the built binary for each case:
   - with a throwaway `--profile-dir`, throwaway XDG directories, and no automation socket (`ZIGBROWSER_SOCKET` removed);
   - on a solid-colour fixture page.
-- For each case, it finds the window by `_NET_WM_PID` and captures it twice: the window itself (`xwd -id`) and the screen area under it (`xwd -root`). Both are written as PNGs, beside the browser's stderr and `glxinfo -B`.
-- It then counts pixels:
-  - the page colour must cover at least 40% of the window;
+- It removes every rendering override the shell may carry (`RENDER_ENV`: `GDK_GL`, `WEBKIT_*` renderer and compositing switches, the EGL and GLX vendor variables, `LIBGL_ALWAYS_SOFTWARE`, `GALLIUM_DRIVER`, and the like, rev 15.3, RoseCat 5350) and every `ZIGBROWSER_*` and `ZB_*` variable. Only the case's own settings apply. Each case's log records its argv and render environment.
+- For each case, it finds the window by `_NET_WM_PID`, asks the window manager to raise it (`_NET_ACTIVE_WINDOW`), and captures it twice: the window itself (`xwd -id`) and the screen area under it (`xwd -root`). Both are written as PNGs, beside the browser's stderr and `glxinfo -B`.
+- It then counts pixels **on the screen and in the window's buffer; the screen is authoritative**, because a presentation failure can leave the buffer drawn and the screen blank. Both must pass:
+  - the page colour must cover at least 40%;
   - with the drawer on, the icon colour must cover at least 400 pixels.
+- If the `drawer-off` control fails, the run is invalid (exit 3): the window was covered or the build is broken.
+- `tests/manual/test_real_screen_check.py` checks the verdict and the environment with fake captures. A good buffer with a blank screen must fail.
 - The cases:
   - `drawer-off` (the control) and `drawer-on` (the check), always;
-  - `--matrix` adds the rendering experiments: `--hardware-acceleration never`, `--renderer default`, `--renderer mesa-egl`, `GDK_GL=disable` and `WEBKIT_DISABLE_COMPOSITING_MODE=1`;
-  - `--variant NAME=PATH` adds a drawer-on case for another build, for bisecting.
+  - `--matrix` adds the rendering experiments: `--hardware-acceleration never`, `--renderer default`, `--renderer mesa-egl` and `GDK_GL=disable`;
+  - `--variant NAME=PATH` adds a drawer-on case for another build, for bisecting; `--variant-page-only NAME=PATH` does the same for a build that draws no icon.
 - Exit 0 only when every case passes.
 - **Each UI slice adds its own case** for what it draws: for example, the open drawer for S2, the Secrets window for S4, and the approval card for S8. Its slice section names the case. Agents check the script itself only on their own private Xvfb, where a good build passes and a blank page or a missing binary fails.
 
