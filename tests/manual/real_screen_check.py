@@ -60,6 +60,33 @@ ICON_MIN_PIXELS = 400           # a 56 px circle has about 2400
 PANEL_RGB = (0xF4, 0xF1, 0xEA)  # #zb-agent-drawer's background
 OPEN_PAGE_MIN_FRACTION = 0.30   # the open drawer covers the bottom 40%
 OPEN_PANEL_MIN_FRACTION = 0.10
+BLANK_MAX_FRACTION = 0.90       # --url: one colour over this much of the page is blank
+PASS, FAIL, INVALID = "PASS", "FAIL", "INVALID"
+
+# The fixture keeps repainting small parts of the page, as a real page does
+# (fonts, images, animation), and forces composited layers: a static page
+# drew where Wikipedia blanked (the orchestrator's fa0aa48 matrix). The moving
+# parts are small, so the page colour still covers most of the window.
+FIXTURE_HTML = """<!doctype html><title>zb real screen check</title>
+<style>
+html,body{margin:0;height:100%;background:#1e6fb4;color:#fff;font:32px sans-serif}
+#spin{position:absolute;left:40px;top:120px;width:60px;height:60px;background:#f2c94c;
+  will-change:transform;animation:spin 1s linear infinite}
+#layer{position:absolute;left:140px;top:120px;width:60px;height:60px;background:#27ae60;transform:translateZ(0)}
+@keyframes spin{to{transform:rotate(360deg)}}
+canvas{position:absolute;left:240px;top:120px}
+</style>
+<body><p style='padding:40px'>zigBrowser real-screen check <span id=tick>0</span></p>
+<div id=spin></div><div id=layer></div><canvas id=c width=60 height=60></canvas>
+<script>
+let n = 0;
+const ctx = document.getElementById('c').getContext('2d');
+(function frame() {
+  ctx.fillStyle = `hsl(${n % 360},80%,50%)`; ctx.fillRect(0, 0, 60, 60);
+  if (n++ % 30 === 0) document.getElementById('tick').textContent = n;
+  requestAnimationFrame(frame);
+})();
+</script>"""
 
 # Rendering overrides a shell may carry. They are removed before each case,
 # so a case's label is the only thing that changes how it renders.
@@ -90,6 +117,7 @@ def cases(matrix: bool, variants: list[tuple[str, str]], page_only: list[tuple[s
         out += [
             Case("on-hw-never", True, ["--hardware-acceleration", "never"], note="no GPU compositing in WebKit"),
             Case("on-renderer-default", True, ["--renderer", "default"], note="DMA-BUF GPU buffers, not SHM"),
+            Case("off-renderer-default", False, ["--renderer", "default"], note="control: DMA-BUF without the drawer"),
             Case("on-renderer-mesa-egl", True, ["--renderer", "mesa-egl"], note="Mesa EGL instead of NVIDIA EGL"),
             Case("on-gdk-gl-disable", True, env={"GDK_GL": "disable"}, note="GDK paints the window without GL"),
             # Not WEBKIT_DISABLE_COMPOSITING_MODE=1: on Xvfb it leaves the page unpainted
@@ -140,16 +168,55 @@ def judge(window: Capture, screen: Capture, crop: tuple[int, int, int, int], nee
     return all(ok for ok, _ in results), "; ".join(text for _, text in results)
 
 
-def judge_open(window: Capture, screen: Capture, crop: tuple[int, int, int, int]) -> tuple[bool, str]:
+def judge_not_blank(window: Capture, screen: Capture, crop: tuple[int, int, int, int]) -> tuple[bool, str]:
+    """--url: any page; it is drawn when no single colour covers most of it
+    (a blank window is one flat colour), on the screen and in the buffer."""
+    results = []
+    for label, cap, box in (("screen", screen, crop), ("window", window, (0, 0, window.width, window.height))):
+        top = top_colour(cap, box)
+        results.append((top < BLANK_MAX_FRACTION, f"{label} top colour {top:.0%}"))
+    return all(ok for ok, _ in results), "; ".join(text for _, text in results)
+
+
+def top_colour(cap: Capture, box: tuple[int, int, int, int]) -> float:
+    """The share of `box` taken by its most common colour (in 8-level steps)."""
+    x0, y0, w, h = box
+    colours: dict[tuple[int, int, int], int] = {}
+    for y in range(y0, y0 + h, 4):
+        for x in range(x0, x0 + w, 4):
+            p = cap.pixel(x, y)
+            key = (p[0] // 8, p[1] // 8, p[2] // 8)
+            colours[key] = colours.get(key, 0) + 1
+    return max(colours.values(), default=0) / max(1, sum(colours.values()))
+
+
+def judge_page(window: Capture, screen: Capture, crop: tuple[int, int, int, int], need_icon: bool,
+               any_page: bool) -> tuple[bool, str]:
+    if not any_page:
+        return judge(window, screen, crop, need_icon)
+    ok, detail = judge_not_blank(window, screen, crop)
+    if need_icon:
+        icon = count(screen, crop, ICON_RGB)
+        ok, detail = ok and icon >= ICON_MIN_PIXELS, f"{detail}; screen icon {icon} px"
+    return ok, detail
+
+
+def judge_open(window: Capture, screen: Capture, crop: tuple[int, int, int, int],
+               any_page: bool = False) -> tuple[bool, str]:
     """The open drawer: the page above it and the panel, on the screen and
     in the window's buffer (the screen is the authority, as in judge)."""
     results = []
     for label, cap, box in (("screen", screen, crop), ("window", window, (0, 0, window.width, window.height))):
         area = max(1, box[2] * box[3])
-        page = count(cap, box, PAGE_RGB) / area
         panel = count(cap, box, PANEL_RGB) / area
-        ok = page >= OPEN_PAGE_MIN_FRACTION and panel >= OPEN_PANEL_MIN_FRACTION
-        results.append((ok, f"open {label} page {page:.0%}, panel {panel:.0%}"))
+        if any_page:  # above the drawer (D2: it takes the bottom 40%)
+            share = top_colour(cap, (box[0], box[1], box[2], box[3] * 55 // 100))
+            page_ok, page_text = share < BLANK_MAX_FRACTION, f"page above: top colour {share:.0%}"
+        else:
+            page = count(cap, box, PAGE_RGB) / area
+            page_ok, page_text = page >= OPEN_PAGE_MIN_FRACTION, f"page {page:.0%}"
+        ok = page_ok and panel >= OPEN_PANEL_MIN_FRACTION
+        results.append((ok, f"open {label} {page_text}, panel {panel:.0%}"))
     return all(ok for ok, _ in results), "; ".join(text for _, text in results)
 
 
@@ -163,58 +230,6 @@ def icon_centre(screen: Capture, crop: tuple[int, int, int, int]) -> tuple[int, 
     return sum(x for x, _ in hits) // len(hits), sum(y for _, y in hits) // len(hits)
 
 
-def xtest(action) -> None:
-    """Runs action(x11, xtst, display) on a fresh connection to $DISPLAY.
-    Used on our own window only: the caller found its target inside it."""
-    import ctypes
-    import ctypes.util
-
-    xlib, xtst = ctypes.util.find_library("X11"), ctypes.util.find_library("Xtst")
-    if xlib is None or xtst is None:
-        raise RuntimeError("libX11 or libXtst is missing")
-    x11, t = ctypes.CDLL(xlib), ctypes.CDLL(xtst)
-    x11.XOpenDisplay.restype = ctypes.c_void_p
-    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
-    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
-    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
-    x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-    t.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
-    t.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
-    t.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
-    dpy = x11.XOpenDisplay(None)
-    if not dpy:
-        raise RuntimeError("cannot open the display")
-    try:
-        action(x11, t, dpy)
-    finally:
-        x11.XCloseDisplay(dpy)
-
-
-def click(x: int, y: int) -> None:
-    """One left click at root x, y."""
-    def act(x11, t, dpy):
-        t.XTestFakeMotionEvent(dpy, -1, x, y, 0)
-        x11.XSync(dpy, 0)
-        time.sleep(0.2)
-        for down in (1, 0):
-            t.XTestFakeButtonEvent(dpy, 1, down, 0)
-            x11.XSync(dpy, 0)
-            time.sleep(0.05)
-    xtest(act)
-
-
-def press_escape() -> None:
-    """Escape, to the focused window (ours: it was just clicked)."""
-    def act(x11, t, dpy):
-        code = x11.XKeysymToKeycode(dpy, 0xFF1B)
-        for down in (1, 0):
-            t.XTestFakeKeyEvent(dpy, code, down, 0)
-            x11.XSync(dpy, 0)
-            time.sleep(0.05)
-    xtest(act)
-
-
 def case_env(base: dict[str, str], work: Path, extra: dict[str, str]) -> dict[str, str]:
     """The shell's environment without rendering overrides, the browser's
     own variables or its socket; throwaway XDG directories; then the case's."""
@@ -225,45 +240,179 @@ def case_env(base: dict[str, str], work: Path, extra: dict[str, str]) -> dict[st
     return env
 
 
-def activate(wid: int) -> None:
-    """Ask the window manager to raise and focus our window
-    (_NET_ACTIVE_WINDOW), so the screen capture sees it, not what covers it."""
-    import ctypes
-    import ctypes.util
+class X11:
+    """One connection to $DISPLAY, for the safety checks and for XTest input."""
 
-    path = ctypes.util.find_library("X11")
-    if path is None:
-        return
-    x = ctypes.CDLL(path)
-    x.XOpenDisplay.restype = ctypes.c_void_p
-    x.XOpenDisplay.argtypes = [ctypes.c_char_p]
-    x.XDefaultRootWindow.restype = ctypes.c_ulong
-    x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-    x.XInternAtom.restype = ctypes.c_ulong
-    x.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
-    x.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
-    x.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-    x.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    def __init__(self) -> None:
+        import ctypes
+        import ctypes.util
 
-    class ClientMessage(ctypes.Structure):
-        _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
-                    ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
-                    ("format", ctypes.c_int), ("data", ctypes.c_long * 5)]
+        self.c = ctypes
+        xlib, xtst = ctypes.util.find_library("X11"), ctypes.util.find_library("Xtst")
+        if xlib is None or xtst is None:
+            raise RuntimeError("libX11 or libXtst is missing")
+        x, t = ctypes.CDLL(xlib), ctypes.CDLL(xtst)
+        ul, ptr, i = ctypes.c_ulong, ctypes.c_void_p, ctypes.c_int
+        x.XOpenDisplay.restype, x.XOpenDisplay.argtypes = ptr, [ctypes.c_char_p]
+        x.XDefaultRootWindow.restype, x.XDefaultRootWindow.argtypes = ul, [ptr]
+        x.XTranslateCoordinates.argtypes = [ptr, ul, ul, i, i, ctypes.POINTER(i), ctypes.POINTER(i), ctypes.POINTER(ul)]
+        x.XQueryPointer.argtypes = [ptr, ul, ctypes.POINTER(ul), ctypes.POINTER(ul), ctypes.POINTER(i),
+                                    ctypes.POINTER(i), ctypes.POINTER(i), ctypes.POINTER(i), ctypes.POINTER(ctypes.c_uint)]
+        x.XGetInputFocus.argtypes = [ptr, ctypes.POINTER(ul), ctypes.POINTER(i)]
+        x.XQueryTree.argtypes = [ptr, ul, ctypes.POINTER(ul), ctypes.POINTER(ul), ctypes.POINTER(ctypes.POINTER(ul)),
+                                 ctypes.POINTER(ctypes.c_uint)]
+        x.XInternAtom.restype, x.XInternAtom.argtypes = ul, [ptr, ctypes.c_char_p, i]
+        x.XSendEvent.argtypes = [ptr, ul, i, ctypes.c_long, ptr]
+        x.XRaiseWindow.argtypes = [ptr, ul]
+        x.XSync.argtypes = [ptr, i]
+        x.XFree.argtypes = [ptr]
+        x.XCloseDisplay.argtypes = [ptr]
+        x.XKeysymToKeycode.restype, x.XKeysymToKeycode.argtypes = ctypes.c_ubyte, [ptr, ul]
+        t.XTestFakeMotionEvent.argtypes = [ptr, i, i, i, ul]
+        t.XTestFakeButtonEvent.argtypes = [ptr, ctypes.c_uint, i, ul]
+        t.XTestFakeKeyEvent.argtypes = [ptr, ctypes.c_uint, i, ul]
+        self.x, self.t = x, t
+        self.dpy = x.XOpenDisplay(None)
+        if not self.dpy:
+            raise RuntimeError("cannot open the display")
+        self.root = x.XDefaultRootWindow(self.dpy)
 
-    dpy = x.XOpenDisplay(None)
-    if not dpy:
-        return
-    try:
-        root = x.XDefaultRootWindow(dpy)
-        ev = ClientMessage(type=33, send_event=1, display=dpy, window=wid,
-                           message_type=x.XInternAtom(dpy, b"_NET_ACTIVE_WINDOW", 0), format=32)
-        ev.data[0], ev.data[1] = 2, 0  # source: a pager (direct user request); time: current
-        x.XSendEvent(dpy, root, 0, (1 << 19) | (1 << 20), ctypes.byref(ev))  # SubstructureRedirect|Notify
-        x.XRaiseWindow(dpy, wid)
-        x.XSync(dpy, 0)
-    finally:
-        x.XCloseDisplay(dpy)
+    def close(self) -> None:
+        if self.dpy:
+            self.x.XCloseDisplay(self.dpy)
+            self.dpy = None
+
+    def path_at(self, px: int, py: int) -> list[int]:
+        """The windows containing root point px, py, topmost first at each
+        level, from the root's child down to the deepest."""
+        c, path, window = self.c, [], self.root
+        while True:
+            cx, cy, child = c.c_int(), c.c_int(), c.c_ulong()
+            if not self.x.XTranslateCoordinates(self.dpy, self.root, window, px, py, c.byref(cx), c.byref(cy),
+                                                c.byref(child)) or not child.value:
+                return path
+            path.append(child.value)
+            window = child.value
+
+    def pointer_path(self) -> list[int]:
+        c, path, window = self.c, [], self.root
+        while True:
+            r, child = c.c_ulong(), c.c_ulong()
+            a, b, d, e, m = c.c_int(), c.c_int(), c.c_int(), c.c_int(), c.c_uint()
+            self.x.XQueryPointer(self.dpy, window, c.byref(r), c.byref(child), c.byref(a), c.byref(b), c.byref(d),
+                                 c.byref(e), c.byref(m))
+            if not child.value:
+                return path
+            path.append(child.value)
+            window = child.value
+
+    def focus(self) -> int:
+        c, w, revert = self.c, self.c.c_ulong(), self.c.c_int()
+        self.x.XGetInputFocus(self.dpy, c.byref(w), c.byref(revert))
+        return w.value
+
+    def parent(self, window: int) -> int:
+        c = self.c
+        root, parent, children, n = c.c_ulong(), c.c_ulong(), c.POINTER(c.c_ulong)(), c.c_uint()
+        if not self.x.XQueryTree(self.dpy, window, c.byref(root), c.byref(parent), c.byref(children), c.byref(n)):
+            return 0
+        if children:
+            self.x.XFree(children)
+        return parent.value
+
+    def activate(self, wid: int) -> None:
+        """Ask the window manager to raise and focus `wid` (_NET_ACTIVE_WINDOW)."""
+        c = self.c
+
+        class ClientMessage(c.Structure):
+            _fields_ = [("type", c.c_int), ("serial", c.c_ulong), ("send_event", c.c_int), ("display", c.c_void_p),
+                        ("window", c.c_ulong), ("message_type", c.c_ulong), ("format", c.c_int),
+                        ("data", c.c_long * 5)]
+
+        ev = ClientMessage(type=33, send_event=1, display=self.dpy, window=wid,
+                           message_type=self.x.XInternAtom(self.dpy, b"_NET_ACTIVE_WINDOW", 0), format=32)
+        ev.data[0], ev.data[1] = 2, 0  # source: a pager (a direct user request); time: current
+        self.x.XSendEvent(self.dpy, self.root, 0, (1 << 19) | (1 << 20), c.byref(ev))
+        self.x.XRaiseWindow(self.dpy, wid)
+        self.x.XSync(self.dpy, 0)
+
+    def move(self, px: int, py: int) -> None:
+        self.t.XTestFakeMotionEvent(self.dpy, -1, px, py, 0)
+        self.x.XSync(self.dpy, 0)
+
+    def button(self) -> None:
+        for down in (1, 0):
+            self.t.XTestFakeButtonEvent(self.dpy, 1, down, 0)
+            self.x.XSync(self.dpy, 0)
+            time.sleep(0.05)
+
+    def escape(self) -> None:
+        code = self.x.XKeysymToKeycode(self.dpy, 0xFF1B)
+        for down in (1, 0):
+            self.t.XTestFakeKeyEvent(self.dpy, code, down, 0)
+            self.x.XSync(self.dpy, 0)
+            time.sleep(0.05)
+
+
+# --- safety: input goes only to our own window, which must be on top ------------
+
+def sample_points(crop: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+    """A 3x3 grid inset from the window's edges, in root coordinates."""
+    x, y, w, h = crop
+    return [(x + w * fx // 6, y + h * fy // 6) for fy in (1, 3, 5) for fx in (1, 3, 5)]
+
+
+def covered_points(wid: int, crop: tuple[int, int, int, int], path_at) -> list[tuple[int, int]]:
+    """The sample points where our window is not on top (not on the path of
+    windows that contain the point)."""
+    return [p for p in sample_points(crop) if wid not in path_at(*p)]
+
+
+def focus_inside(wid: int, focus: int, parent_of) -> bool:
+    """Whether the keyboard focus is `wid` or a window inside it."""
+    seen = 0
+    while focus not in (0, 1) and seen < 64:  # None and PointerRoot are never ours
+        if focus == wid:
+            return True
+        focus, seen = parent_of(focus), seen + 1
+    return False
+
+
+def raise_window(x11: X11, wid: int, tries: int = 3) -> bool:
+    """Asks for our window on top; True once it is on top at every sample point."""
+    for _ in range(tries):
+        x11.activate(wid)
+        time.sleep(0.7)
+        if not covered_points(wid, geometry(wid), x11.path_at):
+            return True
+    return False
+
+
+def safe_click(x11, wid: int, px: int, py: int) -> str | None:
+    """Clicks at px, py only if our window is on top there, before and after
+    the pointer moves. Returns why it refused (nothing was sent), or None."""
+    if wid not in x11.path_at(px, py):
+        return "our window is not on top at the click point"
+    x11.move(px, py)
+    time.sleep(0.2)
+    if wid not in x11.pointer_path():
+        return "the pointer is not over our window"
+    x11.button()
+    return None
+
+
+POINTER_ROOT = 1  # X's focus mode in which keys go to the window under the pointer
+
+
+def safe_escape(x11, wid: int) -> str | None:
+    """Escape only while the keyboard focus is inside our window (or, with
+    PointerRoot focus, the pointer is over our window)."""
+    focus = x11.focus()
+    ours = wid in x11.pointer_path() if focus == POINTER_ROOT else focus_inside(wid, focus, x11.parent)
+    if not ours:
+        return "the keyboard focus is not in our window"
+    x11.escape()
+    return None
 
 
 def our_window(pid: int) -> int | None:
@@ -303,16 +452,16 @@ def xwd(*args: str) -> Capture:
     return Capture(done.stdout)
 
 
-def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bool, str]:
+def run_case(case: Case, default_bin: str, out: Path, settle: float, url: str | None = None) -> tuple[str, str]:
+    """(PASS | FAIL | INVALID, detail). INVALID: the window was not on top, or
+    did not hold the focus, so nothing was judged and no input was sent."""
     work = Path(tempfile.mkdtemp(prefix=f"zb-real-screen-{case.name}-"))
     try:
         page = work / "page.html"
-        page.write_text("<!doctype html><title>zb real screen check</title>"
-                        "<style>html,body{margin:0;height:100%;background:#1e6fb4;color:#fff;"
-                        "font:32px sans-serif}</style><body><p style='padding:40px'>zigBrowser real-screen check</p>")
+        page.write_text(FIXTURE_HTML)
         env = case_env(dict(os.environ), work, case.env)
         argv = [case.binary or default_bin, "--profile-dir", str(work / "profile"),
-                "--agent-drawer", "on" if case.drawer else "off", *case.args, page.as_uri()]
+                "--agent-drawer", "on" if case.drawer else "off", *case.args, url or page.as_uri()]
         log = (out / f"{case.name}.stderr.txt").open("wb")
         log.write(("argv: " + " ".join(argv) + "\nrender env: " + repr({k: v for k, v in env.items() if k in RENDER_ENV})
                    + "\n").encode())
@@ -321,7 +470,7 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
             proc = subprocess.Popen(argv, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         except OSError as err:
             log.close()
-            return False, f"cannot start {argv[0]}: {err.strerror}"
+            return FAIL, f"cannot start {argv[0]}: {err.strerror}"
         try:
             deadline = time.monotonic() + 30
             wid = None
@@ -329,36 +478,51 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float) -> tuple[bo
                 time.sleep(0.5)
                 wid = our_window(proc.pid)
             if wid is None:
-                return False, f"no window (browser exit {proc.poll()})"
-            activate(wid)
-            time.sleep(settle)
-            x, y, w, h = geometry(wid)
-            window, screen = capture_both(wid, out, case.name)
-            crop = (x, y, w, h)
-            if x < 0 or y < 0 or x + w > screen.width or y + h > screen.height or (window.width, window.height) != (w, h):
-                return False, (f"window {w}x{h}+{x}+{y} is not wholly on the {screen.width}x{screen.height} screen "
-                               f"(window capture {window.width}x{window.height}): move it and run again")
-            ok, detail = judge(window, screen, crop, case.icon)
-            detail = f"{w}x{h}+{x}+{y}: {detail}"
-            if not ok or not case.open_drawer:
-                return ok, detail
-            centre = icon_centre(screen, crop)
-            if centre is None:
-                return False, detail + "; no icon on screen to click"
-            click(*centre)
-            # The open drawer, twice, a second apart: it must draw and stay drawn.
-            for sample in (1, 2):
-                time.sleep(settle if sample == 1 else 1.0)
-                window, screen = capture_both(wid, out, f"{case.name}.open{sample}", crop)
-                ok, opened = judge_open(window, screen, crop)
-                detail += f"; open #{sample} {opened}"
-                if not ok:
-                    return False, detail
-            press_escape()
-            time.sleep(settle)
-            window, screen = capture_both(wid, out, f"{case.name}.minimized", crop)
-            ok, closed = judge(window, screen, crop, True)
-            return ok, detail + "; minimized " + closed
+                return FAIL, f"no window (browser exit {proc.poll()})"
+            x11 = X11()
+            try:
+                if not raise_window(x11, wid):
+                    return INVALID, "the window stayed covered: nothing judged, no input sent"
+                time.sleep(settle)
+                x, y, w, h = geometry(wid)
+                crop = (x, y, w, h)
+                window, screen = capture_both(wid, out, case.name)
+                if x < 0 or y < 0 or x + w > screen.width or y + h > screen.height or (window.width, window.height) != (w, h):
+                    return INVALID, (f"window {w}x{h}+{x}+{y} is not wholly on the {screen.width}x{screen.height} screen "
+                                     f"(window capture {window.width}x{window.height}): move it and run again")
+                covered = covered_points(wid, crop, x11.path_at)
+                if covered:
+                    return INVALID, f"covered at {covered[:3]} when captured: nothing judged"
+                ok, detail = judge_page(window, screen, crop, case.icon, url is not None)
+                detail = f"{w}x{h}+{x}+{y}: {detail}"
+                if not ok or not case.open_drawer:
+                    return (PASS if ok else FAIL), detail
+                centre = icon_centre(screen, crop)
+                if centre is None:
+                    return FAIL, detail + "; no icon on screen to click"
+                refused = safe_click(x11, wid, *centre)
+                if refused:
+                    return INVALID, detail + f"; {refused}: no input sent"
+                # The open drawer, twice, a second apart: it must draw and stay drawn.
+                for sample in (1, 2):
+                    time.sleep(settle if sample == 1 else 1.0)
+                    window, screen = capture_both(wid, out, f"{case.name}.open{sample}", crop)
+                    covered = covered_points(wid, crop, x11.path_at)
+                    if covered:
+                        return INVALID, detail + f"; covered at {covered[:3]} while open"
+                    ok, opened = judge_open(window, screen, crop, url is not None)
+                    detail += f"; open #{sample} {opened}"
+                    if not ok:
+                        return FAIL, detail
+                refused = safe_escape(x11, wid)
+                if refused:
+                    return INVALID, detail + f"; {refused}: Escape not sent"
+                time.sleep(settle)
+                window, screen = capture_both(wid, out, f"{case.name}.minimized", crop)
+                ok, closed = judge(window, screen, crop, True)
+                return (PASS if ok else FAIL), detail + "; minimized " + closed
+            finally:
+                x11.close()
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -384,6 +548,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--variant-page-only", action="append", default=[], metavar="NAME=PATH",
                     help="like --variant, for a build that draws no icon: only the page is checked")
     ap.add_argument("--settle", type=float, default=4.0, help="seconds between the window appearing and capture")
+    ap.add_argument("--url", help="load this page instead of the fixture (for example the page the user saw blank); "
+                                  "then a page is drawn when no single colour covers 90%% of it")
     args = ap.parse_args(argv)
     if not args.confirm_user_permission:
         print("refusing: run only on the user's screen with their permission (--confirm-user-permission)",
@@ -411,17 +577,18 @@ def main(argv: list[str]) -> int:
         (out / "glxinfo.txt").write_text(info.stdout + info.stderr)
     print("Keep the screen free while this runs: each window is raised, and the screen under it is captured.",
           flush=True)
-    failed = 0
+    tally = {PASS: 0, FAIL: 0, INVALID: 0}
     for case in cases(args.matrix, variants["variant"], variants["variant_page_only"]):
-        ok, detail = run_case(case, args.bin, out, args.settle)
-        failed += not ok
-        print(f"{'PASS' if ok else 'FAIL'}  {case.name:<22} {detail}  ({case.note})", flush=True)
-        if case.name == "drawer-off" and not ok:
-            print("INVALID RUN: the drawer-off control failed, so the capture itself is not trusted "
+        status, detail = run_case(case, args.bin, out, args.settle, args.url)
+        tally[status] += 1
+        print(f"{status:<7} {case.name:<22} {detail}  ({case.note})", flush=True)
+        if case.name == "drawer-off" and status != PASS:
+            print("INVALID RUN: the drawer-off control did not pass, so the capture itself is not trusted "
                   "(a covered window, or a broken build). Fix that and run again.", flush=True)
             return 3
-    print(f"{failed} failed; captures and logs in {out}")
-    return 1 if failed else 0
+    print(f"{tally[FAIL]} failed, {tally[INVALID]} invalid (covered or unfocused: not judged, no input sent); "
+          f"captures and logs in {out}")
+    return 1 if tally[FAIL] else 3 if tally[INVALID] else 0
 
 
 if __name__ == "__main__":

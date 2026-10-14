@@ -79,6 +79,85 @@ class OpenDrawerTest(unittest.TestCase):
         self.assertIsNone(rsc.icon_centre(BLANK_SCREEN, CROP))
 
 
+class FakeX11:
+    """Stands in for real_screen_check.X11: records input instead of sending it."""
+
+    def __init__(self, path, pointer, focus, parents):
+        self._path, self._pointer, self._focus, self._parents = path, pointer, focus, parents
+        self.sent = []
+
+    def path_at(self, x, y):
+        return self._path(x, y)
+
+    def pointer_path(self):
+        return self._pointer
+
+    def focus(self):
+        return self._focus
+
+    def parent(self, w):
+        return self._parents.get(w, 0)
+
+    def move(self, x, y):
+        self.sent.append(("move", x, y))
+
+    def button(self):
+        self.sent.append(("button",))
+
+    def escape(self):
+        self.sent.append(("escape",))
+
+
+OURS, TERMINAL, FRAME = 0x400001, 0x700001, 0x300001
+
+
+class SafetyTest(unittest.TestCase):
+    """The orchestrator's run sent a click and Escape to the user's terminal:
+    input goes only to our own window, on top, holding the focus."""
+
+    def test_a_covered_click_point_sends_nothing(self):
+        x = FakeX11(lambda px, py: [FRAME, TERMINAL], [FRAME, TERMINAL], OURS, {})
+        self.assertIsNotNone(rsc.safe_click(x, OURS, 10, 10))
+        self.assertEqual(x.sent, [])
+
+    def test_a_pointer_that_lands_elsewhere_moves_but_never_clicks(self):
+        x = FakeX11(lambda px, py: [FRAME, OURS], [FRAME, TERMINAL], OURS, {})
+        self.assertIsNotNone(rsc.safe_click(x, OURS, 10, 10))
+        self.assertNotIn(("button",), x.sent)
+
+    def test_our_window_on_top_gets_the_click(self):
+        x = FakeX11(lambda px, py: [FRAME, OURS, OURS + 5], [FRAME, OURS], OURS, {})
+        self.assertIsNone(rsc.safe_click(x, OURS, 10, 10))
+        self.assertEqual(x.sent, [("move", 10, 10), ("button",)])
+
+    def test_escape_only_with_the_focus_inside_our_window(self):
+        for focus, pointer, parents, allowed in (
+                (TERMINAL, [FRAME, OURS], {TERMINAL: 1}, False), (0, [FRAME, OURS], {}, False),
+                (OURS, [], {}, True), (OURS + 7, [], {OURS + 7: OURS}, True),
+                (1, [FRAME, TERMINAL], {}, False),  # PointerRoot: keys go where the pointer is
+                (1, [FRAME, OURS], {}, True)):
+            x = FakeX11(lambda px, py: [], pointer, focus, parents)
+            refused = rsc.safe_escape(x, OURS)
+            self.assertEqual(refused is None, allowed, (hex(focus), refused))
+            self.assertEqual(x.sent, [("escape",)] if allowed else [])
+
+    def test_a_window_covered_at_any_sample_point_is_not_judged(self):
+        crop = (100, 50, 600, 300)
+        corner = rsc.sample_points(crop)[0]
+        covered = rsc.covered_points(OURS, crop, lambda px, py: [TERMINAL] if (px, py) == corner else [FRAME, OURS])
+        self.assertEqual(covered, [corner])
+        self.assertEqual(rsc.covered_points(OURS, crop, lambda px, py: [FRAME, OURS]), [])
+
+
+class AnyPageTest(unittest.TestCase):
+    def test_a_flat_window_is_blank_and_a_varied_one_is_drawn(self):
+        flat = capture(W + 30, H + 40, lambda x, y: (0xE0, 0xE0, 0xE0))
+        varied = capture(W + 30, H + 40, lambda x, y: ((x * 7) % 256, (y * 5) % 256, 90))
+        self.assertFalse(rsc.judge_not_blank(capture(W, H, lambda x, y: (0xE0, 0xE0, 0xE0)), flat, CROP)[0])
+        self.assertTrue(rsc.judge_not_blank(capture(W, H, lambda x, y: ((x * 7) % 256, (y * 5) % 256, 90)),
+                                            varied, CROP)[0])
+
+
 class EnvironmentTest(unittest.TestCase):
     def test_render_overrides_from_the_shell_never_reach_a_case(self):
         shell = {"DISPLAY": ":0", "XAUTHORITY": "/x/auth", "HOME": "/h", "PATH": "/usr/bin",

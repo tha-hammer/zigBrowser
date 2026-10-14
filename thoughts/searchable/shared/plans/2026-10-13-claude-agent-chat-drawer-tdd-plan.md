@@ -281,7 +281,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
   current -> dist-<n>          the only link setup swaps
   dist-<n>/                    one published build, never state, never written after its publish
     .claude/                   settings.json (sanitized), CLAUDE.md, SAI, hooks, commands, skills, agents;
-                               empty mount points: .claude.json (file), backups/, and one per STATE_DIRS name
+                               mount points: .claude.json (a `{}` placeholder), empty backups/, and one per STATE_DIRS name
     runtime/                   host.json {python, runtime_lock}; host/ (the zb_agent_host copy); bin/ (zb-claude,
                                zb-hook-run); hook-env, writable, path, token-route, config-manifest .json
     .zb-agent-home             {"layout": 2}
@@ -967,6 +967,14 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 **Closing the blocker:** `drawer-on` and `drawer-open` must pass on the user's screen.
 - `drawer-open` clicks the icon inside its own test window. It checks the page above the panel and the panel, twice, a second apart. It then presses Escape and checks the page and the icon again.
 - A window that is not wholly on the screen fails its case.
+- **Input safety (rev 15.5b; the orchestrator's run sent a click and Escape to the user's terminal):**
+  - **No input unless it reaches our window.** Before any input, our window must be on the X window path (topmost first, root down) at every point of a 3x3 grid over its rect. The click point is checked before the pointer moves and again after (`XQueryPointer`). Escape needs the keyboard focus inside our window: the focus window or one of its ancestors is ours, or, with PointerRoot focus, the pointer is over our window.
+  - **Otherwise the case is INVALID:** "not judged, no input sent". An INVALID control ends the run at once (exit 3).
+  - The same grid check guards every screen capture, so a covered window is never judged.
+  - Unit tests drive each refusal with a fake X connection that records input. Mutants that skip any of the three checks each fail.
+- **The fixture keeps repainting** (a CSS-animated `will-change: transform` square, a `translateZ(0)` layer, a canvas redrawn every frame, a ticking text node), as a real page does. The old static page drew on the user's screen where Wikipedia had blanked.
+- **`--url URL`** loads any page instead, for example the one the user saw blank. That page is judged drawn when no single colour covers 90% of it, on screen and in the buffer.
+- **`off-renderer-default`** (drawer off, DMA-BUF) is the control for `on-renderer-default`.
 - `tests/manual/test_real_screen_check.py` runs in `zig build test` (step `real_screen_check_unit`).
 
 ## 8. Workflow closure
@@ -1333,7 +1341,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
     - writable state, the reviewed union `STATE_DIRS`: `state/{projects,sessions,session-env,todos,statsig,debug,MEMORY}/`;
     - `workspace/`, `scratchpad/`, `scratchpad/tmp/`, `secrets/`.
     - Each is created with `mkdir` (or `O_EXCL` for the file) only when absent, mode 0700 (0600 for the file). An existing one must be a real directory (or regular file) owned by the user, else setup refuses.
-  - **The build** holds an empty mount point for each state name: an empty file `.claude/.claude.json`, and empty directories `.claude/backups/` and `.claude/<STATE_DIRS>`. **D12 binds** `state/.claude.json` and `state/backups` **read-only** and `state/<STATE_DIRS>` **writable** over them; nothing else of `.claude` is writable.
+  - **The build** holds a mount point for each state name: a placeholder file `.claude/.claude.json` holding `{}` (so the CLI can read it even when it is not mounted), and empty directories `.claude/backups/` and `.claude/<STATE_DIRS>`. **D12 binds** `state/.claude.json` and `state/backups` **read-only** and `state/<STATE_DIRS>` **writable** over them; nothing else of `.claude` is writable.
   - **The publish order** (each step durable before the next):
     1. build into `.dist-tmp-<random>` (mkdtemp in `root`), check it, probe the token route against its `runtime/`;
     2. fsync every file and directory of the build;
