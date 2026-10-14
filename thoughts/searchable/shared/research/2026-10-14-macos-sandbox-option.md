@@ -3,14 +3,14 @@ date: 2026-10-14
 topic: Why macOS needs its own agent-sandbox backend, and which one to build
 follows: 2026-10-14-agent-sandbox-redteam.md
 method: 3 web-research agents (primary sources where reachable) plus a read of this worktree's src/wkwebview_shim.m
-status: research, not committed
+status: research (committed da24aba); macOS is future work, no plan change
 ---
 
 # macOS sandbox option for the agent drawer
 
 ## Decisions already made (inputs to this report)
 
-- Linux keeps bwrap. It gets its own private network namespace and an allowlist proxy that lets through `api.anthropic.com` only.
+- Linux keeps bwrap. It gets its own private network namespace and an allowlist proxy that lets through `api.anthropic.com`, plus only those endpoints the CLI strictly needs and P0's census verifies (fail closed, not a general allowlist).
 - The only bridges are to host `127.0.0.1:51091` (voice) and `127.0.0.1:31337`.
 - The SAI copy uses rule (a).
 - The token route stays as built: FIFO, then a socketpair on fd 3, never the environment. There is no token-swapping proxy.
@@ -272,7 +272,7 @@ status: research, not committed
   - a hook-launch hook: how one hook gets its own sandbox;
   - a lifetime contract: everything dies with the browser.
 - **Implementations**:
-  - **Linux bwrap** (built): netns, Unix-socket bridges, nested bwrap per hook, `--die-with-parent`.
+  - **Linux bwrap** (base built: bwrap, nested bwrap per hook, PID namespaces, seccomp, `--die-with-parent`; network hardening planned in plan rev 16, not built: private netns, allowlist proxy, Unix-socket bridges).
   - **macOS Seatbelt** (new): SBPL rules instead of netns, app-spawned hooks instead of nested bwrap, launcher cleanup instead of PID-namespace teardown.
   - **Linux-in-VM** (fallback): the Linux bwrap backend inside a guest, with vsock replacing Unix sockets. On macOS that means Virtualization.framework. On Windows, WSL2 is the same idea: the Linux backend inside the WSL distro, started through `wsl.exe`, with the broker on its stdio. WSL2 networking for the bridges is **unverified**.
 - **Shared code**: the host-side allowlist proxy, the bridges, the broker and the approval logic are the same on every OS. Only "how to start a confined process" changes.

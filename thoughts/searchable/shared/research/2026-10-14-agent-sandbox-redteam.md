@@ -2,7 +2,7 @@
 date: 2026-10-14
 topic: Red team of three sandbox options for the zigBrowser Claude agent drawer
 method: RedTeam skill, ParallelAnalysis workflow (24 claims, 32 personas run as 4 squads of 8), plus 3 web-research agents and read-only checks on this host
-status: research, not committed
+status: research (committed 86ddf01); the user decided on it 2026-10-14 (bwrap with its own netns, proxy, two bridges); plan rev 16 pending
 ---
 
 # Agent sandbox red team: VM vs container vs OS-native
