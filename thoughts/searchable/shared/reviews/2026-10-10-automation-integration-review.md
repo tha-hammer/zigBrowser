@@ -5200,3 +5200,90 @@ plan must name and define the combined `p0_census.json` now checked in.
 
 Agent Mail 5273 sent the two blockers, all six amendment dispositions and the
 version/census drift to BlueBeaver, with BlackRobin copied as plan owner.
+
+## Chat drawer S2 (`aca3e33`)
+
+**Verdict: BLOCKER-for-tests.** The native implementation at `aca3e33`
+matches the user's requested shell: the drawer opens full-width at the bottom,
+the icon is hidden, the header has `-` at the upper right, the message list is
+scrollable, and the input row stays at the bottom. The GTK/frame-clock code
+also appears to implement the intended fold into the last icon rect. However,
+the blocking closure e2e does not observe the fold while it is visible. A
+mutation that hides the stand-in for the entire animation still passes every
+open/minimize check, so the test cannot distinguish the requested animation
+from a 180 ms blank pause followed by the icon appearing.
+
+No live browser, live socket, account, token or `DISPLAY :0` was used. The
+author's exact clean-export private-Xvfb gate passed **102/102 steps and
+806/806 tests**. The focused mutation below used its own private Xvfb and the
+throwaway export was deleted.
+
+### Contract trace
+
+- **Bottom shell and hidden icon:** `src/agent_drawer.zig:74-82` computes the
+  full-width bottom rect with the 40%/220 px/70% bounds;
+  `src/agent_drawer.c:372-383` hides the icon, shows the panel and focuses the
+  input. `tests/e2e/agent_drawer_test.py:74-103` drives the real icon through X,
+  checks the exact bottom rect, top-right minus, focus and a page click at the
+  old off-drawer icon position. PASS.
+- **Conversation layout:** `src/agent_drawer.c:619-690` constructs header,
+  vertical scroller/list and the final input row. The real-binary test checks
+  widget order, 200-message scrolling, stable input/header pixels, unread
+  behavior and a real 50 KB clipboard paste (`agent_drawer_test.py:83-88,
+  156-234`). PASS.
+- **Minimize behavior:** `src/agent_drawer.c:400-449` runs a real GDK
+  frame-clock callback, updates the stand-in rect, re-targets after resize and
+  restores focus/icon at the endpoint. The X e2e covers `-`, Escape and
+  Ctrl+Shift+Space and reports 12 frames in its green run
+  (`agent_drawer_test.py:105-150`). Production review PASS; closure oracle
+  **BLOCKED** as below.
+- **T1 isolation:** the drawer subtree contains only native GTK widgets
+  (`agent_drawer.c:608-617,692-695`). The hostile top page, same-origin iframe,
+  cross-origin iframe and related popup each see all five privileged handler
+  names as undefined and all seven candidate `zbHost` methods as
+  `UnknownCommand`; the full-viewport page overlay cannot intercept the real X
+  clicks on the icon or minus (`agent_isolation_test.py:75-121`). The S1
+  regression also sends `agent.ping`, `drawer.open` and `secrets.get` through
+  the real automation socket and requires `-32601`
+  (`agent_drawer_icon_test.py:119-130`). PASS.
+- **Per-window lifecycle/default:** the S1 default remains off. The added live
+  Zig driver proves primary + popup count 2, both normal and during-load popup
+  close return it to 1 while the primary answers, and quit returns it to 0
+  (`src/webkit.zig:1916-1994`). PASS.
+
+### BLOCKER — the visible animation is unobserved
+
+`tests/e2e/agent_drawer_test.py:105-118` waits for the implementation's final
+`anim` row, checks its self-reported frame count and endpoints, then captures
+only the final icon. It never samples a frame while the stand-in is visible.
+In an independent clean export, changing `src/agent_drawer.c:447` from
+`gtk_widget_show(d->ghost)` to `gtk_widget_hide(d->ghost)` made the fold wholly
+invisible while leaving the frame clock, rows and endpoint intact. The focused
+real-X test still passed **25/25** and exited 0 (`MUTANT invisible-fold`). Add a
+deterministic intermediate-frame visual oracle and show this no-show mutant
+red. An e2e-only pause after an intermediate allocation plus XWD pixels in the
+reported intermediate rect would preserve the real X/GDK production chain.
+Agent Mail 5278 sent this blocker to BlackRobin.
+
+### Red-first and mutation evidence
+
+The timestamped S1-binary runs precede the green implementation. The S2 unit
+stubs failed five new assertions; the drawer e2e lacked `tree`, `minus`,
+`anim`, scrolling and the demo seed; and the live drawer-count test expected 2
+but observed 0. T1's negative reachability assertions were already true in S1,
+as expected for an absent surface, while the new native-shell assertions were
+red. Its security sensitivity is established by the later red-at-seam mutant:
+registering a page-world `zbDrawer` handler failed in all four hostile
+contexts. Five other mutants (disconnect minus, fixed target, WebKit view in
+the drawer, forced scroll jump, and omitted detach) also went red. That T1
+evidence is acceptable; the independent invisible-fold mutant is the remaining
+gap.
+
+### Plan/documentation follow-ups
+
+- Rev 12 should add the implemented `DRAWER unread shown|hidden` row to D7b,
+  narrow the impossible area property to componentwise shrink, and explicitly
+  place the header account button in S4 rather than D1/S2. These are accurate,
+  disclosed deviations, not extra S2 implementation blockers.
+- NIT: `git diff --check e9b0cbf..aca3e33` reports a new blank line at EOF in
+  `tests/e2e/agent_common.py:290`.
