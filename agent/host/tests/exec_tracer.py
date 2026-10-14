@@ -16,11 +16,22 @@ Rev 12 named a ptrace tracer for this oracle. A seccomp user notification gives
 the same guarantee (every exec of every descendant stops until it is recorded)
 from the same place, without tracing every thread and signal of the CLI.
 
-A record is written only if the notification is still valid after it was read
-(NOTIF_ID_VALID). Each record: seq, pid and ancestors (host PIDs, the parent chain while the exec
-waits), argv, path (as passed to exec), real (resolved against the caller's
-cwd), exists (a regular file there; an exec of a missing path, as in a PATH
-search, runs nothing). The supervisor is double-forked before the filter
+The log starts with `START <supervisor pid>` and, once every traced process is
+gone, ends with `END <record count>`; a log without END is red. If the
+supervisor dies, the kernel fails every later exec with ENOSYS, so nothing runs
+unrecorded. A record is written only if the notification is still valid after
+it was read (NOTIF_ID_VALID). Each record: seq, pid and ancestors (host PIDs,
+the parent chain while the exec waits), form (execve, or execveat with its
+dirfd and flags), path and argv read in full (argv until its NULL, at most 4096
+pointers; strings up to MAX_ARG_STRLEN; the path up to PATH_MAX), complete
+(false when a bound was reached or a read failed), resolved (execve and the
+plain execveat form, AT_FDCWD with flags 0, only), real (the path resolved
+against the caller's cwd, when complete and resolved), exists (a regular file
+there; an exec of a missing path, as in a PATH search, runs nothing).
+Incomplete or unresolved records are UNEXPECTED to the census (census.py).
+Stated limit: another thread could rewrite argv between this read and the
+kernel's copy; the census watches the CLI's own behaviour, and the sandbox and
+the seccomp filter are the boundary. The supervisor is double-forked before the filter
 exists, so its listener reports POLLHUP once every traced process is gone.
 Standard library only.
 """
@@ -40,6 +51,11 @@ AUDIT_ARCH_X86_64 = 0xC000003E
 RET_ALLOW, RET_USER_NOTIF = 0x7FFF0000, 0x7FC00000
 NOTIF_RECV, NOTIF_SEND, NOTIF_ID_VALID = 0xC0502100, 0xC0182101, 0x40082102
 FLAG_CONTINUE = 1
+AT_FDCWD = -100
+MAX_ARGV = 4096          # pointers read before a record is called incomplete
+MAX_ARG_STRLEN = 131072  # the kernel's limit for one argv string
+PATH_MAX = 4096
+PAGE = 4096
 NOTIF = struct.Struct("<QIIiIQ6Q")  # id, pid, flags, nr, arch, ip, args[6]
 RESP = struct.Struct("<QqiI")       # id, val, error, flags
 
@@ -61,14 +77,24 @@ def program():
     return b"".join(struct.pack("<HBBI", *i) for i in insns)
 
 
-def _read_cstring(pid, addr, limit=4096):
+def _read_cstring(mem, addr, limit):
+    """(text, complete): the NUL-terminated string at addr, read page by page. Incomplete
+    when no NUL is found within `limit` bytes or the memory cannot be read."""
+    data = b""
     try:
-        with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
-            mem.seek(addr)
-            data = mem.read(limit)
+        while len(data) <= limit:
+            mem.seek(addr + len(data))
+            chunk = mem.read(PAGE - (addr + len(data)) % PAGE)
+            if not chunk:
+                break
+            end = chunk.find(b"\0")
+            if end >= 0:
+                data += chunk[:end]
+                return data.decode("utf-8", "replace"), len(data) <= limit
+            data += chunk
     except (OSError, ValueError, OverflowError):
-        return None
-    return data.split(b"\0", 1)[0].decode("utf-8", "replace")
+        pass
+    return data[:limit].decode("utf-8", "replace"), False
 
 
 def _ppid(pid):
@@ -90,20 +116,43 @@ def _ancestors(pid):
     return chain
 
 
-def _read_argv(pid, addr, limit=64):
-    """The exec's argv: a NULL-terminated array of string pointers in the caller's memory."""
+def _read_argv(mem, addr):
+    """(argv, complete): the exec's NULL-terminated argv, every string read in full."""
     argv = []
     try:
-        with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
-            for i in range(limit):
-                mem.seek(addr + 8 * i)
-                ptr = struct.unpack("<Q", mem.read(8))[0]
-                if ptr == 0:
-                    break
-                argv.append(_read_cstring(pid, ptr, 512))
+        for i in range(MAX_ARGV + 1):
+            mem.seek(addr + 8 * i)
+            ptr = struct.unpack("<Q", mem.read(8))[0]
+            if ptr == 0:
+                return argv, True
+            if i == MAX_ARGV:
+                break
+            text, complete = _read_cstring(mem, ptr, MAX_ARG_STRLEN)
+            argv.append(text)
+            if not complete:
+                return argv, False
     except (OSError, ValueError, OverflowError, struct.error):
         pass
-    return argv
+    return argv, False
+
+
+def read_exec(pid, nr, args):
+    """What a waiting execve/execveat asks to run. Only execve and the plain execveat form
+    (dirfd AT_FDCWD, flags 0) are resolved; any other execveat is recorded unresolved."""
+    if nr == NR_EXECVE:
+        dirfd, path_arg, argv_arg, flags = AT_FDCWD, args[0], args[1], 0
+    else:
+        dirfd = ctypes.c_int(args[0] & 0xFFFFFFFF).value
+        path_arg, argv_arg, flags = args[1], args[2], args[4] & 0xFFFFFFFF
+    try:
+        with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
+            path, path_ok = _read_cstring(mem, path_arg, PATH_MAX)
+            argv, argv_ok = _read_argv(mem, argv_arg)
+    except OSError:
+        path, path_ok, argv, argv_ok = None, False, [], False
+    resolved = nr == NR_EXECVE or (dirfd == AT_FDCWD and flags == 0)
+    form = "execve" if nr == NR_EXECVE else f"execveat dirfd={dirfd} flags={flags:#x}"
+    return {"path": path, "argv": argv, "complete": path_ok and argv_ok, "resolved": resolved, "form": form}
 
 
 def _resolve(pid, path):
@@ -122,28 +171,28 @@ def supervise(listener, log_path):
     libc = ctypes.CDLL(None, use_errno=True)
     seq = 0
     with open(log_path, "a", buffering=1) as log:
+        log.write(f"START {os.getpid()}\n")
         poller = select.poll()
         poller.register(listener, select.POLLIN)
         while True:
             events = poller.poll()
             if any(ev & (select.POLLHUP | select.POLLERR) and not ev & select.POLLIN for _fd, ev in events):
+                log.write(f"END {seq}\n")  # every traced process is gone
                 return
             buf = ctypes.create_string_buffer(NOTIF.size)
             if libc.ioctl(listener, NOTIF_RECV, buf) != 0:
                 continue  # the caller died between notify and receive
             nid, pid, _flags, nr, _arch, _ip, *args = NOTIF.unpack(buf.raw)
-            path_arg, argv_arg = (args[0], args[1]) if nr == NR_EXECVE else (args[1], args[2])
-            path = _read_cstring(pid, path_arg)
-            seq += 1
-            real = _resolve(pid, path)
+            record = read_exec(pid, nr, args)
+            real = _resolve(pid, record["path"]) if record["resolved"] and record["complete"] else None
             chain = _ancestors(pid)
             # Still the same waiting exec? (The caller may have died, and its PID been
             # reused, while we read its memory.) If not, nothing ran: no record.
             if libc.ioctl(listener, NOTIF_ID_VALID, ctypes.byref(ctypes.c_uint64(nid))) != 0:
                 continue
+            seq += 1
             log.write(json.dumps({"seq": seq, "pid": pid, "ppid": chain[0] if chain else None, "ancestors": chain,
-                                  "path": path, "real": real, "exists": bool(real) and os.path.isfile(real),
-                                  "argv": _read_argv(pid, argv_arg)}) + "\n")
+                                  **record, "real": real, "exists": bool(real) and os.path.isfile(real)}) + "\n")
             resp = ctypes.create_string_buffer(RESP.pack(nid, 0, 0, FLAG_CONTINUE), RESP.size)
             libc.ioctl(listener, NOTIF_SEND, resp)
 

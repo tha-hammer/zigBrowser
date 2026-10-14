@@ -5,16 +5,20 @@ Canary tokens only; ANTHROPIC_BASE_URL is the fake and HTTPS_PROXY/HTTP_PROXY
 point at its refusing proxy, so no request can leave for a real host.
 """
 
+import ctypes
+import importlib
 import json
 import os
 import secrets
 import stat
+import subprocess
 import threading
 import time
 import unittest
 
 from pathlib import Path
 
+import census
 import support
 from support import (DECOY_MARKER, HOOK_EVENTS, FakeAnthropicApi, Helper, Homes, Inotify, NotifyServer, canary,
                      host_python, install_dump_hooks, processes_holding, provision)
@@ -235,33 +239,6 @@ FILTERED = {"ptrace_attach": "EPERM", "ptrace_traceme": "EPERM", "process_vm_rea
             "process_vm_writev": "EPERM", "seccomp": 2}
 
 
-# The reviewed exception for the CLI's own binary (finding 7, RoseCat 5285): run as
-# argv[0] "rg" (its built-in ripgrep) only to list files, with these flags, and
-# with path operands only under these agent-home paths. Anything else is UNEXPECTED.
-CLI_RG_FLAGS = {"--version", "--no-config", "--files", "--hidden", "--no-ignore"}
-CLI_RG_VALUED = {"--max-depth": str.isdigit, "--glob": lambda v: v == ".orphaned_at"}
-CLI_RG_ROOTS = ("workspace", ".claude/plugins/cache")
-
-
-def cli_self_exec(argv, agent_home):
-    """Census entry for an exec of the CLI's own binary: "$CLI rg", or "$CLI UNEXPECTED ..."."""
-    if not argv or os.path.basename(argv[0]) != "rg":
-        return f"$CLI UNEXPECTED {argv[:4]}"
-    roots = [os.path.join(str(agent_home), r) for r in CLI_RG_ROOTS]
-    args = iter(argv[1:])
-    for arg in args:
-        if arg in CLI_RG_FLAGS:
-            continue
-        if arg in CLI_RG_VALUED:
-            if not CLI_RG_VALUED[arg](next(args, "")):
-                return f"$CLI UNEXPECTED rg {arg}"
-            continue
-        path = os.path.realpath(arg)
-        if arg.startswith("-") or not any(path == r or path.startswith(r + os.sep) for r in roots):
-            return f"$CLI UNEXPECTED rg {arg}"
-    return "$CLI rg"
-
-
 class CliSelfExecShape(unittest.TestCase):
     """The exact `$CLI rg` tuple: only listing flags and agent-home roots pass."""
 
@@ -272,11 +249,131 @@ class CliSelfExecShape(unittest.TestCase):
                f"{home}/.claude/plugins/cache"],
               ["rg", "--no-config", "--files", "--hidden", f"{home}/workspace"]]
         for argv in ok:
-            self.assertEqual(cli_self_exec(argv, home), "$CLI rg", argv)
+            self.assertEqual(census.cli_self_exec(argv, home), "$CLI rg", argv)
         bad = [["rg", "--files", "/home/someone"], ["rg", "token", f"{home}/workspace"], ["rg", "--pre", "sh"],
-               ["rg", "--files", f"{home}/workspace/../secrets"], ["rg", "--glob", "*"], ["claude", "-p", "x"], []]
+               ["rg", "--files", f"{home}/workspace/../secrets"], ["rg", "--glob", "*"], ["claude", "-p", "x"], [],
+               # argv[0] must be the literal "rg" (RoseCat 5e54b07), not any path ending in it.
+               ["/anything/rg", "--version"], ["x/rg", "--version"], ["rg ", "--version"]]
         for argv in bad:
-            self.assertTrue(cli_self_exec(argv, home).startswith("$CLI UNEXPECTED"), argv)
+            self.assertTrue(census.cli_self_exec(argv, home).startswith("$CLI UNEXPECTED"), argv)
+
+
+TRACER = Path(__file__).with_name("exec_tracer.py")
+
+# Run by the traced process in the oracle tests below (standard library only).
+EXECVEAT_SNIPPET = r"""
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True); libc.syscall.restype = ctypes.c_long
+mode = sys.argv[1]
+argv = (ctypes.c_char_p * 2)(b"true", None); envp = (ctypes.c_char_p * 1)(None)
+if mode == "dirfd":
+    fd = os.open("/usr/bin", os.O_PATH | os.O_DIRECTORY)
+    libc.syscall(ctypes.c_long(322), ctypes.c_long(fd), b"true", argv, envp, ctypes.c_long(0))
+else:
+    fd = os.open("/usr/bin/true", os.O_PATH)
+    libc.syscall(ctypes.c_long(322), ctypes.c_long(fd), b"", argv, envp, ctypes.c_long(0x1000))  # AT_EMPTY_PATH
+sys.exit("execveat returned: %d" % ctypes.get_errno())
+"""
+KILL_SUPERVISOR_SNIPPET = r"""
+import os, signal, sys, time
+with open(sys.argv[1]) as f:
+    pid = int(f.readline().split()[1])  # "START <supervisor pid>"
+os.kill(pid, signal.SIGKILL)
+time.sleep(0.5)
+try:
+    os.execv("/usr/bin/true", ["true"])
+except OSError as exc:
+    print(os.strerror(exc.errno) if exc.errno != 38 else "ENOSYS")
+"""
+
+
+class P05ExecOracle(unittest.TestCase):
+    """The exec tracer itself (rev 14 R14-3): complete records or UNEXPECTED, plain execveat
+    only, END on exit, fail-closed without its supervisor, and an unchanged spawn."""
+
+    def setUp(self):
+        self.homes = Homes()
+        self.log = self.homes.root / "exec.jsonl"
+
+    def tearDown(self):
+        self.homes.cleanup()
+
+    def traced(self, *cmd, timeout=60):
+        return subprocess.run(["/usr/bin/python3", "-I", str(TRACER), str(self.log), *map(str, cmd)],
+                              capture_output=True, text=True, timeout=timeout)
+
+    def cli_children(self):
+        records = census.load(self.log)
+        cli = os.path.realpath(token.bundled_cli())
+        # The traced process stands in for the CLI: its own exec is the root here.
+        records = [dict(r, real=cli) if i == 0 else r for i, r in enumerate(records)]
+        return census.non_hook_cli_children(records, cli, self.homes.agent)
+
+    def test_every_argument_is_captured_past_64_pointers_and_512_bytes(self):
+        long_arg = "x" * 1000
+        self.traced("/usr/bin/true", *(["a"] * 70), long_arg)
+        record = [r for r in census.load(self.log) if r["real"] == "/usr/bin/true"][0]
+        self.assertTrue(record["complete"])
+        self.assertEqual(record["argv"], ["/usr/bin/true", *(["a"] * 70), long_arg])
+
+    def test_a_forbidden_65th_rg_argument_is_unexpected(self):
+        cli = token.bundled_cli()
+        workspace = self.homes.workspace
+        script = "import os, sys; pid = os.fork()\nif pid == 0: os.execv(sys.argv[1], sys.argv[2:])\nos.waitpid(pid, 0)"
+        self.traced("/usr/bin/python3", "-I", "-c", script, cli, "rg", *(["--hidden"] * 63), str(workspace), "/etc")
+        self.assertEqual(self.cli_children(), {"$CLI UNEXPECTED rg /etc"})
+
+    def test_an_overlong_rg_path_cannot_hide_an_escape(self):
+        cli = token.bundled_cli()
+        escape = f"{self.homes.workspace}/{'a' * 600}/../../../../etc"
+        script = "import os, sys; pid = os.fork()\nif pid == 0: os.execv(sys.argv[1], sys.argv[2:])\nos.waitpid(pid, 0)"
+        self.traced("/usr/bin/python3", "-I", "-c", script, cli, "rg", "--files", escape)
+        self.assertEqual(self.cli_children(), {f"$CLI UNEXPECTED rg {escape}"})
+
+    def test_execveat_through_a_dirfd_or_empty_path_is_unexpected(self):
+        for mode in ("dirfd", "empty"):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                script = "import os, sys; pid = os.fork()\nif pid == 0: os.execv(sys.argv[1], sys.argv[1:])\nos.waitpid(pid, 0)"
+                self.traced("/usr/bin/python3", "-I", "-c", script, "/usr/bin/python3", "-I", "-c", EXECVEAT_SNIPPET, mode)
+                found = self.cli_children()
+                self.assertTrue(any(f.startswith("UNEXPECTED execveat") for f in found), found)
+
+    def test_the_log_ends_with_end_and_its_count(self):
+        self.traced("/bin/sh", "-c", "/usr/bin/true; /usr/bin/true")
+        lines = self.log.read_text().splitlines()
+        self.assertTrue(lines[0].startswith("START "), lines[0])
+        self.assertEqual(lines[-1], f"END {len(lines) - 2}")
+
+    def test_without_its_supervisor_no_exec_runs_and_the_log_has_no_end(self):
+        out = self.traced("/usr/bin/python3", "-I", "-c", KILL_SUPERVISOR_SNIPPET, self.log)
+        self.assertEqual(out.stdout.strip(), "ENOSYS", out.stderr)
+        self.assertFalse(self.log.read_text().rstrip().splitlines()[-1].startswith("END"))
+        with self.assertRaises(AssertionError):
+            census.load(self.log, wait_s=0.5)
+
+    def test_a_record_the_oracle_could_not_read_in_full_is_unexpected(self):
+        cli, home = "/rt/claude", self.homes.agent
+        base = {"exists": True, "resolved": True, "form": "execve"}
+        records = [dict(base, pid=10, ancestors=[1], path=cli, real=cli, argv=["claude"], complete=True),
+                   dict(base, pid=11, ancestors=[10, 1], path=cli, real=cli, argv=["rg", "--version"], complete=False)]
+        self.assertEqual(census.non_hook_cli_children(records, cli, home),
+                         {f"UNEXPECTED execve {cli!r} complete=False"})
+
+    def test_the_string_reader_reports_a_reached_bound(self):
+        tracer = importlib.import_module("exec_tracer")
+        text = ctypes.create_string_buffer(b"abcdef")
+        with open("/proc/self/mem", "rb", buffering=0) as mem:
+            self.assertEqual(tracer._read_cstring(mem, ctypes.addressof(text), 6), ("abcdef", True))
+            self.assertEqual(tracer._read_cstring(mem, ctypes.addressof(text), 5)[1], False)
+            self.assertEqual(tracer._read_cstring(mem, 8, 5), ("", False))  # unreadable address
+
+    def test_the_traced_command_keeps_its_pid_parent_and_exit_status(self):
+        proc = subprocess.Popen(["/usr/bin/python3", "-I", str(TRACER), str(self.log), "/bin/sh", "-c",
+                                 "echo $$ $PPID; exit 7"], stdout=subprocess.PIPE, text=True)
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(out.split(), [str(proc.pid), str(os.getpid())])
+        self.assertEqual(proc.returncode, 7)
 
 
 class P05Sandbox(ContractCase):
@@ -366,32 +463,13 @@ class P05Sandbox(ContractCase):
         self.assertEqual({mode for _argv, mode in cli}, {2}, "the CLI runs without the outer seccomp filter")
 
     def census_records(self):
-        with open(self.census_log) as f:
-            return [json.loads(line) for line in f]
+        return census.load(self.census_log)
 
     def non_hook_cli_children(self):
-        """Programs run by the CLI and its descendants outside every hook, from the exec tracer
-        (lifecycle-complete: each exec waited for its record). The CLI process is the first exec
-        of the CLI binary; a hook is the zb-hook-run exec and everything below it (a namespace's
-        PID 1, bwrap's reaper, forks without exec, so the whole ancestor chain counts)."""
         records = self.census_records()
         cli = os.path.realpath(token.bundled_cli())
-        cli_pids = [r["pid"] for r in records if r["real"] == cli]
-        self.assertTrue(cli_pids, "the exec census never saw the CLI")
-        cli_pid = cli_pids[0]
-        hook_pids, found = set(), set()
-        for r in records:
-            chain = {r["pid"], *r["ancestors"]}
-            if hook_pids & chain or (r["real"] or "").endswith("/runtime/bin/zb-hook-run"):
-                hook_pids.add(r["pid"])
-                continue
-            if cli_pid not in r["ancestors"] or not r["exists"]:
-                continue  # not below the CLI (bwrap, the helper, zb-claude -> CLI), or a PATH miss
-            if r["real"] == cli:
-                found.add(cli_self_exec(r["argv"], self.homes.agent))  # its built-in rg, exact shape
-            else:
-                found.add(r["real"])
-        return found
+        self.assertTrue(any(r["real"] == cli for r in records), "the exec census never saw the CLI")
+        return census.non_hook_cli_children(records, cli, self.homes.agent)
 
     def test_write_census_and_hook_env_census(self):
         # The census sees what the CLI hands a hook, so these hooks run unwrapped
