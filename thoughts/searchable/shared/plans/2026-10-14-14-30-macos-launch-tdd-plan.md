@@ -798,7 +798,10 @@ green **or** the VM backend lands behind the shared contract. Not a UI slice. Co
   **named** macOS test.
 - **Real-screen (blocker 8):** add macOS `drawer-open`, `secrets-window`, `approval-card` cases to
   the real-screen check; the orchestrator runs them on the user's Mac; **not approved until they
-  pass**. The input guard proves its window is frontmost/topmost and aborts under a grab-equivalent
+  pass**. The input guard proves its window is frontmost/topmost before emitting — via
+  `NSWorkspace.sharedWorkspace.frontmostApplication` compared with
+  `NSRunningApplication.currentApplication` (or `[NSApp isActive]` inside the app); there is no
+  `NSRunningApplication.activeApplication` (BlackRobin 5477) — and aborts under a grab-equivalent
   guard, and the runner **fails closed when Screen-Recording / window-order evidence is
   unavailable**.
 
