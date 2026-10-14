@@ -170,7 +170,7 @@ class OuterRelayTest(unittest.TestCase):
         helper_fd = helper_end.fileno()
         proc = subprocess.Popen(outer_argv(self.root / "egress", child), env=child_env(), pass_fds=(3, stray),
                                 preexec_fn=lambda: os.dup2(helper_fd, 3))
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(reap, proc)
         wait_for(lambda: report.exists(), 20)
         seen = json.loads(report.read_text())
         self.assertEqual(seen["got"], "canary-token", "the helper reads the token from fd 3")
@@ -189,7 +189,7 @@ class OuterRelayTest(unittest.TestCase):
                  f"pathlib.Path({str(marker)!r} + '.ready').write_text('ok')\n"
                  "time.sleep(60)\n"]
         proc = subprocess.Popen(outer_argv(self.root / "egress", child), env=child_env())
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(reap, proc)
         wait_for(lambda: Path(str(marker) + ".ready").exists(), 20)
         relay = only(outer_relays(proc.pid))
         os.kill(relay, signal.SIGTERM)
@@ -203,7 +203,7 @@ class OuterRelayTest(unittest.TestCase):
 
 def assert_sigterm_to_bwrap_ends_everything(tc, argv, ready):
     proc = subprocess.Popen(argv, env=child_env())
-    tc.addCleanup(lambda: proc.poll() is None and proc.kill())
+    tc.addCleanup(reap, proc)
     wait_for(lambda: ready.exists(), 20)
     tree = tree_of(proc.pid)
     tc.assertGreaterEqual(len(tree), 3, "bwrap, the relay and the child")
@@ -284,7 +284,7 @@ class InnerRelayTest(unittest.TestCase):
         marker = self.root / "trapped"
         child = ["/bin/sh", "-c", f"trap 'echo ok > {marker}; exit 9' TERM; touch {marker}.ready; while :; do sleep 0.1; done"]
         proc = subprocess.Popen(inner_argv(self.bridges, child), env=child_env())
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(reap, proc)
         wait_for(lambda: Path(str(marker) + ".ready").exists(), 20)
         relay = only(inner_relays(proc.pid))
         os.kill(relay, signal.SIGTERM)
@@ -312,7 +312,7 @@ class InnerRelayTest(unittest.TestCase):
                          f"if {case == 'relay killed'!r}:\n"
                          "    time.sleep(60)\n"]
                 proc = subprocess.Popen(inner_argv(self.bridges, child), env=child_env())
-                self.addCleanup(lambda p=proc: p.poll() is None and p.kill())
+                self.addCleanup(reap, proc)
                 wait_for(lambda: running(canary), 20)
                 if case == "relay killed":
                     relay = only(inner_relays(proc.pid))
