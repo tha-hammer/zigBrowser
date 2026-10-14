@@ -128,7 +128,7 @@ def check_hooks(settings, home_root, staging_root, source_path):
                 command = hook.get("command")
                 if hook.get("type") != "command" or not isinstance(command, str) or not command.strip():
                     raise SetupError(f"hook cannot be wrapped: {event}/{index}")
-                tokens = shlex.split(command)
+                tokens = hook_tokens(command, f"{event}/{index}")
                 reason = hook_grammar_refusal(tokens, command)
                 if reason:
                     raise SetupError(f"hook command {reason}: {event}/{index}")
@@ -211,14 +211,27 @@ def path_parts(tok):
     return [p for p in tok.split("=") if ("/" in p or p.startswith("~")) and "://" not in p]
 
 
+def hook_tokens(command, where):
+    """The words of a hook command, refused before any shell-style parsing
+    when it is outside the closed grammar's characters (RoseCat 833767e: an
+    unterminated quote must be a setup refusal, exit 2, not a parser crash)."""
+    if not isinstance(command, str) or not HOOK_COMMAND_RE.fullmatch(command):
+        raise SetupError(f"hook command has shell syntax: {where}")
+    return command.split(" ")
+
+
 def check_hook_links(settings, home_root):
     """A hook that names a file setup skipped (a link outside its item) would
     not run as written: that refuses setup (rev 15.6)."""
     home_root = str(home_root)
-    for entries in (settings.get("hooks") or {}).values():
-        for entry in entries:
+    for event, entries in (settings.get("hooks") or {}).items():
+        for index, entry in enumerate(entries):
             for hook in entry.get("hooks", []):
-                for part in (p for tok in shlex.split(hook.get("command") or "") for p in path_parts(tok)):
+                command = hook.get("command")
+                if hook.get("type") != "command" or not isinstance(command, str) or not command.strip():
+                    continue  # check_hooks refuses it with its own reason
+                tokens = hook_tokens(command, f"{event}/{index}")
+                for part in (p for tok in tokens for p in path_parts(tok)):
                     path = home_root + part[1:] if part == "~" or part.startswith("~/") else part
                     if not os.path.isabs(path):
                         continue
@@ -258,7 +271,7 @@ def copy_sai(source, claude, source_home, agent_home):
             _SKIPPED_LINKS.add(name)
             print(f"zigBrowser: agent-setup: skipped {name}: its link is a chain or not this user's", file=sys.stderr)
         elif real.is_dir():
-            _copy_tree(real, real, claude / name, name, source_home, agent_home, set())
+            _copy_tree(real, real, claude / name, name, source_home, agent_home, frozenset())
         else:
             _copy_file(real, claude / name, source_home, agent_home)
 
@@ -305,20 +318,28 @@ def check_disjoint(label, path, home):
 def _link_target(link):
     """The absolute target of `link` when it is a real file or directory of
     this user, not another link; else None."""
-    target = os.path.normpath(os.path.join(os.path.dirname(link), os.readlink(link)))
+    target = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(link)), os.readlink(link)))
     try:
         st = os.lstat(target)
     except OSError:
         return None
     if stat.S_ISLNK(st.st_mode) or st.st_uid != os.getuid():
         return None
+    # No link in a parent component either (RoseCat 833767e): `hop/CLAUDE.md`
+    # with `hop -> /outside` is a chain of two links.
+    if os.path.realpath(target) != target:
+        return None
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
         raise SetupError(f"{os.path.basename(link)} in the SAI source is not a regular file or a directory")
     return target
 
 
-def _copy_tree(root, directory, target, rel, source_home, agent_home, seen, verbatim=False):
-    seen.add(str(directory))
+def _copy_tree(root, directory, target, rel, source_home, agent_home, ancestors, verbatim=False):
+    """`ancestors`: the real directories on the current recursion path only.
+    A link back to one of them is a cycle (skipped with a warning); a link to
+    any other directory of the item is an alias and is copied under its own
+    name too, so nothing vanishes silently (RoseCat 833767e)."""
+    ancestors = ancestors | {str(directory)}
     target.mkdir(mode=0o700, exist_ok=True)
     os.chmod(target, 0o700)
     for entry in sorted(os.scandir(directory), key=lambda e: e.name):
@@ -339,9 +360,11 @@ def _copy_tree(root, directory, target, rel, source_home, agent_home, seen, verb
             print(f"zigBrowser: agent-setup: skipped {entry_rel}: a broken link", file=sys.stderr)
             continue
         if stat.S_ISDIR(mode):
-            if str(path) not in seen:
-                _copy_tree(root, path, target / entry.name, entry_rel, source_home, agent_home, seen,
-                           verbatim or entry.name in DEPENDENCY_DIRS)
+            if str(path) in ancestors:
+                print(f"zigBrowser: agent-setup: skipped {entry_rel}: a link cycle", file=sys.stderr)
+                continue
+            _copy_tree(root, path, target / entry.name, entry_rel, source_home, agent_home, ancestors,
+                       verbatim or entry.name in DEPENDENCY_DIRS)
         elif stat.S_ISREG(mode):
             _copy_file(path, target / entry.name, source_home, agent_home, verbatim)
         else:
@@ -352,9 +375,28 @@ def _copy_tree(root, directory, target, rel, source_home, agent_home, seen, verb
 _SKIPPED_LINKS = set()  # copied-tree paths (rel to .claude) not copied: links outside their item
 
 
+def _read_regular(path):
+    """The bytes of `path`, read through one descriptor that is checked to be
+    a regular file: no link is followed and a FIFO never blocks, so a swap
+    after classification cannot change what is read (RoseCat 833767e SHOULD)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as exc:
+        raise SetupError(f"{path} changed while setup read it") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise SetupError(f"{path} changed while setup read it")
+        chunks = []
+        while chunk := os.read(fd, 1 << 20):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _copy_file(path, target, source_home, agent_home, verbatim=False):
     """Text gets the source-HOME rewrite only; nothing refuses here."""
-    data = path.read_bytes()
+    data = _read_regular(path)
     if not verbatim and b"\0" not in data:
         try:
             text = data.decode("utf-8")

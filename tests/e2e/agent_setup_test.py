@@ -253,6 +253,14 @@ def case_refusals(binary: Path, tmp: Path, check: Checks) -> None:
     refused(binary, tmp, check, "shell syntax in a hook", shell_hook,
             "zigBrowser: agent-setup: hook command has shell syntax: Stop/0")
 
+    def unterminated_quote(w: World) -> None:  # RoseCat 833767e: exit 2, not a parser crash (exit 1)
+        s = w.settings()
+        s["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": 'python3 "unterminated'})
+        w.write_settings(s)
+
+    refused(binary, tmp, check, "unterminated quote in a hook", unterminated_quote,
+            "zigBrowser: agent-setup: hook command has shell syntax: Stop/0")
+
     # Plan rev 15.6 (the user's decision): only hook command lines refuse;
     # a path in copied text, hook scripts included, is copied as it is.
     w = World(tmp, "text-paths")

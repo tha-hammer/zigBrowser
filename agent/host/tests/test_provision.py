@@ -184,6 +184,40 @@ class SourceLinkTest(unittest.TestCase):
         text = "".join(p.read_text(errors="replace") for p in (box.home.root / "current").rglob("*") if p.is_file())
         self.assertNotIn("ZB-SECRET-CANARY", text)
 
+    def test_a_top_level_link_through_a_link_in_a_parent_component_is_skipped(self):
+        """RoseCat 833767e: `CLAUDE.md -> hop/CLAUDE.md` with `hop -> /outside`."""
+        box = Sandbox(self)
+        outside = box.tmp / "outside"
+        outside.mkdir()
+        (outside / "CLAUDE.md").write_text("CHAIN_CANARY\n")
+        (box.tmp / "hop").symlink_to(outside)
+        (box.source / "CLAUDE.md").unlink()
+        (box.source / "CLAUDE.md").symlink_to(box.tmp / "hop" / "CLAUDE.md")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            box.provision()
+        self.assertIn("skipped CLAUDE.md: its link is a chain", err.getvalue())
+        text = "".join(p.read_text(errors="replace") for p in (box.home.root / "current").rglob("*") if p.is_file())
+        self.assertNotIn("CHAIN_CANARY", text)
+
+    def test_an_internal_alias_keeps_both_names_and_a_real_cycle_is_bounded(self):
+        """RoseCat 833767e: a global seen set dropped one of two names."""
+        for alias in ("alias", "zzz-alias"):  # before and after the real name
+            with self.subTest(alias):
+                box = Sandbox(self)
+                real = box.source / "skills" / "real"
+                real.mkdir()
+                (real / "payload.txt").write_text("payload\n")
+                (box.source / "skills" / alias).symlink_to("real")
+                (real / "loop").symlink_to("..")  # a real cycle: back to an ancestor
+                started = time.monotonic()
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    box.provision()
+                self.assertLess(time.monotonic() - started, 30)
+                claude = box.home.root / ".claude"
+                for name in ("real", alias):
+                    self.assertEqual((claude / "skills" / name / "payload.txt").read_text(), "payload\n", name)
+                self.assertIn("a link cycle", err.getvalue())
+
     def test_a_source_or_item_overlapping_the_agent_home_refuses_before_copying(self):
         """RoseCat 5439: `SAI -> an ancestor of the agent home` would copy its own output."""
         box = Sandbox(self)
@@ -609,6 +643,7 @@ class HookTest(unittest.TestCase):
             "bun ~/.claude/hooks/X.hook.ts $HOME": "has shell syntax",
             "bun ~/.claude/hooks/X.hook.ts\nid": "has shell syntax",
             "node -eCODE ~/.claude/hooks/X.hook.ts": "evaluates code",
+            'python3 "unterminated': "has shell syntax",  # RoseCat 833767e: a refusal, not a parser crash
             "bun -pCODE ~/.claude/hooks/X.hook.ts": "evaluates code",
         }
         for command, want in cases.items():
