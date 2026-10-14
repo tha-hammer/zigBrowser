@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Built so far (rev 14): P0 at e9b0cbf (its blocker follow-up is in review), S1 at 2e467c4 (approved e29d25b), S2 at aca3e33 plus 38e30e5 (approved 5678ab5); S3 and later are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; rev 15 aligns S3.9 and R12-C with D11's exec-in-place topology (review log 5e54b07); see section 3b
+status: plan for review. Built so far (rev 14): P0 at e9b0cbf (its blocker follow-up is in review), S1 at 2e467c4 (approved e29d25b), S2 at aca3e33 plus 38e30e5 (approved 5678ab5); S3 and later are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; rev 15 aligns S3.9 and R12-C with D11's exec-in-place topology (review log 5e54b07); rev 15.1 (docs, mail 5316) gives S3 the read-only token-file loader, moves S3.11's `get_text` continuation to S7.6, splits S3 into three gated parts and records S3a's as-built runtime; see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -268,7 +268,8 @@ agent-home/
   workspace/          cwd of every session; file tools confined here (S10)
   scratchpad/         agent scratch; TMPDIR=scratchpad/tmp
   secrets/            0700; the file-store fallback for the token (never inside workspace, scratchpad or .claude)
-  runtime/venv/       the Python helper's venv (created by --agent-setup)
+  runtime/host.json   the helper interpreter `--agent-setup` found (`ZB_AGENT_HOST_PYTHON`, else /usr/lib/zigbrowser/agent-host/bin/python); rev 15.1, as built in S3a: the venv is not copied into each home
+  runtime/host/       a copy of the `zb_agent_host` package (PYTHONPATH; read-only in the sandbox)
   runtime/bin/        zb-claude (the R1 wrapper) and zb-hook-run; runtime/*.json: hook-env, writable, path, token-route, config-manifest
   .zb-agent-home      marker file with layout version
 ```
@@ -750,6 +751,7 @@ agent-home/
 | R14-2 | The fake-CLI seam reached neither the setup run nor the login helper (rev-13 blocker 2) | `ZIGBROWSER_AGENT_CLAUDE_CLI` is app-owned and passed only as the launch argv option `--e2e-claude-cli <path>` to the setup run and the login helper. Each route has its own inertness test (S3.7, S6.1). S3.6 covers only seams whose consumers exist in S3; TTL, pause and trace inertness move to S8.2, S10.5 and S10.4. | §7, S3.6, S3.7, S6.1, S8.2, S10.4, S10.5 |
 | R14-3 | The exec oracle's topology and record completeness (rev-13 blocker 3) | D11 describes P0's real topology: a detached supervisor, and bwrap exec'd in place, so the death chain and exit status are bwrap's own; plus an `END` line, and `ENOSYS` when the supervisor is gone. Records are complete or UNEXPECTED (NULL-terminated argv up to 4,096 pointers, strings up to `MAX_ARG_STRLEN`). `execveat` is plain-form only, else UNEXPECTED. P0.5 adds the failing-first cases: the 65th argument, an over-limit string, `execveat`, and a dead supervisor. | D11, P0.5 |
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
+| R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -1218,6 +1220,19 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 ### S3 — Agent home, own SAI copy, and helper lifecycle
 
+**Three gated parts (rev 15.1).** S3 is larger than one gate, so it lands in three parts. Each has its own red, green, refactor, gate, commit and review:
+- **S3a:** S3.1 and S3.7 (`--agent-setup`, the route probe, the CLI seam);
+- **S3b:** S3.2, S3.3, S3.4, S3.6, the S3.12 lock, the token-file loader, and the closure test;
+- **S3c:** S3.8–S3.11 (hooks in the sandbox; the census uses P0's `exec_tracer.py` and `census.py`).
+
+**The token source in S3 (rev 15.1, mail 5316).** S3 owns the **read-only** production loader of D11's explicit file store, `src/agent_secrets.zig`:
+- `validToken(text)` accepts `^[\x21-\x7e]{16,512}$`;
+- `loadFile(io, gpa, agent_home)` reads `agent-home/secrets/claude-token` only when it is a regular file, mode 0600, owned by the user, in a 0700 `secrets/`. It returns the token, `.absent` or `.refused(<fixed reason>)`, and never logs the token.
+- S3 also owns the flag `--agent-secret-store file`, which chooses that store; any other value is refused until S4.
+- `agent_host.c` calls `loadFile` and writes the result to the helper's fd 3. There is no token test seam: a test seeds the 0600 file.
+- With no token, the drawer shows `DRAWER status unavailable no-token`.
+- S4 adds the Secret Service store, the Secrets window, and the write and remove paths, without changing these signatures.
+
 #### Behavior S3.1: `--agent-setup` provisions an isolated agent home from a SAI source
 - **Given** the fixture SAI tree `tests/fixtures/agent/sai_source/`, whose `settings.json` has `mcpServers`, plugins, `skipDangerousModePermissionPrompt`, a hook `~/.claude/hooks/X.hook.ts`, an absolute hook `/home/u/evil.sh`, a `.credentials.json` and `projects/`,
 - **When** `zigBrowser --agent-setup --sai-source <fixture>` runs with a temp `XDG_DATA_HOME`,
@@ -1270,7 +1285,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Red-at-seam:** start the helper with `--dev-bind / /`, and the decoy CLAUDE.md is read (an inotify event), so red.
 
 #### Behavior S3.9: a malicious hook can neither read the token nor change the workspace (rev 5, blockers 1 and 2)
-- **Given** the real binary with drawer on, a provisioned home whose fixture SAI includes a **malicious hook** on `UserPromptSubmit` and `Stop`, the canary token stored, and `workspace/keep.txt` = "original",
+- **Given** the real binary with drawer on, a provisioned home whose fixture SAI includes a **malicious hook** on `UserPromptSubmit` and `Stop`, the canary token stored in the explicit file store (`--agent-secret-store file`; rev 15.1), and `workspace/keep.txt` = "original",
 - **When** the first prompt runs,
 - **Then** the malicious hook, a real process, records each attempt and its errno in `scratchpad/attack.json`. Every attempt fails:
   - reading `/proc/<pid>/mem` and `/proc/<pid>/environ` for **every** PID it can see, and for the CLI's and the helper's outer-namespace PIDs, which the test passes in through `scratchpad/pids.json`;
@@ -1310,14 +1325,14 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **When** in **session 1** the `SessionStart` hook tries to:
   - (a) add a `hooks.Stop` entry running `touch scratchpad/planted-stop` and an `mcpServers.evil` entry running `touch scratchpad/planted-mcp` to `.claude/.claude.json`, by write-in-place, by temp file plus rename, and by truncate;
   - (b) create a FIFO or file under `/run/zb-token`;
-- and the **same session** then runs `UserPromptSubmit`, one MCP tool call (`get_text`) and `Stop`,
+- and the **same session** then runs `UserPromptSubmit` and `Stop` (rev 15.1: no browser tool exists before S7; the tool-call continuation is asserted in S7.6),
 - **Then**:
   - all three attempts get exactly `EROFS`. Rev 12: the file is inside the read-only `.claude` mount rather than a single-file bind, so the rev-8 accepted set `{EROFS, EBUSY, EXDEV}` for the rename is retired. In every case the file must be byte-identical afterwards;
   - (b) gets an empty private tmpfs, and the real FIFO directory is unchanged;
   - `scratchpad/planted-stop` and `scratchpad/planted-mcp` never appear;
   - no process with the planted command line ever exists (the `/proc` census during the session);
   - `.claude/.claude.json` is byte-identical before and after (hashed from outside);
-  - the session's later events and the tool call work normally.
+  - the session's later events (`UserPromptSubmit`, `Stop`) work normally, and no planted MCP server or hook process ever exists.
 - **Red-at-seam (rev 12):** bind `agent-home/.claude` writable in the outer sandbox. The hook's write then succeeds, and the `EROFS` assertion fails, so red. If the CLI re-reads the file within the session, the planted marker also appears.
 - The pre-session validator from rev 6 stays. S3.10 still covers the cross-session path.
 - **Property:** none. The input is fixed.
@@ -1363,7 +1378,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **DRIVABILITY:** the helper command is injectable only for the frame-validation fake (S3.3). The lifecycle cases run the real helper.
 - **EXECUTION:** the helper venv (fails closed), `xsession`, the fake API.
 
-**Files touched:** `src/agent_host.c` and `src/agent_host.h` (new; they also take and hold the owner lock of S3.12 before the first spawn), `src/agent_protocol.zig` (new), `src/agent_broker.zig` (new; submit and frame routing only), `src/agent_drawer.c` (Send/Stop wiring, status), `tests/agent_protocol_test.zig`, `agent/host/zb_agent_host/{protocol,host,session}.py`, `agent/host/tests/test_protocol.py`, `tests/fixtures/agent/fake_host.py`, `tests/e2e/agent_host_lifecycle_test.py`, `tests/e2e/agent_setup_test.py`, `build.zig`. Production caller: `on_drawer_send` → `agent_broker.submitPrompt` → `agent_host_ensure_started`.
+**Files touched:** `src/agent_host.c` and `src/agent_host.h` (new; they also take and hold the owner lock of S3.12 before the first spawn, and run `--agent-setup`'s helper), `src/agent_setup.zig` and `src/xdg.zig` (new, S3a: the setup run's argv and environment; the shared data-directory rule), `agent/host/zb_agent_host/setup.py` and `agent/host/tests/test_provision.py` (new, S3a), `src/agent_secrets.zig` and `tests/agent_secrets_test.zig` (new, S3b: the read-only token-file loader), `src/cli.zig` (`--agent-setup`, `--agent-secret-store file`), `src/agent_protocol.zig` (new), `src/agent_broker.zig` (new; submit and frame routing only), `src/agent_drawer.c` (Send/Stop wiring, status), `tests/agent_protocol_test.zig`, `agent/host/zb_agent_host/{protocol,host,session}.py`, `agent/host/tests/test_protocol.py`, `tests/fixtures/agent/fake_host.py`, `tests/e2e/agent_host_lifecycle_test.py`, `tests/e2e/agent_setup_test.py`, `build.zig`. Production caller: `on_drawer_send` → `agent_broker.submitPrompt` → `agent_host_ensure_started`.
 
 ---
 
@@ -1416,7 +1431,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **DRIVABILITY:** the store backend is selectable (`--agent-secret-store`), so both are covered.
 - **EXECUTION:** `dbus-run-session` and `gnome-keyring-daemon` are required for the Secret Service case. If either is missing, exit 1.
 
-**Files touched:** `src/agent_secrets.zig`, `src/agent_secrets.c` (libsecret `dlopen`, file store), `src/agent_secrets_window.c` (the native Secrets window), `src/agent_host.c` (fd-3 pipe), `src/cli.zig` (`--agent-secret-store secret-service|file`), `agent/host/zb_agent_host/{host,options}.py` (read fd 3), `tests/agent_secrets_test.zig`, `tests/e2e/agent_secrets_test.py`, `tests/e2e/agent_common.py` (scanner, keyring), `build.zig`.
+**Files touched:** `src/agent_secrets.zig` (grows from S3's read-only loader: store, remove, the backend choice; rev 15.1), `src/agent_secrets.c` (libsecret `dlopen`, file store), `src/agent_secrets_window.c` (the native Secrets window), `src/agent_host.c` (fd-3 pipe), `src/cli.zig` (`--agent-secret-store secret-service|file`), `agent/host/zb_agent_host/{host,options}.py` (read fd 3), `tests/agent_secrets_test.zig`, `tests/e2e/agent_secrets_test.py`, `tests/e2e/agent_common.py` (scanner, keyring), `build.zig`.
 
 ---
 
@@ -1563,6 +1578,7 @@ Inotify carries no PID, so the two observations are kept apart (rev 11, SHOULD).
 - **Given** the S4.4 setup,
 - **When** the scripted turn calls `get_text`,
 - **Then** `PreToolUse` and `PostToolUse` each fired once for `mcp__zigbrowser__get_text`, inside the sandbox. Their env dumps lack the canary, their localhost POSTs arrived, and the tool result still reached the fake API.
+- **Moved from S3.11 (rev 15.1):** in the S3.11 setup (a `SessionStart` hook that tried to plant `hooks.Stop` and `mcpServers.evil`), the same session's `get_text` call still works, and neither planted marker appears.
 
 #### Behavior S7.7 (T6): cookie and automation-token canaries driven into telemetry, error data and tool errors stay out
 - **Given** a canary cookie set through the socket's `cookies.set`, and a socket request sent with a **wrong** `auth` equal to an automation-token-shaped canary,
