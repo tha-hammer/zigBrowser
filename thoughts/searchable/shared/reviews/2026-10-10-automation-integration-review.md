@@ -7788,3 +7788,99 @@ and `a02f1ea` (the three remaining macOS findings just listed). The later
 requested range; it needs its own review and cannot retroactively make the
 exact range fully approved. There is no approved push-through SHA at
 `da5eb70`; no push or history rewrite was performed.
+
+## Per-hook sealed-network decision and plan `6efe260`
+
+The user's 2026-10-14 decision is binding: every hook gets its own network
+namespace, can reach only the two fixed bridges at `127.0.0.1:51091` and
+`:31337`, and has no route to the HTTP CONNECT proxy or Anthropic API. Only
+the Claude CLI may reach the allowlisted API. The slice must measure and
+report the added start cost; there is no performance budget before that
+measurement.
+
+**Explicit verdict for `c9f7b23`: BLOCKED (docs), with four of the five
+`cd59bb5` findings closed.** Rev 16.1 supplies a production setup-probe route
+wholly inside one private netns and a normal non-e2e acceptance test; specifies
+netd's minimal filesystem/resolver closure; replaces the deterministic socket
+directory with exclusive random creation, fd-relative cleanup, a `sun_path`
+bound and a read-only sandbox bind; and correctly leaves bwrap's reaper as PID
+1 while the relay is its child. It also closes the two associated SHOULDs by
+closing inherited descriptors and requiring the read-only bind. Those are
+findings 1, 3, 4 and 5 from `833767e`.
+
+Finding 2 remains **OPEN**. Two active risk-table rows still say R3 is an
+explicit opt-in and require an S3.9 R3 run
+(`claude-agent-chat-drawer-tdd-plan.md@c9f7b23:727,738`). They are neither
+historical nor superseded and contradict §3c.1's R1-only contract. Rewrite
+R2-2 and R5-2 as legacy-refusal/history, with the current R1-only mitigation.
+The other R3 mentions at `:558-559,973-974,1341` are correctly labelled
+history, red mutation or refusal tests and may remain.
+
+**Explicit verdict for `6efe260`: BLOCKED (docs).** The chosen separation is
+correct, and the revision correctly removes proxy variables from hook
+environments, names a bridge-only relay, requires both positive bridge checks
+and makes dropping the nested `--unshare-net` a red mutation. It inherits the
+open R3 risk-table contradiction from `c9f7b23`, and four additional executable
+contract gaps remain before S3n1/S3n2 may build it.
+
+1. **BLOCKER — D12's pinned nested-bwrap argv cannot reach the stated bridge
+   sockets.** Its exact order still lacks `--unshare-net` and mounts a private
+   tmpfs over `/run` (`claude-agent-chat-drawer-tdd-plan.md:639-649`), which
+   hides `/run/zb-net/port-51091.sock` and `port-31337.sock` from the relay
+   described at `:953-957`. Rebinding the old whole socket directory would be
+   worse: it also contains `proxy.sock`, so a hook could bypass the network
+   namespace with a Unix-socket CONNECT. Split the netd output into an
+   `egress/` directory holding only `proxy.sock` and a `bridges/` directory
+   holding only the two bridge sockets; bind only `bridges/` read-only after
+   the nested `/run` tmpfs. Test that both bridge sockets are visible and no
+   `proxy.sock` exists anywhere in the hook view.
+2. **BLOCKER — the active topology still describes the superseded authority.**
+   The §3c.2 diagram draws hooks directly into the outer relay
+   (`:813-820`), while D12 still says hook egress goes through the host proxy
+   (`:656`). Specify two distinct lifecycles: a proxy-only outer relay for the
+   helper/CLI, and one bridge-only nested relay per hook. Give the inner
+   relay's exact argv, standard-library-only installed runtime path,
+   fork/exec/stdio behavior, status and signal propagation, reap behavior and
+   no-orphan test.
+3. **BLOCKER — the negative test could reach the real API and does not prove
+   the required edge.** The new test sends a CONNECT for
+   `api.anthropic.com` to port 3128 (`:960-964`). Under the deliberate
+   no-`--unshare-net` mutant that reaches the production allowlist. Use the
+   offline e2e allowlist name `fake.zb.invalid`, assert the raw CONNECT/TLS
+   path fails and the fake API's request count stays zero, and assert direct
+   connection to the proxy Unix socket is impossible. The positive control
+   must exchange bytes through both bridge decoys.
+4. **BLOCKER — the required cost measurement is assigned to completed P0.**
+   The revision says the “P0 census” measures the new relay (`:958`), but P0
+   predates it. S3n2 must run and report the measurement: paired warmed runs
+   of the same no-op hook with and without the inner netns/relay, at least 30
+   samples, with sample count, median and p90/p95. BlueBeaver's 30-run
+   prototype measured about 15 ms incremental cost (19.4 ms median versus
+   4.1 ms today), but the real slice still must measure its production path.
+
+Two **SHOULD** corrections improve traceability and closure: add a distinct
+R16.2 history row rather than silently extending R16.1, and update the
+real-binary S3.8/S3.9/S4.4/S7.6 closures to exercise both bridges plus the
+fake-API negative, rather than leaving the new edge only in a component test.
+Agent Mail 5492 sent the blockers to BlackRobin and BlueBeaver; BlueBeaver's
+independent mail 5491 confirmed the Unix-socket bypass and proposed the same
+directory split.
+
+This is a docs-only revision after the exact-`da5eb70` clean gate already
+recorded above (**106/106 steps, 817/817 tests**); no production source changed
+between that gate and `6efe260`. No live browser, DISPLAY `:0`, account or
+token was used.
+
+### Linear push-through answer at `6efe260`
+
+The range through and including `c3d7217` is **not** an approved push-through
+range. Although the obsolete macOS rev 1/rev 2 plan verdicts can be superseded
+by a later plan, the cumulative tree at `c3d7217` ends with the production S3a
+implementation from `cab60a1`. Its parent-component link, internal-alias and
+malformed-hook-quote defects are not fixed until the later `da5eb70`; pushing
+only through `c3d7217` would omit all three fixes. The first unpushed commit,
+`abbf0ea`, is itself part of that incomplete S3a chain, so there is no earlier
+unpushed safe stopping point. The newest approved push-through SHA remains the
+current origin, **`fa0aa48`**. This is a statement about the resulting tree at
+the pushed SHA, not an objection to retaining superseded plan revisions in
+history. No push was performed.
