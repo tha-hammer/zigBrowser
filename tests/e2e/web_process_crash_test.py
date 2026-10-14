@@ -31,6 +31,15 @@ popup's page is http: its Reload is an ordinary link to the page's URL
 (escaped: the URL carries a literal `&amp;`), and a real X click on it requests
 the page exactly once more and brings it back.
 
+Blank page: a window opened on about:blank crashes too. Its crash page
+loads as about:blank itself, and a link from it to about:blank is followed:
+so its Reload is a plain about:blank link. Two fresh browsers: in the
+control, after the crash nothing is clicked and no X input is sent for
+BLANK_HOLD_SEC, and the crash page and page.list's "crashed" must remain
+throughout; in the other, a real X click on Reload must load about:blank
+again and clear the crash within BLANK_CLICK_SEC (< BLANK_HOLD_SEC). So
+the click, not an automatic reload, clears it.
+
 Quiet shutdown: with the same three windows (two web processes), stopping
 the browser with SIGTERM, and in a second run with SIGINT, ends every web
 process without a "web process terminated" or crash page line: our own
@@ -66,6 +75,10 @@ PAGE = "<!doctype html><title>crash fixture</title><p id=alive>alive</p>"
 QUERY = "?from=crash&who='zb'&amp;x=1"
 RELOAD_LOCAL = "https://zigbrowser.invalid/reload-crashed-page"
 CRASH_TEXT = "This page crashed (the page's process stopped unexpectedly)"
+# The blank-page control holds longer, with no input, than the clicked run may take to
+# clear: an automatic reload inside the hold turns the control red.
+BLANK_HOLD_SEC = 12.0
+BLANK_CLICK_SEC = 10.0
 
 
 def descendants(pid: int) -> list[int]:
@@ -349,6 +362,106 @@ def quiet_shutdown(browser: Path, base_env: dict[str, str], check) -> None:
         server.server_close()
 
 
+def blank_page(browser: Path, base_env: dict[str, str], check, click: bool) -> None:
+    name = "blank" if click else "blank control"
+    env = dict(base_env)
+    with tempfile.TemporaryDirectory(prefix="zb-crash-blank-e2e-") as tmp:
+        socket_path = Path(tmp) / "automation.sock"
+        display_file = Path(tmp) / "display"
+        env["ZIGBROWSER_SOCKET"] = str(socket_path)
+        proc = subprocess.Popen(
+            xsession_prefix(True)[:-1] + ["--display-file", str(display_file), "--",
+                                          str(browser.resolve()), "about:blank", "--automation-api",
+                                          "--profile-dir", str(Path(tmp) / "profile")],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        stderr_lines: list[str] = []
+        threading.Thread(target=lambda: stderr_lines.extend(proc.stderr), daemon=True).start()  # type: ignore[arg-type]
+        try:
+            deadline = time.monotonic() + 20
+            while not socket_path.exists():
+                if time.monotonic() > deadline:
+                    raise TimeoutError("socket never appeared")
+                time.sleep(0.05)
+            with ZigBrowser(socket_path=str(socket_path)) as zb, XInput.from_display_file(display_file) as x:
+                def ev(expression: str):
+                    return zb.call("page.evaluate", {"expression": expression, "window_id": "window-1"})["result"]
+
+                deadline = time.monotonic() + 10
+                while window_one(zb).get("url") != "about:blank" and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                check(window_one(zb).get("url") == "about:blank", f"{name}: the window shows about:blank (got {window_one(zb)})")
+
+                ev("(window.__offset = null, addEventListener('mousemove', e => "
+                   "{ window.__offset = [e.screenX - e.clientX, e.screenY - e.clientY]; }), 1)")
+                offset = None
+                for step in range(20):
+                    x.move(100 + step, 100 + step)
+                    time.sleep(0.1)
+                    offset = ev("window.__offset")
+                    if offset:
+                        break
+
+                for pid in web_processes(proc.pid):
+                    os.kill(pid, signal.SIGKILL)
+
+                def crash_page() -> dict | None:
+                    try:
+                        return ev("(() => { const a = document.getElementById('zb-crash-reload');"
+                                  " if (!a) return null; const r = a.getBoundingClientRect();"
+                                  " return {text: document.body.innerText, href: a.href,"
+                                  " x: r.left + r.width / 2, y: r.top + r.height / 2}; })()")
+                    except Exception:  # noqa: BLE001 - no web process yet
+                        return None
+
+                deadline = time.monotonic() + 10
+                shown = crash_page()
+                while shown is None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    shown = crash_page()
+                check(shown is not None and CRASH_TEXT in shown["text"] and shown["href"] == "about:blank",
+                      f"{name}: the crash page's Reload is a plain about:blank link (got {shown})")
+                info = window_one(zb)
+                check(info.get("crashed") == "crashed" and info.get("url") == "about:blank",
+                      f"{name}: page.list reports the crash and about:blank (got {info})")
+
+                if not click:
+                    # No X event after the crash: it must stay for the whole hold.
+                    deadline = time.monotonic() + BLANK_HOLD_SEC
+                    kept = True
+                    while kept and time.monotonic() < deadline:
+                        time.sleep(0.25)
+                        info = window_one(zb)
+                        try:
+                            text = ev("document.getElementById('zb-crash') && document.getElementById('zb-crash').textContent")
+                        except Exception as exc:  # noqa: BLE001
+                            text = f"error {exc}"
+                        kept = info.get("crashed") == "crashed" and bool(text) and "This page crashed" in text
+                    check(kept, f"{name}: with no input the crash page and 'crashed' stay for {BLANK_HOLD_SEC} s "
+                                f"(page {text!r}, list {info})")
+                    return
+                if shown is not None and offset:
+                    x.click(round(offset[0] + shown["x"]), round(offset[1] + shown["y"]))
+                deadline = time.monotonic() + BLANK_CLICK_SEC
+                info = window_one(zb)
+                while info.get("crashed") is not None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    info = window_one(zb)
+                gone = None
+                try:
+                    gone = ev("document.getElementById('zb-crash') === null")
+                except Exception as exc:  # noqa: BLE001
+                    gone = f"error {exc}"
+                check(gone is True and "crashed" not in info and info.get("url") == "about:blank",
+                      f"{name}: a real click on Reload loads about:blank again and clears the crash within "
+                      f"{BLANK_CLICK_SEC} s (no crash text {gone!r}, list {info})")
+        except Exception as exc:  # noqa: BLE001 - report every failure the same way
+            check(False, f"{name}: error={exc!r}")
+            eprint("browser stderr (last 30 lines):\n" + "".join(stderr_lines[-30:]))
+        finally:
+            stop_browser(proc)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", default="zig-out/bin/zigBrowser")
@@ -488,6 +601,8 @@ def main() -> int:
             stop_browser(proc)
 
         popups(browser, env, check)
+        blank_page(browser, env, check, click=False)
+        blank_page(browser, env, check, click=True)
         quiet_shutdown(browser, env, check)
 
     if failures:

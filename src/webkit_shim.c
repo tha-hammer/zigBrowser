@@ -1001,11 +1001,13 @@ static int window_is_crash_page_load(const ZbWindow *win, const char *uri) {
   return g_strcmp0(uri, window_crash_page_uri(win)) == 0;
 }
 
-/* WebKit lets no page that it loaded from a string link to a file: URL, and
- * the click never reaches decide-policy (nor does about:blank). So for a
- * local page the Reload link goes here (.invalid never resolves), and
- * decide-policy turns that click into a load of the page. It does this only
- * while that window shows its crash page. */
+/* WebKit lets no page that it loaded from a string as a file: URI link to a
+ * file: URL (or to about:blank), and the click never reaches decide-policy.
+ * So for a local page the Reload link goes here (.invalid never resolves),
+ * and decide-policy turns that click into a load of the page. It does this
+ * only while that window shows its crash page. A crash page for about:blank
+ * loads as about:blank, and its plain link to about:blank is followed (the
+ * e2e clicks it), so it needs no detour. */
 #define ZB_CRASH_RELOAD_URI "https://zigbrowser.invalid/reload-crashed-page"
 
 /* What a person sees in place of a page whose web process died: the reason
