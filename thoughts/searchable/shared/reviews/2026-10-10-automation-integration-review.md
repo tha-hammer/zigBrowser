@@ -5722,3 +5722,145 @@ the topology identity case stayed green as expected.
   a docstring. The code and `test_the_traced_command_keeps_its_pid_parent_and_exit_status`
   correctly prove that bwrap replaces it in place. Align the comment when this
   test file next changes; it does not affect this approval.
+
+## Claude Agent chat-drawer plan rev 15.1 (`be46e05`)
+
+**Verdict: BLOCKER.** The narrow changes requested in mail 5316 are otherwise
+correct: S3 owns one production read-only token-file loader and the explicit
+file-store selection while S4 owns keyring/UI/write/remove; S3.11 now proves
+the same-session prompt/stop events without pretending a browser tool exists;
+S7.6 owns the real `get_text` continuation; and S3a/S3b/S3c each have their
+own red/green/gate/review boundary. The revision also accurately records S3a's
+as-built package-copy layout. But replacing the per-home venv with a shared
+runtime introduced a production dependency that no slice produces.
+
+This was an exact docs-diff review against rev 15. `git diff --check
+7608e73..be46e05` is clean and the plan commit changes only the plan. I read
+the complete affected contracts and rechecked them against the built S3a
+path. No live browser, account, socket, token or DISPLAY `:0` was used.
+
+### BLOCKER — the production helper runtime has a consumer but no producer
+
+D6 now records an interpreter from `ZB_AGENT_HOST_PYTHON`, else
+`/usr/lib/zigbrowser/agent-host/bin/python`, and a copied helper package from
+the analogous shared install (`plan:268-273`). S3a implements those consumers
+in `app.zig:54-65`. Nothing in the plan assigns creation, locked dependency
+installation, compatibility/update handling or cleanup of that shared runtime
+to a slice, however, and `build.zig` installs only the browser executable. A
+normal `zig build install` therefore leaves the default path absent.
+
+The real-binary S3a test cannot catch this: `agent_setup_test.py:83-86`
+injects both the cached developer interpreter and the source package directory.
+Without those undocumented production-capable overrides, the ordinary built
+binary exits with “agent runtime missing.” Add an owned production installation
+contract and a clean-install closure case that sets neither override. A single
+shared runtime is acceptable; a hypothetical `/usr/lib` tree is not.
+
+### SHOULD — make the status paragraph match the repository it describes
+
+The rev-15.1 status still says the P0 blocker follow-up is in review and S3 is
+unbuilt (`plan:8`), although P0 is approved at `fa0aa48` and S3a is already
+built at its parent, `abbf0ea`. This does not alter the design, but a plan whose
+status is used as the implementation ledger should name the approved P0 chain
+and built S3a exactly.
+
+The CodeCleanup plan-hygiene pass found no new side-effecting or mutating
+control-expression, nesting or literal-ownership problem in the narrow plan
+delta. The blocker is a missing production boundary and closure test. Agent
+Mail 5331 sent it to BlackRobin before this entry.
+
+## Claude Agent drawer S3a (`abbf0ea`)
+
+**Verdict: BLOCKER despite a green gate.** The production chain is real:
+`--agent-setup` is parsed by the binary, the app builds a fixed argv/environment,
+the C seam holds the owner lock and synchronously starts the helper, and the
+Python setup command stages the copied SAI and probes the real bundled CLI
+through the R1 wrapper/FIFO/socket path. The tests do not call provisioning
+functions in place of that real-binary chain. Five implementation
+correctness/security gaps remain, none of which the current 12 unit and 50 e2e
+checks exercise; the plan's missing production-runtime producer is a sixth,
+shared closure gap.
+
+I reviewed all 27 files in the exact commit, ran direct read-only probes in a
+clean archive, and ran one bounded independent clean-export gate at exact
+`be46e05` under private Xvfb. The gate was **GREEN: 104/104 steps succeeded;
+813/813 tests passed**. The new provisioning unit suite was 12/12 and the S3a
+real-binary e2e was 50/50. The tree was deleted immediately. No live browser,
+account, user token, live socket or DISPLAY `:0` was touched.
+
+### BLOCKER 1 — a failed re-provision can delete live transcripts and state
+
+`install()` moves each existing `.claude` state directory into the cleanup-owned
+staging tree before the first exchange (`setup.py:273-281`). If that exchange
+raises, `provision()` deletes staging recursively (`setup.py:301-303`). A clean
+fault-injection probe created `projects/keep.jsonl`, made the first exchange
+raise `OSError`, and observed `state_survived=False`. The only live copy had
+been deleted. Preserve the existing tree until commit or implement and test a
+rollback at every install boundary. The first-install per-entry path also
+needs interruption recovery: because the owner lock creates the home first,
+the nominal one-rename first-install path is not used, and a kill before the
+marker can leave colliding partial entries.
+
+### BLOCKER 2 — the copied-text scanner permits forbidden root paths
+
+`PATH_RE` requires at least two slash components (`setup.py:48-50`). Thus
+`rewrite_text("read /secret", "/home/u", "/agent", "x.md")` returns
+`/secret` unchanged, as do `/tmp` and other one-component absolute paths. The
+committed unit test even blesses `/create_tdd_plan` (`test_provision.py:116-119`),
+while S3.1 says **every** absolute path outside the six roots and agent home
+must refuse. Define any slash-command exception narrowly enough that it cannot
+also certify an OS path, and add copied Markdown/JSON/hook-support cases.
+
+### BLOCKER 3 — an absent source HOME rewrites every absolute path
+
+The prefix predicate treats an empty source root as the parent of every
+absolute path (`setup.py:82-91`). `app.zig:49-68` passes an empty string when
+HOME is absent, a reachable production case with absolute XDG_DATA_HOME and an
+explicit `--sai-source`. The probe
+`rewrite_text("/srv/private/x", "", "/agent", ...)` produced
+`/agent/srv/private/x` rather than refusing it. Require a nonempty absolute
+source HOME before prefix rewriting, or disable rewriting and apply the strict
+outside-path rule when no valid prefix exists. Cover it through the real binary.
+
+### BLOCKER 4 — the atomic exchange syscall number is x86_64-only
+
+`exchange()` calls raw syscall 316 (`setup.py:243-255`). That is
+`__NR_renameat2` on x86_64, but Linux asm-generic/aarch64 defines it as 276.
+The implementation therefore fails or calls the wrong syscall on another
+supported Linux architecture. Use libc's typed `renameat2` export (failing
+closed if unavailable) or an architecture-correct named syscall mapping and
+test it. An unqualified numeric ABI literal also fails the CodeCleanup
+named-literal/externally-owned-value gate.
+
+### BLOCKER 5 — the setup child can survive the browser's death
+
+The child callback only calls `prctl(PR_SET_PDEATHSIG, SIGKILL)`
+(`agent_host.c:39-48`). If the browser dies after fork but before that call,
+the child is reparented first; its later `prctl` no longer observes the dead
+browser. This contradicts `agent_host.h:13-16`'s promise and can leave the
+setup helper or route-probe CLI behind. Pass the expected parent PID, set the
+death signal, immediately compare `getppid()` with that PID and exit on a
+mismatch. The regression must assert no descendant remains before harness
+cleanup.
+
+### Shared BLOCKER — the e2e bypasses the absent production runtime
+
+The runtime-producer finding above applies equally to S3a. The e2e's injected
+`ZB_AGENT_HOST_PYTHON` and `ZB_AGENT_HOST_DIR` prove the developer route, not
+the new `/usr/lib` default. Add the real installed-runtime case before S3a can
+close its production edge.
+
+### SHOULD / NIT
+
+- `agent_setup_test.py:96-121` calls `communicate(timeout=180)` without a
+  `finally` that terminates and reaps the setup process and descendants after
+  timeout. Given the project's prior orphan leaks, make timeout teardown
+  explicit and test it.
+- `select_route()` performs the process/network probe directly in an `elif`
+  predicate (`setup.py:321-330`). Separate that effect from the condition so
+  the branch is a pure question and probe failures are easier to diagnose.
+- `git diff --check abbf0ea^..abbf0ea` reports a new blank line at EOF in
+  `tests/e2e/agent_common.py:345`.
+
+Agent Mail 5328–5331 sent the blockers to BlackRobin during the review. The
+green gate result and free slot were mailed as 5333.
