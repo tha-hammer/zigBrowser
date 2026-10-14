@@ -147,6 +147,39 @@ class OuterRelayTest(unittest.TestCase):
         self.assertEqual(seen["fds"], [], "fd 3 and every other inherited descriptor are closed for the child")
         self.assertEqual(bytes(self.egress.accepted[-1]), b"ping-3128")
 
+    def test_a_real_fd_3_reaches_the_helper_readable_and_the_relay_keeps_no_copy(self):
+        """When the app starts the sandbox, the token's socket is fd 3 (§3c.2, D11).
+        The helper must receive exactly that descriptor and read from it, an
+        arbitrary other inherited descriptor must not survive, and the relay
+        itself must hold no copy (RoseCat 5527)."""
+        token_end, helper_end = socket.socketpair()
+        self.addCleanup(token_end.close)
+        self.addCleanup(helper_end.close)
+        token_ino = os.fstat(helper_end.fileno()).st_ino
+        stray = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(os.close, stray)
+        report = self.root / "helper.json"
+        child = ["/usr/bin/python3", "-I", "-S", "-c",
+                 "import json, os, time\n"
+                 "got = os.read(3, 64).decode()\n"
+                 "fds = [fd for fd in range(3, 256) if os.path.exists(f'/proc/self/fd/{fd}')]\n"
+                 f"open({str(report)!r} + '.tmp', 'w').write(json.dumps({{'got': got, 'ino': os.fstat(3).st_ino, 'fds': fds}}))\n"
+                 f"os.rename({str(report)!r} + '.tmp', {str(report)!r})\n"
+                 "time.sleep(30)\n"]
+        token_end.sendall(b"canary-token")
+        helper_fd = helper_end.fileno()
+        proc = subprocess.Popen(outer_argv(self.root / "egress", child), env=child_env(), pass_fds=(3, stray),
+                                preexec_fn=lambda: os.dup2(helper_fd, 3))
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        wait_for(lambda: report.exists(), 20)
+        seen = json.loads(report.read_text())
+        self.assertEqual(seen["got"], "canary-token", "the helper reads the token from fd 3")
+        self.assertEqual(seen["ino"], token_ino, "fd 3 in the helper is the app's token socket")
+        self.assertEqual(seen["fds"], [3], "exactly fd 3 is inherited; the stray descriptor is closed")
+        relay = only(outer_relays(proc.pid))
+        held = [os.readlink(f"/proc/{relay}/fd/{n}") for n in os.listdir(f"/proc/{relay}/fd")]
+        self.assertNotIn(f"socket:[{token_ino}]", held, "the relay keeps no copy of the token socket")
+
     def test_sigterm_reaches_the_child_and_its_status_comes_back(self):
         marker = self.root / "trapped"
         child = ["/usr/bin/python3", "-I", "-S", "-c",
