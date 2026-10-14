@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Built so far (rev 15.2): P0 approved (e9b0cbf, 77cbe96, de871e2; review fa0aa48); S1 at 2e467c4 (approved e29d25b); S2 at aca3e33 plus 38e30e5 (approved 5678ab5); S3a at abbf0ea plus its rev-15.2 follow-up (in review); S3b, S3c and S4 onward are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; rev 15 aligns S3.9 and R12-C with D11's exec-in-place topology (review log 5e54b07); rev 15.1 (docs, mail 5316) gives S3 the read-only token-file loader, moves S3.11's `get_text` continuation to S7.6, splits S3 into three gated parts and records S3a's as-built runtime; rev 15.2 (docs, RoseCat's S3a findings 5328-5331) owns the production runtime, closes the spawn parent-death race, and tightens the setup path rules; see section 3b
+status: plan for review. Built so far (rev 15.2): P0 approved (e9b0cbf, 77cbe96, de871e2; review fa0aa48); S1 at 2e467c4 (approved e29d25b) and S2 at aca3e33 plus 38e30e5 (approved 5678ab5), both reopened by the blank window on the user's NVIDIA screen (§7.1); S3a at abbf0ea plus its rev-15.2 follow-up (in review); S3b, S3c and S4 onward are not built. Rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); rev 13 answers the rev-12 findings (review log 57d495d and 313f0f8): app-owned seams, the seccomp-notification exec oracle, the `$CLI rg` allowlist entry, and a repin to the built baseline; rev 14 answers the rev-13 findings (review log efbe1f1): S3.12's write phases move to S10, the fake-CLI seam becomes a launch argument, and the exec oracle's record must be complete; rev 15 aligns S3.9 and R12-C with D11's exec-in-place topology (review log 5e54b07); rev 15.1 (docs, mail 5316) gives S3 the read-only token-file loader, moves S3.11's `get_text` continuation to S7.6, splits S3 into three gated parts and records S3a's as-built runtime; rev 15.2 (docs, RoseCat's S3a findings 5328-5331) owns the production runtime, closes the spawn parent-death race, and tightens the setup path rules; rev 15.3 (docs, RoseCat 5338 and 5340-5342, and the user's blank-window report) removes the stale venv line, sets S3's commit point, first-install repair, slash-command grammar and dot-segment rule, and adds the real-hardware check for UI slices (§7.1), which reopens S1 and S2 until the blank-window fix passes it; see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -753,6 +753,7 @@ agent-home/
 | R15-1 | S3.9 still said the oracle is bwrap's parent (rev-14 blocker) | S3.9 now states the exec-in-place topology of D11: the listener is installed, then bwrap replaces the oracle, keeping its PID and the browser as parent. The R12-C history row is marked superseded. The opening line-reference note no longer names a revision (NIT). | S3.9, §3b |
 | R15.1 | S3's token source and S3.11's tool call (mail 5316); S3's size | S3 owns the read-only token-file loader (`agent_secrets.zig`: `validToken`, `loadFile`) and `--agent-secret-store file`; S4 grows it. S3.11's `get_text` continuation moves to S7.6. S3 lands as S3a, S3b and S3c. D6 records S3a's runtime (`runtime/host.json` and a package copy, not a venv per home). | S3, S3.9, S3.11, S7.6, S4, D6 |
 | R15.2 | S3a findings 5328-5331 | The production runtime is owned (`install_agent_runtime.sh`, `zig build agent-runtime`, exe-relative location, the lock recorded and checked, a clean-install test with no override). The setup child closes the PDEATHSIG race (parent check; `SPAWN_DELAY_MS` regression). Install rolls back instead of losing state. libc `renameat2`. One-component paths refuse unless a known slash command. An empty or relative HOME refuses. | D6, S3, S3.1, §7 |
+| R15.3 | RoseCat 5338, 5340-5342 on rev 15.2; the user's blank window with the drawer on (NVIDIA) | §5 no longer says setup creates a venv; S3.1's files list is the as-built one. S3 defines one commit point (the marker replace) with rollback before it, repairs an interrupted first install, gives slash commands a grammar, and refuses dot segments, each with its red case. §7.1 adds a real-hardware check for every UI slice: agents prepare `tests/manual/real_screen_check.py`; the orchestrator runs it on the user's screen with permission; a UI slice is not approved until it passes there. S1 and S2 are reopened by the blank-window report until its fix passes that check. | §5, S3, S3.1, §7.1, §10 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -780,7 +781,7 @@ When every slice has landed, these hold:
 - Bash, shell or any process execution by the agent. Web fetch and search tools. MCP servers other than the in-process `zigbrowser`.
 - Session-scoped "always allow" grants for writes.
 - Persisting drawer chat across browser restarts. The SDK transcript is stored in the agent's own `projects/`, but the drawer starts empty. Resume is a later item.
-- Packaging (.deb dependencies, shipping the venv). For now, `--agent-setup` creates the venv with `uv`.
+- Distribution packaging (.deb or .rpm dependencies, a package repository). The production helper runtime is installed by `tools/install_agent_runtime.sh PREFIX` or `zig build agent-runtime` into `PREFIX/lib/zigbrowser/agent-host` (S3, rev 15.2). `--agent-setup` uses that runtime and never creates a venv (rev 15.3, RoseCat 5342).
 - Changing the automation socket API, except the internal split and the new `load_serial` field in `page.list`/`page.health` (additive).
 - Fixing the SDK clients' single-pending-request limits. The broker does not use them.
 - **Moving or deleting files (`fs_move`, `fs_delete`, in either root and either direction).** This was cut by the orchestrator in rev 9: the user never asked for it. A later slice would need its own design for a fd-stable move and delete, crash-consistent recovery and outcomes. RoseCat's rev-7 and rev-8 findings (de0ef43, 27e4aa2) are the starting requirements for that slice.
@@ -885,6 +886,35 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 - Only the Anthropic HTTP API (`fake_anthropic_api.py`) and, in S6, the `claude setup-token` CLI with its OAuth provider page.
 - The real `claude-agent-sdk`, the real bundled Claude CLI, the real helper, the real browser, the real GTK and the real engine all run.
 - Nothing in any forbidden span is mocked.
+
+### 7.1 Real-hardware check for every UI slice (rev 15.3)
+
+**Why.** The gate runs under a private Xvfb with software GL. It cannot see a failure that only the real GPU and driver produce. With `--agent-drawer on`, the user's NVIDIA screen showed a blank window (no page, no icon) while the page answered over the socket. The same build with the drawer off drew normally, and S1 and S2 had passed every Xvfb pixel check.
+
+**The rule.**
+- A **UI slice** is any slice that changes what the browser window draws or its widget tree: S1, S2, S3b (the status line), S4 (the Secrets window), S5, S6, S8 and S9, and any later fix to them.
+- A UI slice is not approved until its real-hardware check has **passed on the user's screen**. A Xvfb pass is necessary but not enough.
+- **Agents prepare; the orchestrator runs.** Agents never run the check on the user's display (`DISPLAY :0`) and never touch the live browser, its profile or its socket. The orchestrator runs it on the user's screen with the user's permission, and mails the printed lines and the capture directory to the slice's author and RoseCat.
+
+**The script:** `tests/manual/real_screen_check.py`.
+- It needs `--confirm-user-permission`, and refuses without it.
+- It starts the built binary for each case:
+  - with a throwaway `--profile-dir`, throwaway XDG directories, and no automation socket (`ZIGBROWSER_SOCKET` removed);
+  - on a solid-colour fixture page.
+- For each case, it finds the window by `_NET_WM_PID` and captures it twice: the window itself (`xwd -id`) and the screen area under it (`xwd -root`). Both are written as PNGs, beside the browser's stderr and `glxinfo -B`.
+- It then counts pixels:
+  - the page colour must cover at least 40% of the window;
+  - with the drawer on, the icon colour must cover at least 400 pixels.
+- The cases:
+  - `drawer-off` (the control) and `drawer-on` (the check), always;
+  - `--matrix` adds the rendering experiments: `--hardware-acceleration never`, `--renderer default`, `--renderer mesa-egl`, `GDK_GL=disable` and `WEBKIT_DISABLE_COMPOSITING_MODE=1`;
+  - `--variant NAME=PATH` adds a drawer-on case for another build, for bisecting.
+- Exit 0 only when every case passes.
+- **Each UI slice adds its own case** for what it draws: for example, the open drawer for S2, the Secrets window for S4, and the approval card for S8. Its slice section names the case. Agents check the script itself only on their own private Xvfb, where a good build passes and a blank page or a missing binary fails.
+
+**The current blocker.** The blank window reopens S1 and S2. The fix lands as a red-first follow-up commit once the cause is known:
+- a Xvfb-checkable structural assertion on the chosen fix;
+- plus `drawer-on` passing on the user's screen.
 
 ## 8. Workflow closure
 
@@ -993,7 +1023,7 @@ The closure-test specs follow, per slice. Every chain above is **BLOCKING**: eac
 
 ## 10. Slices
 
-Every slice follows the same order: (1) mail "Taking the gate slot" only for the gate run itself; (2) write the slice's red tests and record the red runs; (3) green; (4) refactor; (5) quiet gate from a clean `git archive HEAD` plus the slice's files, through `$S/gate.sh`; (6) commit only the slice's files; (7) mail RoseCat. A slice is not done until its closure e2e was **observed to execute** with nonzero assertions. Steps that print "SKIP" count as UNCLOSED.
+Every slice follows the same order: (1) mail "Taking the gate slot" only for the gate run itself; (2) write the slice's red tests and record the red runs; (3) green; (4) refactor; (5) quiet gate from a clean `git archive HEAD` plus the slice's files, through `$S/gate.sh`; (6) commit only the slice's files; (7) mail RoseCat; (8) for a UI slice (§7.1), add the slice's case to `tests/manual/real_screen_check.py` and ask the orchestrator to run it on the user's screen. A UI slice is approved only after that run passes. A slice is not done until its closure e2e was **observed to execute** with nonzero assertions. Steps that print "SKIP" count as UNCLOSED.
 
 ---
 
@@ -1233,9 +1263,17 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 
 **Setup hardening (rev 15.2, RoseCat 5328-5330), each with a failing-first test:**
 - **The spawned setup child closes the fork-to-`prctl` race.** After `PR_SET_PDEATHSIG` it checks that its parent is still the browser, and `_exit`s otherwise. The regression uses the app-owned e2e-only seam `ZIGBROWSER_AGENT_SPAWN_DELAY_MS` (1–5000, honoured only with `--e2e-protocol`), which holds the child inside the race window while the test SIGKILLs the browser, three times. No setup helper may survive.
-- **The live state never enters cleanup-owned staging.** The new `.claude` is swapped in first; the old tree's state directories then move into it. Any failure moves them back and swaps the old tree in again. Fault injection covers each boundary.
+- **The live state never enters cleanup-owned staging.** The new `.claude` is swapped in first; the old tree's state directories then move into it. Any failure moves them back and swaps the old tree in again.
+- **One commit point (rev 15.3, RoseCat 5341).** The re-provision transaction runs up to and including the marker's `os.replace`: every step before it, the runtime exchange, the state moves, the `mkdir`s and the marker write included, rolls back on failure, and the old home is then byte-identical. The marker replace is the commit point. After it, only the removal of the old copies runs; a failure there is reported as `zigBrowser: agent-setup: old copy left at <path>` with exit 0, and setup never claims the old home is unchanged. Fault injection fails each step in turn, the marker replace included (red today: a failed marker replace leaves the new `CLAUDE.md` live).
+- **An interrupted first install is repaired by the next run (rev 15.3, RoseCat 5338).** A first install creates the root under `.zb-owner.lock`, moves the staged entries in one at a time and writes the marker last. A rerun that finds the owner lock and no marker treats the root as a partial first install: it moves only the setup-owned names (`.claude`, `runtime`, `workspace`, `scratchpad`, `secrets`) into cleanup-owned staging and installs again. Any other entry refuses with exit 2. The failing-first test fails the move of each entry k in turn, and also SIGKILLs setup at each move through the spawn-delay seam. A plain rerun must then succeed (red today: `ENOTEMPTY` on `runtime/`).
 - **`renameat2` comes from libc** (glibc ≥ 2.28, every architecture), never a syscall number. Setup fails closed without it.
 - **Any absolute path refuses setup** in copied text, whatever its number of components. The only kept `/name` token is a known slash command: the CLI's built-in commands, or a copied `commands/*.md` or `skills/*`.
+- **The slash-command grammar (rev 15.3, RoseCat 5338).** A known `/name` is kept only as a slash-command invocation in Markdown prose:
+  - it is in a `.md` file, outside fenced code blocks;
+  - it is at the start of a line (after indentation, a list marker or `>`), or it is the whole of an inline code span (`` `/clear` ``), or it follows one of the lead words `run`, `type`, `use`, `after`, `before`, `with`, `via`, `in`, `for`, `then`, `and`, `or`, `been`;
+  - it is followed by the end of the line, whitespace, `'` or one of `` ,.;:)` ``.
+  Anything else is a path: `rm /clear`, `open /help` and `path=/status` refuse (red today), and so does a known name in a `.ts`, `.py`, `.sh` or `.json` file, in a fenced block, or in a longer code span. The real SAI's prose forms stay green: "First run /clear, then", "after /clear", "you have been /clear'd", "shown in /help".
+- **Dot segments refuse (rev 15.3, RoseCat 5340).** Any absolute path with a `.` or `..` segment refuses setup, before any prefix check or rewrite: `cat /usr/../secret`, `/proc/self/../../secret`, `/agent/../secret` and `/home/u/../other` (red today). The containment checks then run on the lexically normal path.
 - **An empty, relative or `/` HOME refuses setup** (exit 2) instead of being used as the rewrite prefix.
 
 **Three gated parts (rev 15.1).** S3 is larger than one gate, so it lands in three parts. Each has its own red, green, refactor, gate, commit and review:
@@ -1266,7 +1304,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - a hook such as `bun ~/.claude/hooks/X.hook.ts` is accepted, and `bun`'s directory is recorded in `runtime/path.json`;
   - a hook whose script is a symlink pointing outside the agent home is rejected (realpath check).
 - **Property:** Invariant (Python unit, Hypothesis is not available, so a seeded `random` generator of `settings.json` trees with keys from a vocabulary that includes every removed key, nested hook entries, and absolute or `~` paths). After sanitizing: no removed key at any depth, and every string that looks like a path resolves inside the agent home.
-- **Files touched:** `agent/host/zb_agent_host/provision.py`, `agent/host/tests/test_provision.py`, `src/cli.zig` (`--agent-setup`, `--sai-source`), `src/app.zig` (`runAgentSetup` spawns the helper synchronously through `agent_host.c`'s spawn helper, using the same env allowlist), `tests/fixtures/agent/sai_source/**`, `tests/e2e/agent_setup_test.py`.
+- **Files touched (as built, rev 15.3):** `agent/host/zb_agent_host/setup.py` (the copy, the scanner, the install transaction), `agent/host/zb_agent_host/__main__.py`, `agent/host/tests/test_provision.py`, `src/agent_setup.zig` (`defaultRuntime`, `host.json`), `src/agent_host.{c,h}` (the setup spawn and its parent check), `src/cli.zig` (`--agent-setup`, `--sai-source`), `src/app.zig` (`runAgentSetup`), `src/main.zig`, `src/root.zig`, `src/xdg.zig`, `tools/install_agent_runtime.sh` and the `agent-runtime` step in `build.zig` (the production runtime), `tests/fixtures/agent/sai_source/**`, `tests/e2e/agent_common.py`, `tests/e2e/agent_setup_test.py`.
 
 #### Behavior S3.2: the helper starts lazily, with exactly the allowlisted environment
 - **Given** drawer on, a provisioned home, and the browser started with `DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `ZIGBROWSER_SOCKET`, `SSH_AUTH_SOCK`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM` and a canary `ZB_CANARY_ENV=…`,
