@@ -443,6 +443,55 @@ class SpliceTest(unittest.TestCase):
         self.assertTrue(done.wait(1.0), "the splice outlived its 0.2 s idle deadline behind a full send buffer")
 
 
+class _Counting(socket.socket):
+    """A real socket that counts the bytes netd reads from it and writes to it."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.received = self.sent = 0
+        self.partner, self.peak = None, 0
+
+    def recv(self, size, *flags):
+        data = super().recv(size, *flags)
+        self.received += len(data)
+        # Bytes taken from this side and not yet handed to the other: netd's buffer.
+        self.peak = max(self.peak, self.received - self.partner.sent)
+        return data
+
+    def send(self, data, *flags):
+        sent = super().send(data, *flags)
+        self.sent += sent
+        return sent
+
+
+class SpliceBufferTest(unittest.TestCase):
+    def test_each_direction_holds_at_most_splice_buffer_bytes(self):
+        """rev 16.2 §3c.3 and 971ede0: at most 64 KiB per direction, also after a
+        partial write to a slow reader (RoseCat 5535)."""
+        from zb_agent_host import netd
+        a0, writer = socket.socketpair()
+        b0, sink = socket.socketpair()  # `sink` never reads
+        sink.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        b0.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+        a, b = _Counting(fileno=a0.detach()), _Counting(fileno=b0.detach())
+        a.partner, b.partner = b, a
+        for sock in (writer, sink):
+            self.addCleanup(sock.close)
+        done = threading.Event()
+        threading.Thread(target=lambda: (netd.splice(a, b, idle=0.5), done.set()), daemon=True).start()
+        writer.setblocking(False)
+        chunk = b"y" * 65536
+        until = time.monotonic() + 0.5
+        while time.monotonic() < until:
+            try:
+                writer.send(chunk)
+            except BlockingIOError:
+                time.sleep(0.005)
+        self.assertTrue(done.wait(5))
+        self.assertGreater(a.received, netd.SPLICE_BUFFER, "the test must fill the buffer to mean anything")
+        self.assertLessEqual(a.peak, netd.SPLICE_BUFFER, f"buffered {a.peak} bytes in one direction")
+
+
 class VettingTest(unittest.TestCase):
     """§3c.3: resolve once; refuse unless every address is global; connect only
     to the vetted address. Sealed: a vetted address is dialed but unreachable."""

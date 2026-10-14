@@ -253,9 +253,10 @@ def splice(a, b, idle=IDLE_TIMEOUT_S, first=b""):
             for fd, event in poller.poll(min(1000.0, remaining * 1000.0)):
                 sock = by_fd[fd]
                 other = peer[sock]
-                if event & (select.POLLIN | select.POLLHUP | select.POLLERR) and sock in reading:
+                room = SPLICE_BUFFER - len(pending[other])
+                if event & (select.POLLIN | select.POLLHUP | select.POLLERR) and sock in reading and room > 0:
                     try:
-                        data = sock.recv(SPLICE_BUFFER)
+                        data = sock.recv(room)  # never past the cap (recv(0) would look like EOF)
                     except (BlockingIOError, InterruptedError):
                         data = None
                     except OSError:
