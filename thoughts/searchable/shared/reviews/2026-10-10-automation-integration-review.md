@@ -5560,3 +5560,105 @@ side effects, mutation in conditions, nesting, or literal ownership. The
 remaining defects are cross-slice and cross-process boundary contracts, not
 formatting concerns. Agent Mail 5299 sent all three blockers to BlackRobin
 and copied BlueBeaver before this log entry.
+
+## Claude Agent chat-drawer plan rev 14 (`9f4f732`)
+
+**Verdict: BLOCKER before S3/S4.** Rev 14 closes all three substantive rev-13
+findings: the cross-instance live-temp phases now land with the real approval
+and filesystem broker in S10.5; both setup and login receive the fake CLI only
+through explicit app-owned launch argv; and D11 now specifies the oracle's
+exec-in-place topology, completion marker, complete-record rule and fail-closed
+`execveat` subset. One stale sentence in the normative S3.9 acceptance case
+still prescribes the rejected parent topology, however. Because S3.9 is what
+the implementer follows, that contradiction needs a narrow docs follow-up
+before S3/S4 start.
+
+This was a docs-only review. I read the complete rev-14 delta and rechecked the
+affected cross-slice and cross-process contracts. `git diff --check
+efbe1f1..9f4f732` is clean and the revision changes only the plan. No live
+browser, socket, account, token, display, build or test was used.
+
+### Rev-13 finding disposition
+
+| Prior finding | Rev-14 disposition |
+|---|---|
+| S3.12 depended on S8/S10 | **CLOSED.** S3.12 retains lock acquisition, idle-holder refusal and takeover; approved-write overlap, `FS_PAUSE`, its 30 s bound and exact inotify/cookie oracle move together to S10.5 (`plan:1324-1333,1767-1779`). |
+| Fake CLI had no route to setup/login | **CLOSED.** The app translates the gated environment seam to `--e2e-claude-cli <path>` only on the synchronous setup and one-shot login helper argv, never an environment or chat `hello`; S3.7 and S6.1 independently prove inertness without `--e2e-protocol` (`plan:847-866,1256-1260,1493-1505`). S3.6 is correctly limited to consumers that exist in S3, with later inertness checks owned by S8/S10. |
+| Oracle topology/completeness/`execveat` | **CLOSED in D11/P0.5.** The original oracle process installs the listener and is replaced by bwrap in place, preserving PID, parent, death chain and exit status; the detached supervisor emits `END`, incomplete reads are UNEXPECTED, and only `execveat(AT_FDCWD, ..., flags=0)` is resolved (`plan:553-564,1041-1046`). The tests name the former 64-pointer and 512-byte blind spots, non-plain `execveat`, supervisor death and process identity. |
+
+### BLOCKER — S3.9 contradicts D11's corrected process topology
+
+The normative S3.9 result still says the app launches the oracle in the
+outer-bwrap slot and therefore “it is bwrap's parent before the helper exists”
+(`plan:1283`). D11 now correctly says the original oracle process installs the
+listener and then `execv`s bwrap, so bwrap **replaces** it, retains the same PID
+and retains the browser/contract as its parent (`plan:553-558`). Both cannot be
+true. Replace the S3.9 sentence with the exec-in-place statement. The historical
+R12-C row also retains “parent of bwrap” (`plan:739`) and should be marked
+superseded or corrected so it cannot revive the rejected topology.
+
+### NIT
+
+- The opening citation note still says “Line references (rev 13)” at
+  `plan:17`; call it rev 14 or omit the revision number.
+
+The CodeCleanup plan-hygiene pass found no independent issue with conditional
+side effects, mutation in control expressions, nesting, literal ownership or
+maintainability. Agent Mail 5305 sent the topology blocker to BlackRobin and
+copied BlueBeaver while the queued P0 review continued.
+
+## Claude Agent helper prerequisite P0 follow-up (`77cbe96`)
+
+**Verdict at exact `77cbe96`: BLOCKER, with both original `66af9e0`
+blockers CLOSED.** The follow-up replaces the lossy `/proc` snapshot census
+with a seccomp user-notification oracle that stops every descendant at
+`execve`/`execveat`, and it passes the real outer BPF filter to bwrap. The real
+SDK/CLI contracts observe `EPERM` in the helper and every hook while all six
+nested hooks still run. It also closes the short-write SHOULD. Exact
+`77cbe96` cannot yet be the approved P0 foundation, however: its records can
+silently truncate argv and strings, it resolves non-plain `execveat` against
+cwd, it has no completion marker, and its `$CLI rg` classifier accepts a
+basename instead of the required literal `argv[0]`.
+
+No live browser, socket, account, token or display was used. I reviewed the
+exact ten-file diff and its red-first evidence; `git diff --check
+9f4f732..77cbe96` is clean. BlueBeaver's clean-export gate for this exact
+commit passed **102/102 steps and 807/807 tests**, including agent-host unit
+**26/26** and contract **14/14**. A second, already-started follow-up is adding
+the rev-14 completeness cases; this verdict intentionally describes the
+committed `77cbe96`, not that uncommitted work.
+
+### Original blocker disposition
+
+| `66af9e0` blocker | Evidence at `77cbe96` | Disposition |
+|---|---|---|
+| Snapshot census misses a 1 ms child | `tests/exec_tracer.py:33-199` installs a user-notification listener before exec-in-place bwrap and records each still-valid notification before continuing it. `test_contract.py:431-439` permanently inserts `/usr/bin/sleep 0.001` between the former samples and requires it in the census. The author's pre-fix mutation survived the old snapshot test and failed this one. | **CLOSED.** |
+| “Exact D12” omitted the outer seccomp filter | `zb_agent_host/seccomp.py:1-59` owns the BPF decision table; `sandbox.py:24-58` passes its fd before bwrap's `--`; and `test_contract.py:306-366` drives that production argv with the real CLI. Helper and all six hook probes require `EPERM`, while nested bwrap hooks and their isolated `/proc` still run. The oracle's stacked filter cannot fake this result because the proof is the four denied calls, not `Seccomp: 2` alone. | **CLOSED.** |
+| Atomic regular-file short writes (SHOULD) | `files.py:7-30` loops to completion and rejects no progress. `test_unit.py:83-108` injects one-byte writes through both the helper and the installed atomic file. | **CLOSED.** |
+
+### BLOCKER — exact `77cbe96` still certifies incomplete exec records
+
+`_read_argv` stops after 64 pointers and `_read_cstring` callers cap argv
+strings at 512 bytes without recording truncation
+(`77cbe96:agent/host/tests/exec_tracer.py:64-71,93-106`). The classifier then treats the captured prefix
+as the whole request. A forbidden 65th argument can therefore disappear behind
+64 allowed entries and still become `$CLI rg`. The tracer also handles
+`execveat`'s pathname and argv slots but ignores its dirfd and flags, resolving
+every relative path against cwd (`exec_tracer.py:109-118,134-146`). Finally,
+the detached supervisor exits on `POLLHUP` without an `END` record, and the
+reader does not wait for or validate a complete log (`exec_tracer.py:121-147`;
+`test_contract.py:368-370`). These are the exact rev-14 D11/P0.5 cases and
+must land before P0 is approved. BlueBeaver acknowledged all three and is
+adding complete-or-UNEXPECTED reads, the plain `execveat` subset, `END`,
+supervisor-death and PID/parent/status tests in a follow-up commit.
+
+### BLOCKER — `$CLI rg` accepts the wrong literal `argv[0]`
+
+The reviewed exception requires `argv[0] == "rg"`, but
+`test_contract.py:246-249` checks `os.path.basename(argv[0]) == "rg"`.
+Consequently `/anything/rg --version` is certified as `$CLI rg`; a direct
+read-only probe printed exactly that result. Require literal equality and add
+an absolute `/anything/rg` case to the bad-shape table. This defect also
+survives in the in-progress extraction to `tests/census.py` and is independent
+of record completeness. Agent Mail 5306 sent it to BlueBeaver and copied
+BlackRobin while the author's gate was still running.
