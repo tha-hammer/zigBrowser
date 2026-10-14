@@ -81,6 +81,26 @@ pub fn applyMediaSource(flag: ?media_config.MediaSource) void {
     }
 }
 
+/// Applies the startup agent-drawer switch (agent_config.zig): `flag`
+/// (--agent-drawer), else ZIGBROWSER_AGENT_DRAWER, else off. Every browsing
+/// window created from now on, popups included, gets the floating "S" icon
+/// when on (src/agent_drawer.c). Call before zb_app_run. Prints the
+/// effective choice when it is not the default, and a variable that is not
+/// on or off. Returns whether the drawer is on (never on other platforms).
+pub fn applyAgentDrawer(flag: ?agent_config.AgentDrawer) bool {
+    if (comptime builtin.os.tag != .linux) return false;
+    const env = if (std.c.getenv(agent_config.env_name)) |v| std.mem.span(v) else null;
+    const resolved = agent_config.resolve(flag, env);
+    if (resolved.bad_env) |text| {
+        std.debug.print("zigBrowser: {s}={s} ignored\n", .{ agent_config.env_name, text });
+    }
+    c.zb_app_set_agent_drawer(if (resolved.value == .on) 1 else 0);
+    if (resolved.value != agent_config.default_agent_drawer) {
+        std.debug.print("zigBrowser: agent-drawer={s}\n", .{@tagName(resolved.value)});
+    }
+    return resolved.value == .on;
+}
+
 fn policyCode(policy: render_config.HwPolicy) c_int {
     return switch (policy) {
         .never => c.ZB_HW_POLICY_NEVER,
@@ -91,6 +111,11 @@ fn policyCode(policy: render_config.HwPolicy) c_int {
 
 test "the stderr 'page not responding' line and page.health use one debounce" {
     try std.testing.expectEqual(@as(u64, c.ZB_UNRESPONSIVE_DEBOUNCE_MS), @import("automation_server.zig").health_debounce_ms);
+}
+
+test "the shim's agent-drawer setting before any startup setting is the built-in default (off)" {
+    try std.testing.expectEqual(agent_config.AgentDrawer.off, agent_config.default_agent_drawer);
+    try std.testing.expectEqual(@as(c_int, 0), c.zb_app_get_agent_drawer());
 }
 
 test "the shim's media setting before any startup setting is the built-in default (MSE on)" {
@@ -411,6 +436,7 @@ const StderrCapture = struct {
 
 const gtk_port = @import("automation_gtk_port.zig");
 const page_port_mod = @import("automation/page_port.zig");
+const agent_config = @import("agent_config.zig");
 const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
 

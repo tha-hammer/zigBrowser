@@ -12,6 +12,7 @@
 //! user decides from evidence.
 
 const std = @import("std");
+const env_switch = @import("env_switch.zig");
 
 pub const MediaSource = enum { on, off };
 
@@ -21,26 +22,17 @@ pub const default_media_source: MediaSource = .on;
 /// The environment variable read when no `--media-source` flag is given.
 pub const env_name = "ZIGBROWSER_MEDIA_SOURCE";
 
-/// Command-line or environment value -> MediaSource (exactly `on`, `off`).
-pub fn parse(text: []const u8) ?MediaSource {
-    return std.meta.stringToEnum(MediaSource, text);
-}
+const flag_or_env = env_switch.Switch(MediaSource, default_media_source);
 
-pub const Resolved = struct {
-    value: MediaSource,
-    /// The variable's value when it was consulted and is not `on` or `off`
-    /// (the default is used, and startup says so).
-    bad_env: ?[]const u8 = null,
-};
+/// Command-line or environment value -> MediaSource (exactly `on`, `off`).
+pub const parse = flag_or_env.parse;
+
+/// The value plus, when the variable was consulted and is not `on` or
+/// `off`, that text (the default is used, and startup says so).
+pub const Resolved = flag_or_env.Resolved;
 
 /// The effective setting: the flag, else the variable, else the default.
-/// `env`: the variable's value (null: unset).
-pub fn resolve(flag: ?MediaSource, env: ?[]const u8) Resolved {
-    if (flag) |value| return .{ .value = value };
-    const text = env orelse return .{ .value = default_media_source };
-    if (parse(text)) |value| return .{ .value = value };
-    return .{ .value = default_media_source, .bad_env = text };
-}
+pub const resolve = flag_or_env.resolve;
 
 test "only on and off parse" {
     try std.testing.expectEqual(MediaSource.on, parse("on").?);

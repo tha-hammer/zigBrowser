@@ -294,6 +294,24 @@ pub fn build(b: *std.Build) void {
     const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
     run_nav_policy_tests.skip_foreign_checks = true;
 
+    // Chat drawer S1: the floating icon's pure logic (src/agent_drawer.zig).
+    const agent_drawer_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_drawer.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const agent_drawer_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_drawer_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_drawer_tests_module.addImport("agent_drawer", agent_drawer_module);
+    const agent_drawer_tests = b.addTest(.{ .root_module = agent_drawer_tests_module });
+    const run_agent_drawer_tests = b.addRunArtifact(agent_drawer_tests);
+    run_agent_drawer_tests.skip_foreign_checks = true;
+
     const config_schema_module = b.createModule(.{
         .root_source_file = b.path("src/config_schema.zig"),
         .target = target,
@@ -591,6 +609,27 @@ pub fn build(b: *std.Build) void {
     });
     media_source_e2e.addArtifactArg(exe);
 
+    // Chat drawer S1: --agent-drawer, the overlay and the floating "S" icon,
+    // driven by real X input on a private Xvfb (closure test S1). Missing
+    // Xvfb, xwd or libXtst fails it (exit 1): no skip to green.
+    const agent_drawer_icon_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_drawer_icon_test.py --binary \"$1\"",
+        "agent-drawer-icon-e2e",
+    });
+    agent_drawer_icon_e2e.addArtifactArg(exe);
+
+    // zbHost: the IPC rows, and the page's own promise settling (chat drawer
+    // S1.6), on a private Xvfb.
+    const ipc_roundtrip_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/ipc_roundtrip_test.py --prefer-xvfb --binary \"$1\"; rc=$?; if [ \"$rc\" = 77 ]; then exit 0; fi; exit \"$rc\"",
+        "ipc-roundtrip-e2e",
+    });
+    ipc_roundtrip_e2e.addArtifactArg(exe);
+
     // page.health: a frozen page turns responsive:false, out of band, while
     // another window stays responsive (watchdog slice 1).
     const page_health_e2e = b.addSystemCommand(&.{
@@ -800,6 +839,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
+    test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -833,6 +873,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&render_config_e2e.step);
     test_step.dependOn(&slow_load_watchdog_e2e.step);
     test_step.dependOn(&media_source_e2e.step);
+    test_step.dependOn(&agent_drawer_icon_e2e.step);
+    test_step.dependOn(&ipc_roundtrip_e2e.step);
     test_step.dependOn(&page_health_e2e.step);
     test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
@@ -977,6 +1019,10 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     module.addIncludePath(b.path("src"));
     module.addCSourceFile(.{
         .file = b.path("src/webkit_shim.c"),
+        .flags = &.{"-std=c11"},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_drawer.c"),
         .flags = &.{"-std=c11"},
     });
 

@@ -1,4 +1,5 @@
 #include "webkit_shim.h"
+#include "agent_drawer.h"
 
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
@@ -140,6 +141,9 @@ struct ZbWindow {
    * window closing) closes it. */
   WebKitScriptDialog *policy_dialog;
   struct ZbAutoJob *policy_job; /* the navigate that owns it (ref) */
+  /* The Claude Agent icon and drawer over this window's page; NULL when
+   * the drawer is off (src/agent_drawer.c). */
+  ZbDrawer *drawer;
 };
 
 struct ZbApp {
@@ -221,6 +225,20 @@ static void emit_safe_field(const char *text) {
       fputc(*p, stdout);
     }
   }
+}
+
+void zb_emit_protocol_row(int enabled, const char *tag, const char *const *fields, int n_fields) {
+  if (!enabled) {
+    return;
+  }
+
+  fputs(tag, stdout);
+  for (int i = 0; i < n_fields; ++i) {
+    fputc('\t', stdout);
+    emit_safe_field(fields[i]);
+  }
+  fputc('\n', stdout);
+  fflush(stdout);
 }
 
 static void emit_protocol1(const ZbApp *app, const char *tag, const char *a) {
@@ -949,6 +967,8 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     g_signal_handlers_disconnect_by_data(win->ucm, win);
   }
 
+  zb_drawer_detach(win->drawer);
+  win->drawer = NULL;
   win->gtk_window = NULL;
   auto_window_destroyed(win); /* anything tracked while tearing down */
   app_remove_window(win->app, win);
@@ -1163,7 +1183,11 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   win->gtk_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_default_size(GTK_WINDOW(win->gtk_window), 1024, 768);
   gtk_window_set_title(GTK_WINDOW(win->gtk_window), "zigBrowser");
-  gtk_container_add(GTK_CONTAINER(win->gtk_window), GTK_WIDGET(view));
+  if (zb_app_get_agent_drawer()) {
+    win->drawer = zb_drawer_attach(win->gtk_window, GTK_WIDGET(view), win->auto_id, app->e2e_protocol);
+  } else {
+    gtk_container_add(GTK_CONTAINER(win->gtk_window), GTK_WIDGET(view));
+  }
 
   WebKitSettings *settings = webkit_web_view_get_settings(view);
   if (settings != NULL) {

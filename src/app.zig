@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const agent_drawer = @import("agent_drawer.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
@@ -44,6 +45,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // Before zb_app_run builds the first window (every window reads it when created).
     webkit.applyMediaSource(spec.media_source);
     const profile_dir = try applyProfileDir(arena, spec);
+    // Before zb_app_run builds the first window; the icon's saved position
+    // lives with the profile (agent-drawer.json), read only when it is on.
+    if (webkit.applyAgentDrawer(spec.agent_drawer)) agent_drawer.configure(io, arena, profile_dir);
 
     if (spec.automation_api) {
         // automation.js must be registered before zb_app_run builds the window.

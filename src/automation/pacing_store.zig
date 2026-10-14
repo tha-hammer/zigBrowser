@@ -12,6 +12,7 @@
 //! - The UTC day resets counts as before: a file saved on another day keeps
 //!   its caps and delays but not its counts.
 const std = @import("std");
+const atomic_file = @import("../atomic_file.zig");
 const pacing = @import("pacing.zig");
 const social_routes = @import("social_routes.zig");
 const x_routes = @import("x_routes.zig");
@@ -62,36 +63,9 @@ fn part(p: FilePart) Part {
     return .{ .actions_today = p.actions_today, .daily_cap = p.daily_cap, .min_delay_ms = p.min_delay_ms, .max_delay_ms = p.max_delay_ms };
 }
 
-/// Atomic replace: a fresh 0600 temp file next to `path`, synced, then
-/// renamed over it. The temp file never outlives a failed save.
+/// Atomic replace (atomic_file.zig).
 pub fn save(io: std.Io, path: []const u8, snapshot: Snapshot) !void {
-    var nonce: [8]u8 = undefined;
-    io.random(&nonce);
-    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp-{x}", .{ path, std.mem.readInt(u64, &nonce, .little) });
-    const dir = std.Io.Dir.cwd();
-    var file = try dir.createFile(io, tmp, .{ .exclusive = true, .permissions = .fromMode(0o600) });
-    var renamed = false;
-    defer if (!renamed) dir.deleteFile(io, tmp) catch {};
-    {
-        defer file.close(io);
-        var buf: [1024]u8 = undefined;
-        var writer = file.writer(io, &buf);
-        try std.json.Stringify.value(snapshot, .{}, &writer.interface);
-        try writer.interface.flush();
-        try file.sync(io);
-    }
-    try dir.rename(tmp, dir, path, io);
-    renamed = true;
-    try syncParent(io, path);
-}
-
-/// fsync of the directory holding `path`, so the rename itself is durable.
-fn syncParent(io: std.Io, path: []const u8) !void {
-    // `iterate` opens it O_RDONLY (a plain open is O_PATH, which fsync refuses).
-    var parent = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(path) orelse ".", .{ .iterate = true });
-    defer parent.close(io);
-    if (std.c.fsync(parent.handle) != 0) return error.SyncFailed;
+    try atomic_file.replaceJson(io, path, snapshot);
 }
 
 /// Ties the server's two pacing states to the file: `loadInto` once at

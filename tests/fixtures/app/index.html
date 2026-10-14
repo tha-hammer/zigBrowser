@@ -81,8 +81,19 @@
         return window.zbHost(cmd, args);
       }
 
+      // The page-side settlement of a zbHost promise, observable from
+      // outside through --print-title: "pending" until it settles, then
+      // "resolved:<value>" or "rejected:<message>".
+      function settleTitle(promise) {
+        document.title = "pending";
+        promise.then(
+          (reply) => { document.title = "resolved:" + (typeof reply === "string" ? reply : JSON.stringify(reply)); },
+          (err) => { document.title = "rejected:" + (err && err.message ? err.message : String(err)); });
+        return promise;
+      }
+
       function runEcho() {
-        return callHost("echo", { msg: "hi-42" })
+        return settleTitle(callHost("echo", { msg: "hi-42" }))
           .then((reply) => {
             writeOut(reply);
             return reply;
@@ -95,7 +106,7 @@
       }
 
       function runEchoBadArgs() {
-        return callHost("echo", {})
+        return settleTitle(callHost("echo", {}))
           .then((reply) => {
             writeOut(reply);
             return reply;

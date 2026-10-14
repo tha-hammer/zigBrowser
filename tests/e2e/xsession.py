@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run one E2E browser so that nothing it starts outlives its test.
 
-    xsession.py [--xvfb] [--screen WxHxD] -- command [args...]
+    xsession.py [--xvfb] [--screen WxHxD] [--display-file PATH] -- command [args...]
 
 The command replaces this process (exec), so the caller's Popen handle is
 the browser itself: its PID, signals and exit status are the browser's. It
@@ -19,6 +19,10 @@ left in its group gets HELPER_GRACE_SEC to exit on its own (tests assert
 that WebKit helpers do), then the guardian ends it the same way. Without
 --xvfb the browser uses the caller's DISPLAY; the group handling is the
 same.
+
+--display-file PATH: before the exec, the browser's DISPLAY and XAUTHORITY
+are written to PATH (a new 0600 file; it must not exist), so the test
+driver can send real X input to that private display (tests/e2e/xinput.py).
 
 Exit status 1 with a message on stderr when the display cannot be set up."""
 
@@ -207,6 +211,7 @@ def guard(report_fd: int, driver: int, browser: int, xvfb: bool, screen: str) ->
 def main(argv: list[str]) -> int:
     xvfb = False
     screen = "1280x1024x24"
+    display_file: str | None = None
     args = list(argv)
     while args and args[0] != "--":
         flag = args.pop(0)
@@ -214,11 +219,13 @@ def main(argv: list[str]) -> int:
             xvfb = True
         elif flag == "--screen" and args:
             screen = args.pop(0)
+        elif flag == "--display-file" and args:
+            display_file = args.pop(0)
         else:
             print(f"xsession: unknown option {flag}", file=sys.stderr)
             return 2
     if not args or args[0] != "--" or len(args) < 2:
-        print("usage: xsession.py [--xvfb] [--screen WxHxD] -- command [args...]", file=sys.stderr)
+        print("usage: xsession.py [--xvfb] [--screen WxHxD] [--display-file PATH] -- command [args...]", file=sys.stderr)
         return 2
     command = args[1:]
 
@@ -254,6 +261,14 @@ def main(argv: list[str]) -> int:
         if "=" in line:
             key, value = line.split("=", 1)
             env[key] = value
+    if display_file is not None:
+        try:
+            fd = os.open(display_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                out.write(f"DISPLAY={env.get('DISPLAY', '')}\nXAUTHORITY={env.get('XAUTHORITY', '')}\n")
+        except OSError as exc:
+            print(f"xsession: cannot write {display_file}: {exc}", file=sys.stderr)
+            return 1
     try:
         os.execvpe(command[0], command, env)
     except OSError as exc:

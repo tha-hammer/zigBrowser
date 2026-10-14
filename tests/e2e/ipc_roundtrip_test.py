@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""Slice 3/4 M1/M2 GTK E2E: echo roundtrip success + bad-args rejection."""
+"""Slice 3/4 M1/M2 GTK E2E: echo roundtrip success + bad-args rejection.
+
+Besides the browser's IPC/IPCERR rows, the page itself must see its zbHost
+promise settle (chat-drawer plan S1.6): the fixture titles the page
+"resolved:<value>" or "rejected:<message>" from the promise's own branches.
+The title is read through the automation socket (page.evaluate), a path
+that does not go through zbHost; --print-title cannot be used, because its
+TITLE row reports only the first title of a load."""
 
 from __future__ import annotations
 
 import argparse
+import atexit
+import sys
+import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdk/python/src"))
 
 from slice2_common import (
     SKIP_EXIT,
@@ -27,7 +39,7 @@ def run_case(
     ok_condition,
     label: str,
 ) -> tuple[bool, int]:
-    cmd = prefix + [str(binary), uri, "--e2e-protocol"]
+    cmd = prefix + [str(binary), uri, "--e2e-protocol", "--automation-api"]
     matched, result = run_interactive_until(cmd, env, timeout_sec, ok_condition)
     if not matched:
         print(f"FAIL\t{label}")
@@ -65,6 +77,23 @@ def main() -> int:
     prefix, env, runner_note = runner
     eprint(f"runner={runner_note}")
 
+    from zigbrowser import ZigBrowser
+
+    socket_dir = tempfile.TemporaryDirectory(prefix="zb-ipc-e2e-")
+    atexit.register(socket_dir.cleanup)
+    socket_path = Path(socket_dir.name) / "automation.sock"
+    env["ZIGBROWSER_SOCKET"] = str(socket_path)
+
+    def page_title() -> str:
+        """The page's own document.title, or "" while the socket is not up."""
+        if not socket_path.exists():
+            return ""
+        try:
+            with ZigBrowser(socket_path=str(socket_path)) as zb:
+                return str(zb.call("page.evaluate", {"expression": "document.title", "window_id": "window-1"})["result"])
+        except Exception:  # noqa: BLE001 - still starting or loading
+            return ""
+
     success_uri = index.resolve().as_uri() + "#auto=echo"
     bad_args_uri = index.resolve().as_uri() + "#auto=echo-bad"
 
@@ -75,7 +104,7 @@ def main() -> int:
             len(row) >= 3 and row[1] == "echo" and row[2] == '"hi-42"' for row in ipc_rows
         )
         saw_error = any(len(row) >= 3 and row[1] == "echo" for row in ipcerr_rows)
-        return saw_success and not saw_error
+        return saw_success and not saw_error and page_title().startswith("resolved:hi-42")
 
     def bad_args_condition(stdout_lines: list[str], _stderr: list[str], _proc) -> bool:
         ipcerr_rows = protocol_rows(stdout_lines, "IPCERR")
@@ -84,7 +113,7 @@ def main() -> int:
             len(row) >= 3 and row[1] == "echo" and row[2] == "BadArgs" for row in ipcerr_rows
         )
         saw_success = any(len(row) >= 3 and row[1] == "echo" for row in ipc_rows)
-        return saw_bad_args and not saw_success
+        return saw_bad_args and not saw_success and page_title().startswith("rejected:BadArgs")
 
     ok_success, code_success = run_case(
         browser,

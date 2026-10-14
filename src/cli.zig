@@ -1,4 +1,5 @@
 const std = @import("std");
+const agent_config = @import("agent_config.zig");
 const config = @import("config.zig");
 const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
@@ -20,6 +21,8 @@ pub const Command = union(enum) {
         renderer: ?render_config.Renderer = null,
         /// --media-source <on|off>; null = ZIGBROWSER_MEDIA_SOURCE, else on.
         media_source: ?media_config.MediaSource = null,
+        /// --agent-drawer <on|off>; null = ZIGBROWSER_AGENT_DRAWER, else off.
+        agent_drawer: ?agent_config.AgentDrawer = null,
     },
     screenshot: struct {
         url: []const u8,
@@ -109,6 +112,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     var hw_policy: ?render_config.HwPolicy = null;
     var renderer: ?render_config.Renderer = null;
     var media_source: ?media_config.MediaSource = null;
+    var agent_drawer: ?agent_config.AgentDrawer = null;
 
     var i: usize = 0;
     while (i < tokens.len) : (i += 1) {
@@ -161,6 +165,12 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
             media_source = media_config.parse(tokens[i]) orelse return .usage;
             continue;
         }
+        if (std.mem.eql(u8, token, "--agent-drawer")) {
+            i += 1;
+            if (i >= tokens.len or agent_drawer != null) return .usage;
+            agent_drawer = agent_config.parse(tokens[i]) orelse return .usage;
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "-")) {
             return .usage;
         }
@@ -183,6 +193,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
         .hw_policy = hw_policy,
         .renderer = renderer,
         .media_source = media_source,
+        .agent_drawer = agent_drawer,
     } };
 }
 
@@ -408,4 +419,21 @@ test "parseArgs --media-source errors are usage" {
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--media-source", "off", "--media-source", "off" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--media-source" }) == .usage);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--media-source", "no" }) == .usage);
+}
+
+test "parseArgs --agent-drawer on|off for an open window; no flag leaves it to the variable and the default" {
+    const on = parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-drawer", "on" });
+    try std.testing.expectEqual(agent_config.AgentDrawer.on, on.open.agent_drawer.?);
+    const off = parseArgs(&.{ "zigBrowser", "--agent-drawer", "off", "https://example.com", "--automation-api" });
+    try std.testing.expectEqual(agent_config.AgentDrawer.off, off.open.agent_drawer.?);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com" }).open.agent_drawer == null);
+}
+
+test "parseArgs --agent-drawer errors are usage, and a screenshot rejects the flag" {
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-drawer" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-drawer", "1" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-drawer", "ON" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-drawer", "on", "--agent-drawer", "on" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--agent-drawer", "on" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--agent-drawer", "off" }) == .usage);
 }

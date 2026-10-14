@@ -114,6 +114,13 @@ int zb_automation_debug_webkit_default_hw_policy(unsigned int timeout_ms);
 void zb_app_set_media_source(int enabled);
 int zb_app_get_media_source(void);
 
+/* The Claude Agent drawer (src/agent_drawer.c): 1 gives every browsing
+ * window created from now on, popups included, the floating "S" icon over
+ * its page (the screenshot view never gets it); 0, the default, leaves each
+ * window exactly GtkWindow -> WebKitWebView. Call before zb_app_run. */
+void zb_app_set_agent_drawer(int enabled);
+int zb_app_get_agent_drawer(void);
+
 /* Test hook: window `id`'s media source: 1 on (setting on, no hiding
  * script), 0 off (setting off and the hiding script installed), 2 when the
  * two disagree, -1 without that window or loop. */
