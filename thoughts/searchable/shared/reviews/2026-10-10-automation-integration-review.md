@@ -5106,3 +5106,97 @@ was touched.
   closes one popup while the process remains alive or asserts a live-drawer
   count. Add that lifecycle oracle when the next drawer slice extends the
   debug rows.
+
+## Claude Agent helper prerequisite P0 (`e9b0cbf`)
+
+**Verdict at exact `e9b0cbf`: BLOCKER.** P0 successfully establishes the
+real-SDK/real-CLI/fake-API boundary, both token routes, all six hook events,
+the in-process MCP round trip and most of the intended filesystem/PID
+confinement. Its two new gate steps fail closed when the frozen helper runtime
+is missing, and the author's clean-export gate is green at **100/100 steps and
+797/797 tests**. However, the P0.5 non-hook child census is a set of a few
+process snapshots rather than a lifecycle-complete census, so it can miss the
+short-lived child that the downstream S3 security assertion is supposed to
+reject. The claimed “full/exact D12” sandbox also omits D11/D12's outer
+seccomp filter. Those claims must not become the foundation of S3/S4 as-is.
+
+No live token, API, browser, socket or `DISPLAY :0` was used. The review read
+the author's timestamped red/seam logs and green gate log, which use generated
+canaries and the loopback fake Messages API. `git diff --check
+e29d25b..e9b0cbf` and Python bytecode compilation of the new package/tests are
+clean. In an independent clean export at exact `e9b0cbf`, the focused P0 suite
+passed **31/31** (19 unit + 12 real-SDK/real-CLI/fake-API contracts) in 29.6 s.
+The subsequent private-Xvfb team gate that included this tree passed **102/102
+steps and 806/806 tests**. Both throwaway trees were removed after use.
+
+### P0 contract trace
+
+| Contract | Production/test evidence at `e9b0cbf` | Verdict |
+|---|---|---|
+| P0.1 own config | `options.py:54-69,87-105` makes the agent home authoritative and fixes `setting_sources=["user"]`, `cwd=workspace` and `tools=[]`. `test_contract.py:66-80` launches with a decoy HOME and observes only the agent marker at the real API boundary. | PASS |
+| P0.2 fake API and R1/R3 | `token.py:31-57,60-101,104-145` validates fd 3, implements R3 and implements the R1 FIFO-to-wrapper-to-socket handoff. `test_contract.py:83-127` observes the real CLI's bearer, response, route list, refusing proxy, R1 environment absence, mode 0300 and FIFO unlink. | PASS, with finding 1's required plan amendment. |
+| P0.4 all hooks and token absence | `provision.py:15-25,32-62` installs the allowlist and wraps hooks; `hook_run.py:20-68` refuses credentials and CLI messaging capabilities, closes fds and enters a nested PID namespace. `test_contract.py:138-177` observes exactly one dump and one notify POST for every event on R1 and R3, including PID 1 under R3. | PASS, with finding 2's required plan amendment. |
+| P0.5 exact sandbox and censuses | `sandbox.py:13-54` constructs the outer mount namespace and `hook_run.py:40-55` the nested one. The real contracts prove helper/hook workspace `EROFS`, scratchpad writes, fd closure, hook PID separation, strict MCP and ignored planted MCP configuration (`test_contract.py:222-356`). | **BLOCKER:** the child census is incomplete and the outer seccomp filter is absent; details below. Findings 3, 4 and 6 also require a plan amendment. |
+| P0.3 MCP round trip | `bridge.py:24-69` emits one tool call, correlates the result and answers before the CLI deadline; `options.py:21-23` fixes the production budgets. `test_contract.py:387-460` uses the real SDK/CLI to prove delayed stdin echo, built-in Read absence plus zero workspace open/access, helper timeout and CLI timeout. | PASS, with finding 5's required plan amendment. |
+
+### BLOCKER findings
+
+1. **The non-hook CLI-child census can miss the exact class it is meant to
+   constrain.** Samples are taken only when the fake API receives a request
+   and when the tool call is answered (`agent/host/tests/test_contract.py:243-260`).
+   `non_hook_cli_children` later walks only those saved snapshots
+   (`:295-311`), and the checked-in allowlist is consequently empty
+   (`agent/host/tests/p0_census.json:2`). A short-lived CLI child created and
+   reaped between the callbacks is invisible, yet rev 11 D11 and P0.5 require
+   the census of non-hook CLI descendants, and S3.9 trusts that allowlist.
+   Use lifecycle-complete observation (for example a continuous observer with
+   a demonstrated observation bound or a process-event oracle) and start with
+   a child that lives wholly between the current sample points; the present
+   test must remain green before the fix and fail afterward.
+
+   The requested mutation proves the gap: the clean-export CLI wrapper was
+   changed to spawn and reap `/usr/bin/sleep 0.001` before executing the real
+   CLI. `test_r1_enforced_sandbox` still passed in 2.0 s and printed
+   `CENSUS_MUTANT_SURVIVED`; no saved API/tool snapshot observed the child.
+
+2. **P0 does not run the “exact D12 sandbox” it claims.** Rev 11 D11/D12 keeps
+   an outer seccomp filter denying `ptrace`, `process_vm_readv` and
+   `process_vm_writev`, while still allowing the nested namespace operations.
+   `sandbox.helper_argv` has no `--seccomp` option or filter fd
+   (`agent/host/zb_agent_host/sandbox.py:24-54`), and neither P0 test mentions
+   seccomp. Either exercise the real filter through the P0 real-CLI contracts,
+   including successful nested hooks, or amend P0's scope before approval and
+   make the real filter a failing-first prerequisite in S3. The current plan
+   and commit cannot both call P0.5 the full/exact D12 sandbox.
+
+### Six implementation findings: disposition
+
+All six technical changes are **ACCEPTED**, and all six are **PLAN AMENDMENT
+REQUIRED BEFORE S3/S4**. They are evidence produced by the intended P0
+boundary probe, not ad-hoc product widening.
+
+| # | Disposition and required rev-12 change |
+|---|---|
+| 1. R1 FIFO hangs | Accept `zb-claude` reading and unlinking the random FIFO, then placing the validated bytes on a socketpair fd 3 (`token.py:104-133`). Amend D7b, D11, P0.2 and S3.7: the FIFO is helper→wrapper only, the token briefly exists in wrapper memory, and wrapper→CLI is a socket descriptor. Preserve the installed-CLI probe. The author's literal-plan wrapper red waited about 66 s and failed, so the deviation is evidence-backed. |
+| 2. CLI messaging capability in hooks | Accept refusing both `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` (`hook_run.py:20-28`); the P0 census confirms the real CLI supplies both. Add both names to D12's unconditional refused set and make P0.4/A4/S3.9 assert their absence independently of the OAuth canary. |
+| 3. live `.claude.json` location and writes | Accept the observed live path `.claude/.claude.json`, keeping it and `backups/` read-only, and adding `sessions/` to the writable state union (`sandbox.py:13-20`; `test_contract.py:313-346`). Correct the host fact, D6 tree, D12 validator/mount text and S3.10/S3.11 paths. Explicitly distinguish the observed writes (`.claude.json`, `backups`, `projects`, `session-env`, `sessions`) from the reviewed writable union (`projects`, `sessions`, `session-env`, `todos`, `statsig`, `debug`, `MEMORY`); the first two remain read-only. |
+| 4. nested mount order | Accept root bind first, then a minimal `/dev` and fresh `/proc` (`hook_run.py:40-55`). Replace D12's executable argv and retain the order unit test (`test_unit.py:145-155`); the old order either breaks `/dev/null` or exposes the outer `/proc`. |
+| 5. in-process MCP timeout | Accept the observed CLI enforcement and the fixed 130,000 ms CLI / 120 s helper budgets (`options.py:21-23`; `test_contract.py:439-460`). Record those exact production values in D7/D7b/P0.3 and use them in S3/S5 timeout tests; retain the short scaled contract so the gate stays bounded. |
+| 6. agent-home remount | Accept remounting the already-confined agent home after private `/tmp`, `/run` and `/dev/shm`, then reapplying read-only workspace constraints (`hook_run.py:46-55`; `test_unit.py:157-164`). Amend D12's exact order before S3. The failing first clean-export gate (98/100, four contract failures) and subsequent 100/100 gate demonstrate the seam. |
+
+The plan's host-fact CLI version must also change from 2.1.296 to the frozen
+SDK's bundled **2.1.294** (`pyproject.toml:1-7`, `p0_census.json:3`), and P0.5's
+three named census artifacts must either remain separate as planned or the
+plan must name and define the combined `p0_census.json` now checked in.
+
+### Non-blocking implementation finding
+
+- **SHOULD — complete atomic regular-file writes.** `files.atomic_write` calls
+  `os.write` once (`agent/host/zb_agent_host/files.py:7-17`). A regular-file
+  write may be short; installing the truncated wrapper, hook runner or JSON
+  file after the subsequent `fsync`/rename violates the helper's own atomic
+  write contract. Loop until every byte is written and add an injected
+  short-write unit case before S3 provisioning makes this production setup.
+
+Agent Mail 5273 sent the two blockers, all six amendment dispositions and the
+version/census drift to BlueBeaver, with BlackRobin copied as plan owner.
