@@ -4,7 +4,7 @@ author: cc_1 (BlackRobin)
 reviewer: cod_1 (RoseCat)
 git_commit: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); see section 3b
+status: plan for review (no implementation, no live runs); rev 2 folds in the user's section 6 answers; rev 3 answers RoseCat's 12 pre-review blockers (mail 5230); rev 4 answers the rev-2 blockers (mails 5232/5233, review log 09069e3); rev 5 answers the rev-4 blockers (review log 23e0264) without any host sysctl change; rev 6 answers the rev-5 blockers (review log bdd9ba7); rev 7 answers the rev-6 findings (review log ed14446); rev 8 answers the rev-7 TOCTOU finding (review log de0ef43); rev 9 applies the orchestrator's scope cut (no move or delete) and so supersedes the rev-8 findings (review log 27e4aa2); rev 10 answers the rev-9 findings (review log b09a56c); rev 11 answers the rev-10 findings (review log 8aa7329); rev 12 folds in P0's six accepted implementation findings, the census, seccomp and version items, and the S2 as-built rows (review log 66af9e0, mail 5275); see section 3b
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -135,11 +135,11 @@ The plan is **one prerequisite, P0, plus ten slices, S1–S10**. P0 changes no b
   - `libsecret-1.so.0` (runtime only; there are no `libsecret-1` dev headers, so pkg-config fails);
   - `uv` 0.11.24.
 - Absent: xdotool and python-xlib.
-- The bundled Claude CLI 2.1.296 contains the environment names `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` and `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`. `claude setup-token` reads "Set up a long-lived authentication token (requires Claude subscription)".
+- The bundled Claude CLI **2.1.294** (the CLI that `claude-agent-sdk` 0.2.165 ships, pinned by P0's frozen `agent/host/uv.lock`; rev 12 corrects the earlier 2.1.296) contains the environment names `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` and `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`. `claude setup-token` reads "Set up a long-lived authentication token (requires Claude subscription)".
 - **SAI hooks are hard-wired to `~/.claude/hooks/*.hook.ts`** (`/home/maceo/Dev/silmari-agent-memory/SAI/settings.json`). They run under the user's HOME unless HOME itself is changed. `settings.json` also carries `mcpServers`, `enabledPlugins`, `extraKnownMarketplaces`, `statusLine` and `skipDangerousModePermissionPrompt`.
 
 **Agent SDK facts** (docs, checked 2026-10-13)
-- `CLAUDE_CONFIG_DIR` relocates user settings, CLAUDE.md, skills, commands, agents, hooks, transcripts (`projects/`) and `.credentials.json`. It does not relocate `~/.claude.json`, which follows HOME.
+- `CLAUDE_CONFIG_DIR` relocates user settings, CLAUDE.md, skills, commands, agents, hooks, transcripts (`projects/`) and `.credentials.json`. **Rev 12 (P0 evidence, finding 3):** with `CLAUDE_CONFIG_DIR` set, the CLI keeps its live state file at `$CLAUDE_CONFIG_DIR/.claude.json`, not at `$HOME/.claude.json`. It rewrites that file by rename and keeps copies in `$CLAUDE_CONFIG_DIR/backups/`. P0.5 shows that a turn still succeeds when both are read-only.
 - `setting_sources` defaults to user+project+local in Python, so the plan always passes it explicitly.
 - `tools=[...]` restricts the built-in tools, and MCP tools are unaffected. `allowed_tools` only auto-approves; it does not restrict.
 - `can_use_tool` runs only when hooks, rules and mode leave the call undecided.
@@ -214,11 +214,12 @@ The agent home is `$XDG_DATA_HOME/zigbrowser/agent-home/` (mode 0700). It sits b
 ```
 agent-home/
   .claude/            CLAUDE_CONFIG_DIR (own settings.json, CLAUDE.md, SAI copy, transcripts)
-  .claude.json        follows HOME (SDK fact above)
+  .claude/.claude.json  the CLI's live state file (rev 12: it lives in CLAUDE_CONFIG_DIR, not HOME; read-only in the sandbox)
   workspace/          cwd of every session; file tools confined here (S10)
   scratchpad/         agent scratch; TMPDIR=scratchpad/tmp
   secrets/            0700; the file-store fallback for the token (never inside workspace, scratchpad or .claude)
   runtime/venv/       the Python helper's venv (created by --agent-setup)
+  runtime/bin/        zb-claude (the R1 wrapper) and zb-hook-run; runtime/*.json: hook-env, writable, path, token-route, config-manifest
   .zb-agent-home      marker file with layout version
 ```
 
@@ -265,6 +266,7 @@ agent-home/
   - `mcp_servers={"zigbrowser": <in-process server>}`;
   - the token delivered by the route `--agent-setup` selected on the installed CLI (D11: R1 fd by default; R3 env only on explicit opt-in);
   - `include_partial_messages=True`;
+  - **the in-process tool budget (rev 12, finding 5):** `MCP_TOOL_TIMEOUT=130000` (ms) in the CLI's environment, because the CLI enforces that limit on in-process MCP tools too (its default is 10^8 ms). The helper answers every `tool_call` it has not resolved within **120 s** with an `is_error` "tool timed out", so the CLI never reaches its own limit. These two values are fixed production constants (`agent/host/zb_agent_host/options.py`). The P0.3 contract runs a scaled pair with the same 10 s margin, so the gate stays bounded;
   - `can_use_tool` that denies everything: no built-in tool is registered (`tools=[]`), and all file access goes through the app-owned `fs_*` MCP tools (D12, S10).
 
 **Supervision**
@@ -316,7 +318,8 @@ agent-home/
 | login | stdout | login → app | NDJSON (`auth_url`, `need_code`, `done`, `error`) | 8 KiB per frame |
 | login | stderr | login → app | text log lines | 16 KiB ring, redacted |
 | login | fd 4 | **login → app only** | raw token bytes, then EOF | ≤ 512 bytes; one write, then close; never on stdout or stderr |
-| CLI (R1) | fd 3 in the CLI | wrapper FIFO → CLI | raw token bytes | ≤ 512 bytes; per session; FIFO unlinked at open |
+| `zb-claude` (R1) | FIFO in `/run/zb-token` (0300) | **helper → wrapper only** | raw token bytes, then EOF | ≤ 512 bytes plus a newline; per session; the wrapper unlinks it when it opens it (rev 12) |
+| CLI (R1) | fd 3 in the CLI | **wrapper → CLI only** | one end of a `socketpair` holding the token bytes | ≤ 512 bytes; per session; the CLI reads it and closes it (rev 12, finding 1) |
 
 **Chat frames, app → helper**
 
@@ -334,7 +337,7 @@ agent-home/
 
 | type | fields |
 |---|---|
-| `ready` | `version`, `route`, `selfcheck` (`{ok, failures[]}`; D12 hook-isolation self-check) |
+| `ready` | `version`, `route`, `selfcheck` (`{ok, failures[]}`; D12 hook-isolation self-check), `tool_deadline_s` (rev 12: always 120) |
 | `session_opened` | `session`, `sdk_session_id` |
 | `assistant_delta` | `session`, `text` (≤ 16 KiB; coalesced every 50 ms or more) |
 | `assistant_message` | `session`, `text` (≤ 256 KiB) |
@@ -365,8 +368,10 @@ agent-home/
 | `DRAWER\t<win>\tminus\t<rect>` | together with `open`: the '-' button's rect |
 | `DRAWER\t<win>\tanim\t<frames>\t<from-rect>\t<to-rect>` | the minimize animation ends |
 | `DRAWER\t<win>\tminimized\t<rect>` | after minimize |
+| `DRAWER\t<win>\tfold\t<n>\t<rect>` | the minimize stand-in was **drawn** at `<rect>` in animation frame `<n>` (emitted from the stand-in's own `draw` handler, so a stand-in that is not on screen emits nothing; rev 12, RoseCat S2 verdict 6fe538f) |
 | `DRAWER\t<win>\tfocus\t<icon\|input\|send\|stop\|minus\|list\|approve\|deny>` | focus moves |
 | `DRAWER\t<win>\tscroll\t<bottom\|value>` | the list scrolls |
+| `DRAWER\t<win>\tunread\t<shown\|hidden>` | the \"↓ New messages\" control appears or goes away (rev 12; S2 as built) |
 | `DRAWER\t<win>\tmsg\t<user\|assistant\|system\|approval\|error>\t<text>` | a bubble is finalized |
 | `DRAWER\t<win>\tdelta\t<session>\t<text>` | a coalesced delta is applied |
 | `DRAWER\t<win>\tstatus\t<stopped\|starting\|ready\|busy\|crashed\|unavailable>\t<reason>` | the agent state changes. `<reason>` is exactly one of `-`, `runtime-missing`, `sandbox`, `hook-isolation`, `config-changed`, `cli-changed`, `no-token`, `home-locked` (rev 10), `exit-<n>` or `signal-<n>` (rev 6) |
@@ -464,17 +469,22 @@ agent-home/
 **Handoff, helper → Claude CLI** (rev 4: R2 removed, and the selection is made on the installed CLI).
 
 - **R1 — file descriptor (the default).** The SDK option `cli_path` points to a wrapper `agent-home/runtime/bin/zb-claude` (0700, written by setup).
-  - For each session, the helper creates a FIFO with a random 128-bit name in a sandbox-private tmpfs directory `/run/zb-token` (mode **0300**: same-uid processes can open a known name, but cannot list the directory). It passes the path in `ZB_TOKEN_FIFO`.
-  - The wrapper opens the FIFO as fd 3, unlinks it, unsets `ZB_TOKEN_FIFO`, and `exec`s the bundled CLI with `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`.
-  - The helper writes the token once and closes its end.
+  - For each session, the helper creates a FIFO with a random 128-bit name in a sandbox-private tmpfs directory `/run/zb-token` (mode **0300**: same-uid processes can open a known name, but cannot list the directory). It passes the path in `ZB_TOKEN_FIFO`, writes the token once, and closes its end. **The FIFO carries the token from the helper to the wrapper only** (rev 12, finding 1).
+  - The wrapper `zb-claude` is a standard-library Python script (`#!/usr/bin/python3 -I`), not `sh`. In order, it:
+    1. removes `ZB_TOKEN_FIFO` from its environment, opens the FIFO and unlinks it;
+    2. reads at most 513 bytes to end of stream, and refuses an empty or oversized token;
+    3. creates a `socketpair`, writes the bytes into one end, closes that end and drops its own copy;
+    4. puts the other end on **fd 3**, sets `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`, and `exec`s the bundled CLI. The CLI reads the socket and closes it.
+  - **Why a socket and not the FIFO (P0 evidence):** the CLI reopens a non-socket token descriptor through `/proc/self/fd/3`. For a FIFO whose writer has already closed, that reopen blocks. The rev-11 wrapper (`exec 3<fifo`) therefore hung: the P0 red run waited about 66 s, and the SDK gave up. A socket descriptor is read directly.
+  - The token briefly exists in the wrapper's memory, between the FIFO read and the `exec`. The wrapper is the CLI's own process before its `exec`, inside the outer sandbox. Hooks cannot name it, because each hook runs in its own PID namespace (below).
   - A wrapper is needed because the Python SDK starts the CLI with `close_fds`.
-  - Under R1, no process environment holds the token, and hooks inherit at most a drained descriptor.
+  - Under R1, no process environment holds the token, and a hook inherits no descriptor at all (`zb-hook-run` closes every descriptor ≥ 3).
 - **R2 is removed** (rev 4, blocker 2). A credentials file inside the agent's `CLAUDE_CONFIG_DIR` would be readable by every hook, which contradicts A4 and the Secrets-window boundary.
 - **R3 — env, explicit opt-in only.** It is used only when `--agent-setup --agent-token-route env` was given. Setup prints the risk: any process in the sandbox, hooks included, can read the CLI's `/proc/<pid>/environ` as the same user.
   - The token goes through the SDK `env` option. Every hook still starts through `zb-hook-run`, which passes bwrap a **fresh environment built only from the hook-environment allowlist** (D12; rev 6). bwrap's namespace PID 1, the hook and every hook descendant therefore never receive the token. `zb-hook-run`'s own pre-exec process sits in the outer namespace, which the hook cannot see.
 
 **Route selection happens on the installed CLI, never from a build-host artifact** (rev 4, blocker 5).
-- `--agent-setup` runs the R1 probe against the **installed** bundled CLI: a one-shot loopback probe server inside the setup process, a random probe token through the real wrapper and FIFO, then a check that the probe server received `Authorization: Bearer <probe>` and that `/proc/<cli>/environ` lacks it.
+- `--agent-setup` runs the R1 probe against the **installed** bundled CLI: a one-shot loopback probe server inside the setup process, a random probe token through the real wrapper, FIFO and socket handoff, then a check that the probe server received `Authorization: Bearer <probe>` and that `/proc/<cli>/environ` lacks it.
 - It writes `agent-home/runtime/token-route.json` = `{route, cli_path, cli_version, probed_at}`.
 - If R1 fails and no explicit `--agent-token-route env` was given, setup **exits 2** with `zigBrowser: agent-setup: no safe token route for this Claude CLI`, and the agent stays unavailable.
 - At each helper start, the CLI's `--version` is compared with `cli_version`. A mismatch gives "Claude CLI changed: run zigBrowser --agent-setup again", and nothing is spawned.
@@ -483,10 +493,17 @@ agent-home/
 **Memory, not environment: a boundary that does not depend on `ptrace_scope` (rev 5, blocker 2).** This host has `kernel.yama.ptrace_scope = 0`, and the plan does **not** change it. Instead, no hook can address the CLI or the helper at all:
 - Every hook runs through `zb-hook-run` (D6, D12). It starts a **nested** `bwrap --unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session`, so bwrap's reaper is PID 1 of a new PID namespace and the hook is its child. The hook sees a fresh `/proc` containing only that namespace's processes (rev 7 wording; see D12).
 - The CLI and the helper have **no PID** in the hook's namespace: `/proc/<n>/mem`, `/proc/<n>/environ`, `ptrace`, `process_vm_readv` and `kill` cannot name them. The kernel resolves PIDs per namespace, so this holds under `ptrace_scope = 0`.
-- `zb-hook-run` closes every inherited descriptor ≥ 3 (`close_range(3, ~0, 0)`) before `exec`, so no FIFO or pipe of the CLI leaks into a hook.
-- The outer seccomp filter (deny `ptrace`, `process_vm_readv`, `process_vm_writev`) stays as defense in depth. It must **not** deny `clone`/`unshare` with namespace flags, because `zb-hook-run` needs them.
+- `zb-hook-run` closes every inherited descriptor ≥ 3 (`close_range(3, ~0, 0)`) before `exec`, so no FIFO, socket or pipe of the CLI leaks into a hook.
+- The outer seccomp filter (deny `ptrace`, `process_vm_readv`, `process_vm_writev`) stays as defense in depth. It must **not** deny `clone`/`unshare` with namespace flags, because `zb-hook-run` needs them. **Rev 12:** the filter is part of the exact sandbox. It is passed to the outer bwrap with `--seccomp` (D12), and P0.6 proves it with the real CLI and nested hooks.
 - **Fail closed.** The chat helper runs `zb-hook-run --selfcheck` before `ready`. The self-check is a probe hook that must find (a) no `/proc` entry for its parent CLI or for the helper, (b) `EROFS` on a create in `workspace/`, and (c) every descriptor ≥ 3 closed. A failure reports `ready.selfcheck.ok = false`. The app then shows "Agent sandbox unavailable (hook isolation)" and starts no session. `--agent-setup` runs the same self-check and exits 2 when it fails.
-- **Other CLI children.** With built-in tools off and no stdio MCP servers, the only CLI children expected are hooks, plus any fixed system programs the CLI runs on its own. P0.5 records that census on the build host. S3.9 asserts in the real binary that every CLI descendant is either inside a `zb-hook-run` namespace or on the census allowlist (absolute paths under `/usr`). An unexpected child fails the test.
+- **Other CLI children (rev 12: a lifecycle-complete census; RoseCat P0 blocker 1).** With built-in tools off and no stdio MCP servers, the only CLI children expected are hooks, plus any fixed system programs the CLI runs on its own.
+  - A census built from `/proc` snapshots can miss a child that starts and exits between two samples. RoseCat's mutant, a wrapper that spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, survived P0's first census.
+  - The census oracle is therefore **`agent/host/tests/exec_tracer.py`**: a test-only, standard-library `ctypes` ptrace tracer that is the **parent** of the sandbox's bwrap. Its child calls `PTRACE_TRACEME` before `exec`, and the tracer sets `PTRACE_O_TRACEFORK|TRACEVFORK|TRACECLONE|TRACEEXEC|EXITKILL`. So every descendant is attached at birth, and every `execve` stops it, whatever its lifetime.
+  - It records `(pid, ppid, exe)` for each exec, reading `exe` from `/proc/<pid>/exe` at the exec stop.
+  - A process is a **hook process** if it or an ancestor exec'd `runtime/bin/zb-hook-run`. Every other exec'd program is a **non-hook CLI child**, apart from bwrap, the helper's Python, `zb-claude` and the CLI itself.
+  - Tracing one's own descendants works under `ptrace_scope` 0 and 1, so the oracle needs no sysctl change. Under 2 or 3 the census fails closed (red), and the product is unaffected: the tracer exists only in tests. If the tracer cannot follow the sandbox on this host, P0.5 is red and the plan returns to review.
+  - P0.5 records the census in the build-host evidence file `agent/host/tests/p0_census.json`.
+  - S3.9 asserts it in the real binary, through the e2e-only `ZIGBROWSER_AGENT_BWRAP` seam pointing at a tracer shim. The shim `exec`s the real bwrap as its traced child, keeps the D7 death chain (`PR_SET_PDEATHSIG` on the shim, `PTRACE_O_EXITKILL` on the child), and writes its exec log outside the sandbox. Every non-hook CLI child must be on the allowlist (absolute paths under `/usr`); an unexpected child fails the test.
 - If nested user and PID namespaces turn out not to work on a target host (P0.5 red), the agent is **unavailable** there. The orchestrator then takes the sysctl question to the user. That is the only path that leads to a host change.
 
 **Under every route, A4 must pass:** a canary token is absent from every hook process's environment, and every hook still runs.
@@ -506,14 +523,20 @@ agent-home/
 
 ### D12. Sandbox (filesystem and process confinement from S3; `fs_*` tools in S10)
 
-- **From S3** (rev 4, blocker 1), the helper, and so the Claude CLI and every hook, runs under bwrap with a PID namespace (D7), a seccomp filter (D11) and these filesystem binds, which are the only ones:
+- **From S3** (rev 4, blocker 1), the helper, and so the Claude CLI and every hook, runs under bwrap with a PID namespace (D7), a seccomp filter (D11; rev 12: `--seccomp <fd>`, below) and these filesystem binds, which are the only ones:
   - **The exact bind list (rev 5; executable as written, and P0.5 runs it):**
     - Mounts: `--unshare-pid --unshare-ipc --unshare-uts --die-with-parent --new-session --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run`. `--dev` gives the minimal null, zero, full, random, urandom and tty devices plus `/dev/pts` and `/dev/shm`. The pty for S6's login helper comes from that `/dev/pts`.
+    - **The outer seccomp filter (rev 12; RoseCat P0 blocker 2).** The helper's launcher passes `--seccomp <fd>`, whose descriptor holds a classic BPF program built by `agent/host/zb_agent_host/seccomp.py` (standard library only). The program:
+      1. kills the process (`SECCOMP_RET_KILL_PROCESS`) when `seccomp_data.arch` is not `AUDIT_ARCH_X86_64`;
+      2. returns `EPERM` for any x32 syscall number (bit `0x40000000`);
+      3. returns `EPERM` for `ptrace` (101), `process_vm_readv` (310) and `process_vm_writev` (311);
+      4. allows everything else, including `clone`, `clone3`, `unshare`, `mount`, `pivot_root` and `setns`, which the nested `zb-hook-run` bwrap needs.
+      bwrap installs the filter after its own setup. Every descendant inherits it: the helper, the CLI, the nested bwrap and every hook.
     - Read-only: `/usr`, plus the `/bin`, `/sbin`, `/lib` and `/lib64` symlinks into `/usr` (`--symlink usr/bin /bin`, and so on); `/etc/ssl`, `/etc/ca-certificates`, `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/group`, `/etc/localtime`; `agent-home/runtime` (the venv, `zb-claude`, `zb-hook-run` and the bundled CLI); and each hook command directory from `runtime/path.json` (for example `~/.bun/bin`).
     - Read-only: **`agent-home/workspace`** (rev 5, blocker 1).
-    - **Immutable configuration (rev 6, blocker 1):** `agent-home/.claude` is bound **read-only** as a whole. That covers `settings.json`, `CLAUDE.md`, the SAI copy, `hooks/`, `commands/`, `skills/`, `agents/` and every script a hook runs or imports. Only the exact state directories in `runtime/writable.json` are then re-bound writable on top of it, one by one. That list is produced by P0.5's write census (initial expectation: `projects/`, `todos/`, `statsig/`, `debug/`, `session-env/`, and the SAI data directory `MEMORY/`), and it is reviewed before S3.
+    - **Immutable configuration (rev 6, blocker 1):** `agent-home/.claude` is bound **read-only** as a whole. That covers `settings.json`, `CLAUDE.md`, the SAI copy, `hooks/`, `commands/`, `skills/`, `agents/` and every script a hook runs or imports. Only the exact state directories in `runtime/writable.json` are then re-bound writable on top of it, one by one. That list is the **reviewed writable union** (rev 12, finding 3): `projects/`, `sessions/`, `session-env/`, `todos/`, `statsig/`, `debug/` and the SAI data directory `MEMORY/`. It is **not** a copy of P0.5's **observed writes** in one real turn, which were `.claude.json`, `backups/`, `projects/`, `session-env/` and `sessions/`. `.claude.json` and `backups/` were written but stay **read-only**: the CLI tolerates the refusal, and its configuration must not drift. `todos/`, `statsig/`, `debug/` and `MEMORY/` were not written in that turn, but are kept for longer sessions and for the SAI hooks. Any change to the union is a plan change.
     - **Rules for the writable state directories.** They hold data only. Provisioning refuses a hook whose command or whose script's import and require specifiers resolve into any of them, and refuses a writable entry that contains an executable or a hook-referenced path. `.claude/settings.json` and every hook definition are never writable from inside the sandbox.
-    - Writable: `agent-home/.claude.json`, because the CLI keeps its state there. Before **each** session the app (outside the sandbox) re-validates it against a key allowlist and refuses the session ("Agent configuration changed: run zigBrowser --agent-setup again") if it contains `mcpServers`, `hooks`, `env`, `apiKeyHelper`, `permissions`, `enabledMcpjsonServers` or `enableAllProjectMcpServers` at any depth.
+    - **`.claude/.claude.json` is read-only** (rev 12, finding 3; this replaces rev 6's writable `agent-home/.claude.json`). It is the CLI's live state file (section 2), inside the read-only `.claude`. No `$HOME/.claude.json` is created or mounted. `--agent-setup` writes it outside the sandbox and validates it against a key allowlist, refusing `mcpServers`, `hooks`, `env`, `apiKeyHelper`, `permissions`, `enabledMcpjsonServers` and `enableAllProjectMcpServers` at any depth. The per-session manifest check below covers it too, so a change made outside the sandbox refuses the session ("Agent configuration changed: run zigBrowser --agent-setup again").
     - The helper also starts the CLI with `--strict-mcp-config` through the SDK's `extra_args` (P0.5 contract), so only the in-process `zigbrowser` server can exist. `setting_sources=["user"]` keeps project settings inside the workspace from ever loading.
     - **Per-session integrity:** the app also re-hashes the read-only `.claude` tree against `runtime/config-manifest.json` (SHA-256 per file, written by `--agent-setup`, outside the sandbox) before each session. A mismatch refuses the session. This catches changes made outside the sandbox, by any other user process.
     - Writable: `agent-home/scratchpad`. A private tmpfs is mounted at `/run/zb-token` with mode 0300 (R1).
@@ -521,10 +544,20 @@ agent-home/
     - If P0.5 finds that the Python venv or the CLI needs another path, the list is amended in the plan before S3. It is never widened ad hoc during green.
   - **Hook isolation (rev 5, blocker 2; rev 6, blocker 2):** every hook command runs through `zb-hook-run`. That is a small program in the read-only runtime, so a hook cannot replace it. In order, it:
     1. closes every descriptor ≥ 3 (`close_range(3, ~0, 0)`);
-    2. builds a **fresh environment** containing only the names in `runtime/hook-env.json`, copying their values from its own environment. The allowlist is produced by P0.5's census of the variables the CLI sets for hooks, plus `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR` and `TERM`. `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` and `ZB_TOKEN_FIFO` are **refused** by name even if a future census lists them, and setup exits 2;
-    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`, and with `--unshare-pid --unshare-ipc --proc /proc --die-with-parent --new-session --bind / / --ro-bind <workspace> <workspace> --ro-bind <agent-home>/.claude.json <agent-home>/.claude.json --tmpfs /tmp --tmpfs /run --tmpfs /dev/shm -- <hook command>` (rev 8 adds the private `/tmp`, `/run` and `/dev/shm`; `/run` covers `/run/zb-token`).
-    - **Rev 7, blocker 1:** inside the hook's view, `.claude.json` is **read-only**, although it stays writable for the outer CLI. So a hook cannot change the CLI's live configuration during a session; its write gets `EROFS`. `/run/zb-token` is replaced by an empty tmpfs, so a hook cannot even see the FIFO directory. The pre-session `.claude.json` validator stays, to catch corruption by the CLI itself or by another same-user process outside the sandbox.
-    - **What a hook can write (rev 8, SHOULD):** persistent agent-home paths are exactly the census state directories under `.claude` and `scratchpad/`. Ephemeral paths are the hook's **private** `/tmp`, `/run` and `/dev/shm` tmpfs mounts. They are not shared with the CLI or the helper, and they are discarded when the hook exits. Nothing else is writable.
+    2. builds a **fresh environment** containing only the names in `runtime/hook-env.json`, copying their values from its own environment. The allowlist is produced by P0.5's census of the variables the CLI sets for hooks, plus `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR` and `TERM`. `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, `ZB_TOKEN_FIFO`, **`CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`** are **refused** by name even if a future census lists them, and setup exits 2. Rev 12, finding 2: the real CLI hands every hook both messaging names, and together they let a process send messages to the CLI. That is a capability, not configuration, so it never reaches a hook;
+    3. `execve`s `bwrap --clearenv` plus one `--setenv` per allowlisted name, with that fresh environment as bwrap's own `envp`. **The exact argv and its order (rev 12, findings 4 and 6):**
+       `bwrap --clearenv --setenv … --unshare-pid --unshare-ipc --die-with-parent --new-session --bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run --tmpfs /dev/shm --bind <agent-home> <agent-home> --ro-bind <workspace> <workspace> -- <hook command>`
+       - bwrap applies mounts in order, so later mounts replace parts of earlier ones.
+       - `--bind / /` comes first. It is recursive, so it carries the outer sandbox's own read-only binds with it.
+       - `--dev /dev` comes after it, because the device nodes of the root bind cannot be opened inside the user namespace, not even `/dev/null`.
+       - `--proc /proc` comes after it, because otherwise the outer `/proc` stays visible, CLI and helper included.
+       - Then come the private `/tmp`, `/run` and `/dev/shm`. `/run` hides `/run/zb-token`.
+       - The agent home is mounted back **after** them, because it may live under one of them; the gate export lives under `/tmp`, and P0's first gate failed there (98/100, 4 contracts). That recursive bind carries the outer read-only binds of `.claude`, `runtime` and the workspace. It never exposes `secrets/` or `.zb-broker-tmp/`, because the outer sandbox does not mount them.
+       - The workspace is bound read-only once more, last.
+       - There is no separate `.claude.json` bind: the file is inside the read-only `.claude`.
+       - `agent/host/tests/test_unit.py` pins this order, and any change to it is a plan change.
+    - **Rev 7, blocker 1, as amended by rev 12:** `.claude/.claude.json` is read-only in the hook's view and in the outer view alike (finding 3), so no process in the sandbox can change the CLI's live configuration; a write gets `EROFS`. `/run/zb-token` is replaced by an empty tmpfs, so a hook cannot even see the FIFO directory. The setup validator and the per-session manifest check stay, to catch changes by another same-user process outside the sandbox.
+    - **What a hook can write (rev 8, SHOULD):** persistent agent-home paths are exactly the reviewed writable union under `.claude` (rev 12: `runtime/writable.json`, D12 above) and `scratchpad/`. Ephemeral paths are the hook's **private** `/tmp`, `/run` and `/dev/shm` tmpfs mounts. They are not shared with the CLI or the helper, and they are discarded when the hook exits. Nothing else is writable.
     - So bwrap's own process, its namespace PID 1 (the reaper; `--as-pid-1` is not used) and the hook all start from the allowlisted environment only. The CLI's environment never crosses into the hook's namespace.
     - Inside, the hook sees the same files as the outer view (workspace read-only, `.claude` read-only apart from the state directories, scratchpad writable), but its own PID namespace and `/proc`.
   - File operations follow the single routing table below (rev 6, blocker 3). No process inside the sandbox can write the workspace.
@@ -610,11 +643,11 @@ agent-home/
 | R4-3 | T4/T6 attacks not driven failing-first | T4 is a full attack matrix (reveal credential, enable a forbidden tool, Post/Follow/Connect/Like with forged approval, injected via page text and via tool output), each with red-at-seam. T6 seeds canaries deliberately into telemetry, JSON-RPC error data, tool errors, drawer errors, API error bodies, stderr crash lines and transcripts, each with a redactor-removal red. | §9, S5.7, S7.7, S8.7, S9.4 |
 | R4-4 | Helper and row protocols incomplete | D7b fixes both processes (chat and one-shot login), every pipe's direction, owner and limit (fd 3 app → chat; fd 4 login → app), every frame's fields, and every `DRAWER`/`SECRETS`/`AUTH` row. | D7b |
 | SHOULD | D6 stale; duplicate property; minimal binds; whole-gate orphans | D6 says "from S3". The duplicate property is removed. D12 names every bind. A final gate step checks for agent orphans. | D6, P0.4, D12, §11 |
-| R5-1 | Writable hook configuration lets a hook remove its own isolation | `.claude` is bound read-only as a whole, and only the census-derived state directories in `runtime/writable.json` are writable (data only; hooks may not reference them). `zb-hook-run` and `zb-claude` live in the read-only runtime. `.claude.json` is re-validated before every session, and `--strict-mcp-config` plus `setting_sources=["user"]` stop planted MCP servers and project settings. The read-only tree is re-hashed against `runtime/config-manifest.json` before every session. S3.10 is the two-session malicious-hook red. | D6, D12, P0.5, S3.10 |
+| R5-1 | Writable hook configuration lets a hook remove its own isolation | `.claude` is bound read-only as a whole, and only the state directories in `runtime/writable.json` are writable (rev 12: the reviewed union, R12-3, not a copy of the census) (data only; hooks may not reference them). `zb-hook-run` and `zb-claude` live in the read-only runtime. `.claude.json` is re-validated before every session, and `--strict-mcp-config` plus `setting_sources=["user"]` stop planted MCP servers and project settings. The read-only tree is re-hashed against `runtime/config-manifest.json` before every session. S3.10 is the two-session malicious-hook red. | D6, D12, P0.5, S3.10 |
 | R5-2 | The R3 token reaches the namespace PID 1 | `zb-hook-run` closes descriptors, builds a fresh environment from `runtime/hook-env.json` (token names refused), and `execve`s `bwrap --clearenv --setenv …` with that environment. bwrap, its PID-1 reaper and the hook never hold the token. The `env -u` prefix is gone. S3.9 under R3 reads `/proc/1/environ` and every visible `environ`, with a red-at-seam. No `ptrace_scope` change. | D6, D11, D12, P0.4, S3.9, S4.4, A4 |
 | R5-3 | Two answers for file-tool owner and scratchpad approval | One routing table in D12: helper reads plus every scratchpad operation; app `agent_fs.zig` for every workspace mutation (write, edit, delete, move, rename) after the card. S10.1 drives every row at its real owner, with denied, timeout and approved cases and a swap race per owner. T7 and the old response row are rewritten to match. | D12, §9 T7, S10.1, S10.2 |
 | R5-4 | Competing observation schemas | The section 7 table is deleted. D7b is the only schema, with exact `status` reasons. Every assertion writes all fields, the Secrets window uses `SECRETS tree`, approval rows carry `account`, and `parse_row` fails any row that does not match D7b. Real tab characters in the table are replaced with literal `\t`. | D7b, §7, S1.2, S2.5, S4.3, S8.1 |
-| R6-1 | A hook can change live `.claude.json` within a session | `zb-hook-run` re-binds `.claude.json` read-only inside every hook's view (it stays writable for the outer CLI) and hides `/run/zb-token` behind an empty tmpfs. S3.11 is the same-session red: the hook's write gets `EROFS`, and later events in that session run no planted command. The pre-session validator stays. | D12, S3.11 |
+| R6-1 | A hook can change live `.claude.json` within a session | ~~`zb-hook-run` re-binds `.claude.json` read-only inside every hook's view (it stays writable for the outer CLI)~~ **Superseded by R12-3:** the live `.claude/.claude.json` is read-only everywhere in the sandbox. `zb-hook-run` hides `/run/zb-token` behind an empty tmpfs. S3.11 is the same-session red: the hook's write gets `EROFS`, and later events in that session run no planted command. The pre-session validator stays. | D12, S3.11 |
 | R6-2 | Cross-root `fs_move` not driven, and a wrong count | S10.1 now has 19 calls, including `scratchpad → workspace` and `workspace → scratchpad`. Both go to the app owner with a card. Denied and timeout leave both roots byte-identical, approval commits once, and a source-only-routing red is included. | S10.1 |
 | R6-S | Directory object type; stale PID-1 and history text | D12 has an object-type table (`S_ISDIR` directory fds, `S_ISREG` leaves, relative traversal, limits, cross-root `renameat2`). D11 says bwrap's reaper is PID 1. The rev-3 row is marked superseded. | D11, D12, §3b |
 | R7-1 | `fs_move`/`fs_delete` checked an fd but mutated a name | A capture → verify → commit protocol at both owners. The object is renamed into a quarantine no other writer can reach (the app's is outside the sandbox; the helper's is hidden from hooks by a tmpfs), then verified as the same regular inode, then committed. Moves into the workspace copy the verified bytes into a fresh inode, checked against the card's `content_sha256`, so no sandbox fd can reach the workspace. There are exact outcomes, rollback, and a journal with crash replay. S10.4 is the failing-first racing-hook test (Zig 10k, Python 10k, e2e 50), red first against the rev-7 sequence. | D12, S10.1, S10.4 |
@@ -629,6 +662,17 @@ agent-home/
 | R10-1 | The device test was short-circuited by `RESOLVE_NO_XDEV` | The guard is tested at the leaf-open path through the injected syscall seams (Python `os_ops`, Zig `Sys`). The fake `fstat` reports char, block, FIFO and socket objects on the same mount. The test asserts the first open is `O_PATH` and that no I/O reopen follows. It is red first, with an `O_RDONLY` red-at-seam. The dev-bind case is kept only as a mount-boundary check. | S10.4 |
 | R10-2 | D12 stated two descriptor contracts | One invariant: a classification descriptor (`O_PATH`) and an I/O descriptor opened through its `/proc/self/fd` link, with equal dev, ino and type; a new file has one `O_EXCL` descriptor. The rev-8 history clause is marked superseded. | D12, §3b |
 | R10-S | S3.12 relied on PID attribution from inotify | Split into phases: B against an idle A (zero events, no B-descendant process), then A alone with a paused write and an exact event sequence, then B taking over. A new e2e-only pause seam is added. | S3.12, §7 seams |
+| R12-1 | R1's FIFO hangs the CLI (P0 finding 1) | The FIFO is helper → wrapper only. `zb-claude` (standard-library Python) reads and unlinks it, then hands the token to the CLI on fd 3 as one end of a `socketpair`; the token briefly exists in the wrapper's memory. | D7b, D11, P0.2, S3.7 |
+| R12-2 | The CLI gives hooks a messaging capability (finding 2) | `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` join the unconditional refused set; P0.4, A4 and S3.9 assert both are absent, independently of the OAuth canary. | D12, P0.4, S3.9 |
+| R12-3 | `.claude.json` lives in `CLAUDE_CONFIG_DIR` (finding 3) | The live `.claude/.claude.json` and `backups/` are read-only; `sessions/` joins the writable union. Observed writes and the reviewed union are listed separately. | §2, D6, D12, S3.10, S3.11 |
+| R12-4 | Nested mount order (finding 4) | `--bind / /`, then `--dev /dev`, then `--proc /proc`; pinned by a unit test. | D12 |
+| R12-5 | In-process tool budget (finding 5) | Production constants: `MCP_TOOL_TIMEOUT=130000` ms for the CLI, a 120 s helper deadline; the contract runs a scaled pair. | D7, P0.3, S3.2 |
+| R12-6 | Agent home under `/tmp` hidden from hooks (finding 6) | The agent home is mounted back after the private `/tmp`, `/run` and `/dev/shm`; the workspace is re-bound read-only last. | D12 |
+| R12-C | The child census samples, so it can miss a short-lived child (P0 blocker 1) | A test-only ptrace exec tracer, parent of bwrap, sees every exec of every descendant. RoseCat's `sleep 0.001` mutant must turn the census red. | D11, P0.5, S3.9 |
+| R12-S | P0 ran without the outer seccomp filter (P0 blocker 2) | The filter is specified exactly and passed with `--seccomp`; new P0.6 proves it with the real CLI and nested hooks. | D12, P0.6 |
+| R12-V | CLI version and census artifact names | 2.1.294; one evidence file `agent/host/tests/p0_census.json` (`cli_version`, `cli_children`, `writes`, `hook_env`), from which the reviewed `runtime/writable.json` and `runtime/hook-env.json` are derived. | §2, P0.5 |
+| R12-A | `atomic_write` may write short (SHOULD) | It loops until every byte is written; a unit test injects a short write. | P0.7 |
+| R12-D | S2 as built (mail 5275) and S2 verdict 6fe538f | New rows `unread` and `fold`; the S2.2 area property is restricted to a componentwise shrink (the wider form is false); a mid-fold observation is added. | D7b, S2.2, S2.3 |
 | 12 | The setup-token fake is invented | The real CLI transcript, recorded by the orchestrator and redacted, is a committed **prerequisite** to S6. The fake replays it, and a test checks the match. | S6 |
 
 ## 4. Desired end state and observable behaviors
@@ -737,6 +781,7 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 | `ZIGBROWSER_AGENT_DRAWER_DEMO` | seeded system messages (S2.3) | `messages:<n≤5000>` |
 | `ZIGBROWSER_AGENT_FS_TRACE` | sets `hello.e2e.fs_trace`, so the helper emits `fs_trace` (S10.4; rev 10) | `1` only |
 | `ZIGBROWSER_AGENT_FS_PAUSE` | pauses the app broker at a named point of a workspace write until the test releases it on stdin (S3.12; rev 11) | `after-temp` only |
+| `ZIGBROWSER_AGENT_ANIM_MS` | stretches the minimize animation so an `xwd` capture can sample the fold mid-flight (S2.2; rev 12) | 180–5000; the default is 180 |
 
 **Social fixture.** The existing `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN` server shape from `tests/e2e/social_flows_test.py` gains a commit log (POST count per action).
 
@@ -885,7 +930,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then** the fake server records `POST /v1/messages` with `authorization: Bearer <canary>`, the streamed scripted text arrives as the SDK's assistant message, and any non-`/v1/messages` path the CLI tries is listed. These become the fake's required routes.
 - **Edge case:** with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, no other host is contacted. The contract run sets `HTTPS_PROXY`/`HTTP_PROXY` to the fake server, whose CONNECT handler records and refuses every tunnel. The recorded tunnel list must be empty.
 - **Token-route contracts (D11), one per route, in order:**
-  - **R1:** the `cli_path` wrapper plus a FIFO on fd 3 plus `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`.
+  - **R1 (rev 12):** the helper → wrapper FIFO, then the wrapper → CLI `socketpair` end on fd 3, plus `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3` (D11). The contract also asserts that the FIFO directory is 0300 and empty afterwards. **Red-at-seam:** the rev-11 `sh` wrapper (`exec 3<fifo`) gets no reply before the SDK gives up.
   - **R3:** the SDK `env` option.
   - Each contract asserts the fake API received `Authorization: Bearer <canary>`, and, for R1, that `/proc/<claude-cli>/environ` does **not** contain the canary.
   - The suite is red if R1 fails on the build host. That is developer evidence only; the installed runtime's route is chosen by `--agent-setup` (S3.1).
@@ -896,11 +941,12 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then**:
   - every event's hook ran (one env file per event, and one POST per event at the fake notify server);
   - no env file contains the canary;
-  - every recorded hook command line starts with `zb-hook-run --` (rev 6). Under R3, the canary is absent from **every** `/proc/*/environ` visible inside the hook's namespace, **PID 1 included**, read by the hook itself.
-- **Red first:** before the wrapper and route selection exist, the R3-only run shows the canary in the hook env files.
+  - every recorded hook command line starts with `zb-hook-run --` (rev 6). Under R3, the canary is absent from **every** `/proc/*/environ` visible inside the hook's namespace, **PID 1 included**, read by the hook itself;
+  - (rev 12, finding 2) no env file holds `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`. This is checked by name, independently of the canary, because the real CLI sets both for hooks (the census shows them).
+- **Red first:** before the wrapper and route selection exist, the R3-only run shows the canary in the hook env files. Without the refused names, both messaging names appear in every env file.
 - **Property:** none. The input is fixed.
 
-#### Behavior P0.5: the exact sandbox and per-hook PID isolation work on this host (rev 5)
+#### Behavior P0.5: the exact sandbox and per-hook PID isolation work on this host (rev 5; rev 12: with P0.6's filter, the mount orders of D12 and a lifecycle-complete census)
 - **Given** the D12 bind list as written, the real bundled CLI, the venv and `zb-hook-run`,
 - **When** a one-turn contract runs with a hook for every event,
 - **Then**:
@@ -908,24 +954,39 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - inside each hook, `/proc` lists only the hook's own processes, and neither the CLI's nor the helper's PID exists;
   - a create in `workspace/` from the hook and from the helper gets `EROFS`, and a scratchpad write succeeds;
   - descriptors ≥ 3 in the hook are closed;
-  - the census of non-hook CLI descendants is recorded in `agent/host/tests/cli_child_census.json`, as absolute paths under `/usr` only;
-  - (rev 6) the **write census**: every path the CLI and the SAI hooks write under `.claude` during the turn, from the inotify oracle. It becomes `runtime/writable.json`, the reviewed list of state directories;
-  - (rev 6) the **hook-environment census**: the variable names the CLI sets for hooks. It becomes `runtime/hook-env.json`, minus the refused names;
-  - (rev 6) `--strict-mcp-config` passed through the SDK's `extra_args` is accepted, and an `mcpServers` entry planted in `.claude.json` is ignored.
+  - (rev 12) the census of non-hook CLI descendants comes from the exec tracer (D11), which sees every exec of every descendant whatever its lifetime, and is recorded as `cli_children` in `agent/host/tests/p0_census.json`, as absolute paths under `/usr` only. **Red first:** RoseCat's mutant wrapper, which spawns and reaps `/usr/bin/sleep 0.001` before the real CLI, passes the snapshot census and must fail the traced one (`/usr/bin/sleep` is not on the allowlist);
+  - (rev 6) the **write census**: every path the CLI and the SAI hooks write under `.claude` during the turn, from the inotify oracle, recorded as `writes` in `p0_census.json`. Rev 12: these are the **observed writes**. `runtime/writable.json` is the **reviewed union** in D12, which is not a copy of them;
+  - (rev 6) the **hook-environment census**: the variable names the CLI sets for hooks, recorded as `hook_env` in `p0_census.json`. It becomes `runtime/hook-env.json`, minus the refused names (D12 step 2, which now includes both messaging names);
+  - (rev 6) `--strict-mcp-config` passed through the SDK's `extra_args` is accepted, and an `mcpServers` entry planted in `.claude/.claude.json` is ignored;
+  - (rev 12) the turn succeeds with `.claude/.claude.json` and `backups/` read-only, and the nested argv order of D12 is pinned by a unit test. The old order either cannot open `/dev/null` or shows the outer `/proc`, and both are red.
 - **Red first:** without `zb-hook-run`, the probe hook finds the CLI's PID in `/proc`, so red.
 - If this is red on the host for a reason other than missing code (nested namespaces refused), the plan stops and the orchestrator takes the host question to the user.
 - **Property:** none. The input is fixed.
+
+#### Behavior P0.6: the outer seccomp filter holds, and nested hooks still run (rev 12; RoseCat P0 blocker 2)
+- **Given** the P0.5 sandbox with `--seccomp <fd>` holding `seccomp.py`'s program (D12),
+- **When** one real-CLI turn runs with a hook for every event, and a probe command runs in the helper's sandbox and in a hook,
+- **Then**:
+  - `ptrace(PTRACE_ATTACH)` on a sibling, `ptrace(PTRACE_TRACEME)`, `process_vm_readv` and `process_vm_writev` each get `EPERM`, in the helper's sandbox and in the hook;
+  - every hook still starts through the nested bwrap (all six env dumps exist, and the hook's `/proc` shows only its own namespace);
+  - `/proc/self/status` shows `Seccomp: 2` in the CLI and in the hook.
+- **Unit (Python):** the program is decoded and run against a table of `seccomp_data` inputs: x86_64 `ptrace`, `process_vm_readv` and `process_vm_writev` give `ERRNO(EPERM)`; an x32 number gives `ERRNO(EPERM)`; a foreign `arch` gives `KILL_PROCESS`; `clone`, `clone3`, `unshare`, `mount`, `pivot_root`, `setns`, `read` and `write` give `ALLOW`. A forked child also loads the filter with `prctl(PR_SET_NO_NEW_PRIVS)` and `seccomp(2)` and observes `EPERM` from `ptrace`.
+- **Red first:** without `--seccomp`, the probe's `process_vm_readv` on its own child succeeds (same user, `ptrace_scope` 0), so red.
+- **Property:** none. The input is fixed.
+
+#### Behavior P0.7: helper file writes are complete before they are installed (rev 12, SHOULD)
+- `files.atomic_write` loops until every byte is written before `fsync` and rename. A unit test injects an `os.write` that writes one byte per call, and the installed file equals the input. **Red first:** the single `os.write` installs a truncated file.
 
 #### Behavior P0.3: in-process MCP tools and `can_use_tool` round-trip through the helper
 - **Given** a scripted `tool_use` for `mcp__zigbrowser__echo` and a host-side reply delayed 3 s,
 - **When** the tool handler awaits a reply that arrives on the helper's stdin,
 - **Then** the fake API receives the `tool_result` with the echoed text. A second scripted `tool_use` for the built-in `Read` gets an `is_error` `tool_result` and touches no file, which proves built-in tools are absent under `tools=[]` (rev 3: file access is only through `fs_*`).
-- **Edge cases:** a reply after `MCP_TOOL_TIMEOUT`. Record the observed timeout and make the helper's own deadline 10 s shorter.
+- **Edge cases (rev 12, finding 5):** the CLI enforces `MCP_TOOL_TIMEOUT` on in-process tools. The production values are fixed at 130,000 ms for the CLI and 120 s for the helper's own deadline (D7), and a unit test pins both constants. The contract runs a scaled pair with the same 10 s margin: a reply held past the helper deadline gets the helper's `is_error` "tool timed out" before the CLI's own timeout fires.
 - **Property:** none. The input is fixed.
 
 **Closure (P0).** These are Tier-2 boundary contracts, not product promises. LEAF, because they touch no zigBrowser production code. P0 is a **prerequisite, not a slice**: the "every slice ends with a real-binary Xvfb e2e" rule applies to S1–S10 (rev 3, blocker 1). Every contract P0 records is re-proved through the real browser in S3 (lifecycle and hooks), S4 (token route and A4) and S5 (chat). The contracts run in gate step `agent-host-contract`, which fails closed if the venv is missing.
 
-**Success criteria:** `zig build test` includes `agent-host-contract` and `agent-host-unit`; the red runs are recorded; the green runs are recorded; the gate is 94+2 steps.
+**Success criteria:** `zig build test` includes `agent-host-contract` and `agent-host-unit`; the red runs are recorded; the green runs are recorded; the gate is 94+2 steps. Rev 12: the recorded red runs also include the census mutant (P0.5), the sandbox without `--seccomp` (P0.6) and the injected short write (P0.7), and P0's verdict waits for all three.
 
 ---
 
@@ -1023,9 +1084,13 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - focus is on the icon;
   - the icon is visible at R in an `xwd` capture.
 - **Edge case:** a resize during the animation re-targets to the clamped R.
+- **Mid-fold observation (rev 12; RoseCat S2 verdict 6fe538f).** The rows above prove the start and the end only, so a stand-in hidden for the whole animation would still pass. The fold must be seen while it is on screen:
+  - at the default 180 ms: at least 2 `DRAWER fold` rows whose rects lie strictly between the open rect and R, their frame numbers increasing, and each rect's width and height no larger than the previous one's and each edge moving toward R's;
+  - with `ZIGBROWSER_AGENT_ANIM_MS=3000`: an `xwd` capture taken mid-animation shows the stand-in's colour at the centre of the latest `fold` rect (a point outside R, where the page would show if the stand-in were not drawn), and the page colour just outside that rect;
+  - **red-at-seam:** hide the stand-in for the whole animation (`gtk_widget_hide` instead of `gtk_widget_show`). No `fold` row appears and the mid-flight pixel is the page colour, so red.
 - **Property (Zig):**
   - Invariant: `lerpRect(a,b,0)==a`, `lerpRect(a,b,1)==b`, and every component lies between a and b for t ∈ [0,1].
-  - Metamorphic: the area is monotone non-increasing when area(b) ≤ area(a).
+  - Metamorphic (rev 12, corrected): the area is monotone non-increasing as `t` grows when `b.w ≤ a.w` and `b.h ≤ a.h`, which is the drawer-into-icon case. The rev-11 wording, with only area(b) ≤ area(a), is false: a 1×100 rect folding into a 50×1 rect is about 1287 px² at the midpoint.
   - `ease` is monotone on [0,1] with `ease(0)=0` and `ease(1)=1` (10k seeded samples).
 
 #### Behavior S2.3: the messages scroll, and the input stays at the bottom
@@ -1086,6 +1151,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Then**:
   - `DRAWER status starting -` → `DRAWER status ready -`;
   - `/proc/<helper>/environ` keys equal the D7 allowlist exactly;
+  - (rev 12, finding 5) once a session is open, `/proc/<cli>/environ` holds `MCP_TOOL_TIMEOUT=130000`, and the helper's `ready` frame reports its tool deadline as 120 s;
   - `HOME` and `CLAUDE_CONFIG_DIR` are inside the agent home;
   - the helper's pgid is its own pid, and its parent is the browser;
   - no helper exists before the first Send.
@@ -1099,7 +1165,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - Roundtrip: `parse(encode(f)) == f` for generated valid frames.
 
 #### Behavior S3.7: `--agent-setup` selects the token route on the installed CLI, and fails closed (rev 4, blocker 5)
-- **Given** the real bundled CLI, **When** setup runs, **Then** `runtime/token-route.json` says `R1` with the CLI's version, and the probe server saw the probe bearer.
+- **Given** the real bundled CLI, **When** setup runs, **Then** `runtime/token-route.json` says `R1` with the CLI's version, and the probe server saw the probe bearer. The probe goes through the real `zb-claude`, the FIFO and the socket handoff (rev 12, finding 1). **Red-at-seam:** install the rev-11 `sh` wrapper (`exec 3<fifo`); the probe gets no request within its 30 s limit, and setup exits 2 with "no safe token route".
 - **Given** an e2e-only CLI that ignores `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` (through the S3.6 seam table), **Then** setup exits 2 with "no safe token route", and nothing is written. With `--agent-token-route env`, setup writes `R3`, wraps every hook, and prints the risk line.
 - **Given** `cli_version` in `token-route.json` differs from the installed CLI, **When** Send is pressed, **Then** the drawer says "Claude CLI changed: run zigBrowser --agent-setup again", and nothing is spawned.
 
@@ -1107,7 +1173,7 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 - **Given** fixture hooks that try to open the decoy home's `.claude/CLAUDE.md`, a file in the decoy repo, the profile's `cookies.sqlite`, `$XDG_RUNTIME_DIR`, `agent-home/secrets/`, and `ptrace` on their parent CLI,
 - **When** the first prompt runs,
 - **Then**:
-  - every attempt fails (ENOENT, because those paths are not mounted; `ptrace` gets EPERM from seccomp);
+  - every attempt fails (ENOENT, because those paths are not mounted; `ptrace` and `process_vm_readv` get EPERM from the outer seccomp filter, P0.6);
   - the inotify oracle records zero events on the decoy trees;
   - the same hooks' localhost POSTs to the fake notify server still arrive.
 - **Red-at-seam:** start the helper with `--dev-bind / /`, and the decoy CLAUDE.md is read (an inotify event), so red.
@@ -1124,7 +1190,8 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - the canary is absent from `attack.json` and from every file the hook wrote. Under R3 (a second run with `--agent-token-route env`), the hook also reads `/proc/1/environ`, its own `/proc/self/environ` and every other visible `/proc/*/environ`, and none holds the canary (rev 6, blocker 2). **Red-at-seam** for this case: have `zb-hook-run` pass its own environment to bwrap, and `/proc/1/environ` shows the canary, so red;
   - `workspace/keep.txt` is still "original" (hash checked from outside), and `workspace/new.txt` does not exist;
   - the hook's positive controls succeed: a scratchpad write, and a localhost POST to the fake notify server;
-  - the census holds: every CLI descendant is in a `zb-hook-run` namespace or on the allowlist.
+  - the census holds: every CLI descendant is in a `zb-hook-run` namespace or on the allowlist. Rev 12: the census comes from the exec tracer shim behind `ZIGBROWSER_AGENT_BWRAP` (D11), so a child that lives between two samples is still seen. **Red-at-seam:** a `zb-claude` that spawns and reaps `/usr/bin/sleep 0.001` before the CLI turns this check red;
+  - (rev 12, finding 2) the hook's own environment holds neither `CLAUDE_CODE_MESSAGING_SOCKET` nor `CLAUDE_CODE_MESSAGING_TOKEN`, checked by name, independently of the canary. **Red-at-seam:** drop both from the refused set, and they appear in `attack.json`'s environment dump.
 - **Fail-closed case:** with `ZIGBROWSER_AGENT_BWRAP` pointing at a bwrap shim that ignores `--unshare-pid` for nested calls (e2e-only seam), the self-check fails. `DRAWER status unavailable hook-isolation` is shown, and no session starts.
 - **Red-at-seam:** remove the `zb-hook-run` prefix from the provisioned hooks, and the hook reads the canary from `/proc/<cli>/environ` under R3, or from `/proc/<cli>/mem` under R1, so red. Bind the workspace writable, and `keep.txt` changes, so red.
 - **Property:** none. The input is fixed.
@@ -1134,13 +1201,13 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
   - (a) overwrite `.claude/settings.json` so its own hook command loses `zb-hook-run --`;
   - (b) overwrite its own hook script, and every other file under `hooks/`;
   - (c) write a new hook definition into `.claude/settings.local.json` and into a project-level `workspace/.claude/settings.json`;
-  - (d) add `hooks` and `mcpServers` to `.claude.json`;
+  - (d) add `hooks` and `mcpServers` to `.claude/.claude.json` (rev 12: the live file, inside the read-only `.claude`);
   - (e) drop an executable and a module named like each hook's imports into every writable state directory;
   - (f) replace `runtime/bin/zb-hook-run` and `runtime/bin/zb-claude`.
 - **When** the window's session ends, a second window opens a **session 2**, and its first prompt runs,
 - **Then**:
-  - attempts (a), (b), (c) and (f) got `EROFS` in session 1;
-  - for (d), session 2 is refused with "Agent configuration changed", and nothing runs. In a second variant, (d) is skipped and session 2 runs;
+  - attempts (a), (b), (c), (d) and (f) got `EROFS` in session 1 (rev 12: (d) is now refused inside the sandbox too);
+  - a second variant makes change (d) from **outside** the sandbox, as another same-user process would. Session 2 is then refused with "Agent configuration changed", and nothing runs. In a third variant nothing is changed, and session 2 runs;
   - in session 2 the same malicious hook runs **through `zb-hook-run`** (its `/proc/self/ns/pid` differs from the CLI's), still cannot read the token (the S3.9 checks), and still cannot mutate `workspace/`;
   - the file planted in (e) is never executed: a marker it would write is absent;
   - the config manifest check passes for session 2.
@@ -1150,17 +1217,17 @@ Every slice follows the same order: (1) mail "Taking the gate slot" only for the
 #### Behavior S3.11: a hook cannot change the live CLI configuration within the same session (rev 7, blocker 1)
 - **Given** the S3.9 setup with a malicious `SessionStart` hook, and marker-writing fixture commands for the planted entries,
 - **When** in **session 1** the `SessionStart` hook tries to:
-  - (a) add a `hooks.Stop` entry running `touch scratchpad/planted-stop` and an `mcpServers.evil` entry running `touch scratchpad/planted-mcp` to `.claude.json`, by write-in-place, by temp file plus rename, and by truncate;
+  - (a) add a `hooks.Stop` entry running `touch scratchpad/planted-stop` and an `mcpServers.evil` entry running `touch scratchpad/planted-mcp` to `.claude/.claude.json`, by write-in-place, by temp file plus rename, and by truncate;
   - (b) create a FIFO or file under `/run/zb-token`;
 - and the **same session** then runs `UserPromptSubmit`, one MCP tool call (`get_text`) and `Stop`,
 - **Then**:
-  - the in-place write and the truncate each get exactly `EROFS`. The temp-plus-rename attempt is refused with an errno in the accepted set `{EROFS, EBUSY, EXDEV}` (rev 8, SHOULD; renaming over a bind-mounted file may return `EBUSY`). In every case the file must be byte-identical afterwards;
+  - all three attempts get exactly `EROFS`. Rev 12: the file is inside the read-only `.claude` mount rather than a single-file bind, so the rev-8 accepted set `{EROFS, EBUSY, EXDEV}` for the rename is retired. In every case the file must be byte-identical afterwards;
   - (b) gets an empty private tmpfs, and the real FIFO directory is unchanged;
   - `scratchpad/planted-stop` and `scratchpad/planted-mcp` never appear;
   - no process with the planted command line ever exists (the `/proc` census during the session);
-  - `.claude.json` is byte-identical before and after (hashed from outside);
+  - `.claude/.claude.json` is byte-identical before and after (hashed from outside);
   - the session's later events and the tool call work normally.
-- **Red-at-seam:** remove the nested `--ro-bind` of `.claude.json` from `zb-hook-run`. The hook's write then succeeds, and the `EROFS` assertion fails, so red. If the CLI re-reads the file within the session, the planted marker also appears.
+- **Red-at-seam (rev 12):** bind `agent-home/.claude` writable in the outer sandbox. The hook's write then succeeds, and the `EROFS` assertion fails, so red. If the CLI re-reads the file within the session, the planted marker also appears.
 - The pre-session validator from rev 6 stays. S3.10 still covers the cross-session path.
 - **Property:** none. The input is fixed.
 
