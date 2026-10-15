@@ -64,9 +64,16 @@ SECRETS_TEXTS = ("No token is stored.", "Connected. The token is stored in the s
                  "The token could not be saved.", "The token could not be removed.")
 
 
+# The canary's random part: uppercase letters that are not hex, not in any row tag (DRAWER,
+# SECRETS, AGENTNET, TITLE, NAV, WINCOUNT, LOAD_FAIL) and not lowercase, so a run of 4 of
+# them cannot occur by chance in what the browser prints (canary-self-test; BlackRobin 5709).
+CANARY_TAIL = "BHJKQXYZ"
+
+
 def canary() -> str:
-    """A canary the X keyboard can type without Shift (lowercase, digits, '-')."""
-    return "sk-ant-oat01-zbcanary-" + secrets.token_hex(20)
+    """A canary of 16-512 printable characters: a fixed prefix and 40 random letters of
+    CANARY_TAIL (120 bits), typed with Shift."""
+    return "sk-ant-oat01-zbcanary-" + "".join(secrets.choice(CANARY_TAIL) for _ in range(40))
 
 
 def leaks(text: str, token: str, run: int = 4) -> list[str]:
@@ -260,7 +267,10 @@ def click_rect(b, r: tuple[int, int, int, int]) -> None:
 
 def type_text(b, text: str) -> None:
     for ch in text:
-        b.x.key({" ": "space", "\n": "Return", "\t": "Tab"}.get(ch, ch), settle=0.005)
+        if "A" <= ch <= "Z":
+            b.x.key(ch.lower(), ("Shift_L",), settle=0.005)
+        else:
+            b.x.key({" ": "space", "\n": "Return", "\t": "Tab"}.get(ch, ch), settle=0.005)
 
 
 def send_prompt(b, text: str) -> None:

@@ -69,6 +69,9 @@ struct ZbDrawer {
    * panel is never squeezed below its minimum size. */
   GtkWidget *ghost;
   GtkWidget *minus;
+  /* The header's Account button (S4, D1/D11): opens the Secrets window in any
+   * agent state. Only with a provisioned agent home; NULL otherwise. */
+  GtkWidget *account;
   GtkWidget *status; /* the header's agent state (S3b) */
   GtkWidget *scroller;
   GtkWidget *list;
@@ -689,6 +692,10 @@ static void on_panel_allocated(GtkWidget *widget, GdkRectangle *allocation, gpoi
   ZbDrawerRect minus = widget_rect(d, d->minus);
   drawer_rect_row(d, "open", &panel);
   drawer_rect_row(d, "minus", &minus);
+  if (d->account != NULL) {
+    ZbDrawerRect account = widget_rect(d, d->account);
+    drawer_rect_row(d, "account", &account);
+  }
 }
 
 static gboolean on_anim_tick(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
@@ -928,7 +935,16 @@ static void collect_types(GtkWidget *widget, gpointer data) {
   }
 }
 
-/* The drawer: header ("Claude Agent", status, '-'), the scrolling message
+/* Account: the Secrets window, above this browser window, whatever the agent's
+ * state (a missing runtime included). */
+static void on_account_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  ZbDrawer *d = data;
+  GtkWidget *top = gtk_widget_get_toplevel(d->panel);
+  zb_secrets_window_present(top != NULL && GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : NULL);
+}
+
+/* The drawer: header ("Claude Agent", status, Account, '-'), the scrolling message
  * list, "New messages", and the input row (text, Send, Stop). */
 static void build_panel(ZbDrawer *d) {
   d->panel = named(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0), "zb-agent-drawer", "Claude Agent");
@@ -945,6 +961,11 @@ static void build_panel(ZbDrawer *d) {
   gtk_box_pack_start(GTK_BOX(header), title, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(header), status, TRUE, TRUE, 0);
   gtk_box_pack_end(GTK_BOX(header), d->minus, FALSE, FALSE, 0);
+  if (zb_secrets_window_configured()) {
+    d->account = named(gtk_button_new_with_label("Account"), "zb-agent-account", "Account");
+    gtk_widget_set_tooltip_text(d->account, "Claude Agent account");
+    gtk_box_pack_end(GTK_BOX(header), d->account, FALSE, FALSE, 0);
+  }
 
   d->scroller = gtk_scrolled_window_new(NULL, NULL);
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(d->scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -996,6 +1017,10 @@ static void build_panel(ZbDrawer *d) {
   report_focus(d, d->send, "send");
   report_focus(d, d->stop, "stop");
   report_focus(d, d->minus, "minus");
+  if (d->account != NULL) {
+    report_focus(d, d->account, "account");
+    g_signal_connect(d->account, "clicked", G_CALLBACK(on_account_clicked), d);
+  }
   g_signal_connect(d->list, "set-focus-child", G_CALLBACK(on_list_focus_child), d);
   g_signal_connect(d->minus, "clicked", G_CALLBACK(on_minus_clicked), d);
   g_signal_connect(d->send, "clicked", G_CALLBACK(on_send_clicked), d);
@@ -1089,6 +1114,9 @@ void zb_drawer_detach(ZbDrawer *d) {
                           G_OBJECT(d->ghost)};
   for (size_t i = 0; i < G_N_ELEMENTS(connected); ++i) {
     g_signal_handlers_disconnect_by_data(connected[i], d);
+  }
+  if (d->account != NULL) {
+    g_signal_handlers_disconnect_by_data(d->account, d);
   }
   g_atomic_int_add(&zb_drawer_live, -1);
   zb_drawers = g_list_remove(zb_drawers, d);

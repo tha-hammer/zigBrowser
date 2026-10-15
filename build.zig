@@ -817,7 +817,7 @@ pub fn build(b: *std.Build) void {
     const agent_secrets_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable,fallback-persists,stale-store,lookup-race,remove-both,remove-close",
+        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable,fallback-persists,stale-store,lookup-race,remove-both,remove-close,account-button,account-after-no-token,canary-self-test",
         "agent-secrets-e2e",
     });
     agent_secrets_e2e.addArtifactArg(exe);

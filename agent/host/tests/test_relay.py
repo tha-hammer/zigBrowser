@@ -315,7 +315,8 @@ class InnerRelayTest(unittest.TestCase):
                 self.addCleanup(reap, proc)
                 wait_for(lambda: running(canary), 20)
                 if case == "relay killed":
-                    relay = only(inner_relays(proc.pid))
+                    # Waited for, like the descriptor census: one /proc walk can miss it (a gate flake).
+                    relay = only(wait_for(lambda: inner_relays(proc.pid), 20))
                     os.kill(relay, signal.SIGKILL)
                 proc.wait(timeout=20)
                 wait_for(lambda: not running(canary), 1.0)
