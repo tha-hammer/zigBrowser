@@ -815,6 +815,15 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_contract",
     });
+    // MS0 (macOS launch plan, rev 6): the shared SandboxBackend seam — the
+    // behaviour-preserving golden-argv oracle (LinuxBwrapBackend reproduces
+    // helper_argv byte-for-byte) and the backend-supplied network capability
+    // (egress endpoint + bridge policy); fails closed without the venv.
+    const agent_host_backend_contract = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_backend_contract",
+    });
     // Chat drawer S3n1 (plan rev 16.2 §3c): the host-side network helper and the
     // two relays, driven through their command lines, offline (private fakes on
     // 127.0.0.1 and short /tmp/zbn-* socket directories only).
@@ -1075,6 +1084,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&agent_host_unit.step);
     test_step.dependOn(&agent_host_contract.step);
+    test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_netd.step);
