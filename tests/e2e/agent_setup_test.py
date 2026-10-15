@@ -484,6 +484,27 @@ def case_timeout_teardown(binary: Path, tmp: Path, check: Checks) -> None:
     check(err == "TIMEOUT" and helpers_for(w.agent) == [], f"timeout: the run timed out and no helper outlived it ({helpers_for(w.agent)})")
 
 
+def case_spawn_policy_delay(binary: Path, tmp: Path, check: Checks) -> None:
+    """MS0 Slice F / #3 (RoseCat 5740): the caller-supplied spawn policy is consumed.
+    app.zig passes ``zb_spawn_policy_linux(delay)`` to ``zb_agent_run_sync``, which
+    applies ``policy.delay_ms`` in the child before exec. A paired run at 0 ms vs
+    3000 ms must differ by about that delay — a seam that built its own policy and
+    ignored the caller's would show no difference. This pins that the injected policy
+    value reaches the real production spawn (not a parallel field); the parent-death
+    and timeout cases don't catch it, since 0 ms is the safe path and setup already
+    outlives a 1 s timeout on its own."""
+    def run_ms(ms: int) -> float:
+        w = World(tmp, f"spawn-delay-{ms}")
+        start = time.monotonic()
+        run_setup(binary, w, ["--e2e-protocol"], {"ZIGBROWSER_AGENT_SPAWN_DELAY_MS": str(ms)}, timeout=60.0)
+        return time.monotonic() - start
+    base = run_ms(0)
+    delayed = run_ms(3000)
+    check(delayed - base >= 2.0,
+          f"spawn-delay: the caller's 3 s policy delay reaches the real spawn "
+          f"(base {base:.2f}s, delayed {delayed:.2f}s, +{delayed - base:.2f}s)")
+
+
 def case_bad_home(binary: Path, tmp: Path, check: Checks) -> None:
     """RoseCat 5328 (3): an empty or missing HOME is refused, never rewritten."""
     for label, extra in (("empty HOME", {"HOME": ""}), ("relative HOME", {"HOME": "rel"})):
@@ -668,7 +689,8 @@ def case_descendants(binary: Path, tmp: Path, check: Checks) -> None:
 def main() -> int:
     return run_main(__doc__, {"provision": case_provision, "refusals": case_refusals, "cli": case_cli_seam, "sealed": case_sealed,
                               "parent": case_parent_death, "home": case_bad_home, "install": case_clean_install,
-                              "timeout": case_timeout_teardown, "kill": case_kill, "descendants": case_descendants})
+                              "timeout": case_timeout_teardown, "spawn-delay": case_spawn_policy_delay,
+                              "kill": case_kill, "descendants": case_descendants})
 
 
 if __name__ == "__main__":
