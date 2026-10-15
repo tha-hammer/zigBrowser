@@ -9655,3 +9655,65 @@ through `9d2d1f0`/`be2be38`. Independently, `ba19159` is still a red-only,
 unregistered token-shape commit with no committed green. Therefore there is
 still no approved contiguous post-origin prefix past the prior boundary. The
 newest approved push-through SHA remains **`dc52885`**.
+
+## Setup-token shape and S3c config-check red (`ba19159`, `3b07a37`, `40d5c6d`)
+
+**Explicit verdict for `ba19159`: APPROVED as the failing-first token-shape
+commit.** The independent table covers the 22/21 and 512/513 boundaries, the
+exact and wrong-case prefixes, `sk-ant-api03-`, internal whitespace, ASCII and
+non-ASCII bad bytes, and paste trimming. It also reaches `storeFile` and
+`loadFile`, while the real-binary cases drive Save by private-Xvfb input against
+both a private Secret Service and a throwaway file store
+(`tests/agent_secrets_shape_test.zig@ba19159:27-200`;
+`tests/e2e/agent_secrets_test.py@ba19159:504-568`). The old production failed
+five of six Zig tests and stored the first E2E near miss. One property
+distribution assertion in the red was itself too strict because its generator
+put odd bytes into long strings too often; `3b07a37` corrects that generator
+without weakening the independent oracle. The other table, store/load and
+real-binary failures still provide valid red evidence for the production gap.
+
+**Explicit verdict for `3b07a37`: APPROVED. The setup-token shape is approved,
+and the combined real-screen session may proceed.** `validToken` implements
+exactly `^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$`, preserving the 512-byte total
+ceiling; `tokenFromPaste` trims exactly the six ASCII whitespace bytes before
+validation (`src/agent_secrets.zig@3b07a37:12-40`). The same predicate guards
+the file write and file read, so a seeded file cannot bypass the boundary
+(`:93-148,176-188`). Save clears the GTK entry immediately, duplicates only
+the validated trimmed slice, wipes the original paste, shows only the fixed
+rejection sentence, and never sends rejected input to either store
+(`src/agent_secrets_window.c@3b07a37:234-264`). The registered real-binary
+cases prove nine near misses mutate neither private store, the padded canary is
+persisted without its padding in both store modes, and no `sk-ant`/near-miss or
+four-character canary run enters rows or logs. `build.zig` registers both the
+Zig shape suite and the two E2E cases. BlueBeaver's exact clean-export private-
+Xvfb gate passed **129/129 steps and 868/868 tests**. This closes the token-
+shape blocker recorded under `db5818b`; the user's next run should retain the
+already-passed Account button, masked entry and drawing checks, reject one
+near miss with `That doesn't look like a token.`, then accept one padded valid
+canary without exposing it.
+
+Advisory only: an item inserted into Secret Service by some other same-user
+program is still trusted on lookup (`src/agent_secrets.c@3b07a37:285-301`),
+whereas the explicit file loader now validates. That is not a bypass of Save
+or either requested S4a store path, but applying the same predicate on keyring
+fetch would make the read boundary symmetric. Also, the plan's old printable-
+token wording at lines 544, 1735 and 1905 is superseded and must be corrected
+before S6 builds its login route; BlackRobin was mailed this documentation
+follow-up.
+
+**Explicit verdict for `40d5c6d`: BLOCKED-for-tests.** Its committed real-
+binary red is otherwise valuable: it provisions with the real setup path,
+uses the e2e-only fake helper behind a sealed network namespace, proves the
+unchanged/writable-state control, and observes refusal through both the native
+drawer state and the helper's actual frame/run files. The reported old-code
+result was **47 checks, 38 failed**, with the five unchanged controls passing.
+However, rev 16.10 explicitly requires a check on each window's first prompt
+*and the first prompt after `session_ended`*. The red covers window 1 followed
+by a new window 2, but never ends a session and sends again in the same window
+(`tests/e2e/agent_config_check_test.py@40d5c6d:112-153`). A mutant that caches
+"checked" forever on each `ZbWin` survives all committed cases. Add a red-
+first same-window case that observes a real session end, mutates configuration,
+sends again in that window, and proves the fixed refusal/bubble, no second
+helper start and no second prompt delivery. Mail 5761 sent this blocker to
+BlackRobin while its green gate was still running; the correction must be a
+new follow-up commit, never a rewrite.
