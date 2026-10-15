@@ -1,0 +1,153 @@
+//! The C face of the helper's frames (chat-drawer plan D7, D7b, S3.3; S3b):
+//! src/agent_helper.c validates every helper stdout line here before it acts
+//! on it, and builds every frame it writes here. One helper at a time, GTK
+//! main thread only. A frame's strings stay valid until the next validate.
+
+const std = @import("std");
+const protocol = @import("agent_protocol.zig");
+const helper = @import("agent_helper.zig");
+
+const gpa = std.heap.c_allocator;
+
+var validator: ?protocol.Validator = null;
+var frame_arena: std.heap.ArenaAllocator = .init(gpa);
+var out_seq: u64 = 0;
+var hello_home: ?[]u8 = null;
+var hello_e2e: ?helper.HelloE2e = null;
+
+/// app.zig, once: what the helper's `hello` frame says.
+pub fn setHello(home: []const u8, e2e: ?helper.HelloE2e) !void {
+    hello_home = try gpa.dupe(u8, home);
+    if (e2e) |value| hello_e2e = .{ .test_base_url = if (value.test_base_url) |url| try gpa.dupe(u8, url) else null };
+}
+
+pub const Kind = enum(c_int) { ready, session_opened, assistant_delta, assistant_message, tool_call, result, @"error", session_ended };
+
+pub const CFrame = extern struct {
+    kind: c_int = 0,
+    session: ?[*]const u8 = null,
+    session_len: usize = 0,
+    /// delta and message text, an error's message, an ended session's reason.
+    text: ?[*]const u8 = null,
+    text_len: usize = 0,
+    /// an error's code.
+    code: ?[*]const u8 = null,
+    code_len: usize = 0,
+    is_error: c_int = 0,
+};
+
+/// A new helper process: a fresh validator (its seq and sessions) and out seq.
+export fn zb_agent_frames_reset() void {
+    if (validator) |*v| v.deinit();
+    validator = protocol.Validator.init(gpa);
+    _ = frame_arena.reset(.free_all);
+    out_seq = 0;
+}
+
+/// The app opened `session` for window `window` (sent `open_session`).
+export fn zb_agent_frames_open_session(session: [*:0]const u8, window: u32) c_int {
+    const v = if (validator) |*v| v else return -1;
+    v.openSession(std.mem.span(session), window) catch return -1;
+    return 0;
+}
+
+/// The app closed `session` (its window went away): later frames naming it are rejected.
+export fn zb_agent_frames_close_session(session: [*:0]const u8) void {
+    if (validator) |*v| v.closeSession(std.mem.span(session));
+}
+
+/// 0 and `out` filled when the line is a valid frame; otherwise 1 + the
+/// protocol.Reason (zb_agent_frames_reason names it). Never logs content.
+export fn zb_agent_frames_validate(line: [*]const u8, len: usize, out: *CFrame) c_int {
+    const v = if (validator) |*v| v else return 1 + @as(c_int, @intFromEnum(protocol.Reason.envelope));
+    _ = frame_arena.reset(.retain_capacity);
+    const outcome = v.validate(frame_arena.allocator(), line[0..len]);
+    const frame = switch (outcome) {
+        .rejected => |reason| return 1 + @as(c_int, @intFromEnum(reason)),
+        .ok => |f| f,
+    };
+    out.* = .{ .kind = @intFromEnum(std.meta.stringToEnum(Kind, @tagName(frame)).?) };
+    switch (frame) {
+        .ready => {},
+        .session_opened => |f| setSession(out, f.session),
+        .assistant_delta, .assistant_message => |f| {
+            setSession(out, f.session);
+            setText(out, f.text);
+        },
+        .tool_call => |f| setSession(out, f.session),
+        .result => |f| {
+            setSession(out, f.session);
+            out.is_error = @intFromBool(f.is_error);
+        },
+        .@"error" => |f| {
+            if (f.session) |s| setSession(out, s);
+            setText(out, f.message);
+            out.code = f.code.ptr;
+            out.code_len = f.code.len;
+        },
+        .session_ended => |f| {
+            setSession(out, f.session);
+            setText(out, f.reason);
+        },
+    }
+    return 0;
+}
+
+fn setSession(out: *CFrame, session: []const u8) void {
+    out.session = session.ptr;
+    out.session_len = session.len;
+}
+
+fn setText(out: *CFrame, text: []const u8) void {
+    out.text = text.ptr;
+    out.text_len = text.len;
+}
+
+export fn zb_agent_frames_reason(code: c_int) [*:0]const u8 {
+    const fields = @typeInfo(protocol.Reason).@"enum".fields;
+    inline for (fields) |field| if (code == 1 + field.value) return field.name;
+    return "unknown";
+}
+
+// --- frames the app writes (NUL-terminated, newline included; free with
+// zb_agent_out_free). NULL when the frame cannot be built or is too large. ---
+
+fn owned(built: anyerror![]u8) ?[*:0]u8 {
+    const bytes = built catch return null;
+    defer gpa.free(bytes);
+    const z = gpa.dupeZ(u8, bytes) catch return null;
+    return z.ptr;
+}
+
+fn nextSeq() u64 {
+    out_seq += 1;
+    return out_seq;
+}
+
+export fn zb_agent_out_hello() ?[*:0]u8 {
+    return owned(helper.helloFrame(gpa, nextSeq(), hello_home orelse return null, hello_e2e));
+}
+
+export fn zb_agent_out_open_session(window: u32, k: u32) ?[*:0]u8 {
+    return owned(helper.openSessionFrame(gpa, nextSeq(), window, k));
+}
+
+export fn zb_agent_out_prompt(session: [*:0]const u8, text: [*]const u8, len: usize) ?[*:0]u8 {
+    const built = (helper.promptFrame(gpa, out_seq + 1, std.mem.span(session), text[0..len]) catch return null) orelse return null;
+    out_seq += 1;
+    return owned(built);
+}
+
+/// kind: 0 interrupt, 1 end_session.
+export fn zb_agent_out_session(kind: c_int, session: [*:0]const u8) ?[*:0]u8 {
+    const which: helper.SessionFrame = if (kind == 0) .interrupt else .end_session;
+    return owned(helper.sessionFrame(gpa, nextSeq(), which, std.mem.span(session)));
+}
+
+export fn zb_agent_out_shutdown() ?[*:0]u8 {
+    return owned(helper.shutdownFrame(gpa, nextSeq()));
+}
+
+export fn zb_agent_out_free(frame: ?[*:0]u8) void {
+    if (frame) |p| gpa.free(std.mem.span(p));
+}

@@ -38,15 +38,10 @@ int zb_agent_home_lock(const char *home) {
   return 0;
 }
 
-typedef struct {
-  pid_t parent;
-  unsigned int delay_ms;
-} ZbChildSetup;
-
 /* In the child, before exec: die with the browser. If the browser already
  * died between fork() and prctl(), the child was reparented and the death
  * signal would never come, so it exits at once instead. */
-static void die_with_browser(gpointer data) {
+void zb_agent_die_with_browser(void *data) {
   const ZbChildSetup *setup = data;
   if (setup->delay_ms > 0) {
     usleep(setup->delay_ms * 1000u);
@@ -60,7 +55,7 @@ int zb_agent_run_sync(const char *const *argv, const char *const *envp, unsigned
   int wait_status = 0;
   GError *error = NULL;
   ZbChildSetup setup = {getpid(), spawn_delay_ms};
-  if (!g_spawn_sync(NULL, (char **)argv, (char **)envp, G_SPAWN_DEFAULT, die_with_browser, &setup,
+  if (!g_spawn_sync(NULL, (char **)argv, (char **)envp, G_SPAWN_DEFAULT, zb_agent_die_with_browser, &setup,
                     NULL, NULL, &wait_status, &error)) {
     g_printerr("zigBrowser: agent: cannot start %s: %s\n", argv[0], error != NULL ? error->message : "?");
     g_clear_error(&error);
@@ -97,6 +92,8 @@ static struct {
   GString *line;
   void (*listener)(void *data);
   void *listener_data;
+  void (*ready_listener)(void *data);
+  void *ready_listener_data;
 } zb_net = {.state = ZB_AGENT_NET_NOT_SET_UP, .stdin_fd = -1};
 
 static void net_row(const char *state, const char *detail) {
@@ -132,6 +129,11 @@ void zb_agent_net_configure(const char *const *argv, const char *const *envp, co
 void zb_agent_net_set_listener(void (*listener)(void *data), void *data) {
   zb_net.listener = listener;
   zb_net.listener_data = data;
+}
+
+void zb_agent_net_set_ready_listener(void (*listener)(void *data), void *data) {
+  zb_net.ready_listener = listener;
+  zb_net.ready_listener_data = data;
 }
 
 const char *zb_agent_net_dir(void) {
@@ -176,6 +178,9 @@ static gboolean on_netd_output(GIOChannel *channel, GIOCondition cond, gpointer 
         zb_net.ready_timeout = 0;
       }
       net_row("ready", zb_net.sockdir);
+      if (zb_net.ready_listener != NULL) {
+        zb_net.ready_listener(zb_net.ready_listener_data);
+      }
     }
     g_string_truncate(zb_net.line, 0);
   }
@@ -239,7 +244,7 @@ int zb_agent_net_ensure(void) {
   GError *error = NULL;
   /* CLOEXEC pipes: no later child inherits netd's stdin, so closing ours is its EOF. */
   if (!g_spawn_async_with_pipes(NULL, zb_net.argv, zb_net.envp, G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_CLOEXEC_PIPES,
-                                die_with_browser, &setup, &zb_net.pid, &in_fd, &out_fd, NULL, &error)) {
+                                zb_agent_die_with_browser, &setup, &zb_net.pid, &in_fd, &out_fd, NULL, &error)) {
     g_printerr("zigBrowser: agent: cannot start the network helper: %s\n", error != NULL ? error->message : "?");
     g_clear_error(&error);
     net_unavailable("spawn");

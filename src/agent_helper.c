@@ -1,0 +1,656 @@
+/* The chat helper's process side (chat-drawer plan D7, D7b, S3.2-S3.4, S3.12;
+ * rev 16 §3c.2; S3b). See agent_helper.h. GTK main thread only.
+ *
+ * States: idle -> (lock, netd, token) -> starting -> ready; then crashed
+ * (restart on the next Send after the 1, 2, 4, 8 s backoff), or unavailable
+ * (no sandbox, no network: no restart). Every stdout line is validated in
+ * agent_frames.zig first; a rejected frame is never shown, and three restart
+ * the helper. The token is written once to the pipe at the helper's fd 3,
+ * then wiped; it is never logged. */
+
+#define _GNU_SOURCE /* pipe2 */
+#include "agent_helper.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <gio/gio.h>
+#include <signal.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "agent_host.h"
+#include "agent_secrets.h"
+#include "agent_secrets_window.h"
+
+/* agent_frames.zig */
+typedef struct {
+  int kind;
+  const char *session;
+  size_t session_len;
+  const char *text;
+  size_t text_len;
+  const char *code;
+  size_t code_len;
+  int is_error;
+} ZbAgentFrame;
+enum { ZB_FRAME_READY, ZB_FRAME_SESSION_OPENED, ZB_FRAME_DELTA, ZB_FRAME_MESSAGE, ZB_FRAME_TOOL_CALL,
+       ZB_FRAME_RESULT, ZB_FRAME_ERROR, ZB_FRAME_SESSION_ENDED };
+void zb_agent_frames_reset(void);
+int zb_agent_frames_open_session(const char *session, unsigned int window);
+void zb_agent_frames_close_session(const char *session);
+int zb_agent_frames_validate(const char *line, size_t len, ZbAgentFrame *out);
+const char *zb_agent_frames_reason(int code);
+char *zb_agent_out_hello(void);
+char *zb_agent_out_open_session(unsigned int window, unsigned int k);
+char *zb_agent_out_prompt(const char *session, const char *text, size_t len);
+char *zb_agent_out_session(int kind, const char *session);
+char *zb_agent_out_shutdown(void);
+void zb_agent_out_free(char *frame);
+
+#define ZB_MAX_FRAME (256 * 1024)
+#define ZB_REJECTIONS_RESTART 3
+#define ZB_SHUTDOWN_MS 2000
+#define ZB_TERM_MS 1000
+#define ZB_STDERR_RING (64 * 1024)
+
+#define ZB_TEXT_NETWORK "Agent network unavailable"
+#define ZB_TEXT_SANDBOX "Agent sandbox unavailable"
+#define ZB_TEXT_LOCKED "Agent unavailable: another zigBrowser is using the agent home"
+#define ZB_TEXT_NO_TOKEN "Add a Claude token in the window that opened" /* S4.1 */
+#define ZB_TEXT_RUNTIME "Agent runtime not set up: run zigBrowser --agent-setup"
+#define ZB_TEXT_TOO_LONG "Message too long (64 KiB at most)"
+
+enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE };
+
+typedef struct {
+  unsigned int win;
+  unsigned int k;   /* sessions opened so far in this window */
+  char session[48]; /* s-<win>-<k> while open */
+  int open, busy;
+  int confirmed; /* the helper answered session_opened */
+  GPtrArray *pending; /* prompts (char *) waiting for a ready helper */
+} ZbWin;
+
+static struct {
+  int configured, e2e;
+  char **argv, **envp;
+  char *home, *unavailable, *bubble, *refusal;
+  int state;
+  GSubprocess *proc;
+  pid_t pid;
+  GOutputStream *in;
+  GInputStream *out, *err;
+  GCancellable *cancel;
+  GString *line;
+  int line_dropping;
+  char buf[16384];
+  char err_buf[4096];
+  GHashTable *wins; /* win id -> ZbWin* */
+  unsigned int restarts;
+  gint64 crashed_at;
+  guint restart_timer;
+  int rejections, restart_now, stopping;
+  /* While unavailable (no sandbox, no network, a refused seam): what every
+   * later Send shows again. */
+  const char *down_reason, *down_text;
+  ZbChildSetup setup;
+} zb_helper = {.state = H_IDLE};
+
+static void start(void);
+
+/* No sandbox, no network or a refused seam: no helper runs in this browser. */
+static void go_down(const char *reason, const char *text) {
+  zb_helper.state = H_UNAVAILABLE;
+  zb_helper.down_reason = reason;
+  zb_helper.down_text = text;
+  zb_drawer_agent_status(0, "unavailable", reason);
+  zb_drawer_agent_message(0, "system", text, strlen(text));
+}
+
+static ZbWin *win_get(unsigned int win) {
+  if (zb_helper.wins == NULL) {
+    zb_helper.wins = g_hash_table_new(g_direct_hash, g_direct_equal);
+  }
+  ZbWin *w = g_hash_table_lookup(zb_helper.wins, GUINT_TO_POINTER(win));
+  if (w == NULL) {
+    w = g_new0(ZbWin, 1);
+    w->win = win;
+    w->pending = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_insert(zb_helper.wins, GUINT_TO_POINTER(win), w);
+  }
+  return w;
+}
+
+static ZbWin *win_of_session(const char *session, size_t len) {
+  if (zb_helper.wins == NULL || session == NULL) {
+    return NULL;
+  }
+  GHashTableIter it;
+  gpointer key, value;
+  g_hash_table_iter_init(&it, zb_helper.wins);
+  while (g_hash_table_iter_next(&it, &key, &value)) {
+    ZbWin *w = value;
+    if (w->open && strlen(w->session) == len && memcmp(w->session, session, len) == 0) {
+      return w;
+    }
+  }
+  return NULL;
+}
+
+/* Every window that is waiting for the agent: tell it, drop what it queued. */
+static void fail_waiting(const char *state, const char *reason, const char *text) {
+  if (zb_helper.wins == NULL) {
+    return;
+  }
+  GHashTableIter it;
+  gpointer key, value;
+  g_hash_table_iter_init(&it, zb_helper.wins);
+  while (g_hash_table_iter_next(&it, &key, &value)) {
+    ZbWin *w = value;
+    if (w->pending->len > 0 || w->busy) {
+      g_ptr_array_set_size(w->pending, 0);
+      w->busy = 0;
+      zb_drawer_agent_status(w->win, state, reason);
+      zb_drawer_agent_message(w->win, "system", text, strlen(text));
+    }
+  }
+}
+
+static void write_frame(char *frame) {
+  if (frame == NULL) {
+    return;
+  }
+  if (zb_helper.in != NULL) {
+    /* Small frames on a pipe the helper reads in a thread of its own. */
+    g_output_stream_write_all(zb_helper.in, frame, strlen(frame), NULL, NULL, NULL);
+  }
+  zb_agent_out_free(frame);
+}
+
+/* A ready helper: open the window's session if needed, then send its next
+ * prompt. One prompt runs per session (the helper answers a second one with
+ * `busy`): the rest wait here until the running one's `result`. */
+static void flush(ZbWin *w) {
+  if (zb_helper.state != H_READY || w->pending->len == 0 || w->busy) {
+    return;
+  }
+  if (!w->open) {
+    w->k += 1;
+    g_snprintf(w->session, sizeof w->session, "s-%u-%u", w->win, w->k);
+    if (zb_agent_frames_open_session(w->session, w->win) != 0) {
+      return;
+    }
+    w->open = 1;
+    w->confirmed = 0;
+    write_frame(zb_agent_out_open_session(w->win, w->k));
+  }
+  while (w->pending->len > 0 && !w->busy) {
+    char *text = g_ptr_array_steal_index(w->pending, 0);
+    char *frame = zb_agent_out_prompt(w->session, text, strlen(text));
+    g_free(text);
+    if (frame == NULL) {
+      zb_drawer_agent_message(w->win, "error", ZB_TEXT_TOO_LONG, strlen(ZB_TEXT_TOO_LONG));
+      continue;
+    }
+    write_frame(frame);
+    w->busy = 1;
+    zb_drawer_agent_status(w->win, "busy", "-");
+  }
+}
+
+static void flush_all(void) {
+  if (zb_helper.wins == NULL) {
+    return;
+  }
+  GHashTableIter it;
+  gpointer key, value;
+  g_hash_table_iter_init(&it, zb_helper.wins);
+  while (g_hash_table_iter_next(&it, &key, &value)) {
+    flush(value);
+  }
+}
+
+/* --- one helper frame -------------------------------------------------------- */
+
+static void on_frame(const ZbAgentFrame *f) {
+  ZbWin *w = win_of_session(f->session, f->session_len);
+  unsigned int win = w != NULL ? w->win : 0;
+  switch (f->kind) {
+  case ZB_FRAME_READY:
+    zb_helper.state = H_READY;
+    zb_drawer_agent_status(0, "ready", "-");
+    write_frame(zb_agent_out_hello());
+    flush_all();
+    break;
+  case ZB_FRAME_DELTA:
+    if (w != NULL) {
+      zb_drawer_agent_delta(win, w->session, f->text, f->text_len);
+    }
+    break;
+  case ZB_FRAME_MESSAGE:
+    if (w != NULL) {
+      zb_drawer_agent_message(win, "assistant", f->text, f->text_len);
+    }
+    break;
+  case ZB_FRAME_RESULT:
+    zb_helper.restarts = 0;
+    if (w != NULL) {
+      w->busy = 0;
+      zb_drawer_agent_status(win, "ready", "-");
+      flush(w);
+    }
+    break;
+  case ZB_FRAME_ERROR:
+    zb_drawer_agent_message(win, "error", f->text, f->text_len);
+    if (w != NULL) { /* a session's error ends its prompt (chat's _prompt) */
+      if (!w->confirmed) { /* it never opened: the next prompt opens a new one */
+        zb_agent_frames_close_session(w->session);
+        w->open = 0;
+      }
+      w->busy = 0;
+      zb_drawer_agent_status(win, "ready", "-");
+      flush(w);
+    }
+    break;
+  case ZB_FRAME_SESSION_ENDED:
+    if (w != NULL) {
+      w->open = 0;
+      w->busy = 0;
+    }
+    break;
+  case ZB_FRAME_SESSION_OPENED:
+    if (w != NULL) {
+      w->confirmed = 1;
+    }
+    break;
+  default: /* tool_call: no tool exists before S7 */
+    break;
+  }
+}
+
+static void on_line(const char *line, size_t len) {
+  ZbAgentFrame f;
+  int code = zb_agent_frames_validate(line, len, &f);
+  if (code == 0) {
+    on_frame(&f);
+    return;
+  }
+  g_printerr("zigBrowser: agent: rejected frame (%s)\n", zb_agent_frames_reason(code));
+  if (++zb_helper.rejections == ZB_REJECTIONS_RESTART && zb_helper.pid > 0) {
+    zb_helper.restart_now = 1;
+    kill(-zb_helper.pid, SIGKILL);
+  }
+}
+
+static void read_more(void);
+
+static void on_stdout(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)data;
+  gssize n = g_input_stream_read_finish(G_INPUT_STREAM(source), res, NULL);
+  if (n <= 0) {
+    return; /* EOF or cancelled: the exit is reported by the wait */
+  }
+  for (gssize i = 0; i < n; ++i) {
+    char c = zb_helper.buf[i];
+    if (c != '\n') {
+      if (zb_helper.line->len <= ZB_MAX_FRAME) {
+        g_string_append_c(zb_helper.line, c);
+      } else {
+        zb_helper.line_dropping = 1;
+      }
+      continue;
+    }
+    if (zb_helper.line_dropping) {
+      /* Over the cap: rejected without being parsed (D7, "dropped"). */
+      on_line(zb_helper.line->str, ZB_MAX_FRAME + 1);
+    } else {
+      on_line(zb_helper.line->str, zb_helper.line->len);
+    }
+    g_string_truncate(zb_helper.line, 0);
+    zb_helper.line_dropping = 0;
+  }
+  read_more();
+}
+
+static void read_more(void) {
+  if (zb_helper.out != NULL) {
+    g_input_stream_read_async(zb_helper.out, zb_helper.buf, sizeof zb_helper.buf, G_PRIORITY_DEFAULT,
+                              zb_helper.cancel, on_stdout, NULL);
+  }
+}
+
+/* stderr is drained and kept nowhere in S3b: nothing of it is logged (D7b). */
+static void on_stderr(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)data;
+  gssize n = g_input_stream_read_finish(G_INPUT_STREAM(source), res, NULL);
+  if (n > 0 && zb_helper.err != NULL) {
+    g_input_stream_read_async(zb_helper.err, zb_helper.err_buf, sizeof zb_helper.err_buf, G_PRIORITY_DEFAULT,
+                              zb_helper.cancel, on_stderr, NULL);
+  }
+}
+
+/* --- exit and restart ------------------------------------------------------- */
+
+static void forget_process(void) {
+  if (zb_helper.cancel != NULL) {
+    g_cancellable_cancel(zb_helper.cancel);
+    g_clear_object(&zb_helper.cancel);
+  }
+  zb_helper.in = NULL;
+  zb_helper.out = NULL;
+  zb_helper.err = NULL;
+  g_clear_object(&zb_helper.proc);
+  zb_helper.pid = 0;
+  if (zb_helper.line != NULL) {
+    g_string_truncate(zb_helper.line, 0);
+  }
+  zb_helper.line_dropping = 0;
+  if (zb_helper.wins != NULL) {
+    GHashTableIter it;
+    gpointer key, value;
+    g_hash_table_iter_init(&it, zb_helper.wins);
+    while (g_hash_table_iter_next(&it, &key, &value)) {
+      ZbWin *w = value;
+      w->open = 0; /* the helper's sessions, and their prompts, died with it */
+      w->busy = 0;
+    }
+  }
+}
+
+static void on_helper_exit(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)data;
+  GSubprocess *proc = G_SUBPROCESS(source);
+  if (!g_subprocess_wait_finish(proc, res, NULL) || proc != zb_helper.proc) {
+    return; /* cancelled at quit, or an older helper */
+  }
+  int exited = g_subprocess_get_if_exited(proc);
+  int value = exited ? g_subprocess_get_exit_status(proc) : g_subprocess_get_term_sig(proc);
+  forget_process();
+  if (zb_helper.stopping) {
+    return;
+  }
+  if (zb_helper.restart_now) {
+    zb_helper.restart_now = 0;
+    zb_helper.state = H_IDLE;
+    start();
+    return;
+  }
+  char reason[32], text[96];
+  if (exited && value == 3) {
+    go_down("sandbox", ZB_TEXT_SANDBOX);
+    return;
+  }
+  g_snprintf(reason, sizeof reason, "%s-%d", exited ? "exit" : "signal", value);
+  g_snprintf(text, sizeof text, "Agent stopped (%s %d). Send to restart.", exited ? "exit" : "signal", value);
+  zb_helper.state = H_CRASHED;
+  zb_helper.crashed_at = g_get_monotonic_time();
+  zb_drawer_agent_status(0, "crashed", reason);
+  zb_drawer_agent_message(0, "system", text, strlen(text));
+  if (zb_helper.wins != NULL) {
+    GHashTableIter it;
+    gpointer key, value_ptr;
+    g_hash_table_iter_init(&it, zb_helper.wins);
+    while (g_hash_table_iter_next(&it, &key, &value_ptr)) {
+      ((ZbWin *)value_ptr)->busy = 0;
+    }
+  }
+}
+
+static gboolean on_restart_due(gpointer data) {
+  (void)data;
+  zb_helper.restart_timer = 0;
+  if (zb_helper.state == H_CRASHED) {
+    zb_helper.restarts += 1;
+    zb_helper.state = H_IDLE;
+    start();
+  }
+  return G_SOURCE_REMOVE;
+}
+
+/* After a crash: restart now if the backoff has passed, else when it does. */
+static void restart_after_backoff(void) {
+  if (zb_helper.restart_timer != 0) {
+    return;
+  }
+  guint backoff = 1000u << MIN(zb_helper.restarts, 3u);
+  gint64 elapsed = (g_get_monotonic_time() - zb_helper.crashed_at) / 1000;
+  guint wait = elapsed >= (gint64)backoff ? 0 : (guint)(backoff - elapsed);
+  zb_helper.restart_timer = g_timeout_add(wait, on_restart_due, NULL);
+}
+
+/* --- start: lock, netd, token, spawn ---------------------------------------- */
+
+static void helper_child_setup(gpointer data) {
+  setpgid(0, 0); /* its own group: the stop signals reach it and nothing else */
+  zb_agent_die_with_browser(data);
+}
+
+static void spawn_with(char *token) {
+  int fds[2];
+  if (pipe2(fds, O_CLOEXEC) != 0) {
+    zb_secrets_free(token);
+    zb_helper.state = H_IDLE;
+    fail_waiting("crashed", "exit-1", "Agent could not start");
+    return;
+  }
+  GSubprocessLauncher *launcher = g_subprocess_launcher_new(
+      G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+  g_subprocess_launcher_set_environ(launcher, zb_helper.envp);
+  g_subprocess_launcher_take_fd(launcher, fds[0], 3);
+  zb_helper.setup.parent = getpid();
+  zb_helper.setup.delay_ms = 0;
+  g_subprocess_launcher_set_child_setup(launcher, helper_child_setup, &zb_helper.setup, NULL);
+  GError *error = NULL;
+  GSubprocess *proc = g_subprocess_launcher_spawnv(launcher, (const char *const *)zb_helper.argv, &error);
+  g_object_unref(launcher); /* closes our copy of the read end */
+  if (proc == NULL) {
+    g_printerr("zigBrowser: agent: cannot start the helper: %s\n", error != NULL ? error->message : "?");
+    g_clear_error(&error);
+    close(fds[1]);
+    zb_secrets_free(token);
+    zb_helper.state = H_IDLE;
+    fail_waiting("unavailable", "runtime-missing", ZB_TEXT_RUNTIME);
+    return;
+  }
+  /* The token: written once, the pipe closed, our copy wiped (zb_secrets_free). */
+  size_t len = strlen(token), done = 0;
+  while (done < len) {
+    ssize_t n = write(fds[1], token + done, len - done);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n <= 0) {
+      break;
+    }
+    done += (size_t)n;
+  }
+  close(fds[1]);
+  zb_secrets_free(token);
+
+  zb_helper.proc = proc;
+  zb_helper.pid = (pid_t)g_ascii_strtoll(g_subprocess_get_identifier(proc), NULL, 10);
+  zb_helper.in = g_subprocess_get_stdin_pipe(proc);
+  zb_helper.out = g_subprocess_get_stdout_pipe(proc);
+  zb_helper.err = g_subprocess_get_stderr_pipe(proc);
+  zb_helper.cancel = g_cancellable_new();
+  zb_helper.line = zb_helper.line != NULL ? zb_helper.line : g_string_new(NULL);
+  zb_helper.rejections = 0;
+  zb_helper.state = H_STARTING;
+  zb_agent_frames_reset();
+  read_more();
+  g_input_stream_read_async(zb_helper.err, zb_helper.err_buf, sizeof zb_helper.err_buf, G_PRIORITY_DEFAULT,
+                            zb_helper.cancel, on_stderr, NULL);
+  g_subprocess_wait_async(proc, zb_helper.cancel, on_helper_exit, NULL);
+}
+
+static void on_token(ZbTokenResult result, char *token, void *data) {
+  (void)data;
+  if (zb_helper.state != H_WAIT_TOKEN) {
+    zb_secrets_free(token);
+    return;
+  }
+  if (result != ZB_TOKEN_OK || token == NULL) {
+    zb_secrets_free(token);
+    zb_helper.state = H_IDLE; /* the next Send asks again */
+    fail_waiting("unavailable", "no-token", ZB_TEXT_NO_TOKEN);
+    return;
+  }
+  spawn_with(token);
+}
+
+static void fetch_token(void) {
+  zb_helper.state = H_WAIT_TOKEN;
+  zb_agent_token_fetch(zb_secrets_window_store(), zb_helper.home, on_token, NULL);
+}
+
+static void on_net_ready(void *data) {
+  (void)data;
+  if (zb_helper.state == H_WAIT_NET) {
+    fetch_token();
+  }
+}
+
+/* netd failed or exited: no helper runs without it, and none restarts (§3c.2). */
+static void on_net_unavailable(void *data) {
+  (void)data;
+  if (zb_helper.pid > 0) {
+    zb_helper.stopping = 1;
+    kill(-zb_helper.pid, SIGKILL);
+    waitpid(zb_helper.pid, NULL, 0);
+    forget_process();
+    zb_helper.stopping = 0;
+  }
+  go_down("network", ZB_TEXT_NETWORK);
+}
+
+static void start(void) {
+  switch (zb_agent_home_lock(zb_helper.home)) {
+  case 0:
+    break;
+  case -2: /* another browser owns the home; the next Send tries again (S3.12) */
+    fail_waiting("unavailable", "home-locked", ZB_TEXT_LOCKED);
+    return;
+  default:
+    fail_waiting("unavailable", "home-locked", ZB_TEXT_LOCKED);
+    return;
+  }
+  zb_drawer_agent_status(0, "starting", "-");
+  switch (zb_agent_net_ensure()) {
+  case ZB_AGENT_NET_READY:
+    fetch_token();
+    break;
+  case ZB_AGENT_NET_STARTING:
+    zb_helper.state = H_WAIT_NET;
+    break;
+  default:
+    on_net_unavailable(NULL);
+    break;
+  }
+}
+
+/* --- the API ------------------------------------------------------------------ */
+
+void zb_agent_helper_configure(const char *const *argv, const char *const *envp, const char *home,
+                               const char *unavailable, const char *bubble, const char *refusal,
+                               int e2e_protocol) {
+  if (zb_helper.configured) {
+    return;
+  }
+  zb_helper.configured = 1;
+  zb_helper.argv = g_strdupv((char **)argv);
+  zb_helper.envp = g_strdupv((char **)envp);
+  zb_helper.home = g_strdup(home);
+  zb_helper.unavailable = g_strdup(unavailable);
+  zb_helper.bubble = g_strdup(bubble);
+  zb_helper.refusal = g_strdup(refusal);
+  zb_helper.e2e = e2e_protocol;
+  zb_agent_net_set_listener(on_net_unavailable, NULL);
+  zb_agent_net_set_ready_listener(on_net_ready, NULL);
+}
+
+int zb_agent_helper_configured(void) { return zb_helper.configured; }
+
+void zb_agent_helper_send(unsigned int win, const char *text) {
+  if (!zb_helper.configured) {
+    return;
+  }
+  if (zb_helper.unavailable != NULL) {
+    zb_drawer_agent_status(win, "unavailable", zb_helper.unavailable);
+    zb_drawer_agent_message(win, "system", zb_helper.bubble, strlen(zb_helper.bubble));
+    return;
+  }
+  if (zb_helper.refusal != NULL) {
+    g_printerr("%s\n", zb_helper.refusal);
+    g_clear_pointer(&zb_helper.refusal, g_free);
+    go_down("-", "Agent unavailable: a test seam was refused");
+    return;
+  }
+  ZbWin *w = win_get(win);
+  switch (zb_helper.state) {
+  case H_UNAVAILABLE:
+    zb_drawer_agent_status(win, "unavailable", zb_helper.down_reason);
+    zb_drawer_agent_message(win, "system", zb_helper.down_text, strlen(zb_helper.down_text));
+    return;
+  case H_READY:
+    g_ptr_array_add(w->pending, g_strdup(text));
+    flush(w);
+    return;
+  case H_CRASHED:
+    g_ptr_array_add(w->pending, g_strdup(text));
+    restart_after_backoff();
+    return;
+  case H_IDLE:
+    g_ptr_array_add(w->pending, g_strdup(text));
+    start();
+    return;
+  default: /* starting: sent once ready */
+    g_ptr_array_add(w->pending, g_strdup(text));
+    return;
+  }
+}
+
+void zb_agent_helper_window_closed(unsigned int win) {
+  ZbWin *w = zb_helper.wins != NULL ? g_hash_table_lookup(zb_helper.wins, GUINT_TO_POINTER(win)) : NULL;
+  if (w == NULL) {
+    return;
+  }
+  if (w->open && zb_helper.state == H_READY) {
+    write_frame(zb_agent_out_session(1, w->session));
+    zb_agent_frames_close_session(w->session);
+  }
+  g_hash_table_remove(zb_helper.wins, GUINT_TO_POINTER(win));
+  g_ptr_array_unref(w->pending);
+  g_free(w);
+}
+
+static int reaped_within(pid_t pid, int ms) {
+  for (int waited = 0; waited < ms; waited += 20) {
+    pid_t r = waitpid(pid, NULL, WNOHANG);
+    if (r == pid || (r < 0 && errno == ECHILD)) {
+      return 1;
+    }
+    g_usleep(20 * 1000);
+  }
+  return 0;
+}
+
+void zb_agent_helper_stop(void) {
+  if (zb_helper.pid <= 0) {
+    return;
+  }
+  pid_t pid = zb_helper.pid;
+  zb_helper.stopping = 1;
+  write_frame(zb_agent_out_shutdown());
+  if (zb_helper.in != NULL) {
+    g_output_stream_close(zb_helper.in, NULL, NULL);
+  }
+  if (!reaped_within(pid, ZB_SHUTDOWN_MS)) {
+    kill(-pid, SIGTERM);
+    if (!reaped_within(pid, ZB_TERM_MS)) {
+      kill(-pid, SIGKILL);
+      waitpid(pid, NULL, 0);
+    }
+  }
+  forget_process();
+}

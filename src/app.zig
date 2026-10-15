@@ -5,6 +5,8 @@ const agent_drawer = @import("agent_drawer.zig");
 const agent_setup = @import("agent_setup.zig");
 const agent_config = @import("agent_config.zig");
 const agent_net = @import("agent_net.zig");
+const agent_helper = @import("agent_helper.zig");
+const agent_frames = @import("agent_frames.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
@@ -18,6 +20,7 @@ const webkit = @import("webkit.zig");
 const c = @cImport({
     @cInclude("webkit_shim.h");
     @cInclude("agent_host.h");
+    @cInclude("agent_helper.h");
 });
 
 const OpenSpec = @TypeOf(@as(cli.Command, .{ .open = undefined }).open);
@@ -114,12 +117,13 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
 /// to agent_host.c, which starts netd on the drawer's first Send. No
 /// XDG_RUNTIME_DIR, or a bad e2e seam (read only with --e2e-protocol),
 /// configures a refusal line instead. Without a provisioned home nothing is
-/// configured, and Send says "Agent not available yet" as before.
-fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !void {
-    if (comptime builtin.os.tag != .linux) return;
-    const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return;
+/// configured, and Send says "Agent not available yet" as before. Returns what
+/// the helper's launch needs (S3b), or null without a provisioned home.
+fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !?AgentNet {
+    if (comptime builtin.os.tag != .linux) return null;
+    const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return null;
     const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
-    if (std.c.access(current.ptr, 0) != 0) return; // F_OK: not set up
+    if (std.c.access(current.ptr, 0) != 0) return null; // F_OK: not set up
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_len = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
     if (exe_len <= 0) return error.NoExecutablePath;
@@ -139,6 +143,7 @@ fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !void {
         },
     };
     var seam: ?agent_net.NetTest = null;
+    var test_ca: ?[]const u8 = null;
     if (e2e) {
         if (getenvOwned(arena, agent_net.net_test_env)) |value| {
             seam = agent_net.parseNetTest(value) catch blk: {
@@ -147,15 +152,91 @@ fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !void {
             };
         }
         if (getenvOwned(arena, agent_net.net_test_ca_env)) |path| {
-            agent_net.checkTestCa(path) catch {
+            if (agent_net.checkTestCa(path)) |_| {
+                test_ca = path;
+            } else |_| {
                 refusal = refusal orelse "zigBrowser: agent: bad " ++ agent_net.net_test_ca_env;
-            };
+            }
         }
     }
     const argv = try toCStrings(arena, try agent_net.netdArgv(arena, python, package_dir, sockdir, "/usr/bin/bwrap", seam));
     const envp = try toCStrings(arena, try agent_net.netdEnv(arena, getenvOwned(arena, "LANG"), getenvOwned(arena, "LC_ALL")));
     const refusal_z: ?[*:0]const u8 = if (refusal) |line| (try arena.dupeZ(u8, line)).ptr else null;
     c.zb_agent_net_configure(argv.ptr, envp.ptr, (try arena.dupeZ(u8, sockdir)).ptr, refusal_z, @intFromBool(e2e));
+    return .{ .home = home, .python = python, .package_dir = package_dir, .sockdir = sockdir, .test_ca = test_ca };
+}
+
+/// What configureAgentNet resolved, for the helper's launch (S3b).
+const AgentNet = struct {
+    home: []const u8,
+    python: []const u8,
+    package_dir: []const u8,
+    sockdir: []const u8,
+    test_ca: ?[]const u8,
+};
+
+/// Chat drawer S3b (plan D7, S3.2, S3.6; rev 16 §3c): with a provisioned agent
+/// home, hands the helper's launch argv, built environment and hello to
+/// agent_helper.c, which starts it on the first Send once netd is ready. A
+/// missing runtime or a changed one makes the agent unavailable up front; the
+/// e2e seams are read only with --e2e-protocol (agent_helper.zig).
+fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: AgentNet) !void {
+    if (comptime builtin.os.tag != .linux) return;
+    const runtime_dir = try std.fs.path.join(arena, &.{ net.home, "runtime" });
+    var path_dirs: []const []const u8 = &.{};
+    if (readSmall(arena, io, try std.fs.path.join(arena, &.{ runtime_dir, "path.json" }))) |text| {
+        path_dirs = std.json.parseFromSliceLeaky([]const []const u8, arena, text, .{}) catch &.{};
+    }
+    const installed = readSmall(arena, io, try std.fs.path.join(arena, &.{ net.package_dir, "runtime.json" }));
+    const recorded = readSmall(arena, io, try std.fs.path.join(arena, &.{ runtime_dir, "host.json" }));
+    var unavailable: ?[:0]const u8 = null;
+    var bubble: ?[:0]const u8 = null;
+    const python_z = try arena.dupeZ(u8, net.python);
+    if (std.c.access(python_z.ptr, 1) != 0) { // X_OK
+        unavailable = "runtime-missing";
+        bubble = "Agent runtime not set up: run zigBrowser --agent-setup";
+    } else switch (agent_helper.checkRuntime(arena, recorded, installed)) {
+        .ok => {},
+        .missing => {
+            unavailable = "runtime-missing";
+            bubble = "Agent runtime not set up: run zigBrowser --agent-setup";
+        },
+        .changed => {
+            unavailable = "config-changed";
+            bubble = "Claude Agent runtime changed: run zigBrowser --agent-setup again";
+        },
+    }
+    const launch = try agent_helper.launch(arena, .{
+        .python = net.python,
+        .home = net.home,
+        .net_dir = net.sockdir,
+        .path_dirs = path_dirs,
+        .lang = getenvOwned(arena, "LANG"),
+        .lc_all = getenvOwned(arena, "LC_ALL"),
+        .e2e_protocol = e2e,
+        .bwrap = getenvOwned(arena, agent_helper.bwrap_env),
+        .host_cmd = getenvOwned(arena, agent_helper.host_cmd_env),
+        .test_base_url = getenvOwned(arena, agent_helper.test_base_url_env),
+        .test_ca = net.test_ca,
+    });
+    for (launch.warnings) |line| std.debug.print("{s}\n", .{line});
+    try agent_frames.setHello(net.home, launch.hello_e2e);
+    const argv = try toCStrings(arena, launch.argv);
+    const envp = try toCStrings(arena, launch.env);
+    const refusal_z: ?[*:0]const u8 = if (launch.refusal) |line| (try arena.dupeZ(u8, line)).ptr else null;
+    c.zb_agent_helper_configure(argv.ptr, envp.ptr, (try arena.dupeZ(u8, net.home)).ptr,
+        if (unavailable) |s| s.ptr else null, if (bubble) |s| s.ptr else null, refusal_z, @intFromBool(e2e));
+}
+
+/// A small file's bytes, or null when it cannot be read.
+fn readSmall(arena: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch null;
+}
+
+// The helper's frame exports (src/agent_frames.zig) are linked where
+// agent_helper.c, which calls them, is built.
+comptime {
+    if (builtin.os.tag == .linux) _ = agent_frames;
 }
 
 /// Chat drawer S4a (plan D11, S4.1): with a provisioned agent home, the
@@ -206,6 +287,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // At quit, after the main loop (a no-op when netd never started). Linux
     // only: agent_host.c is GTK-only, and the cross builds must not name it.
     defer if (comptime builtin.os.tag == .linux) c.zb_agent_net_stop();
+    // Before netd stops (defers run in reverse): the helper's shutdown, 2 s,
+    // SIGTERM to its group, 1 s, SIGKILL (D7). A no-op when none started.
+    defer if (comptime builtin.os.tag == .linux) c.zb_agent_helper_stop();
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     if (webkit.applyAgentDrawer(spec.agent_drawer)) {
@@ -213,8 +297,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
             .demo = getenvOwned(arena, agent_drawer.demo_env_name),
             .anim_ms = getenvOwned(arena, agent_drawer.anim_env_name),
         }, spec.e2e_protocol);
-        configureAgentNet(arena, io, spec.e2e_protocol) catch return error.WriteFailed;
+        const net = configureAgentNet(arena, io, spec.e2e_protocol) catch return error.WriteFailed;
         configureAgentSecrets(arena, spec.agent_secret_store, spec.e2e_protocol) catch return error.WriteFailed;
+        if (net) |n| configureAgentHelper(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
     }
 
     if (spec.automation_api) {

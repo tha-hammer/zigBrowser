@@ -8,6 +8,7 @@
  * not available yet". */
 
 #include "agent_drawer.h"
+#include "agent_helper.h"
 #include "agent_host.h"
 #include "agent_secrets.h"
 #include "agent_secrets_window.h"
@@ -41,9 +42,7 @@ enum { ZB_GESTURE_DRAG = 1 };
 #define ZB_NO_AGENT_TEXT "Agent not available yet"
 /* netd could not start or stopped (plan rev 16.2 §3c.2): shown on that Send and
  * every later one; netd is never started again in this browser. */
-#define ZB_NET_UNAVAILABLE_TEXT "Agent network unavailable"
 /* S4.1: no token is stored (or the store did not answer); the Secrets window opens. */
-#define ZB_NO_TOKEN_TEXT "Add a Claude token in the window that opened"
 
 static gint zb_agent_drawer_enabled = 0;
 static gint zb_drawer_live = 0;
@@ -70,6 +69,7 @@ struct ZbDrawer {
    * panel is never squeezed below its minimum size. */
   GtkWidget *ghost;
   GtkWidget *minus;
+  GtkWidget *status; /* the header's agent state (S3b) */
   GtkWidget *scroller;
   GtkWidget *list;
   GtkWidget *unread;
@@ -94,8 +94,6 @@ struct ZbDrawer {
   ZbDrawerRect press_rect;
   /* The message list follows new messages while it is at the bottom. */
   int stick_bottom;
-  /* A Send here started (or found starting) netd: its failure is shown here. */
-  int net_waiting;
   int unread_shown;
   char scroll_reported[32];
   /* The minimize animation. */
@@ -576,41 +574,59 @@ static void add_message(ZbDrawer *d, const char *role, const char *text) {
   }
 }
 
-/* netd became unavailable: each drawer whose Send was waiting says so. */
-static void on_net_unavailable(void *data) {
-  (void)data;
+/* --- the agent's reports (agent_helper.h; S3b) ------------------------------- */
+
+static const char *status_text(const char *state, const char *reason) {
+  if (strcmp(state, "starting") == 0) return "Starting…";
+  if (strcmp(state, "ready") == 0) return "Ready";
+  if (strcmp(state, "busy") == 0) return "Working…";
+  if (strcmp(state, "crashed") == 0) return "Stopped";
+  if (strcmp(state, "unavailable") == 0) return strcmp(reason, "no-token") == 0 ? "No token" : "Unavailable";
+  return "Not connected";
+}
+
+void zb_drawer_agent_status(unsigned int win_id, const char *state, const char *reason) {
   for (GList *l = zb_drawers; l != NULL; l = l->next) {
     ZbDrawer *d = l->data;
-    if (d->net_waiting) {
-      d->net_waiting = 0;
-      add_message(d, "system", ZB_NET_UNAVAILABLE_TEXT);
+    if (win_id != 0 && d->win_id != win_id) {
+      continue;
+    }
+    drawer_row(d, "status", state, reason, NULL);
+    gtk_label_set_text(GTK_LABEL(d->status), status_text(state, reason));
+    if (strcmp(reason, "no-token") == 0) { /* S4.1: the Secrets window opens */
+      GtkWidget *top = gtk_widget_get_toplevel(d->input);
+      zb_secrets_window_present(top != NULL && GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : NULL);
     }
   }
 }
 
-/* The token store's answer for a Send (S4.1). With no token (or no answer
- * from the store) the Secrets window opens. The drawer may have gone in the
- * meantime: then only the window opens. The token itself is not needed yet
- * (S3b hands it to the helper's fd 3 once netd is ready), so it is wiped. */
-static void on_send_token(ZbTokenResult result, char *token, void *data) {
-  zb_secrets_free(token);
-  ZbDrawer *d = g_list_find(zb_drawers, data) != NULL ? data : NULL;
-  if (result == ZB_TOKEN_OK) {
-    if (d != NULL) {
-      add_message(d, "system", ZB_NO_AGENT_TEXT);
+void zb_drawer_agent_message(unsigned int win_id, const char *role, const char *text, size_t len) {
+  char *copy = g_strndup(text, len);
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (win_id == 0 || d->win_id == win_id) {
+      add_message(d, role, copy);
     }
-    return;
   }
-  GtkWidget *top = d != NULL ? gtk_widget_get_toplevel(d->input) : NULL;
-  if (d != NULL) {
-    add_message(d, "system", ZB_NO_TOKEN_TEXT);
-  }
-  zb_secrets_window_present(top != NULL && GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : NULL);
+  g_free(copy);
 }
 
-/* Send: the user's bubble, then a system bubble. With a provisioned agent home
- * the first Send starts netd (S3n2), and then the token store is asked: with
- * no token the Secrets window opens (S4.1; the helper itself comes with S3b). */
+/* S3b reports a coalesced delta as a row; S5 streams it into the bubble. */
+void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char *text, size_t len) {
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (d->win_id == win_id) {
+      size_t keep = zb_drawer_row_text_len(text, len);
+      char *capped = g_strdup_printf("%.*s%s", (int)keep, text, keep < len ? "…" : "");
+      drawer_row(d, "delta", session, capped, NULL);
+      g_free(capped);
+    }
+  }
+}
+
+/* Send: the user's bubble, then the agent (agent_helper.c): with a provisioned
+ * agent home it takes the owner lock, starts netd, fetches the token (the
+ * Secrets window opens without one) and starts the helper, which answers. */
 static void send_input(ZbDrawer *d) {
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(d->input));
   GtkTextIter start, end;
@@ -619,17 +635,10 @@ static void send_input(ZbDrawer *d) {
   g_strstrip(text);
   if (text[0] != '\0') {
     add_message(d, "user", text);
-    int net = zb_agent_net_ensure();
-    if (net == ZB_AGENT_NET_UNAVAILABLE) {
-      d->net_waiting = 0;
-      add_message(d, "system", ZB_NET_UNAVAILABLE_TEXT);
+    if (zb_agent_helper_configured()) {
+      zb_agent_helper_send(d->win_id, text);
     } else {
-      d->net_waiting = net != ZB_AGENT_NET_NOT_SET_UP;
-      if (zb_secrets_window_configured()) {
-        zb_agent_token_fetch(zb_secrets_window_store(), zb_secrets_window_home(), on_send_token, d);
-      } else {
-        add_message(d, "system", ZB_NO_AGENT_TEXT);
-      }
+      add_message(d, "system", ZB_NO_AGENT_TEXT);
     }
     gtk_text_buffer_set_text(buffer, "", 0);
   }
@@ -930,6 +939,7 @@ static void build_panel(ZbDrawer *d) {
   GtkWidget *status = named(gtk_label_new("Not connected"), "zb-agent-status", NULL);
   gtk_widget_set_hexpand(status, TRUE);
   gtk_label_set_xalign(GTK_LABEL(status), 0);
+  d->status = status;
   d->minus = named(gtk_button_new_with_label("-"), "zb-agent-minus", "Minimize Claude Agent");
   gtk_widget_set_tooltip_text(d->minus, "Minimize");
   gtk_box_pack_start(GTK_BOX(header), title, FALSE, FALSE, 0);
@@ -1061,7 +1071,6 @@ ZbDrawer *zb_drawer_attach(GtkWidget *toplevel, GtkWidget *view, guint32 win_id,
   gtk_window_set_focus(GTK_WINDOW(toplevel), view);
   g_atomic_int_inc(&zb_drawer_live);
   zb_drawers = g_list_prepend(zb_drawers, d);
-  zb_agent_net_set_listener(on_net_unavailable, NULL);
   return d;
 }
 
@@ -1069,6 +1078,7 @@ void zb_drawer_detach(ZbDrawer *d) {
   if (d == NULL) {
     return;
   }
+  zb_agent_helper_window_closed(d->win_id); /* end_session for this window only */
   if (d->tick_id != 0) {
     gtk_widget_remove_tick_callback(d->host, d->tick_id);
   }

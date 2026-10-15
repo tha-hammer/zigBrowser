@@ -1304,6 +1304,10 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
         .flags = &.{"-std=gnu11"},
     });
     module.addCSourceFile(.{
+        .file = b.path("src/agent_helper.c"),
+        .flags = &.{"-std=gnu11"},
+    });
+    module.addCSourceFile(.{
         .file = b.path("src/agent_secrets.c"),
         .flags = &.{"-std=gnu11"},
     });

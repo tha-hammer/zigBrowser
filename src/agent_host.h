@@ -4,11 +4,24 @@
 /* The Claude Agent helper's process side (chat-drawer plan D7, S3). Linux
  * (GTK backend) only. Plain C types, so Zig can import this header. */
 
+#include <sys/types.h>
+
 /* Takes the agent home's owner lock (plan D12, S3.12): creates `home`
  * (0700) if needed, then flock(home/.zb-owner.lock, LOCK_EX|LOCK_NB). The
  * lock is held until the process exits. Returns 0 when held, -2 when another
  * process holds it, -1 on any other error. Taking it again is a no-op. */
 int zb_agent_home_lock(const char *home);
+
+/* A spawn's child setup (GSpawnChildSetupFunc): die with the browser
+ * (PR_SET_PDEATHSIG SIGKILL), then _exit(127) unless the parent is still
+ * `parent`, closing the fork-to-prctl race (RoseCat 5330). `delay_ms` (e2e
+ * only, else 0) widens that race for the regression test. The helper's spawn
+ * (agent_helper.c, S3b) uses it too. */
+typedef struct {
+  pid_t parent;
+  unsigned int delay_ms;
+} ZbChildSetup;
+void zb_agent_die_with_browser(void *data);
 
 /* Runs `argv` (NULL-terminated) with exactly `envp` (NULL-terminated) and
  * waits for it. Its stdin is /dev/null; stdout and stderr are the browser's.
@@ -46,6 +59,8 @@ void zb_agent_net_configure(const char *const *argv, const char *const *envp, co
  * listener is called once; it is never started again. */
 int zb_agent_net_ensure(void);
 void zb_agent_net_set_listener(void (*listener)(void *data), void *data);
+/* Called once when netd prints `netd ready` (S3b starts the helper then). */
+void zb_agent_net_set_ready_listener(void (*listener)(void *data), void *data);
 
 /* netd's socket directory while it is ready, else NULL (S3b passes it on to
  * the helper's launch as --net-dir). */
