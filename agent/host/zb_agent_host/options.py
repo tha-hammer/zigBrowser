@@ -18,6 +18,10 @@ HELPER_ENV_NAMES = (
 # Copied from the launching environment; the rest of HELPER_ENV_NAMES is set here.
 INHERITED_ENV_NAMES = ("PATH", "LANG", "LC_ALL")
 
+# The CLI's only way out (plan rev 16 §3c.2): the outer relay's listener inside the
+# helper sandbox's own network namespace. IPv4 only, so no ::1 in NO_PROXY.
+RELAY_PROXY = "http://127.0.0.1:3128"
+
 # Bounds the CLI's wait for one in-process tool call; the helper answers 10 s earlier.
 MCP_TOOL_TIMEOUT_MS = 130_000
 TOOL_DEADLINE_S = (MCP_TOOL_TIMEOUT_MS - 10_000) / 1000
@@ -76,7 +80,7 @@ def helper_environ(home, inherited):
     return env
 
 
-def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS):
+def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS, ca_file=None):
     fixed = {**home_env(home), "DISABLE_AUTOUPDATER": "1", "MCP_TOOL_TIMEOUT": str(mcp_tool_timeout_ms)}
     clash = sorted(set(route_env) & set(fixed))
     if clash:
@@ -87,18 +91,20 @@ def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_
         env["ANTHROPIC_BASE_URL"] = base_url
     if proxy:
         env.update({"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy, "NO_PROXY": "127.0.0.1,localhost"})
+    if ca_file:
+        env["NODE_EXTRA_CA_CERTS"] = ca_file  # the e2e fake's CA (§3c.4); the CLI's environment only
     return env
 
 
 def build(home, *, route_env, cli_path=None, base_url=None, proxy=None, mcp_servers=None,
           allowed_tools=(), can_use_tool=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS,
-          stderr=None, extra_args=None):
+          stderr=None, extra_args=None, ca_file=None):
     return ClaudeAgentOptions(
         setting_sources=["user"],
         cwd=str(home.workspace),
         tools=[],
         permission_mode="default",
-        env=cli_env(home, route_env, base_url, proxy, mcp_tool_timeout_ms),
+        env=cli_env(home, route_env, base_url, proxy, mcp_tool_timeout_ms, ca_file),
         cli_path=cli_path,
         mcp_servers=dict(mcp_servers or {}),
         allowed_tools=list(allowed_tools),

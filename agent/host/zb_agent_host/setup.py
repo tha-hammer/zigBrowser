@@ -33,7 +33,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import hook_run, options, sandbox, token
+from . import hook_run, options, relay, sandbox, token
 from . import provision as runtime_provision
 from .files import atomic_write, write_all
 
@@ -458,6 +458,8 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
         raise SetupError(f"refused hook environment names: {', '.join(bad)}")
     token.write_wrapper(runtime / "bin" / "zb-claude", cli)
     atomic_write(runtime / "bin" / "zb-hook-run", Path(hook_run.__file__).read_text(), 0o700)
+    # The outer relay (the helper sandbox's command) and each sealed hook's bridge-only relay (§3c.2, §3c.8b).
+    atomic_write(runtime / "bin" / "zb-net-relay", Path(relay.BRIDGE_RELAY_FILE).read_text(), 0o555)
     atomic_write(runtime / "hook-env.json", json.dumps(list(runtime_provision.HOOK_ENV_NAMES)), 0o600)
     atomic_write(runtime / "writable.json", json.dumps(list(sandbox.STATE_DIRS)), 0o600)
     atomic_write(runtime / "path.json", json.dumps(dirs), 0o600)

@@ -41,7 +41,8 @@ const Bad = error{ Schema, Session };
 const tool_prefix = "mcp__zigbrowser__";
 const error_codes = [_][]const u8{ "auth", "busy", "protocol", "overflow", "sdk", "sandbox" };
 const end_reasons = [_][]const u8{ "end", "interrupt", "crash", "token_removed" };
-const routes = [_][]const u8{ "R1", "R3" };
+/// R3 was removed (plan rev 16 §3c.1): the token reaches the CLI only on fd 3.
+const routes = [_][]const u8{"R1"};
 
 pub const Validator = struct {
     gpa: std.mem.Allocator,

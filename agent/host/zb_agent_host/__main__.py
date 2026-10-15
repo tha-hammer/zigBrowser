@@ -6,6 +6,8 @@ import sys
 COMMANDS = {
     "contract-config": "contract",  # P0 contracts: one SDK turn under a token route
     "provision-runtime": "provision",  # wrappers, hook-env allowlist, hook rewrite
+    "launch": "launch",  # what the app spawns: builds the sandbox argv, execs bwrap in place
+    "chat": "chat",  # the drawer's helper, inside the sandbox
     "setup": "setup",  # --agent-setup: the agent home from a SAI source, and the token route
     "probe-r1": "route_probe",  # setup's R1 probe, inside setup's own sandbox (§3c.7)
 }
