@@ -179,25 +179,41 @@ def case_errors(binary: Path, tmp: Path, check) -> None:
         fake.close()
 
 
-def case_agent_error(binary: Path, tmp: Path, check) -> None:
-    """S5.3: a helper's protocol or sdk error shows "Agent error", never its message."""
+def agent_error_run(binary: Path, tmp: Path, check, label: str, on_prompt: list) -> None:
+    """One browser whose scripted helper answers the prompt with `on_prompt`: exactly one
+    "Agent error" bubble, and none of the frames' messages anywhere."""
     w = life.world(binary, tmp)
     scratch = w.agent / "scratchpad"
     for name in ("fake-host-runs", "fake-host-frames.jsonl"):
         (scratch / name).unlink(missing_ok=True)
-    errors = [{"frame": {"type": "error", "session": "$SESSION", "code": code, "message": f"{SERVER_CANARY}-{code}"}}
-              for code in ("protocol", "sdk")]
-    (scratch / "fake-host-script.json").write_text(json.dumps({"runs": [{"on_prompt": errors}]}))
-    b = life.launch(binary, tmp, "agent-error", life.env_for(w, life.runtime_dir(), {"ZIGBROWSER_AGENT_HOST_CMD": str(life.FAKE_HOST_SCRIPT)}))
+    (scratch / "fake-host-script.json").write_text(json.dumps({"runs": [{"on_prompt": on_prompt}]}))
+    b = life.launch(binary, tmp, f"agent-error-{label}",
+                    life.env_for(w, life.runtime_dir(), {"ZIGBROWSER_AGENT_HOST_CMD": str(life.FAKE_HOST_SCRIPT)}))
     try:
         life.send(b, "hi")
-        check(b.wait(lambda: life.bubbles(b).count(("error", AGENT_ERROR_TEXT)) >= 2, 30),
-              f"both errors show 'Agent error' ({life.bubbles(b)})", b)
+        check(b.wait(lambda: ("error", AGENT_ERROR_TEXT) in life.bubbles(b), 30),
+              f"{label}: the error shows 'Agent error' ({life.bubbles(b)})", b)
+        time.sleep(2.0)  # anything more the helper sent has arrived
+        errors = [text for role, text in life.bubbles(b) if role == "error"]
+        check(errors == [AGENT_ERROR_TEXT], f"{label}: exactly one error bubble for the one prompt ({errors})")
         leaked = [line for line in b.out + b.err if SERVER_CANARY in line]
-        check(leaked == [], f"the helper's message is in no row, bubble or log ({leaked[:2]})")
+        check(leaked == [], f"{label}: no frame's message is in a row, bubble or log ({leaked[:2]})")
     finally:
         life.release_x(b)
         b.stop()
+
+
+def error_frame(code: str) -> dict:
+    return {"frame": {"type": "error", "session": "$SESSION", "code": code, "message": f"{SERVER_CANARY}-{code}"}}
+
+
+def case_agent_error(binary: Path, tmp: Path, check) -> None:
+    """S5.3: a helper's protocol error and its sdk error (each its own prompt's one ending
+    frame) show "Agent error", never the message. RoseCat 5834: an error ends the prompt in
+    place of its result, so a second ending frame for the same prompt shows nothing more."""
+    agent_error_run(binary, tmp, check, "protocol", [error_frame("protocol")])
+    agent_error_run(binary, tmp, check, "sdk", [error_frame("sdk")])
+    agent_error_run(binary, tmp, check, "second-ending-frame", [error_frame("sdk"), error_frame("protocol")])
 
 
 CASES = {"stream": case_stream, "stop": case_stop, "errors": case_errors, "agent-error": case_agent_error}
