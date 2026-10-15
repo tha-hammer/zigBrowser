@@ -349,6 +349,16 @@ pub fn build(b: *std.Build) void {
     agent_net_tests_module.addImport("agent_net", agent_net_module);
     const run_agent_net_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_net_tests_module }));
     run_agent_net_tests.skip_foreign_checks = true;
+    // MS0 slice D: netd's argv names the backend's network manifest.
+    const agent_net_manifest_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_net_manifest_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_net_manifest_tests_module.addImport("agent_net", agent_net_module);
+    const run_agent_net_manifest_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_net_manifest_tests_module }));
+    run_agent_net_manifest_tests.skip_foreign_checks = true;
 
     // Chat drawer S3b: the helper's launch argv and environment, the app's
     // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
@@ -845,6 +855,14 @@ pub fn build(b: *std.Build) void {
         "agent-netd-spawn-e2e",
     });
     agent_netd_spawn_e2e.addArtifactArg(exe);
+    // MS0 slice D: the browser hands netd the backend's network manifest.
+    const agent_netd_manifest_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_netd_manifest_test.py --binary \"$1\"",
+        "agent-netd-manifest-e2e",
+    });
+    agent_netd_manifest_e2e.addArtifactArg(exe);
     // Chat drawer S3b: the first Send starts a confined helper, its frames are
     // validated natively, and every exit path cleans it up (Closure Test S3).
     // The whole run sits in a network namespace of its own: nothing real is reachable.
@@ -913,6 +931,18 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_relay",
+    });
+    // MS0 slices D and E: netd's manifest (allow-list and bridge ports) and the
+    // inner relay's --ports, each module run alone like the others.
+    const agent_host_netd_manifest = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_netd_manifest",
+    });
+    const agent_host_relay_ports = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_relay_ports",
     });
     // Chat drawer S3n2 (plan rev 16.2 §3c.8b): each hook's own sealed network, from a
     // real outer sandbox through the real zb-hook-run. The module runs in a disposable
@@ -1114,6 +1144,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
+    test_step.dependOn(&run_agent_net_manifest_tests.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
@@ -1172,9 +1203,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
+    test_step.dependOn(&agent_host_netd_manifest.step);
+    test_step.dependOn(&agent_host_relay_ports.step);
     test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&agent_netd_spawn_e2e.step);
+    test_step.dependOn(&agent_netd_manifest_e2e.step);
     test_step.dependOn(&agent_host_lifecycle_e2e.step);
     test_step.dependOn(&agent_secrets_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);

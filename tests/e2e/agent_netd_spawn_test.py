@@ -8,7 +8,8 @@ and only when the agent home is provisioned (its `current` build exists;
 otherwise Send says "Agent not available yet" as before and nothing starts):
 - the browser starts `<venv python> -I -S <agent-host>/zb_agent_host/netd.py
   --sockdir $XDG_RUNTIME_DIR/zigbrowser-agent-<browser pid>-<16 hex> --bwrap
-  /usr/bin/bwrap` plus, with --e2e-protocol only, the pairs of
+  /usr/bin/bwrap --net-manifest <agent home>/runtime/net.json` (MS0; the
+  backend's manifest, agent_netd_manifest_test.py) plus, with --e2e-protocol only, the pairs of
   ZIGBROWSER_AGENT_NET_TEST, with an environment it builds (no ZIGBROWSER_*);
 - it waits for `netd ready` (at most 5 s) and writes the row
   `AGENTNET ready <dir>`; netd made the directory 0700 with egress/ and
@@ -196,7 +197,8 @@ def case_ready(binary: Path, tmp: Path, check) -> None:
     rt = runtime_dir(tmp)
     decoys = HookNetDecoys()
     seam = " ".join(decoys.netd_test_args())
-    b = launch(binary, tmp, "ready", env_for(provisioned_world(binary, tmp), rt, {"ZIGBROWSER_AGENT_NET_TEST": seam}))
+    world = provisioned_world(binary, tmp)
+    b = launch(binary, tmp, "ready", env_for(world, rt, {"ZIGBROWSER_AGENT_NET_TEST": seam}))
     try:
         check(b.wait(lambda: b.rows("icon", 1) != [], 20), "the drawer's icon is up", b)
         check(netd_launchers(rt) == [], "no netd before the first Send")
@@ -212,7 +214,8 @@ def case_ready(binary: Path, tmp: Path, check) -> None:
         if launchers and sockdir is not None:
             argv = argv_of(launchers[0])
             expect = ["-I", "-S", str(REPO / "agent" / "host" / NETD_SCRIPT), "--sockdir", str(sockdir),
-                      "--bwrap", "/usr/bin/bwrap", *decoys.netd_test_args()]
+                      "--bwrap", "/usr/bin/bwrap", "--net-manifest", str(world.agent / "runtime" / "net.json"),
+                      *decoys.netd_test_args()]
             check(argv[1:] == expect, f"netd's argv is exact ({argv[1:]})")
             names = env_names_of(launchers[0])
             check(not [n for n in names if n.startswith("ZIGBROWSER")], f"no ZIGBROWSER_* reaches netd ({names})")
@@ -394,7 +397,7 @@ def case_seams_inert_without_flag(binary: Path, tmp: Path, check) -> None:
             argv = argv_of(launchers[0])
             sockdir = argv[argv.index("--sockdir") + 1] if "--sockdir" in argv else ""
             expect = ["-I", "-S", str(REPO / "agent" / "host" / NETD_SCRIPT), "--sockdir", sockdir,
-                      "--bwrap", "/usr/bin/bwrap"]
+                      "--bwrap", "/usr/bin/bwrap", "--net-manifest", str(world.agent / "runtime" / "net.json")]
             check(argv[1:] == expect, f"netd's argv is the production one, no --test-* ({argv[1:]})")
         bad = [l for l in b.err if "bad ZIGBROWSER_AGENT_NET_TEST" in l or "network unavailable" in l]
         check(bad == [], f"no refusal line without the flag ({bad})", b)

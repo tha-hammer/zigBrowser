@@ -159,7 +159,7 @@ fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !?AgentNet
             }
         }
     }
-    const argv = try toCStrings(arena, try agent_net.netdArgv(arena, python, package_dir, sockdir, "/usr/bin/bwrap", seam));
+    const argv = try toCStrings(arena, try agent_net.netdArgv(arena, python, package_dir, sockdir, "/usr/bin/bwrap", try agent_net.netManifestPath(arena, home), seam));
     const envp = try toCStrings(arena, try agent_net.netdEnv(arena, getenvOwned(arena, "LANG"), getenvOwned(arena, "LC_ALL")));
     const refusal_z: ?[*:0]const u8 = if (refusal) |line| (try arena.dupeZ(u8, line)).ptr else null;
     c.zb_agent_net_configure(argv.ptr, envp.ptr, (try arena.dupeZ(u8, sockdir)).ptr, refusal_z, @intFromBool(e2e));

@@ -82,12 +82,12 @@ test "netd's argv: exact, with the seam's pairs only when given" {
     defer arena.deinit();
     const a = arena.allocator();
     // netd runs as a script (standard library only): -I needs no PYTHONPATH and -S no site.
-    const plain = try net.netdArgv(a, "/v/bin/python", "/pkg", "/run/user/1/zigbrowser-agent-1-deadbeef000102ff", "/usr/bin/bwrap", null);
+    const plain = try net.netdArgv(a, "/v/bin/python", "/pkg", "/run/user/1/zigbrowser-agent-1-deadbeef000102ff", "/usr/bin/bwrap", null, null);
     const want_plain = [_][]const u8{ "/v/bin/python", "-I", "-S", "/pkg/zb_agent_host/netd.py", "--sockdir", "/run/user/1/zigbrowser-agent-1-deadbeef000102ff", "--bwrap", "/usr/bin/bwrap" };
     try expectArgv(&want_plain, plain);
 
     const seam = try net.parseNetTest("--test-bridge 31337=40003 --test-allow fake.zb.invalid=40001");
-    const with = try net.netdArgv(a, "/v/bin/python", "/pkg", "/d", "/usr/bin/bwrap", seam);
+    const with = try net.netdArgv(a, "/v/bin/python", "/pkg", "/d", "/usr/bin/bwrap", null, seam);
     // A fixed order (allow, then 51091, then 31337), whatever the seam's order.
     const want_with = [_][]const u8{ "/v/bin/python", "-I", "-S", "/pkg/zb_agent_host/netd.py", "--sockdir", "/d", "--bwrap", "/usr/bin/bwrap", "--test-allow", "fake.zb.invalid=40001", "--test-bridge", "31337=40003" };
     try expectArgv(&want_with, with);

@@ -87,17 +87,26 @@ fn parsePort(text: []const u8) error{BadNetTest}!u16 {
 
 /// netd's argv (§3c.2, BlueBeaver 5466): the runtime's netd.py run as a script
 /// (standard library only, so -I needs no PYTHONPATH and -S no site), then the
-/// seam's options in a fixed order. Allocates in `a` (an arena is expected).
-pub fn netdArgv(a: std.mem.Allocator, python: []const u8, package_dir: []const u8, sockdir: []const u8, bwrap: []const u8, seam: ?NetTest) ![]const []const u8 {
+/// backend's network manifest (MS0, BlueBeaver 5755) when there is an agent
+/// home, then the seam's options in a fixed order. Allocates in `a` (an arena
+/// is expected).
+pub fn netdArgv(a: std.mem.Allocator, python: []const u8, package_dir: []const u8, sockdir: []const u8, bwrap: []const u8, manifest: ?[]const u8, seam: ?NetTest) ![]const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     const script = try std.fs.path.join(a, &.{ package_dir, "zb_agent_host", "netd.py" });
     try argv.appendSlice(a, &.{ python, "-I", "-S", script, "--sockdir", sockdir, "--bwrap", bwrap });
+    if (manifest) |path| try argv.appendSlice(a, &.{ "--net-manifest", path });
     if (seam) |s| {
         if (s.allow) |port| try argv.appendSlice(a, &.{ "--test-allow", try std.fmt.allocPrint(a, fake_host ++ "={d}", .{port}) });
         if (s.bridge_51091) |port| try argv.appendSlice(a, &.{ "--test-bridge", try std.fmt.allocPrint(a, "51091={d}", .{port}) });
         if (s.bridge_31337) |port| try argv.appendSlice(a, &.{ "--test-bridge", try std.fmt.allocPrint(a, "31337={d}", .{port}) });
     }
     return argv.toOwnedSlice(a);
+}
+
+/// The backend's network manifest in an agent home: setup writes it from the
+/// LaunchSpec network field, and netd reads it (its allow-list and bridge ports).
+pub fn netManifestPath(a: std.mem.Allocator, agent_home: []const u8) ![]const u8 {
+    return std.fs.path.join(a, &.{ agent_home, "runtime", "net.json" });
 }
 
 /// netd's whole environment, built, never inherited from the browser (BlackRobin

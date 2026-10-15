@@ -31,12 +31,13 @@ import os
 import socket
 import stat
 import sys
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_netd import Listener, Netd, response_head, short_root, status_of  # noqa: E402
+from test_netd import Listener, Netd, client_hello, response_head, short_root, status_of  # noqa: E402
 
 CANARY = "zbqxmanifest"  # in every refused manifest: never in netd's output
 
@@ -55,6 +56,18 @@ class ManifestFile:
         if doc is not None or data is not None:
             self.path.write_bytes(data if data is not None else json.dumps(doc).encode())
             os.chmod(self.path, mode)
+
+
+def dial(d, host):
+    """CONNECT `host`:443, then (when netd says 200) the ClientHello that names it: netd
+    dials upstream only after the SNI matches. Returns the status and the attempts."""
+    s = d.proxy()
+    s.sendall(b"CONNECT %s:443 HTTP/1.1\r\n\r\n" % host.encode())
+    status = status_of(response_head(s))
+    if status == 200:
+        s.sendall(client_hello(host))
+        time.sleep(1)
+    return status, d.connects()
 
 
 def layout(d):
@@ -101,14 +114,9 @@ class ManifestTest(unittest.TestCase):
                  "--test-resolve", "api.example-backend.com=1.1.1.1",
                  "--test-resolve", "api.anthropic.com=1.0.0.1", sealed=True)
         self.assertTrue(d.ready(), d.err)
-        s = d.proxy()
-        s.sendall(b"CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n")
-        self.assertEqual(status_of(response_head(s)), 403)
-        self.assertEqual(d.connects(), [], "the built-in host is gone from the allow-list")
-        s = d.proxy()
-        s.sendall(b"CONNECT api.example-backend.com:443 HTTP/1.1\r\n\r\n")
-        response_head(s)  # sealed: the dial fails; what matters is that it was attempted
-        self.assertEqual(d.connects(), ["1.1.1.1 443"])
+        self.assertEqual(dial(d, "api.anthropic.com"), (403, []), "the built-in host is gone from the allow-list")
+        # Sealed: the dial fails; what matters is that it was attempted, at the vetted address.
+        self.assertEqual(dial(d, "api.example-backend.com"), (200, ["1.1.1.1 443"]))
 
     def test_a_missing_manifest_or_one_without_network_keys_means_the_built_in_values(self):
         for name, m in (("missing", ManifestFile(self)),  # the path names nothing
@@ -119,10 +127,7 @@ class ManifestTest(unittest.TestCase):
                 self.assertTrue(d.ready(), d.err)
                 self.assertEqual(layout(d), ["bridges", "bridges/port-31337.sock", "bridges/port-51091.sock",
                                              "egress", "egress/proxy.sock"])
-                s = d.proxy()
-                s.sendall(b"CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n")
-                response_head(s)
-                self.assertEqual(d.connects(), ["1.1.1.1 443"])
+                self.assertEqual(dial(d, "api.anthropic.com"), (200, ["1.1.1.1 443"]))
                 d.stop()
 
     def test_a_bad_manifest_exits_2_before_ready_and_names_none_of_its_content(self):

@@ -2,9 +2,16 @@
 
 The browser starts it before the helper, outside the agent sandbox:
 
-    python -I -m zb_agent_host.netd --sockdir DIR --bwrap BWRAP
+    python -I -m zb_agent_host.netd --sockdir DIR --bwrap BWRAP [--net-manifest PATH]
         [--test-allow NAME=PORT] [--test-bridge 51091=PORT] [--test-bridge 31337=PORT]
         [--test-resolve NAME=ADDR[,ADDR...]] [--test-record-connects]
+
+PATH is the backend's network manifest, the agent home's runtime/net.json (MS0;
+BlueBeaver 5755, JadeBeacon 5762): its `egress.allow` replaces the built-in
+api.anthropic.com and its `ports` replace the bridges 51091 and 31337. netd reads
+it here, before bwrap, and hands the sandboxed side the checked values; a missing
+file, or one with neither key, means the built-in values, and any other fault exits 2
+before anything exists.
 
 It creates DIR (one mkdir 0700 under a 0700 parent of ours), then runs bwrap as its only
 child and waits: it stays the PID the browser spawned (with its PDEATHSIG), and bwrap's
@@ -12,8 +19,9 @@ child and waits: it stays the PID the browser spawned (with its PDEATHSIG), and 
 filesystem beyond /usr, its own code, the resolver inputs and DIR (§3c.2b). Inside,
 it creates
 
-    DIR/egress/proxy.sock            CONNECT api.anthropic.com:443, and nothing else
-    DIR/bridges/port-51091.sock      host 127.0.0.1:51091, fixed
+    DIR/egress/proxy.sock            CONNECT api.anthropic.com:443 (or the manifest's
+                                     hosts), and nothing else
+    DIR/bridges/port-51091.sock      host 127.0.0.1:51091, fixed (or one per manifest port)
     DIR/bridges/port-31337.sock      host 127.0.0.1:31337, fixed
 
 and prints exactly "netd ready". It stops when its stdin reaches EOF (bwrap forwards no
@@ -25,6 +33,7 @@ The --test-* options are honoured as given: the app passes them only under
 --e2e-protocol (§3c.4, §3c.5). Standard library only."""
 
 import ipaddress
+import json
 import os
 import re
 import select
@@ -40,6 +49,8 @@ EXIT_USAGE = 2
 
 API_HOST = "api.anthropic.com"
 BRIDGE_PORTS = (51091, 31337)
+MANIFEST_MAX = 65536
+NETWORK_LIST_MAX = 8  # hosts in egress.allow, and bridge ports
 SUN_PATH_MAX = 107
 USR_LINKS = (("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("usr/lib64", "/lib64"))
 RESOLVER_FILES = ("/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/hosts", "/etc/host.conf", "/etc/gai.conf")
@@ -300,11 +311,11 @@ def _shut(sock):
 # ---------------------------------------------------------------- the service
 
 class Netd:
-    def __init__(self, sockdir, allow, bridges, resolve, record_connects):
+    def __init__(self, sockdir, allow, bridges, resolve, record_connects, hosts=(API_HOST,)):
         self.sockdir = sockdir
-        self.allowed = {API_HOST, *allow}
+        self.allowed = {*hosts, *allow}
         self.test_allow = allow  # name -> 127.0.0.1 port; skips vetting (the e2e seam)
-        self.bridges = bridges  # sandbox port -> host port
+        self.bridges = bridges  # sandbox port -> host port, one socket each
         self.resolve_seam = resolve
         self.record_connects = record_connects
         self.tunnels = threading.BoundedSemaphore(TUNNELS_MAX)
@@ -451,9 +462,8 @@ class Netd:
             os.mkdir(os.path.join(self.sockdir, name), 0o700)
         os.umask(0o177)  # sockets are born 0600: there is no window with a wider mode
         self.listen(os.path.join(self.sockdir, "egress", "proxy.sock"), self.egress)
-        for port in BRIDGE_PORTS:
-            self.listen(os.path.join(self.sockdir, "bridges", f"port-{port}.sock"), self.bridge,
-                        self.bridges[port])
+        for port, host_port in self.bridges.items():
+            self.listen(os.path.join(self.sockdir, "bridges", f"port-{port}.sock"), self.bridge, host_port)
 
     def stop(self):
         """Unlink exactly what start() made, by directory fd, and nothing else."""
@@ -463,7 +473,7 @@ class Netd:
         root = os.open(self.sockdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             for sub, names in (("egress", ("proxy.sock",)),
-                               ("bridges", tuple(f"port-{p}.sock" for p in BRIDGE_PORTS))):
+                               ("bridges", tuple(f"port-{p}.sock" for p in self.bridges))):
                 try:
                     fd = os.open(sub, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
                 except OSError:
@@ -505,10 +515,12 @@ def _port(text):
 
 
 def parse_args(argv):
-    opts = {"sockdir": None, "bwrap": None, "allow": [], "bridge": [], "resolve": [],
-            "record": False, "serve": False}
-    single = {"--sockdir": "sockdir", "--bwrap": "bwrap"}
-    multi = {"--test-allow": "allow", "--test-bridge": "bridge", "--test-resolve": "resolve"}
+    opts = {"sockdir": None, "bwrap": None, "manifest": None, "allow": [], "bridge": [], "resolve": [],
+            "host": [], "port": [], "record": False, "serve": False}
+    single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest"}
+    # --allow-host and --bridge-port carry the checked manifest to the sandboxed side.
+    multi = {"--test-allow": "allow", "--test-bridge": "bridge", "--test-resolve": "resolve",
+             "--allow-host": "host", "--bridge-port": "port"}
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -530,17 +542,103 @@ def parse_args(argv):
             raise ValueError(f"unknown argument {arg!r}")
     if not opts["sockdir"]:
         raise ValueError("--sockdir is required")
+    if opts["serve"] and opts["manifest"] is not None:
+        raise ValueError("--net-manifest is read before the sandbox")
+    if not opts["serve"] and (opts["host"] or opts["port"]):
+        raise ValueError("--allow-host and --bridge-port belong to the sandboxed side")
+    if opts["manifest"] is not None and not os.path.isabs(opts["manifest"]):
+        raise ValueError("--net-manifest needs an absolute path")
     allow = _pairs(opts["allow"], "--test-allow", _port)
     for name in allow:
         if not valid_dns_name(name):
             raise ValueError(f"--test-allow name is not a DNS name: {name!r}")
-    bridges = {port: port for port in BRIDGE_PORTS}
-    for key, value in _pairs(opts["bridge"], "--test-bridge", _port).items():
-        if key not in {str(p) for p in BRIDGE_PORTS}:
+    resolve = _pairs(opts["resolve"], "--test-resolve", lambda v: [a for a in v.split(",") if a])
+    return opts, allow, resolve
+
+
+def network(opts):
+    """(hosts, ports, from_manifest): the egress allow-list and the bridge ports, from
+    the manifest (outer side), from --allow-host/--bridge-port (sandboxed side), or
+    the built-in values."""
+    if opts["serve"]:
+        hosts = tuple(opts["host"]) or (API_HOST,)
+        ports = tuple(_port(p) for p in opts["port"]) or BRIDGE_PORTS
+        check_network(hosts, ports)
+        return hosts, ports, False
+    if opts["manifest"] is not None:
+        loaded = load_manifest(opts["manifest"])
+        if loaded is not None:
+            return (*loaded, True)
+    return (API_HOST,), BRIDGE_PORTS, False
+
+
+def check_network(hosts, ports):
+    """1-8 distinct DNS names and 1-8 distinct ports (1-65535). Fixed words only: the
+    values may come from a file."""
+    if not all(isinstance(h, str) and valid_dns_name(h) for h in hosts) or \
+            not 1 <= len(hosts) <= NETWORK_LIST_MAX or len(set(hosts)) != len(hosts):
+        raise ValueError("network manifest refused (egress.allow)")
+    if not all(type(p) is int and 0 < p < 65536 for p in ports) or \
+            not 1 <= len(ports) <= NETWORK_LIST_MAX or len(set(ports)) != len(ports):
+        raise ValueError("network manifest refused (ports)")
+
+
+def load_manifest(path):
+    """The backend's network manifest at `path` as (hosts, ports), or None when no file
+    has that name or it has neither `egress` nor `ports` (written before they existed). It must be a regular file of ours, not group- or world-writable, at
+    most MANIFEST_MAX bytes of UTF-8 JSON; it is opened without following a link and
+    without blocking (a FIFO is refused, never waited on). Raises ValueError with fixed
+    words: no byte of the file reaches a log."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ValueError("network manifest refused (unreadable or a link)") from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("network manifest refused (not a regular file)")
+        if st.st_uid != os.getuid() or st.st_mode & 0o022:
+            raise ValueError("network manifest refused (owner or mode)")
+        data = b""
+        while len(data) <= MANIFEST_MAX:
+            chunk = os.read(fd, MANIFEST_MAX + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        os.close(fd)
+    if len(data) > MANIFEST_MAX:
+        raise ValueError("network manifest refused (too large)")
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise ValueError("network manifest refused (not JSON)") from None
+    if not isinstance(doc, dict):
+        raise ValueError("network manifest refused (not an object)")
+    if "egress" not in doc and "ports" not in doc:
+        return None  # a manifest from before these keys (bridges_dir only): the built-in values
+    egress = doc.get("egress")
+    hosts = egress.get("allow") if isinstance(egress, dict) else None
+    ports = doc.get("ports")
+    if not isinstance(hosts, list):
+        raise ValueError("network manifest refused (egress.allow)")
+    if not isinstance(ports, list):
+        raise ValueError("network manifest refused (ports)")
+    check_network(hosts, ports)
+    return tuple(hosts), tuple(ports)
+
+
+def bridge_targets(ports, test_bridges):
+    """Sandbox port -> host port: each bridge goes to its own port, unless the e2e seam
+    redirects one of them."""
+    bridges = {port: port for port in ports}
+    for key, value in _pairs(test_bridges, "--test-bridge", _port).items():
+        if key not in {str(p) for p in ports}:
             raise ValueError(f"--test-bridge names an unknown bridge: {key!r}")
         bridges[int(key)] = value
-    resolve = _pairs(opts["resolve"], "--test-resolve", lambda v: [a for a in v.split(",") if a])
-    return opts, allow, bridges, resolve
+    return bridges
 
 
 def check_sockdir(sockdir):
@@ -594,8 +692,8 @@ def sandbox_argv(bwrap, sockdir, serve_argv):
     return argv
 
 
-def serve(sockdir, allow, bridges, resolve, record):
-    netd = Netd(sockdir, allow, bridges, resolve, record)
+def serve(sockdir, allow, bridges, resolve, record, hosts):
+    netd = Netd(sockdir, allow, bridges, resolve, record, hosts)
     netd.start()
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: done.set())
@@ -619,14 +717,16 @@ def serve(sockdir, allow, bridges, resolve, record):
 
 def main(argv):
     try:
-        opts, allow, bridges, resolve = parse_args(argv)
+        opts, allow, resolve = parse_args(argv)
+        hosts, ports, from_manifest = network(opts)  # the manifest is read here, before anything exists
+        bridges = bridge_targets(ports, opts["bridge"])
     except ValueError as exc:
         log(f"netd: {exc}")
         return EXIT_USAGE
     sockdir = opts["sockdir"]
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))  # nothing the browser leaked goes further
     if opts["serve"]:
-        return serve(sockdir, allow, bridges, resolve, opts["record"])
+        return serve(sockdir, allow, bridges, resolve, opts["record"], hosts)
     bwrap = opts["bwrap"] or "/usr/bin/bwrap"
     if not os.access(bwrap, os.X_OK):
         log("network unavailable (bwrap)")
@@ -640,7 +740,13 @@ def main(argv):
     child = os.fork()
     if child == 0:
         try:
-            os.execv(bwrap, sandbox_argv(bwrap, sockdir, _serve_args(argv)))
+            serve_argv = _serve_args(argv)
+            if from_manifest:
+                for host in hosts:
+                    serve_argv += ["--allow-host", host]
+                for port in ports:
+                    serve_argv += ["--bridge-port", str(port)]
+            os.execv(bwrap, sandbox_argv(bwrap, sockdir, serve_argv))
         finally:
             os._exit(EXIT_NO_SANDBOX)
     while True:
@@ -658,13 +764,14 @@ def main(argv):
 
 
 def _serve_args(argv):
-    """argv without --bwrap BWRAP (the sandboxed side has no bwrap)."""
+    """argv without --bwrap BWRAP (the sandboxed side has no bwrap) and without
+    --net-manifest PATH (it has no agent home; it gets the checked values instead)."""
     out, skip = [], False
     for arg in argv:
         if skip:
             skip = False
             continue
-        if arg == "--bwrap":
+        if arg in ("--bwrap", "--net-manifest"):
             skip = True
             continue
         out.append(arg)

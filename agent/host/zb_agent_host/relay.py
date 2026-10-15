@@ -5,6 +5,11 @@ relayed to netd's Unix sockets. One standard-library file with two modes:
     relay.py --bridges DIR -- HOOK...     the inner relay of one sealed hook:
                                           127.0.0.1:51091 -> DIR/port-51091.sock
                                           127.0.0.1:31337 -> DIR/port-31337.sock
+    relay.py --bridges DIR --ports P1,P2,... -- HOOK...
+                                          the same for the backend's bridge ports
+                                          (MS0): 127.0.0.1:Pn -> DIR/port-Pn.sock
+
+--ports is 1 to PORTS_MAX distinct ports (1-65535) in plain decimal, comma-separated.
 
 The outer relay is the agent sandbox's command (python3 -I -m zb_agent_host.relay); the
 inner one runs from the read-only runtime copy, always as `/usr/bin/python3 -I -S
@@ -32,6 +37,7 @@ EXIT_EXEC_FAILED = 1  # what bwrap itself returns when it cannot exec an unseale
 FORWARDED = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2)
 EGRESS = {3128: "proxy.sock"}
 BRIDGES = {51091: "port-51091.sock", 31337: "port-31337.sock"}
+PORTS_MAX = 8
 PAIRS_MAX = {"egress": 64, "bridges": 16}
 BUFFER_MAX = 65536
 UNIX_CONNECT_TIMEOUT_S = 1.0
@@ -43,10 +49,36 @@ def fail(text, code=EXIT_USAGE):
 
 
 def parse(argv):
-    if len(argv) < 4 or argv[0] not in ("--egress", "--bridges") or argv[2] != "--" or not argv[3:]:
+    """(mode, DIR, command, ports or None), or None for a bad argv."""
+    if len(argv) < 4 or argv[0] not in ("--egress", "--bridges"):
         return None
-    mode = argv[0][2:]
-    return mode, argv[1], argv[3:]
+    mode, directory, rest = argv[0][2:], argv[1], argv[2:]
+    ports = None
+    if mode == "bridges" and rest[:1] == ["--ports"] and len(rest) > 1:
+        ports = parse_ports(rest[1])
+        if ports is None:
+            return None
+        rest = rest[2:]
+    if rest[:1] != ["--"] or not rest[1:]:
+        return None
+    return mode, directory, rest[1:], ports
+
+
+def parse_ports(text):
+    """The ports of `--ports P1,P2,...`, or None: 1-PORTS_MAX distinct ports 1-65535,
+    ASCII digits with no sign, space or leading zero."""
+    items = text.split(",")
+    if not 1 <= len(items) <= PORTS_MAX:
+        return None
+    ports = []
+    for item in items:
+        if not item or not item.isascii() or not item.isdigit() or item[0] == "0":
+            return None
+        port = int(item)
+        if port > 65535 or port in ports:
+            return None
+        ports.append(port)
+    return ports
 
 
 class Pair:
@@ -134,10 +166,12 @@ class Pair:
 
 
 class Relay:
-    def __init__(self, mode, directory):
+    def __init__(self, mode, directory, ports=None):
         self.mode = mode
-        self.targets = {port: os.path.join(directory, name)
-                        for port, name in (EGRESS if mode == "egress" else BRIDGES).items()}
+        names = EGRESS if mode == "egress" else BRIDGES
+        if ports is not None:
+            names = {port: f"port-{port}.sock" for port in ports}
+        self.targets = {port: os.path.join(directory, name) for port, name in names.items()}
         self.selector = selectors.DefaultSelector()
         self.pairs = set()
         self.listeners = {}
@@ -216,9 +250,9 @@ def _close_inherited(keep):
 def main(argv):
     parsed = parse(argv)
     if parsed is None:
-        return fail("usage: zb-net-relay --egress|--bridges DIR -- COMMAND...")
-    mode, directory, command = parsed
-    relay = Relay(mode, directory)
+        return fail("usage: zb-net-relay --egress DIR | --bridges DIR [--ports P1,P2,...] -- COMMAND...")
+    mode, directory, command, ports = parsed
+    relay = Relay(mode, directory, ports)
     try:
         relay.bind()
     except OSError as exc:
