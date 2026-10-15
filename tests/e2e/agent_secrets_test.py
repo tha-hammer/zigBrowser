@@ -501,6 +501,70 @@ def case_rejected(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+# Near misses of the setup-token shape ^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$ (src/agent_secrets.zig
+# validToken; RoseCat 5731). None is a secret; the old printable-run rule passed all but the
+# last three.
+SHAPE_NEAR_MISSES = (
+    "sk-ant-api03-" + "ZBQXJKHY" * 5,             # an API key
+    "SK-ANT-OAT01-" + "ZBQXJKHY" * 5,             # wrong case
+    "sk-ant-oat02-" + "ZBQXJKHY" * 5,             # wrong prefix
+    "sk-ant-oat01-" + "ZBQXJKHY" * 2 + "ZBQXJ",   # too short: 21 after the prefix
+    "sk-ant-oat01-ZBQX.JKHY+ZBQX/JKHY=ZBQXJKHY",  # bad characters
+    "zbqx-not-a-token-but-long-enough",           # no prefix
+    "sk-ant-oat01-ZBQXJKHY ZBQXJKHYZBQXJKHYZB",   # inner space
+    "sk-ant-oat01-ZBQXJKHYZBQX\tJKHYZBQXJKHY",    # inner tab
+    "",                                           # empty
+)
+
+
+def shape_case(binary: Path, tmp: Path, check, store: str) -> None:
+    """The user's requirement (S4a real-screen check): Save accepts only the setup-token shape.
+    Each near miss, pasted with a real Ctrl+V and saved with a real click, gives "rejected" and
+    stores nothing in the keyring or the file; then the canary pasted between spaces, tabs and
+    newlines is trimmed and stored (`store`: the private keyring, or the file flag) without the
+    padding. No row and no log line holds any of it."""
+    token = canary()
+    world = provisioned(binary, tmp, f"shape-{store}")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
+        args = ["--agent-secret-store", "file"] if store == "file" else []
+        b = launch(binary, tmp, world, kr.bus_env, api, f"shape-{store}", args)
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20), "the Secrets window opens", b)
+            file = world.agent / "secrets" / "claude-token"
+            for i, bad in enumerate(SHAPE_NEAR_MISSES):
+                paste_and_save_bad(b, bad)
+                check(b.wait(lambda n=i: secrets_status(b).count("rejected") >= n + 1, 15), f"rejected: {bad!r}", b)
+                check(kr.lookup() is None and not file.exists(), f"nothing stored after {bad!r}", b)
+            texts = [f[0] for k, f in secrets_lines(b) if k == "text"]
+            check(texts.count("That doesn't look like a token.") >= len(SHAPE_NEAR_MISSES),
+                  "each near miss showed the fixed sentence", b)
+            check(not any(s.startswith("connected") for s in secrets_status(b)), "no near miss was stored", b)
+            paste_and_save_bad(b, "\n  \t" + token + " \t\n")
+            want = "connected-file" if store == "file" else "connected-secret-service"
+            check(b.wait(lambda: secrets_status(b)[-1:] == [want], 20), f"the padded canary is stored: {want}", b)
+            if store == "file":
+                check(kr.lookup() is None, "nothing in the keyring")
+                check(file.is_file() and file.read_bytes() in (token.encode(), token.encode() + b"\n"),
+                      "the file holds the canary without the padding", b)
+            else:
+                check(kr.lookup() == token, "the keyring holds the canary without the padding", b)
+                check(not file.exists(), "no token file (the keyring was chosen)")
+            printed = "\n".join(b.out + b.err)
+            check("sk-ant" not in printed.lower() and "zbqx" not in printed.lower(), "no near miss in any row or log", b)
+            check(not leaks(printed, token), "no run of the canary in rows, stdout or stderr", b)
+        finally:
+            b.stop()
+
+
+def case_shape(binary: Path, tmp: Path, check) -> None:
+    shape_case(binary, tmp, check, "keyring")
+
+
+def case_shape_file(binary: Path, tmp: Path, check) -> None:
+    shape_case(binary, tmp, check, "file")
+
+
 def case_no_keyring(binary: Path, tmp: Path, check) -> None:
     """S4.1 edge: no Secret Service and no flag: Save stores nothing; only an X click on
     "Save to a private file instead" writes the 0600 file."""
@@ -1035,6 +1099,9 @@ CASES = {
     "account-button": case_account_button,
     "account-after-no-token": case_account_after_no_token,
     "canary-self-test": case_canary_self_test,
+    # The setup-token shape (the user's requirement after the S4a real-screen check).
+    "shape": case_shape,
+    "shape-file": case_shape_file,
     # S4b: the hand-off through S3b's helper (its build step runs these with --only).
     "handoff": case_handoff,
     "remove-session": case_remove_session,
