@@ -36,11 +36,11 @@ test "every valid helper frame type is accepted" {
     var v = try fresh();
     defer v.deinit();
     try expectOk(&v, "{\"v\":1,\"seq\":1,\"type\":\"ready\",\"version\":\"0.1.0\",\"route\":\"R1\",\"selfcheck\":{\"ok\":true,\"failures\":[]},\"tool_deadline_s\":120}");
-    try expectOk(&v, "{\"v\":1,\"seq\":2,\"type\":\"session_opened\",\"session\":\"s-1-1\",\"sdk_session_id\":\"abc\"}");
+    try expectOk(&v, "{\"v\":1,\"seq\":2,\"type\":\"session_opened\",\"session\":\"s-1-1\"}");
     try expectOk(&v, "{\"v\":1,\"seq\":3,\"type\":\"assistant_delta\",\"session\":\"s-1-1\",\"text\":\"Hel\"}");
     try expectOk(&v, "{\"v\":1,\"seq\":4,\"type\":\"assistant_message\",\"session\":\"s-1-1\",\"text\":\"Hello\"}");
     try expectOk(&v, "{\"v\":1,\"seq\":5,\"type\":\"tool_call\",\"session\":\"s-1-1\",\"id\":\"" ++ uuid ++ "\",\"tool\":\"mcp__zigbrowser__get_text\",\"args\":{\"selector\":\"h1\"}}");
-    try expectOk(&v, "{\"v\":1,\"seq\":6,\"type\":\"result\",\"session\":\"s-1-1\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"cost_usd\":null}");
+    try expectOk(&v, "{\"v\":1,\"seq\":6,\"type\":\"result\",\"session\":\"s-1-1\",\"sdk_session_id\":\"" ++ uuid ++ "\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"cost_usd\":null}");
     try expectOk(&v, "{\"v\":1,\"seq\":7,\"type\":\"error\",\"session\":null,\"code\":\"sdk\",\"message\":\"x\"}");
     try expectOk(&v, "{\"v\":1,\"seq\":8,\"type\":\"session_ended\",\"session\":\"s-1-1\",\"reason\":\"end\"}");
 }
@@ -53,9 +53,11 @@ test "each kind of bad frame is rejected with its reason" {
     try expectRejected(&v, "{\"v\":2,\"seq\":1,\"type\":\"ready\"}", .envelope);
     try expectRejected(&v, "{\"seq\":1,\"type\":\"ready\"}", .envelope);
     try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"frobnicate\"}", .type);
-    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"session_opened\",\"session\":\"s-1-1\",\"sdk_session_id\":\"a\",\"extra\":1}", .schema);
-    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"session_opened\",\"session\":\"s-1-1\"}", .schema);
-    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"result\",\"session\":\"s-1-1\",\"subtype\":\"x\",\"is_error\":\"no\",\"num_turns\":1,\"cost_usd\":null}", .schema);
+    // RoseCat 5632: no SDK session id exists when a session opens; the result carries the real one.
+    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"session_opened\",\"session\":\"s-1-1\",\"sdk_session_id\":\"a\"}", .schema);
+    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"session_opened\",\"session\":\"s-1-1\",\"extra\":1}", .schema);
+    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"result\",\"session\":\"s-1-1\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"cost_usd\":null}", .schema);
+    try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"result\",\"session\":\"s-1-1\",\"sdk_session_id\":\"" ++ uuid ++ "\",\"subtype\":\"x\",\"is_error\":\"no\",\"num_turns\":1,\"cost_usd\":null}", .schema);
     // R3 was removed (plan rev 16 §3c.1): a helper reporting it is rejected.
     try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"ready\",\"version\":\"0\",\"route\":\"R3\",\"selfcheck\":{\"ok\":true,\"failures\":[]},\"tool_deadline_s\":120}", .schema);
     try expectRejected(&v, "{\"v\":1,\"seq\":1,\"type\":\"ready\",\"version\":\"0\",\"route\":\"R2\",\"selfcheck\":{\"ok\":true,\"failures\":[]},\"tool_deadline_s\":120}", .schema);
@@ -95,7 +97,7 @@ fn validFrame(random: std.Random, buf: []u8, session: []const u8) p.Frame {
     return switch (random.uintLessThan(u8, 5)) {
         0 => .{ .assistant_delta = .{ .session = session, .text = text } },
         1 => .{ .assistant_message = .{ .session = session, .text = text } },
-        2 => .{ .result = .{ .session = session, .subtype = "success", .is_error = random.boolean(), .num_turns = random.intRangeAtMost(i64, 0, 50), .cost_usd = if (random.boolean()) null else 0.5 } },
+        2 => .{ .result = .{ .session = session, .sdk_session_id = uuid, .subtype = "success", .is_error = random.boolean(), .num_turns = random.intRangeAtMost(i64, 0, 50), .cost_usd = if (random.boolean()) null else 0.5 } },
         3 => .{ .session_ended = .{ .session = session, .reason = "end" } },
         else => blk: {
             const hex = "0123456789abcdef";
@@ -103,6 +105,25 @@ fn validFrame(random: std.Random, buf: []u8, session: []const u8) p.Frame {
             break :blk .{ .tool_call = .{ .session = session, .id = buf[0..36], .tool = "mcp__zigbrowser__get_text", .args_json = "{\"a\":1}" } };
         },
     };
+}
+
+test "a session id is opened once, and nothing of a session is accepted after its session_ended (RoseCat 5628)" {
+    var v = try fresh();
+    defer v.deinit();
+    try std.testing.expectError(error.DuplicateSession, v.openSession("s-1-1", 2));
+    try expectOk(&v, "{\"v\":1,\"seq\":1,\"type\":\"assistant_delta\",\"session\":\"s-1-1\",\"text\":\"a\"}");
+    try expectOk(&v, "{\"v\":1,\"seq\":2,\"type\":\"session_ended\",\"session\":\"s-1-1\",\"reason\":\"end\"}");
+    try expectRejected(&v, "{\"v\":1,\"seq\":3,\"type\":\"assistant_delta\",\"session\":\"s-1-1\",\"text\":\"late\"}", .session);
+    try expectRejected(&v, "{\"v\":1,\"seq\":3,\"type\":\"session_ended\",\"session\":\"s-1-1\",\"reason\":\"end\"}", .session);
+    try expectRejected(&v, "{\"v\":1,\"seq\":3,\"type\":\"error\",\"session\":\"s-1-1\",\"code\":\"sdk\",\"message\":\"x\"}", .session);
+    // A rejected frame commits nothing: seq 3 is still free for a session-less frame.
+    try expectOk(&v, "{\"v\":1,\"seq\":3,\"type\":\"error\",\"session\":null,\"code\":\"sdk\",\"message\":\"x\"}");
+    // The app may close a session itself (its window went away), and may then open a new one.
+    try v.openSession("s-1-2", 1);
+    v.closeSession("s-1-2");
+    try expectRejected(&v, "{\"v\":1,\"seq\":4,\"type\":\"assistant_delta\",\"session\":\"s-1-2\",\"text\":\"a\"}", .session);
+    try v.openSession("s-1-3", 1);
+    try expectOk(&v, "{\"v\":1,\"seq\":4,\"type\":\"assistant_delta\",\"session\":\"s-1-3\",\"text\":\"a\"}");
 }
 
 test "property (roundtrip): validate(encode(f)) gives back f for generated valid frames" {
@@ -125,6 +146,8 @@ test "property (roundtrip): validate(encode(f)) gives back f for generated valid
             return error.TestUnexpectedResult;
         }
         try std.testing.expectEqualDeep(frame, out.ok);
+        // session_ended closes the session; the app opens the next one.
+        if (frame == .session_ended) try v.openSession("s-1-1", 1);
     }
 }
 
@@ -147,10 +170,13 @@ test "property (invariant): random bytes and mutated valid frames are never acce
             continue;
         }
         seq += 1;
-        const line = try p.encode(a, seq, validFrame(random, &id_buf, "s-1-1"));
+        const frame = validFrame(random, &id_buf, "s-1-1");
+        const line = try p.encode(a, seq, frame);
         // The original is accepted first, so a mutation that replays its seq
         // or its tool-call id is a real replay.
         try std.testing.expect(v.validate(a, line) == .ok);
+        // session_ended closes the session; the app opens the next one.
+        if (frame == .session_ended) try v.openSession("s-1-1", 1);
         const mutated = switch (random.uintLessThan(u8, 5)) {
             // drop a field: cut the last ",\"name\":value" before the closing brace
             0 => try std.mem.concat(a, u8, &.{ line[0..std.mem.lastIndexOfScalar(u8, line, ',').?], "}" }),

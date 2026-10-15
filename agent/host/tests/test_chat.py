@@ -5,10 +5,12 @@ execs bwrap in place. The token arrives on fd 3; the Messages API is P0's fake."
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -43,7 +45,15 @@ class Helper:
                                      env=env, pass_fds=(read,), text=True)
         os.close(read)
         self.seq = 0
+        self.lines = queue.Queue()  # stdout lines, then None at EOF
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
         tc.addCleanup(self.kill)
+
+    def _read(self):
+        for line in self.proc.stdout:
+            self.lines.put(line)
+        self.lines.put(None)
 
     def send(self, type_, **fields):
         self.seq += 1
@@ -51,13 +61,27 @@ class Helper:
         self.proc.stdin.flush()
 
     def frame(self, timeout=60):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise AssertionError(f"helper exited: {self.proc.stderr.read()[-2000:]}")
-            return json.loads(line)
-        raise AssertionError("no frame")
+        try:
+            line = self.lines.get(timeout=timeout)
+        except queue.Empty:
+            raise AssertionError("no frame") from None
+        if line is None:
+            self.lines.put(None)
+            raise AssertionError(f"helper exited: {self.proc.stderr.read()[-2000:]}")
+        return json.loads(line)
+
+    def rest(self, quiet=3.0):
+        """Every frame until stdout ends or `quiet` seconds pass without one."""
+        frames = []
+        while True:
+            try:
+                line = self.lines.get(timeout=quiet)
+            except queue.Empty:
+                return frames
+            if line is None:
+                self.lines.put(None)
+                return frames
+            frames.append(json.loads(line))
 
     def until(self, type_, timeout=60):
         seen = []
@@ -71,6 +95,7 @@ class Helper:
         if self.proc.poll() is None:
             self.proc.kill()
         self.proc.wait()
+        self.reader.join(10)
         for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
             try:
                 stream.close()
@@ -81,6 +106,9 @@ class Helper:
 HELPER_ENV = {"PATH", "LANG", "HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
               "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"}
 PROXY = "http://127.0.0.1:3128"
+# The SDK gives a CLI 5 s to exit after stdin EOF (it flushes its session file), then
+# terminates it: a session closed mid-prompt ends within that, plus margin.
+SDK_CLOSE_S = 15.0
 
 
 def provisioned(tc, route="R1"):
@@ -92,6 +120,19 @@ def provisioned(tc, route="R1"):
     elif record.exists():
         record.unlink()
     return box
+
+
+def fifos(box):
+    """The R1 FIFOs left in Helper's FIFO directory (outside the sandbox, so not
+    /run/zb-token). The directory is 0300, unlistable; the test opens it for a moment."""
+    path = box.home.scratchpad / "tmp" / "zb-token"
+    if not path.exists():
+        return []
+    os.chmod(path, 0o700)
+    try:
+        return sorted(path.iterdir())
+    finally:
+        os.chmod(path, 0o300)
 
 
 def net_dir(tc):
@@ -117,9 +158,14 @@ class ChatTest(unittest.TestCase):
                    scratchpad=str(box.home.scratchpad), route="R1", e2e={"test_base_url": api.base_url})
             h.send("open_session", session="s-1-1", window_id="window-1")
             opened, _ = h.until("session_opened")
+            # No SDK session id exists yet when the session opens (RoseCat 5632).
+            self.assertEqual(set(opened), {"v", "seq", "type", "session"})
             self.assertEqual(opened["session"], "s-1-1")
             h.send("prompt", session="s-1-1", text="hi")
             result, seen = h.until("result", timeout=120)
+            # The real one comes with the result: the CLI's own transcript is named after it.
+            transcripts = [p.stem for p in (box.home.claude_dir / "projects").glob("*/*.jsonl")]
+            self.assertEqual([result["sdk_session_id"]], transcripts)
             message = [f for f in seen if f["type"] == "assistant_message"]
             self.assertEqual([m["text"] for m in message], ["Hello from the agent"])
             self.assertFalse(result["is_error"])
@@ -140,7 +186,7 @@ class ChatTest(unittest.TestCase):
         box = provisioned(self, route="R3")
         h = Helper(self, box.home)
         self.assertEqual(h.proc.wait(timeout=30), 2)
-        self.assertEqual(h.proc.stdout.read(), "")
+        self.assertEqual(h.rest(), [])
         self.assertEqual(h.proc.stderr.read(),
                          "zigBrowser: agent: token route R3 was removed: run zigBrowser --agent-setup again\n")
 
@@ -150,7 +196,7 @@ class ChatTest(unittest.TestCase):
                 box = provisioned(self, route=route)
                 h = Helper(self, box.home)
                 self.assertEqual(h.proc.wait(timeout=30), 2)
-                self.assertEqual(h.proc.stdout.read(), "")
+                self.assertEqual(h.rest(), [])
                 self.assertEqual(h.proc.stderr.read(),
                                  "zigBrowser: agent: token route is not set up: run zigBrowser --agent-setup\n")
 
@@ -162,6 +208,44 @@ class ChatTest(unittest.TestCase):
         self.assertNotIn("short", json.dumps(f))
         self.assertNotEqual(h.proc.wait(timeout=30), 0)
 
+    def test_a_duplicate_open_session_fails_closed_and_keeps_the_open_one(self):
+        """RoseCat 5633: a second open of a live id never replaces (or leaks) the first."""
+        box = provisioned(self)
+        with FakeAnthropicApi(turns=[{"text": "still here"}]) as api:
+            h = Helper(self, box.home)
+            h.frame()
+            h.send("hello", agent_home=str(box.home.root), workspace=str(box.home.workspace),
+                   scratchpad=str(box.home.scratchpad), route="R1", e2e={"test_base_url": api.base_url})
+            h.send("open_session", session="s-1-1", window_id="window-1")
+            h.until("session_opened")
+            h.send("open_session", session="s-1-1", window_id="window-1")
+            refused, _ = h.until("error")
+            self.assertEqual((refused["code"], refused["session"]), ("protocol", "s-1-1"))
+            h.send("prompt", session="s-1-1", text="hi")
+            result, seen = h.until("result", timeout=120)
+            self.assertEqual([f["text"] for f in seen if f["type"] == "assistant_message"], ["still here"])
+            self.assertEqual(fifos(box), [], "no FIFO is left behind")
+            h.send("shutdown")
+            self.assertEqual(h.proc.wait(timeout=30), 0)
+
+    def test_a_session_that_cannot_open_is_reported_and_the_helper_stays(self):
+        """RoseCat 5633: open() failing closes the new session's route and reports it."""
+        box = provisioned(self)
+        wrapper = box.home.runtime / "bin" / "zb-claude"
+        wrapper.write_text("#!/bin/sh\nexit 1\n")
+        h = Helper(self, box.home)
+        h.frame()
+        h.send("open_session", session="s-1-1", window_id="window-1")
+        failed, seen = h.until("error", timeout=120)
+        self.assertEqual((failed["code"], failed["session"]), ("sdk", "s-1-1"))
+        self.assertNotIn("session_opened", [f["type"] for f in seen])
+        self.assertEqual(fifos(box), [], "the failed session's FIFO is gone")
+        h.send("frobnicate")
+        f, _ = h.until("error")
+        self.assertEqual(f["code"], "protocol", "the helper still answers")
+        h.send("shutdown")
+        self.assertEqual(h.proc.wait(timeout=30), 0)
+
     def test_an_unknown_frame_from_the_app_is_an_error_not_a_crash(self):
         box = provisioned(self)
         h = Helper(self, box.home)
@@ -171,6 +255,74 @@ class ChatTest(unittest.TestCase):
         self.assertEqual(f["code"], "protocol")
         h.send("shutdown")
         self.assertEqual(h.proc.wait(timeout=30), 0)
+
+
+class PromptLifecycleTest(unittest.TestCase):
+    """RoseCat 5628.3: one prompt at a time per session, and nothing of a session after it
+    ended. The fake holds the first messages request until `release`, so a prompt is in
+    flight. (A unit test of chat's frames; the closure runs in agent_host_lifecycle_test.)"""
+
+    def setUp(self):
+        self.box = provisioned(self)
+        self.release = threading.Event()
+        self.api = FakeAnthropicApi(responder=self.held)
+        self.api.start()
+        self.addCleanup(self.api.stop)
+        self.addCleanup(self.release.set)
+        self.h = Helper(self, self.box.home)
+        self.assertEqual(self.h.frame()["type"], "ready")
+        self.h.send("hello", agent_home=str(self.box.home.root), workspace=str(self.box.home.workspace),
+                    scratchpad=str(self.box.home.scratchpad), route="R1", e2e={"test_base_url": self.api.base_url})
+        self.h.send("open_session", session="s-1-1", window_id="window-1")
+        self.h.until("session_opened")
+        self.h.send("prompt", session="s-1-1", text="first")
+        deadline = time.monotonic() + 60
+        while not self.api.messages_requests() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.api.messages_requests(), "the first prompt reached the fake")
+
+    def held(self, entry, index):
+        self.release.wait(60)
+        return {"text": f"reply {index}"}
+
+    def rest(self, quiet=3.0):
+        return self.h.rest(quiet)
+
+    def test_a_second_prompt_while_one_runs_is_refused_busy_and_never_runs(self):
+        self.h.send("prompt", session="s-1-1", text="second")
+        busy, _ = self.h.until("error")
+        self.assertEqual((busy["code"], busy["session"]), ("busy", "s-1-1"))
+        self.release.set()
+        self.h.until("result")
+        later = self.rest()
+        self.assertEqual([f for f in later if f["type"] == "result"], [], "only the first prompt ran")
+        self.assertEqual(len(self.api.messages_requests()), 1)
+
+    def test_end_session_during_a_prompt_cancels_and_awaits_it_first(self):
+        # The reply is released at once: only a prompt cancelled (and awaited) before the
+        # disconnect keeps it from reaching the drawer while the session closes.
+        self.h.send("end_session", session="s-1-1")
+        self.release.set()
+        frames = self.rest(SDK_CLOSE_S)
+        self.assertEqual([(f["type"], f.get("session")) for f in frames], [("session_ended", "s-1-1")], frames)
+        self.h.send("shutdown")
+        self.assertEqual(self.h.proc.wait(timeout=30), 0)
+
+    def test_shutdown_during_a_prompt_ends_the_session_and_exits_cleanly(self):
+        self.h.send("shutdown")
+        self.release.set()
+        frames = self.rest(SDK_CLOSE_S)
+        self.assertEqual([f["type"] for f in frames], ["session_ended"], frames)
+        self.assertEqual(self.h.proc.wait(timeout=30), 0)
+        self.assertNotIn("Traceback", self.h.proc.stderr.read())
+
+    def test_eof_during_a_prompt_ends_the_session_and_exits_cleanly(self):
+        self.h.proc.stdin.close()
+        self.release.set()
+        frames = self.rest(SDK_CLOSE_S)
+        self.assertEqual([f["type"] for f in frames], ["session_ended"], frames)
+        self.assertEqual(self.h.proc.wait(timeout=30), 0)
+        self.assertNotIn("Traceback", self.h.proc.stderr.read())
 
 
 class SessionOptionsTest(unittest.TestCase):
@@ -354,10 +506,14 @@ class LaunchSandboxTest(unittest.TestCase):
         ready = json.loads(line)
         self.assertEqual((ready["type"], ready["route"]), ("ready", "R1"))
         tree = descendants(proc.pid)
-        chat_pid = next(p for p in tree if b"chat" in cmdline(p) and b"-c" in cmdline(p))
+        # chat itself: `<python> -I -c CHAT_BOOT <package> chat ...` (bwrap's and the
+        # relay's argv name chat too, after their own options).
+        chat_pid = next(p for p in tree if cmdline(p).split(b"\0")[1:3] == [b"-I", b"-c"]
+                        and cmdline(p).split(b"\0")[5:6] == [b"chat"])
         relay_pid = ppid(chat_pid)
         self.assertIn(b"zb-net-relay", cmdline(relay_pid))
-        self.assertEqual(set(environ(chat_pid)), HELPER_ENV)
+        # bwrap adds PWD (its --chdir, the workspace) to what launch gave it.
+        self.assertEqual(set(environ(chat_pid)), HELPER_ENV | {"PWD"})
         self.assertNotEqual(os.readlink(f"/proc/{chat_pid}/ns/net"), os.readlink("/proc/self/ns/net"))
         proc.stdin.write(json.dumps({"v": 1, "seq": 1, "type": "shutdown"}) + "\n")
         proc.stdin.flush()
