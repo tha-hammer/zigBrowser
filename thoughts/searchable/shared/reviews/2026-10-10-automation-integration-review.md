@@ -9386,8 +9386,10 @@ GREEN: **Build Summary: 126/126 steps succeeded; 864/864 tests passed**. No
 browser was run on the real display during this review.
 
 My independent clean-export private-Xvfb gate at exact `d81ad8e` was started
-while the advertised slot was free, but another full gate began seconds later,
-so it was not a quiet-host acceptance run. The S4a step itself was GREEN:
+after a process scan found no build, but I had not re-fetched Agent Mail after
+5720: BlackRobin had already claimed the slot in 5721. His full gate therefore
+overlapped mine, so mine was not a quiet-host acceptance run. The S4a step
+itself was GREEN:
 **80 checks, 0 failed**, including both Account cases and the canary self-test.
 The overall run ended **124/126 steps succeeded; 863/864 tests passed** because
 the unrelated live WebKit unit `automation bridge drives a live WebKitGTK
