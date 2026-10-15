@@ -50,14 +50,16 @@ def hook_bridges(tc, notify):
     return str(netd.dir / "bridges")
 
 
-def hook_view_prefix(bridges):
-    """P0.4's outer prefix: the host's own view, plus netd's bridges at
-    hook_run.BRIDGES (all a sealed hook needs from the outer sandbox). The host's
-    /run is not writable, so a tmpfs takes its place and every entry of the real
-    one is bound back: a checkout or agent home under /run stays (RoseCat 5559)."""
+def hook_view_prefix(bridges, keep):
+    """P0.4's outer prefix: the host's view with a private /run (the host's is not
+    writable, so /run/zb-net/bridges could not be made in it), netd's bridges at
+    hook_run.BRIDGES, and back from the host's /run exactly the `keep` paths that
+    lie under it (the checkout, the test root), so a clean export or agent home
+    there still works (RoseCat 5559) and nothing else of /run is seen (5565)."""
     argv = [sandbox.BWRAP, "--dev-bind", "/", "/", "--tmpfs", "/run"]
-    for name in sorted(os.listdir("/run")):
-        argv += ["--dev-bind-try", f"/run/{name}", f"/run/{name}"]
+    for path in map(Path, keep):
+        if path.is_relative_to("/run"):
+            argv += ["--bind", str(path), str(path)]
     return argv + ["--ro-bind", bridges, hook_run.BRIDGES]
 
 
@@ -179,7 +181,8 @@ class P04HookEnvironment(ContractCase):
         self.assertEqual(rc, 0, out)
         with FakeAnthropicApi(list(ECHO_TURNS)) as api:
             helper = self.run_turn(api, route, extra=("--mcp",), on_tool_call=echo_reply,
-                                   argv_prefix=hook_view_prefix(hook_bridges(self, notify)))
+                                   argv_prefix=hook_view_prefix(hook_bridges(self, notify),
+                                                                [support.HOST_DIR, self.homes.root]))
         self.assertTrue(any(f.get("type") == "tool_call" for f in helper.frames), helper.describe())
         return notify
 
@@ -214,15 +217,20 @@ class P04HookEnvironment(ContractCase):
     def test_r1_hooks_never_see_the_token(self):
         self.check_hooks(self.run_hooked_turn("R1"))
 
-    def test_the_hook_view_prefix_keeps_a_checkout_and_home_under_run(self):
-        """RoseCat 5559: with the checkout and the agent home under /run (a clean
-        export in /run/user/<uid>), the helper still imports zb_agent_host from the
-        checkout and reads the home under P0.4's prefix, beside the bridges."""
+    def test_the_hook_view_prefix_keeps_a_checkout_and_home_under_run_and_nothing_else(self):
+        """RoseCat 5559 and 5565: with the checkout and the agent home under /run (a
+        clean export in /run/user/<uid>), the helper still imports zb_agent_host
+        from the checkout and reads the home, beside the bridges; a sibling under
+        /run/user/<uid> stays hidden."""
         run_user = Path(f"/run/user/{os.getuid()}")
         self.assertTrue(os.access(run_user, os.W_OK), f"{run_user} is needed to place a checkout under /run")
         root = Path(tempfile.mkdtemp(prefix="zb-p04-", dir=run_user))
         self.addCleanup(shutil.rmtree, root, True)
-        shutil.copytree(support.HOST_DIR / "zb_agent_host", root / "host" / "zb_agent_host")
+        sibling = Path(tempfile.mkdtemp(prefix="zb-p04-sibling-", dir=run_user))
+        self.addCleanup(shutil.rmtree, sibling, True)
+        (sibling / "canary").write_text("must stay hidden\n")
+        checkout = root / "host"
+        shutil.copytree(support.HOST_DIR / "zb_agent_host", checkout / "zb_agent_host")
         home = root / "agent-home"
         home.mkdir()
         (home / "marker").write_text("home\n")
@@ -230,12 +238,14 @@ class P04HookEnvironment(ContractCase):
         self.addCleanup(shutil.rmtree, bridges, True)
         (bridges / "51091.sock").touch()
         code = ("import os, sys, zb_agent_host; print(os.path.dirname(zb_agent_host.__file__)); "
-                "print(open(sys.argv[1]).read().strip()); print(*os.listdir(sys.argv[2]))")
-        seen = subprocess.run(hook_view_prefix(str(bridges)) + [host_python(), "-c", code, str(home / "marker"), hook_run.BRIDGES],
-                              env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(root / "host"), "PYTHONDONTWRITEBYTECODE": "1"},
+                "print(open(sys.argv[1]).read().strip()); print(*os.listdir(sys.argv[2])); "
+                "print('sibling-seen' if os.path.exists(sys.argv[3]) else 'sibling-hidden')")
+        seen = subprocess.run(hook_view_prefix(str(bridges), [checkout, home]) +
+                              [host_python(), "-c", code, str(home / "marker"), hook_run.BRIDGES, str(sibling / "canary")],
+                              env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(checkout), "PYTHONDONTWRITEBYTECODE": "1"},
                               capture_output=True, text=True, timeout=30)
         self.assertEqual((seen.returncode, seen.stdout.split()),
-                         (0, [str(root / "host" / "zb_agent_host"), "home", "51091.sock"]), seen.stderr)
+                         (0, [str(checkout / "zb_agent_host"), "home", "51091.sock", "sibling-hidden"]), seen.stderr)
 
 
 CENSUS = Path(__file__).with_name("p0_census.json")
