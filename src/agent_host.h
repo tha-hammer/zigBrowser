@@ -12,14 +12,32 @@
  * process holds it, -1 on any other error. Taking it again is a no-op. */
 int zb_agent_home_lock(const char *home);
 
-/* A spawn's child setup (GSpawnChildSetupFunc): die with the browser
- * (PR_SET_PDEATHSIG SIGKILL), then _exit(127) unless the parent is still
- * `parent`, closing the fork-to-prctl race (RoseCat 5330). `delay_ms` (e2e
- * only, else 0) widens that race for the regression test. The helper's spawn
- * (agent_helper.c, S3b) uses it too. */
+/* The spawn/lifetime policy a sandbox backend supplies (MS0, macOS launch plan
+ * rev 6, route a): the Linux facts behind the child setup, named so a macOS
+ * backend (MS6) can later supply its own (posix_spawn + kqueue NOTE_EXIT) for
+ * the same semantic contract. `pdeathsig` is the signal the child dies with
+ * when the browser does (SIGKILL on Linux); `check_parent_race`, when set,
+ * _exit(127)s if the child was already reparented between fork and prctl,
+ * closing that race (RoseCat 5330); `delay_ms` (e2e only, else 0) widens it for
+ * the regression test. It governs die-with-browser ONLY — it does not create a
+ * process group (G_SPAWN_DEFAULT does not, and the helper makes its own with
+ * setpgid in its own child setup). */
+typedef struct {
+  int pdeathsig;
+  int check_parent_race;
+  unsigned int delay_ms;
+} ZbSpawnPolicy;
+
+/* The Linux spawn/lifetime policy: SIGKILL, race-check on, `delay_ms` (e2e). */
+ZbSpawnPolicy zb_spawn_policy_linux(unsigned int delay_ms);
+
+/* A spawn's child setup (GSpawnChildSetupFunc): applies `policy` in the child
+ * before exec — die with the browser, then the parent-race check. `parent` is
+ * the browser's pid at fork. The helper's spawn (agent_helper.c, S3b) uses it
+ * too (after its own setpgid). */
 typedef struct {
   pid_t parent;
-  unsigned int delay_ms;
+  ZbSpawnPolicy policy;
 } ZbChildSetup;
 void zb_agent_die_with_browser(void *data);
 

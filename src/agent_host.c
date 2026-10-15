@@ -38,15 +38,23 @@ int zb_agent_home_lock(const char *home) {
   return 0;
 }
 
-/* In the child, before exec: die with the browser. If the browser already
- * died between fork() and prctl(), the child was reparented and the death
- * signal would never come, so it exits at once instead. */
+/* The Linux spawn/lifetime policy (one source of the native facts, MS0 route a). */
+ZbSpawnPolicy zb_spawn_policy_linux(unsigned int delay_ms) {
+  ZbSpawnPolicy policy = {SIGKILL, 1, delay_ms};
+  return policy;
+}
+
+/* In the child, before exec: apply the spawn policy — die with the browser. If
+ * the browser already died between fork() and prctl(), the child was reparented
+ * and the death signal would never come, so it exits at once instead. */
 void zb_agent_die_with_browser(void *data) {
   const ZbChildSetup *setup = data;
-  if (setup->delay_ms > 0) {
-    usleep(setup->delay_ms * 1000u);
+  const ZbSpawnPolicy *policy = &setup->policy;
+  if (policy->delay_ms > 0) {
+    usleep(policy->delay_ms * 1000u);
   }
-  if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != setup->parent) {
+  if (prctl(PR_SET_PDEATHSIG, policy->pdeathsig) != 0 ||
+      (policy->check_parent_race && getppid() != setup->parent)) {
     _exit(127);
   }
 }
@@ -54,7 +62,7 @@ void zb_agent_die_with_browser(void *data) {
 int zb_agent_run_sync(const char *const *argv, const char *const *envp, unsigned int spawn_delay_ms) {
   int wait_status = 0;
   GError *error = NULL;
-  ZbChildSetup setup = {getpid(), spawn_delay_ms};
+  ZbChildSetup setup = {getpid(), zb_spawn_policy_linux(spawn_delay_ms)};
   if (!g_spawn_sync(NULL, (char **)argv, (char **)envp, G_SPAWN_DEFAULT, zb_agent_die_with_browser, &setup,
                     NULL, NULL, &wait_status, &error)) {
     g_printerr("zigBrowser: agent: cannot start %s: %s\n", argv[0], error != NULL ? error->message : "?");
@@ -239,7 +247,7 @@ int zb_agent_net_ensure(void) {
     net_unavailable("refused");
     return zb_net.state;
   }
-  ZbChildSetup setup = {getpid(), 0};
+  ZbChildSetup setup = {getpid(), zb_spawn_policy_linux(0)};
   int in_fd = -1, out_fd = -1;
   GError *error = NULL;
   /* CLOEXEC pipes: no later child inherits netd's stdin, so closing ours is its EOF. */

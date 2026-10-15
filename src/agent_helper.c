@@ -477,7 +477,7 @@ static void spawn_with(char *token) {
   g_subprocess_launcher_set_environ(launcher, zb_helper.envp);
   g_subprocess_launcher_take_fd(launcher, fds[0], 3);
   zb_helper.setup.parent = getpid();
-  zb_helper.setup.delay_ms = 0;
+  zb_helper.setup.policy = zb_spawn_policy_linux(0);
   g_subprocess_launcher_set_child_setup(launcher, helper_child_setup, &zb_helper.setup, NULL);
   GError *error = NULL;
   GSubprocess *proc = g_subprocess_launcher_spawnv(launcher, (const char *const *)zb_helper.argv, &error);
