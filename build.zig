@@ -1114,6 +1114,24 @@ pub fn build(b: *std.Build) void {
     b.step("display-guard-probe", "Print one line (the display guard's test target)").dependOn(&display_guard_probe.step);
     const display_guard_test = b.addSystemCommand(&.{ "python3", "tests/display_guard_test.py", "--zig", b.graph.zig_exe });
     test_step.dependOn(&display_guard_test.step);
+
+    guardDisplay(b);
+}
+
+/// The display guard (orchestrator HARD RULE, 2026-10-15): every step that a
+/// top-level step depends on waits for tools/display_guard.py, which refuses a
+/// display that is not a private Xvfb (and any WAYLAND_DISPLAY) unless
+/// ZB_ALLOW_REAL_DISPLAY=1. `run` (the browser on purpose), the install steps
+/// and `agent-runtime` and `mac-gate` (no window on this host) are left out.
+/// Called last, so every step registered above is covered.
+fn guardDisplay(b: *std.Build) void {
+    const guard = b.addSystemCommand(&.{ "python3", "tools/display_guard.py" });
+    guard.has_side_effects = true; // the environment is read on every run, never cached
+    const unguarded = [_][]const u8{ "run", "install", "uninstall", "agent-runtime", "mac-gate" };
+    next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
+        for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
+        for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
+    }
 }
 
 fn loadSiteConfig(b: *std.Build, path: []const u8) config_schema.SiteConfig {
