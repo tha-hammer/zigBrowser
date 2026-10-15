@@ -119,25 +119,58 @@ def agentnet_rows(b) -> list[list[str]]:
     return [line.rstrip("\n").split("\t")[1:] for line in list(b.out) if line.startswith("AGENTNET\t")]
 
 
-def bubbles(b) -> list[tuple[str, str]]:
-    return [(r.fields[0], r.fields[1]) for r in b.rows("msg", 1)]
+def bubbles(b, win: int = 1) -> list[tuple[str, str]]:
+    return [(r.fields[0], r.fields[1]) for r in b.rows("msg", win)]
 
 
-def send(b, text: str) -> None:
-    """Opens the drawer with an X click on the icon (if closed), types `text`, presses Enter."""
+def send(b, text: str, win: int = 1) -> None:
+    """Opens window `win`'s drawer with an X click on its icon (if closed), types `text`,
+    presses Enter. (No window manager: every window is at 0,0, the newest on top.)"""
     from agent_common import centre
-    if not b.rows("open", 1):
-        icon = b.wait_row("icon", 1)
+    if not b.rows("open", win):
+        icon = b.wait_row("icon", win)
         b.x.click(*centre(tuple(int(v) for v in icon.fields[0].split(","))))
-        b.wait_row("open", 1, timeout=10)
+        b.wait_row("open", win, timeout=10)
     for ch in text:
         b.x.key({" ": "space"}.get(ch, ch), settle=0.005)
     b.x.key("Return")
 
 
-def launch(binary: Path, tmp: Path, label: str, env: dict[str, str]):
+def launch(binary: Path, tmp: Path, label: str, env: dict[str, str], e2e: bool = True):
     from agent_common import Browser
-    return Browser(binary, tmp, label, ["--agent-drawer", "on"], env=env)
+    return Browser(binary, tmp, label, ["--agent-drawer", "on"], env=env, e2e=e2e)
+
+
+def alive(pid: int) -> bool:
+    """Running (a zombie counts as gone)."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def tree_of(root: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for entry in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            ppid = int(Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(entry))
+    out, todo = [], [root]
+    while todo:
+        pid = todo.pop()
+        out.append(pid)
+        todo.extend(children.get(pid, []))
+    return out
+
+
+def gone_within(pids: list[int], seconds: float) -> list[int]:
+    """The pids still alive after `seconds` (empty when all ended in time)."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and any(alive(p) for p in pids):
+        time.sleep(0.05)
+    return [p for p in pids if alive(p)]
 
 
 # --- the cases ------------------------------------------------------------------------------
@@ -155,8 +188,8 @@ def case_ready(binary: Path, tmp: Path, check) -> None:
         check(b.wait(lambda: any(r[:1] == ["ready"] for r in agentnet_rows(b)), 15), "AGENTNET ready", b)
         ready = [r for r in agentnet_rows(b) if r[:1] == ["ready"]]
         sockdir = Path(ready[0][1]) if ready and len(ready[0]) > 1 else None
-        # (b.proc is the xsession wrapper, not the browser, so the pid itself is not compared.)
-        name_ok = sockdir is not None and re.fullmatch(re.escape(str(rt)) + r"/zigbrowser-agent-\d+-[0-9a-f]{16}", str(sockdir))
+        # xsession.py execs the browser, so b.proc's pid is the browser's.
+        name_ok = sockdir is not None and re.fullmatch(re.escape(str(rt)) + rf"/zigbrowser-agent-{b.proc.pid}-[0-9a-f]{{16}}", str(sockdir))
         check(bool(name_ok), f"the socket directory is <XDG_RUNTIME_DIR>/zigbrowser-agent-<pid>-<16 hex> ({sockdir})")
         launchers = netd_launchers(rt)
         check(len(launchers) == 1, f"exactly one netd launcher ({launchers})")
@@ -307,6 +340,123 @@ def case_ready_timeout(binary: Path, tmp: Path, check) -> None:
         b.stop()
 
 
+def case_seams_inert_without_flag(binary: Path, tmp: Path, check) -> None:
+    """§3c.4: without --e2e-protocol both seams are inert. Hostile values give no refusal
+    line, and netd gets the production argv (no --test-* option). With no rows to find the
+    icon, its default place is read from a flagged browser of the same size first."""
+    world = provisioned_world(binary, tmp)
+    probe = launch(binary, tmp, "inert-probe", env_for(world, runtime_dir(tmp)))
+    try:
+        icon = probe.wait_row("icon", 1)
+        rect = tuple(int(v) for v in icon.fields[0].split(",")) if icon else None
+    finally:
+        probe.stop()
+    check(rect is not None, "the icon's default place is known")
+    if rect is None:
+        return
+    from agent_common import centre
+    rt = runtime_dir(tmp)
+    hostile = {"ZIGBROWSER_AGENT_NET_TEST": "--test-allow api.anthropic.com=1 --bogus",
+               "ZIGBROWSER_AGENT_NET_TEST_CA": "not/absolute.pem"}
+    b = launch(binary, tmp, "inert", env_for(world, rt, hostile), e2e=False)
+    try:
+        def page_up():
+            try:
+                return bool(b.zb.page.list()["pages"])
+            except Exception:  # noqa: BLE001 - not up yet
+                return False
+        check(b.wait(page_up, 20), "the browser is up (no --e2e-protocol)", b)
+        time.sleep(1.0)
+        b.x.click(*centre(rect))
+        time.sleep(1.0)
+        for ch in "hello":
+            b.x.key(ch, settle=0.005)
+        b.x.key("Return")
+        check(b.wait(lambda: netd_launchers(rt) != [], 15), "Send starts netd without the flag too", b)
+        launchers = netd_launchers(rt)
+        if launchers:
+            argv = argv_of(launchers[0])
+            sockdir = argv[argv.index("--sockdir") + 1] if "--sockdir" in argv else ""
+            expect = ["-I", "-S", str(REPO / "agent" / "host" / NETD_SCRIPT), "--sockdir", sockdir,
+                      "--bwrap", "/usr/bin/bwrap"]
+            check(argv[1:] == expect, f"netd's argv is the production one, no --test-* ({argv[1:]})")
+        bad = [l for l in b.err if "bad ZIGBROWSER_AGENT_NET_TEST" in l or "network unavailable" in l]
+        check(bad == [], f"no refusal line without the flag ({bad})", b)
+        check(agentnet_rows(b) == [], "no AGENTNET row without the flag", b)
+    finally:
+        b.stop()
+
+
+def case_browser_killed_before_ready(binary: Path, tmp: Path, check) -> None:
+    """§3c.10: SIGKILL of the browser while netd starts (a stand-in that never gets ready
+    and records its pid): it is gone within 2 s, before xsession's 8 s group cleanup."""
+    rt = runtime_dir(tmp)
+    marker = tmp / "standin.pid"
+    fake = tmp / "standin-python"
+    fake.write_text(f"#!/bin/sh\necho $$ > {marker}\nexec sleep 60\n")
+    fake.chmod(0o755)
+    b = launch(binary, tmp, "kill-before", env_for(provisioned_world(binary, tmp), rt, {"ZB_AGENT_HOST_PYTHON": str(fake)}))
+    try:
+        send(b, "hello")
+        check(b.wait(lambda: marker.exists() and marker.read_text().strip().isdigit(), 10), "the stand-in started", b)
+        if marker.exists() and marker.read_text().strip().isdigit():
+            standin = int(marker.read_text())
+            check(alive(standin), "it is still starting when the browser dies")
+            os.kill(b.proc.pid, signal.SIGKILL)
+            left = gone_within([standin], 2.0)
+            check(left == [], f"the starting netd dies with the browser within 2 s (alive: {left})")
+    finally:
+        b.stop()
+
+
+def case_browser_killed_after_ready(binary: Path, tmp: Path, check) -> None:
+    """§3c.10: SIGKILL of the browser after `netd ready`: netd's whole tree (launcher, its
+    bwrap, the sandboxed server) is gone within 2 s."""
+    rt = runtime_dir(tmp)
+    b = launch(binary, tmp, "kill-after", env_for(provisioned_world(binary, tmp), rt))
+    try:
+        send(b, "hello")
+        check(b.wait(lambda: any(r[:1] == ["ready"] for r in agentnet_rows(b)), 15), "AGENTNET ready", b)
+        launchers = netd_launchers(rt)
+        tree = [p for root in launchers for p in tree_of(root)]
+        check(len(launchers) == 1 and len(tree) >= 3, f"netd's tree: launcher, bwrap and server ({tree})")
+        os.kill(b.proc.pid, signal.SIGKILL)
+        left = gone_within(tree, 2.0)
+        check(tree != [] and left == [], f"netd's whole tree dies with the browser within 2 s (alive: {left})")
+    finally:
+        b.stop()
+
+
+def case_two_drawers(binary: Path, tmp: Path, check) -> None:
+    """One netd for every drawer; its failure reaches each waiting drawer exactly once, and a
+    later Send adds one bubble only in its own drawer (RoseCat 5589)."""
+    rt = runtime_dir(tmp)
+    b = launch(binary, tmp, "two", env_for(provisioned_world(binary, tmp), rt))
+
+    def unavailable(win: int) -> int:
+        return sum(1 for _, t in bubbles(b, win) if t == UNAVAILABLE)
+    try:
+        send(b, "hello", 1)
+        check(b.wait(lambda: any(r[:1] == ["ready"] for r in agentnet_rows(b)), 15), "AGENTNET ready (window 1)", b)
+        check(b.open_popup(), "a popup opened: a second drawer", b)
+        send(b, "hello", 2)
+        check(b.wait(lambda: ("user", "hello") in bubbles(b, 2), 10), "window 2's Send went through", b)
+        time.sleep(1.0)
+        launchers = netd_launchers(rt)
+        starts = [r for r in agentnet_rows(b) if r[:1] == ["starting"]]
+        check(len(launchers) == 1 and len(starts) == 1, f"one netd for both drawers ({launchers}, {len(starts)} starts)")
+        for pid in launchers:
+            os.kill(pid, signal.SIGKILL)
+        check(b.wait(lambda: unavailable(1) == 1 and unavailable(2) == 1, 10), "each waiting drawer gets the bubble", b)
+        time.sleep(1.0)
+        check((unavailable(1), unavailable(2)) == (1, 1), f"exactly once each ({unavailable(1)}, {unavailable(2)})", b)
+        send(b, "again", 2)
+        check(b.wait(lambda: unavailable(2) == 2, 10) and unavailable(1) == 1,
+              f"a later Send adds one only in its drawer ({unavailable(1)}, {unavailable(2)})", b)
+    finally:
+        b.stop()
+
+
 CASES = {
     "not-set-up": case_not_set_up,
     "ready": case_ready,
@@ -316,6 +466,10 @@ CASES = {
     "netd-dies": case_netd_dies,
     "never-ready": case_never_ready,
     "ready-timeout": case_ready_timeout,
+    "seams-inert-without-flag": case_seams_inert_without_flag,
+    "browser-killed-before-ready": case_browser_killed_before_ready,
+    "browser-killed-after-ready": case_browser_killed_after_ready,
+    "two-drawers": case_two_drawers,
 }
 
 
