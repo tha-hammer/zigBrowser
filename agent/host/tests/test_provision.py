@@ -21,7 +21,7 @@ HOST_DIR = Path(__file__).resolve().parents[1]
 REPO = HOST_DIR.parents[1]
 sys.path.insert(0, str(HOST_DIR))
 
-from zb_agent_host import options, setup  # noqa: E402
+from zb_agent_host import options, relay, setup  # noqa: E402
 
 FIXTURE = REPO / "tests" / "fixtures" / "agent" / "sai_source"
 sys.path.insert(0, str(REPO / "tests" / "e2e"))
@@ -450,6 +450,20 @@ class RuntimeRecordTest(unittest.TestCase):
         box = Sandbox(self)
         box.provision()
         self.assertIsNone(json.loads((box.home.runtime / "host.json").read_text())["runtime_lock"])
+
+
+class RuntimeRelayTest(unittest.TestCase):
+    """§3c.2 and §3c.8b: setup's published runtime holds zb-net-relay, the outer relay
+    (the helper sandbox's command) and each sealed hook's bridge-only relay. Until
+    S3b only the P0 provision path installed it, so a real setup home had none."""
+
+    def test_setup_installs_the_relay_read_only_and_executable(self):
+        box = Sandbox(self)
+        box.provision()
+        path = box.home.runtime / "bin" / "zb-net-relay"
+        self.assertEqual(stat.S_IMODE(path.lstat().st_mode), 0o555)
+        self.assertTrue(stat.S_ISREG(path.lstat().st_mode))
+        self.assertEqual(path.read_bytes(), Path(relay.BRIDGE_RELAY_FILE).read_bytes())
 
 
 def inode_and_bytes(path):

@@ -299,6 +299,21 @@ pub fn build(b: *std.Build) void {
     const run_nav_policy_tests = b.addRunArtifact(nav_policy_tests);
     run_nav_policy_tests.skip_foreign_checks = true;
 
+    // Chat drawer S3.3: the native validator of helper frames.
+    const agent_protocol_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const agent_protocol_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_protocol_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_protocol_tests_module.addImport("agent_protocol", agent_protocol_module);
+    const run_agent_protocol_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_tests_module }));
+    run_agent_protocol_tests.skip_foreign_checks = true;
+
     // Chat drawer S1: the floating icon's pure logic (src/agent_drawer.zig).
     const agent_drawer_module = b.createModule(.{
         .root_source_file = b.path("src/agent_drawer.zig"),
@@ -707,6 +722,14 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_provision",
     });
+    // Chat drawer S3b: the helper's `chat` (real SDK and CLI against the fake
+    // Messages API, token on fd 3, R1 only) and `launch` (the sandbox with its
+    // own network, the outer relay as its command); fails closed without the venv.
+    const agent_host_chat = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat",
+    });
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
     const agent_setup_e2e = b.addSystemCommand(&.{
@@ -958,6 +981,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
+    test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -1000,6 +1024,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_unit.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_provision_unit.step);
+    test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_hook_net.step);
