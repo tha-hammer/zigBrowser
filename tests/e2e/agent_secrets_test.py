@@ -606,14 +606,29 @@ def bubbles_after(b, start: int) -> list[tuple[str, ...]]:
     return [r.fields for r in b.rows("msg", 1)[start:]]
 
 
+NO_TOKEN_BUBBLE = ("system", "Add a Claude token in the window that opened")
+
+
+def token_was_found(b, start: int, statuses: int) -> tuple[bool, str]:
+    """After a Send: the drawer answered (any bubble besides the user's: "Agent not available
+    yet" before S3b's helper, the helper's reply after it), none of its bubbles asks for a
+    token, and the Secrets window did not open again."""
+    answered = b.wait(lambda: any(f[0] != "user" for f in bubbles_after(b, start)), 20)
+    time.sleep(1.0)
+    found = answered and NO_TOKEN_BUBBLE not in bubbles_after(b, start) and secrets_status(b)[statuses:] == []
+    return found, f"bubbles {bubbles_after(b, start)}, new statuses {secrets_status(b)[statuses:]}"
+
+
 def case_fallback_persists(binary: Path, tmp: Path, check) -> None:
     """RoseCat 5648 B1 (D11): the explicit "Save to a private file instead" click makes the file
-    the active store: a second Send finds that token (no Secrets window), and so does a Send
-    after a restart without --agent-secret-store."""
+    the active store, even in a run started with --agent-secret-store secret-service: a second
+    Send finds that token (no Secrets window), and so does a Send after a restart without the
+    flag (the file persists the choice)."""
     token = canary()
     world = provisioned(binary, tmp, "fallback")
     with fake_api(tmp) as api:
-        b = launch(binary, tmp, world, no_session_bus_env({}, tmp), api, "fallback")
+        # The first run names the Secret Service explicitly, so only the click can select the file.
+        b = launch(binary, tmp, world, no_session_bus_env({}, tmp), api, "fallback", ["--agent-secret-store", "secret-service"])
         try:
             send_prompt(b, "hello")
             check(b.wait(lambda: secrets_status(b)[:1] == ["no-keyring"], 20), "no keyring: the window opens", b)
@@ -623,18 +638,15 @@ def case_fallback_persists(binary: Path, tmp: Path, check) -> None:
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 15), "the click stores to the file", b)
             statuses, start = len(secrets_status(b)), len(b.rows("msg", 1))
             send_prompt(b, "again")
-            check(b.wait(lambda: ("system", "Agent not available yet") in bubbles_after(b, start), 15),
-                  f"a second Send finds the file token ({bubbles_after(b, start)})", b)
-            time.sleep(1.0)
-            check(secrets_status(b)[statuses:] == [], f"and asks no keyring again ({secrets_status(b)[statuses:]})", b)
+            found, seen = token_was_found(b, start, statuses)
+            check(found, f"a second Send finds the file token and asks no store again ({seen})", b)
         finally:
             b.stop()
         b = launch(binary, tmp, world, no_session_bus_env({}, tmp), api, "fallback-restart")
         try:
             send_prompt(b, "after a restart")
-            check(b.wait(lambda: ("system", "Agent not available yet") in bubbles_after(b, 0), 15),
-                  f"after a restart without the flag the file token is still the one used ({bubbles_after(b, 0)})", b)
-            time.sleep(1.0)
+            found, seen = token_was_found(b, 0, 0)
+            check(found, f"after a restart without the flag the file token is still the one used ({seen})", b)
             check(secrets_lines(b) == [], f"and no Secrets window opens ({secrets_lines(b)[:3]})", b)
         finally:
             b.stop()
@@ -682,10 +694,13 @@ def case_lookup_race(binary: Path, tmp: Path, check) -> None:
         try:
             send_prompt(b, "hello")
             check(b.wait(lambda: (secrets_rect(b, "save") or (0, 0, 0, 0))[2] > 0, 10), "the window is up", b)
+            up = time.monotonic()
             check(secrets_status(b) == [], "before the held-back lookup answered (timing precondition)", b)
             paste_and_save(b, token)
             b.wait(lambda: secrets_status(b) != [], 10)
-            time.sleep(1.5)
+            # The lookup's answer is held back 3 s from when the window asked: wait past it.
+            b.wait(lambda: time.monotonic() - up > 4.5, 10)
+            time.sleep(0.5)
             stored = kr.lookup()
             final = secrets_status(b)[-1:]
             want = ["connected-secret-service"] if stored == token else ["empty"]

@@ -159,16 +159,18 @@ fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !void {
 }
 
 /// Chat drawer S4a (plan D11, S4.1): with a provisioned agent home, the
-/// Secrets window gets the home and the store (--agent-secret-store, else the
-/// Secret Service), and the drawer's Send asks that store before starting
-/// netd. Without one nothing is configured. Linux only, like the drawer.
+/// Secrets window gets the home and the store flag (--agent-secret-store), and
+/// the drawer's Send asks the active store after starting netd. Without one
+/// nothing is configured. Linux only, like the drawer.
 fn configureAgentSecrets(arena: std.mem.Allocator, store: ?agent_config.SecretStore, e2e: bool) !void {
     if (comptime builtin.os.tag != .linux) return;
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return;
     const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
     if (std.c.access(current.ptr, 0) != 0) return; // F_OK: not set up
-    const chosen = store orelse .secret_service;
-    secrets_window.zb_secrets_window_setup(@intFromEnum(chosen), (try arena.dupeZ(u8, home)).ptr, @intFromBool(e2e));
+    // -1: no flag; the window then uses the file when one exists (the explicit
+    // file choice persisting), else the Secret Service (RoseCat 5648).
+    const chosen: c_int = if (store) |s| @intFromEnum(s) else -1;
+    secrets_window.zb_secrets_window_setup(chosen, (try arena.dupeZ(u8, home)).ptr, @intFromBool(e2e));
 }
 
 // The token store's C exports (src/agent_secrets.zig) are linked where the

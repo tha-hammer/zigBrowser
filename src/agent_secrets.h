@@ -55,4 +55,9 @@ typedef void (*ZbTokenDone)(ZbTokenResult result, char *token, void *data);
  * ZB_TOKEN_OK; `done` owns it and releases it with zb_secrets_free. */
 void zb_agent_token_fetch(int store, const char *agent_home, ZbTokenDone done, void *data);
 
+/* The e2e-only answer delays (ZIGBROWSER_AGENT_SECRETS_TEST_DELAY, set by
+ * the Secrets window's setup with --e2e-protocol): each Secret Service
+ * answer is held back this many milliseconds after the call. */
+void zb_secrets_set_test_delay(unsigned lookup_ms, unsigned store_ms, unsigned clear_ms);
+
 #endif

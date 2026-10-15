@@ -9,6 +9,7 @@
 #include "agent_drawer.h" /* zb_emit_protocol_row */
 #include "agent_secrets.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* src/agent_secrets.zig (C exports, Linux only). Each takes the token's
@@ -49,6 +50,11 @@ static const char *const state_rows[] = {"empty", "connected-secret-service", "c
 typedef struct {
   ZbSecretsConfig config;
   char *agent_home;
+  /* --agent-secret-store: -1 when not given, else a ZbSecretStore. */
+  int explicit_store;
+  /* This session's click on "Save to a private file instead" (D11: the
+   * explicit choice selects the file store; the file then persists it). */
+  int file_choice;
   GtkWidget *window;
   GtkWidget *entry;
   GtkWidget *save;
@@ -57,32 +63,60 @@ typedef struct {
   GtkWidget *file_box; /* the warning and "Save to a private file instead" */
   GtkWidget *file_button;
   /* A token the Secret Service did not take, kept only until the user
-   * chooses the private file or closes the window (then wiped). */
+   * chooses the private file or closes the window (then wiped). It belongs
+   * to the current epoch: no older answer may touch it. */
   char *pending;
+  /* An operation (the opening lookup, Save, Remove) is in flight: Save,
+   * Remove and the entry wait for it. */
   int busy;
+  /* The store that was active when Remove started (its failure rule). */
+  int removing_store;
   int configured;
-  guint generation; /* bumped when the window closes: late callbacks are dropped */
+  /* Bumped when any operation starts and when the window closes. An answer
+   * carries the epoch it was started in; any other epoch's answer changes
+   * nothing (RoseCat 5648). */
+  guint epoch;
 } Secrets;
 
 static Secrets secrets;
+
+/* src/agent_secrets.zig: the active store (explicit -1 for no flag). */
+int zb_secrets_effective_store(int explicit_store, int session_file_choice, const char *agent_home);
+/* 0 with the delays filled in, -1 for a bad value. */
+int zb_secrets_parse_test_delay(const char *text, unsigned *lookup_ms, unsigned *store_ms, unsigned *clear_ms);
+
+#define TEST_DELAY_ENV "ZIGBROWSER_AGENT_SECRETS_TEST_DELAY"
 
 void zb_secrets_window_configure(const ZbSecretsConfig *config) {
   secrets.config = *config;
   g_free(secrets.agent_home);
   secrets.agent_home = g_strdup(config->agent_home != NULL ? config->agent_home : "");
   secrets.config.agent_home = secrets.agent_home;
+  secrets.explicit_store = config->store;
 }
 
 void zb_secrets_window_setup(int store, const char *agent_home, int e2e_protocol) {
-  ZbSecretsConfig config = {e2e_protocol, store == ZB_SECRET_STORE_FILE ? ZB_SECRET_STORE_FILE : ZB_SECRET_STORE_SERVICE,
-                            agent_home, NULL, NULL};
+  ZbSecretsConfig config = {e2e_protocol, ZB_SECRET_STORE_SERVICE, agent_home, NULL, NULL};
   zb_secrets_window_configure(&config);
+  secrets.explicit_store = store == ZB_SECRET_STORE_FILE || store == ZB_SECRET_STORE_SERVICE ? store : -1;
   secrets.configured = 1;
+  const char *delay = e2e_protocol ? g_getenv(TEST_DELAY_ENV) : NULL;
+  if (delay != NULL) {
+    unsigned lookup_ms = 0, store_ms = 0, clear_ms = 0;
+    if (zb_secrets_parse_test_delay(delay, &lookup_ms, &store_ms, &clear_ms) == 0) {
+      zb_secrets_set_test_delay(lookup_ms, store_ms, clear_ms);
+    } else {
+      fprintf(stderr, "zigBrowser: agent: bad " TEST_DELAY_ENV "\n");
+    }
+  }
 }
 
 int zb_secrets_window_configured(void) { return secrets.configured; }
 
-int zb_secrets_window_store(void) { return secrets.config.store; }
+int zb_secrets_window_store(void) {
+  return zb_secrets_effective_store(secrets.explicit_store, secrets.file_choice,
+                                    secrets.agent_home != NULL ? secrets.agent_home : "");
+}
 
 const char *zb_secrets_window_home(void) { return secrets.agent_home; }
 
@@ -124,23 +158,30 @@ static void set_busy(int busy) {
   gtk_widget_set_sensitive(secrets.file_button, !busy);
 }
 
+/* Starts an asynchronous operation: a new epoch, and the controls wait. */
+static gpointer begin_operation(void) {
+  secrets.epoch++;
+  set_busy(1);
+  return GUINT_TO_POINTER(secrets.epoch);
+}
+
+/* Whether an answer belongs to the operation in flight in this window. */
+static int current(gpointer epoch) { return secrets.window != NULL && GPOINTER_TO_UINT(epoch) == secrets.epoch; }
+
 static void notify_changed(int has_token) {
   if (secrets.config.changed != NULL) {
     secrets.config.changed(has_token, secrets.config.data);
   }
 }
 
-/* A callback from a worker thread for a window that has since closed is
- * dropped: `data` carries the generation it was started in. */
-static int current(gpointer data) { return secrets.window != NULL && GPOINTER_TO_UINT(data) == secrets.generation; }
-
 /* --- the current state, when the window opens ------------------------------ */
 
-static void on_lookup(ZbSecretsResult result, char *token, gpointer data) {
+static void on_lookup(ZbSecretsResult result, char *token, gpointer epoch) {
   zb_secrets_free(token); /* only whether one exists matters here */
-  if (!current(data)) {
+  if (!current(epoch)) {
     return;
   }
+  set_busy(0);
   if (result == ZB_SECRETS_OK) {
     set_state(STATE_SERVICE, TEXT_SERVICE);
   } else if (result == ZB_SECRETS_ABSENT) {
@@ -151,12 +192,12 @@ static void on_lookup(ZbSecretsResult result, char *token, gpointer data) {
 }
 
 static void show_current_state(void) {
-  if (secrets.config.store == ZB_SECRET_STORE_FILE) {
+  if (zb_secrets_window_store() == ZB_SECRET_STORE_FILE) {
     int present = zb_secrets_file_present(secrets.agent_home);
     set_state(present ? STATE_FILE : STATE_EMPTY, present ? TEXT_FILE : TEXT_EMPTY);
     return;
   }
-  zb_secrets_service_lookup_async(on_lookup, GUINT_TO_POINTER(secrets.generation));
+  zb_secrets_service_lookup_async(on_lookup, begin_operation());
 }
 
 /* --- Save ------------------------------------------------------------------- */
@@ -170,10 +211,9 @@ static void store_in_file(const char *token) {
   }
 }
 
-static void on_service_stored(ZbSecretsResult result, gpointer data) {
-  if (!current(data)) {
-    wipe_pending();
-    return;
+static void on_service_stored(ZbSecretsResult result, gpointer epoch) {
+  if (!current(epoch)) {
+    return; /* an older window's or operation's answer: this one's token is not its to wipe */
   }
   set_busy(0);
   if (result == ZB_SECRETS_OK) {
@@ -202,16 +242,16 @@ static void on_save(GtkWidget *button, gpointer unused) {
     set_state(STATE_REJECTED, TEXT_REJECTED);
     return;
   }
-  if (secrets.config.store == ZB_SECRET_STORE_FILE) {
+  if (zb_secrets_window_store() == ZB_SECRET_STORE_FILE) {
     store_in_file(token);
     explicit_bzero(token, strlen(token));
     g_free(token);
     return;
   }
   secrets.pending = token; /* wiped on success, on close, or after the file choice */
-  set_busy(1);
+  gpointer epoch = begin_operation();
   set_status_text(TEXT_WORKING);
-  zb_secrets_service_store_async(token, on_service_stored, GUINT_TO_POINTER(secrets.generation));
+  zb_secrets_service_store_async(token, on_service_stored, epoch);
 }
 
 static void on_save_to_file(GtkWidget *button, gpointer unused) {
@@ -220,20 +260,28 @@ static void on_save_to_file(GtkWidget *button, gpointer unused) {
   if (secrets.busy || secrets.pending == NULL) {
     return;
   }
+  secrets.file_choice = 1; /* the explicit choice: the file is now the active store */
   store_in_file(secrets.pending);
   wipe_pending();
   gtk_widget_set_visible(secrets.file_box, FALSE);
 }
 
-/* --- Remove ----------------------------------------------------------------- */
+/* --- Remove: both stores ------------------------------------------------------ */
 
-static void on_service_cleared(ZbSecretsResult result, gpointer data) {
-  if (!current(data)) {
+/* Remove clears the keyring item and deletes the file (RoseCat 5648, 5649).
+ * Success needs the file gone and the keyring cleared; a keyring that cannot
+ * be reached also counts when the file was the active store (no keyring is
+ * why the file store exists). Otherwise "The token could not be removed." */
+static void on_cleared(ZbSecretsResult result, gpointer epoch) {
+  if (!current(epoch)) {
     return;
   }
   set_busy(0);
   int file_gone = zb_secrets_remove_file(secrets.agent_home) == 0;
-  if (result == ZB_SECRETS_OK && file_gone) {
+  int keyring_done = result == ZB_SECRETS_OK ||
+                     (result == ZB_SECRETS_UNAVAILABLE && secrets.removing_store == ZB_SECRET_STORE_FILE);
+  if (file_gone && keyring_done) {
+    secrets.file_choice = 0;
     set_state(STATE_EMPTY, TEXT_EMPTY);
     notify_changed(0);
   } else {
@@ -248,17 +296,8 @@ static void on_remove(GtkWidget *button, gpointer unused) {
     return;
   }
   wipe_pending();
-  if (secrets.config.store == ZB_SECRET_STORE_FILE) {
-    if (zb_secrets_remove_file(secrets.agent_home) == 0) {
-      set_state(STATE_EMPTY, TEXT_EMPTY);
-      notify_changed(0);
-    } else {
-      set_status_text(TEXT_REMOVE_FAILED);
-    }
-    return;
-  }
-  set_busy(1);
-  zb_secrets_service_clear_async(on_service_cleared, GUINT_TO_POINTER(secrets.generation));
+  secrets.removing_store = zb_secrets_window_store();
+  zb_secrets_service_clear_async(on_cleared, begin_operation());
 }
 
 /* --- where things are (e2e rows) --------------------------------------------- */
@@ -326,7 +365,7 @@ static void on_destroy(GtkWidget *window, gpointer unused) {
   (void)window;
   (void)unused;
   wipe_pending();
-  secrets.generation++;
+  secrets.epoch++;
   secrets.window = NULL;
   secrets.busy = 0;
 }

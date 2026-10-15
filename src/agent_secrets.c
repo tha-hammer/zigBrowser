@@ -54,6 +54,23 @@ static struct {
 
 static GMutex ss_lock;
 
+/* ZIGBROWSER_AGENT_SECRETS_TEST_DELAY (--e2e-protocol only): each Secret
+ * Service answer is held back this long after the call, so a test can make
+ * an old answer land late (RoseCat 5648). Zero in production. */
+static guint delay_lookup_ms, delay_store_ms, delay_clear_ms;
+
+void zb_secrets_set_test_delay(unsigned lookup_ms, unsigned store_ms, unsigned clear_ms) {
+  delay_lookup_ms = lookup_ms;
+  delay_store_ms = store_ms;
+  delay_clear_ms = clear_ms;
+}
+
+static void hold_back(guint ms) {
+  if (ms > 0) {
+    g_usleep((gulong)ms * 1000);
+  }
+}
+
 /* Loads libsecret once. The handle is never closed: libsecret keeps
  * threads and D-Bus state that must outlive any one call. */
 static int ss_load(void) {
@@ -133,6 +150,7 @@ static void store_thread(GTask *task, gpointer source, gpointer task_data, GCanc
   }
   wipe_free(call->token);
   call->token = NULL;
+  hold_back(delay_store_ms);
   g_task_return_boolean(task, TRUE);
 }
 
@@ -150,6 +168,7 @@ static void clear_thread(GTask *task, gpointer source, gpointer task_data, GCanc
     g_clear_error(&error);
     g_hash_table_unref(attrs);
   }
+  hold_back(delay_clear_ms);
   g_task_return_boolean(task, TRUE);
 }
 
@@ -176,6 +195,7 @@ static void lookup_thread(GTask *task, gpointer source, gpointer task_data, GCan
     g_clear_error(&error);
     g_hash_table_unref(attrs);
   }
+  hold_back(delay_lookup_ms);
   g_task_return_boolean(task, TRUE);
 }
 
@@ -282,6 +302,7 @@ static void token_fetch_thread(GTask *task, gpointer source, gpointer task_data,
       g_clear_error(&error);
       g_hash_table_unref(attrs);
     }
+    hold_back(delay_lookup_ms);
   }
   g_task_return_boolean(task, TRUE);
 }
