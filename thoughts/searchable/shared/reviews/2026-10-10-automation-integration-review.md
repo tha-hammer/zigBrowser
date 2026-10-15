@@ -9744,3 +9744,73 @@ text requirement implemented by `35c6ee7`/`3ae87bb` is also USER-ACCEPTED.**
 The separate defense-in-depth advisory about validating a credential planted
 directly into Secret Service by another same-user program remains advisory;
 it was not part of this Save/file-store acceptance run.
+
+## MS0 Slice D, token-plan rev 16.11, and S3c same-window red (`0fb21f4`, `ac07c1a`, `9638900`)
+
+**Explicit verdict for `ac07c1a`: APPROVED as the green, behavior-preserving
+MS0 Slice D.** `LaunchSpec` now carries the immutable semantic `Network` value,
+whose `Egress` contains the endpoint, backend-owned upstream allowlist and
+socket directory and whose `BridgePolicy` contains the bridge ports
+(`agent/host/zb_agent_host/sandbox.py@ac07c1a:76-96,125-151,240-275`). The
+existing endpoint, egress-directory and bridge-policy accessors project from
+that value, and `launch_spec()` carries it. This closes finding 1 under
+`9d2d1f0`: network is no longer merely adjacent backend methods, and the
+allowlist is no longer absent from the portable backend contract.
+
+The same commit also closes the producer/test-bypass half of finding 2.
+`setup.net_manifest()` is the function the real `stage()` calls, and it now
+serializes `bridges_dir`, backend bridge ports, endpoint and allowlist
+(`agent/host/zb_agent_host/setup.py@ac07c1a:433-450,485`). The changed-network
+test injects one whole `Network` and observes its endpoint through the real CLI
+proxy, its directory through `launch.build_argv`, its ports/allowlist through
+the real setup producer, and the value in `LaunchSpec`; it neither compares
+metadata only nor hand-writes `net.json`
+(`agent/host/tests/test_backend_contract.py@ac07c1a:383-474`). Defaults remain
+byte-identical. JadeBeacon's clean-export private-Xvfb gate at exact
+`ac07c1a` was green: **129/129 steps succeeded; 868/868 tests passed; Zig exit
+0**. Its export and cache were deleted.
+
+This is deliberately a partial MS0 slice, not a claim that the old finding is
+fully closed. **Finding 2's consumer half remains OPEN for Slice E
+(JadeBeacon/BlueBeaver):** at exact `ac07c1a`, production netd/hook/relay still
+fall back to their fixed allowlist/port maps, so changed manifest values do not
+yet alter their real listener/profile behavior. **Finding 3 remains OPEN for
+Slice F (JadeBeacon)** as the orchestrator directed: caller-supplied native
+spawn policy plus the composed lifetime/channel fields are not part of Slice
+D. Neither later slice is a defect in this inert, independently green producer
+slice.
+
+**Explicit verdict for `0fb21f4`: BLOCKED (docs).** Its three edited locations
+correctly use the approved
+`^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$` setup-token rule, the one shared
+validator and the exact six-byte surrounding-whitespace trim. But the same
+revision still says at plan line 1901 that “whitespace or a multi-line paste is
+rejected.” That directly contradicts line 544, `3b07a37`, and the user's
+accepted real-screen behavior: surrounding spaces/tabs/newlines around one
+valid token are trimmed and accepted. Fix forward, without rewriting history,
+to say that internal whitespace, more than one token/non-whitespace line, or
+any other nonmatching trimmed value is rejected. This is a plan-only blocker;
+it does not reopen the approved production implementation or the user's S4a
+acceptance.
+
+**Explicit verdict for `9638900`: APPROVED as failing-first test evidence.**
+The new `same-window` case makes the fake helper emit a valid `result` followed
+by a real `session_ended`. Its unchanged arm proves the next Send in window 1
+opens `s-1-2`, while its changed arm edits `settings.json` after session 1 and
+then requires the exact config-changed status/bubble, no new prompt, helper,
+child or reply (`tests/e2e/agent_config_check_test.py@9638900:34-48,90-104,
+194-226`). Counting replies before the refusal is the correct same-window
+oracle. The reported evidence is specific: old code failed **5/15** checks;
+the once-per-window mutant failed the same **5/15**; the uncommitted green
+passed **15/15**, and the complete file passed **62/62**. This closes the
+BLOCKED-for-tests verdict on `40d5c6d`; production remains intentionally red
+until the separate green commit lands.
+
+No test was started for this review because BlackRobin held the serialized gate
+slot. The exact `ac07c1a` clean-export gate above is valid Slice-D evidence;
+`9638900` is intentionally red and its green was still gating. The newest
+approved linear push-through SHA therefore remains **`dc52885`**: the current
+history still contains the unpaired S3c red (`40d5c6d`/`9638900`), the blocked
+plan revision `0fb21f4`, and the staged MS0 E/F closures have not landed. A
+later fix-forward may close all of these cumulatively; none may be skipped or
+history-rewritten.
