@@ -8917,3 +8917,223 @@ was used.
 wait for the remove-close follow-up. The newest approved linear push-through
 SHA remains **`dc52885`**, because `0fca5d1` is blocked and the earlier
 interleaved S3b chain still awaits its follow-ups.
+
+**Superseded:** the later `bc85c37`/`adbb8a0` review below closes this sole
+S4a blocker and approves S4a.
+
+## macOS MS0 SandboxBackend seam (`4fffdd8`, `7301c5d`)
+
+**Explicit verdict for `4fffdd8`: BLOCKED-for-tests.** The commit is genuinely
+red before production exists: an exact clean export ran all seven new tests and
+failed all seven because `SandboxBackend`/`LinuxBwrapBackend` were absent.
+However, its central behavior-preservation oracle cannot detect a wrong
+refactor. `test_helper_launch_spec_equals_helper_argv` and its network variant
+compare a fresh backend's `launch_spec` with `sandbox.helper_argv`
+(`agent/host/tests/test_backend_contract.py@4fffdd8:95-120`), but after the green
+the alleged oracle calls the same singleton backend method
+(`agent/host/zb_agent_host/sandbox.py@7301c5d:183-197`). A clean-export mutant
+that appended `--wrong-ms0-mutant` to every `LinuxBwrapBackend.launch_spec`
+result therefore left **all 7/7 tests green**. The third “launch” test never
+calls `launch.build_argv` or compares an argv; it checks only that the backend
+has a method (`test_backend_contract.py@4fffdd8:122-131`). This does not meet
+the rev-6 MS0 requirement for an independent, captured pre-refactor golden
+over the argument variants. The follow-up needs a fixed pre-refactor oracle
+and must drive the real `launch.build_argv` path.
+
+**Explicit verdict for `7301c5d`: BLOCKED.** The extraction of the bwrap argv
+builder itself is production-called and appears mechanically behavior-
+preserving: `helper_argv` delegates to the singleton `LinuxBwrapBackend`, and
+existing callers still receive a list (`sandbox.py@7301c5d:102-159,183-197`).
+Three required parts of the rev-6 contract are nevertheless absent:
+
+1. The backend's network capability is only a parallel description.
+   `egress_endpoint`, `bridge_policy` and `hook_launch_spec`
+   (`sandbox.py@7301c5d:161-180`) have no production callers. The running paths
+   still hard-code the proxy in `options.py@7301c5d:21-23`, the egress mount in
+   `launch.py@7301c5d:48`, and the hook bridges/network launcher in
+   `hook_run.py@7301c5d:38,104-127`. A different backend-supplied endpoint or
+   hook policy therefore changes no CLI/helper/hook environment or argv. This
+   fails both macOS rev-6 lines 331-350 and drawer-plan §3c's separation of
+   helper egress from bridge-only hooks. The tests must inject a changed
+   backend capability through the real consumer paths and observe the exact
+   production environment/argv; the current hook test does not inspect
+   `hook_launch_spec` at all.
+2. The required C/GLib spawn/lifetime seam was not implemented. Rev-6 MS0
+   explicitly factors both Python policy/argv and C spawn/parent-death behind
+   the semantic launch spec and names `launch.py` plus `src/agent_host.c`
+   (macOS plan lines 318-376). The green changes only `sandbox.py`;
+   `src/agent_host.c@7301c5d:41-75` remains a Linux-specific direct
+   `g_spawn_sync`/`prctl(PR_SET_PDEATHSIG)` path with no parameterized backend
+   seam or preservation test. Implement it, or revise and approve the plan
+   before calling MS0 complete.
+3. Consequently `LaunchSpec` contains only an argv tuple. It does not yet
+   carry or govern the broader semantic launch contract the plan assigns to
+   it: endpoint/policy consumption, per-hook realization, or spawn/lifetime.
+
+The exact new unit was independently checked outside the gate: `4fffdd8`
+reported **7 tests, 7 failures**; `7301c5d` reported **7 tests, 0 failures**.
+The self-referential wrong-argv mutant also reported **7 tests, 0 failures**.
+An independent pre/post comparison between exact `4fffdd8` and `7301c5d`
+found identical `helper_argv` output for seven variants: default, seccomp fd,
+extra read-only path, writable Claude tree, network binds, a state-directory
+subset, and the combined seccomp/read-only/network case. This supports the
+narrow argv-extraction claim even though the committed oracle does not guard
+it.
+All checks used clean exports with DISPLAY and WAYLAND_DISPLAY unset,
+and each tree was deleted immediately.
+
+The independent clean-export full gate at exact `00f5ec2`, with fresh caches
+under private Xvfb `:106`, was **RED**:
+`Build Summary: 124/126 steps succeeded (1 failed); 864/864 tests passed`.
+The sole failed build step was the S3b lifecycle e2e described below, not MS0;
+all compiled Zig tests passed. The tree was deleted immediately afterward.
+These MS0 blockers are contract/test failures independent of that failure.
+The newest approved linear push-through SHA remains **`dc52885`**.
+
+## S3b helper lifecycle and native supervision (`00e1f93` through `00f5ec2`)
+
+**Explicit verdict for `00e1f93`: BLOCKED-for-tests.** The red commit is
+honest for the busy response, duplicate/failed opens, the SDK-session-id
+schema and native validator lifecycle: its commit evidence identifies the
+specific old-code failures, and part of the suite cannot compile before the
+new validator API exists. But its three cancellation tests are explicitly
+false-green on the old implementation. They release the held HTTP reply at
+the same time as close and let the SDK's own disconnect stop its reader
+(`agent/host/tests/test_chat.py@00e1f93:260-325`), so they do not prove that
+the prompt task was cancelled **and awaited** before disconnect and
+`session_ended`. A cancellation-resistant task/client must keep its cleanup
+pending and make the test fail until close waits for that acknowledgement.
+
+**Explicit verdict for `9740498`: BLOCKED-for-tests.** The implementation is
+otherwise internally consistent: one `Session.task` enforces prompt
+exclusivity; close cancels and gathers before disconnect; a failed open closes
+its token route; `ResultMessage.session_id` supplies the real SDK id; and an
+accepted `session_ended` removes the native validator session
+(`chat.py@9740498:36-95,116-184`,
+`src/agent_protocol.zig@9740498:49-108,127-188`). The missing red oracle above
+means the most important ordering change remains unprotected.
+
+**Explicit verdict for `20e7336`: BLOCKED-for-tests.** This is a substantial,
+honest red slice: its reported pre-production run failed 10 of 14 lifecycle
+checks and could not build the absent pure helper module. The closure e2e uses
+the real browser, X input, setup, bwrap, helper, CLI, relay/netd and TLS fake
+API; the bad-frame test uses the documented e2e-only helper seam and still
+passes every frame through the production native validator. Its coverage is
+nevertheless incomplete in three safety-critical places:
+
+1. The `window-close` case waits for the popup reply and only checks that its
+   CLI exits (`agent_host_lifecycle_test.py@20e7336:475-505`). It does not
+   assert that a normal close emits no rejected-frame line or that repeated
+   closes do not restart the healthy shared helper.
+2. The restart case leaves no queued old stdout/stderr completion while the
+   new helper starts, so it cannot catch a completion from the old generation
+   parsing or scheduling a read against the new one.
+3. No test exercises the D7 64-KiB redacted stderr-ring contract or proves a
+   canary from helper stderr is absent from logs.
+
+**Explicit verdict for `da93d83`: BLOCKED.** The new production chain is real,
+not a test bypass: drawer Send routes through the native helper; first use
+takes the owner lock, waits for netd and the token, writes fd 3 once, launches
+the confined helper, validates its stdout in Zig, and maps accepted frames
+back to the named drawer. The closure exercises that chain. Four issues must
+be corrected before this green can be accepted:
+
+1. **Normal close consumes its own acknowledgement as a protocol strike.**
+   `zb_agent_helper_window_closed` writes `end_session` and immediately removes
+   the session from the validator (`src/agent_helper.c@da93d83:613-624`). The
+   helper's required `session_ended` then fails `knownSessions`, is logged as a
+   rejection and increments the three-strikes restart counter
+   (`:272-283`). Closing three ordinary session windows can therefore restart
+   a healthy helper. Keep a closing/tombstone session until its terminal frame
+   (and safely discard any UI output after detach); cover confirmed and
+   not-yet-confirmed opens.
+2. **Async reads cross process generations.** The stdout/stderr callbacks use
+   global buffers and global current streams when rescheduling
+   (`:288-331`). `forget_process` cancels the old reads (`:335-358`) and the
+   rejection path immediately starts a new helper (`:361-377`). An already
+   queued positive completion from the old stream can therefore parse a
+   buffer reused by the new read and schedule a second concurrent read on the
+   new stream. Each callback needs a generation-owned stream, buffer and
+   cancellation identity; stale completions must neither parse nor reschedule.
+3. **D7's stderr contract is not implemented.** The code says stderr is
+   drained and kept nowhere (`:323-331`), while the plan requires a bounded
+   64-KiB ring whose logged lines are redacted; the defined
+   `ZB_STDERR_RING` is unused (`:55`). Implement/test that contract or amend
+   and approve the plan to specify deliberate discard.
+4. The cancel-before-disconnect ordering remains without a test that fails
+   when its `await asyncio.gather(...)` is removed (the `9740498` finding).
+
+Two lower-severity follow-ups are worth keeping visible. `write_frame`
+performs a synchronous pipe write on the GTK main thread
+(`agent_helper.c@da93d83:160-169`); a helper that stops consuming app frames
+can freeze UI, so this needs a bounded/nonblocking design before arbitrary
+tool-result traffic arrives. Also, a netd failure calls `go_down` after killing
+the helper but does not clear each window's pending prompts (`:514-525`), so
+those strings remain retained in an unrestartable unavailable state until the
+window closes.
+
+**Explicit verdict for `00f5ec2`: APPROVED (docs only).** Rev 16.6 accurately
+records the measured Linux behavior: bwrap's `--chdir` contributes `PWD` with
+the workspace value in addition to the built helper allowlist. This plan-only
+correction does not waive the production/test blockers above.
+
+Part 2 does draw new user-visible states. It changes the drawer's header from
+the static “Not connected” label to Starting/Ready/Working/Stopped/Unavailable
+and adds real assistant/error/system bubbles, including the crash bubble and
+restart transition (`src/agent_drawer.c@da93d83:577-646,931-1003`). The earlier
+real-screen check at `c8f058f` covered only the network-unavailable status and
+bubble, not a real reply, crash bubble or restart. Once the blockers are fixed,
+the part-2 UI therefore needs a throwaway-profile real-screen check with the
+user.
+
+The independent clean-export gate at exact `00f5ec2` was **RED**:
+`Build Summary: 124/126 steps succeeded (1 failed); 864/864 tests passed`.
+The lifecycle e2e's independent expected set omits `LC_ALL`
+(`tests/e2e/agent_host_lifecycle_test.py@00f5ec2:35-36`), even though the plan
+and production `HELPER_ENV_NAMES` include it. On this clean run the confined
+helper correctly had `LC_ALL`, so the exact-set check at lines 343-345 emitted
+the sole failing check. This is a deterministic test-oracle blocker; it was
+mailed to BlackRobin as finding 5686. The apparently failed inner Zig commands
+printed elsewhere in the log are expected mutation/negative-test subprocesses:
+the final summary counted all **864/864** compiled tests green. The throwaway
+tree was deleted immediately.
+
+The S3b blockers do not change the linear result: **`dc52885` remains the
+newest approved push-through SHA**, because the earlier interleaved MS0 red/
+green chain is blocked as well.
+
+## S4a Remove survives Secrets-window close (`bc85c37`, `adbb8a0`)
+
+**Explicit verdict for `bc85c37`: APPROVED (red).** The added `remove-close`
+case is an honest production-chain regression. It creates only a private
+D-Bus daemon, private gnome-keyring, private runtime directory, throwaway
+agent home/profile and Xvfb browser. Through real X input it first places one
+canary in the private keyring and another in the selected file store, then
+holds the keyring clear for four seconds, clicks Remove, sends the real
+`WM_DELETE_WINDOW`, and waits past the held answer. Its three terminal
+assertions prove that the file is already absent, the keyring worker finished,
+and the stale answer emitted no UI/protocol row
+(`tests/e2e/agent_secrets_test.py@bc85c37:748-782`). On `00f5ec2` plus this
+test, the old implementation deterministically failed “the file is gone
+although the window closed first” (**5 checks, 1 failed**). Leaving the case
+out of the build's `--only` list in the red commit is acceptable because the
+red was run explicitly and the green commit registers it in the normal gate.
+
+**Explicit verdict for `adbb8a0`: APPROVED.** `on_remove` now deletes the
+token file synchronously at the authorized Remove click, records that result,
+and starts the asynchronous keyring clear; `on_cleared` only reports the
+combined result if the original window/epoch is still current
+(`src/agent_secrets_window.c@adbb8a0:273-307`). Closing the window invalidates
+only the report callback. It cannot cancel the `GTask` worker, resurrect the
+file, or expose a late row. `removed_file` is overwritten for every serialized
+Remove operation, and `on_destroy` clears `busy`, so reopening cannot inherit
+an in-flight UI lock. The author reports the exact regression **5/5 green**,
+the inverse mutant (moving file deletion back behind the epoch check) red, and
+a private-Xvfb clean-export gate **126/126 steps, 864/864 tests**.
+
+This closes finding 5663. With the previously accepted functionality in
+`cf4c612`, `d47ae67`, `db7dc12` and `0fca5d1`, **S4a is now APPROVED** and its
+native Secrets window is ready for the orchestrator's throwaway-profile
+real-screen check. The linear push-through SHA nevertheless remains
+**`dc52885`**: the interleaved MS0 commit `4fffdd8` is still blocked before this
+S4a follow-up in history.
