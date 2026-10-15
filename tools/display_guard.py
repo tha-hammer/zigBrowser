@@ -1,7 +1,7 @@
 """The display guard (orchestrator HARD RULE, 2026-10-15). build.zig runs it before
-every step of a top-level step (all but `run`, the install steps, `agent-runtime`
-and `mac-gate`), so no build or test step can open a browser or a GTK window on
-the user's real screen.
+every step of a top-level step (all but the install steps, `agent-runtime` and
+`mac-gate`; `zig build run` included), so no build or test step can open a browser
+or a GTK window on the user's real screen.
 
 It refuses (exit 1, one stderr line) unless DISPLAY is unset or names a local X
 server (`:N` or `:N.S`) whose X lock (/tmp/.XN-lock) belongs to a live Xvfb, and
