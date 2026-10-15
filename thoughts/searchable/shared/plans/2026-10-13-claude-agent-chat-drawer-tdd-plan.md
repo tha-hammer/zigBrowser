@@ -442,10 +442,11 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 | `DRAWER\t<win>\ticon\t<rect>` | the icon is shown or moved |
 | `DRAWER\t<win>\topen\t<rect>` | the drawer opens |
 | `DRAWER\t<win>\tminus\t<rect>` | together with `open`: the '-' button's rect |
+| `DRAWER\t<win>\taccount\t<rect>` | together with `open`, only with a provisioned agent home: the header's Account button's rect (S4; it opens the Secrets window in any agent state; rev 16.8, RoseCat 5695) |
 | `DRAWER\t<win>\tanim\t<frames>\t<from-rect>\t<to-rect>` | the minimize animation ends |
 | `DRAWER\t<win>\tminimized\t<rect>` | after minimize |
 | `DRAWER\t<win>\tfold\t<n>\t<rect>` | the minimize stand-in was **drawn** at `<rect>` in animation frame `<n>` (emitted from the stand-in's own `draw` handler, so a stand-in that is not on screen emits nothing; rev 12, RoseCat S2 verdict 6fe538f) |
-| `DRAWER\t<win>\tfocus\t<icon\|input\|send\|stop\|minus\|list\|approve\|deny>` | focus moves |
+| `DRAWER\t<win>\tfocus\t<icon\|input\|send\|stop\|minus\|account\|list\|approve\|deny>` | focus moves (`account`: rev 16.8, S4) |
 | `DRAWER\t<win>\tscroll\t<bottom\|value>` | the list scrolls |
 | `DRAWER\t<win>\tunread\t<shown\|hidden>` | the \"↓ New messages\" control appears or goes away (rev 12; S2 as built) |
 | `DRAWER\t<win>\tmsg\t<user\|assistant\|system\|approval\|error>\t<text>` | a bubble is finalized |

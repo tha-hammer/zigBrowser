@@ -782,6 +782,45 @@ def case_remove_close(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+def open_drawer(b) -> None:
+    from agent_common import centre
+    if not b.rows("open", 1):
+        icon = b.wait_row("icon", 1)
+        b.x.click(*centre(tuple(int(v) for v in icon.fields[0].split(","))))
+        b.wait_row("open", 1, timeout=10)
+
+
+def case_account_button(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5695 (D1, D11): the drawer header's Account button opens the Secrets window
+    without any Send, here with the agent runtime missing; closed, it opens again on the next
+    click. The window stays unreachable from pages and the socket."""
+    from agent_common import centre
+    world = provisioned(binary, tmp, "account")
+    with fake_api(tmp) as api:
+        bus = dict(no_session_bus_env({}, tmp), ZB_AGENT_HOST_PYTHON="/nonexistent/zb-no-runtime/python")
+        b = launch(binary, tmp, world, bus, api, "account")
+        try:
+            open_drawer(b)
+            row = b.wait_row("account", 1, timeout=10)
+            check(row is not None, "the open drawer reports its Account button (DRAWER account <rect>)", b)
+            if row is None:
+                return
+            b.x.click(*centre(row.rect()))
+            check(b.wait(lambda: secrets_status(b)[:1] == ["no-keyring"], 15),
+                  f"one click opens the Secrets window, no Send needed ({secrets_status(b)})", b)
+            check([r for r in b.rows("msg", 1)] == [], "no message was sent", b)
+            tree = [f[0] for k, f in secrets_lines(b) if k == "tree"]
+            check(tree != [] and "WebKitWebView" not in tree[0], f"its tree has no WebKitWebView: {tree[:1]}", b)
+            check(len(b.zb.page.list()["pages"]) == 1, "page.list does not list it", b)
+            close_secrets_window(b)
+            check(b.wait(lambda: not b.x.toplevels("Claude Agent account"), 5), "the window closed", b)
+            seen = len(secrets_status(b))
+            b.x.click(*centre(b.rows("account", 1)[-1].rect()))
+            check(b.wait(lambda: secrets_status(b)[seen:][:1] == ["no-keyring"], 15), "the next click opens it again", b)
+        finally:
+            b.stop()
+
+
 def needle_in_proc(token: str) -> list[str]:
     hits = []
     for pid in filter(str.isdigit, os.listdir("/proc")):
@@ -898,6 +937,7 @@ CASES = {
     "lookup-race": case_lookup_race,
     "remove-both": case_remove_both,
     "remove-close": case_remove_close,
+    "account-button": case_account_button,
     # S4b: the hand-off through S3b's helper (its build step runs these with --only).
     "handoff": case_handoff,
     "remove-session": case_remove_session,
