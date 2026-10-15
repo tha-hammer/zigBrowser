@@ -9194,3 +9194,87 @@ focus and page-isolation assertions remain. Because this changes the drawer's
 native widgets and real pointer/keyboard interaction, it is a UI change under
 §7.1: after private-Xvfb green, the user must confirm mouse selection and
 Ctrl+C on the real screen before the requirement closes.
+
+## S3b lifecycle follow-ups (`eed7742`, `d71ca7f`, `442386e`)
+
+**Explicit verdict for `eed7742`: APPROVED (red), with one new red still
+required for the green finding below.** The commit closes the specific test
+gaps carried from `00e1f93` and `20e7336`:
+
+- `CancelThenAwaitTest` uses the production `Session.close` with a task that
+  remains suspended after receiving cancellation. Before its cleanup is
+  released, it requires that disconnect, route close and `session_ended` have
+  not happened; afterward it requires their exact order
+  (`agent/host/tests/test_chat.py@eed7742:330-371`). In an exact clean export,
+  the test passed in **0.204 s**; deleting only the production
+  `await asyncio.gather(...)` made it fail with disconnect/route-close/
+  session-ended preceding `cancelled`. This is the failing-first oracle
+  missing from `9740498`.
+- `window-close` now exercises one normal close and four repeats, including a
+  close before `session_opened`; it requires zero protocol strikes, no helper
+  restart and a still-working opener
+  (`tests/e2e/agent_host_lifecycle_test.py@eed7742:487-531`).
+- `frames` leaves 400 junk lines in the condemned helper's stdout, requires
+  exactly three strikes and one restart, then requires one valid frame from
+  the replacement. It also sends the token canary on stderr and requires it
+  in no log/row (`:382-419`). This fails the old shared-buffer implementation
+  with 403 strikes and covers the old-generation reader gap.
+- The independent expected environment now includes `LC_ALL`, and the test
+  sets both locale names, so finding 5686 no longer depends on the invoking
+  shell (`:35-39,118-121`).
+
+An exact-`442386e` disposable export, built and run under private Xvfb, passed
+the focused production cases **24 checks, 0 failed** (`frames,window-close`).
+The tree and caches were deleted immediately. BlackRobin's clean-export full
+gate reports **126/126 steps succeeded; 864/864 tests passed**.
+
+An independent clean export at exact `4e49a13` (code-identical to `442386e`;
+the intervening change is this review document), under private Xvfb with a
+fresh cache, was also GREEN: **Build Summary: 126/126 steps succeeded; 864/864
+tests passed**. The disposable tree was deleted immediately.
+
+**Explicit verdict for `d71ca7f`: BLOCKED.** The `ZbReader` ownership is
+otherwise sound: each process/pipe owns its stream, cancellable, buffer and
+partial line; one reference belongs to the process and one to the outstanding
+read; stopping invalidates and cancels it, and a late callback can only release
+that reader (`src/agent_helper.c@d71ca7f:74-87,300-381`). The third rejection
+also stops stdout before remaining bytes can be parsed. Keeping a closed
+window's validator session until the helper's `session_ended` is likewise the
+right exactly-once direction and prevents ordinary closes from becoming
+protocol strikes (`:644-657`).
+
+One routing error remains. Once the `ZbWin` is removed, a valid
+session-scoped `error` is accepted by the deliberately retained validator,
+but `on_frame` unconditionally calls `zb_drawer_agent_message(win, ...)` with
+`win == 0` (`src/agent_helper.c@d71ca7f:226-265`). Zero means broadcast to
+every drawer (`src/agent_drawer.c@d71ca7f:603-610`). A prompt cleanup or SDK
+failure after a popup closes can therefore put that closed popup's error into
+the opener and every sibling. Mail 5699 sent the blocker. Required red: emit a
+valid session-scoped error after removing the popup's `ZbWin`; it must produce
+zero strikes, appear in no surviving drawer, accept the following
+`session_ended`, and leave the opener usable. The error arm must draw only when
+its named window still exists; a genuinely global error with null session may
+remain broadcast. The stale `agent_frames.zig:54-56` comment saying app close
+directly removes the validator session should also be corrected.
+
+**Explicit verdict for `442386e`: APPROVED (docs only).** Rev 16.7 consistently
+changes both D7 and D7b from a not-yet-built 64-KiB stderr ring to the actual
+S3b contract: continuously drain and discard, retain nothing, and log nothing.
+The lifecycle canary assertion guards the no-log property. A bounded redacted
+diagnostic log is explicitly deferred to S5.7, where its redaction contract
+and tests must land together.
+
+**Closure of earlier findings.** The `9740498` cancel-then-await test blocker
+is CLOSED by `eed7742` and the independently killed mutation above. All three
+`20e7336` coverage gaps are CLOSED by `eed7742` plus the approved rev-16.7
+scope correction: ordinary and early close/restart, old-generation output,
+and stderr's now-explicit no-retention/no-log contract. Findings 5681's
+manufactured strike, 5682's cross-generation pipe ownership, and 5686's locale
+oracle are implemented correctly in `d71ca7f`/`eed7742`; S3b remains blocked
+only by the newly exposed late-error broadcast. The earlier nonblocking
+SHOULDs remain open: GTK-thread pipe writes are synchronous, and a terminal
+netd failure retains pending prompt strings until their windows close.
+
+Because `d71ca7f` is blocked—and the earlier interleaved S4a and MS0 chains
+also remain blocked—the newest approved linear push-through SHA remains the
+current origin commit, **`dc52885`**.
