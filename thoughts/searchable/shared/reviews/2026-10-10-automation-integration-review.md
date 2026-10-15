@@ -9874,3 +9874,94 @@ The newest approved linear push-through SHA remains **`dc52885`**. Rev 16.12
 still needs the unambiguous wording follow-up, S3c needs its symlink red/green,
 and the previously recorded MS0 Slice E/F closures remain staged. `04b7977`
 and `1d5cac0` may be closed only by new follow-up commits; no history rewrite.
+
+## Rev 16.13, S3c symlink closure, and BlueBeaver reds (`8e43934`, `734a1e0`, `738b17a`, `72e663f`)
+
+**Explicit verdict for `8e43934`: APPROVED.** Rev 16.13 removes the
+contradictory “multi-line” shorthand from both the current status and the S4
+edge-case contract. The normative line now says that SP/HT/CR/LF/VT/FF are
+accepted only at the paste's edges and trimmed, while whitespace inside the
+trimmed token—more than one token or more than one non-whitespace line—is
+rejected (`thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md@8e43934:8,1901`). This matches `3b07a37` and the user's accepted real-screen behavior. It closes the docs blockers on `0fb21f4`/`04b7977`; those revisions are cumulatively superseded by `8e43934`.
+
+**Explicit verdict for `734a1e0`: APPROVED.** The registered
+`agent_config_check_test` step now pins the complete symlink rule: a
+manifest-named link to different bytes is `changed`; a link to identical bytes
+is `ok` and follows later target changes; a new link to a directory is ignored;
+and both a manifest-named and a new dangling link are `changed`
+(`tests/agent_config_check_test.zig@734a1e0:166-208`). This covers both sides of
+“a symlink counts as the file it names,” rather than merely rejecting every
+link. BlackRobin reports **9/9** focused tests and four discriminating mutants:
+the old five tests let all four survive, while the new suite kills the
+count-without-hashing, reject-all-links, include-link-to-directory and
+dangling-link-matches mutants with 3, 2, 1 and 1 failures respectively. No
+production file changed. This closes the only BLOCKED-for-tests finding on
+`1d5cac0`; cumulatively, `40d5c6d` + `9638900` + `1d5cac0` + `734a1e0` are
+**APPROVED**, and S3c config checking is complete.
+
+**Explicit verdict for `738b17a`: APPROVED as failing-first MS0 Slice D/E
+evidence; intentionally red and not pushable without its green.** The four
+independent layers do not collapse into a test-only shortcut:
+
+- the direct netd suite drives its real command line and socket tree, proves
+  that manifest ports carry bytes, that the manifest allowlist replaces the
+  built-in host before any upstream attempt, that missing/legacy manifests
+  preserve the defaults, and that malformed JSON, types, counts, modes,
+  symlink/directory/FIFO inputs fail before ready without leaking the canary
+  (`agent/host/tests/test_netd_manifest.py@738b17a:64-195`);
+- the direct relay suite runs each real relay command in private network/PID
+  namespaces, proves exactly the supplied 1–8 ports carry bytes, proves 3128
+  and omitted bridge ports remain absent, checks the hook inherits no fd above
+  2, and rejects a complete bad-grammar table before the hook runs
+  (`agent/host/tests/test_relay_ports.py@738b17a:56-121`);
+- the Zig suite requires production `netdArgv` to place
+  `--net-manifest PATH` after `--bwrap` and before e2e seams, preserves the
+  exact old argv when no path exists, and derives the path from the agent home
+  (`tests/agent_net_manifest_test.zig@738b17a:13-50`); and
+- the real-binary E2E provisions through the real setup path, sends through
+  the drawer, inspects the actual netd launcher/socket layout, exercises the
+  legacy fallback, and observes a refused manifest as `AGENTNET unavailable`
+  plus the fixed bubble with no canary in rows or stderr
+  (`tests/e2e/agent_netd_manifest_test.py@738b17a:43-170`).
+
+The E2E deliberately replaces only setup's produced `runtime/net.json`; it
+does not by itself prove the backend producer. That edge is independently
+driven by approved `ac07c1a`, whose test calls the exact producer used by
+`stage()`. Together they close the production chain without either test
+bypassing its owned boundary. The reported old-code reds are specific: netd
+5/8 fail, relay 2/3 fail, Zig 3/3 fail, and real-binary E2E 6/13 checks fail.
+Registration and the production consumers still belong to the pending green.
+
+**Explicit verdict for `72e663f`: APPROVED as failing-first BadWindow
+evidence; intentionally red and not pushable without its green.** The test
+refuses every display outside xsession's private `:200`–`:399` range before it
+opens X, creates and destroys its own window, then deterministically issues
+the same `XFetchName`/`X_GetProperty` request that killed the Secrets E2E
+(`tests/e2e/test_xinput_errors.py@72e663f:54-79`). Old code exits on BadWindow
+in exactly one of the three cases. The two controls require a vanished window
+to be absent from `toplevels()` while a non-race BadValue still terminates the
+process (`:81-91`), so the desired fix cannot turn every X error into success.
+This accurately captures BlackRobin's observed harness failure without
+touching production browser code.
+
+One green-review item was mailed early to BlueBeaver (5786): the current WIP
+handler ignores every BadWindow and BadDrawable process-wide, although such an
+error need not come from a read-only census of a window that just disappeared.
+The committed red remains approved, but the green must either scope tolerated
+errors to justified read-only request codes (and add a BadDrawable case if it
+keeps that claim) or provide tests that deliberately establish the broader
+harness policy while unrelated mutation errors remain fatal.
+
+No test process was started for this review because BlueBeaver explicitly
+holds the serialized gate slot for these red/green pairs. `734a1e0` changes
+only an already-registered unit suite and relies on BlackRobin's focused
+9/9/mutation evidence plus the prior **132/132-step, 873/873-test** clean gate
+for unchanged production; `8e43934` is docs-only. BlueBeaver's final clean-
+export private-Xvfb gate must cover both greens.
+
+The newest approved linear push-through SHA remains **`dc52885`**. Although
+the plan and S3c findings are now cumulatively closed, the earlier MS0 composed
+contract still has open Slice E/F consumer/spawn work, and the linear history
+now also contains the unpaired red-only `72e663f` and `738b17a`. Neither red
+may be included in an approved push prefix until its registered green lands;
+no history rewrite may skip them.
