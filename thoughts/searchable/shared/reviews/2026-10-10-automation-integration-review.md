@@ -9278,3 +9278,62 @@ netd failure retains pending prompt strings until their windows close.
 Because `d71ca7f` is blocked—and the earlier interleaved S4a and MS0 chains
 also remain blocked—the newest approved linear push-through SHA remains the
 current origin commit, **`dc52885`**.
+
+## Late-error closure and S4a red tests (`2af4d87`, `92239f7`, `10474a0`, `6f65893`)
+
+**Explicit verdict for `2af4d87`: APPROVED (red).** The new `late-error` case
+drives the production close path: after a popup session has answered, a real
+`page.close` makes the app send `end_session`; the scripted helper answers
+with a valid session-scoped `error` and then `session_ended`. The case requires
+the error in no surviving drawer, zero rejected-frame strikes, and a still-
+working opener (`tests/e2e/agent_host_lifecycle_test.py@2af4d87:537-575`). It
+fails on `d71ca7f` because the error is broadcast into window 1. Extending the
+scripted helper with `on_end` uses the actual app/helper frame stream rather
+than a validator-only seam (`tests/fixtures/agent/fake_host.py@2af4d87:73-94`).
+
+The same red makes `home-locked`'s owner A use the scripted helper rather than
+a live CLI and hooks. After A's reply, it performs no reads of the watched
+workspace or `.claude`, so the inotify negative now attributes every event to
+the rejected owner B. The production lock/start chain is unchanged.
+
+**Explicit verdict for `92239f7`: APPROVED.** `on_frame` now distinguishes a
+helper-wide error (`session == NULL`, still broadcast) from a session-scoped
+error whose `ZbWin` has disappeared (drop it). It does not weaken validation:
+the validator accepts and sequences the error before this routing decision,
+and the following `session_ended` still closes the retained session
+(`src/agent_helper.c@92239f7:226-279`). The change is GTK-main-thread local,
+adds no ownership or lifetime edge, and exactly closes finding 5699. The
+`agent_frames.zig` comment now describes the retained-session contract.
+
+BlackRobin's focused `late-error,window-close,frames` run passed **31 checks,
+0 failed**. His clean-export private-Xvfb rerun was GREEN: **Build Summary:
+126/126 steps succeeded; 864/864 tests passed**. The first run's unrelated
+canary false positive is captured by `6f65893` below. **Finding 5699 is CLOSED
+by `92239f7`.** NIT: `src/agent_protocol.zig:75-76` still says an app/window
+close removes the validator session; that sibling comment should be aligned
+with the corrected `agent_frames.zig` comment.
+
+**Explicit verdict for `10474a0`: BLOCKED-for-tests.** The red honestly fails
+on the missing `DRAWER account` row and uses real X input to require the native
+Secrets window, no Send/message, no `WebKitWebView`, exclusion from
+`page.list`, close, and reopen. But D7b and the commit claim that Account opens
+Secrets **in any agent state**, while the sole case exercises only
+`runtime-missing` (`tests/e2e/agent_secrets_test.py@10474a0:803-831`). A bad
+implementation that creates or enables Account only in that state passes.
+Mail 5714 asks for the second `no-token` state promised in mail 5698, with a
+pre-click assertion that no Secrets window/status already exists. The new
+`focus account` schema is also unexercised; keyboard focus plus Return/Space
+is a SHOULD so an X-click-only control cannot satisfy the accessibility path.
+
+**Explicit verdict for `6f65893`: APPROVED (red).** The browser-free self-test
+uses the production canary generator and leak scanner against seeded hex and
+decimal noise plus the protocol/log vocabulary. Independently at exact
+`6f65893`, it failed as intended: **50/50 canaries collided, 1 check failed,
+exit 1**. This reliably exposes why a 40-hex-character tail and a four-
+character leak window produce false positives against netd's unrelated random
+hex. Its green and inclusion in the normal S4a case list are still required;
+the red commit alone is not a completed slice.
+
+The newest approved linear push-through SHA remains **`dc52885`**: the older
+S4a/MS0 blockers remain in the range, and `10474a0`/`6f65893` do not yet have
+reviewed green follow-ups.
