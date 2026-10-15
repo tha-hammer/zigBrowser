@@ -7,7 +7,12 @@ records and refuses every CONNECT tunnel and every proxied request for another
 host (`tunnels`), so a run that points HTTPS_PROXY/HTTP_PROXY at it (with
 NO_PROXY=127.0.0.1) proves no other host was contacted.
 
-A turn is a dict: {"text": str} and/or {"tool_use": {"name": str, "input": {}}}.
+A turn is a dict: {"text": str} and/or {"tool_use": {"name": str, "input": {}}};
+or {"deltas": [str, ...]}: one text block whose streamed form is one text delta per
+item (its text is their join), with an optional {"stall": threading.Event}: the
+stream holds after the first delta (flushed) until the event is set, at most 30 s;
+or {"status": int, "body": {...}}: that HTTP status with a JSON error body (the
+default body names the status), streamed request or not (chat-drawer plan S5a).
 `responder(request, index)` may pick the turn for each messages request; the
 default takes the scripted turns in order and answers "ok" once they run out.
 """
@@ -27,10 +32,15 @@ def _usage():
     return {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
+STALL_MAX_S = 30.0
+
+
 def _content(turn, index):
     blocks = []
     if turn.get("text") is not None:
         blocks.append({"type": "text", "text": turn["text"]})
+    if turn.get("deltas") is not None:
+        blocks.append({"type": "text", "text": "".join(turn["deltas"])})
     if turn.get("tool_use") is not None:
         use = turn["tool_use"]
         blocks.append({"type": "tool_use", "id": use.get("id", f"toolu_fake_{index}"), "name": use["name"], "input": use.get("input", {})})
@@ -58,7 +68,11 @@ def _sse_events(turn, index):
     for i, block in enumerate(_content(turn, index)):
         if block["type"] == "text":
             yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}
-            yield "content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": block["text"]}}
+            pieces = turn["deltas"] if turn.get("deltas") is not None else [block["text"]]
+            for n, piece in enumerate(pieces):
+                yield "content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": piece}}
+                if n == 0 and turn.get("stall") is not None:
+                    turn["stall"].wait(STALL_MAX_S)  # the delta above is already flushed
         else:
             empty = dict(block, input={})
             yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": empty}
@@ -215,6 +229,10 @@ class FakeAnthropicApi:
                     index = api.messages_count
                     api.messages_count += 1
                 turn = api._turn(entry, index)
+                if turn.get("status") is not None:
+                    status = turn["status"]
+                    self._send(status, turn.get("body") or {"type": "error", "error": {"type": "api_error", "message": f"fake {status}"}})
+                    return
                 body = entry["body"] if isinstance(entry["body"], dict) else {}
                 if not body.get("stream"):
                     self._send(200, _message(turn, index))
