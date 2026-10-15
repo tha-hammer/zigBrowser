@@ -9406,3 +9406,64 @@ of the Secrets window and Account button using a genuinely provisioned
 throwaway agent home; that check may now proceed. The separate user
 requirement that drawer/status text be selectable and copyable remains open
 and is not part of these commits.
+
+## S4a real-screen result and setup-token shape blocker (2026-10-15)
+
+The user tested exact `d81ad8e` on the real NVIDIA X11 screen with a genuinely
+provisioned throwaway agent home, dead D-Bus, the explicit file store, fake API
+base URL and media source disabled. The **native UI portion passed**: the
+Secrets window and Account route both drew, and pasted secret text appeared
+only as password dots. The browser log contained zero occurrences of
+`sk-ant`, and the throwaway home (including the token file) was deleted unread.
+This closes the outstanding real-screen drawing, Account-route and masked-
+entry conditions from the preceding section.
+
+**S4a acceptance is REOPENED / BLOCKED by the user's new token-shape
+requirement.** The same run showed that three non-token-shaped inputs were
+accepted and stored. `src/agent_secrets.zig:12-21` currently accepts every
+16-512-byte printable non-space line, and the plan still repeats that obsolete
+rule at `:1735` and `:1905`. Today's direct user requirement supersedes those
+lines. Save must trim surrounding ASCII whitespace (`SP`, `HT`, `CR`, `LF`,
+`VT`, `FF`) and then accept only:
+
+`^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$`
+
+The 22-character suffix minimum is a documented local plausibility bound, not
+an assertion that Anthropic publishes an exact token length. OAuth 2.0 Threat
+Model and Security Considerations, RFC 6819 §5.1.4.2.2, recommends at least
+128 bits for non-human token handles. The user-mandated 64-symbol suffix
+alphabet carries six bits per character, so 22 characters provide 132 bits
+while 21 provide only 126. With the exact 13-byte prefix, the minimum total
+length is therefore 35 bytes; retaining the existing 512-byte total maximum
+makes the suffix maximum 499. Source:
+<https://datatracker.ietf.org/doc/html/rfc6819#section-5.1.4.2.2>.
+
+`sk-ant-api03-` must remain rejected. The accepted route is specifically the
+long-lived credential produced by `claude setup-token`; plan `:1076` excludes
+API-key authentication and says `ANTHROPIC_API_KEY` is not read. Surrounding
+whitespace is removed before both validation and persistence, and only the
+trimmed value may be stored. Internal whitespace, a wrong or wrong-case
+prefix, a short suffix, non-ASCII, or any suffix byte outside the exact
+alphabet must produce `That doesn't look like a token.` and mutate neither
+store. No rejected or accepted token bytes may enter a protocol row, stderr or
+log.
+
+This should tighten the shared `validToken` contract used by Save, `storeFile`
+and `loadFile`, rather than add a UI-only check: otherwise a manually seeded
+file bypasses the same boundary and can still reach the CLI. BlackRobin's mail
+5730 inventories the short direct-file canaries that must grow in the green.
+Required red-first coverage is an independent table/property oracle with the
+22/21 boundaries, prefix-only, empty, wrong prefix/case, `sk-ant-api03-`, bad
+characters (`.`, `+`, `/`, `=` and non-ASCII), internal whitespace, the
+512/513 total boundaries, and surrounding-whitespace trimming. The real-
+binary E2E must press Save on a unique near-miss, observe the fixed message,
+prove no file/keyring mutation and no input fragment in rows/logs, then prove
+that a padded valid canary is stored and loaded only in trimmed form. Mail 5731
+sent this blocker and exact contract to BlueBeaver, copied to BlackRobin.
+
+The next user real-screen check is required after the red/green implementation
+is reviewed: one rejected near-miss must show the fixed validation message and
+leave the store unchanged, followed by one valid setup-token-shaped canary
+that connects without revealing text. The already-passed drawing, Account and
+password-mask observations need not be treated as failures, but should remain
+in the rerun as regression checks.
