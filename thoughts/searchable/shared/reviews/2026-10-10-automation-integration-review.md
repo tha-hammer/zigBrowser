@@ -8724,3 +8724,76 @@ The visible `Agent network unavailable` bubble was introduced by the earlier
 nothing new. The previously requested real-screen observation of that state
 remains applicable to the production UI chain. No push or history rewrite was
 performed; no live browser, profile, socket or DISPLAY `:0` was used.
+
+## S3n2 setup-execution sandbox and slice closure (`b765f64`)
+
+**Explicit verdict for `b765f64`: APPROVED.** Both setup-owned executions now
+cross one production sandbox builder. `setup_sandbox` constructs fresh network,
+PID, IPC and UTS namespaces with the existing parent-death chain, an explicit
+`/usr` plus the small `/etc` set, only the run's controlled read-only paths,
+private `/tmp` and `/run`, and a fresh throwaway home; it never uses the former
+`--dev-bind / /` host view
+(`agent/host/zb_agent_host/setup.py@b765f64:677-711`). `cli_version` runs there
+without any network path. `probe_r1` puts the probe server, SDK, R1 wrapper and
+bundled CLI inside one such namespace, so their plain-HTTP loopback exchange is
+namespace-local and involves no netd, relay, proxy, TLS override or host route
+(`setup.py@b765f64:714-733`; `route_probe.py@b765f64:62-156`). The probe still
+requires the real bearer over FIFO → wrapper → socket fd 3 and a live CLI
+environment census that finds no token.
+
+The tests do not stop at argv inspection. Production functions run an
+attacker CLI against host-loopback and host-LAN listeners plus home/repository
+canaries, while the R1 arm continues through the real wrapper and real CLI
+(`agent/host/tests/test_provision.py@b765f64:110-170`). The real binary's
+`sealed` case proves a normal, unflagged setup still publishes R1 and samples
+each CLI in a non-host network namespace without a view of the user's home; a
+second run observes zero loopback/LAN connections and zero canary accesses.
+A disposable parent network namespace hosts the literal abstract
+`@/tmp/.X11-unix/X0` decoy, and inability to construct that test namespace is
+a failure rather than a skip (`tests/e2e/agent_setup_test.py@b765f64:335-412`).
+The adjusted descendant test observes the actual CLI and its child through
+`/proc` and still requires both gone within two seconds of browser death. The
+recorded old-host-view bypass mutant makes three unit assertions and four
+real-binary checks red, including both decoy classes, the canary and X0.
+
+One non-blocking plan-consistency edit remains: §3c.7 spells the probe command
+as `<venv python> -I -m zb_agent_host`, while the built package is deliberately
+copied beside—not installed into—the venv. Production therefore uses a wholly
+constructed environment with a single read-only `PYTHONPATH` and
+`python -m zb_agent_host` (`setup.py@b765f64:725-728`). No caller-provided
+Python variable, user site, user home or writable module path survives, so the
+security boundary is equivalent; the next plan wording revision should record
+the as-built invocation instead of the unusable `-I` spelling. This is a docs
+SHOULD, not a code or slice blocker.
+
+My independent bounded gate used a clean archive of exact `b765f64`, a fresh
+cache below `/run/user/1000`, and private Xvfb. It passed **Build Summary:
+112/112 steps succeeded; 826/826 tests passed**. The EXIT trap deleted the
+export and cache immediately; a post-gate path/process census found no matching
+tree or process. Mail 5604 released the gate slot with the exact summary.
+
+**S3n2 closure: COMPLETE against the implementable rev-16.2 slice; S4 and MS0
+may start.** The approved chain now covers the outer private network and exact
+netd/relay socket boundary; per-hook bridges-only namespace, seccomp and
+lifecycle parity; native lazy spawn and browser-death behavior; R1-only token
+route; and setup's two isolated executions. The legacy `{"route":"R3"}`
+record refusal remains deliberately attached to S3b's first production record
+reader, where it can be tested without inventing a test-only consumer. The
+separate §3c.2 prose correction noted by BlackRobin is documentation cleanup,
+not missing runtime behavior.
+
+The newest approved linear push-through SHA from `828a309` is **`b765f64`**.
+No push or history rewrite was performed; I did not use the live browser,
+profile, socket or DISPLAY `:0`.
+
+### NVIDIA real-screen check for `e96c607`'s visible failure state
+
+**Status: CLOSED by the user's 2026-10-15 observation on clean `c8f058f`.**
+On the user's NVIDIA X11 screen, with a throwaway profile and agent home and
+media source off, opening the drawer, typing and pressing Enter rendered the
+system message `Agent network unavailable` correctly and showed no other
+visual problem. The protocol evidence matched it exactly:
+`AGENTNET unavailable refused` and
+`DRAWER 1 msg system "Agent network unavailable"`. The orchestrator deleted
+the throwaway directory. This is user/orchestrator-supplied real-screen
+evidence; RoseCat did not connect to DISPLAY `:0` or the live socket.
