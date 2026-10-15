@@ -9467,3 +9467,69 @@ leave the store unchanged, followed by one valid setup-token-shaped canary
 that connects without revealing text. The already-passed drawing, Account and
 password-mask observations need not be treated as failures, but should remain
 in the rerun as regression checks.
+
+## Copyable drawer text and setup sampler (`069e019`, `35c6ee7`, `3ae87bb`)
+
+**Explicit verdict for `069e019`: APPROVED.** This is a test-hygiene-only
+change. Both process samplers now take one `/proc` parent snapshot, exclude
+zombies, and walk each candidate's parent chain back to the particular
+`--agent-setup` browser PID. The PPID field is parsed correctly from
+`/proc/<pid>/stat` after the final `)`, and the bounded walk is ample for this
+fixed browser → setup helper → bwrap/init → CLI topology
+(`tests/e2e/agent_setup_test.py@069e019:117-140`). `watch_helper` and
+`cli_processes` share that helper, so unrelated setup/CLI processes can no
+longer supply either argv/environment observations or the sealed-case CLI
+census (`:143-163,359-368`). A disappearing process is still a normal sample
+race and is skipped; production code is unchanged.
+
+I independently reproduced the contamination with a process outside the
+tested browser's descendant tree whose argv contained `zb_agent_host setup
+--e2e-claude-cli` and whose environment contained the seam. Mutating only the
+new descendant loop back to the old global `/proc` scan made the `cli` case
+fail **3 of 11** checks (argv, environment-name absence and the exact
+allowlist). Exact `069e019` passed **11/11** with the same decoy alive. This is
+a deterministic red/green proof of the claimed cause, not merely a reduction
+in the flake's probability.
+
+**Explicit verdict for `35c6ee7`: APPROVED (red).** The registered real-binary
+test obtains all five targets through production paths: a real typed Send;
+assistant/error frames from the supervised helper; a real helper SIGKILL for
+the system crash bubble; and the live Ready status. `textrect` rows report
+only widget/root geometry and carry no copied text, so they can aim the X
+pointer but cannot satisfy the oracle. Before every attempt, a separate GTK
+process owns the private display's clipboard with a decoy; real multi-click X
+input plus real Ctrl+C must replace it, and another GTK process reads back the
+exact expected string (`tests/e2e/agent_drawer_copy_test.py@35c6ee7:39-103,
+106-135`). The test is registered in the ordinary full gate and runs inside a
+sealed network namespace. On an exact clean export of `35c6ee7`, my private-
+Xvfb run failed **5 of 19** checks: user, assistant, error, system and status
+all left the decoy untouched. Thus the red is both production-chain-complete
+and specific to the missing GTK selection capability.
+
+**Explicit verdict for `3ae87bb`: APPROVED.** The sole behavioral change calls
+`gtk_label_set_selectable(..., TRUE)` in the shared `report_text` path, which
+is applied to every current bubble role and the status label
+(`src/agent_drawer.c@3ae87bb:573-599,985-990`). It neither makes text editable
+nor introduces a page/socket route. The role row contains only a fixed role
+and rectangle; message content remains out of diagnostic rows. The companion
+`agent_protocol.zig` edit correctly closes the stale comment from finding
+5701: window close retains a validator session until the helper's
+`session_ended`.
+
+I added only that production line to the exact red export, rebuilt, and reran
+the same private-Xvfb case: **19/19 passed**, including exact whole-line copy
+of the multiword system bubble. This kills a delete-the-selectable-line
+mutation. The regular drawer/icon/isolation tests remain the regression guard
+for focus, click-through and page-world isolation; BlackRobin's exact clean-
+export gate for the committed blobs was GREEN: **Build Summary: 127/127 steps
+succeeded; 864/864 tests passed**. No test or browser touched the real display,
+and the throwaway export and cache were deleted immediately.
+
+The copyable-text implementation may proceed to the combined user real-screen
+session. That check should select and copy both a message bubble and the status
+label with the mouse and Ctrl+C, alongside the still-pending setup-token-shape
+fix. All commits in the linear range after origin `dc52885` through the review
+record `db5818b` are now individually approved. The newest approved
+push-through SHA is therefore **`db5818b`**. The open token-shape requirement
+recorded there still blocks final S4a acceptance, but it is a new follow-up and
+does not make any earlier commit in this prefix unreviewable.
