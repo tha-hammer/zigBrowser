@@ -573,6 +573,7 @@ static gboolean on_text_drawn(GtkWidget *widget, cairo_t *cr, gpointer data) {
 /* Every bubble and the status label: the mouse selects their text and Ctrl+C
  * copies it (the user's requirement, 2026-10-15). */
 static void report_text(ZbDrawer *d, GtkWidget *label, const char *role) {
+  gtk_label_set_selectable(GTK_LABEL(label), TRUE);
   g_object_set_data(G_OBJECT(label), "zb-text-role", (gpointer)role);
   g_signal_connect_after(label, "draw", G_CALLBACK(on_text_drawn), d);
 }

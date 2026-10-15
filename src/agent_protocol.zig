@@ -72,8 +72,10 @@ pub const Validator = struct {
         try self.sessions.put(self.gpa, key, window);
     }
 
-    /// The session is gone (its session_ended was accepted, or the app closed
-    /// it): every later frame naming it is rejected (RoseCat 5628).
+    /// The session is gone (its session_ended was accepted, or the app gave up
+    /// on a session the helper could not open): every later frame naming it is
+    /// rejected (RoseCat 5628). A window close does not close it: the helper's
+    /// session_ended does (RoseCat 5681).
     pub fn closeSession(self: *Validator, session: []const u8) void {
         if (self.sessions.fetchRemove(session)) |entry| self.gpa.free(entry.key);
     }
