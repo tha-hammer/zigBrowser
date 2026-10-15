@@ -34,6 +34,7 @@ Run:
 
 import json
 import os
+import signal
 import sys
 import tempfile
 import unittest
@@ -49,7 +50,7 @@ try:  # launch.py is the chat-drawer launch command MS0 also refactors.
 except Exception:  # noqa: BLE001 - absence is just one fewer golden to check
     launch = None
 
-from zb_agent_host import chat, hook_run, setup  # noqa: E402 - the real consumers of the network capability
+from zb_agent_host import chat, hook_run, setup, token  # noqa: E402 - the real consumers of the network/channel
 
 # ---------------------------------------------------------------------------
 # The FROZEN policy. These are copied here on purpose (not imported from
@@ -499,6 +500,75 @@ class NetworkIsAnImmutableLaunchSpecField(unittest.TestCase):
                          "MS0 rev6: the backend owns the egress allowlist")
         self.assertEqual(setup.net_manifest()["egress"]["allow"], ["api.anthropic.com"],
                          "MS0 rev6: setup serializes the backend allowlist into net.json for netd")
+
+
+class LifetimeAndChannelAreImmutableLaunchSpecFields(unittest.TestCase):
+    """RoseCat 5750 (composed-spec ruling), finding #3: the immutable LaunchSpec
+    also carries the backend's spawn ``lifetime`` and inherited fd-3 ``channel``.
+    ``lifetime`` is the backend-neutral die-with-browser policy whose native
+    realization is agent_host.c's ``ZbSpawnPolicy`` threaded through
+    ``zb_agent_run_sync`` (the real consumer; the registered agent-setup-e2e
+    parent-death/timeout cases are its changed-value injection). ``channel`` is the
+    token's fd + env var, projected by the real ``token.write_wrapper`` — changing
+    it changes the descriptor the CLI actually inherits, not a parallel label."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.home = options.AgentHome(root)
+        for d in (".claude", "workspace", "scratchpad", "runtime"):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        for base in (root / "state", root / ".claude"):
+            base.mkdir(parents=True, exist_ok=True)
+            for name in ("backups", *sandbox.STATE_DIRS):
+                (base / name).mkdir(mode=0o700, exist_ok=True)
+            (base / ".claude.json").write_text("{}\n")
+
+    def test_launch_spec_carries_lifetime_and_channel(self):
+        spec = _backend().launch_spec(self.home)
+        self.assertEqual(spec.lifetime, sandbox.lifetime(), "#3: LaunchSpec must carry the backend lifetime")
+        self.assertEqual(spec.channel, sandbox.channel(), "#3: LaunchSpec must carry the backend channel")
+
+    def test_lifetime_mirrors_the_native_linux_spawn_policy(self):
+        """The Python lifetime is the mirror of agent_host.c's zb_spawn_policy_linux(0):
+        SIGKILL, race-check on, no delay — the values ZbSpawnPolicy must realize."""
+        lt = sandbox.lifetime()
+        self.assertEqual((lt.die_with_parent, lt.signal, lt.check_parent_race, lt.delay_ms),
+                         (True, signal.SIGKILL, True, 0),
+                         "#3: lifetime mirrors zb_spawn_policy_linux(0) (SIGKILL, race-check, delay 0)")
+
+    def test_a_changed_channel_changes_the_real_zb_claude_wrapper(self):
+        """#3 real-consumer injection: token.write_wrapper (the production zb-claude
+        wrapper) projects the backend channel. The default puts the token on fd 3 and
+        sets CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR; a changed channel changes the exact
+        descriptor the wrapper dup2s and the env var it sets."""
+        d = Path(tempfile.mkdtemp(prefix="zb-chan-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        default = d / "zb-claude"
+        token.write_wrapper(default, "/x/cli")
+        text = default.read_text()
+        self.assertEqual((sandbox.channel().fd, sandbox.channel().env), (3, "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"))
+        self.assertIn("os.dup2(fd3, 3)", text)
+        self.assertIn('os.environ["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] = "3"', text)
+        self.assertIn("os.set_inheritable(3, True)", text)
+        changed = d / "zb-claude-changed"
+        token.write_wrapper(changed, "/x/cli", channel=sandbox.Channel(7, "ZB_ALT_FD"))
+        ctext = changed.read_text()
+        self.assertIn("os.dup2(fd3, 7)", ctext)
+        self.assertIn("os.set_inheritable(7, True)", ctext)
+        self.assertIn('os.environ["ZB_ALT_FD"] = "7"', ctext)
+        self.assertNotIn("os.dup2(fd3, 3)", ctext, "#3: a changed channel must not keep the old fd")
+
+    def test_the_production_wrapper_uses_the_backend_channel(self):
+        """The real setup wrapper is exactly write_wrapper projected from the backend
+        channel — not a hand-written fd."""
+        a = Path(tempfile.mkdtemp(prefix="zb-chan-a-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(a, ignore_errors=True))
+        token.write_wrapper(a / "w1", "/x/cli")
+        token.write_wrapper(a / "w2", "/x/cli", channel=sandbox.channel())
+        self.assertEqual((a / "w1").read_bytes(), (a / "w2").read_bytes(),
+                         "#3: the default wrapper IS the backend-channel projection")
 
 
 if __name__ == "__main__":

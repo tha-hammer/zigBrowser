@@ -18,6 +18,7 @@ same launch without reusing a bwrap argv.
 """
 
 import os
+import signal
 from typing import NamedTuple, Protocol
 
 from . import relay  # the Linux net topology: egress + bridge loopback ports (one source of truth)
@@ -81,7 +82,12 @@ class LaunchSpec(NamedTuple):
         endpoint *and* its upstream allowlist, the egress socket dir, and the
         bridge policy). It is the immutable, backend-neutral statement the CLI
         proxy, ``launch``'s ``--egress``, netd's allowlist/ports and the relay all
-        project from, so a macOS backend states the same meaning (RoseCat 5750).
+        project from, so a macOS backend states the same meaning (RoseCat 5750);
+      * ``lifetime`` — the backend's spawn/lifetime policy (:class:`Lifetime`),
+        whose native realization is ``agent_host.c``'s ``ZbSpawnPolicy`` threaded
+        through ``zb_agent_run_sync`` (RoseCat 5750);
+      * ``channel`` — the backend's inherited broker channel (:class:`Channel`): the
+        token's fd and its announcing env var, projected by ``token.write_wrapper``.
 
     Stored as a tuple so the spec is immutable; callers that need a mutable argv
     list wrap ``argv`` in ``list()``. The extra fields default to empty so the
@@ -93,6 +99,8 @@ class LaunchSpec(NamedTuple):
     workdir: str = None
     seccomp_fd: object = None
     network: object = None  # a :class:`Network` (defined below), or None
+    lifetime: object = None  # a :class:`Lifetime`, or None
+    channel: object = None  # a :class:`Channel`, or None
 
 
 class Endpoint(NamedTuple):
@@ -150,6 +158,41 @@ class Network(NamedTuple):
     bridges: BridgePolicy
 
 
+class Lifetime(NamedTuple):
+    """The spawn/lifetime policy a backend supplies for the setup CLI's spawn (MS0
+    rev 6, route a), carried by :class:`LaunchSpec`'s ``lifetime`` field. It is the
+    backend-neutral meaning of "die with the browser"; its native Linux realization
+    is ``agent_host.c``'s ``ZbSpawnPolicy`` (``zb_spawn_policy_linux``), threaded
+    through ``zb_agent_run_sync`` so the caller owns the policy instead of the C
+    hard-coding it. A macOS backend states the same meaning and realizes it with
+    posix_spawn + kqueue NOTE_EXIT.
+
+      * ``die_with_parent`` — the child dies when the browser does;
+      * ``signal`` — the death signal (SIGKILL on Linux);
+      * ``check_parent_race`` — re-check the parent after the fork-to-prctl window
+        and exit if it was reparented (RoseCat 5330);
+      * ``delay_ms`` — e2e only (else 0): widens that window for the race test.
+    """
+    die_with_parent: bool
+    signal: int
+    check_parent_race: bool
+    delay_ms: int = 0
+
+
+class Channel(NamedTuple):
+    """The inherited broker channel a backend hands the launched CLI (MS0 rev 6),
+    carried by :class:`LaunchSpec`'s ``channel`` field: the token's socket on
+    descriptor ``fd`` (3 on Linux), announced to the CLI through the environment
+    variable ``env`` (``CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR``). The real
+    consumer is ``token.write_wrapper``'s ``zb-claude`` wrapper, which dup2s the
+    token socket to ``fd`` and sets ``env`` — so a changed backend channel changes
+    the descriptor the CLI really inherits. A macOS backend states the same
+    descriptor contract.
+    """
+    fd: int
+    env: str
+
+
 class SandboxBackend(Protocol):
     """The shared seam a Linux (bwrap) and a macOS (Seatbelt) sandbox both satisfy.
 
@@ -163,6 +206,10 @@ class SandboxBackend(Protocol):
                     claude_writable=False, net_dir=None) -> "LaunchSpec": ...
 
     def network(self) -> "Network": ...
+
+    def lifetime(self) -> "Lifetime": ...
+
+    def channel(self) -> "Channel": ...
 
     def egress_endpoint(self, session=None) -> "Endpoint": ...
 
@@ -241,7 +288,7 @@ class LinuxBwrapBackend:
             argv += ["--seccomp", str(seccomp_fd)]
         argv.append("--")
         return LaunchSpec(tuple(argv), unshare=unshare, mounts=mounts, workdir=workdir, seccomp_fd=seccomp_fd,
-                          network=self.network())
+                          network=self.network(), lifetime=self.lifetime(), channel=self.channel())
 
     def network(self, session=None):
         """The whole Linux network capability as one immutable :class:`Network` —
@@ -283,6 +330,21 @@ class LinuxBwrapBackend:
         """
         return HookNetwork(bridges_dir=f"{NET_DIR}/bridges", ports=self.bridge_policy().ports, egress=None)
 
+    def lifetime(self):
+        """The Linux spawn/lifetime policy as one immutable :class:`Lifetime` — the
+        mirror of agent_host.c's ``zb_spawn_policy_linux(0)``: die with the browser
+        by SIGKILL, with the fork-to-prctl race check, no extra delay. The native
+        realization is that C policy, now threaded through ``zb_agent_run_sync``; a
+        macOS backend supplies its own for the same meaning (RoseCat 5750)."""
+        return Lifetime(die_with_parent=True, signal=signal.SIGKILL, check_parent_race=True, delay_ms=0)
+
+    def channel(self):
+        """The inherited broker channel as one immutable :class:`Channel` — the token
+        socket on fd 3, announced as ``CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR``. The
+        real consumer is ``token.write_wrapper`` (the ``zb-claude`` wrapper), which
+        dup2s the token to this fd and sets this env var."""
+        return Channel(fd=3, env="CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR")
+
 
 # The single Linux backend instance. `helper_argv` and the network-capability
 # delegates below flow through it, so the production launch and network paths go
@@ -295,6 +357,18 @@ def network(session=None):
     endpoint + allowlist + dir and the bridge policy. setup serializes it to
     net.json; options/launch/netd/relay all project from it."""
     return _LINUX_BACKEND.network(session)
+
+
+def lifetime():
+    """The backend's spawn/lifetime policy (one source of truth): the native mirror
+    that ``zb_agent_run_sync`` threads through ``ZbSpawnPolicy``."""
+    return _LINUX_BACKEND.lifetime()
+
+
+def channel():
+    """The backend's inherited broker channel (one source of truth): the token fd and
+    its announcing env var, which ``token.write_wrapper`` projects."""
+    return _LINUX_BACKEND.channel()
 
 
 def egress_endpoint(session=None):

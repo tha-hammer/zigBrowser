@@ -43,12 +43,15 @@ void zb_agent_die_with_browser(void *data);
 
 /* Runs `argv` (NULL-terminated) with exactly `envp` (NULL-terminated) and
  * waits for it. Its stdin is /dev/null; stdout and stderr are the browser's.
- * It dies with the browser: PR_SET_PDEATHSIG, then a check that its parent
- * is still the browser, which closes the fork-to-prctl race (RoseCat 5330).
- * `spawn_delay_ms` (e2e only, else 0) widens that race for the regression
- * test. Returns its exit status
+ * `policy` is the caller-supplied spawn/lifetime policy (MS0 rev 6, route a): the
+ * Zig caller passes zb_spawn_policy_linux(delay_ms) today, so a backend owns the
+ * die-with-browser contract rather than this function hard-coding it (a macOS
+ * backend can supply its own for the same meaning). It dies with the browser by
+ * PR_SET_PDEATHSIG, then re-checks its parent to close the fork-to-prctl race
+ * (RoseCat 5330); policy.delay_ms (e2e only, else 0) widens that race for the
+ * regression test. Returns its exit status
  * (0..255), 128+N when signal N ended it, or -1 when it could not start. */
-int zb_agent_run_sync(const char *const *argv, const char *const *envp, unsigned int spawn_delay_ms);
+int zb_agent_run_sync(const char *const *argv, const char *const *envp, ZbSpawnPolicy policy);
 
 /* The agent's network helper, netd (chat-drawer plan rev 16.2 §3c.2; S3n2
  * native spawn wiring). One per browser, started at most once. GTK thread

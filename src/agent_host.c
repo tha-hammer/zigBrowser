@@ -59,10 +59,10 @@ void zb_agent_die_with_browser(void *data) {
   }
 }
 
-int zb_agent_run_sync(const char *const *argv, const char *const *envp, unsigned int spawn_delay_ms) {
+int zb_agent_run_sync(const char *const *argv, const char *const *envp, ZbSpawnPolicy policy) {
   int wait_status = 0;
   GError *error = NULL;
-  ZbChildSetup setup = {getpid(), zb_spawn_policy_linux(spawn_delay_ms)};
+  ZbChildSetup setup = {getpid(), policy};
   if (!g_spawn_sync(NULL, (char **)argv, (char **)envp, G_SPAWN_DEFAULT, zb_agent_die_with_browser, &setup,
                     NULL, NULL, &wait_status, &error)) {
     g_printerr("zigBrowser: agent: cannot start %s: %s\n", argv[0], error != NULL ? error->message : "?");

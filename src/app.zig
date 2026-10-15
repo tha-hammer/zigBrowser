@@ -108,7 +108,7 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
     }
     const argv = toCStrings(arena, setup_run.argv) catch return error.WriteFailed;
     const envp = toCStrings(arena, setup_run.env) catch return error.WriteFailed;
-    const status = c.zb_agent_run_sync(argv.ptr, envp.ptr, setup_run.spawn_delay_ms);
+    const status = c.zb_agent_run_sync(argv.ptr, envp.ptr, c.zb_spawn_policy_linux(setup_run.spawn_delay_ms));
     return if (status < 0) 1 else @intCast(@min(status, 255));
 }
 

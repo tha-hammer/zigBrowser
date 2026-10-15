@@ -15,6 +15,7 @@ import secrets
 import stat
 import threading
 
+from . import sandbox  # the backend owns the inherited token channel (fd + env), one source of truth
 from .files import atomic_write
 
 MIN_TOKEN = 16
@@ -98,7 +99,7 @@ class FifoHandoff:
 
 WRAPPER = '''#!{python} -I
 # zb-claude (written by --agent-setup): route R1. Reads this session's token FIFO,
-# unlinks it, and starts the Claude CLI with the token on fd 3 as a socket.
+# unlinks it, and starts the Claude CLI with the token on fd {fd} as a socket.
 import os, socket, sys
 CLI = {cli!r}
 path = os.environ.pop("ZB_TOKEN_FIFO", "")
@@ -120,17 +121,23 @@ ours.sendall(data)
 ours.close()
 del data
 fd3 = theirs.detach()
-if fd3 != 3:
-    os.dup2(fd3, 3)
+if fd3 != {fd}:
+    os.dup2(fd3, {fd})
     os.close(fd3)
-os.set_inheritable(3, True)
-os.environ["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] = "3"
+os.set_inheritable({fd}, True)
+os.environ["{env}"] = "{fd}"
 os.execv(CLI, [CLI] + sys.argv[1:])
 '''
 
 
-def write_wrapper(path, cli, python="/usr/bin/python3"):
-    return atomic_write(path, WRAPPER.format(python=python, cli=str(cli), limit=MAX_TOKEN), 0o700)
+def write_wrapper(path, cli, python="/usr/bin/python3", channel=None):
+    """Writes the zb-claude wrapper. The CLI's inherited token channel (the fd the
+    token socket lands on and the env var that announces it) comes from the backend
+    (sandbox.channel(), one source of truth), so a changed backend channel changes
+    the descriptor the CLI really inherits; `channel` overrides it for tests."""
+    ch = channel if channel is not None else sandbox.channel()
+    return atomic_write(path, WRAPPER.format(python=python, cli=str(cli), limit=MAX_TOKEN,
+                                             fd=ch.fd, env=ch.env), 0o700)
 
 
 def bundled_cli():
