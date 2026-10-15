@@ -24,6 +24,8 @@ sys.path.insert(0, str(HOST_DIR))
 from zb_agent_host import options, setup  # noqa: E402
 
 FIXTURE = REPO / "tests" / "fixtures" / "agent" / "sai_source"
+sys.path.insert(0, str(REPO / "tests" / "e2e"))
+from agent_escape import TcpDecoy, attempter_cli, host_lan_address  # noqa: E402
 
 
 def tree_digest(root):
@@ -103,6 +105,74 @@ class TokenRouteTest(unittest.TestCase):
         self.assertFalse(hasattr(setup, "RISK_LINE"))
         from zb_agent_host import token
         self.assertFalse(hasattr(token, "r3_env"))
+
+
+class SetupSandboxTest(unittest.TestCase):
+    """§3c.7: setup's own executions (`cli --version` and the R1 probe) run in the
+    same kind of sandbox as the helper, never under `--dev-bind / /`: a private
+    network, read-only /usr, the few /etc files and what they need, a throwaway
+    home, and no X11, XDG_RUNTIME_DIR, user home or repository."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="zb-setup-sandbox-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.decoys = [TcpDecoy("127.0.0.1")]
+        lan = host_lan_address()
+        self.assertIsNotNone(lan, "the host has no global IPv4 address for the LAN decoy")
+        self.decoys.append(TcpDecoy(lan))
+        for decoy in self.decoys:
+            self.addCleanup(decoy.close)
+        self.user = self.tmp / "user-home"
+        (self.user / "src" / "repo").mkdir(parents=True)
+        self.canaries = [self.user / "canary", self.user / "src" / "repo" / "canary"]
+        for canary in self.canaries:
+            canary.write_text("canary\n")
+
+    def attempter(self, path=None, real=None):
+        return attempter_cli(path or self.tmp / "attempter-claude", tcp=[d.address for d in self.decoys],
+                             files=self.canaries, real=real)
+
+    def assert_nothing_reached(self, opened):
+        self.assertEqual([d.accepted for d in self.decoys], [0, 0], "a decoy was reached (loopback, LAN)")
+        self.assertEqual(sorted(p for p in opened if "canary" in p), [], "a canary was opened")
+
+    def test_the_sandbox_has_its_own_network_and_only_the_binds_it_needs(self):
+        scratch = self.tmp / "scratch"
+        argv = setup.setup_sandbox(scratch, ["/v", "/pkg", "/r/runtime", "/c/claude"], ["/c/claude", "--version"])
+        self.assertNotIn("--dev-bind", argv)
+        for flag in ("--unshare-net", "--unshare-pid", "--unshare-ipc", "--die-with-parent", "--new-session"):
+            self.assertIn(flag, argv[:argv.index("--")])
+        binds = [(argv[i], argv[i + 1]) for i in range(len(argv) - 1) if argv[i] in ("--bind", "--ro-bind", "--dev-bind")]
+        self.assertEqual([b for b in binds if b[0] == "--bind"], [("--bind", str(scratch))], "only the throwaway home is writable")
+        ro = {path for flag, path in binds if flag == "--ro-bind"}
+        allowed = {"/usr", "/v", "/pkg", "/r/runtime", "/c/claude", *(f for f in setup.sandbox.ETC_FILES)}
+        self.assertLessEqual(ro, allowed)
+        self.assertEqual(argv[argv.index("--") + 1:], ["/c/claude", "--version"])
+
+    def test_cli_version_reaches_no_decoy_and_reads_no_canary(self):
+        cli = self.attempter()
+        watch = support_inotify(self.user)
+        version = setup.cli_version(cli)
+        self.assert_nothing_reached(watch.close())
+        self.assertEqual(version, "0.0.0", "the sandboxed CLI still answers --version")
+
+    def test_the_r1_probe_still_passes_and_reaches_no_decoy_or_canary(self):
+        # The wrapper starts the attempter (in the runtime, which the probe sees), which
+        # then execs the real CLI: the probe still finds and checks the real CLI.
+        from zb_agent_host import token
+        real = token.bundled_cli()
+        wrapper = self.tmp / "runtime" / "bin" / "zb-claude"
+        wrapper.parent.mkdir(parents=True)
+        token.write_wrapper(wrapper, self.attempter(wrapper.parent / "escape-claude", real=real))
+        watch = support_inotify(self.user)
+        r1 = setup.probe_r1(wrapper, real)
+        self.assert_nothing_reached(watch.close())
+        self.assertTrue(r1, "the real CLI behind the attempter must still pass the R1 probe")
+
+
+def support_inotify(root):
+    import support
+    return support.Inotify(root, extra_mask=support.Inotify.IN_OPEN | support.Inotify.IN_ACCESS)
 
 
 class SanitizeTest(unittest.TestCase):

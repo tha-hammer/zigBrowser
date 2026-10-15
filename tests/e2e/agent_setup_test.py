@@ -25,6 +25,13 @@ event there. The SAI source is the fixture tree, copied with its
   reaches the setup helper's argv or environment, and never runs
 - R3 removed (plan rev 16, §3c.1): --agent-token-route env (or any route
   value) refuses with one line and exit 2, and no agent home is written
+- sealed (plan rev 16.1, §3c.7): a normal setup's CLI runs (its --version and
+  the R1 probe) each live in their own network namespace with no view of the
+  user's home, and setup still selects R1; an e2e CLI that tries a host
+  loopback decoy, a host LAN decoy and canaries in $HOME/.claude and the
+  repository reaches none of them; the same with the literal
+  @/tmp/.X11-unix/X0 inside a disposable parent network namespace (which must
+  be creatable: the case fails rather than skips)
 - kill (plan rev 15.5): the browser is SIGKILLed while setup is paused at
   `swap:before` or `swap:after` (ZIGBROWSER_AGENT_SETUP_PAUSE, e2e only):
   `current` names one whole build, the old or the new; the seeded state
@@ -45,11 +52,13 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
 from agent_common import REPO, Checks, Inotify, host_python, run_main
+from agent_escape import AbstractDecoy, TcpDecoy, attempter_cli, host_lan_address
 
 FIXTURE = REPO / "tests" / "fixtures" / "agent" / "sai_source"
 NO_ROUTE = "zigBrowser: agent-setup: no safe token route for this Claude CLI"
@@ -323,6 +332,86 @@ def case_cli_seam(binary: Path, tmp: Path, check: Checks) -> None:
               f"R3 removed: --agent-token-route {route} refuses with exit 2, nothing written ({code}; {err.strip()[-200:]!r})")
 
 
+def cli_processes(cli: str) -> list[int]:
+    """Live, non-zombie processes running `cli` (its argv[0]; bwrap only names it in a bind)."""
+    found = []
+    for pid in (p for p in os.listdir("/proc") if p.isdigit()):
+        try:
+            if Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0] == cli.encode() and \
+                    Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z":
+                found.append(int(pid))
+        except OSError:
+            continue
+    return found
+
+
+def case_sealed(binary: Path, tmp: Path, check: Checks) -> None:
+    """§3c.7: setup's own executions are sandboxed like the helper."""
+    # A normal setup (no --e2e-protocol, the real CLI): every CLI process seen
+    # while it runs has its own network namespace and no view of the user's home.
+    w = World(tmp, "sealed")
+    cli, host_net = bundled_cli(), os.readlink("/proc/self/ns/net")
+    seen: dict[int, tuple[str, bool]] = {}
+    proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--sai-source", str(w.source)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=w.env())
+    while proc.poll() is None:
+        for pid in cli_processes(cli):
+            try:
+                seen.setdefault(pid, (os.readlink(f"/proc/{pid}/ns/net"), os.path.exists(f"/proc/{pid}/root{w.home}")))
+            except OSError:
+                continue
+        time.sleep(0.005)
+    err = proc.stderr.read()
+    proc.stderr.close()
+    route = json.loads((w.agent / "runtime" / "token-route.json").read_text()) if proc.returncode == 0 else {}
+    check(proc.returncode == 0 and route.get("route") == "R1", f"sealed: a normal setup still selects R1 ({proc.returncode}; {err.strip()[-200:]!r})")
+    check(bool(seen), f"sealed: the CLI was sampled while setup ran ({len(seen)} processes)")
+    check(all(net != host_net and not home for net, home in seen.values()),
+          f"sealed: each CLI process had its own network and no view of $HOME ({sorted(set(seen.values()))})")
+
+    # An e2e CLI that tries every way out, in both executions (--version and the probe).
+    w = World(tmp, "sealed-escape")
+    lan = host_lan_address()
+    if not check(lan is not None, "sealed: the host has a global IPv4 address for the LAN decoy"):
+        return
+    decoys = [TcpDecoy("127.0.0.1"), TcpDecoy(lan)]
+    canaries = [w.home / ".claude" / "canary", w.home / "src" / "decoy-repo" / "canary"]
+    for canary in canaries:
+        canary.write_text("canary\n")
+    escape = attempter_cli(w.root / "escape-claude", tcp=[d.address for d in decoys], files=canaries)
+    try:
+        code, _out, err, events, _ = run_setup(binary, w, ["--e2e-protocol"], {"ZIGBROWSER_AGENT_CLAUDE_CLI": str(escape)})
+    finally:
+        for decoy in decoys:
+            decoy.close()
+    check(code == 2 and NO_ROUTE in err, f"sealed: the attempter ran and could not pass the probe ({code}; {err.strip()[-200:]!r})")
+    check([d.accepted for d in decoys] == [0, 0], f"sealed: no decoy was reached (loopback, LAN: {[d.accepted for d in decoys]})")
+    check(not [path for path, _mask in events if "canary" in path], f"sealed: no canary was touched ({events})")
+
+    # The literal X0 abstract socket, only inside a disposable parent network namespace.
+    child = subprocess.run(["/usr/bin/bwrap", "--unshare-net", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc",
+                            "--", sys.executable, str(Path(__file__).resolve()), "--x0-child", str(binary.resolve()), str(tmp)],
+                           capture_output=True, text=True, timeout=300, env={"PATH": "/usr/bin:/bin", **w.env()})
+    if not check(child.returncode == 0 and child.stdout.strip(),
+                 f"sealed: the disposable parent network namespace exists (bwrap --unshare-net; {child.returncode}: "
+                 f"{child.stderr.strip()[-300:]!r})"):
+        return
+    got = json.loads(child.stdout.strip().splitlines()[-1])
+    check(got["x0"] == 0 and got["lo"] == 0 and got["code"] == 2,
+          f"sealed: neither @/tmp/.X11-unix/X0 nor loopback is reached from setup's executions ({got})")
+
+
+def x0_child(binary: Path, tmp: Path) -> int:
+    """Inside the disposable parent network namespace: an abstract decoy at the
+    literal @/tmp/.X11-unix/X0 and a loopback decoy, then a setup with the attempter."""
+    w = World(tmp, "sealed-x0")
+    x0, lo = AbstractDecoy("/tmp/.X11-unix/X0"), TcpDecoy("127.0.0.1")
+    escape = attempter_cli(w.root / "escape-claude", tcp=[lo.address], abstract=[x0.address])
+    code, _out, _err, _events, _ = run_setup(binary, w, ["--e2e-protocol"], {"ZIGBROWSER_AGENT_CLAUDE_CLI": str(escape)})
+    print(json.dumps({"x0": x0.accepted, "lo": lo.accepted, "code": code}), flush=True)
+    return 0
+
+
 def helpers_for(home: Path) -> list[int]:
     """Live processes running the setup helper for this agent home."""
     pids = []
@@ -505,16 +594,16 @@ def case_descendants(binary: Path, tmp: Path, check: Checks) -> None:
     """RoseCat 5347: the route probe's CLI and whatever it starts die with the
     browser. The fake CLI answers --version, then on the probe starts a child
     and sleeps; both carry a marker in their argv, so the test finds their
-    host PIDs (they live in their own PID namespace)."""
+    host PIDs (they live in their own PID namespace). The probe's sandbox has no
+    view of the test's directories (§3c.7), so readiness is those processes
+    appearing, not a file."""
     import signal
     w = World(tmp, "descendants")
     tag = f"zb-descendant-{os.getpid()}-{int(time.monotonic() * 1000)}"
-    ready = w.root / "ready"
     cli = fake_cli(w.root, "sleepy-claude", (
         "import subprocess, sys, time\n"
         "if '--version' in sys.argv: print('0.0.0 (fake)'); sys.exit(0)\n"
         f"subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)', {tag + '-child'!r}])\n"
-        f"open({str(ready)!r}, 'w').write('ok')\n"
         "time.sleep(120)\n"))
     proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--e2e-protocol", "--sai-source", str(w.source)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -535,10 +624,10 @@ def case_descendants(binary: Path, tmp: Path, check: Checks) -> None:
         return pids
 
     deadline = time.monotonic() + 120
-    while time.monotonic() < deadline and not ready.exists() and proc.poll() is None:
+    while time.monotonic() < deadline and not running(tag + "-child") and proc.poll() is None:
         time.sleep(0.1)
     cli_pids, child_pids = running(str(cli)), running(tag + "-child")
-    if not check(ready.exists() and cli_pids and child_pids,
+    if not check(bool(cli_pids and child_pids),
                  f"descendants: the probe's CLI and its child are running ({cli_pids}, {child_pids})"):
         reap(proc)
         return
@@ -554,11 +643,13 @@ def case_descendants(binary: Path, tmp: Path, check: Checks) -> None:
 
 
 def main() -> int:
-    return run_main(__doc__, {"provision": case_provision, "refusals": case_refusals, "cli": case_cli_seam,
+    return run_main(__doc__, {"provision": case_provision, "refusals": case_refusals, "cli": case_cli_seam, "sealed": case_sealed,
                               "parent": case_parent_death, "home": case_bad_home, "install": case_clean_install,
                               "timeout": case_timeout_teardown, "kill": case_kill, "descendants": case_descendants})
 
 
 if __name__ == "__main__":
     PYTHON = host_python()
+    if sys.argv[1:2] == ["--x0-child"]:
+        raise SystemExit(x0_child(Path(sys.argv[2]), Path(sys.argv[3])))
     raise SystemExit(main())

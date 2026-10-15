@@ -18,7 +18,6 @@ history, todos, shell snapshots, the user's MEMORY/ (the agent starts empty).
 """
 
 import argparse
-import asyncio
 import datetime
 import hashlib
 import json
@@ -31,9 +30,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import hook_run, options, sandbox, token
@@ -677,22 +674,63 @@ def provision(home, source, source_home, source_path, python, select_token_route
 
 # --- the token route (D11, S3.7) ---------------------------------------------
 
-def contained(argv):
-    """`argv` in its own PID namespace that dies with this process (RoseCat
-    5347): the setup helper dies with the browser (PDEATHSIG), bwrap with the
-    helper (--die-with-parent), and with bwrap's first child the kernel kills
-    every process in the namespace, whatever the CLI started."""
-    return [sandbox.BWRAP, "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc",
-            "--", *map(str, argv)]
+def setup_sandbox(scratch, ro_paths, command):
+    """One of setup's own executions (`cli --version`, the R1 probe) in the same kind
+    of sandbox as the helper (plan rev 16.1, §3c.7), never under `--dev-bind / /`:
+    its own network namespace (only its own loopback, no bridge, no proxy), PID,
+    IPC and UTS namespaces; read-only /usr, the few /etc files and `ro_paths`;
+    `scratch`, a throwaway home, is the only writable path. No X11,
+    XDG_RUNTIME_DIR, user home or repository is in its view. The death chain is
+    the helper's (RoseCat 5347): this process dies with the browser, bwrap with
+    it (--die-with-parent), and with bwrap's first child the kernel kills every
+    process in the namespace, whatever the CLI started."""
+    argv = [sandbox.BWRAP, "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--die-with-parent", "--new-session", "--proc", "/proc", "--dev", "/dev",
+            "--tmpfs", "/tmp", "--tmpfs", "/run", "--ro-bind", "/usr", "/usr"]
+    for target, link in sandbox.USR_LINKS:
+        argv += ["--symlink", target, link]
+    for path in sandbox.ETC_FILES:
+        if os.path.exists(path):
+            argv += ["--ro-bind", path, path]
+    for path in map(str, ro_paths):
+        argv += ["--ro-bind", path, path]
+    return argv + ["--bind", str(scratch), str(scratch), "--chdir", str(scratch), "--", *map(str, command)]
+
+
+def _sandboxed(ro_paths, command, timeout, env=None):
+    """Runs `command` in setup_sandbox with a fresh throwaway home; (stdout, ok)."""
+    scratch = Path(tempfile.mkdtemp(prefix="zb-setup-run-"))
+    try:
+        done = subprocess.run(setup_sandbox(scratch, ro_paths, command), capture_output=True, text=True,
+                              timeout=timeout, env={"PATH": "/usr/bin:/bin", "HOME": str(scratch),
+                                                    "LANG": "C.UTF-8", **(env or {})})
+        return done.stdout, done.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def cli_version(cli):
+    """`cli --version` in setup's sandbox: no network at all is needed."""
+    out, _ok = _sandboxed([sys.prefix, cli], [cli, "--version"], timeout=20)
+    return (out.strip().split() or ["unknown"])[0]
+
+
+def probe_r1(wrapper, cli):
+    """The R1 probe (route_probe), whole inside one setup sandbox: the probe server,
+    the SDK, the wrapper and the CLI all live in its private network namespace.
+    True when the CLI took the probe token from fd 3 and no CLI environment held it."""
+    runtime = Path(wrapper).parent.parent
+    out, ok = _sandboxed([sys.prefix, PACKAGE_DIR, runtime, cli],
+                         [sys.executable, "-m", "zb_agent_host", "probe-r1", "--wrapper", wrapper, "--cli", cli],
+                         timeout=PROBE_TIMEOUT_S + 30,
+                         env={"PYTHONPATH": str(PACKAGE_DIR), "PYTHONDONTWRITEBYTECODE": "1"})
+    lines = out.strip().splitlines()
     try:
-        done = subprocess.run(contained([cli, "--version"]), capture_output=True, text=True, timeout=20,
-                              env={"PATH": "/usr/bin:/bin", "HOME": tempfile.gettempdir()})
-        return (done.stdout.strip().split() or ["unknown"])[0]
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
+        return ok and json.loads(lines[-1]) == {"r1": True}
+    except (IndexError, ValueError):
+        return False
 
 
 def select_route(runtime, cli, probe):
@@ -704,135 +742,6 @@ def select_route(runtime, cli, probe):
     record = {"route": "R1", "cli_path": str(cli), "cli_version": cli_version(cli),
               "probed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     atomic_write(runtime / "token-route.json", json.dumps(record), 0o600)
-
-
-def _stream(text):
-    message = {"id": "msg_probe", "type": "message", "role": "assistant", "model": "probe", "content": [],
-               "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}}
-    yield "message_start", {"type": "message_start", "message": message}
-    yield "content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
-    yield "content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
-    yield "content_block_stop", {"type": "content_block_stop", "index": 0}
-    yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                            "usage": {"output_tokens": 1}}
-    yield "message_stop", {"type": "message_stop"}
-
-
-def _descendants_running(exe):
-    """PIDs of our descendants whose executable is `exe`."""
-    me, found = os.getpid(), []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            if os.path.realpath(f"/proc/{entry}/exe") != exe:
-                continue
-        except OSError:
-            continue
-        pid = int(entry)
-        while pid > 1:
-            try:
-                with open(f"/proc/{pid}/stat") as f:
-                    pid = int(f.read().rsplit(")", 1)[1].split()[1])
-            except (OSError, ValueError, IndexError):
-                break
-            if pid == me:
-                found.append(int(entry))
-                break
-    return found
-
-
-class _ProbeServer:
-    """A one-shot loopback Messages API: records the bearer it receives and
-    whether any running CLI process holds the probe token in its environment."""
-
-    def __init__(self, probe_token, cli):
-        self.bearer = None
-        self.cli_env_clean = None
-        server = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_args):
-                pass
-
-            def do_POST(self):  # noqa: N802 - http.server API
-                length = int(self.headers.get("content-length") or 0)
-                body = json.loads(self.rfile.read(length) or b"{}")
-                if self.path.split("?", 1)[0] == "/v1/messages" and server.bearer is None:
-                    server.bearer = self.headers.get("authorization", "")
-                    environs = []
-                    for pid in _descendants_running(os.path.realpath(cli)):
-                        try:
-                            with open(f"/proc/{pid}/environ", "rb") as f:
-                                environs.append(f.read())
-                        except OSError:
-                            pass
-                    server.cli_env_clean = bool(environs) and all(probe_token.encode() not in e for e in environs)
-                if not body.get("stream"):
-                    self._reply(200, "application/json", json.dumps({"type": "message", "content": []}).encode())
-                    return
-                self.send_response(200)
-                self.send_header("content-type", "text/event-stream")
-                self.send_header("connection", "close")
-                self.end_headers()
-                for name, data in _stream("ok"):
-                    self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
-                self.close_connection = True
-
-            def _reply(self, code, ctype, data):
-                self.send_response(code)
-                self.send_header("content-type", ctype)
-                self.send_header("content-length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.httpd.daemon_threads = True
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-
-    def close(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-
-
-def probe_r1(wrapper, cli):
-    """One turn through the real wrapper, FIFO and socket hand-off, with a
-    random probe token, against the loopback probe server. Runs with a
-    throwaway HOME and config (no SAI, no hooks). True when the server saw
-    `Bearer <probe>` and no CLI environment held it."""
-    from claude_agent_sdk import query
-
-    probe_token = "zb-probe-" + secrets.token_hex(24)
-    server = _ProbeServer(probe_token, cli)
-    scratch = Path(tempfile.mkdtemp(prefix="zb-route-probe-"))
-    try:
-        home = options.AgentHome(scratch / "home")
-        for sub in (home.claude_dir, home.workspace, home.tmp):
-            sub.mkdir(mode=0o700, parents=True, exist_ok=True)
-        handoff = token.FifoHandoff(scratch / "zb-token", probe_token)
-        # The SDK starts the CLI through this launcher, so the CLI and all it
-        # starts live in a PID namespace that dies with this helper.
-        launcher = scratch / "zb-claude-contained"
-        launcher.write_text("#!/bin/sh\nexec " + " ".join(map(shlex.quote, contained([wrapper]))) + ' "$@"\n')
-        launcher.chmod(0o700)
-        opts = options.build(home, route_env=handoff.env(), cli_path=str(launcher), base_url=server.url)
-
-        async def turn():
-            async for _ in query(prompt="probe", options=opts):
-                pass
-
-        try:
-            asyncio.run(asyncio.wait_for(turn(), PROBE_TIMEOUT_S))
-        except BaseException as exc:  # noqa: BLE001 - the verdict is what the server saw
-            if isinstance(exc, KeyboardInterrupt):
-                raise
-        finally:
-            handoff.close()
-        return server.bearer == f"Bearer {probe_token}" and server.cli_env_clean is True
-    finally:
-        server.close()
-        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def main(argv):
