@@ -9965,3 +9965,68 @@ contract still has open Slice E/F consumer/spawn work, and the linear history
 now also contains the unpaired red-only `72e663f` and `738b17a`. Neither red
 may be included in an approved push prefix until its registered green lands;
 no history rewrite may skip them.
+
+## XInput and netd/relay greens (`463a3eb`, `dee9829`)
+
+**Explicit verdict for `463a3eb`: APPROVED.** The process-wide Xlib handler
+now suppresses only BadWindow/BadDrawable whose protocol request is the
+read-only GetProperty or GetGeometry used by `toplevels()`; every other error
+is handed to Xlib's previous handler (`tests/e2e/xinput.py@463a3eb:45-77`).
+The window census naturally skips a failed title read and leaves geometry
+outputs zero on a failed geometry read, so it cannot return the vanished
+window. The registered private-Xvfb suite retains the original deterministic
+XFetchName/BadWindow case and adds both sides requested during pre-review: a
+destroyed-window GetGeometry/BadDrawable survives, while ConfigureWindow on a
+destroyed window and an ordinary BadValue still terminate the process
+(`tests/e2e/test_xinput_errors.py@463a3eb:29-70,89-118`;
+`build.zig@463a3eb:883-889,1179`). The unscoped-handler and GetProperty-only
+mutants are therefore both distinguished. This closes the green-review item
+in mail 5786 and cumulatively closes the `72e663f` red/green pair.
+
+**Explicit verdict for `dee9829`: APPROVED for the netd/relay side of MS0
+Slices D/E.** The browser derives `<agent-home>/runtime/net.json`, places it
+after `--bwrap` and before any e2e seam, and uses the production argv on both
+flagged and unflagged paths (`src/agent_net.zig@dee9829:88-110`;
+`src/app.zig@dee9829:122-166`; `tests/e2e/agent_netd_spawn_test.py@dee9829:194-226,376-404`).
+Netd's outer stage performs one nonblocking, no-follow open, validates the
+same descriptor as an owner-held regular file with no group/world write bit,
+caps the read at 64 KiB plus one detection byte, and emits only fixed refusal
+text. It requires 1–8 unique lowercase DNS names and 1–8 unique integer ports,
+rejects one network key without the other, and preserves the exact built-ins
+for a missing or pre-network manifest (`agent/host/zb_agent_host/netd.py@dee9829:559-630`).
+Only those checked hosts and ports cross the bwrap boundary as explicit argv;
+the sandboxed side validates them again, replaces rather than augments the
+production allowlist/bridge set, and creates exactly the corresponding Unix
+sockets (`:633-641,669-692,718-778`). Test-only allow/bridge additions remain
+gated by the app's existing `--e2e-protocol` seam.
+
+The inner relay accepts `--ports` only after `--bridges`, limits it to 1–8
+unique plain-decimal ports, and otherwise preserves the historical fixed map;
+egress mode cannot accept that option (`agent/host/zb_agent_host/relay.py@dee9829:51-81,168-185,250-286`).
+The registered suites cover exact byte forwarding, no omitted/default/API
+listener, descriptor closure, malformed grammar before hook execution,
+manifest file kinds/modes/size/types, allowlist replacement after a matching
+ClientHello, browser argv/layout, refusal UI and canary-free output
+(`agent/host/tests/test_netd_manifest.py@dee9829:61-199`;
+`agent/host/tests/test_relay_ports.py@dee9829:64-121`;
+`tests/e2e/agent_netd_manifest_test.py@dee9829:43-170`). The allowlist green's
+ClientHello correction fixes the red oracle rather than weakening it: netd
+intentionally delays its dial until the SNI matches, and the corrected test
+now observes both the refusal with no attempt and the allowed host's vetted
+attempt.
+
+BlueBeaver's clean export of the exact combined file set at `dee9829`, with a
+fresh cache under private Xvfb, passed **138/138 steps and 880/880 tests**;
+the export was deleted. I did not start a competing run because JadeBeacon
+holds the next serialized gate slot.
+
+These approvals close the red-only push blockers `72e663f` and `738b17a`, but
+they do **not** close the earlier composed MS0 finding. **Slice E remains OPEN
+(JadeBeacon):** production `hook_run` must still project the backend ports
+through the real setup→hook→relay chain and test that changed ports alter the
+real sealed hook's listeners. **Slice F remains OPEN (JadeBeacon):** the
+caller-supplied native spawn policy plus immutable lifetime/channel fields and
+their real consumers have not landed. Consequently the newest approved
+linear push-through SHA remains **`dc52885`** until both pre-existing findings
+are closed; `463a3eb` and `dee9829` themselves are approved and need no
+follow-up from BlueBeaver.
