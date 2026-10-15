@@ -19,4 +19,40 @@ int zb_agent_home_lock(const char *home);
  * (0..255), 128+N when signal N ended it, or -1 when it could not start. */
 int zb_agent_run_sync(const char *const *argv, const char *const *envp, unsigned int spawn_delay_ms);
 
+/* The agent's network helper, netd (chat-drawer plan rev 16.2 §3c.2; S3n2
+ * native spawn wiring). One per browser, started at most once. GTK thread
+ * only. With --e2e-protocol every state change writes the row
+ * `AGENTNET <starting|ready DIR|unavailable REASON>`. */
+enum {
+  ZB_AGENT_NET_NOT_SET_UP = 0, /* not configured: no provisioned agent home */
+  ZB_AGENT_NET_IDLE = 1,
+  ZB_AGENT_NET_STARTING = 2,
+  ZB_AGENT_NET_READY = 3,
+  ZB_AGENT_NET_UNAVAILABLE = 4,
+};
+
+/* Called once, before the first window: netd's argv and its whole
+ * environment (NULL-terminated, copied), its socket directory, and
+ * `refusal`: when non-NULL, the one stderr line that refuses the agent (a bad
+ * seam, no XDG_RUNTIME_DIR), printed when the agent would start. */
+void zb_agent_net_configure(const char *const *argv, const char *const *envp, const char *sockdir,
+                            const char *refusal, int e2e_protocol);
+
+/* Starts netd the first time (it dies with the browser, its stdin and stdout
+ * are pipes the browser keeps), and returns the state now. netd has 5 s to
+ * print `netd ready`. Whenever it becomes unavailable (a refusal, a failed
+ * spawn, no `netd ready` in time, or its exit, logged as
+ * `zigBrowser: agent: network helper exited (exit N|signal N)`), the
+ * listener is called once; it is never started again. */
+int zb_agent_net_ensure(void);
+void zb_agent_net_set_listener(void (*listener)(void *data), void *data);
+
+/* netd's socket directory while it is ready, else NULL (S3b passes it on to
+ * the helper's launch as --net-dir). */
+const char *zb_agent_net_dir(void);
+
+/* At quit, after the main loop: closes netd's stdin (its normal shutdown:
+ * it removes its sockets and directory) and waits up to 2 s for it. */
+void zb_agent_net_stop(void);
+
 #endif

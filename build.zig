@@ -317,6 +317,24 @@ pub fn build(b: *std.Build) void {
     const run_agent_drawer_tests = b.addRunArtifact(agent_drawer_tests);
     run_agent_drawer_tests.skip_foreign_checks = true;
 
+    // Chat drawer S3n2, native spawn wiring: netd's socket directory, the e2e
+    // seams' grammar and netd's argv and environment (src/agent_net.zig).
+    const agent_net_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_net.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const agent_net_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_net_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_net_tests_module.addImport("agent_net", agent_net_module);
+    const run_agent_net_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_net_tests_module }));
+    run_agent_net_tests.skip_foreign_checks = true;
+
     const config_schema_module = b.createModule(.{
         .root_source_file = b.path("src/config_schema.zig"),
         .target = target,
@@ -698,6 +716,15 @@ pub fn build(b: *std.Build) void {
         "agent-setup-e2e",
     });
     agent_setup_e2e.addArtifactArg(exe);
+    // Chat drawer S3n2: the browser starts netd on the first Send (with a
+    // provisioned agent home), reports its failures and stops it at quit.
+    const agent_netd_spawn_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_netd_spawn_test.py --binary \"$1\"",
+        "agent-netd-spawn-e2e",
+    });
+    agent_netd_spawn_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -930,6 +957,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
+    test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -976,6 +1004,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);
+    test_step.dependOn(&agent_netd_spawn_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&real_screen_input_xvfb.step);
     test_step.dependOn(&automation_dialogs_e2e.step);

@@ -8,6 +8,7 @@
  * not available yet". */
 
 #include "agent_drawer.h"
+#include "agent_host.h"
 #include "webkit_shim.h"
 
 #include <math.h>
@@ -36,9 +37,14 @@ unsigned int zb_drawer_anim_ms(void);
 
 enum { ZB_GESTURE_DRAG = 1 };
 #define ZB_NO_AGENT_TEXT "Agent not available yet"
+/* netd could not start or stopped (plan rev 16.2 §3c.2): shown on that Send and
+ * every later one; netd is never started again in this browser. */
+#define ZB_NET_UNAVAILABLE_TEXT "Agent network unavailable"
 
 static gint zb_agent_drawer_enabled = 0;
 static gint zb_drawer_live = 0;
+/* Every attached drawer (GTK thread), for netd's failure, which may come later. */
+static GList *zb_drawers = NULL;
 
 void zb_app_set_agent_drawer(int enabled) { g_atomic_int_set(&zb_agent_drawer_enabled, enabled != 0); }
 
@@ -84,6 +90,8 @@ struct ZbDrawer {
   ZbDrawerRect press_rect;
   /* The message list follows new messages while it is at the bottom. */
   int stick_bottom;
+  /* A Send here started (or found starting) netd: its failure is shown here. */
+  int net_waiting;
   int unread_shown;
   char scroll_reported[32];
   /* The minimize animation. */
@@ -564,7 +572,20 @@ static void add_message(ZbDrawer *d, const char *role, const char *text) {
   }
 }
 
-/* Send: the user's bubble, then, with no agent yet, a system bubble. */
+/* netd became unavailable: each drawer whose Send was waiting says so. */
+static void on_net_unavailable(void *data) {
+  (void)data;
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (d->net_waiting) {
+      d->net_waiting = 0;
+      add_message(d, "system", ZB_NET_UNAVAILABLE_TEXT);
+    }
+  }
+}
+
+/* Send: the user's bubble, then a system bubble. With a provisioned agent home
+ * the first Send starts netd (S3n2; the helper itself comes with S3b). */
 static void send_input(ZbDrawer *d) {
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(d->input));
   GtkTextIter start, end;
@@ -573,7 +594,14 @@ static void send_input(ZbDrawer *d) {
   g_strstrip(text);
   if (text[0] != '\0') {
     add_message(d, "user", text);
-    add_message(d, "system", ZB_NO_AGENT_TEXT);
+    int net = zb_agent_net_ensure();
+    if (net == ZB_AGENT_NET_UNAVAILABLE) {
+      d->net_waiting = 0;
+      add_message(d, "system", ZB_NET_UNAVAILABLE_TEXT);
+    } else {
+      d->net_waiting = net != ZB_AGENT_NET_NOT_SET_UP;
+      add_message(d, "system", ZB_NO_AGENT_TEXT);
+    }
     gtk_text_buffer_set_text(buffer, "", 0);
   }
   g_free(text);
@@ -1003,6 +1031,8 @@ ZbDrawer *zb_drawer_attach(GtkWidget *toplevel, GtkWidget *view, guint32 win_id,
    * icon is reached with Tab (D4). */
   gtk_window_set_focus(GTK_WINDOW(toplevel), view);
   g_atomic_int_inc(&zb_drawer_live);
+  zb_drawers = g_list_prepend(zb_drawers, d);
+  zb_agent_net_set_listener(on_net_unavailable, NULL);
   return d;
 }
 
@@ -1022,6 +1052,7 @@ void zb_drawer_detach(ZbDrawer *d) {
     g_signal_handlers_disconnect_by_data(connected[i], d);
   }
   g_atomic_int_add(&zb_drawer_live, -1);
+  zb_drawers = g_list_remove(zb_drawers, d);
   g_free(d->windows_reported);
   g_free(d);
 }

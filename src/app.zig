@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const agent_drawer = @import("agent_drawer.zig");
 const agent_setup = @import("agent_setup.zig");
+const agent_net = @import("agent_net.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
@@ -108,6 +109,55 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
     return if (status < 0) 1 else @intCast(@min(status, 255));
 }
 
+/// Chat drawer S3n2 (plan rev 16.2 §3c.2): when the agent home has a published
+/// build (`current`), hands netd's argv, built environment and socket directory
+/// to agent_host.c, which starts netd on the drawer's first Send. No
+/// XDG_RUNTIME_DIR, or a bad e2e seam (read only with --e2e-protocol),
+/// configures a refusal line instead. Without a provisioned home nothing is
+/// configured, and Send says "Agent not available yet" as before.
+fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !void {
+    if (comptime builtin.os.tag != .linux) return;
+    const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), getenvOwned(arena, "HOME")) catch null) orelse return;
+    const current = try std.fs.path.joinZ(arena, &.{ home, "current" });
+    if (std.c.access(current.ptr, 0) != 0) return; // F_OK: not set up
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_len = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+    if (exe_len <= 0) return error.NoExecutablePath;
+    const runtime = try agent_setup.defaultRuntime(arena, exe_buf[0..@intCast(exe_len)]);
+    const python = getenvOwned(arena, "ZB_AGENT_HOST_PYTHON") orelse runtime.python;
+    const package_dir = getenvOwned(arena, "ZB_AGENT_HOST_DIR") orelse runtime.package_dir;
+
+    var refusal: ?[]const u8 = null;
+    var random: [8]u8 = undefined;
+    try io.randomSecure(&random);
+    const pid: u32 = @intCast(std.os.linux.getpid());
+    const sockdir = agent_net.sockdirPath(arena, getenvOwned(arena, "XDG_RUNTIME_DIR"), pid, random) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => blk: {
+            refusal = "zigBrowser: agent: network unavailable (XDG_RUNTIME_DIR)";
+            break :blk "";
+        },
+    };
+    var seam: ?agent_net.NetTest = null;
+    if (e2e) {
+        if (getenvOwned(arena, agent_net.net_test_env)) |value| {
+            seam = agent_net.parseNetTest(value) catch blk: {
+                refusal = refusal orelse "zigBrowser: agent: bad " ++ agent_net.net_test_env;
+                break :blk null;
+            };
+        }
+        if (getenvOwned(arena, agent_net.net_test_ca_env)) |path| {
+            agent_net.checkTestCa(path) catch {
+                refusal = refusal orelse "zigBrowser: agent: bad " ++ agent_net.net_test_ca_env;
+            };
+        }
+    }
+    const argv = try toCStrings(arena, try agent_net.netdArgv(arena, python, package_dir, sockdir, "/usr/bin/bwrap", seam));
+    const envp = try toCStrings(arena, try agent_net.netdEnv(arena, getenvOwned(arena, "LANG"), getenvOwned(arena, "LC_ALL")));
+    const refusal_z: ?[*:0]const u8 = if (refusal) |line| (try arena.dupeZ(u8, line)).ptr else null;
+    c.zb_agent_net_configure(argv.ptr, envp.ptr, (try arena.dupeZ(u8, sockdir)).ptr, refusal_z, @intFromBool(e2e));
+}
+
 /// A NULL-terminated C string array of `items`.
 fn toCStrings(arena: std.mem.Allocator, items: []const []const u8) ![:null]?[*:0]const u8 {
     const out = try arena.allocSentinel(?[*:0]const u8, items.len, null);
@@ -126,6 +176,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     // Before zb_app_run builds the first window (every window reads it when created).
     webkit.applyMediaSource(spec.media_source);
     const profile_dir = try applyProfileDir(arena, spec);
+    // At quit, after the main loop (a no-op when netd never started). Linux
+    // only: agent_host.c is GTK-only, and the cross builds must not name it.
+    defer if (comptime builtin.os.tag == .linux) c.zb_agent_net_stop();
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
     if (webkit.applyAgentDrawer(spec.agent_drawer)) {
@@ -133,6 +186,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
             .demo = getenvOwned(arena, agent_drawer.demo_env_name),
             .anim_ms = getenvOwned(arena, agent_drawer.anim_env_name),
         }, spec.e2e_protocol);
+        configureAgentNet(arena, io, spec.e2e_protocol) catch return error.WriteFailed;
     }
 
     if (spec.automation_api) {
