@@ -9,6 +9,8 @@
 
 #include "agent_drawer.h"
 #include "agent_host.h"
+#include "agent_secrets.h"
+#include "agent_secrets_window.h"
 #include "webkit_shim.h"
 
 #include <math.h>
@@ -40,6 +42,8 @@ enum { ZB_GESTURE_DRAG = 1 };
 /* netd could not start or stopped (plan rev 16.2 §3c.2): shown on that Send and
  * every later one; netd is never started again in this browser. */
 #define ZB_NET_UNAVAILABLE_TEXT "Agent network unavailable"
+/* S4.1: no token is stored (or the store did not answer); the Secrets window opens. */
+#define ZB_NO_TOKEN_TEXT "Add a Claude token in the window that opened"
 
 static gint zb_agent_drawer_enabled = 0;
 static gint zb_drawer_live = 0;
@@ -584,8 +588,29 @@ static void on_net_unavailable(void *data) {
   }
 }
 
+/* The token store's answer for a Send (S4.1). With no token (or no answer
+ * from the store) the Secrets window opens. The drawer may have gone in the
+ * meantime: then only the window opens. The token itself is not needed yet
+ * (S3b hands it to the helper's fd 3 once netd is ready), so it is wiped. */
+static void on_send_token(ZbTokenResult result, char *token, void *data) {
+  zb_secrets_free(token);
+  ZbDrawer *d = g_list_find(zb_drawers, data) != NULL ? data : NULL;
+  if (result == ZB_TOKEN_OK) {
+    if (d != NULL) {
+      add_message(d, "system", ZB_NO_AGENT_TEXT);
+    }
+    return;
+  }
+  GtkWidget *top = d != NULL ? gtk_widget_get_toplevel(d->input) : NULL;
+  if (d != NULL) {
+    add_message(d, "system", ZB_NO_TOKEN_TEXT);
+  }
+  zb_secrets_window_present(top != NULL && GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : NULL);
+}
+
 /* Send: the user's bubble, then a system bubble. With a provisioned agent home
- * the first Send starts netd (S3n2; the helper itself comes with S3b). */
+ * the first Send starts netd (S3n2), and then the token store is asked: with
+ * no token the Secrets window opens (S4.1; the helper itself comes with S3b). */
 static void send_input(ZbDrawer *d) {
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(d->input));
   GtkTextIter start, end;
@@ -600,7 +625,11 @@ static void send_input(ZbDrawer *d) {
       add_message(d, "system", ZB_NET_UNAVAILABLE_TEXT);
     } else {
       d->net_waiting = net != ZB_AGENT_NET_NOT_SET_UP;
-      add_message(d, "system", ZB_NO_AGENT_TEXT);
+      if (zb_secrets_window_configured()) {
+        zb_agent_token_fetch(zb_secrets_window_store(), zb_secrets_window_home(), on_send_token, d);
+      } else {
+        add_message(d, "system", ZB_NO_AGENT_TEXT);
+      }
     }
     gtk_text_buffer_set_text(buffer, "", 0);
   }

@@ -59,18 +59,33 @@ def runtime_dir(tmp: Path) -> Path:
 WORLDS: dict[str, object] = {}
 
 
-def provisioned_world(binary: Path, tmp: Path):
-    """One agent home provisioned by the real --agent-setup (S3a), shared by the cases."""
-    if "world" not in WORLDS:
+def provisioned_world(binary: Path, tmp: Path, token: bool = True):
+    """One agent home provisioned by the real --agent-setup (S3a), shared by the cases.
+
+    With `token`, a canary sits in the explicit file store (launch passes
+    --agent-secret-store file, so no case reaches D-Bus): a Send then finds a token and the
+    Secrets window (S4a) stays shut, so later keys still reach the drawer. These cases also
+    get ZIGBROWSER_AGENT_TEST_BASE_URL=https://fake.zb.invalid and no --test-allow pair
+    (env_for), so once S3b starts the real helper its CLI's CONNECT is refused and never
+    reaches the real API (BlackRobin 5620). Without `token` (the case run without
+    --e2e-protocol, where those seams are inert), no helper can start at all."""
+    key = "world" if token else "world-no-token"
+    if key not in WORLDS:
         import agent_setup_test
         from agent_common import host_python
         agent_setup_test.PYTHON = host_python()  # World.env reads it (set by that file's main)
-        world = agent_setup_test.World(tmp, "netd")
+        world = agent_setup_test.World(tmp, "netd" if token else "netd-no-token")
         rc, _out, err, _events, _seen = agent_setup_test.run_setup(binary, world)
         if rc != 0:
             raise AssertionError(f"--agent-setup failed: {err.strip()[-300:]}")
-        WORLDS["world"] = world
-    return WORLDS["world"]
+        if token:
+            secrets_dir = world.agent / "secrets"
+            secrets_dir.mkdir(mode=0o700, exist_ok=True)  # --agent-setup makes it
+            fd = os.open(secrets_dir / "claude-token", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(fd, b"sk-ant-oat01-ZBCANARY-netd-spawn-0123456789")
+            os.close(fd)
+        WORLDS[key] = world
+    return WORLDS[key]
 
 
 def env_for(world, rt: Path | None, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -85,6 +100,7 @@ def env_for(world, rt: Path | None, extra: dict[str, str] | None = None) -> dict
     for name in [n for n in env if n.startswith("ZIGBROWSER_AGENT_")]:
         env.pop(name)
     env.update(world.env())
+    env["ZIGBROWSER_AGENT_TEST_BASE_URL"] = "https://fake.zb.invalid"  # see provisioned_world
     if rt is not None:
         env["XDG_RUNTIME_DIR"] = str(rt)
     env.update(extra or {})
@@ -138,7 +154,7 @@ def send(b, text: str, win: int = 1) -> None:
 
 def launch(binary: Path, tmp: Path, label: str, env: dict[str, str], e2e: bool = True):
     from agent_common import Browser
-    return Browser(binary, tmp, label, ["--agent-drawer", "on"], env=env, e2e=e2e)
+    return Browser(binary, tmp, label, ["--agent-drawer", "on", "--agent-secret-store", "file"], env=env, e2e=e2e)
 
 
 def alive(pid: int) -> bool:
@@ -344,7 +360,7 @@ def case_seams_inert_without_flag(binary: Path, tmp: Path, check) -> None:
     """§3c.4: without --e2e-protocol both seams are inert. Hostile values give no refusal
     line, and netd gets the production argv (no --test-* option). With no rows to find the
     icon, its default place is read from a flagged browser of the same size first."""
-    world = provisioned_world(binary, tmp)
+    world = provisioned_world(binary, tmp, token=False)
     probe = launch(binary, tmp, "inert-probe", env_for(world, runtime_dir(tmp)))
     try:
         icon = probe.wait_row("icon", 1)

@@ -23,6 +23,8 @@ pub const Command = union(enum) {
         media_source: ?media_config.MediaSource = null,
         /// --agent-drawer <on|off>; null = ZIGBROWSER_AGENT_DRAWER, else off.
         agent_drawer: ?agent_config.AgentDrawer = null,
+        /// --agent-secret-store <secret-service|file>; null = the Secret Service.
+        agent_secret_store: ?agent_config.SecretStore = null,
     },
     screenshot: struct {
         url: []const u8,
@@ -152,6 +154,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
     var renderer: ?render_config.Renderer = null;
     var media_source: ?media_config.MediaSource = null;
     var agent_drawer: ?agent_config.AgentDrawer = null;
+    var agent_secret_store: ?agent_config.SecretStore = null;
 
     var i: usize = 0;
     while (i < tokens.len) : (i += 1) {
@@ -210,6 +213,12 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
             agent_drawer = agent_config.parse(tokens[i]) orelse return .usage;
             continue;
         }
+        if (std.mem.eql(u8, token, "--agent-secret-store")) {
+            i += 1;
+            if (i >= tokens.len or agent_secret_store != null) return .usage;
+            agent_secret_store = agent_config.parseSecretStore(tokens[i]) orelse return .usage;
+            continue;
+        }
         if (std.mem.startsWith(u8, token, "-")) {
             return .usage;
         }
@@ -233,6 +242,7 @@ fn parseOpenArgs(tokens: []const []const u8) Command {
         .renderer = renderer,
         .media_source = media_source,
         .agent_drawer = agent_drawer,
+        .agent_secret_store = agent_secret_store,
     } };
 }
 
@@ -462,6 +472,21 @@ test "parseArgs --agent-drawer on|off for an open window; no flag leaves it to t
     const off = parseArgs(&.{ "zigBrowser", "--agent-drawer", "off", "https://example.com", "--automation-api" });
     try std.testing.expectEqual(agent_config.AgentDrawer.off, off.open.agent_drawer.?);
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com" }).open.agent_drawer == null);
+}
+
+test "parseArgs --agent-secret-store secret-service|file; no flag leaves the Secret Service" {
+    const file = parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-secret-store", "file" });
+    try std.testing.expectEqual(agent_config.SecretStore.file, file.open.agent_secret_store.?);
+    const service = parseArgs(&.{ "zigBrowser", "--agent-secret-store", "secret-service", "https://example.com" });
+    try std.testing.expectEqual(agent_config.SecretStore.secret_service, service.open.agent_secret_store.?);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com" }).open.agent_secret_store == null);
+}
+
+test "parseArgs --agent-secret-store errors are usage, and a screenshot rejects the flag" {
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-secret-store" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-secret-store", "keyring" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "https://example.com", "--agent-secret-store", "file", "--agent-secret-store", "file" }) == .usage);
+    try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--agent-secret-store", "file" }) == .usage);
 }
 
 test "parseArgs --agent-drawer errors are usage, and a screenshot rejects the flag" {

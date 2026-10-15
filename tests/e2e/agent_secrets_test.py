@@ -57,6 +57,11 @@ sys.path.insert(0, str(HERE))
 
 SECRETS_STATES = ("empty", "connected-secret-service", "connected-file", "no-keyring", "rejected")
 SECRETS_CONTROLS = ("entry", "save", "remove", "file")
+# Every sentence the status line may show (src/agent_secrets_window.c): never the token.
+SECRETS_TEXTS = ("No token is stored.", "Connected. The token is stored in the system keyring.",
+                 "Connected. The token is stored in a private file.", "That doesn't look like a token.",
+                 "No system keyring is available. Nothing was stored.", "Saving...",
+                 "The token could not be saved.", "The token could not be removed.")
 
 
 def canary() -> str:
@@ -80,13 +85,14 @@ class SecretsRowError(AssertionError):
 
 
 def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
-    """`SECRETS status <state>`, `SECRETS tree <types>` or `SECRETS rect <control> <x,y,w,h>`;
-    anything else raises SecretsRowError."""
+    """`SECRETS status <state>`, `SECRETS text <sentence>`, `SECRETS tree <types>` or
+    `SECRETS rect <control> <x,y,w,h>`; anything else raises SecretsRowError."""
     parts = line.split("\t")
     if parts[0] != "SECRETS" or len(parts) < 3:
         raise SecretsRowError(f"not a SECRETS row: {line!r}")
     kind, fields = parts[1], tuple(parts[2:])
     ok = (kind == "status" and len(fields) == 1 and fields[0] in SECRETS_STATES) or \
+         (kind == "text" and len(fields) == 1 and fields[0] in SECRETS_TEXTS) or \
          (kind == "tree" and len(fields) == 1 and re.fullmatch(r"[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*", fields[0])) or \
          (kind == "rect" and len(fields) == 2 and fields[0] in SECRETS_CONTROLS
           and re.fullmatch(r"-?\d+,-?\d+,\d+,\d+", fields[1]))
@@ -140,6 +146,9 @@ class PrivateKeyring:
                              env=self.base, capture_output=True, text=True, timeout=20, check=True).stdout.split()
         self.address, self.dbus_pid = out[0], int(out[1])
         self.env = dict(self.base, DBUS_SESSION_BUS_ADDRESS=self.address)
+        # What the browser takes from it: only the bus and the runtime dir (its HOME and
+        # XDG_DATA_HOME stay the world's, where the provisioned agent home is).
+        self.bus_env = {"DBUS_SESSION_BUS_ADDRESS": self.address, "XDG_RUNTIME_DIR": self.base["XDG_RUNTIME_DIR"]}
         subprocess.run(["gnome-keyring-daemon", "--unlock", "--components=secrets"], input="zb-test-keyring",
                        env=self.env, capture_output=True, text=True, timeout=20)
         deadline = time.monotonic() + 10
@@ -272,9 +281,69 @@ def send_prompt(b, text: str) -> None:
 
 
 def entry_pixels(b) -> list[tuple[int, int, int]]:
-    r = secrets_rect(b, "entry")
-    shot = b.x.screen()
-    return [shot.pixel(x, y) for y in range(r[1] + 4, r[1] + r[3] - 4, 3) for x in range(r[0] + 4, r[0] + r[2] - 4, 3)]
+    """The Secrets entry's pixels, from a capture of the Secrets window itself (`xwd -id`):
+    on the private Xvfb a root capture shows that window's area black, while the window's
+    own contents are drawn (found on the S4a green run)."""
+    from xinput import Capture
+    wins = b.x.toplevels("Claude Agent account")
+    if not wins:
+        raise AssertionError("no Secrets window to capture")
+    window, wx, wy, _w, _h = wins[-1]
+    env = dict(os.environ, XAUTHORITY=b.x.xauth)
+    done = subprocess.run(["xwd", "-id", str(window), "-silent", "-display", b.x.display_name],
+                          capture_output=True, env=env, timeout=30, check=True)
+    shot = Capture(done.stdout)
+    x0, y0, w, h = secrets_rect(b, "entry")
+    x0, y0 = x0 - wx, y0 - wy
+    return [shot.pixel(x, y) for y in range(y0 + 4, y0 + h - 4, 3) for x in range(x0 + 4, x0 + w - 4, 3)]
+
+
+def dark(pixels: list[tuple[int, int, int]]) -> int:
+    """How many sampled pixels are dark: a stored token's 16 or more bullets give about a
+    hundred; a text cursor (which may blink in or out between captures) only a few."""
+    return sum(1 for r, g, b in pixels if r + g + b < 384)
+
+
+class ClipboardOwner:
+    """Owns the private Xvfb's CLIPBOARD with `text` (a GTK process on that display), so a
+    real Ctrl+V pastes it. Only for strings that are not secrets: a canary is always typed."""
+
+    CODE = ("import sys, gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk, Gdk, GLib\n"
+            "c = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD); c.set_text(sys.argv[1], -1); c.store()\n"
+            "GLib.io_add_watch(sys.stdin, GLib.IO_IN | GLib.IO_HUP, lambda *a: Gtk.main_quit())\n"
+            "print('ready', flush=True); Gtk.main()")
+
+    def __init__(self, b, text: str) -> None:
+        env = {"PATH": "/usr/bin:/bin", "DISPLAY": b.x.display_name, "XAUTHORITY": b.x.xauth,
+               "HOME": str(b.dir), "NO_AT_BRIDGE": "1"}
+        self.proc = subprocess.Popen(["/usr/bin/python3", "-I", "-c", self.CODE, text], env=env, text=True,
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if self.proc.stdout.readline().strip() != "ready":
+            self.close()
+            raise RuntimeError("the clipboard owner did not start")
+
+    def close(self) -> None:
+        self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        self.proc.stdout.close()
+
+
+def paste_and_save_bad(b, text: str) -> None:
+    """Pastes the non-secret `text` (newlines kept: a real multi-line paste) into the Secrets
+    entry with a real Ctrl+V from the private display's clipboard, then clicks Save."""
+    b.wait(lambda: secrets_rect(b, "save") is not None and secrets_rect(b, "save")[2] > 0, 15)
+    owner = ClipboardOwner(b, text)
+    try:
+        click_rect(b, secrets_rect(b, "entry"))
+        b.x.key("v", ("Control_L",))
+        time.sleep(0.3)
+    finally:
+        owner.close()
+    click_rect(b, secrets_rect(b, "save"))
 
 
 def paste_and_save(b, token: str) -> None:
@@ -344,7 +413,7 @@ def case_secret_service(binary: Path, tmp: Path, check) -> None:
     token = canary()
     world = provisioned(binary, tmp, "service")
     with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
-        b = launch(binary, tmp, world, kr.env, api, "service")
+        b = launch(binary, tmp, world, kr.bus_env, api, "service")
         try:
             send_prompt(b, "hello")
             check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20), "Send with no token opens the Secrets window", b)
@@ -352,10 +421,14 @@ def case_secret_service(binary: Path, tmp: Path, check) -> None:
             paste_and_save(b, token)
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20),
                   "SECRETS status connected-secret-service", b)
-            check(entry_pixels(b) == empty, "the entry is empty again after Save", b)
+            after = entry_pixels(b)
+            check(dark(after) <= dark(empty) + 12, f"the entry is empty again after Save (dark {dark(empty)} -> {dark(after)})", b)
             check(kr.lookup() == token, "the private keyring holds the item (read through the Secret Service API)")
             check(not (world.agent / "secrets" / "claude-token").exists(), "no token file (the keyring was chosen)")
             check(not leaks("\n".join(b.out + b.err), token), "no run of the canary in rows, stdout or stderr", b)
+            texts = [f[0] for k, f in secrets_lines(b) if k == "text"]
+            check(texts != [] and all(t in SECRETS_TEXTS for t in texts),
+                  f"the window's status line showed only its fixed sentences: {texts}", b)
         finally:
             b.stop()
 
@@ -366,7 +439,7 @@ def case_handoff(binary: Path, tmp: Path, check) -> None:
     token = canary()
     world = provisioned(binary, tmp, "handoff")
     with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
-        b = launch(binary, tmp, world, kr.env, api, "handoff")
+        b = launch(binary, tmp, world, kr.bus_env, api, "handoff")
         try:
             send_prompt(b, "hello")
             b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
@@ -405,12 +478,12 @@ def case_rejected(binary: Path, tmp: Path, check) -> None:
     """S4.1 edge: whitespace or a multi-line paste is rejected and nothing is stored."""
     world = provisioned(binary, tmp, "reject")
     with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
-        b = launch(binary, tmp, world, kr.env, api, "reject")
+        b = launch(binary, tmp, world, kr.bus_env, api, "reject")
         try:
             send_prompt(b, "hello")
             b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
             for i, bad in enumerate(("sk-ant-oat01 zbcanary-with-a-space", "sk-ant-oat01-zbcanary-two\nlines-0123")):
-                paste_and_save(b, bad)
+                (paste_and_save_bad if "\n" in bad else paste_and_save)(b, bad)
                 check(b.wait(lambda n=i: secrets_status(b).count("rejected") >= n + 1, 15), f"rejected: {bad!r}", b)
             check(kr.lookup() is None, "nothing in the keyring")
             check(not (world.agent / "secrets" / "claude-token").exists(), "no token file")
@@ -448,7 +521,7 @@ def case_remove(binary: Path, tmp: Path, check) -> None:
     token = canary()
     world = provisioned(binary, tmp, "remove")
     with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
-        b = launch(binary, tmp, world, kr.env, api, "remove")
+        b = launch(binary, tmp, world, kr.bus_env, api, "remove")
         try:
             send_prompt(b, "hello")
             b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
@@ -473,7 +546,7 @@ def case_remove_session(binary: Path, tmp: Path, check) -> None:
     token = canary()
     world = provisioned(binary, tmp, "remove-session")
     with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
-        b = launch(binary, tmp, world, kr.env, api, "remove-session")
+        b = launch(binary, tmp, world, kr.bus_env, api, "remove-session")
         try:
             send_prompt(b, "hello")
             b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)

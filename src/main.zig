@@ -34,6 +34,7 @@ pub fn main(init: std.process.Init) !void {
                     "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
                     "                  [--media-source on|off] [--agent-drawer on|off]\n" ++
+                    "                  [--agent-secret-store secret-service|file]\n" ++
                     "       zigBrowser --agent-setup [--sai-source DIR] [--e2e-protocol]\n" ++
                     "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++

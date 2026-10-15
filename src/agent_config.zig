@@ -31,6 +31,26 @@ pub const Resolved = flag_or_env.Resolved;
 /// The effective setting: the flag, else the variable, else the default.
 pub const resolve = flag_or_env.resolve;
 
+/// --agent-secret-store <secret-service|file> (chat-drawer plan D11, S4): where
+/// the Secrets window keeps the token. The Secret Service is the default; the
+/// 0600 file agent-home/secrets/claude-token only when chosen here (or by an
+/// explicit click in the window). Values match agent_secrets.h's store ints.
+pub const SecretStore = enum(c_int) { secret_service = 0, file = 1 };
+
+pub fn parseSecretStore(text: []const u8) ?SecretStore {
+    if (std.mem.eql(u8, text, "secret-service")) return .secret_service;
+    if (std.mem.eql(u8, text, "file")) return .file;
+    return null;
+}
+
+test "--agent-secret-store parses exactly secret-service and file" {
+    try std.testing.expectEqual(SecretStore.secret_service, parseSecretStore("secret-service").?);
+    try std.testing.expectEqual(SecretStore.file, parseSecretStore("file").?);
+    for ([_][]const u8{ "", "keyring", "File", "secret_service", "secret-service ", "files" }) |text| {
+        try std.testing.expect(parseSecretStore(text) == null);
+    }
+}
+
 test "only on and off parse" {
     try std.testing.expectEqual(AgentDrawer.on, parse("on").?);
     try std.testing.expectEqual(AgentDrawer.off, parse("off").?);

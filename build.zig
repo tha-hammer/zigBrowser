@@ -350,6 +350,43 @@ pub fn build(b: *std.Build) void {
     const run_agent_net_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_net_tests_module }));
     run_agent_net_tests.skip_foreign_checks = true;
 
+    // Chat drawer S4a: the token's shape and the explicit file store, read and
+    // write (src/agent_secrets.zig).
+    const agent_secrets_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_secrets.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const agent_secrets_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_secrets_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_secrets_tests_module.addImport("agent_secrets", agent_secrets_module);
+    const run_agent_secrets_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_tests_module }));
+    run_agent_secrets_tests.skip_foreign_checks = true;
+    // S4.1 edge: the libsecret dlopen fails (built against a missing library;
+    // in the browser WebKitGTK has it loaded already). GTK hosts only.
+    const agent_secrets_dlopen_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_secrets_dlopen_module.addIncludePath(b.path("src"));
+    agent_secrets_dlopen_module.addCSourceFile(.{ .file = b.path("tests/agent_secrets_dlopen_test.c"), .flags = &.{"-std=gnu11"} });
+    agent_secrets_dlopen_module.addCSourceFile(.{
+        .file = b.path("src/agent_secrets.c"),
+        .flags = &.{ "-std=gnu11", "-DZB_LIBSECRET_SONAME=\"libzb-missing-secret.so.0\"" },
+    });
+    agent_secrets_dlopen_module.linkSystemLibrary("gio-2.0", .{ .use_pkg_config = .force });
+    const run_agent_secrets_dlopen_test = b.addRunArtifact(b.addExecutable(.{
+        .name = "agent-secrets-dlopen-test",
+        .root_module = agent_secrets_dlopen_module,
+    }));
+    run_agent_secrets_dlopen_test.skip_foreign_checks = true;
+
     const config_schema_module = b.createModule(.{
         .root_source_file = b.path("src/config_schema.zig"),
         .target = target,
@@ -748,6 +785,16 @@ pub fn build(b: *std.Build) void {
         "agent-netd-spawn-e2e",
     });
     agent_netd_spawn_e2e.addArtifactArg(exe);
+    // Chat drawer S4a: the Secrets window stores a typed token in a private
+    // keyring or the explicit 0600 file, and Send with no token opens it. The
+    // S4b cases (handoff, remove-session, hooks) join after S3b's helper.
+    const agent_secrets_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable",
+        "agent-secrets-e2e",
+    });
+    agent_secrets_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -981,6 +1028,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
+    test_step.dependOn(&run_agent_secrets_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
+    const agent_secrets_step = b.step("test-agent-secrets", "Run the Claude Agent token store's unit tests");
+    agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
+    if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
@@ -1030,6 +1082,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&agent_netd_spawn_e2e.step);
+    test_step.dependOn(&agent_secrets_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&real_screen_input_xvfb.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
@@ -1210,6 +1263,14 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     });
     module.addCSourceFile(.{
         .file = b.path("src/agent_host.c"),
+        .flags = &.{"-std=gnu11"},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_secrets.c"),
+        .flags = &.{"-std=gnu11"},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_secrets_window.c"),
         .flags = &.{"-std=gnu11"},
     });
 
