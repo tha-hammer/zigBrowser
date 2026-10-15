@@ -11,6 +11,10 @@ assumes are extracted behind a `SandboxBackend` seam with a `LinuxBwrapBackend`
 implementation, so macOS Seatbelt can later satisfy the same contract. The
 extraction is behaviour-preserving: `helper_argv` keeps its exact signature and
 byte-for-byte output and simply delegates to the Linux backend's `launch_spec`.
+`launch_spec` returns a semantic `LaunchSpec` — the namespaces, the ordered
+filesystem `Mount` contract, the workdir and the seccomp fd — and the Linux argv
+is a projection of that contract, so a macOS Seatbelt backend can satisfy the
+same launch without reusing a bwrap argv.
 """
 
 import os
@@ -41,14 +45,43 @@ TOKEN_DIR = "/run/zb-token"
 NET_DIR = "/run/zb-net"
 
 
-class LaunchSpec(NamedTuple):
-    """The portable result of a backend launch: the sandbox argv prefix.
+class Mount(NamedTuple):
+    """One path the sandbox exposes to the launched process, backend-neutrally.
 
-    On Linux `argv` is the bwrap prefix (ending in ``--``); a macOS backend
-    would carry its sandbox-exec profile here instead. Stored as a tuple so the
-    spec is immutable; callers that need a mutable list wrap it in ``list()``.
+    Linux realizes it as ``--ro-bind``/``--bind`` source target; a macOS backend
+    realizes the same ``(source, target, writable)`` as a Seatbelt file-read or
+    file-write rule. ``source`` and ``target`` are equal for an in-place bind.
+    """
+    source: str
+    target: str
+    writable: bool = False
+
+
+class LaunchSpec(NamedTuple):
+    """The portable, semantic launch contract a backend produces (MS0, rev 6).
+
+    ``argv`` is the realized Linux bwrap prefix (ending in ``--``) that production
+    execs; the other fields are the backend-neutral *meaning* of that launch, so a
+    macOS Seatbelt backend can satisfy the same contract without reusing a bwrap
+    argv (and so the contract test can pin the launch independently of the argv):
+
+      * ``unshare`` — the namespaces isolated: ``("pid", "ipc", "uts")`` always,
+        plus ``"net"`` when the process runs in netd's private network namespace;
+      * ``mounts`` — the ordered filesystem contract, every path the sandbox
+        exposes as a :class:`Mount` (read-only or writable). On Linux the argv
+        binds are a projection of exactly this list, in this order;
+      * ``workdir`` — the working directory inside the sandbox;
+      * ``seccomp_fd`` — the outer seccomp program descriptor on Linux, or None.
+
+    Stored as a tuple so the spec is immutable; callers that need a mutable argv
+    list wrap ``argv`` in ``list()``. The extra fields default to empty so the
+    type stays constructible as ``LaunchSpec(argv)``.
     """
     argv: tuple
+    unshare: tuple = ()
+    mounts: tuple = ()
+    workdir: str = None
+    seccomp_fd: object = None
 
 
 class Endpoint(NamedTuple):
@@ -119,44 +152,54 @@ class LinuxBwrapBackend:
         directory; the sandbox then gets a network namespace of its own and sees
         only netd's egress/ and bridges/, read-only, under /run/zb-net.
         """
-        net = _net_binds(net_dir) if net_dir is not None else []
-        argv = [BWRAP, "--unshare-pid", "--unshare-ipc", "--unshare-uts", *(["--unshare-net"] if net else []),
-                "--die-with-parent", "--new-session",
-                "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run",
-                "--ro-bind", "/usr", "/usr"]
-        for target, link in USR_LINKS:
-            argv += ["--symlink", target, link]
-        for path in ETC_FILES:
-            if os.path.exists(path):
-                argv += ["--ro-bind", path, path]
-        for path in (str(home.runtime), *map(str, ro_paths)):
-            argv += ["--ro-bind", path, path]
-        argv += ["--ro-bind", str(home.workspace), str(home.workspace)]
+        # netd's egress/bridges binds, validated here (before the .claude state
+        # checks below), so a missing net dir refuses in exactly the old order.
+        net_mounts = _net_mounts(net_dir) if net_dir is not None else ()
+        unshare = ("pid", "ipc", "uts") + (("net",) if net_mounts else ())
+
+        # The ordered filesystem contract. /usr is first (the --symlink shims sit
+        # between it and the rest); then the etc files, the runtime and the extra
+        # read-only paths, the workspace, .claude (and its reviewed writable
+        # state), netd's sockets, and the writable scratchpad. The argv binds
+        # below are a projection of exactly this list, in this order.
+        head = Mount("/usr", "/usr", False)
+        rest = [Mount(path, path, False) for path in ETC_FILES if os.path.exists(path)]
+        rest += [Mount(path, path, False) for path in (str(home.runtime), *map(str, ro_paths))]
+        rest.append(Mount(str(home.workspace), str(home.workspace), False))
         claude = str(home.claude_dir)
         if claude_writable:
-            argv += ["--bind", claude, claude]
+            rest.append(Mount(claude, claude, True))
         else:
-            argv += ["--ro-bind", claude, claude]
+            rest.append(Mount(claude, claude, False))
             # The state lives outside the published build (plan rev 15.5): setup
             # made every source and every mount point; a published build is never
             # written after its publish, so anything missing refuses.
-            for name, flag, is_dir in ((".claude.json", "--ro-bind", False), ("backups", "--ro-bind", True),
-                                       *((n, "--bind", True) for n in state_dirs)):
+            for name, writable, is_dir in ((".claude.json", False, False), ("backups", False, True),
+                                           *((n, True, True) for n in state_dirs)):
                 source, target = os.path.join(str(home.state), name), os.path.join(claude, name)
                 for path in (source, target):
                     ok = os.path.isdir(path) if is_dir else os.path.isfile(path)
                     if os.path.islink(path) or not ok:
                         raise SandboxError(f"{path} is missing or not a {'directory' if is_dir else 'file'}: "
                                            "run zigBrowser --agent-setup")
-                argv += [flag, source, target]
-        argv += net
-        argv += ["--bind", str(home.scratchpad), str(home.scratchpad),
-                 "--perms", "0300", "--dir", TOKEN_DIR,
-                 "--chdir", str(home.workspace)]
+                rest.append(Mount(source, target, writable))
+        rest.extend(net_mounts)
+        rest.append(Mount(str(home.scratchpad), str(home.scratchpad), True))
+        mounts = (head, *rest)
+        workdir = str(home.workspace)
+
+        argv = [BWRAP, *(f"--unshare-{n}" for n in unshare), "--die-with-parent", "--new-session",
+                "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run"]
+        argv += _bind_flags(head)
+        for target, link in USR_LINKS:
+            argv += ["--symlink", target, link]
+        for mount in rest:
+            argv += _bind_flags(mount)
+        argv += ["--perms", "0300", "--dir", TOKEN_DIR, "--chdir", workdir]
         if seccomp_fd is not None:
             argv += ["--seccomp", str(seccomp_fd)]
         argv.append("--")
-        return LaunchSpec(tuple(argv))
+        return LaunchSpec(tuple(argv), unshare=unshare, mounts=mounts, workdir=workdir, seccomp_fd=seccomp_fd)
 
     def egress_endpoint(self, session=None):
         """The loopback the CLI reaches via HTTPS_PROXY: 127.0.0.1:3128 (the outer
@@ -197,14 +240,21 @@ def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, cl
         claude_writable=claude_writable, net_dir=net_dir).argv)
 
 
-def _net_binds(net_dir):
-    """Read-only binds of netd's egress/ and bridges/ (each a real directory, not
-    a link), after the /run tmpfs. connect() works through a read-only bind;
-    create, rename and unlink get EROFS (BlueBeaver 5472)."""
-    argv = []
+def _bind_flags(mount):
+    """The bwrap flags that realize one :class:`Mount`: writable binds with
+    ``--bind``, read-only with ``--ro-bind``."""
+    return ["--bind" if mount.writable else "--ro-bind", mount.source, mount.target]
+
+
+def _net_mounts(net_dir):
+    """Read-only :class:`Mount`\\ s of netd's egress/ and bridges/ (each a real
+    directory, not a link), bound under /run/zb-net after the /run tmpfs.
+    connect() works through a read-only bind; create, rename and unlink get
+    EROFS (BlueBeaver 5472)."""
+    mounts = []
     for name in ("egress", "bridges"):
         source = os.path.join(str(net_dir), name)
         if os.path.islink(source) or not os.path.isdir(source):
             raise SandboxError(f"{source} is missing or not a directory: netd is not running")
-        argv += ["--ro-bind", source, f"{NET_DIR}/{name}"]
-    return argv
+        mounts.append(Mount(source, f"{NET_DIR}/{name}", False))
+    return tuple(mounts)
