@@ -1,0 +1,314 @@
+//! The Claude Agent token store's pure checks (src/agent_secrets.zig):
+//! the token shape (plan S4.1) and the read-only loader of the explicit file
+//! store, agent-home/secrets/claude-token (D11; S3b reads it, S4 writes it).
+//! Canary tokens only.
+const std = @import("std");
+const secrets = @import("agent_secrets");
+
+const canary = "sk-ant-oat01-ZBCANARY-0123456789abcdef";
+
+test "validToken: one line of 16 to 512 printable characters, no spaces" {
+    try std.testing.expect(secrets.validToken(canary));
+    try std.testing.expect(secrets.validToken("a" ** 16));
+    try std.testing.expect(secrets.validToken("~" ** 512));
+    try std.testing.expect(secrets.validToken("!\"#$%&'()*+,-./0123456789:;<=>?@[\\]^_`{|}~"));
+    for ([_][]const u8{
+        "",
+        "a" ** 15,
+        "a" ** 513,
+        "sk-ant-oat01 ZBCANARY-0123456789",
+        "sk-ant-oat01-ZBCANARY-0123456789\n",
+        "sk-ant-oat01-ZBCANARY-0123456789\r",
+        "\tsk-ant-oat01-ZBCANARY-0123456789",
+        "sk-ant-oat01-ZBCANARY-0123456789\x7f",
+        "sk-ant-oat01-ZBCANARY-0123456789\x00",
+        "sk-ant-oat01-ZBCANARY-é-0123456789",
+    }) |bad| try std.testing.expect(!secrets.validToken(bad));
+}
+
+/// The oracle: `^[\x21-\x7e]{16,512}$` restated with std.ascii (printable and
+/// not a space), not with validToken's own range test.
+fn referenceToken(text: []const u8) bool {
+    if (text.len < 16 or text.len > 512) return false;
+    for (text) |c| {
+        if (!std.ascii.isPrint(c) or c == ' ') return false;
+    }
+    return true;
+}
+
+test "property (oracle): validToken matches ^[\\x21-\\x7e]{16,512}$ over 10k generated strings" {
+    var prng = std.Random.DefaultPrng.init(0x5EC_2E7);
+    const random = prng.random();
+    const odd = [_]u8{ ' ', '\t', '\n', '\r', 0x00, 0x7f, 0x80, 0xc3, 0xff, 0x20, 0x21, 0x7e };
+    var buf: [600]u8 = undefined;
+    var accepted: usize = 0;
+    for (0..10_000) |_| {
+        // Lengths cluster around the bounds; most bytes are valid, so both
+        // outcomes are common.
+        const len: usize = switch (random.uintLessThan(u8, 4)) {
+            0 => random.intRangeAtMost(usize, 14, 18),
+            1 => random.intRangeAtMost(usize, 510, 514),
+            2 => random.uintAtMost(usize, 30),
+            else => random.uintAtMost(usize, buf.len),
+        };
+        for (buf[0..len]) |*c| {
+            c.* = if (random.uintLessThan(u8, 40) == 0) odd[random.uintLessThan(usize, odd.len)] else random.intRangeAtMost(u8, 0x21, 0x7e);
+        }
+        const text = buf[0..len];
+        try std.testing.expectEqual(referenceToken(text), secrets.validToken(text));
+        if (referenceToken(text)) accepted += 1;
+    }
+    try std.testing.expect(accepted > 1000 and accepted < 9000);
+}
+
+/// A temporary agent home with `secrets/` (dir_mode) and, unless null,
+/// `secrets/claude-token` (file_mode) holding `content`.
+const Home = struct {
+    tmp: std.testing.TmpDir,
+    path: []u8,
+
+    fn init(dir_mode: ?u32, content: ?[]const u8, file_mode: u32) !Home {
+        const io = std.testing.io;
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try tmp.dir.realPath(io, &buf);
+        const path = try std.testing.allocator.dupe(u8, buf[0..n]);
+        if (dir_mode) |mode| {
+            try tmp.dir.createDir(io, "secrets", .default_dir);
+            if (content) |text| {
+                try tmp.dir.writeFile(io, .{ .sub_path = "secrets/claude-token", .data = text });
+                try chmod(path, "secrets/claude-token", file_mode);
+            }
+            try chmod(path, "secrets", mode);
+        }
+        return .{ .tmp = tmp, .path = path };
+    }
+
+    fn deinit(self: *Home) void {
+        chmod(self.path, "secrets", 0o700) catch {};
+        std.testing.allocator.free(self.path);
+        self.tmp.cleanup();
+    }
+};
+
+fn chmod(home: []const u8, sub: []const u8, mode: u32) !void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = try std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ home, sub });
+    if (std.c.chmod(full.ptr, @intCast(mode)) != 0) return error.ChmodFailed;
+}
+
+fn load(home: *const Home) secrets.Loaded {
+    return secrets.loadFile(std.testing.io, std.testing.allocator, home.path);
+}
+
+fn expectRefused(want: secrets.Refusal, got: secrets.Loaded) !void {
+    switch (got) {
+        .refused => |reason| try std.testing.expectEqual(want, reason),
+        .token => |t| {
+            secrets.wipeFree(std.testing.allocator, t);
+            return error.TestExpectedRefusal;
+        },
+        .absent => return error.TestExpectedRefusal,
+    }
+}
+
+test "loadFile returns the token, with one trailing newline stripped" {
+    for ([_][]const u8{ canary, canary ++ "\n" }) |content| {
+        var home = try Home.init(0o700, content, 0o600);
+        defer home.deinit();
+        switch (load(&home)) {
+            .token => |t| {
+                defer secrets.wipeFree(std.testing.allocator, t);
+                try std.testing.expectEqualStrings(canary, t);
+            },
+            else => return error.TestExpectedToken,
+        }
+    }
+}
+
+test "loadFile: no secrets directory, or no token file, is absent" {
+    var no_dir = try Home.init(null, null, 0);
+    defer no_dir.deinit();
+    try std.testing.expectEqual(secrets.Loaded.absent, load(&no_dir));
+    var no_file = try Home.init(0o700, null, 0);
+    defer no_file.deinit();
+    try std.testing.expectEqual(secrets.Loaded.absent, load(&no_file));
+}
+
+test "loadFile refuses a token file that is not exactly 0600" {
+    for ([_]u32{ 0o644, 0o640, 0o604, 0o400, 0o700, 0o660 }) |mode| {
+        var home = try Home.init(0o700, canary, mode);
+        defer home.deinit();
+        try expectRefused(.file_mode, load(&home));
+    }
+}
+
+test "loadFile refuses a secrets directory that is not exactly 0700" {
+    for ([_]u32{ 0o755, 0o750, 0o711, 0o777 }) |mode| {
+        var home = try Home.init(mode, canary, 0o600);
+        defer home.deinit();
+        try expectRefused(.dir_mode, load(&home));
+    }
+}
+
+test "loadFile refuses a symlink, a directory or a FIFO in place of the token file, without blocking" {
+    const io = std.testing.io;
+    {
+        var home = try Home.init(0o700, null, 0);
+        defer home.deinit();
+        try home.tmp.dir.writeFile(io, .{ .sub_path = "elsewhere", .data = canary });
+        try home.tmp.dir.symLink(io, "../elsewhere", "secrets/claude-token", .{});
+        try expectRefused(.not_regular, load(&home));
+    }
+    {
+        var home = try Home.init(0o700, null, 0);
+        defer home.deinit();
+        try home.tmp.dir.createDir(io, "secrets/claude-token", .default_dir);
+        try expectRefused(.not_regular, load(&home));
+    }
+    {
+        var home = try Home.init(0o700, null, 0);
+        defer home.deinit();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const fifo = try std.fmt.bufPrintZ(&buf, "{s}/secrets/claude-token", .{home.path});
+        if (std.os.linux.errno(std.os.linux.mknod(fifo.ptr, std.os.linux.S.IFIFO | 0o600, 0)) != .SUCCESS) return error.MkfifoFailed;
+        try expectRefused(.not_regular, load(&home)); // no writer: a blocking open would hang here
+    }
+}
+
+test "loadFile refuses a symlinked secrets directory" {
+    const io = std.testing.io;
+    var home = try Home.init(null, null, 0);
+    defer home.deinit();
+    try home.tmp.dir.createDir(io, "real-secrets", .default_dir);
+    try chmod(home.path, "real-secrets", 0o700);
+    try home.tmp.dir.writeFile(io, .{ .sub_path = "real-secrets/claude-token", .data = canary });
+    try chmod(home.path, "real-secrets/claude-token", 0o600);
+    try home.tmp.dir.symLink(io, "real-secrets", "secrets", .{});
+    try expectRefused(.dir_not_directory, load(&home));
+}
+
+test "loadFile refuses content that is not one valid token" {
+    for ([_][]const u8{
+        "",
+        "\n",
+        "short\n",
+        canary ++ "\n\n",
+        "sk-ant-oat01 ZBCANARY-0123456789abcdef",
+        canary ++ "\r\n",
+        "a" ** 513,
+        "a" ** 4096,
+    }) |content| {
+        var home = try Home.init(0o700, content, 0o600);
+        defer home.deinit();
+        try expectRefused(.bad_shape, load(&home));
+    }
+}
+
+test "checkOwner: a file or directory owned by another user is refused (stat-level rule)" {
+    try std.testing.expect(secrets.ownedBy(1000, 1000));
+    try std.testing.expect(!secrets.ownedBy(0, 1000));
+    try std.testing.expect(!secrets.ownedBy(1001, 1000));
+}
+
+test "the refusal reasons are fixed words" {
+    inline for (std.meta.fields(secrets.Refusal)) |field| {
+        const word = secrets.refusalWord(@enumFromInt(field.value));
+        try std.testing.expect(word.len > 0);
+        for (word) |c| try std.testing.expect(std.ascii.isLower(c) or c == '-');
+    }
+}
+
+// --- S4: the file store's write side (storeFile, removeFile, filePresent) ---
+
+fn statMode(home: []const u8, sub: []const u8) !u32 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = try std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ home, sub });
+    var sx: std.os.linux.Statx = undefined;
+    const rc = std.os.linux.statx(std.os.linux.AT.FDCWD, full.ptr, std.os.linux.AT.SYMLINK_NOFOLLOW, .{ .TYPE = true, .MODE = true }, &sx);
+    return switch (std.os.linux.errno(rc)) {
+        .SUCCESS => sx.mode,
+        .NOENT => error.FileNotFound,
+        else => error.StatFailed,
+    };
+}
+
+fn entries(home: *const Home, sub: []const u8) !usize {
+    var dir = try home.tmp.dir.openDir(std.testing.io, sub, .{ .iterate = true });
+    defer dir.close(std.testing.io);
+    var it = dir.iterate();
+    var n: usize = 0;
+    while (try it.next(std.testing.io)) |_| n += 1;
+    return n;
+}
+
+test "storeFile creates a 0700 secrets/ and a 0600 token file that loadFile reads back" {
+    var home = try Home.init(null, null, 0);
+    defer home.deinit();
+    try secrets.storeFile(std.testing.io, home.path, canary);
+    try std.testing.expectEqual(@as(u32, std.os.linux.S.IFDIR | 0o700), try statMode(home.path, "secrets"));
+    try std.testing.expectEqual(@as(u32, std.os.linux.S.IFREG | 0o600), try statMode(home.path, "secrets/claude-token"));
+    try std.testing.expectEqual(@as(usize, 1), try entries(&home, "secrets")); // no temp file left
+    switch (load(&home)) {
+        .token => |t| {
+            defer secrets.wipeFree(std.testing.allocator, t);
+            try std.testing.expectEqualStrings(canary, t);
+        },
+        else => return error.TestExpectedToken,
+    }
+    try std.testing.expect(secrets.filePresent(std.testing.io, home.path));
+}
+
+test "storeFile replaces a stored token, and replaces a planted symlink instead of following it" {
+    const io = std.testing.io;
+    var home = try Home.init(0o700, canary, 0o600);
+    defer home.deinit();
+    const second = "sk-ant-oat01-ZBCANARY-second-0123456789";
+    try secrets.storeFile(io, home.path, second);
+    try std.testing.expectEqual(@as(u32, std.os.linux.S.IFREG | 0o600), try statMode(home.path, "secrets/claude-token"));
+
+    try home.tmp.dir.writeFile(io, .{ .sub_path = "target", .data = "untouched" });
+    try home.tmp.dir.deleteFile(io, "secrets/claude-token");
+    try home.tmp.dir.symLink(io, "../target", "secrets/claude-token", .{});
+    try secrets.storeFile(io, home.path, canary);
+    try std.testing.expectEqual(@as(u32, std.os.linux.S.IFREG | 0o600), try statMode(home.path, "secrets/claude-token"));
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("untouched", try home.tmp.dir.readFile(io, "target", &buf));
+}
+
+test "storeFile refuses an invalid token and a secrets/ that is not ours to trust, writing nothing" {
+    {
+        var home = try Home.init(null, null, 0);
+        defer home.deinit();
+        try std.testing.expectError(error.BadShape, secrets.storeFile(std.testing.io, home.path, "not a token"));
+        try std.testing.expectError(error.FileNotFound, statMode(home.path, "secrets"));
+    }
+    {
+        var home = try Home.init(0o755, null, 0);
+        defer home.deinit();
+        try std.testing.expectError(error.DirMode, secrets.storeFile(std.testing.io, home.path, canary));
+        try std.testing.expectEqual(@as(usize, 0), try entries(&home, "secrets"));
+    }
+    {
+        const io = std.testing.io;
+        var home = try Home.init(null, null, 0);
+        defer home.deinit();
+        try home.tmp.dir.createDir(io, "elsewhere", .default_dir);
+        try home.tmp.dir.symLink(io, "elsewhere", "secrets", .{});
+        try std.testing.expectError(error.DirNotDirectory, secrets.storeFile(io, home.path, canary));
+        try std.testing.expectEqual(@as(usize, 0), try entries(&home, "elsewhere"));
+    }
+}
+
+test "removeFile deletes the token file; removing an absent token is fine" {
+    var home = try Home.init(0o700, canary, 0o600);
+    defer home.deinit();
+    try secrets.removeFile(std.testing.io, home.path);
+    try std.testing.expectEqual(secrets.Loaded.absent, load(&home));
+    try std.testing.expect(!secrets.filePresent(std.testing.io, home.path));
+    try secrets.removeFile(std.testing.io, home.path);
+    var none = try Home.init(null, null, 0);
+    defer none.deinit();
+    try secrets.removeFile(std.testing.io, none.path);
+}

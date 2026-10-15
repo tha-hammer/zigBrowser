@@ -13,7 +13,10 @@ default takes the scripted turns in order and answers "ok" once they run out.
 """
 
 import json
+import ssl
+import subprocess
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -66,11 +69,46 @@ def _sse_events(turn, index):
     yield "message_stop", {"type": "message_stop"}
 
 
+FAKE_HOST = "fake.zb.invalid"
+
+
+class _QuietServer(ThreadingHTTPServer):
+    """A peer that resets or never finishes the TLS handshake (a probe, a refused hook) is
+    part of what the tests drive: it is counted in `connections`, not printed."""
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], OSError):
+            return
+        super().handle_error(request, client_address)
+
+
+def make_test_cert(directory, host=FAKE_HOST):
+    """A throwaway self-signed certificate for `host` (one day, P-256), written to
+    `directory`. Returns (cert, key); the cert is also the CA the CLI is told to
+    trust (NODE_EXTRA_CA_CERTS, chat-drawer plan rev 16.2 §3c.4)."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    cert, key = directory / "fake-api-cert.pem", directory / "fake-api-key.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                    "-keyout", str(key), "-out", str(cert), "-days", "1", "-subj", f"/CN={host}",
+                    "-addext", f"subjectAltName=DNS:{host}"],
+                   check=True, capture_output=True)
+    return cert, key
+
+
 class FakeAnthropicApi:
-    def __init__(self, turns=None, responder=None):
+    """`tls=(cert, key)` serves HTTPS (for the route through relay and netd, where
+    netd's --test-allow maps fake.zb.invalid to this port); otherwise plain HTTP."""
+
+    def __init__(self, turns=None, responder=None, tls=None):
+        self.tls = tls
         self.turns = list(turns or [])
         self.responder = responder
         self.requests = []
+        # One entry per accepted connection: the authorization values of the requests that
+        # came on it (S4.4: a connection with no Bearer request was not the CLI's).
+        self.connections = []
         self.tunnels = []
         self.messages_count = 0
         self._lock = threading.Lock()
@@ -82,6 +120,17 @@ class FakeAnthropicApi:
         host, port = self._server.server_address[:2]
         return f"http://{host}:{port}"
 
+    def connections_without_bearer(self, token):
+        """How many accepted connections carried no `Bearer <token>` request (a TLS
+        handshake that never sends a request counts too)."""
+        want = f"Bearer {token}"
+        with self._lock:
+            return sum(1 for c in self.connections if want not in c["authorizations"])
+
+    @property
+    def port(self):
+        return self._server.server_address[1]
+
     def start(self):
         api = self
 
@@ -90,6 +139,12 @@ class FakeAnthropicApi:
 
             def log_message(self, *args):
                 pass
+
+            def setup(self):
+                super().setup()
+                self.zb_connection = {"authorizations": []}
+                with api._lock:
+                    api.connections.append(self.zb_connection)
 
             def _record(self, body):
                 headers = {k.lower(): v for k, v in self.headers.items()}
@@ -104,6 +159,7 @@ class FakeAnthropicApi:
                 entry = {"method": self.command, "path": path, "target": self.path, "headers": headers, "body": parsed}
                 with api._lock:
                     api.requests.append(entry)
+                    self.zb_connection["authorizations"].append(headers.get("authorization"))
                 return entry
 
             def _read_body(self):
@@ -173,7 +229,13 @@ class FakeAnthropicApi:
                     self.wfile.flush()
                 self.close_connection = True
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = _QuietServer(("127.0.0.1", 0), Handler)
+        if self.tls is not None:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(*map(str, self.tls))
+            # The handshake runs in each request's thread, not in the accept loop.
+            self._server.socket = context.wrap_socket(self._server.socket, server_side=True,
+                                                      do_handshake_on_connect=False)
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
