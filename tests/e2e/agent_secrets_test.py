@@ -511,6 +511,9 @@ def case_no_keyring(binary: Path, tmp: Path, check) -> None:
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 15), "the X click stores to the file", b)
             check(store.is_file() and stat.S_IMODE(store.stat().st_mode) == 0o600 and store.read_text() == token,
                   "a 0600 file with the canary")
+            click_rect(b, secrets_rect(b, "remove"))
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 15) and not store.exists(),
+                  "Remove with the file active and no keyring reachable: the file goes, and that is success", b)
         finally:
             b.stop()
 
@@ -562,6 +565,167 @@ def case_remove_session(binary: Path, tmp: Path, check) -> None:
             send_prompt(b, "and again")
             check(b.wait(lambda: any(k == "status" for k, _f in secrets_lines(b)[before:]), 15),
                   "the next Send reopens the Secrets window", b)
+        finally:
+            b.stop()
+
+
+# --- RoseCat 5648: the active store, stale completions, the opening lookup, Remove ------------
+DELAY_ENV = "ZIGBROWSER_AGENT_SECRETS_TEST_DELAY"
+
+
+def close_secrets_window(b) -> None:
+    """Closes the Secrets window the way a window manager's close button does: a
+    WM_PROTOCOLS/WM_DELETE_WINDOW client message (there is no window manager on the private
+    Xvfb). GTK answers it with delete-event, then destroys the window."""
+    import ctypes
+
+    class ClientMessage(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                    ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                    ("format", ctypes.c_int), ("data", ctypes.c_long * 5)]
+
+    class Event(ctypes.Union):
+        _fields_ = [("xclient", ClientMessage), ("pad", ctypes.c_long * 24)]
+
+    x, dpy = b.x._x, b.x._dpy
+    x.XInternAtom.restype = ctypes.c_ulong
+    x.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
+    window = b.x.toplevels("Claude Agent account")[-1][0]
+    event = Event()
+    event.xclient.type = 33  # ClientMessage
+    event.xclient.window = window
+    event.xclient.message_type = x.XInternAtom(dpy, b"WM_PROTOCOLS", 0)
+    event.xclient.format = 32
+    event.xclient.data[0] = x.XInternAtom(dpy, b"WM_DELETE_WINDOW", 0)
+    x.XSendEvent(dpy, window, 0, 0, ctypes.byref(event))
+    x.XFlush(dpy)
+
+
+def bubbles_after(b, start: int) -> list[tuple[str, ...]]:
+    return [r.fields for r in b.rows("msg", 1)[start:]]
+
+
+def case_fallback_persists(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5648 B1 (D11): the explicit "Save to a private file instead" click makes the file
+    the active store: a second Send finds that token (no Secrets window), and so does a Send
+    after a restart without --agent-secret-store."""
+    token = canary()
+    world = provisioned(binary, tmp, "fallback")
+    with fake_api(tmp) as api:
+        b = launch(binary, tmp, world, no_session_bus_env({}, tmp), api, "fallback")
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: secrets_status(b)[:1] == ["no-keyring"], 20), "no keyring: the window opens", b)
+            paste_and_save(b, token)
+            check(b.wait(lambda: (secrets_rect(b, "file") or (0, 0, 0, 0))[2] > 0, 15), "the file choice is offered", b)
+            click_rect(b, secrets_rect(b, "file"))
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 15), "the click stores to the file", b)
+            statuses, start = len(secrets_status(b)), len(b.rows("msg", 1))
+            send_prompt(b, "again")
+            check(b.wait(lambda: ("system", "Agent not available yet") in bubbles_after(b, start), 15),
+                  f"a second Send finds the file token ({bubbles_after(b, start)})", b)
+            time.sleep(1.0)
+            check(secrets_status(b)[statuses:] == [], f"and asks no keyring again ({secrets_status(b)[statuses:]})", b)
+        finally:
+            b.stop()
+        b = launch(binary, tmp, world, no_session_bus_env({}, tmp), api, "fallback-restart")
+        try:
+            send_prompt(b, "after a restart")
+            check(b.wait(lambda: ("system", "Agent not available yet") in bubbles_after(b, 0), 15),
+                  f"after a restart without the flag the file token is still the one used ({bubbles_after(b, 0)})", b)
+            time.sleep(1.0)
+            check(secrets_lines(b) == [], f"and no Secrets window opens ({secrets_lines(b)[:3]})", b)
+        finally:
+            b.stop()
+
+
+def case_stale_store(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5648 B2: a store completion from a closed window changes nothing. Save A (its
+    answer held back 10 s), close the window, reopen it with Send, Save B: A's late answer lands
+    while B is pending; B still gets the file choice, and the file then holds B."""
+    token_a, token_b = canary(), canary()
+    world = provisioned(binary, tmp, "stale")
+    with fake_api(tmp) as api:
+        bus = dict(no_session_bus_env({}, tmp), **{DELAY_ENV: "store=10000"})
+        b = launch(binary, tmp, world, bus, api, "stale")
+        try:
+            send_prompt(b, "hello")
+            b.wait(lambda: secrets_status(b)[:1] == ["no-keyring"], 20)
+            paste_and_save(b, token_a)
+            saved_a = time.monotonic()
+            close_secrets_window(b)
+            check(b.wait(lambda: not b.x.toplevels("Claude Agent account"), 5), "the window closed", b)
+            seen = len(secrets_status(b))
+            send_prompt(b, "again")
+            check(b.wait(lambda: "no-keyring" in secrets_status(b)[seen:], 10), "Send reopens it", b)
+            paste_and_save(b, token_b)
+            check(time.monotonic() - saved_a < 8.5, "B was saved before A's held-back answer (timing precondition)")
+            check(b.wait(lambda: (secrets_rect(b, "file") or (0, 0, 0, 0))[2] > 0, 15),
+                  "after A's stale answer, B still gets the file choice (B's own answer lands last)", b)
+            if (secrets_rect(b, "file") or (0, 0, 0, 0))[2] > 0:
+                click_rect(b, secrets_rect(b, "file"))
+                b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 15)
+            store = world.agent / "secrets" / "claude-token"
+            check(store.is_file() and store.read_text() == token_b, "the file holds B, not A and not nothing")
+        finally:
+            b.stop()
+
+
+def case_lookup_race(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5648 B3: the opening lookup (its answer held back 3 s) cannot overwrite a later
+    Save: what the window finally says matches the keyring. Then a Save after it works."""
+    token = canary()
+    world = provisioned(binary, tmp, "lookup")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "lookup=3000"}), api, "lookup")
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: (secrets_rect(b, "save") or (0, 0, 0, 0))[2] > 0, 10), "the window is up", b)
+            check(secrets_status(b) == [], "before the held-back lookup answered (timing precondition)", b)
+            paste_and_save(b, token)
+            b.wait(lambda: secrets_status(b) != [], 10)
+            time.sleep(1.5)
+            stored = kr.lookup()
+            final = secrets_status(b)[-1:]
+            want = ["connected-secret-service"] if stored == token else ["empty"]
+            check(final == want, f"the window's last word matches the keyring (keyring {'has' if stored else 'lacks'} "
+                                 f"the token; statuses {secrets_status(b)})", b)
+            paste_and_save(b, token)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 15) and kr.lookup() == token,
+                  "a Save after the lookup answered stores the token", b)
+        finally:
+            b.stop()
+
+
+def case_remove_both(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5648 B4: Remove clears both stores. A keyring item saved in one run and a file
+    token saved in a run with --agent-secret-store file are both gone after Remove there."""
+    token_k, token_f = canary(), canary()
+    world = provisioned(binary, tmp, "both")
+    store = world.agent / "secrets" / "claude-token"
+    with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
+        b = launch(binary, tmp, world, kr.bus_env, api, "both-keyring")
+        try:
+            send_prompt(b, "hello")
+            b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
+            paste_and_save(b, token_k)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20) and kr.lookup() == token_k,
+                  "the keyring holds the first token", b)
+        finally:
+            b.stop()
+        b = launch(binary, tmp, world, kr.bus_env, api, "both-file", ["--agent-secret-store", "file"])
+        try:
+            send_prompt(b, "hello")
+            b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
+            paste_and_save(b, token_f)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 20) and store.is_file(),
+                  "the file holds the second token", b)
+            check(b.wait(lambda: (secrets_rect(b, "remove") or (0, 0, 0, 0))[2] > 0, 10), "Remove is shown", b)
+            click_rect(b, secrets_rect(b, "remove"))
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 15), "Remove: SECRETS status empty", b)
+            check(not store.exists(), "the file is gone")
+            check(kr.lookup() is None, "and so is the keyring item")
         finally:
             b.stop()
 
@@ -677,12 +841,17 @@ CASES = {
     "no-keyring": case_no_keyring,
     "remove": case_remove,
     "unreachable": case_unreachable,
+    "fallback-persists": case_fallback_persists,
+    "stale-store": case_stale_store,
+    "lookup-race": case_lookup_race,
+    "remove-both": case_remove_both,
     # S4b: the hand-off through S3b's helper (its build step runs these with --only).
     "handoff": case_handoff,
     "remove-session": case_remove_session,
     "hooks": case_hooks,
 }
-S4A_CASES = ("secret-service", "file-flag", "rejected", "no-keyring", "remove", "unreachable")
+S4A_CASES = ("secret-service", "file-flag", "rejected", "no-keyring", "remove", "unreachable",
+             "fallback-persists", "stale-store", "lookup-race", "remove-both")
 
 
 def main() -> int:

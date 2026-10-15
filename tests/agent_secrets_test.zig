@@ -312,3 +312,67 @@ test "removeFile deletes the token file; removing an absent token is fine" {
     defer none.deinit();
     try secrets.removeFile(std.testing.io, none.path);
 }
+
+// --- S4a follow-up (RoseCat 5648): which store is active, and the e2e delay seam ---
+
+test "effectiveStore: this session's file click, then the flag, then a token file, then the Secret Service" {
+    const S = secrets.Store;
+    // Exhaustive over (explicit flag, session click, file exists).
+    for ([_]?S{ null, .secret_service, .file }) |explicit| {
+        for ([_]bool{ false, true }) |clicked| {
+            for ([_]bool{ false, true }) |exists| {
+                const want: S = if (clicked)
+                    .file
+                else if (explicit) |e|
+                    e
+                else if (exists)
+                    .file
+                else
+                    .secret_service;
+                try std.testing.expectEqual(want, secrets.effectiveStore(explicit, clicked, exists));
+            }
+        }
+    }
+}
+
+test "fileExists: any entry named secrets/claude-token counts (a refused one too), never followed" {
+    const io = std.testing.io;
+    {
+        var none = try Home.init(null, null, 0);
+        defer none.deinit();
+        try std.testing.expect(!secrets.fileExists(none.path));
+        try none.tmp.dir.createDir(io, "secrets", .default_dir);
+        try std.testing.expect(!secrets.fileExists(none.path));
+    }
+    {
+        var good = try Home.init(0o700, canary, 0o600);
+        defer good.deinit();
+        try std.testing.expect(secrets.fileExists(good.path));
+    }
+    {
+        var loose = try Home.init(0o700, canary, 0o644); // loadFile refuses it; it still selects the file store
+        defer loose.deinit();
+        try std.testing.expect(secrets.fileExists(loose.path));
+    }
+    {
+        var dangling = try Home.init(0o700, null, 0);
+        defer dangling.deinit();
+        try dangling.tmp.dir.symLink(io, "../nowhere", "secrets/claude-token", .{});
+        try std.testing.expect(secrets.fileExists(dangling.path)); // the link itself, not its target
+    }
+}
+
+test "parseTestDelay: lookup=, store=, clear= in milliseconds (0-10000), each at most once" {
+    const all = try secrets.parseTestDelay("lookup=3000,store=4000,clear=0");
+    try std.testing.expectEqual(secrets.TestDelay{ .lookup_ms = 3000, .store_ms = 4000, .clear_ms = 0 }, all);
+    try std.testing.expectEqual(secrets.TestDelay{ .store_ms = 10000 }, try secrets.parseTestDelay("store=10000"));
+    try std.testing.expectEqual(secrets.TestDelay{ .clear_ms = 1, .lookup_ms = 2 }, try secrets.parseTestDelay("clear=1,lookup=2"));
+    const bad = [_][]const u8{ "", ",", "lookup", "lookup=", "lookup=-1", "lookup=+1", "lookup=01", "lookup=10001",
+        "lookup=1x", "fetch=1", "lookup=1,lookup=2", "lookup=1,", ",lookup=1", "lookup=1 ,store=2", "LOOKUP=1" };
+    for (bad) |text| {
+        if (secrets.parseTestDelay(text)) |_| {
+            std.debug.print("accepted: {s}\n", .{text});
+            return error.TestExpectedError;
+        } else |err| try std.testing.expectEqual(error.BadTestDelay, err);
+    }
+}
