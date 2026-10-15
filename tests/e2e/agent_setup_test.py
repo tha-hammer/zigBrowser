@@ -332,17 +332,33 @@ def case_cli_seam(binary: Path, tmp: Path, check: Checks) -> None:
               f"R3 removed: --agent-token-route {route} refuses with exit 2, nothing written ({code}; {err.strip()[-200:]!r})")
 
 
-def cli_processes(cli: str) -> list[int]:
-    """Live, non-zombie processes running `cli` (its argv[0]; bwrap only names it in a bind)."""
-    found = []
-    for pid in (p for p in os.listdir("/proc") if p.isdigit()):
+def cli_processes(cli: str, root: int) -> list[int]:
+    """Live, non-zombie descendants of `root` running `cli` (its argv[0]; bwrap only names
+    it in a bind). Only descendants: the bundled CLI is shared, and other gate steps run
+    it unsandboxed in parallel (BlueBeaver 5631). An orphan inside setup's PID namespace
+    is re-parented to that namespace's init, itself a descendant, so none is missed."""
+    parents: dict[int, int] = {}
+    argv0: dict[int, bytes] = {}
+    for pid in (int(p) for p in os.listdir("/proc") if p.isdigit()):
         try:
-            if Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0] == cli.encode() and \
-                    Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z":
-                found.append(int(pid))
-        except OSError:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            if fields[0] == "Z":
+                continue
+            parents[pid] = int(fields[1])
+            argv0[pid] = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0]
+        except (OSError, IndexError, ValueError):
             continue
-    return found
+
+    def under_root(pid: int) -> bool:
+        for _ in range(64):
+            pid = parents.get(pid, 0)
+            if pid == root:
+                return True
+            if pid <= 1:
+                return False
+        return False
+
+    return [pid for pid, name in argv0.items() if name == cli.encode() and under_root(pid)]
 
 
 def case_sealed(binary: Path, tmp: Path, check: Checks) -> None:
@@ -355,7 +371,7 @@ def case_sealed(binary: Path, tmp: Path, check: Checks) -> None:
     proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--sai-source", str(w.source)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=w.env())
     while proc.poll() is None:
-        for pid in cli_processes(cli):
+        for pid in cli_processes(cli, proc.pid):
             try:
                 seen.setdefault(pid, (os.readlink(f"/proc/{pid}/ns/net"), os.path.exists(f"/proc/{pid}/root{w.home}")))
             except OSError:
