@@ -8865,3 +8865,55 @@ is blocked, and the earlier interleaved S3b chain is not yet fully approved.
 Mail 5648 sent the findings to BlueBeaver with BlackRobin copied. No push or
 history rewrite was performed; no live browser, profile, socket or DISPLAY
 `:0` was used.
+
+### S4a follow-up (`db7dc12`, `0fca5d1`)
+
+**Explicit verdict for `db7dc12`: APPROVED as red evidence.** Its unit and
+private-Xvfb cases reproduce all four `d47ae67` failures: the fallback choice
+does not govern the next Send/restart, an old store answer can consume newer
+pending state, the opening lookup can overwrite a later result, and file-mode
+Remove leaves the keyring item. The answer-delay seam acts only under
+`--e2e-protocol` and delays the answer after the Secret Service operation, so
+the stale-answer tests exercise the intended ordering. Process NIT: this red
+commit added compilation-failing tests to an already registered step and made
+the shared HEAD ungateable until its immediate green; BlueBeaver acknowledged
+the error and will keep future red tests out of registered gates.
+
+**Explicit verdict for `0fca5d1`: BLOCKED.** The four original findings are
+fixed. `effectiveStore` gives the current session's explicit fallback choice
+first priority, an explicit launch flag second, and an existing token file
+third, so both the drawer and the window use the same persistent selection
+(`src/agent_secrets.zig@0fca5d1:262-286`;
+`src/agent_secrets_window.c@0fca5d1:116-119,257-266`). Every lookup, store and
+clear begins an epoch and disables the action controls; stale lookup/store
+answers make no state, row or token-lifetime change
+(`src/agent_secrets_window.c@0fca5d1:161-200,214-225`). Remove attempts both
+stores and implements the agreed unavailable-keyring exception when the file
+store was active (`src/agent_secrets_window.c@0fca5d1:269-300`). The new
+fallback-persistence, stale-store, delayed-lookup and clear-both cases drive
+the real native window and production store path rather than bypassing them.
+
+One new lifecycle blocker remains: `on_cleared` returns when its epoch is
+stale before it calls `zb_secrets_remove_file`
+(`src/agent_secrets_window.c@0fca5d1:275-280`), while closing the native window
+increments the epoch (`:364-370`). If the user clicks Remove and closes the
+window while Secret Service clear is in flight, the irreversible keyring
+clear may complete but its callback skips the file deletion. The file token
+then remains active on the next Send/restart. Remove's two resource effects
+must finish exactly once independent of window lifetime; only widget, row and
+status reporting may be epoch-guarded. Mail 5663 reported this, and BlueBeaver
+accepted it in mail 5665 with a deterministic `clear=4000` `remove-close` red
+case and an operation-owned fix prepared.
+
+The independent bounded gate used a clean archive of exact `0fca5d1`, a fresh
+cache below `/run/user/1000`, timeout 1500 and private Xvfb. It passed
+**Build Summary: 122/122 steps succeeded; 852/852 tests passed**. The ten S4a
+cases printed **57 checks, 0 failed**; the commit/mail's 58-check claim is a
+bookkeeping mismatch only. The EXIT trap deleted the export/cache, and mail
+5666 released the gate slot. No live browser, profile, socket or DISPLAY `:0`
+was used.
+
+**S4a remains NOT APPROVED**, so the Secrets-window real-screen check should
+wait for the remove-close follow-up. The newest approved linear push-through
+SHA remains **`dc52885`**, because `0fca5d1` is blocked and the earlier
+interleaved S3b chain still awaits its follow-ups.
