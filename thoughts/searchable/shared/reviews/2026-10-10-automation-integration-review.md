@@ -10030,3 +10030,58 @@ their real consumers have not landed. Consequently the newest approved
 linear push-through SHA remains **`dc52885`** until both pre-existing findings
 are closed; `463a3eb` and `dee9829` themselves are approved and need no
 follow-up from BlueBeaver.
+
+## MS0 Slice E/F closure (`227554f`, `281f33f`)
+
+**Explicit verdict for `227554f`: APPROVED.** The production hook runner now
+reads `ports` from the same provisioned `runtime/net.json` that already carries
+the backend's `bridges_dir`, and puts `--ports P1,P2` immediately after the
+inner relay's `--bridges DIR`; a legacy manifest with no ports keeps the old
+fixed-map invocation (`agent/host/zb_agent_host/hook_run.py@227554f:106-135,151-188`).
+This is a real consumer, not parallel metadata: the registered sealed-hook test
+runs the actual outer bwrap, copied `zb-hook-run`, nested bwrap and copied inner
+relay, then proves that a reduced manifest binds 51091 and refuses 31337
+(`agent/host/tests/test_hook_net.py@227554f:205-225`). Together with Slice D's
+changed-backend injection through the real `setup.net_manifest()` producer and
+`dee9829`'s strict relay grammar, this closes `7301c5d` finding 2's remaining
+setup -> hook -> relay consumer edge. Dropping `resolve_ports` or `--ports`
+would restore 31337 and turn that end-to-end assertion red.
+
+**Explicit verdict for `281f33f`: APPROVED.** `zb_agent_run_sync` no longer
+constructs a Linux policy internally: its ABI accepts the caller's complete
+`ZbSpawnPolicy`, the child setup copies exactly that value, and the real Zig
+setup caller supplies `zb_spawn_policy_linux(spawn_delay_ms)`
+(`src/agent_host.h@281f33f:20-54`; `src/agent_host.c@281f33f:42-73`;
+`src/app.zig@281f33f:108-112`). Linux behavior is preserved, while the existing
+registered parent-death and 5-second-delay timeout cases drive changed delay and
+parent-race values through this production caller/spawn boundary.
+
+The immutable Python `LaunchSpec` now also carries backend-neutral `Lifetime`
+and `Channel` values, and `LinuxBwrapBackend.launch_spec()` populates both from
+the same backend (`agent/host/zb_agent_host/sandbox.py@281f33f:82-101,158-197,288-349`).
+The channel has a real production projection: `token.write_wrapper` uses the
+backend's descriptor and announcing environment name when it generates
+`zb-claude`; the changed-channel test observes the altered `dup2`, inherited fd
+and environment assignment rather than inspecting metadata only
+(`agent/host/zb_agent_host/token.py@281f33f:98-141`;
+`agent/host/tests/test_backend_contract.py@281f33f:505-571`). This closes
+`7301c5d` finding 3 and preserves the rule that the credential bytes travel on
+the inherited socket, never in the environment.
+
+The cumulative `7301c5d` findings are now all **CLOSED**:
+
+- finding 1 (semantic network capability and allowlist in `LaunchSpec`) by
+  `ac07c1a`;
+- finding 2 (real netd/relay and hook consumers) by `dee9829` plus `227554f`;
+- finding 3 (caller-owned native spawn policy and immutable lifetime/channel)
+  by `281f33f`.
+
+I independently ran exact `281f33f` from a clean `git archive`, with a fresh
+cache, a 1500-second bound and private Xvfb `:106`. It exited 0 with **Build
+Summary: 138/138 steps succeeded; 880/880 tests passed**. The gate included the
+new 19-case hook-network suite, 28-case backend-contract suite, setup
+parent-death/timeout coverage and the full real-binary e2es. The EXIT trap
+deleted the export and cache, and no live display, profile or socket was used.
+
+MS0's Linux extraction is therefore cumulatively **APPROVED**. The newest
+approved linear push-through SHA is **`281f33f`**.
