@@ -52,7 +52,6 @@ void zb_agent_out_free(char *frame);
 #define ZB_REJECTIONS_RESTART 3
 #define ZB_SHUTDOWN_MS 2000
 #define ZB_TERM_MS 1000
-#define ZB_STDERR_RING (64 * 1024)
 
 #define ZB_TEXT_NETWORK "Agent network unavailable"
 #define ZB_TEXT_SANDBOX "Agent sandbox unavailable"
@@ -72,6 +71,21 @@ typedef struct {
   GPtrArray *pending; /* prompts (char *) waiting for a ready helper */
 } ZbWin;
 
+/* One helper process's pipe reader (stdout or stderr). Every pending read
+ * holds a reference; once its process is forgotten the reader is dead, and a
+ * late completion only drops its reference: it parses nothing, rearms
+ * nothing, and never touches the next process's buffers (RoseCat 5682). */
+typedef struct {
+  int refs;
+  int live;
+  int frames; /* stdout parses frames; stderr is drained and discarded */
+  GInputStream *stream;
+  GCancellable *cancel;
+  GString *line;
+  int dropping;
+  char buf[16384];
+} ZbReader;
+
 static struct {
   int configured, e2e;
   char **argv, **envp;
@@ -80,12 +94,8 @@ static struct {
   GSubprocess *proc;
   pid_t pid;
   GOutputStream *in;
-  GInputStream *out, *err;
   GCancellable *cancel;
-  GString *line;
-  int line_dropping;
-  char buf[16384];
-  char err_buf[4096];
+  ZbReader *out, *err;
   GHashTable *wins; /* win id -> ZbWin* */
   unsigned int restarts;
   gint64 crashed_at;
@@ -269,6 +279,7 @@ static void on_frame(const ZbAgentFrame *f) {
   }
 }
 
+static void reader_stop_out(void);
 static void on_line(const char *line, size_t len) {
   ZbAgentFrame f;
   int code = zb_agent_frames_validate(line, len, &f);
@@ -280,55 +291,83 @@ static void on_line(const char *line, size_t len) {
   if (++zb_helper.rejections == ZB_REJECTIONS_RESTART && zb_helper.pid > 0) {
     zb_helper.restart_now = 1;
     kill(-zb_helper.pid, SIGKILL);
+    /* Nothing more of this helper is read: what it left in the pipe must not
+     * count against it, or against the next one. */
+    reader_stop_out();
   }
 }
 
-static void read_more(void);
-
-static void on_stdout(GObject *source, GAsyncResult *res, gpointer data) {
-  (void)data;
-  gssize n = g_input_stream_read_finish(G_INPUT_STREAM(source), res, NULL);
-  if (n <= 0) {
-    return; /* EOF or cancelled: the exit is reported by the wait */
+static void reader_unref(ZbReader *r) {
+  if (--r->refs > 0) {
+    return;
   }
-  for (gssize i = 0; i < n; ++i) {
-    char c = zb_helper.buf[i];
+  g_object_unref(r->stream);
+  g_object_unref(r->cancel);
+  g_string_free(r->line, TRUE);
+  g_free(r);
+}
+
+static void reader_arm(ZbReader *r);
+
+/* stdout: NDJSON frames, each validated (on_line). stderr: drained and kept
+ * nowhere, never logged (plan D7 rev 16.7: its redacted log comes with S5.7). */
+static void on_read(GObject *source, GAsyncResult *res, gpointer data) {
+  ZbReader *r = data;
+  gssize n = g_input_stream_read_finish(G_INPUT_STREAM(source), res, NULL);
+  if (!r->live || n <= 0) { /* an old process's late answer, EOF or cancel */
+    reader_unref(r);
+    return;
+  }
+  for (gssize i = 0; r->frames && i < n && r->live; ++i) {
+    char c = r->buf[i];
     if (c != '\n') {
-      if (zb_helper.line->len <= ZB_MAX_FRAME) {
-        g_string_append_c(zb_helper.line, c);
+      if (r->line->len <= ZB_MAX_FRAME) {
+        g_string_append_c(r->line, c);
       } else {
-        zb_helper.line_dropping = 1;
+        r->dropping = 1;
       }
       continue;
     }
-    if (zb_helper.line_dropping) {
-      /* Over the cap: rejected without being parsed (D7, "dropped"). */
-      on_line(zb_helper.line->str, ZB_MAX_FRAME + 1);
-    } else {
-      on_line(zb_helper.line->str, zb_helper.line->len);
-    }
-    g_string_truncate(zb_helper.line, 0);
-    zb_helper.line_dropping = 0;
+    /* Over the cap: rejected without being parsed (D7, "dropped"). */
+    on_line(r->line->str, r->dropping ? ZB_MAX_FRAME + 1 : r->line->len);
+    g_string_truncate(r->line, 0);
+    r->dropping = 0;
   }
-  read_more();
-}
-
-static void read_more(void) {
-  if (zb_helper.out != NULL) {
-    g_input_stream_read_async(zb_helper.out, zb_helper.buf, sizeof zb_helper.buf, G_PRIORITY_DEFAULT,
-                              zb_helper.cancel, on_stdout, NULL);
+  if (r->live) {
+    reader_arm(r); /* the pending read keeps this reference */
+  } else {
+    reader_unref(r); /* a frame above ended this process */
   }
 }
 
-/* stderr is drained and kept nowhere in S3b: nothing of it is logged (D7b). */
-static void on_stderr(GObject *source, GAsyncResult *res, gpointer data) {
-  (void)data;
-  gssize n = g_input_stream_read_finish(G_INPUT_STREAM(source), res, NULL);
-  if (n > 0 && zb_helper.err != NULL) {
-    g_input_stream_read_async(zb_helper.err, zb_helper.err_buf, sizeof zb_helper.err_buf, G_PRIORITY_DEFAULT,
-                              zb_helper.cancel, on_stderr, NULL);
-  }
+static void reader_arm(ZbReader *r) {
+  g_input_stream_read_async(r->stream, r->buf, sizeof r->buf, G_PRIORITY_DEFAULT, r->cancel, on_read, r);
 }
+
+static ZbReader *reader_start(GInputStream *stream, int frames) {
+  ZbReader *r = g_new0(ZbReader, 1);
+  r->refs = 2; /* the process's, and the first pending read's */
+  r->live = 1;
+  r->frames = frames;
+  r->stream = g_object_ref(stream);
+  r->cancel = g_cancellable_new();
+  r->line = g_string_new(NULL);
+  reader_arm(r);
+  return r;
+}
+
+static void reader_stop(ZbReader **slot) {
+  ZbReader *r = *slot;
+  if (r == NULL) {
+    return;
+  }
+  *slot = NULL;
+  r->live = 0;
+  g_cancellable_cancel(r->cancel);
+  reader_unref(r);
+}
+
+static void reader_stop_out(void) { reader_stop(&zb_helper.out); }
 
 /* --- exit and restart ------------------------------------------------------- */
 
@@ -338,14 +377,10 @@ static void forget_process(void) {
     g_clear_object(&zb_helper.cancel);
   }
   zb_helper.in = NULL;
-  zb_helper.out = NULL;
-  zb_helper.err = NULL;
+  reader_stop(&zb_helper.out);
+  reader_stop(&zb_helper.err);
   g_clear_object(&zb_helper.proc);
   zb_helper.pid = 0;
-  if (zb_helper.line != NULL) {
-    g_string_truncate(zb_helper.line, 0);
-  }
-  zb_helper.line_dropping = 0;
   if (zb_helper.wins != NULL) {
     GHashTableIter it;
     gpointer key, value;
@@ -471,16 +506,12 @@ static void spawn_with(char *token) {
   zb_helper.proc = proc;
   zb_helper.pid = (pid_t)g_ascii_strtoll(g_subprocess_get_identifier(proc), NULL, 10);
   zb_helper.in = g_subprocess_get_stdin_pipe(proc);
-  zb_helper.out = g_subprocess_get_stdout_pipe(proc);
-  zb_helper.err = g_subprocess_get_stderr_pipe(proc);
   zb_helper.cancel = g_cancellable_new();
-  zb_helper.line = zb_helper.line != NULL ? zb_helper.line : g_string_new(NULL);
   zb_helper.rejections = 0;
   zb_helper.state = H_STARTING;
   zb_agent_frames_reset();
-  read_more();
-  g_input_stream_read_async(zb_helper.err, zb_helper.err_buf, sizeof zb_helper.err_buf, G_PRIORITY_DEFAULT,
-                            zb_helper.cancel, on_stderr, NULL);
+  zb_helper.out = reader_start(g_subprocess_get_stdout_pipe(proc), 1);
+  zb_helper.err = reader_start(g_subprocess_get_stderr_pipe(proc), 0);
   g_subprocess_wait_async(proc, zb_helper.cancel, on_helper_exit, NULL);
 }
 
@@ -616,8 +647,10 @@ void zb_agent_helper_window_closed(unsigned int win) {
     return;
   }
   if (w->open && zb_helper.state == H_READY) {
+    /* The validator keeps the session: the helper's session_ended (and a late
+     * session_opened) are valid frames, and that session_ended closes it
+     * (RoseCat 5681). With the window gone they are accepted and dropped. */
     write_frame(zb_agent_out_session(1, w->session));
-    zb_agent_frames_close_session(w->session);
   }
   g_hash_table_remove(zb_helper.wins, GUINT_TO_POINTER(win));
   g_ptr_array_unref(w->pending);
