@@ -8797,3 +8797,71 @@ visual problem. The protocol evidence matched it exactly:
 `DRAWER 1 msg system "Agent network unavailable"`. The orchestrator deleted
 the throwaway directory. This is user/orchestrator-supplied real-screen
 evidence; RoseCat did not connect to DISPLAY `:0` or the live socket.
+
+## Plan rev 16.5 and S4a Secrets review (`a0a0b56`, `cf4c612`, `d47ae67`)
+
+**Explicit verdict for `a0a0b56`: APPROVED.** Rev 16.5 resolves rev 16.4's
+contradictions: the browser-to-launcher bootstrap environment is distinct from
+the helper's exact final environment; current token ownership belongs to S4a;
+and `TEST_PROXY` is removed while the test endpoint remains exactly
+`https://fake.zb.invalid`.
+
+**Explicit verdict for `cf4c612`: APPROVED as the red commit.** It records
+real pre-green failures (the absent production module plus 9 of 14 E2E checks)
+and does not register the new suite in the normal gate before production is
+present.
+
+**Explicit verdict for `d47ae67`: BLOCKED.** Four correctness findings remain:
+
+1. **BLOCKER — explicit file fallback does not select the file backend.**
+   `on_save_to_file` writes and wipes the pending token but leaves
+   `secrets.config.store` set to Secret Service
+   (`src/agent_secrets_window.c@d47ae67:85,217-225`). The next Send therefore
+   passes Secret Service to `zb_agent_token_fetch`
+   (`src/agent_drawer.c@d47ae67:628-629`) and ignores the file the user just
+   selected. An exact-commit private-Xvfb reproduction clicked the fallback,
+   sent again, and observed `STATUSES_AFTER_SECOND_SEND=['no-keyring']` while
+   `FILE_STILL_EXISTS=True`. The selection is also lost across restart unless
+   the command line independently requested file mode, contrary to D11.
+2. **BLOCKER — an obsolete async store completion can wipe a newer token.** A
+   stale generation calls the global `wipe_pending()`
+   (`src/agent_secrets_window.c@d47ae67:173-176`). Save A, close, reopen and
+   Save B can therefore let A's late callback destroy B before B's explicit
+   file fallback. Async requests need request-owned secret state or an epoch;
+   stale callbacks must not mutate the current generation.
+3. **BLOCKER — the opening lookup races later operations.**
+   `show_current_state` starts its async lookup without making the UI busy or
+   advancing an operation epoch (`src/agent_secrets_window.c@d47ae67:139-160`).
+   A Save or Remove can finish first and then have its current state overwritten
+   by the older lookup callback. A controlled delayed-callback regression is
+   required.
+4. **BLOCKER — file-mode Remove is not S4.1's clear-all operation.** Service
+   mode clears the keyring and file (`src/agent_secrets_window.c@d47ae67:230-241`),
+   but file mode removes only the file (`:251-258`). A stale keyring item can
+   reappear after a backend switch, despite S4.1 saying Remove deletes the item
+   and the file. Clear both with defined partial-failure behavior, or amend the
+   contract explicitly.
+
+The reviewed privacy seams otherwise hold. The E2E launches either a private
+D-Bus plus private keyring and private `XDG_RUNTIME_DIR`, or a dead bus address
+with a private runtime directory; pre-launch assertions reject the user's bus
+and runtime. No committed test reaches the user's real keyring. Token canary
+scanning covers stdout, stderr and every protocol row; production emits fixed
+status/error strings, clears the password entry immediately, and wipes owned
+token buffers. The exact-commit targeted checks passed under private Xvfb:
+`test-agent-secrets` reported **6/6 steps and 15/15 tests**, the dynamic-loader
+subsuite reported **5/5**, and the direct E2E reported **35 checks, 0 failed**.
+
+This slice draws a native, non-WebView, non-resizable 460-pixel-wide window
+titled `Claude Agent account`, with a masked token entry, Save and Remove
+buttons, and a fixed status line. If Secret Service fails after Save, it adds
+the unencrypted-file warning and `Save to a private file instead`. Send with no
+token adds the drawer bubble `Add a Claude token in the window that opened`
+and presents the native window. No drawer account/header button is present in
+this slice yet.
+
+The newest approved linear push-through SHA remains **`dc52885`**: `d47ae67`
+is blocked, and the earlier interleaved S3b chain is not yet fully approved.
+Mail 5648 sent the findings to BlueBeaver with BlackRobin copied. No push or
+history rewrite was performed; no live browser, profile, socket or DISPLAY
+`:0` was used.
