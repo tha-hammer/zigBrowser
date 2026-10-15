@@ -252,7 +252,10 @@ static void on_frame(const ZbAgentFrame *f) {
     }
     break;
   case ZB_FRAME_ERROR:
-    zb_drawer_agent_message(win, "error", f->text, f->text_len);
+    if (f->session != NULL && w == NULL) {
+      break; /* its window closed: the session's error goes nowhere (RoseCat 5699) */
+    }
+    zb_drawer_agent_message(win, "error", f->text, f->text_len); /* win 0: a helper-wide error */
     if (w != NULL) { /* a session's error ends its prompt (chat's _prompt) */
       if (!w->confirmed) { /* it never opened: the next prompt opens a new one */
         zb_agent_frames_close_session(w->session);

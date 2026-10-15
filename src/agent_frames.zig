@@ -51,7 +51,9 @@ export fn zb_agent_frames_open_session(session: [*:0]const u8, window: u32) c_in
     return 0;
 }
 
-/// The app closed `session` (its window went away): later frames naming it are rejected.
+/// The app gives up on `session` without a session_ended: a session the helper
+/// reported it could not open (an error before session_opened). A window close
+/// does not call this: the helper's session_ended closes that session (RoseCat 5681).
 export fn zb_agent_frames_close_session(session: [*:0]const u8) void {
     if (validator) |*v| v.closeSession(std.mem.span(session));
 }
