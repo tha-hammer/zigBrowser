@@ -8544,3 +8544,94 @@ approved S3n2 network chain; hook filter/lifecycle parity, R3 removal, the
 setup probe and native spawn wiring remain later slices. No push or history
 rewrite was performed; no live browser, profile, socket or DISPLAY `:0` was
 used.
+
+## S3n2 native netd spawn (`c3e0152`, `e96c607`)
+
+### Exact verdicts
+
+**Explicit verdict for `c3e0152`: BLOCKED at this exact SHA, while retaining
+valid initial red evidence.** The pure contract tests cannot compile on its
+parent because `src/agent_net.zig` does not yet exist, and BlueBeaver's
+recorded real-binary run on `1e17ef4` produced 28 failures: no netd, no
+`AGENTNET` lifecycle and no failure bubbles. The tests that are present are
+well targeted, but the red slice omits two rev-16.2 requirements described
+below. It is therefore a genuine but incomplete failing-first artifact, not
+an approved test boundary.
+
+**Explicit verdict for `e96c607`: BLOCKED for tests; no production-code
+blocker found.** The implementation itself matches the reviewed S3n2 native
+spawn boundary:
+
+- `configureAgentNet` runs only with the drawer, recognizes a provisioned
+  `current`, uses OS entropy for the per-browser directory, gates both test
+  seams on `--e2e-protocol`, builds netd's argv/environment and configures the
+  C owner before any Send (`src/app.zig@e96c607:112-159,179-190`). The direct
+  `python -I -S .../netd.py` form is the already accepted S3n1 deviation from
+  the plan's `-m` spelling: the file is standard-library-only and needs no
+  ambient import path.
+- The first Send crosses one process-global state machine. It spawns through
+  `die_with_browser`, keeps CLOEXEC stdin/stdout pipes, accepts only the exact
+  `netd ready` line, enforces the five-second pre-ready limit, reports exit
+  status, never restarts after a failure, and exposes the directory only in
+  `READY` (`src/agent_host.c@e96c607:78-258`). Normal quit removes the child
+  watch, closes stdin for netd's fd-relative cleanup, waits two seconds and
+  finally kills/reaps if necessary (`:260-285`).
+- The drawer owns no second network process. A synchronous refusal or later
+  child exit reaches the existing system-message path, and the global drawer
+  list avoids dereferencing a detached window
+  (`src/agent_drawer.c@e96c607:575-608,1029-1057`). A second Send cannot start
+  another netd.
+- The real-binary test pins no setup/no start, lazy start, exact argv and
+  allowlisted environment, the 0700 split socket tree, malformed seam/CA and
+  runtime-dir refusals, exit 2, SIGKILL, five-second readiness timeout, no
+  restart, and clean normal shutdown
+  (`tests/e2e/agent_netd_spawn_test.py@e96c607:143-318`). The Zig table pins
+  the directory length, strict seam grammar, fixed argv/environment and
+  no-follow CA check (`tests/agent_net_test.zig@c3e0152:10-128`).
+
+Two mutation-surviving gaps block the exact green commit:
+
+1. **BLOCKER-for-tests — the app-owned seams are never proved inert without
+   `--e2e-protocol`.** Every case uses `launch()` at
+   `agent_netd_spawn_test.py@e96c607:138-140`, whose `Browser` default enables
+   the flag. Deleting the `if (e2e)` condition at `app.zig@e96c607:142` leaves
+   all committed tests green, contrary to §3c.4 (`plan:897-903`). A
+   real-binary no-flag case must supply hostile values for both environment
+   seams and prove production argv, no refusal/effect and no protocol row.
+2. **BLOCKER-for-tests — browser death is not driven before or after netd
+   readiness.** The e2e performs clean `b.stop()` and separately kills netd,
+   but never kills the browser. Replacing `die_with_browser, &setup` with
+   `NULL, NULL` at `agent_host.c@e96c607:241-242` therefore survives. Rev 16.2
+   explicitly requires both browser-kill cases and no surviving process tree
+   (`plan:827-852,1017-1030`). The test must signal only the browser PID and
+   observe the tree gone before xsession's eight-second guardian grace, so
+   process-group cleanup cannot satisfy it.
+
+BlueBeaver accepted both findings in mail 5586 and reported test-only cases
+that kill the two mutants; their follow-up was not committed at this review
+cut. A separate non-blocking SHOULD (mail 5589) asks that the shared-netd
+claim be exercised from two drawers: one process total and exactly one failure
+bubble in each waiting drawer. The committed single-window cases do not pin
+that otherwise-correct global-list path.
+
+### Gate, visible failure state and push-through boundary
+
+My independent clean archive of exact `e96c607`, with the helper runtime
+prepared first, a fresh cache below `/run/user/1000`, and private Xvfb, passed
+**Build Summary: 112/112 steps succeeded; 825/825 tests passed**. The new Zig
+module passed 8/8 and the native-spawn e2e passed 44/44. The EXIT trap deleted
+the export and cache. This green integration result does not cover the two
+surviving mutations above.
+
+The failure report **does draw new user-visible content**: it adds a system
+message bubble reading `Agent network unavailable` through the existing
+message-list renderer (`agent_drawer.c@e96c607:575-603`). It adds no new GTK
+widget type, overlay, geometry or styling, but the new state is only asserted
+through protocol rows under Xvfb, not by a real-screen pixel check. Under the
+orchestrator's rule, schedule a real-screen check with the user after the test
+blockers close.
+
+Because both commits are blocked at this review cut, the newest approved
+linear push-through SHA from `828a309` remains **`828a309`**. No push or
+history rewrite was performed; no live browser, profile, socket or DISPLAY
+`:0` was used.
