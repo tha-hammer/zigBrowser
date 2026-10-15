@@ -8445,3 +8445,62 @@ linear push-through SHA from `1a425a7` remains **`1a425a7`**. The focused
 `063a1ce` diff is approved, but it cannot be selected without crossing the
 unclosed red milestone. No push or history rewrite was performed; no live
 browser, profile, token, socket or DISPLAY `:0` was used.
+
+## S3n2 `/run` clean-export closure (`365a463`)
+
+**Explicit verdict for `365a463`: APPROVED.** It closes the sole blocker on
+`3b217b2`. P0.4's test-only outer prefix still starts with the historical host
+view, overlays a private `/run`, restores the real top-level `/run` entries,
+then adds the test bridge directory (`agent/host/tests/test_contract.py@365a463:53-61`).
+A checkout and test home below `/run/user/<uid>` consequently remain visible
+to the helper, while `/run/zb-net/bridges` exists for the real nested
+`zb-hook-run`.
+
+The regression is causal rather than a larger timeout or changed assertion.
+It creates both a copied `zb_agent_host` checkout and an agent home below
+`/run/user/<uid>`, enters the same prefix, imports from that checkout, reads
+the home's marker and lists the bridge mount
+(`test_contract.py@365a463:217-238`). I independently ran it in a clean exact-
+`365a463` export: it passed. Replacing only `hook_view_prefix` with
+`3b217b2`'s old prefix made the same test fail immediately with
+`ModuleNotFoundError: No module named 'zb_agent_host'`. This reproduces the two
+P0.4 failures from my earlier full gate at their actual cause.
+
+I initially flagged the restore of every top-level `/run` entry because it is
+broader than the exact checkout/home paths required by this regression. On
+the full execution trace, that is not a release blocker:
+
+- P0.4 deliberately runs the helper and CLI in their pre-S3 host-view
+  contract; before the new prefix they already saw the host's `/run` directly.
+  This commit restores that baseline so the test can add the otherwise
+  uncreatable `/run/zb-net/bridges` mount. It is not the production D12
+  sandbox; P0.5 separately drives that exact prefix.
+- The hook does **not** inherit this restored `/run`. The production
+  `zb-hook-run` starts its nested bwrap, overlays its own private `/run`, and
+  binds back only `/run/zb-net/bridges`. The registered S3n2 probe still proves
+  `egress/proxy.sock` is ENOENT and absent from the hook's whole view.
+- The diff is test-only and makes no production path broader.
+
+An exact-path P0.4 remount would still be a worthwhile non-blocking
+test-hygiene improvement: it would keep unrelated user-session runtime sockets
+out of the helper/CLI's test view. No current test connects to such a socket,
+and this is not a capability newly granted to P0.4 by the S3n2 production
+change.
+
+My independent bounded full gate used a clean exact-`365a463` export and
+fresh cache below `/run/user/1000`, under private Xvfb. It passed
+**Build Summary: 109/109 steps succeeded; 817/817 tests passed**. The repaired
+contract module passed 24/24 and the S3n2 hook-network module passed 4/4. This
+run measured sealed hooks at 34.7/36.8/37.1 ms, unsealed at
+18.7/19.5/20.2 ms, and paired overhead at 15.9/16.9/18.2 ms
+(median/p90/p95, n=40 per arm, five warm-ups). The EXIT trap deleted the
+export and cache.
+
+Therefore `365a463` cumulatively closes the path-dependent gate blocker on
+`3b217b2`; the red `1331a4d`, focused `063a1ce`, green `3b217b2` and this
+follow-up form an approved linear network-slice chain. The newest approved
+push-through SHA from `1a425a7` is **`365a463`**. The later S3n2 work already
+listed in the prior review (hook filter and lifecycle parity, R3 removal,
+setup probe and native spawn wiring) remains future work and is not implied
+complete by this approval. No push or history rewrite was performed; no live
+browser, profile, token, socket or DISPLAY `:0` was used.
