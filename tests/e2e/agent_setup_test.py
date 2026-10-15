@@ -114,10 +114,36 @@ class World:
         (self.source / "settings.json").write_text(json.dumps(settings))
 
 
+def descendants(root: int) -> set[int]:
+    """Live, non-zombie descendants of `root`, by the ppid chain. Samplers look only
+    here: other gate steps run their own --agent-setup and CLIs in parallel
+    (BlueBeaver 5631; the inert case's argv sampler too). An orphan inside setup's PID
+    namespace is re-parented to that namespace's init, itself a descendant."""
+    parents: dict[int, int] = {}
+    for pid in (int(p) for p in os.listdir("/proc") if p.isdigit()):
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            if fields[0] != "Z":
+                parents[pid] = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    out: set[int] = set()
+    for pid in parents:
+        node = pid
+        for _ in range(64):
+            node = parents.get(node, 0)
+            if node == root:
+                out.add(pid)
+                break
+            if node <= 1:
+                break
+    return out
+
+
 def run_setup(binary: Path, world: World, args: list[str] = (), extra: dict[str, str] | None = None,
               watch_helper: bool = False, drop: tuple[str, ...] = (), timeout: float = 180):
     """Runs --agent-setup; with `watch_helper`, also samples the setup
-    helper's argv and environment while it runs."""
+    helper's argv and environment while it runs (only this run's own processes)."""
     oracle = Inotify(world.home / ".claude", world.home / "src" / "decoy-repo")
     proc = subprocess.Popen([str(binary.resolve()), "--agent-setup", "--sai-source", str(world.source), *args],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
@@ -126,9 +152,7 @@ def run_setup(binary: Path, world: World, args: list[str] = (), extra: dict[str,
     if watch_helper:
         deadline = time.monotonic() + 120
         while proc.poll() is None and time.monotonic() < deadline:
-            for pid in os.listdir("/proc"):
-                if not pid.isdigit():
-                    continue
+            for pid in descendants(proc.pid):
                 try:
                     argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
                     if b"zb_agent_host" in argv and b"setup" in argv:
@@ -333,32 +357,15 @@ def case_cli_seam(binary: Path, tmp: Path, check: Checks) -> None:
 
 
 def cli_processes(cli: str, root: int) -> list[int]:
-    """Live, non-zombie descendants of `root` running `cli` (its argv[0]; bwrap only names
-    it in a bind). Only descendants: the bundled CLI is shared, and other gate steps run
-    it unsandboxed in parallel (BlueBeaver 5631). An orphan inside setup's PID namespace
-    is re-parented to that namespace's init, itself a descendant, so none is missed."""
-    parents: dict[int, int] = {}
-    argv0: dict[int, bytes] = {}
-    for pid in (int(p) for p in os.listdir("/proc") if p.isdigit()):
+    """Live descendants of `root` running `cli` (its argv[0]; bwrap only names it in a bind)."""
+    found = []
+    for pid in descendants(root):
         try:
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            if fields[0] == "Z":
-                continue
-            parents[pid] = int(fields[1])
-            argv0[pid] = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0]
-        except (OSError, IndexError, ValueError):
+            if Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[0] == cli.encode():
+                found.append(pid)
+        except OSError:
             continue
-
-    def under_root(pid: int) -> bool:
-        for _ in range(64):
-            pid = parents.get(pid, 0)
-            if pid == root:
-                return True
-            if pid <= 1:
-                return False
-        return False
-
-    return [pid for pid, name in argv0.items() if name == cli.encode() and under_root(pid)]
+    return found
 
 
 def case_sealed(binary: Path, tmp: Path, check: Checks) -> None:
