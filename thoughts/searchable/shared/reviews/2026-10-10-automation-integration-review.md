@@ -9528,8 +9528,42 @@ and the throwaway export and cache were deleted immediately.
 The copyable-text implementation may proceed to the combined user real-screen
 session. That check should select and copy both a message bubble and the status
 label with the mouse and Ctrl+C, alongside the still-pending setup-token-shape
-fix. All commits in the linear range after origin `dc52885` through the review
-record `db5818b` are now individually approved. The newest approved
-push-through SHA is therefore **`db5818b`**. The open token-shape requirement
-recorded there still blocks final S4a acceptance, but it is a new follow-up and
-does not make any earlier commit in this prefix unreviewable.
+fix.
+
+**Superseded by the closure audit immediately below:** this section originally
+said every commit after `dc52885` through `db5818b` was individually approved
+and named `db5818b` as the push-through SHA. That aggregate claim was wrong: it
+failed to carry forward the still-open MS0 verdicts and treated fixes later in
+history as though they were present in an earlier candidate prefix.
+
+## Corrected blocker closure and linear push boundary (2026-10-15)
+
+| Commit | Correct cumulative status at `db5818b` | Closure evidence |
+|---|---|---|
+| `4fffdd8` | **OPEN — BLOCKED-for-tests** | No committed follow-up yet. Its golden is self-referential and the real `launch.build_argv` path is not driven. JadeBeacon's strengthened independent oracle is still uncommitted. |
+| `7301c5d` | **OPEN — BLOCKED** | No committed follow-up yet. Backend network values still lack production consumers, the native C spawn/lifetime seam is absent, and `LaunchSpec` remains argv-only. JadeBeacon's rework is still uncommitted. |
+| `00e1f93` | **CLOSED cumulatively by `eed7742`** | `CancelThenAwaitTest` keeps cleanup suspended after cancellation and fails if disconnect/route close/session end runs before the awaited acknowledgement. |
+| `9740498` | **CLOSED cumulatively by `eed7742`** | The delete-`await asyncio.gather(...)` mutation is now killed, covering the green's cancel-then-await ordering. |
+| `20e7336` | **CLOSED cumulatively by `eed7742` + `442386e`** | Repeated/early normal close, old-generation stdout, locale and stderr-canary tests land in `eed7742`; approved rev 16.7 deliberately changes the unbuilt stderr ring to drain-and-discard/no-log. |
+| `da93d83` | **CLOSED cumulatively by `eed7742`, `d71ca7f`, `442386e` and `92239f7`** | Those commits respectively supply the missing tests, generation-owned readers and retained closing sessions, the approved stderr contract, and the final closed-window error-routing fix. `2af4d87` is the failing-first evidence for the last item. |
+| `d71ca7f` | **CLOSED cumulatively by `2af4d87` + `92239f7`** | A valid late session error for a destroyed popup is now dropped instead of broadcast, while `session_ended` still closes the retained validator session. |
+| `d47ae67` | **Its four original findings are CLOSED by `db7dc12` + `0fca5d1`** | File fallback persistence, request epochs, delayed lookup and clear-both behavior are covered. This does not close `0fca5d1`'s later Remove/close finding or today's new token-shape requirement. |
+| `0fca5d1` | **Its Remove/close finding is CLOSED by `bc85c37` + `adbb8a0`** | File deletion commits at the authorized click and keyring clear finishes independently of window lifetime. Those closure commits occur after the open MS0 pair. |
+| `10474a0` | **CLOSED cumulatively by `a335080` + `d81ad8e`** | The extended red covers runtime-missing and no-token states, pre-click absence, close/reopen and keyboard activation; the green Account button is state-independent. |
+| S4a current contract | **OPEN — new token-shape blocker** | `db5818b` records the user's later requirement; no implementation commit yet accepts only normalized `sk-ant-oat01-...` setup tokens. |
+
+The distinction between cumulative HEAD closure and a **linear push-through
+state** is load-bearing. `adbb8a0`, which repairs the last old S4a Remove/close
+bug, is after the open MS0 pair; therefore a prefix ending before `4fffdd8`
+would still stop at `0fca5d1` with that bug present. Similarly, the commits
+that cumulatively close the initial S3b part-one findings are after MS0. A
+candidate prefix ending at `a0a0b56` would still contain the blocked
+`c320f97`, while a prefix ending at `6fc6719` would additionally contain the
+unrepaired `0fca5d1`. The first post-origin commits are red-first artifacts;
+the branch rule is to commit/push milestones when green, so neither is a safe
+standalone boundary.
+
+Accordingly **no post-`dc52885` contiguous green prefix is currently fully
+approved**. The newest confirmed linear push-through SHA remains
+**`dc52885`**. Once the MS0 rework and token-shape green land, the cumulative
+closures above can be reassessed together at the resulting later SHA.
