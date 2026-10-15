@@ -69,8 +69,10 @@ typedef struct {
   /* An operation (the opening lookup, Save, Remove) is in flight: Save,
    * Remove and the entry wait for it. */
   int busy;
-  /* The store that was active when Remove started (its failure rule). */
+  /* Remove: the store that was active when it started (its failure rule),
+   * and whether its file deletion, done at the click, succeeded. */
   int removing_store;
+  int removed_file;
   int configured;
   /* Bumped when any operation starts and when the window closes. An answer
    * carries the epoch it was started in; any other epoch's answer changes
@@ -269,19 +271,20 @@ static void on_save_to_file(GtkWidget *button, gpointer unused) {
 /* --- Remove: both stores ------------------------------------------------------ */
 
 /* Remove clears the keyring item and deletes the file (RoseCat 5648, 5649).
- * Success needs the file gone and the keyring cleared; a keyring that cannot
- * be reached also counts when the file was the active store (no keyring is
- * why the file store exists). Otherwise "The token could not be removed." */
+ * Both effects belong to the operation, not the window: the file goes at
+ * the click and the keyring clear runs to its end even if the window closes
+ * meanwhile (RoseCat 5663); only the report back is the window's. Success
+ * needs the file gone and the keyring cleared; a keyring that cannot be
+ * reached also counts when the file was the active store (no keyring is why
+ * the file store exists). Otherwise "The token could not be removed." */
 static void on_cleared(ZbSecretsResult result, gpointer epoch) {
   if (!current(epoch)) {
     return;
   }
   set_busy(0);
-  int file_gone = zb_secrets_remove_file(secrets.agent_home) == 0;
   int keyring_done = result == ZB_SECRETS_OK ||
                      (result == ZB_SECRETS_UNAVAILABLE && secrets.removing_store == ZB_SECRET_STORE_FILE);
-  if (file_gone && keyring_done) {
-    secrets.file_choice = 0;
+  if (secrets.removed_file && keyring_done) {
     set_state(STATE_EMPTY, TEXT_EMPTY);
     notify_changed(0);
   } else {
@@ -297,6 +300,10 @@ static void on_remove(GtkWidget *button, gpointer unused) {
   }
   wipe_pending();
   secrets.removing_store = zb_secrets_window_store();
+  secrets.removed_file = zb_secrets_remove_file(secrets.agent_home) == 0;
+  if (secrets.removed_file) {
+    secrets.file_choice = 0; /* nothing is left for this session's file choice to select */
+  }
   zb_secrets_service_clear_async(on_cleared, begin_operation());
 }
 
