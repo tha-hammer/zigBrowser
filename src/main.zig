@@ -34,12 +34,16 @@ pub fn main(init: std.process.Init) !void {
                     "       zigBrowser <URL> [--print-title] [--e2e-protocol]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
                     "                  [--media-source on|off] [--agent-drawer on|off]\n" ++
-                    "       zigBrowser --agent-setup [--sai-source DIR] [--agent-token-route r1|env] [--e2e-protocol]\n" ++
+                    "       zigBrowser --agent-setup [--sai-source DIR] [--e2e-protocol]\n" ++
                     "       zigBrowser --screenshot <out.png> <URL> [--print-title]\n" ++
                     "                  [--hardware-acceleration never|always|webkit] [--renderer default|shm|mesa-egl]\n" ++
                     "                  [--media-source on|off]\n",
             );
             std.process.exit(errors.exitCode(error.Usage));
+        },
+        .agent_route_removed => {
+            try writeStderr(init, "zigBrowser: --agent-token-route was removed: the token reaches the Claude CLI only on fd 3 (R1)\n");
+            std.process.exit(2);
         },
         .open => |spec| {
             const code = app.runWithIo(arena, init.io, command) catch |err| {

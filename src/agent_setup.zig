@@ -48,8 +48,6 @@ test "the runtime sits at <prefix>/lib/zigbrowser/agent-host beside <prefix>/bin
     try std.testing.expectEqualStrings("/opt/zb/lib/zigbrowser/agent-host/venv/bin/python", local.python);
 }
 
-pub const Route = enum { r1, env };
-
 pub const Inputs = struct {
     home: []const u8,
     python: []const u8,
@@ -59,7 +57,6 @@ pub const Inputs = struct {
     /// a hook's bare command is looked up.
     source_home: []const u8,
     source_path: []const u8,
-    route: Route,
     e2e_protocol: bool,
     /// ZIGBROWSER_AGENT_CLAUDE_CLI's value (null: unset).
     claude_cli: ?[]const u8 = null,
@@ -92,7 +89,7 @@ pub fn launch(gpa: std.mem.Allocator, in: Inputs) Error!Launch {
         in.python,        "-m",           "zb_agent_host", "setup",
         "--home",         in.home,        "--sai-source",  in.sai_source,
         "--source-home",  in.source_home, "--source-path", in.source_path,
-        "--python",       in.python,      "--route",       @tagName(in.route),
+        "--python",       in.python,
     });
     var warning: ?[]const u8 = null;
     var spawn_delay_ms: u32 = 0;
@@ -140,7 +137,7 @@ test "the setup run gets exactly the allowlisted environment" {
     const run = try launch(arena.allocator(), .{
         .home = "/d/zigbrowser/agent-home", .python = "/v/bin/python", .package_dir = "/pkg",
         .sai_source = "/u/.claude", .source_home = "/u", .source_path = "/u/bin:/usr/bin",
-        .route = .r1, .e2e_protocol = false, .lang = "C.UTF-8",
+        .e2e_protocol = false, .lang = "C.UTF-8",
     });
     const want = [_][]const u8{
         "PATH=/usr/bin:/bin",
@@ -158,7 +155,7 @@ test "the setup run gets exactly the allowlisted environment" {
         "/v/bin/python",   "-m",               "zb_agent_host", "setup",
         "--home",          "/d/zigbrowser/agent-home",            "--sai-source", "/u/.claude",
         "--source-home",   "/u",               "--source-path", "/u/bin:/usr/bin",
-        "--python",        "/v/bin/python",    "--route",       "r1",
+        "--python",        "/v/bin/python",
     };
     try std.testing.expectEqual(argv.len, run.argv.len);
     for (argv, run.argv) |w, got| try std.testing.expectEqualStrings(w, got);
@@ -170,12 +167,12 @@ test "the CLI seam is a launch option only with --e2e-protocol, and refused othe
     defer arena.deinit();
     var in: Inputs = .{
         .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = "/u",
-        .source_path = "/usr/bin", .route = .env, .e2e_protocol = true, .claude_cli = "/fake/claude",
+        .source_path = "/usr/bin", .e2e_protocol = true, .claude_cli = "/fake/claude",
     };
     const on = try launch(arena.allocator(), in);
     try std.testing.expectEqualStrings("--e2e-claude-cli", on.argv[on.argv.len - 2]);
     try std.testing.expectEqualStrings("/fake/claude", on.argv[on.argv.len - 1]);
-    try std.testing.expectEqualStrings("env", on.argv[on.argv.len - 3]);
+    for (on.argv) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--route")); // R3 is gone (§3c.1)
     for (on.env) |entry| try std.testing.expect(std.mem.indexOf(u8, entry, "/fake/claude") == null);
 
     in.e2e_protocol = false;
@@ -201,7 +198,7 @@ test "property: no input reaches the environment except the fixed names and the 
     while (i < 500) : (i += 1) {
         const run = try launch(arena.allocator(), .{
             .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = "/u",
-            .source_path = "/a:/b", .route = if (random.boolean()) .r1 else .env, .e2e_protocol = random.boolean(),
+            .source_path = "/a:/b", .e2e_protocol = random.boolean(),
             .claude_cli = if (random.boolean()) "/c" else null,
             .lang = if (random.boolean()) "en_US.UTF-8" else null, .lc_all = if (random.boolean()) "C" else null,
         });
@@ -219,7 +216,7 @@ test "the source HOME must be an absolute directory other than /" {
     for ([_][]const u8{ "", "relative", "/" }) |home| {
         try std.testing.expectError(error.BadSourceHome, launch(arena.allocator(), .{
             .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = home,
-            .source_path = "/usr/bin", .route = .r1, .e2e_protocol = false,
+            .source_path = "/usr/bin", .e2e_protocol = false,
         }));
     }
 }
@@ -228,7 +225,7 @@ test "the spawn-delay seam counts only with --e2e-protocol and within 1..5000 ms
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var in: Inputs = .{ .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = "/u",
-        .source_path = "/usr/bin", .route = .r1, .e2e_protocol = true, .spawn_delay = "500" };
+        .source_path = "/usr/bin", .e2e_protocol = true, .spawn_delay = "500" };
     try std.testing.expectEqual(@as(u32, 500), (try launch(arena.allocator(), in)).spawn_delay_ms);
     in.spawn_delay = "0";
     try std.testing.expectEqual(@as(u32, 0), (try launch(arena.allocator(), in)).spawn_delay_ms);
@@ -245,7 +242,7 @@ test "the setup pause seam reaches the helper only with --e2e-protocol and only 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var in: Inputs = .{ .home = "/h", .python = "/p", .package_dir = "/k", .sai_source = "/s", .source_home = "/u",
-        .source_path = "/usr/bin", .route = .r1, .e2e_protocol = true, .setup_pause = "swap:after" };
+        .source_path = "/usr/bin", .e2e_protocol = true, .setup_pause = "swap:after" };
     const on = try launch(arena.allocator(), in);
     try std.testing.expectEqualStrings("--e2e-pause-at", on.argv[on.argv.len - 2]);
     try std.testing.expectEqualStrings("swap:after", on.argv[on.argv.len - 1]);

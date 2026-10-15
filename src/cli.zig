@@ -1,6 +1,5 @@
 const std = @import("std");
 const agent_config = @import("agent_config.zig");
-const agent_setup = @import("agent_setup.zig");
 const config = @import("config.zig");
 const media_config = @import("media_config.zig");
 const render_config = @import("render_config.zig");
@@ -36,19 +35,18 @@ pub const Command = union(enum) {
         renderer: ?render_config.Renderer = null,
         media_source: ?media_config.MediaSource = null,
     },
-    /// --agent-setup [--sai-source DIR] [--agent-token-route r1|env]
-    /// [--e2e-protocol]: provisions the Claude Agent home (chat-drawer S3).
+    /// --agent-setup [--sai-source DIR] [--e2e-protocol]: provisions the
+    /// Claude Agent home (chat-drawer S3); its token route is always R1, probed
+    /// on the installed CLI (R3 and --agent-token-route were removed, §3c.1).
     agent_setup: struct {
         sai_source: ?[]const u8 = null,
-        token_route: TokenRoute = .r1,
         e2e_protocol: bool = false,
     },
+    /// --agent-setup --agent-token-route <any>: the flag and R3 were removed
+    /// (plan rev 16, §3c.1). Refused with its own line and exit 2.
+    agent_route_removed,
     usage,
 };
-
-/// The token route --agent-setup selects (plan D11): R1 (a descriptor,
-/// probed on the installed CLI) unless the environment route is asked for.
-pub const TokenRoute = agent_setup.Route;
 
 pub fn parseArgs(args: []const []const u8) Command {
     if (args.len <= 1) return .{ .open = .{ .url = config.default_url } };
@@ -120,7 +118,6 @@ fn parseScreenshotArgs(tokens: []const []const u8) Command {
 
 fn parseAgentSetupArgs(tokens: []const []const u8) Command {
     var sai_source: ?[]const u8 = null;
-    var token_route: ?TokenRoute = null;
     var e2e_protocol = false;
     var i: usize = 0;
     while (i < tokens.len) : (i += 1) {
@@ -130,6 +127,7 @@ fn parseAgentSetupArgs(tokens: []const []const u8) Command {
             e2e_protocol = true;
             continue;
         }
+        if (std.mem.eql(u8, token, "--agent-token-route")) return .agent_route_removed;
         if (std.mem.eql(u8, token, "--sai-source")) {
             i += 1;
             if (i >= tokens.len or sai_source != null) return .usage;
@@ -138,15 +136,9 @@ fn parseAgentSetupArgs(tokens: []const []const u8) Command {
             sai_source = path;
             continue;
         }
-        if (std.mem.eql(u8, token, "--agent-token-route")) {
-            i += 1;
-            if (i >= tokens.len or token_route != null) return .usage;
-            token_route = std.meta.stringToEnum(TokenRoute, tokens[i]) orelse return .usage;
-            continue;
-        }
         return .usage;
     }
-    return .{ .agent_setup = .{ .sai_source = sai_source, .token_route = token_route orelse .r1, .e2e_protocol = e2e_protocol } };
+    return .{ .agent_setup = .{ .sai_source = sai_source, .e2e_protocol = e2e_protocol } };
 }
 
 fn parseOpenArgs(tokens: []const []const u8) Command {
@@ -481,17 +473,25 @@ test "parseArgs --agent-drawer errors are usage, and a screenshot rejects the fl
     try std.testing.expect(parseArgs(&.{ "zigBrowser", "--screenshot", "out.png", "https://example.com", "--agent-drawer", "off" }) == .usage);
 }
 
-test "parseArgs --agent-setup with a SAI source, a token route and the e2e protocol" {
+test "parseArgs --agent-setup with a SAI source and the e2e protocol" {
     const plain = parseArgs(&.{ "zigBrowser", "--agent-setup" });
     try std.testing.expect(plain.agent_setup.sai_source == null);
-    try std.testing.expectEqual(TokenRoute.r1, plain.agent_setup.token_route);
     try std.testing.expect(!plain.agent_setup.e2e_protocol);
-    const full = parseArgs(&.{ "zigBrowser", "--agent-setup", "--sai-source", "/src/sai", "--agent-token-route", "env", "--e2e-protocol" });
+    const full = parseArgs(&.{ "zigBrowser", "--agent-setup", "--sai-source", "/src/sai", "--e2e-protocol" });
     try std.testing.expectEqualStrings("/src/sai", full.agent_setup.sai_source.?);
-    try std.testing.expectEqual(TokenRoute.env, full.agent_setup.token_route);
     try std.testing.expect(full.agent_setup.e2e_protocol);
-    const r1 = parseArgs(&.{ "zigBrowser", "--agent-setup", "--agent-token-route", "r1" });
-    try std.testing.expectEqual(TokenRoute.r1, r1.agent_setup.token_route);
+}
+
+test "parseArgs --agent-setup --agent-token-route is refused: R3 and the flag were removed" {
+    for ([_][]const []const u8{
+        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "env" },
+        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "r1" },
+        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "r3" },
+        &.{ "zigBrowser", "--agent-setup", "--agent-token-route" },
+        &.{ "zigBrowser", "--agent-setup", "--sai-source", "/s", "--agent-token-route", "env", "--e2e-protocol" },
+    }) |args| {
+        try std.testing.expect(parseArgs(args) == .agent_route_removed);
+    }
 }
 
 test "parseArgs --agent-setup errors are usage" {
@@ -500,8 +500,6 @@ test "parseArgs --agent-setup errors are usage" {
         &.{ "zigBrowser", "--agent-setup", "--sai-source", "" },
         &.{ "zigBrowser", "--agent-setup", "--sai-source", "-x" },
         &.{ "zigBrowser", "--agent-setup", "--sai-source", "a", "--sai-source", "b" },
-        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "r3" },
-        &.{ "zigBrowser", "--agent-setup", "--agent-token-route", "env", "--agent-token-route", "env" },
         &.{ "zigBrowser", "--agent-setup", "https://example.com" },
         &.{ "zigBrowser", "--agent-setup", "--print-title" },
         &.{ "zigBrowser", "https://example.com", "--agent-setup" },

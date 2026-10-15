@@ -1,4 +1,4 @@
-"""P0 contract commands: one real SDK turn under the chosen token route.
+"""P0 contract commands: one real SDK turn, the token on route R1 (fd 3 through the wrapper).
 
 `contract-config` runs a single ClaudeSDKClient turn and reports it as frames:
 assistant_message (the final text of each assistant message), then result.
@@ -21,7 +21,6 @@ def add_turn_args(parser):
     parser.add_argument("--home", required=True)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--proxy")
-    parser.add_argument("--route", choices=("R1", "R3"), default="R1")
     parser.add_argument("--fifo-dir", default="/run/zb-token")
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--mcp", action="store_true", help="register the zigbrowser echo tool")
@@ -34,14 +33,9 @@ def add_turn_args(parser):
 
 
 class Route:
-    """The route's CLI env and cli_path for one session; close() drops the FIFO."""
+    """R1's CLI env and cli_path for one session; close() drops the FIFO."""
 
-    def __init__(self, home, route, value, fifo_dir):
-        self._fifo = None
-        self.cli_path = None
-        if route == "R3":
-            self.env = token.r3_env(value)
-            return
+    def __init__(self, home, value, fifo_dir):
         wrapper = home.runtime / "bin" / "zb-claude"
         if not wrapper.exists():
             wrapper.parent.mkdir(parents=True, exist_ok=True)
@@ -51,8 +45,7 @@ class Route:
         self.cli_path = str(wrapper)
 
     def close(self):
-        if self._fifo is not None:
-            self._fifo.close()
+        self._fifo.close()
 
 
 def probe_workspace(home):
@@ -70,7 +63,7 @@ async def run_turn(args, value, out):
         out.emit("probe", session="contract", workspace_create=probe_workspace(home))
     if args.probe_syscalls:
         out.emit("probe", session="contract", syscalls=probe.syscalls())
-    route = Route(home, args.route, value, args.fifo_dir)
+    route = Route(home, value, args.fifo_dir)
     try:
         mcp = {}
         if args.mcp:

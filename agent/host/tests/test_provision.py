@@ -67,9 +67,42 @@ class Sandbox:
 
     def provision(self, **kw):
         args = dict(home=self.home, source=self.source, source_home=self.source_home,
-                    source_path=self.source_path, python="/usr/bin/python3", route=None)
+                    source_path=self.source_path, python="/usr/bin/python3", select_token_route=False)
         args.update(kw)
         return setup.provision(**args)
+
+
+class TokenRouteTest(unittest.TestCase):
+    """§3c.1: R3 (the token in the CLI's environment) is removed. Setup always
+    probes R1, the descriptor route, and refuses when it does not work."""
+
+    def setUp(self):
+        self.runtime = Path(tempfile.mkdtemp(prefix="zb-route-"))
+        self.addCleanup(shutil.rmtree, self.runtime, True)
+
+    def test_setup_takes_no_route_option_any_more(self):
+        required = ["--home", "/h", "--sai-source", "/s", "--source-home", "/u", "--source-path", "/usr/bin",
+                    "--python", "/usr/bin/python3"]
+        for route in ("env", "r1"):
+            with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                setup.main([*required, "--route", route])
+            self.assertEqual(raised.exception.code, 2, route)
+
+    def test_the_route_is_r1_when_the_descriptor_probe_works(self):
+        with mock.patch.object(setup, "cli_version", return_value="9.9.9"):
+            setup.select_route(self.runtime, "/cli", lambda wrapper, cli: True)
+        record = json.loads((self.runtime / "token-route.json").read_text())
+        self.assertEqual((record["route"], record["cli_path"]), ("R1", "/cli"))
+
+    def test_setup_refuses_when_the_descriptor_probe_fails(self):
+        with self.assertRaises(setup.SetupError):
+            setup.select_route(self.runtime, "/cli", lambda wrapper, cli: False)
+        self.assertFalse((self.runtime / "token-route.json").exists())
+
+    def test_no_risk_line_and_no_env_route_remain(self):
+        self.assertFalse(hasattr(setup, "RISK_LINE"))
+        from zb_agent_host import token
+        self.assertFalse(hasattr(token, "r3_env"))
 
 
 class SanitizeTest(unittest.TestCase):
@@ -232,7 +265,7 @@ class SourceLinkTest(unittest.TestCase):
         box = Sandbox(self)
         with self.assertRaises(setup.SetupError) as cm:
             setup.provision(home=box.home, source=box.tmp, source_home=box.source_home, source_path=box.source_path,
-                            python="/usr/bin/python3", route=None)
+                            python="/usr/bin/python3", select_token_route=False)
         self.assertIn("the SAI source overlaps the agent home", str(cm.exception))
 
     def test_each_item_must_have_its_type(self):

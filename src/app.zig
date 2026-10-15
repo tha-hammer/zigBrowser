@@ -32,7 +32,7 @@ pub fn run(arena: std.mem.Allocator, command: cli.Command) errors.BrowserError!u
 pub fn runWithIo(arena: std.mem.Allocator, io: std.Io, command: cli.Command) errors.BrowserError!u8 {
     return switch (command) {
         .version => 0,
-        .usage => error.Usage,
+        .usage, .agent_route_removed => error.Usage,
         .open => |spec| runOpen(arena, io, spec),
         .screenshot => |spec| runScreenshot(arena, spec),
         .agent_setup => |spec| runAgentSetup(arena, spec),
@@ -71,7 +71,6 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
         .sai_source = source,
         .source_home = user_home orelse "",
         .source_path = getenvOwned(arena, "PATH") orelse "/usr/bin:/bin",
-        .route = spec.token_route,
         .e2e_protocol = spec.e2e_protocol,
         .claude_cli = getenvOwned(arena, agent_setup.claude_cli_env),
         .lang = getenvOwned(arena, "LANG"),

@@ -37,9 +37,9 @@ from zb_agent_host import hook_run, options, provision as provisioning, sandbox,
 TURN_TIMEOUT = 90
 
 
-def turn_args(homes, api, route, extra=()):
+def turn_args(homes, api, extra=()):
     return ["--home", str(homes.agent), "--base-url", api.base_url, "--proxy", api.base_url,
-            "--route", route, "--fifo-dir", str(homes.root / "token-fifo"), "--prompt", "Say hello.", *extra]
+            "--fifo-dir", str(homes.root / "token-fifo"), "--prompt", "Say hello.", *extra]
 
 
 def hook_bridges(tc, notify):
@@ -78,8 +78,8 @@ class ContractCase(unittest.TestCase):
             helper.kill()
         self.homes.cleanup()
 
-    def run_turn(self, api, route, extra=(), env_extra=None, on_tool_call=None, argv_prefix=None, pass_fds=()):
-        helper = Helper(self.homes, "contract-config", turn_args(self.homes, api, route, extra), self.token, env_extra,
+    def run_turn(self, api, extra=(), env_extra=None, on_tool_call=None, argv_prefix=None, pass_fds=()):
+        helper = Helper(self.homes, "contract-config", turn_args(self.homes, api, extra), self.token, env_extra,
                         argv_prefix=argv_prefix, pass_fds=pass_fds)
         self.helpers.append(helper)
         answered = set()
@@ -103,7 +103,7 @@ class P01OwnConfig(ContractCase):
 
     def test_user_settings_from_agent_home(self):
         with FakeAnthropicApi([{"text": "Hello from the fake."}]) as api:
-            self.run_turn(api, "R3")
+            self.run_turn(api)
         sent = api.messages_requests()
         self.assertTrue(sent, "the CLI never called /v1/messages")
         self.assertTrue(any(self.homes.marker in body_text(r) for r in sent),
@@ -130,21 +130,6 @@ class P02FakeApiAndRoutes(ContractCase):
         self.assertEqual(api.tunnels, [], "the CLI tried to reach another host")
         self.assertEqual(api.other_paths(), self.REQUIRED_OTHER_ROUTES)
 
-    def test_r3_env_route_delivers_bearer(self):
-        seen = {}
-
-        def scan(entry, index):
-            seen.setdefault(index, processes_holding(self.token))
-            return None
-
-        with FakeAnthropicApi([{"text": "Scripted reply."}], responder=scan) as api:
-            helper = self.run_turn(api, "R3")
-        self.check_turn(api, helper)
-        holders = seen[0]
-        self.assertTrue(holders, "under R3 the CLI's environment should hold the token")
-        for _pid, argv in holders:
-            self.assertTrue(argv and argv[0].endswith("/claude"), f"unexpected holder {argv}")
-
     def test_r1_fd_route_delivers_bearer_and_no_environ_holds_it(self):
         seen = {}
 
@@ -153,7 +138,7 @@ class P02FakeApiAndRoutes(ContractCase):
             return None
 
         with FakeAnthropicApi([{"text": "Scripted reply."}], responder=scan) as api:
-            helper = self.run_turn(api, "R1")
+            helper = self.run_turn(api)
         self.check_turn(api, helper)
         self.assertEqual(seen[0], [], "under R1 no process environment may hold the token")
         fifo_dir = self.homes.root / "token-fifo"
@@ -173,14 +158,14 @@ ECHO_TURNS = [{"tool_use": {"name": "mcp__zigbrowser__echo", "input": {"text": "
 class P04HookEnvironment(ContractCase):
     """P0.4: the selected token route never reaches a hook's environment, and every hook runs."""
 
-    def run_hooked_turn(self, route):
+    def run_hooked_turn(self):
         notify = NotifyServer()
         self.addCleanup(notify.close)
         install_dump_hooks(self.homes, 51091)
         rc, out = provision(self.homes)
         self.assertEqual(rc, 0, out)
         with FakeAnthropicApi(list(ECHO_TURNS)) as api:
-            helper = self.run_turn(api, route, extra=("--mcp",), on_tool_call=echo_reply,
+            helper = self.run_turn(api, extra=("--mcp",), on_tool_call=echo_reply,
                                    argv_prefix=hook_view_prefix(hook_bridges(self, notify),
                                                                 [support.HOST_DIR, self.homes.root]))
         self.assertTrue(any(f.get("type") == "tool_call" for f in helper.frames), helper.describe())
@@ -206,16 +191,12 @@ class P04HookEnvironment(ContractCase):
                     self.assertTrue(hook["command"].startswith(str(self.homes.agent / "runtime" / "bin" / "zb-hook-run") + " -- "),
                                     f"{ev}: {hook['command']}")
 
-    def test_r3_hooks_never_see_the_token(self):
-        notify = self.run_hooked_turn("R3")
-        self.check_hooks(notify)
-        # Under R3 the hook also read every /proc/*/environ it could see, PID 1 included.
+    def test_r1_hooks_never_see_the_token(self):
+        self.check_hooks(self.run_hooked_turn())
+        # Not vacuous: each hook read every /proc/*/environ it could see, PID 1 included.
         for ev in HOOK_EVENTS:
             seen = [p.name for p in self.dumps("procenv") if p.name.startswith(f"hook-procenv-{ev}-")]
             self.assertTrue(any(name.endswith("-1") for name in seen), f"{ev}: PID 1's environ was not read: {seen}")
-
-    def test_r1_hooks_never_see_the_token(self):
-        self.check_hooks(self.run_hooked_turn("R1"))
 
     def test_the_hook_view_prefix_keeps_a_checkout_and_home_under_run_and_nothing_else(self):
         """RoseCat 5559 and 5565: with the checkout and the agent home under /run (a
@@ -466,7 +447,7 @@ class P05Sandbox(ContractCase):
         # Only netd's bridges/, for the hooks (the module docstring), before the closing "--".
         return tracer + argv[:-1] + ["--ro-bind", self.bridges, hook_run.BRIDGES, "--"]
 
-    def sandboxed_turn(self, route, claude_writable=False):
+    def sandboxed_turn(self, claude_writable=False):
         def sample(_entry, _index):
             helper = self.helpers[-1]
             self.samples.append([(pid, cmdline(pid), seccomp_mode(pid)) for pid in descendants(helper.proc.pid)])
@@ -479,7 +460,7 @@ class P05Sandbox(ContractCase):
         filter_fd = seccomp.seccomp_fd()
         self.addCleanup(os.close, filter_fd)
         with FakeAnthropicApi(list(ECHO_TURNS), responder=sample) as api:
-            helper = self.run_turn(api, route, extra=("--mcp", "--probe-workspace", "--probe-syscalls",
+            helper = self.run_turn(api, extra=("--mcp", "--probe-workspace", "--probe-syscalls",
                                                       "--fifo-dir", sandbox.TOKEN_DIR),
                                    on_tool_call=reply, argv_prefix=self.prefix(filter_fd, claude_writable),
                                    pass_fds=(filter_fd,))
@@ -552,7 +533,7 @@ class P05Sandbox(ContractCase):
         self.homes.write_settings(settings)
         watch = Inotify(self.homes.agent / ".claude")
         try:
-            self.sandboxed_turn("R1", claude_writable=True)
+            self.sandboxed_turn(claude_writable=True)
         finally:
             written = watch.close()
         # The CLI's .claude.json writes come with .lock and .tmp.<pid>.<rand> siblings.
@@ -582,15 +563,11 @@ class P05Sandbox(ContractCase):
         lines = wrapper.read_text().splitlines(keepends=True)
         lines.insert(1, 'import subprocess; subprocess.run(["/usr/bin/sleep", "0.001"])\n')
         wrapper.write_text("".join(lines))
-        self.sandboxed_turn("R1")
+        self.sandboxed_turn()
         self.assertIn("/usr/bin/sleep", self.non_hook_cli_children())
 
     def test_r1_enforced_sandbox(self):
-        self.check_enforced(self.sandboxed_turn("R1"))
-        self.check_census_children()
-
-    def test_r3_enforced_sandbox(self):
-        self.check_enforced(self.sandboxed_turn("R3"))
+        self.check_enforced(self.sandboxed_turn())
         self.check_census_children()
         for ev in HOOK_EVENTS:
             procenv = self.dumps("procenv", ev)
@@ -642,7 +619,7 @@ class P03ToolRoundTrip(ContractCase):
                 on_tool_call(helper, frame)
 
         with FakeAnthropicApi(turns, responder=stamp) as api:
-            helper = self.run_turn(api, "R1", extra=("--mcp", *extra), on_tool_call=on_call)
+            helper = self.run_turn(api, extra=("--mcp", *extra), on_tool_call=on_call)
         return api, helper, stamps
 
     def test_echo_answer_arrives_from_stdin_after_three_seconds(self):

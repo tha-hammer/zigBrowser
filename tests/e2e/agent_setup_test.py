@@ -23,7 +23,8 @@ event there. The SAI source is the fixture tree, copied with its
   route", nothing written
 - inertness: the CLI seam without --e2e-protocol is refused on stderr, never
   reaches the setup helper's argv or environment, and never runs
-- R3: --agent-token-route env writes R3 and prints the risk line
+- R3 removed (plan rev 16, §3c.1): --agent-token-route env (or any route
+  value) refuses with one line and exit 2, and no agent home is written
 - kill (plan rev 15.5): the browser is SIGKILLed while setup is paused at
   `swap:before` or `swap:after` (ZIGBROWSER_AGENT_SETUP_PAUSE, e2e only):
   `current` names one whole build, the old or the new; the seeded state
@@ -314,12 +315,12 @@ def case_cli_seam(binary: Path, tmp: Path, check: Checks) -> None:
                 "PYTHONDONTWRITEBYTECODE", "LANG"}
     check(bool(seen) and set(seen[0][1]) == expected, f"inert: the helper's environment is exactly the allowlist ({seen[0][1] if seen else None})")
 
-    # R3 on request.
-    w = World(tmp, "r3")
-    code, _out, err, _ev, _ = run_setup(binary, w, ["--agent-token-route", "env"])
-    route = json.loads((w.agent / "runtime" / "token-route.json").read_text()) if code == 0 else {}
-    check(code == 0 and route.get("route") == "R3" and "token route env (R3)" in err,
-          f"R3: --agent-token-route env writes R3 and prints the risk line ({code}; {route})")
+    # R3 is removed: the route flag itself refuses, before anything is written.
+    for route in ("env", "r1"):
+        w = World(tmp, f"route-{route}")
+        code, _out, err, _ev, _ = run_setup(binary, w, ["--agent-token-route", route])
+        check(code == 2 and not w.agent.exists() and "--agent-token-route was removed" in err,
+              f"R3 removed: --agent-token-route {route} refuses with exit 2, nothing written ({code}; {err.strip()[-200:]!r})")
 
 
 def helpers_for(home: Path) -> list[int]:

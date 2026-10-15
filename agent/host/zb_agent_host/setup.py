@@ -2,7 +2,7 @@
 home from a SAI source and selects the token route on the installed CLI.
 
     python -m zb_agent_host setup --home H --sai-source S --source-home U
-        --source-path PATH --python PY [--route r1|env] [--e2e-claude-cli CLI]
+        --source-path PATH --python PY [--e2e-claude-cli CLI]
 
 The home layout (plan rev 15.4): setup never mutates live state in place.
 Everything setup produces (`.claude/`, `runtime/`) is built complete in
@@ -643,9 +643,10 @@ def collect_garbage(root):
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
 
 
-def provision(home, source, source_home, source_path, python, route, cli=None, probe=None, package_dir=PACKAGE_DIR):
-    """Builds and checks a complete dist, selects the token route (when
-    `route` is given), then publishes it. Raises SetupError, leaving the home
+def provision(home, source, source_home, source_path, python, select_token_route=True, cli=None, probe=None,
+              package_dir=PACKAGE_DIR):
+    """Builds and checks a complete dist, selects the token route (R1, unless
+    `select_token_route` is false), then publishes it. Raises SetupError, leaving the home
     as it was."""
     root = home.root
     if not os.path.isabs(str(source_home)) or str(source_home).rstrip("/") == "":
@@ -660,8 +661,8 @@ def provision(home, source, source_home, source_path, python, route, cli=None, p
         os.chmod(build, 0o700)
         cli = cli or token.bundled_cli()
         stage(home, source, source_home, source_path, python, cli, build, package_dir)
-        if route is not None:
-            select_route(build / "runtime", route, cli, probe or probe_r1)
+        if select_token_route:
+            select_route(build / "runtime", cli, probe or probe_r1)
         fsync_tree(build)
     except BaseException:
         if build is not None:
@@ -675,10 +676,6 @@ def provision(home, source, source_home, source_path, python, route, cli=None, p
 
 
 # --- the token route (D11, S3.7) ---------------------------------------------
-
-RISK_LINE = ("zigBrowser: agent-setup: token route env (R3): any process in the agent sandbox, hooks included, "
-             "can read the Claude CLI's environment as the same user")
-
 
 def contained(argv):
     """`argv` in its own PID namespace that dies with this process (RoseCat
@@ -698,18 +695,13 @@ def cli_version(cli):
         return "unknown"
 
 
-def select_route(runtime, route, cli, probe):
+def select_route(runtime, cli, probe):
     """R1 when the installed CLI takes the token from the wrapper's descriptor;
-    R3 only when explicitly asked; else refuse."""
-    if route == "env":
-        print(RISK_LINE, file=sys.stderr)
-        chosen = "R3"
-    else:
-        descriptor_route_works = probe(runtime / "bin" / "zb-claude", cli)
-        if not descriptor_route_works:
-            raise SetupError("no safe token route for this Claude CLI")
-        chosen = "R1"
-    record = {"route": chosen, "cli_path": str(cli), "cli_version": cli_version(cli),
+    else refuse. There is no other route: R3, the token in the CLI's
+    environment, was removed (plan rev 16, §3c.1)."""
+    if not probe(runtime / "bin" / "zb-claude", cli):
+        raise SetupError("no safe token route for this Claude CLI")
+    record = {"route": "R1", "cli_path": str(cli), "cli_version": cli_version(cli),
               "probed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     atomic_write(runtime / "token-route.json", json.dumps(record), 0o600)
 
@@ -850,7 +842,6 @@ def main(argv):
     parser.add_argument("--source-home", required=True)
     parser.add_argument("--source-path", required=True)
     parser.add_argument("--python", required=True)
-    parser.add_argument("--route", choices=("r1", "env"), default="r1")
     parser.add_argument("--e2e-claude-cli")
     parser.add_argument("--e2e-pause-at", choices=PAUSE_CUTS)
     args = parser.parse_args(argv)
@@ -858,7 +849,7 @@ def main(argv):
     _PAUSE_AT = args.e2e_pause_at
     try:
         provision(options.AgentHome(args.home), Path(args.sai_source), args.source_home.rstrip("/"),
-                  args.source_path, args.python, args.route, cli=args.e2e_claude_cli)
+                  args.source_path, args.python, cli=args.e2e_claude_cli)
     except SetupError as exc:
         print(f"zigBrowser: agent-setup: {exc}", file=sys.stderr)
         return 2

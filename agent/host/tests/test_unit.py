@@ -8,6 +8,9 @@ from unittest import mock
 from pathlib import Path
 
 import http.client
+import argparse
+import contextlib
+import io
 import json
 import struct
 import subprocess
@@ -318,6 +321,17 @@ class SandboxArgv(unittest.TestCase):
             self.assertEqual(run_bpf(program, x86, nr), allow, nr)  # I/O, fork, exec, sockets, pidfd, wait, epoll
         self.assertEqual(run_bpf(program, x86, 0x40000000 | 1), eperm, "x32")
         self.assertEqual(run_bpf(program, 0x40000003, 26), kill, "i386")
+
+    def test_the_contract_runner_takes_no_route_any_more(self):
+        # §3c.1: R3 is removed; R1 (fd 3 through the wrapper) is the only route.
+        from zb_agent_host import contract
+        parser = argparse.ArgumentParser()
+        contract.add_turn_args(parser)
+        base = ["--home", "/h", "--base-url", "http://127.0.0.1:1", "--prompt", "p"]
+        self.assertEqual(parser.parse_args(base).fifo_dir, "/run/zb-token")
+        for route in ("R3", "R1"):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args([*base, "--route", route])
 
     def test_hook_argv_installs_the_hook_filter_inside_the_nested_bwrap(self):
         argv = hook_run.bwrap_argv("/a", {}, ["/a/.claude/hooks/x.sh"], filter_fd=13)

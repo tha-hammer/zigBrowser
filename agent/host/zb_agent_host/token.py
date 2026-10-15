@@ -1,4 +1,4 @@
-"""The token's two hops: app -> helper (fd 3, read once) and helper -> CLI (route R1 or R3).
+"""The token's two hops: app -> helper (fd 3, read once) and helper -> CLI (route R1, the only one).
 
 R1 (default): the helper writes the token once into a FIFO with a random name in
 a directory others cannot list (0300); the CLI is started through the wrapper
@@ -6,9 +6,8 @@ a directory others cannot list (0300); the CLI is started through the wrapper
 fd 3 as a socket (CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3). The CLI reads a
 socket descriptor directly and closes it; a pipe or FIFO it would reopen through
 /proc/self/fd/3, which blocks for a FIFO whose writer has gone. No process
-environment holds the token.
-
-R3 (explicit opt-in): CLAUDE_CODE_OAUTH_TOKEN in the CLI's environment.
+environment holds the token. R3 (the token in the CLI's environment) was removed
+(chat-drawer plan rev 16, §3c.1).
 """
 
 import os
@@ -51,10 +50,6 @@ def read_token(fd):
     except UnicodeDecodeError:
         raise ValueError("token must be ASCII") from None
     return check_shape(text)
-
-
-def r3_env(value):
-    return {"CLAUDE_CODE_OAUTH_TOKEN": value}
 
 
 class FifoHandoff:
