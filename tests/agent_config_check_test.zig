@@ -149,3 +149,61 @@ test "property (metamorphic): flipping any one byte of any configuration file is
         try std.testing.expectEqual(config.Check.changed, home.check());
     }
 }
+
+// RoseCat 5781: a symlink counts as the file it names (setup.py's is_file()), so
+// its target's bytes are what is hashed; one to a directory is neither hashed nor
+// entered; a dangling one is a change. setup publishes ordinary copies, so each
+// link here is a later, outside change.
+
+/// Replaces `.claude/<rel>` with a symlink to `target` (relative to the link).
+fn replaceWithLink(home: Home, rel: []const u8, target: []const u8) !void {
+    const full = try std.fs.path.join(gpa, &.{ ".claude", rel });
+    defer gpa.free(full);
+    home.tmp.dir.deleteFile(io, full) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => |e| return e,
+    };
+    try home.tmp.dir.symLink(io, target, full, .{});
+}
+
+test "a manifest file replaced by a symlink to different bytes is a change" {
+    var home = try Home.init();
+    defer home.deinit();
+    try home.writeRaw("elsewhere/other.md", "# not the agent\n");
+    try replaceWithLink(home, "CLAUDE.md", "../elsewhere/other.md");
+    try std.testing.expectEqual(config.Check.changed, home.check());
+}
+
+test "a manifest file replaced by a symlink to identical bytes still matches: the link counts as its target" {
+    var home = try Home.init();
+    defer home.deinit();
+    try home.writeRaw("elsewhere/same.md", "# agent\n");
+    try replaceWithLink(home, "CLAUDE.md", "../elsewhere/same.md");
+    try std.testing.expectEqual(config.Check.ok, home.check());
+    // ...and its target's later change is a change.
+    try home.writeRaw("elsewhere/same.md", "# agent, changed through the link\n");
+    try std.testing.expectEqual(config.Check.changed, home.check());
+}
+
+test "a symlink to a directory, not in the manifest, is neither hashed nor entered" {
+    var home = try Home.init();
+    defer home.deinit();
+    try home.writeRaw("elsewhere/dir/inside.md", "not configuration\n");
+    try home.tmp.dir.symLink(io, "../elsewhere/dir", ".claude/linked-dir", .{ .is_directory = true });
+    try std.testing.expectEqual(config.Check.ok, home.check());
+}
+
+test "a dangling symlink is a change, in the manifest's place or new" {
+    {
+        var home = try Home.init();
+        defer home.deinit();
+        try replaceWithLink(home, "hooks/notify.py", "../../elsewhere/missing.py");
+        try std.testing.expectEqual(config.Check.changed, home.check());
+    }
+    {
+        var home = try Home.init();
+        defer home.deinit();
+        try home.tmp.dir.symLink(io, "../elsewhere/missing", ".claude/dangling", .{});
+        try std.testing.expectEqual(config.Check.changed, home.check());
+    }
+}
