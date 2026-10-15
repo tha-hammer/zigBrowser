@@ -17,8 +17,10 @@ import importlib
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -46,6 +48,17 @@ def hook_bridges(tc, notify):
     netd = Netd(tc, "--test-bridge", f"51091={notify.port}", "--test-bridge", f"31337={notify.port}")
     tc.assertTrue(netd.ready(), netd.err)
     return str(netd.dir / "bridges")
+
+
+def hook_view_prefix(bridges):
+    """P0.4's outer prefix: the host's own view, plus netd's bridges at
+    hook_run.BRIDGES (all a sealed hook needs from the outer sandbox). The host's
+    /run is not writable, so a tmpfs takes its place and every entry of the real
+    one is bound back: a checkout or agent home under /run stays (RoseCat 5559)."""
+    argv = [sandbox.BWRAP, "--dev-bind", "/", "/", "--tmpfs", "/run"]
+    for name in sorted(os.listdir("/run")):
+        argv += ["--dev-bind-try", f"/run/{name}", f"/run/{name}"]
+    return argv + ["--ro-bind", bridges, hook_run.BRIDGES]
 
 
 def body_text(request):
@@ -164,11 +177,9 @@ class P04HookEnvironment(ContractCase):
         install_dump_hooks(self.homes, 51091)
         rc, out = provision(self.homes)
         self.assertEqual(rc, 0, out)
-        # Only what hooks need from the outer sandbox: netd's bridges at /run/zb-net/bridges.
-        prefix = [sandbox.BWRAP, "--dev-bind", "/", "/", "--tmpfs", "/run",
-                  "--ro-bind", hook_bridges(self, notify), hook_run.BRIDGES]
         with FakeAnthropicApi(list(ECHO_TURNS)) as api:
-            helper = self.run_turn(api, route, extra=("--mcp",), on_tool_call=echo_reply, argv_prefix=prefix)
+            helper = self.run_turn(api, route, extra=("--mcp",), on_tool_call=echo_reply,
+                                   argv_prefix=hook_view_prefix(hook_bridges(self, notify)))
         self.assertTrue(any(f.get("type") == "tool_call" for f in helper.frames), helper.describe())
         return notify
 
@@ -202,6 +213,29 @@ class P04HookEnvironment(ContractCase):
 
     def test_r1_hooks_never_see_the_token(self):
         self.check_hooks(self.run_hooked_turn("R1"))
+
+    def test_the_hook_view_prefix_keeps_a_checkout_and_home_under_run(self):
+        """RoseCat 5559: with the checkout and the agent home under /run (a clean
+        export in /run/user/<uid>), the helper still imports zb_agent_host from the
+        checkout and reads the home under P0.4's prefix, beside the bridges."""
+        run_user = Path(f"/run/user/{os.getuid()}")
+        self.assertTrue(os.access(run_user, os.W_OK), f"{run_user} is needed to place a checkout under /run")
+        root = Path(tempfile.mkdtemp(prefix="zb-p04-", dir=run_user))
+        self.addCleanup(shutil.rmtree, root, True)
+        shutil.copytree(support.HOST_DIR / "zb_agent_host", root / "host" / "zb_agent_host")
+        home = root / "agent-home"
+        home.mkdir()
+        (home / "marker").write_text("home\n")
+        bridges = Path(tempfile.mkdtemp(prefix="zb-p04-bridges-"))
+        self.addCleanup(shutil.rmtree, bridges, True)
+        (bridges / "51091.sock").touch()
+        code = ("import os, sys, zb_agent_host; print(os.path.dirname(zb_agent_host.__file__)); "
+                "print(open(sys.argv[1]).read().strip()); print(*os.listdir(sys.argv[2]))")
+        seen = subprocess.run(hook_view_prefix(str(bridges)) + [host_python(), "-c", code, str(home / "marker"), hook_run.BRIDGES],
+                              env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(root / "host"), "PYTHONDONTWRITEBYTECODE": "1"},
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual((seen.returncode, seen.stdout.split()),
+                         (0, [str(root / "host" / "zb_agent_host"), "home", "51091.sock"]), seen.stderr)
 
 
 CENSUS = Path(__file__).with_name("p0_census.json")
