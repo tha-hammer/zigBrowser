@@ -45,7 +45,7 @@ def build_argv(home, seccomp_fd, python, *, net_dir, bwrap=sandbox.BWRAP, test_c
     chat = [python, "-I", "-c", CHAT_BOOT, f"{runtime}/host", "chat", "--home", str(home.root)]
     if test_ca is not None:
         chat += ["--test-ca", TEST_CA]
-    relay = ["/usr/bin/python3", "-I", "-S", f"{runtime}/bin/zb-net-relay", "--egress", f"{sandbox.NET_DIR}/egress"]
+    relay = ["/usr/bin/python3", "-I", "-S", f"{runtime}/bin/zb-net-relay", "--egress", sandbox.egress_dir()]
     return argv + relay + ["--", *chat]
 
 

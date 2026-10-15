@@ -35,6 +35,9 @@ REFUSED = (
     "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_MESSAGING_SOCKET",
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
 )
+# The in-sandbox bridges mount (a fixed convention mirroring sandbox.NET_DIR).
+# It is the default; production (`main`) reads the actual value the backend wrote
+# to runtime/net.json, so it cannot drift from the sandbox seam (MS0).
 BRIDGES = "/run/zb-net/bridges"
 
 # The hook filter (§3c.6), x86_64 only, like the outer one (seccomp.py).
@@ -101,7 +104,7 @@ def filter_fd():
     return high
 
 
-def bwrap_argv(home, env, command, filter_fd=None):
+def bwrap_argv(home, env, command, filter_fd=None, bridges=BRIDGES):
     workspace = os.path.join(home, "workspace")
     claude_json = os.path.join(home, ".claude.json")
     argv = [BWRAP, "--clearenv"]
@@ -122,9 +125,9 @@ def bwrap_argv(home, env, command, filter_fd=None):
     # bridge-only relay gives the hook 127.0.0.1:51091 and :31337, nothing else.
     if filter_fd is not None:
         argv += ["--seccomp", str(filter_fd)]
-    argv += ["--ro-bind", BRIDGES, BRIDGES, "--",
+    argv += ["--ro-bind", bridges, bridges, "--",
              "/usr/bin/python3", "-I", "-S", os.path.join(home, "runtime", "bin", "zb-net-relay"),
-             "--bridges", BRIDGES, "--", *command]
+             "--bridges", bridges, "--", *command]
     return argv
 
 
@@ -140,10 +143,25 @@ def main(argv):
     if bad:
         print(f"zb-hook-run: refused names in hook-env.json: {', '.join(bad)}", file=sys.stderr)
         return 2
+    # The bridges mount the backend wrote at provision (MS0); the hook runner is
+    # stdlib-only and cannot import sandbox, so it reads the value, as hook-env.json.
+    bridges = resolve_bridges(runtime)
     env = {name: os.environ[name] for name in names if name in os.environ}
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))
-    os.execve(BWRAP, bwrap_argv(home, env, argv[1:], filter_fd()), env)
+    os.execve(BWRAP, bwrap_argv(home, env, argv[1:], filter_fd(), bridges=bridges), env)
     return 127
+
+
+def resolve_bridges(runtime):
+    """The in-sandbox bridges mount. The backend writes it to runtime/net.json at
+    provision (MS0); without that manifest (a hook runner invoked outside a
+    provisioned home) it falls back to the fixed BRIDGES convention, so the value
+    is byte-identical to today's."""
+    try:
+        with open(os.path.join(runtime, "net.json")) as f:
+            return json.load(f)["bridges_dir"]
+    except (FileNotFoundError, KeyError, ValueError):
+        return BRIDGES
 
 
 if __name__ == "__main__":

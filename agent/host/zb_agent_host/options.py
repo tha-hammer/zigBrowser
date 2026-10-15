@@ -10,6 +10,8 @@ from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from . import sandbox  # stdlib-only; the backend owns the egress endpoint (one source of truth)
+
 # Everything the helper process keeps; anything else it inherited is dropped.
 HELPER_ENV_NAMES = (
     "PATH", "LANG", "LC_ALL", "HOME", "CLAUDE_CONFIG_DIR", "TMPDIR",
@@ -20,7 +22,15 @@ INHERITED_ENV_NAMES = ("PATH", "LANG", "LC_ALL")
 
 # The CLI's only way out (plan rev 16 §3c.2): the outer relay's listener inside the
 # helper sandbox's own network namespace. IPv4 only, so no ::1 in NO_PROXY.
-RELAY_PROXY = "http://127.0.0.1:3128"
+def relay_proxy_url():
+    """The CLI's HTTPS_PROXY, from the backend's egress endpoint — not a hard-coded
+    literal, so a different backend-supplied endpoint changes the CLI's proxy
+    (rev 16.2 §3c; MS0). Stays ``http://127.0.0.1:3128`` on Linux."""
+    ep = sandbox.egress_endpoint()
+    return f"http://{ep.host}:{ep.port}"
+
+
+RELAY_PROXY = relay_proxy_url()
 
 # Bounds the CLI's wait for one in-process tool call; the helper answers 10 s earlier.
 MCP_TOOL_TIMEOUT_MS = 130_000

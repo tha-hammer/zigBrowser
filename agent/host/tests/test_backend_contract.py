@@ -49,6 +49,7 @@ try:  # launch.py is the chat-drawer launch command MS0 also refactors.
 except Exception:  # noqa: BLE001 - absence is just one fewer golden to check
     launch = None
 
+from zb_agent_host import chat, hook_run  # noqa: E402 - the real consumers of the network capability
 
 # ---------------------------------------------------------------------------
 # The FROZEN policy. These are copied here on purpose (not imported from
@@ -295,6 +296,64 @@ class RealLaunchBuildArgvMatchesReference(unittest.TestCase):
         got = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir), test_ca="/some/ca.pem")
         expected = reference_build_argv(self.home, 17, self.python, net_dir=str(self.net_dir), test_ca="/some/ca.pem")
         self.assertEqual(got, expected, "MS0: the --test-ca branch of build_argv must match the reference too")
+
+    def test_a_changed_egress_dir_changes_the_outer_relay_in_build_argv(self):
+        """#2 real-consumer injection: launch.build_argv binds --egress from the backend."""
+        self._require_build_argv()
+        base = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
+        self.assertEqual(base[base.index("--egress") + 1], "/run/zb-net/egress")
+        orig = sandbox._LINUX_BACKEND.egress_dir
+        try:
+            sandbox._LINUX_BACKEND.egress_dir = lambda: "/run/zb-net/EGRESS-X"
+            changed = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
+        finally:
+            sandbox._LINUX_BACKEND.egress_dir = orig
+        self.assertEqual(changed[changed.index("--egress") + 1], "/run/zb-net/EGRESS-X",
+                         "#2: a changed backend egress dir must change the outer relay's --egress in build_argv")
+
+
+class NetworkCapabilityConsumedByRealPaths(unittest.TestCase):
+    """rev 16.2 §3c / RoseCat #2: the backend's egress endpoint and hook network are
+    consumed by the REAL CLI/helper/hook paths — injecting a changed capability changes
+    the exact production environment/argv, not merely a parallel description."""
+
+    def test_a_changed_egress_endpoint_changes_the_cli_proxy(self):
+        home = options.AgentHome("/h")
+        kw = dict(route_env={"ZB_TOKEN_FIFO": "/run/zb-token/x"},
+                  cli_path="/h/runtime/bin/zb-claude", e2e=None, test_ca=None)
+        base = chat.session_options(home, **kw).env
+        self.assertEqual(base["HTTPS_PROXY"], "http://127.0.0.1:3128", "default egress proxy unchanged")
+        orig = sandbox._LINUX_BACKEND.egress_endpoint
+        try:
+            sandbox._LINUX_BACKEND.egress_endpoint = lambda session=None: sandbox.Endpoint("127.0.0.1", 4999)
+            changed = chat.session_options(home, **kw).env
+        finally:
+            sandbox._LINUX_BACKEND.egress_endpoint = orig
+        self.assertEqual((changed["HTTPS_PROXY"], changed["HTTP_PROXY"]),
+                         ("http://127.0.0.1:4999", "http://127.0.0.1:4999"),
+                         "#2: a changed backend egress endpoint must change the CLI's real proxy env")
+
+    def test_the_hook_bridges_come_from_the_backend_via_net_json(self):
+        """#2: zb-hook-run is stdlib-only, so setup writes the backend's bridges dir to
+        runtime/net.json and the hook runner reads it — a changed dir changes the hook argv."""
+        runtime = Path(tempfile.mkdtemp(prefix="zb-net-")) / "runtime"
+        runtime.mkdir(parents=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(runtime.parent, ignore_errors=True))
+        # setup writes it from the backend; the default equals the sandbox convention.
+        (runtime / "net.json").write_text(json.dumps({"bridges_dir": sandbox.hook_network().bridges_dir}))
+        self.assertEqual(hook_run.resolve_bridges(str(runtime)), "/run/zb-net/bridges")
+        # inject a changed hook network; the hook's real bwrap argv must follow it.
+        (runtime / "net.json").write_text(json.dumps({"bridges_dir": "/run/zb-net/BRIDGES-X"}))
+        bridges = hook_run.resolve_bridges(str(runtime))
+        argv = hook_run.bwrap_argv("/h", {"PATH": "/usr/bin"}, ["/h/.claude/hooks/x.sh"], bridges=bridges)
+        self.assertIn("/run/zb-net/BRIDGES-X", argv, "#2: the hook must bind the backend-supplied bridges dir")
+        self.assertEqual(argv[argv.index("--bridges") + 1], "/run/zb-net/BRIDGES-X",
+                         "#2: the bridge-only relay launcher must use the backend-supplied dir")
+
+    def test_bridge_policy_is_the_source_of_the_hook_ports(self):
+        """bridge_policy() is no longer dead: hook_network() reads its ports (one source)."""
+        self.assertEqual(tuple(sandbox.hook_network().ports), tuple(sandbox._LINUX_BACKEND.bridge_policy().ports))
+        self.assertEqual(tuple(sandbox.hook_network().ports), BRIDGE_PORTS)
 
 
 class NetworkCapabilityIsBackendSupplied(unittest.TestCase):

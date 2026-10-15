@@ -104,9 +104,10 @@ class BridgePolicy(NamedTuple):
 class HookNetwork(NamedTuple):
     """A hook's network view: the bridges directory + ports, and no egress.
 
-    This mirrors ``hook_run.py`` read-only (MS0 does not change the hook runner);
-    it is the macOS-portable statement of "a hook gets the two bridges and
-    nothing else", which a macOS backend realizes as a Seatbelt profile.
+    It is the macOS-portable statement of "a hook gets the two bridges and
+    nothing else", which a macOS backend realizes as a Seatbelt profile. MS0
+    makes it the source of the hook runner's bridges mount: setup writes
+    ``runtime/net.json`` from it and ``zb-hook-run`` reads that.
     """
     bridges_dir: str
     ports: tuple
@@ -126,6 +127,8 @@ class SandboxBackend(Protocol):
                     claude_writable=False, net_dir=None) -> "LaunchSpec": ...
 
     def egress_endpoint(self, session=None) -> "Endpoint": ...
+
+    def egress_dir(self) -> str: ...
 
     def bridge_policy(self) -> "BridgePolicy": ...
 
@@ -209,6 +212,13 @@ class LinuxBwrapBackend:
         (port,) = tuple(relay.EGRESS)  # exactly one egress port (3128); fails loudly if the topology changes
         return Endpoint("127.0.0.1", port)
 
+    def egress_dir(self):
+        """The outer relay's egress socket directory inside the sandbox
+        (/run/zb-net/egress), where netd's proxy.sock lives — the only target the
+        outer relay forwards 127.0.0.1:3128 to. `launch.build_argv` binds and
+        names it, so it comes from the backend, not a hard-coded path."""
+        return f"{NET_DIR}/egress"
+
     def bridge_policy(self):
         """The two fixed loopback bridges (51091, 31337); hooks never get egress."""
         return BridgePolicy(ports=tuple(relay.BRIDGES), hooks_get_egress=False)
@@ -220,12 +230,28 @@ class LinuxBwrapBackend:
         the same statement as a hook Seatbelt profile permitting only loopback
         51091/31337.
         """
-        return HookNetwork(bridges_dir=f"{NET_DIR}/bridges", ports=tuple(relay.BRIDGES), egress=None)
+        return HookNetwork(bridges_dir=f"{NET_DIR}/bridges", ports=self.bridge_policy().ports, egress=None)
 
 
-# The single Linux backend instance. `helper_argv` delegates to it, so the
-# production launch path flows through the seam (it is not test-only scaffolding).
+# The single Linux backend instance. `helper_argv` and the network-capability
+# delegates below flow through it, so the production launch and network paths go
+# through the seam (it is not test-only scaffolding).
 _LINUX_BACKEND = LinuxBwrapBackend()
+
+
+def egress_endpoint(session=None):
+    """The CLI's HTTPS_PROXY target, from the backend (one source of truth)."""
+    return _LINUX_BACKEND.egress_endpoint(session)
+
+
+def egress_dir():
+    """The outer relay's egress socket directory, from the backend."""
+    return _LINUX_BACKEND.egress_dir()
+
+
+def hook_network():
+    """A hook's network capability (bridges dir + ports, no egress), from the backend."""
+    return _LINUX_BACKEND.hook_launch_spec()
 
 
 def helper_argv(home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS, claude_writable=False, net_dir=None):

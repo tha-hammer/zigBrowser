@@ -99,7 +99,7 @@ def session_options(home, *, route_env, cli_path, e2e, test_ca, stderr=None):
     """One session's ClaudeAgentOptions: the relay is the CLI's only proxy, whatever
     hello carried; hello's e2e object (§7 seams) may name only the test base URL."""
     return options.build(home, route_env=route_env, cli_path=cli_path, base_url=(e2e or {}).get("test_base_url"),
-                         proxy=options.RELAY_PROXY, ca_file=test_ca, stderr=stderr)
+                         proxy=options.relay_proxy_url(), ca_file=test_ca, stderr=stderr)
 
 
 class Chat:
