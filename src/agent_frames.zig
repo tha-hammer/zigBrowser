@@ -6,6 +6,7 @@
 const std = @import("std");
 const protocol = @import("agent_protocol.zig");
 const helper = @import("agent_helper.zig");
+const config_check = @import("agent_config_check.zig");
 
 const gpa = std.heap.c_allocator;
 
@@ -148,6 +149,15 @@ export fn zb_agent_out_session(kind: c_int, session: [*:0]const u8) ?[*:0]u8 {
 
 export fn zb_agent_out_shutdown() ?[*:0]u8 {
     return owned(helper.shutdownFrame(gpa, nextSeq()));
+}
+
+/// 0 when the agent home's `.claude` still matches its config manifest
+/// (agent_config_check.zig), 1 when it changed or the manifest is unreadable.
+/// agent_helper.c calls it on a GTask worker thread: it touches no state here,
+/// and the single-threaded Io only makes plain file syscalls for it.
+export fn zb_agent_config_changed(home: [*:0]const u8) c_int {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return @intFromBool(config_check.check(gpa, io, std.mem.span(home)) != .ok);
 }
 
 export fn zb_agent_out_free(frame: ?[*:0]u8) void {

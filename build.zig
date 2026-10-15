@@ -366,6 +366,21 @@ pub fn build(b: *std.Build) void {
     const run_agent_helper_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_helper_tests_module }));
     run_agent_helper_tests.skip_foreign_checks = true;
 
+    // Chat drawer S3c: the per-session configuration check, `.claude` against
+    // runtime/config-manifest.json (src/agent_config_check.zig).
+    const agent_config_check_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_config_check_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_config_check_tests_module.addImport("agent_config_check", b.createModule(.{
+        .root_source_file = b.path("src/agent_config_check.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_config_check_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_config_check_tests_module }));
+    run_agent_config_check_tests.skip_foreign_checks = true;
+
     // Chat drawer S4a: the token's shape and the explicit file store, read and
     // write (src/agent_secrets.zig).
     const agent_secrets_module = b.createModule(.{
@@ -741,6 +756,15 @@ pub fn build(b: *std.Build) void {
         "agent-drawer-copy-e2e",
     });
     agent_drawer_copy_e2e.addArtifactArg(exe);
+    // Chat drawer S3c (plan S3.10, section 2): a `.claude` changed outside the
+    // sandbox refuses the next session; the writable state directories do not.
+    const agent_config_check_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_config_check_test.py --binary \"$1\"",
+        "agent-config-check-e2e",
+    });
+    agent_config_check_e2e.addArtifactArg(exe);
     const agent_isolation_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -1092,6 +1116,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
+    test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -1128,6 +1153,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_drawer_icon_e2e.step);
     test_step.dependOn(&agent_drawer_e2e.step);
     test_step.dependOn(&agent_drawer_copy_e2e.step);
+    test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
     test_step.dependOn(&ipc_roundtrip_e2e.step);
     test_step.dependOn(&page_health_e2e.step);

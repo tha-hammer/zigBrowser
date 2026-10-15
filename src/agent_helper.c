@@ -47,6 +47,7 @@ char *zb_agent_out_prompt(const char *session, const char *text, size_t len);
 char *zb_agent_out_session(int kind, const char *session);
 char *zb_agent_out_shutdown(void);
 void zb_agent_out_free(char *frame);
+int zb_agent_config_changed(const char *home);
 
 #define ZB_MAX_FRAME (256 * 1024)
 #define ZB_REJECTIONS_RESTART 3
@@ -59,6 +60,7 @@ void zb_agent_out_free(char *frame);
 #define ZB_TEXT_NO_TOKEN "Add a Claude token in the window that opened" /* S4.1 */
 #define ZB_TEXT_RUNTIME "Agent runtime not set up: run zigBrowser --agent-setup"
 #define ZB_TEXT_TOO_LONG "Message too long (64 KiB at most)"
+#define ZB_TEXT_CONFIG "Agent configuration changed: run zigBrowser --agent-setup again" /* S3.10 */
 
 enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE };
 
@@ -68,6 +70,7 @@ typedef struct {
   char session[48]; /* s-<win>-<k> while open */
   int open, busy;
   int confirmed; /* the helper answered session_opened */
+  int checking;  /* a new session's config check runs (its prompt waits in pending) */
   GPtrArray *pending; /* prompts (char *) waiting for a ready helper */
 } ZbWin;
 
@@ -182,7 +185,7 @@ static void write_frame(char *frame) {
  * prompt. One prompt runs per session (the helper answers a second one with
  * `busy`): the rest wait here until the running one's `result`. */
 static void flush(ZbWin *w) {
-  if (zb_helper.state != H_READY || w->pending->len == 0 || w->busy) {
+  if (zb_helper.state != H_READY || w->pending->len == 0 || w->busy || w->checking) {
     return;
   }
   if (!w->open) {
@@ -583,6 +586,67 @@ static void start(void) {
   }
 }
 
+/* What a window's queued prompt needs from the helper's state. */
+static void dispatch(ZbWin *w) {
+  switch (zb_helper.state) {
+  case H_READY:
+    flush(w);
+    return;
+  case H_CRASHED:
+    restart_after_backoff();
+    return;
+  case H_IDLE:
+    start();
+    return;
+  default: /* starting: sent once ready */
+    return;
+  }
+}
+
+/* A new session first re-hashes `.claude` against the manifest --agent-setup
+ * wrote (plan section 2, S3.10): a change made outside the sandbox refuses
+ * it, and nothing starts. The tree can be hundreds of MB, so the hashing runs
+ * on a worker thread; the window's prompt waits in `pending` meanwhile. */
+static void config_check_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancel) {
+  (void)source;
+  (void)cancel;
+  g_task_return_int(task, zb_agent_config_changed(data));
+}
+
+static void on_config_checked(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)source;
+  unsigned int win = GPOINTER_TO_UINT(data);
+  gssize changed = g_task_propagate_int(G_TASK(res), NULL);
+  ZbWin *w = zb_helper.wins != NULL ? g_hash_table_lookup(zb_helper.wins, GUINT_TO_POINTER(win)) : NULL;
+  if (w == NULL) { /* the window closed meanwhile */
+    return;
+  }
+  w->checking = 0;
+  if (changed != 0) {
+    g_ptr_array_set_size(w->pending, 0);
+    zb_drawer_agent_status(win, "unavailable", "config-changed");
+    zb_drawer_agent_message(win, "system", ZB_TEXT_CONFIG, strlen(ZB_TEXT_CONFIG));
+    return;
+  }
+  if (zb_helper.state == H_UNAVAILABLE) { /* went down meanwhile */
+    g_ptr_array_set_size(w->pending, 0);
+    zb_drawer_agent_status(win, "unavailable", zb_helper.down_reason);
+    zb_drawer_agent_message(win, "system", zb_helper.down_text, strlen(zb_helper.down_text));
+    return;
+  }
+  if (w->pending->len > 0) {
+    dispatch(w);
+  }
+}
+
+static void check_config(ZbWin *w) {
+  w->checking = 1;
+  GTask *task = g_task_new(NULL, NULL, on_config_checked, GUINT_TO_POINTER(w->win));
+  g_task_set_task_data(task, g_strdup(zb_helper.home), g_free);
+  g_task_run_in_thread(task, config_check_thread);
+  g_object_unref(task);
+}
+
 /* --- the API ------------------------------------------------------------------ */
 
 void zb_agent_helper_configure(const char *const *argv, const char *const *envp, const char *home,
@@ -621,27 +685,28 @@ void zb_agent_helper_send(unsigned int win, const char *text) {
     return;
   }
   ZbWin *w = win_get(win);
-  switch (zb_helper.state) {
-  case H_UNAVAILABLE:
+  if (zb_helper.state == H_UNAVAILABLE) {
     zb_drawer_agent_status(win, "unavailable", zb_helper.down_reason);
     zb_drawer_agent_message(win, "system", zb_helper.down_text, strlen(zb_helper.down_text));
     return;
-  case H_READY:
-    g_ptr_array_add(w->pending, g_strdup(text));
-    flush(w);
-    return;
-  case H_CRASHED:
-    g_ptr_array_add(w->pending, g_strdup(text));
-    restart_after_backoff();
-    return;
-  case H_IDLE:
-    g_ptr_array_add(w->pending, g_strdup(text));
-    start();
-    return;
-  default: /* starting: sent once ready */
-    g_ptr_array_add(w->pending, g_strdup(text));
+  }
+  g_ptr_array_add(w->pending, g_strdup(text));
+  if (w->checking) { /* sent once the running check passes */
     return;
   }
+  if (!w->open && w->pending->len == 1) {
+    /* The home's lock first: a browser refused it reads nothing of the home,
+     * `.claude` included (S3.12). Taking a held lock again is a no-op. */
+    if (zb_agent_home_lock(zb_helper.home) != 0) {
+      g_ptr_array_set_size(w->pending, 0);
+      zb_drawer_agent_status(win, "unavailable", "home-locked");
+      zb_drawer_agent_message(win, "system", ZB_TEXT_LOCKED, strlen(ZB_TEXT_LOCKED));
+      return;
+    }
+    check_config(w);
+    return;
+  }
+  dispatch(w);
 }
 
 void zb_agent_helper_window_closed(unsigned int win) {
