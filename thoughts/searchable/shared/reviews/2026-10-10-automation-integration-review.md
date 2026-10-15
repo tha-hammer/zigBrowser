@@ -10085,3 +10085,46 @@ deleted the export and cache, and no live display, profile or socket was used.
 
 MS0's Linux extraction is therefore cumulatively **APPROVED**. The newest
 approved linear push-through SHA is **`281f33f`**.
+
+## S4.2 helper token-removal seam (`658a403`)
+
+**Explicit verdict for `658a403`: BLOCKED.** The running-helper shutdown path
+is otherwise carefully bounded: it fails the currently waiting prompts, sends
+the helper shutdown frame, closes its input, escalates from TERM to KILL on
+main-loop timers, and guards both timers by the exact removing PID. The exit
+callback forgets that process once, suppresses the ordinary crash/restart path,
+and starts a fresh helper only if a window accumulated a new prompt while the
+old process was stopping (`src/agent_helper.c@658a403:407-488,761-784`). This
+also cancels a pending crash-restart timer, so a helper which already has a PID
+cannot quietly return after Remove. BlackRobin's reported old-code red (1 of 5
+checks failed), focused green (8/8), lifecycle green (89/89), and full private-
+Xvfb gate (138/138 steps, 880/880 tests) exercise that already-running case.
+
+However, the public removal seam does not invalidate a token acquisition which
+has not spawned the helper yet. `fetch_token()` leaves the helper in
+`H_WAIT_TOKEN`; its worker may already have copied the old credential before
+delaying its callback. If the user clicks Remove then, the new function sees
+`pid <= 0` and returns without changing that state
+(`src/agent_helper.c@658a403:588-590,761-774`). The stale callback subsequently
+still sees `H_WAIT_TOKEN` and calls `spawn_with(token)`
+(`src/agent_helper.c@658a403:573-585`). The same class exists one stage earlier:
+Remove leaves `H_WAIT_NET`, so a later net-ready callback can begin a fetch
+while the asynchronous store deletion is still running. Consequently the
+credential selected before Remove can start a new helper after the click. That
+violates S4.2's edge contract that removal ends the session and the next Send
+starts afresh; correctness cannot depend on the asynchronous clear winning a
+race.
+
+The required regression must hold the existing keyring lookup-delay seam after
+it has copied a token, click Remove before delivering the callback, and assert
+that no helper or fake-API request uses that stale Bearer, the waiting prompt is
+decided exactly once, and a subsequent Send opens Secrets. A second case must
+remove while waiting for netd. The fix needs a removal/token generation or an
+equivalent state invalidation which wipes every pre-Remove completion. Mail
+5813 sent this BLOCKER and the failing-first shape to BlackRobin, with
+BlueBeaver copied because the S4b caller is the other half of the edge.
+
+I did not start a test process: the serialized gate slot passed to JadeBeacon
+and then BlueBeaver, and the reported gate cannot cover the uncommitted S4b
+caller or the missing interleaving. The newest approved linear push-through SHA
+therefore remains **`281f33f`**.
