@@ -9717,3 +9717,30 @@ sends again in that window, and proves the fixed refusal/bubble, no second
 helper start and no second prompt delivery. Mail 5761 sent this blocker to
 BlackRobin while its green gate was still running; the correction must be a
 new follow-up commit, never a rewrite.
+
+## User acceptance: S4a and copyable drawer text (2026-10-15)
+
+The user completed the combined real-screen check on the NVIDIA X11 display
+using a clean export of exact `3b07a37`, a throwaway agent home provisioned by
+the real `--agent-setup`, a dead D-Bus address, the explicit file store, a fake
+API base URL and media source disabled. The throwaway directory was deleted
+afterward.
+
+- **Account route: PASS.** The drawer's Account button opened the native
+  **Claude Agent account** window.
+- **Setup-token shape: PASS — user: “All correct.”** `sk-ant-api03-abc` and
+  `sk-ant-oat01-short` were refused; a made-up setup-token-shaped `oat01`
+  canary was accepted after surrounding whitespace was trimmed; Remove then
+  cleared it successfully.
+- **Copyable text: PASS — user: “Copy works.”** Drawer text was selected with
+  the mouse and copied with Ctrl+C on the real screen.
+- **Leak check: PASS.** The browser log contained zero occurrences of
+  `sk-ant`.
+
+**S4a is USER-ACCEPTED on the real screen.** This closes the outstanding
+Secrets-window drawing, Account-button, password-entry, token-shape and Remove
+acceptance conditions for `d81ad8e` through `3b07a37`. **The copyable drawer
+text requirement implemented by `35c6ee7`/`3ae87bb` is also USER-ACCEPTED.**
+The separate defense-in-depth advisory about validating a credential planted
+directly into Secret Service by another same-user program remains advisory;
+it was not part of this Save/file-store acceptance run.
