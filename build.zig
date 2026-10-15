@@ -1106,6 +1106,14 @@ pub fn build(b: *std.Build) void {
     dashboard_visual.setCwd(b.path("."));
     const dashboard_visual_step = b.step("dashboard-visual", "Visual-regression check for the automation dashboard (Node+Playwright)");
     dashboard_visual_step.dependOn(&dashboard_visual.step);
+
+    // The display guard (orchestrator HARD RULE, 2026-10-15): a harmless step
+    // that only prints, so tests/display_guard_test.py can show that the guard
+    // stops a step on a display that is not a private Xvfb.
+    const display_guard_probe = b.addSystemCommand(&.{ "sh", "-c", "echo display-guard-probe ran" });
+    b.step("display-guard-probe", "Print one line (the display guard's test target)").dependOn(&display_guard_probe.step);
+    const display_guard_test = b.addSystemCommand(&.{ "python3", "tests/display_guard_test.py", "--zig", b.graph.zig_exe });
+    test_step.dependOn(&display_guard_test.step);
 }
 
 fn loadSiteConfig(b: *std.Build, path: []const u8) config_schema.SiteConfig {
