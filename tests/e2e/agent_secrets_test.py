@@ -745,6 +745,43 @@ def case_remove_both(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+def case_remove_close(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5663: closing the window while Remove's keyring clear is in flight still
+    finishes Remove: both stores are gone, and the late answer changes no window or row."""
+    token_k, token_f = canary(), canary()
+    world = provisioned(binary, tmp, "remove-close")
+    store = world.agent / "secrets" / "claude-token"
+    with PrivateKeyring(tmp) as kr, fake_api(tmp) as api:
+        b = launch(binary, tmp, world, kr.bus_env, api, "remove-close-keyring")
+        try:
+            send_prompt(b, "hello")
+            b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
+            paste_and_save(b, token_k)
+            b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20)
+        finally:
+            b.stop()
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "clear=4000"}), api, "remove-close-file",
+                   ["--agent-secret-store", "file"])
+        try:
+            send_prompt(b, "hello")
+            b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20)
+            paste_and_save(b, token_f)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 20) and kr.lookup() == token_k,
+                  "both stores hold a token", b)
+            b.wait(lambda: (secrets_rect(b, "remove") or (0, 0, 0, 0))[2] > 0, 10)
+            click_rect(b, secrets_rect(b, "remove"))
+            clicked = time.monotonic()
+            close_secrets_window(b)
+            check(b.wait(lambda: not b.x.toplevels("Claude Agent account"), 5), "the window closed during Remove", b)
+            rows = len(secrets_lines(b))
+            b.wait(lambda: time.monotonic() - clicked > 6.0, 10)  # past the held-back clear answer
+            check(not store.exists(), "the file is gone although the window closed first")
+            check(kr.lookup() is None, "and so is the keyring item")
+            check(secrets_lines(b)[rows:] == [], f"the late answer changed no row ({secrets_lines(b)[rows:]})", b)
+        finally:
+            b.stop()
+
+
 def needle_in_proc(token: str) -> list[str]:
     hits = []
     for pid in filter(str.isdigit, os.listdir("/proc")):
@@ -860,6 +897,7 @@ CASES = {
     "stale-store": case_stale_store,
     "lookup-race": case_lookup_race,
     "remove-both": case_remove_both,
+    "remove-close": case_remove_close,
     # S4b: the hand-off through S3b's helper (its build step runs these with --only).
     "handoff": case_handoff,
     "remove-session": case_remove_session,
