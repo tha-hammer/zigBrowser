@@ -108,6 +108,9 @@ static struct {
   /* The token was removed (S4.2): this helper is being stopped on purpose; once it
    * has exited the agent is idle, and a prompt sent meanwhile starts it afresh. */
   pid_t removing;
+  /* Bumped by every removal: a token fetch carries the generation it began in, and an
+   * answer from an older one is wiped unused (RoseCat 5813). */
+  unsigned int token_gen;
   /* While unavailable (no sandbox, no network, a refused seam): what every
    * later Send shows again. */
   const char *down_reason, *down_text;
@@ -571,8 +574,7 @@ static void spawn_with(char *token) {
 }
 
 static void on_token(ZbTokenResult result, char *token, void *data) {
-  (void)data;
-  if (zb_helper.state != H_WAIT_TOKEN) {
+  if (GPOINTER_TO_UINT(data) != zb_helper.token_gen || zb_helper.state != H_WAIT_TOKEN) {
     zb_secrets_free(token);
     return;
   }
@@ -587,7 +589,7 @@ static void on_token(ZbTokenResult result, char *token, void *data) {
 
 static void fetch_token(void) {
   zb_helper.state = H_WAIT_TOKEN;
-  zb_agent_token_fetch(zb_secrets_window_store(), zb_helper.home, on_token, NULL);
+  zb_agent_token_fetch(zb_secrets_window_store(), zb_helper.home, on_token, GUINT_TO_POINTER(zb_helper.token_gen));
 }
 
 static void on_net_ready(void *data) {
@@ -766,9 +768,20 @@ void zb_agent_helper_token_removed(void) {
     g_source_remove(zb_helper.restart_timer);
     zb_helper.restart_timer = 0;
   }
+  zb_helper.token_gen += 1; /* every fetch begun before now is stale */
   if (zb_helper.pid <= 0) {
-    if (zb_helper.state == H_CRASHED) {
+    switch (zb_helper.state) {
+    case H_WAIT_NET:   /* netd's ready no longer fetches: the state is idle */
+    case H_WAIT_TOKEN: /* the fetch in flight answers into an older generation */
+      fail_waiting("stopped", "-", ZB_TEXT_REMOVED); /* the waiting prompt, decided once */
       zb_helper.state = H_IDLE;
+      zb_drawer_agent_status(0, "stopped", "-");
+      break;
+    case H_CRASHED:
+      zb_helper.state = H_IDLE;
+      break;
+    default:
+      break;
     }
     return;
   }
