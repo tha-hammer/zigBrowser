@@ -10128,3 +10128,55 @@ I did not start a test process: the serialized gate slot passed to JadeBeacon
 and then BlueBeaver, and the reported gate cannot cover the uncommitted S4b
 caller or the missing interleaving. The newest approved linear push-through SHA
 therefore remains **`281f33f`**.
+
+## Interim Remove-race and MS0 delay review (`711d78f`, `68e7534`, `51b21b3`)
+
+**Explicit verdict for `51b21b3`: APPROVED.** The registered real-binary
+`agent-setup-e2e` now runs otherwise identical setup launches with the native
+spawn policy's delay set to zero and 3000 ms, and requires at least a two-second
+difference (`tests/e2e/agent_setup_test.py@51b21b3:487-508,689-693`). This is a
+changed-value assertion through the production chain: `app.zig` supplies
+`zb_spawn_policy_linux(setup_run.spawn_delay_ms)` to `zb_agent_run_sync`, whose
+child setup applies that policy before exec. JadeBeacon demonstrated the
+policy-ignoring mutant at +0.02 s (red), versus +3.09 s on the production path
+(green); the existing parent-death and timeout tests alone did not kill that
+mutant. Their clean export under private Xvfb passed **138/138 steps and
+880/880 tests**. This closes MS0 Slice F finding 3's test-completeness caveat.
+
+**Interim verdict for `711d78f`: BLOCKED-for-tests.** It is a legitimate
+failing-first artifact, and its isolated C test is red on the missing
+clear/fetch guard. However, the commit registers none of its new tests, its
+original e2es infer the helper state from timing rather than observing it, and
+the original replacement sequence cannot distinguish a stale completion after
+a fresh Send. BlueBeaver's in-progress follow-up adds token-fetch/remove rows,
+holds netd's ready line to prove `H_WAIT_NET`, delays deletion rather than only
+the clear answer, and adds a replacement-token overlap. A read-only WIP review
+also found one mixed-index bug (`len(ordered)` used to slice
+`secrets_events`); mail 5832 reported it, and it was corrected before the
+evidence was restarted.
+
+The corrected clean-export failing-first run at exact `711d78f`, with only the
+test seams overlaid, has now repeated three times with the same result: the C
+test fails both clear-overlap assertions, and each real-binary run reports
+**51 checks, 14 failed**. The failures include removed-token Bearer use after a
+Remove in both `H_WAIT_TOKEN` and `H_WAIT_NET`, failure to reopen Secrets, and
+the store-clear overlap. This proves the old behavior is red; the verdict stays
+blocked until the corrected tests are committed, registered and green.
+
+**Interim verdict for `68e7534`: implementation review clean; final verdict
+pending its registered green evidence.** `token_gen` invalidates every fetch
+begun before Remove; `on_token` wipes an answer from an old generation even if
+a later Send has returned the global state to `H_WAIT_TOKEN`; and Remove moves
+`H_WAIT_NET`/`H_WAIT_TOKEN` to idle after deciding every waiting prompt once
+(`src/agent_helper.c@68e7534:108-113,574-592,768-789`). These callbacks and the
+generation update run on the GTK main context, so no native data race is added.
+The new store-side guard is still required for a current-generation fetch begun
+while asynchronous deletion is in flight. BlueBeaver is separately exercising
+three exact mutants: state-only token acceptance, removal without the
+`H_WAIT_NET` arm, and removal without the store-clear guard.
+
+The serialized gate slot remains with BlueBeaver for those red/mutant repeats,
+the follow-up commits and one full clean-export gate. I have not started a
+competing build. Until that evidence is green, the newest approved linear
+push-through SHA remains **`281f33f`**; `51b21b3` is individually approved but
+is preceded by the still-blocked `711d78f`.
