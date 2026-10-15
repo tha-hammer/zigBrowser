@@ -551,6 +551,32 @@ static void on_unread_clicked(GtkButton *button, gpointer data) {
 }
 
 /* A finished bubble (`role`: user, assistant, system): inert text only. */
+/* `textrect <role> <rect>`: where a bubble or the status label is drawn (root
+ * coordinates), one row per new place, so an e2e test can aim the X pointer at
+ * the text (the user's copyable-text requirement). It locates; it is never the
+ * oracle of what was copied. */
+static gboolean on_text_drawn(GtkWidget *widget, cairo_t *cr, gpointer data) {
+  (void)cr;
+  ZbDrawer *d = data;
+  ZbDrawerRect r = widget_rect(d, widget);
+  ZbDrawerRect *last = g_object_get_data(G_OBJECT(widget), "zb-text-rect");
+  if (last != NULL && memcmp(last, &r, sizeof r) == 0) {
+    return FALSE;
+  }
+  g_object_set_data_full(G_OBJECT(widget), "zb-text-rect", g_memdup2(&r, sizeof r), g_free);
+  char rect[64];
+  root_rect_text(d, &r, rect, sizeof rect);
+  drawer_row(d, "textrect", g_object_get_data(G_OBJECT(widget), "zb-text-role"), rect, NULL);
+  return FALSE;
+}
+
+/* Every bubble and the status label: the mouse selects their text and Ctrl+C
+ * copies it (the user's requirement, 2026-10-15). */
+static void report_text(ZbDrawer *d, GtkWidget *label, const char *role) {
+  g_object_set_data(G_OBJECT(label), "zb-text-role", (gpointer)role);
+  g_signal_connect_after(label, "draw", G_CALLBACK(on_text_drawn), d);
+}
+
 static void add_message(ZbDrawer *d, const char *role, const char *text) {
   GtkWidget *label = gtk_label_new(NULL);
   gtk_label_set_text(GTK_LABEL(label), text);
@@ -566,6 +592,10 @@ static void add_message(ZbDrawer *d, const char *role, const char *text) {
   g_free(role_class);
   gtk_container_add(GTK_CONTAINER(d->list), label);
   gtk_widget_show_all(gtk_widget_get_parent(label)); /* its GtkListBoxRow */
+  report_text(d, label, strcmp(role, "user") == 0        ? "user"
+                        : strcmp(role, "assistant") == 0 ? "assistant"
+                        : strcmp(role, "error") == 0     ? "error"
+                                                         : "system");
 
   size_t len = strlen(text);
   size_t keep = zb_drawer_row_text_len(text, len);
@@ -956,6 +986,7 @@ static void build_panel(ZbDrawer *d) {
   gtk_widget_set_hexpand(status, TRUE);
   gtk_label_set_xalign(GTK_LABEL(status), 0);
   d->status = status;
+  report_text(d, status, "status");
   d->minus = named(gtk_button_new_with_label("-"), "zb-agent-minus", "Minimize Claude Agent");
   gtk_widget_set_tooltip_text(d->minus, "Minimize");
   gtk_box_pack_start(GTK_BOX(header), title, FALSE, FALSE, 0);

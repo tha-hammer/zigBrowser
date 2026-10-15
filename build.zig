@@ -721,6 +721,16 @@ pub fn build(b: *std.Build) void {
         "agent-drawer-e2e",
     });
     agent_drawer_e2e.addArtifactArg(exe);
+    // The user's requirement (2026-10-15): every drawer bubble and the status
+    // text are selectable with the mouse and copied with Ctrl+C (real X input,
+    // the private display's clipboard, a pre-seeded decoy).
+    const agent_drawer_copy_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_drawer_copy_test.py --binary \"$1\"",
+        "agent-drawer-copy-e2e",
+    });
+    agent_drawer_copy_e2e.addArtifactArg(exe);
     const agent_isolation_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -1105,6 +1115,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&media_source_e2e.step);
     test_step.dependOn(&agent_drawer_icon_e2e.step);
     test_step.dependOn(&agent_drawer_e2e.step);
+    test_step.dependOn(&agent_drawer_copy_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
     test_step.dependOn(&ipc_roundtrip_e2e.step);
     test_step.dependOn(&page_health_e2e.step);
