@@ -13,8 +13,10 @@ every hook command is rewritten as `zb-hook-run -- <command>`. In order it:
    .claude.json read-only, and private /tmp, /run and /dev/shm. The CLI and the
    helper have no PID in there, so /proc/<pid>/environ, /proc/<pid>/mem and
    ptrace cannot name them. Of /run/zb-net only bridges/ comes back (read-only),
-   and the hook runs under runtime/bin/zb-net-relay --bridges, so it reaches
-   127.0.0.1:51091 and :31337 and nothing else: no proxy, DNS or other host
+   and the hook runs under runtime/bin/zb-net-relay --bridges DIR --ports P1,P2
+   (the bridge ports the backend wrote to runtime/net.json; the fixed 51091/31337
+   map without that manifest), so it reaches those loopback bridges and nothing
+   else: no proxy, DNS or other host
    (chat-drawer plan rev 16.2, §3c.8b). bwrap installs the filter last, after
    its own namespace and mount setup, and closes its descriptor: the relay and
    the hook run under it, on top of the helper's outer filter (§3c.6).
@@ -104,7 +106,7 @@ def filter_fd():
     return high
 
 
-def bwrap_argv(home, env, command, filter_fd=None, bridges=BRIDGES):
+def bwrap_argv(home, env, command, filter_fd=None, bridges=BRIDGES, ports=None):
     workspace = os.path.join(home, "workspace")
     claude_json = os.path.join(home, ".claude.json")
     argv = [BWRAP, "--clearenv"]
@@ -125,9 +127,12 @@ def bwrap_argv(home, env, command, filter_fd=None, bridges=BRIDGES):
     # bridge-only relay gives the hook 127.0.0.1:51091 and :31337, nothing else.
     if filter_fd is not None:
         argv += ["--seccomp", str(filter_fd)]
+    # The inner relay binds the backend's bridge ports (MS0 slice E): `--ports` when
+    # the manifest supplied them, else the relay's fixed BRIDGES map (byte-identical).
+    relay_ports = ["--ports", ",".join(str(p) for p in ports)] if ports else []
     argv += ["--ro-bind", bridges, bridges, "--",
              "/usr/bin/python3", "-I", "-S", os.path.join(home, "runtime", "bin", "zb-net-relay"),
-             "--bridges", bridges, "--", *command]
+             "--bridges", bridges, *relay_ports, "--", *command]
     return argv
 
 
@@ -146,9 +151,10 @@ def main(argv):
     # The bridges mount the backend wrote at provision (MS0); the hook runner is
     # stdlib-only and cannot import sandbox, so it reads the value, as hook-env.json.
     bridges = resolve_bridges(runtime)
+    ports = resolve_ports(runtime)
     env = {name: os.environ[name] for name in names if name in os.environ}
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))
-    os.execve(BWRAP, bwrap_argv(home, env, argv[1:], filter_fd(), bridges=bridges), env)
+    os.execve(BWRAP, bwrap_argv(home, env, argv[1:], filter_fd(), bridges=bridges, ports=ports), env)
     return 127
 
 
@@ -162,6 +168,21 @@ def resolve_bridges(runtime):
             return json.load(f)["bridges_dir"]
     except (FileNotFoundError, KeyError, ValueError):
         return BRIDGES
+
+
+def resolve_ports(runtime):
+    """The bridge ports the backend supplied, read from runtime/net.json at provision
+    (MS0 slice E): the single source that setup wrote from the backend's hook network,
+    so the hook's own relay binds exactly the backend's ports. None when the manifest
+    or its `ports` is absent (a hook runner outside a provisioned home, or a pre-slice-E
+    manifest) — then bwrap_argv passes no `--ports` and the relay binds its fixed
+    BRIDGES map, byte-identical to today's. The relay validates the values."""
+    try:
+        with open(os.path.join(runtime, "net.json")) as f:
+            ports = json.load(f)["ports"]
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+    return tuple(ports) or None
 
 
 if __name__ == "__main__":

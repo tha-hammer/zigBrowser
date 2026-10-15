@@ -355,6 +355,35 @@ class NetworkCapabilityConsumedByRealPaths(unittest.TestCase):
         self.assertEqual(tuple(sandbox.hook_network().ports), tuple(sandbox._LINUX_BACKEND.bridge_policy().ports))
         self.assertEqual(tuple(sandbox.hook_network().ports), BRIDGE_PORTS)
 
+    def test_the_hook_bridge_ports_come_from_the_backend_via_net_json(self):
+        """#2 slice E: setup writes the backend's bridge ports to runtime/net.json and the
+        stdlib-only hook runner reads them, so the inner relay binds exactly the backend's
+        ports. A changed port set changes the real `--ports` the relay launcher gets; no
+        ports (a pre-slice-E manifest) means no `--ports`, byte-identical to today."""
+        runtime = Path(tempfile.mkdtemp(prefix="zb-netports-")) / "runtime"
+        runtime.mkdir(parents=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(runtime.parent, ignore_errors=True))
+        dir_ = sandbox.hook_network().bridges_dir
+        # setup writes the backend's ports; resolve_ports returns exactly them.
+        (runtime / "net.json").write_text(json.dumps(
+            {"bridges_dir": dir_, "ports": list(sandbox.hook_network().ports)}))
+        self.assertEqual(hook_run.resolve_ports(str(runtime)), tuple(sandbox.hook_network().ports))
+        # inject a changed port set; the hook's real bwrap argv must follow it.
+        (runtime / "net.json").write_text(json.dumps({"bridges_dir": dir_, "ports": [40101, 40102]}))
+        ports = hook_run.resolve_ports(str(runtime))
+        argv = hook_run.bwrap_argv("/h", {"PATH": "/usr/bin"}, ["/h/.claude/hooks/x.sh"],
+                                   bridges=hook_run.resolve_bridges(str(runtime)), ports=ports)
+        self.assertEqual(argv[argv.index("--ports") + 1], "40101,40102",
+                         "#2: the bridge relay launcher must bind the backend-supplied ports")
+        self.assertEqual(argv.index("--ports"), argv.index("--bridges") + 2,
+                         "#2: --ports comes right after --bridges DIR, as the relay requires")
+        # a pre-slice-E manifest (bridges_dir only): no --ports, byte-identical.
+        (runtime / "net.json").write_text(json.dumps({"bridges_dir": dir_}))
+        self.assertIsNone(hook_run.resolve_ports(str(runtime)))
+        legacy = hook_run.bwrap_argv("/h", {"PATH": "/usr/bin"}, ["/h/.claude/hooks/x.sh"],
+                                     bridges=hook_run.resolve_bridges(str(runtime)), ports=None)
+        self.assertNotIn("--ports", legacy, "no manifest ports means the relay's fixed BRIDGES map")
+
 
 class NetworkCapabilityIsBackendSupplied(unittest.TestCase):
     """rev 16.2 §3c: the egress endpoint and bridge policy are the backend's to supply."""

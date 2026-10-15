@@ -42,7 +42,7 @@ import support  # noqa: E402  (puts tests/e2e and agent/host on sys.path)
 from agent_hook_net import HookNetDecoys, hook_network_failures, install_probe, probe_command  # noqa: E402
 from support import Homes, provision  # noqa: E402
 from test_netd import Netd  # noqa: E402
-from zb_agent_host import hook_run, options, relay, sandbox, seccomp  # noqa: E402
+from zb_agent_host import hook_run, options, relay, sandbox, seccomp, setup  # noqa: E402
 
 UNSEALED = Path(__file__).with_name("hook_run_unsealed.py")
 FILTER_PROBE = support.REPO / "tests" / "fixtures" / "agent" / "hook_filter_probe.py"
@@ -51,6 +51,19 @@ BUN = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".bun" / "bin" / "bun"
 OUTER_RELAY = support.HOST_DIR / "zb_agent_host" / "relay.py"
 CLI_ENV_PROXY = {"HTTPS_PROXY": "http://127.0.0.1:3128", "HTTP_PROXY": "http://127.0.0.1:3128",
                  "NO_PROXY": "127.0.0.1,localhost"}
+
+# Connects to each given port from inside the hook and writes {port: open|refused}
+# to argv[1]: a bound bridge accepts, an unbound one is refused.
+PORTS_PROBE = r"""
+import json, os, socket, sys
+def talk(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=3).close()
+        return "open"
+    except OSError:
+        return "refused"
+json.dump({p: talk(int(p)) for p in sys.argv[2:]}, open(sys.argv[1], "w"))
+"""
 
 
 def private_netns():
@@ -188,6 +201,28 @@ class HookNetworkTest(unittest.TestCase):
         self.assertEqual(result["netns"], outer_netns)
         self.assertTrue(any("3128" in f for f in failures), failures)
         self.assertTrue(any("fake API" in f for f in failures), failures)
+
+    def test_the_backends_net_json_ports_reach_the_hooks_inner_relay(self):
+        """MS0 slice E consumer half (RoseCat 5775): the real chain net.json -> zb-hook-run
+        -> inner relay. The producer half (setup.net_manifest writes the backend's bridge
+        ports) is closed in Slice D, and the Chain's lighter provision-runtime omits
+        net.json, so the real producer writes it here; a reduced port set then proves the
+        consumer: the real zb-hook-run reads net.json's ports and passes `--ports`, so the
+        hook's own relay binds exactly those. One named bridge drops the other end to end;
+        a runner that ignored net.json's ports would bind the fixed pair (:31337 open)."""
+        chain = Chain(self)
+        net = chain.homes.agent / "runtime" / "net.json"
+        manifest = setup.net_manifest()  # the real producer's content (its ports half, Slice D)
+        self.assertEqual(sorted(manifest["ports"]), sorted(sandbox.hook_network().ports))
+        manifest["ports"] = [51091]  # the backend now supplies a single bridge
+        net.write_text(json.dumps(manifest))
+        probe = chain.hooks / "ports_probe.py"
+        probe.write_text(PORTS_PROBE)
+        out = chain.homes.scratchpad / f"ports-{secrets.token_hex(6)}.json"
+        done = chain.outer(["/bin/sh", "-c", f"{chain.runner()} /usr/bin/python3 -I -S {probe} {out} 51091 31337"])
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(out.read_text()), {"51091": "open", "31337": "refused"},
+                         "only the port net.json names is bound in the hook")
 
 
 class HookFilterTest(unittest.TestCase):
