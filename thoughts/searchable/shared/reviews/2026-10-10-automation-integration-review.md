@@ -9814,3 +9814,63 @@ history still contains the unpaired S3c red (`40d5c6d`/`9638900`), the blocked
 plan revision `0fb21f4`, and the staged MS0 E/F closures have not landed. A
 later fix-forward may close all of these cumulatively; none may be skipped or
 history-rewritten.
+
+## Plan rev 16.12 and S3c config-check green (`04b7977`, `1d5cac0`)
+
+**Explicit verdict for `04b7977`: BLOCKED (docs).** The first half of the
+revised S4 edge-case sentence now correctly says that surrounding SP, HT, CR,
+LF, VT and FF are trimmed and that only the trimmed token is stored. The same
+sentence then independently says that “a multi-line paste” is rejected
+(`thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md@04b7977:1901`).
+That still overlaps the accepted case: the production/E2E padded valid token
+has leading and trailing CR/LF and is therefore literally a multi-line paste.
+The line must state the boundary without overlap: internal whitespace, more
+than one token/non-whitespace line, or any other nonmatching trimmed value is
+rejected; whitespace-only lines at the edges are part of the surrounding trim.
+This remains documentation-only and does not reopen `3b07a37` or the user's
+real-screen acceptance.
+
+**Explicit verdict for `1d5cac0`: BLOCKED-for-tests; the reviewed production
+path is otherwise correct.** The implementation reads and parses both bounded
+manifests, walks `.claude`, skips only top-level state names, hashes each
+manifest file in 64-KiB chunks, compares the exact key count, and maps every
+read/parse/walk error to `changed`
+(`src/agent_config_check.zig@1d5cac0:15-53,68-84`). The native boundary takes
+the owner lock before reading, owns the copied home string as GTask data, runs
+the expensive work off the GTK thread, resolves the window by ID on the main-
+context callback rather than retaining a `ZbWin *`, drops every pending prompt
+on refusal, and starts nothing for it
+(`src/agent_helper.c@1d5cac0:606-648,672-710,712-725`). The `checking` field is
+per window, blocks `flush`, and is cleared exactly once by completion. A closed
+window makes the callback a no-op. The original red drives the real setup,
+binary, drawer and fake-helper production chain; `9638900` proves the check
+runs again in the same window after a real `session_ended`.
+
+One explicit rev-16.10 contract branch is untested. The plan says a symlink
+counts as the file it names, and production special-cases `.sym_link` plus
+symlink-to-directory (`src/agent_config_check.zig@1d5cac0:38-46,63-65`). The
+unit fixture creates no symlink, and the real setup resolves every accepted
+source link into an ordinary copied file/directory before the E2E starts.
+Neither red therefore fails if a manifest-named symlink merely increments
+`seen` without hashing its target. That mutant could accept an arbitrary
+replacement while satisfying the count. Add failing-first unit cases that pin
+the complete intended rule: a manifest file replaced by a symlink to different
+bytes is `changed`; a symlink to identical bytes is `ok`; a symlink to a
+directory absent from the manifest is ignored; and a broken symlink is
+`changed`. The identical-bytes control is necessary to kill an opposite
+reject-all-symlinks implementation and preserve the plan's chosen semantics.
+
+BlackRobin's final clean-export private-Xvfb gate for the five S3c green files
+was green: **132/132 steps succeeded; 873/873 tests passed**. The immediately
+preceding gate had the same 873 compiled tests pass but lost the unrelated
+`agent-secrets-e2e` harness to Xlib `BadWindow` while it inspected a Secrets
+window that closed between `XQueryTree` and `XFetchName`; the final gate did
+not reproduce it. BlueBeaver owns a separate failing-first XInput harness fix,
+so that race does not indict S3c, but it remains tracked until that fix lands.
+No independent test was started here because BlueBeaver held the serialized
+gate slot.
+
+The newest approved linear push-through SHA remains **`dc52885`**. Rev 16.12
+still needs the unambiguous wording follow-up, S3c needs its symlink red/green,
+and the previously recorded MS0 Slice E/F closures remain staged. `04b7977`
+and `1d5cac0` may be closed only by new follow-up commits; no history rewrite.
