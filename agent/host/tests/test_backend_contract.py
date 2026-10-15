@@ -49,7 +49,7 @@ try:  # launch.py is the chat-drawer launch command MS0 also refactors.
 except Exception:  # noqa: BLE001 - absence is just one fewer golden to check
     launch = None
 
-from zb_agent_host import chat, hook_run  # noqa: E402 - the real consumers of the network capability
+from zb_agent_host import chat, hook_run, setup  # noqa: E402 - the real consumers of the network capability
 
 # ---------------------------------------------------------------------------
 # The FROZEN policy. These are copied here on purpose (not imported from
@@ -378,6 +378,98 @@ class NetworkCapabilityIsBackendSupplied(unittest.TestCase):
         self.assertEqual(tuple(getattr(hook, "ports", ())), BRIDGE_PORTS,
                          "MS0: the hook network must be exactly the two bridge ports")
         self.assertIsNone(getattr(hook, "egress", "set"), "MS0: a hook's network carries no egress")
+
+
+class NetworkIsAnImmutableLaunchSpecField(unittest.TestCase):
+    """RoseCat 5750 (composed-spec ruling): the backend's network capability is
+    ONE immutable value (``sandbox.Network``) that ``LaunchSpec.network`` carries
+    and every real consumer projects from — the CLI proxy, launch's ``--egress``,
+    the real ``setup.net_manifest`` producer (bridge ports AND the egress
+    allowlist), and the launch spec field itself. Changing the single backend
+    ``Network`` changes all of them together. The old shape (adjacent methods, no
+    backend allowlist, net.json carrying only ``bridges_dir``) fails these."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.home = options.AgentHome(root)
+        for d in (".claude", "workspace", "scratchpad", "runtime"):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        for base in (root / "state", root / ".claude"):
+            base.mkdir(parents=True, exist_ok=True)
+            for name in ("backups", *sandbox.STATE_DIRS):
+                (base / name).mkdir(mode=0o700, exist_ok=True)
+            (base / ".claude.json").write_text("{}\n")
+        self.net_dir = root / "zb-net"
+        for sub in ("egress", "bridges"):
+            (self.net_dir / sub).mkdir(parents=True, exist_ok=True)
+        (root / "runtime" / "path.json").write_text(json.dumps(["/usr", "/usr/bin", "/opt/hookdir"]))
+        self.python = "/opt/zb-venv/bin/python3"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _changed():
+        """A wholly different backend network: a changed egress endpoint, a changed
+        upstream allowlist, a changed egress dir and changed bridge ports."""
+        return sandbox.Network(
+            egress=sandbox.Egress(sandbox.Endpoint("127.0.0.1", 4999), ("example.test",), "/run/zb-net/EGRESS-X"),
+            bridges=sandbox.BridgePolicy(ports=(40001, 40002), hooks_get_egress=False),
+        )
+
+    def test_launch_spec_carries_the_network_field(self):
+        spec = sandbox._LINUX_BACKEND.launch_spec(self.home, net_dir=str(self.net_dir))
+        self.assertIsInstance(spec.network, sandbox.Network,
+                              "MS0 rev6: LaunchSpec must carry a semantic Network field, not only argv/mounts")
+        self.assertEqual(spec.network, sandbox.network(),
+                         "MS0 rev6: the spec's network must be the backend's single network value")
+        self.assertEqual(spec.network.egress.allow, ("api.anthropic.com",),
+                         "MS0 rev6: the backend supplies the egress allowlist in the field (default byte-identical)")
+
+    def test_the_default_network_is_byte_identical_to_today(self):
+        self.assertEqual(options.relay_proxy_url(), "http://127.0.0.1:3128")
+        base_argv = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
+        self.assertEqual(base_argv[base_argv.index("--egress") + 1], "/run/zb-net/egress")
+        self.assertEqual(setup.net_manifest()["ports"], [51091, 31337])
+        self.assertEqual(setup.net_manifest()["egress"],
+                         {"endpoint": "127.0.0.1:3128", "allow": ["api.anthropic.com"]})
+
+    def test_a_changed_backend_network_projects_into_every_real_consumer(self):
+        """The single injection: change the backend's Network, and the CLI proxy,
+        launch --egress, the real net.json producer (ports + allowlist) and the
+        LaunchSpec field all follow it. Removing any one projection fails here."""
+        orig = sandbox._LINUX_BACKEND.network
+        changed = self._changed()
+        try:
+            sandbox._LINUX_BACKEND.network = lambda session=None: changed
+            # 1) the CLI's real HTTPS_PROXY (options/chat project the endpoint)
+            self.assertEqual(options.relay_proxy_url(), "http://127.0.0.1:4999",
+                             "#D: a changed backend egress endpoint must change the CLI proxy")
+            # 2) launch.build_argv projects the egress dir
+            argv = launch.build_argv(self.home, 17, self.python, net_dir=str(self.net_dir))
+            self.assertEqual(argv[argv.index("--egress") + 1], "/run/zb-net/EGRESS-X",
+                             "#D: a changed backend egress dir must change launch's --egress")
+            # 3) the REAL setup producer (setup.net_manifest, what stage() writes — not a hand-written net.json)
+            manifest = setup.net_manifest()
+            self.assertEqual(manifest["ports"], [40001, 40002],
+                             "#D: a changed backend bridge policy must change the serialized ports")
+            self.assertEqual(manifest["egress"], {"endpoint": "127.0.0.1:4999", "allow": ["example.test"]},
+                             "#D: a changed backend egress endpoint + allowlist must reach net.json via the real producer")
+            # 4) the immutable LaunchSpec field
+            spec = sandbox._LINUX_BACKEND.launch_spec(self.home, net_dir=str(self.net_dir))
+            self.assertEqual(spec.network, changed,
+                             "#D: a changed backend network must appear in the LaunchSpec field")
+        finally:
+            sandbox._LINUX_BACKEND.network = orig
+
+    def test_the_egress_allowlist_is_backend_supplied(self):
+        """The upstream allowlist is the backend's now (was netd's own API_HOST
+        literal): it is in the Network field and in the real net.json producer."""
+        self.assertEqual(sandbox.network().egress.allow, ("api.anthropic.com",),
+                         "MS0 rev6: the backend owns the egress allowlist")
+        self.assertEqual(setup.net_manifest()["egress"]["allow"], ["api.anthropic.com"],
+                         "MS0 rev6: setup serializes the backend allowlist into net.json for netd")
 
 
 if __name__ == "__main__":

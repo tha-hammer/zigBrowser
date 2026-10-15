@@ -430,6 +430,26 @@ def runtime_lock(package_dir):
         return None
 
 
+def net_manifest():
+    """The ``runtime/net.json`` content, a pure projection of the backend's
+    network capability (MS0 rev 6; RoseCat 5750). It is the single manifest both
+    the stdlib-only hook runner (zb-hook-run, a lone copied file that cannot
+    import sandbox) and netd's outer stage + the relay read, the way zb-hook-run
+    reads hook-env.json. It carries the bridge dir and ports and the egress
+    endpoint + upstream allowlist, so a changed backend policy reaches the real
+    hook bwrap argv, netd's allowed set and the relay's bind set. `stage` writes
+    exactly this; the contract test drives this same producer (never a hand-written
+    net.json)."""
+    hooknet = sandbox.hook_network()
+    net = sandbox.network()
+    return {
+        "bridges_dir": hooknet.bridges_dir,
+        "ports": list(hooknet.ports),
+        "egress": {"endpoint": f"{net.egress.endpoint.host}:{net.egress.endpoint.port}",
+                   "allow": list(net.egress.allow)},
+    }
+
+
 def stage(home, source, source_home, source_path, python, cli, staging, package_dir):
     """A complete build in `staging`: `.claude/` and `runtime/`, laid out for
     `home` (they are published at home/.claude and home/runtime)."""
@@ -462,12 +482,7 @@ def stage(home, source, source_home, source_path, python, cli, staging, package_
     atomic_write(runtime / "bin" / "zb-net-relay", Path(relay.BRIDGE_RELAY_FILE).read_text(), 0o555)
     atomic_write(runtime / "hook-env.json", json.dumps(list(runtime_provision.HOOK_ENV_NAMES)), 0o600)
     atomic_write(runtime / "writable.json", json.dumps(list(sandbox.STATE_DIRS)), 0o600)
-    # The hook's network, from the backend (MS0): zb-hook-run is stdlib-only and
-    # runs as a lone copied file, so it cannot import sandbox; it reads this
-    # manifest the way it reads hook-env.json. A changed hook_network() thus
-    # changes the hook's real bwrap argv.
-    _hooknet = sandbox.hook_network()
-    atomic_write(runtime / "net.json", json.dumps({"bridges_dir": _hooknet.bridges_dir}), 0o600)
+    atomic_write(runtime / "net.json", json.dumps(net_manifest()), 0o600)
     atomic_write(runtime / "path.json", json.dumps(dirs), 0o600)
     atomic_write(runtime / "host.json", json.dumps({"python": str(python), "runtime_lock": runtime_lock(package_dir)}), 0o600)
     shutil.copytree(Path(package_dir) / "zb_agent_host", runtime / "host" / "zb_agent_host",

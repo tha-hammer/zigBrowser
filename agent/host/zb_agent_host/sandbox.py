@@ -43,6 +43,11 @@ TOKEN_DIR = "/run/zb-token"
 # holds proxy.sock (the outer relay's only target), bridges/ the two fixed
 # bridge sockets, which zb-hook-run binds on into each sealed hook.
 NET_DIR = "/run/zb-net"
+# The upstream hosts the egress proxy may reach. The backend owns this allowlist
+# (MS0 rev 6; RoseCat 5750): setup serializes it to runtime/net.json and netd's
+# outer stage reads it, instead of netd owning the literal. Linux's default is
+# byte-identical to netd's historical API_HOST.
+EGRESS_ALLOW = ("api.anthropic.com",)
 
 
 class Mount(NamedTuple):
@@ -71,7 +76,12 @@ class LaunchSpec(NamedTuple):
         exposes as a :class:`Mount` (read-only or writable). On Linux the argv
         binds are a projection of exactly this list, in this order;
       * ``workdir`` — the working directory inside the sandbox;
-      * ``seccomp_fd`` — the outer seccomp program descriptor on Linux, or None.
+      * ``seccomp_fd`` — the outer seccomp program descriptor on Linux, or None;
+      * ``network`` — the backend-supplied :class:`Network` capability (the egress
+        endpoint *and* its upstream allowlist, the egress socket dir, and the
+        bridge policy). It is the immutable, backend-neutral statement the CLI
+        proxy, ``launch``'s ``--egress``, netd's allowlist/ports and the relay all
+        project from, so a macOS backend states the same meaning (RoseCat 5750).
 
     Stored as a tuple so the spec is immutable; callers that need a mutable argv
     list wrap ``argv`` in ``list()``. The extra fields default to empty so the
@@ -82,6 +92,7 @@ class LaunchSpec(NamedTuple):
     mounts: tuple = ()
     workdir: str = None
     seccomp_fd: object = None
+    network: object = None  # a :class:`Network` (defined below), or None
 
 
 class Endpoint(NamedTuple):
@@ -114,6 +125,31 @@ class HookNetwork(NamedTuple):
     egress: None = None
 
 
+class Egress(NamedTuple):
+    """The agent's egress policy, backend-supplied (MS0 rev 6; RoseCat 5750).
+
+    ``endpoint`` is the loopback the CLI's HTTPS_PROXY and the outer relay use
+    (127.0.0.1:3128 on Linux); ``allow`` is the upstream hosts netd's egress proxy
+    may CONNECT to (``("api.anthropic.com",)`` on Linux — the backend owns this
+    allowlist now, not netd's own literal); ``dir`` is the outer relay's egress
+    socket directory inside the sandbox. A macOS backend states the same meaning.
+    """
+    endpoint: Endpoint
+    allow: tuple
+    dir: str
+
+
+class Network(NamedTuple):
+    """The backend's whole network capability: the single immutable value the CLI
+    proxy, ``launch`` ``--egress``, netd's allowlist/ports and the relay all
+    project from, carried by :class:`LaunchSpec`'s ``network`` field. Changing it
+    changes every one of those real consumers (that is what the contract test
+    pins), so a changed backend policy cannot silently fail to propagate.
+    """
+    egress: Egress
+    bridges: BridgePolicy
+
+
 class SandboxBackend(Protocol):
     """The shared seam a Linux (bwrap) and a macOS (Seatbelt) sandbox both satisfy.
 
@@ -125,6 +161,8 @@ class SandboxBackend(Protocol):
 
     def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS,
                     claude_writable=False, net_dir=None) -> "LaunchSpec": ...
+
+    def network(self) -> "Network": ...
 
     def egress_endpoint(self, session=None) -> "Endpoint": ...
 
@@ -202,26 +240,39 @@ class LinuxBwrapBackend:
         if seccomp_fd is not None:
             argv += ["--seccomp", str(seccomp_fd)]
         argv.append("--")
-        return LaunchSpec(tuple(argv), unshare=unshare, mounts=mounts, workdir=workdir, seccomp_fd=seccomp_fd)
+        return LaunchSpec(tuple(argv), unshare=unshare, mounts=mounts, workdir=workdir, seccomp_fd=seccomp_fd,
+                          network=self.network())
+
+    def network(self, session=None):
+        """The whole Linux network capability as one immutable :class:`Network` —
+        the single source the egress endpoint/dir, the allowlist, the bridge policy
+        and (via setup's net.json) netd and the relay all project from. `session`
+        is accepted for the macOS backend (an ephemeral per-session port); Linux's
+        is fixed. Built from the `relay` topology (one source of truth) plus the
+        backend-owned `EGRESS_ALLOW`."""
+        (port,) = tuple(relay.EGRESS)  # exactly one egress port (3128); fails loudly if the topology changes
+        return Network(
+            egress=Egress(Endpoint("127.0.0.1", port), EGRESS_ALLOW, f"{NET_DIR}/egress"),
+            bridges=BridgePolicy(ports=tuple(relay.BRIDGES), hooks_get_egress=False),
+        )
 
     def egress_endpoint(self, session=None):
         """The loopback the CLI reaches via HTTPS_PROXY: 127.0.0.1:3128 (the outer
-        relay, which forwards to netd's egress/proxy.sock). `session` is accepted
-        for the macOS backend (an ephemeral per-session port); Linux's is fixed.
-        """
-        (port,) = tuple(relay.EGRESS)  # exactly one egress port (3128); fails loudly if the topology changes
-        return Endpoint("127.0.0.1", port)
+        relay, which forwards to netd's egress/proxy.sock), projected from the
+        backend's :meth:`network`."""
+        return self.network(session).egress.endpoint
 
     def egress_dir(self):
         """The outer relay's egress socket directory inside the sandbox
         (/run/zb-net/egress), where netd's proxy.sock lives — the only target the
         outer relay forwards 127.0.0.1:3128 to. `launch.build_argv` binds and
-        names it, so it comes from the backend, not a hard-coded path."""
-        return f"{NET_DIR}/egress"
+        names it, projected from the backend's :meth:`network`."""
+        return self.network().egress.dir
 
     def bridge_policy(self):
-        """The two fixed loopback bridges (51091, 31337); hooks never get egress."""
-        return BridgePolicy(ports=tuple(relay.BRIDGES), hooks_get_egress=False)
+        """The two fixed loopback bridges (51091, 31337); hooks never get egress.
+        Projected from the backend's :meth:`network`."""
+        return self.network().bridges
 
     def hook_launch_spec(self):
         """A hook's network: the two bridges under /run/zb-net/bridges, no egress.
@@ -237,6 +288,13 @@ class LinuxBwrapBackend:
 # delegates below flow through it, so the production launch and network paths go
 # through the seam (it is not test-only scaffolding).
 _LINUX_BACKEND = LinuxBwrapBackend()
+
+
+def network(session=None):
+    """The backend's whole network capability (one source of truth): the egress
+    endpoint + allowlist + dir and the bridge policy. setup serializes it to
+    net.json; options/launch/netd/relay all project from it."""
+    return _LINUX_BACKEND.network(session)
 
 
 def egress_endpoint(session=None):
