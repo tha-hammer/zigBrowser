@@ -199,18 +199,18 @@ class HookIsolation(unittest.TestCase):
         self.assertLess(home, pairs.index(("--ro-bind", "/tmp/x/home/workspace")))
 
 
-def run_bpf(program, arch, nr):
-    """Interprets the classic-BPF subset the filters use (ld abs word, jeq/jge k, ret k)."""
+def run_bpf(program, arch, nr, args=(0,) * 6):
+    """Interprets the classic-BPF subset the filters use (ld abs word, jeq/jge/jset k, ret k)."""
     insns = [struct.unpack_from("<HBBI", program, i) for i in range(0, len(program), 8)]
-    data = struct.pack("<iIQ6Q", nr, arch, 0, *([0] * 6))  # struct seccomp_data
+    data = struct.pack("<iIQ6Q", nr, arch, 0, *args)  # struct seccomp_data
     acc, pc = 0, 0
     while True:
         code, jt, jf, k = insns[pc]
         if code == 0x20:
             acc = struct.unpack_from("<I", data, k)[0]
             pc += 1
-        elif code in (0x15, 0x35):
-            hit = acc == k if code == 0x15 else acc >= k
+        elif code in (0x15, 0x35, 0x45):
+            hit = {0x15: acc == k, 0x35: acc >= k, 0x45: bool(acc & k)}[code]
             pc += 1 + (jt if hit else jf)
         elif code == 0x06:
             return k
@@ -295,6 +295,34 @@ class SandboxArgv(unittest.TestCase):
         ]
         for arch, nr, expected in table:
             self.assertEqual(run_bpf(seccomp.program(), arch, nr), expected, (hex(arch), nr))
+
+    def test_hook_filter_decision_table(self):
+        # §3c.6: the per-hook filter, stacked on the outer one by zb-hook-run's bwrap.
+        allow, kill = hook_run.RET_ALLOW, hook_run.RET_KILL_PROCESS
+        eperm, enosys = hook_run.RET_ERRNO | 1, hook_run.RET_ERRNO | 38
+        x86, sigchld = hook_run.AUDIT_ARCH_X86_64, 17
+        denied = {"unshare": 272, "setns": 308, "mount": 165, "umount2": 166, "pivot_root": 155,
+                  "open_tree": 428, "move_mount": 429, "fsopen": 430, "fsconfig": 431, "fsmount": 432,
+                  "fspick": 433, "mount_setattr": 442, "io_uring_setup": 425, "io_uring_enter": 426,
+                  "io_uring_register": 427}
+        program = hook_run.hook_filter()
+        for name, nr in denied.items():
+            self.assertEqual(run_bpf(program, x86, nr), eperm, name)
+        self.assertEqual(run_bpf(program, x86, 435), enosys, "clone3: ENOSYS, so glibc falls back to clone")
+        for flag in (0x80, 0x20000, 0x02000000, 0x04000000, 0x08000000, 0x10000000, 0x20000000, 0x40000000):
+            self.assertEqual(run_bpf(program, x86, 56, (flag | sigchld, 0, 0, 0, 0, 0)), eperm, hex(flag))
+        thread = 0x3D0F00  # glibc's pthread_create flags (CLONE_VM | FS | FILES | SIGHAND | THREAD | ...)
+        for flags in (sigchld, thread, 0x4111):  # fork, a thread, vfork (CLONE_VM | CLONE_VFORK | SIGCHLD)
+            self.assertEqual(run_bpf(program, x86, 56, (flags, 0, 0, 0, 0, 0)), allow, hex(flags))
+        for nr in (0, 1, 57, 58, 59, 41, 49, 50, 43, 288, 42, 434, 61, 232, 291):
+            self.assertEqual(run_bpf(program, x86, nr), allow, nr)  # I/O, fork, exec, sockets, pidfd, wait, epoll
+        self.assertEqual(run_bpf(program, x86, 0x40000000 | 1), eperm, "x32")
+        self.assertEqual(run_bpf(program, 0x40000003, 26), kill, "i386")
+
+    def test_hook_argv_installs_the_hook_filter_inside_the_nested_bwrap(self):
+        argv = hook_run.bwrap_argv("/a", {}, ["/a/.claude/hooks/x.sh"], filter_fd=13)
+        self.assertEqual(argv[argv.index("--seccomp") + 1], "13")
+        self.assertLess(argv.index("--seccomp"), argv.index("--"))
 
     def test_workspace_is_read_only_and_secrets_and_home_are_absent(self):
         ws = str(self.home.workspace)
