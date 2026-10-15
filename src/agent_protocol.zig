@@ -14,10 +14,12 @@ pub const Reason = enum { oversize, json, envelope, seq, type, schema, session, 
 
 pub const SelfCheck = struct { ok: bool, failures: []const []const u8 };
 pub const Ready = struct { version: []const u8, route: []const u8, selfcheck: SelfCheck, tool_deadline_s: i64 };
-pub const SessionOpened = struct { session: []const u8, sdk_session_id: []const u8 };
+/// No SDK session id exists yet when a session opens (RoseCat 5632): the
+/// CLI's own id comes with each `result`.
+pub const SessionOpened = struct { session: []const u8 };
 pub const Text = struct { session: []const u8, text: []const u8 };
 pub const ToolCall = struct { session: []const u8, id: []const u8, tool: []const u8, args_json: []const u8 };
-pub const Result = struct { session: []const u8, subtype: []const u8, is_error: bool, num_turns: i64, cost_usd: ?f64 };
+pub const Result = struct { session: []const u8, sdk_session_id: []const u8, subtype: []const u8, is_error: bool, num_turns: i64, cost_usd: ?f64 };
 pub const Failure = struct { session: ?[]const u8, code: []const u8, message: []const u8 };
 pub const SessionEnded = struct { session: []const u8, reason: []const u8 };
 
@@ -61,11 +63,19 @@ pub const Validator = struct {
         freeKeys(self.gpa, &self.tool_ids);
     }
 
-    /// The app opened `session` for `window` (open_session).
+    /// The app opened `session` for `window` (open_session). An id is opened
+    /// once: a second open of a live id is error.DuplicateSession.
     pub fn openSession(self: *Validator, session: []const u8, window: u32) !void {
+        if (self.sessions.contains(session)) return error.DuplicateSession;
         const key = try self.gpa.dupe(u8, session);
         errdefer self.gpa.free(key);
         try self.sessions.put(self.gpa, key, window);
+    }
+
+    /// The session is gone (its session_ended was accepted, or the app closed
+    /// it): every later frame naming it is rejected (RoseCat 5628).
+    pub fn closeSession(self: *Validator, session: []const u8) void {
+        if (self.sessions.fetchRemove(session)) |entry| self.gpa.free(entry.key);
     }
 
     /// One line from the helper's stdout. `arena` owns the frame's strings.
@@ -94,6 +104,7 @@ pub const Validator = struct {
             };
         }
         self.last_seq = seq.integer;
+        if (frame == .session_ended) self.closeSession(frame.session_ended.session);
         return .{ .ok = frame };
     }
 
@@ -133,8 +144,8 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
             break :blk .{ .ready = .{ .version = try string(obj, "version", 64), .route = try oneOf(obj, "route", &routes), .selfcheck = .{ .ok = ok, .failures = failures }, .tool_deadline_s = deadline } };
         },
         .session_opened => blk: {
-            try exact(obj, &.{ "session", "sdk_session_id" });
-            break :blk .{ .session_opened = .{ .session = try string(obj, "session", 64), .sdk_session_id = try string(obj, "sdk_session_id", 256) } };
+            try exact(obj, &.{"session"});
+            break :blk .{ .session_opened = .{ .session = try string(obj, "session", 64) } };
         },
         .assistant_delta => .{ .assistant_delta = try text(obj, 16 * 1024) },
         .assistant_message => .{ .assistant_message = try text(obj, 256 * 1024) },
@@ -151,7 +162,7 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
             break :blk .{ .tool_call = .{ .session = try string(obj, "session", 64), .id = id, .tool = tool, .args_json = args_json } };
         },
         .result => blk: {
-            try exact(obj, &.{ "session", "subtype", "is_error", "num_turns", "cost_usd" });
+            try exact(obj, &.{ "session", "sdk_session_id", "subtype", "is_error", "num_turns", "cost_usd" });
             const turns = try integer(obj, "num_turns");
             if (turns < 0) return error.Schema;
             const cost: ?f64 = switch (obj.get("cost_usd").?) {
@@ -160,7 +171,7 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
                 .integer => |n| @floatFromInt(n),
                 else => return error.Schema,
             };
-            break :blk .{ .result = .{ .session = try string(obj, "session", 64), .subtype = try string(obj, "subtype", 64), .is_error = try boolean(obj, "is_error"), .num_turns = turns, .cost_usd = cost } };
+            break :blk .{ .result = .{ .session = try string(obj, "session", 64), .sdk_session_id = try string(obj, "sdk_session_id", 64), .subtype = try string(obj, "subtype", 64), .is_error = try boolean(obj, "is_error"), .num_turns = turns, .cost_usd = cost } };
         },
         .@"error" => blk: {
             try exact(obj, &.{ "session", "code", "message" });

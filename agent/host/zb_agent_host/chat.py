@@ -15,6 +15,7 @@ is never written anywhere; errors say what failed, never with the token."""
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -40,10 +41,16 @@ class Session:
                                     e2e=chat.e2e, test_ca=chat.test_ca,
                                     stderr=lambda line: print(line, file=sys.stderr))
         self.client = ClaudeSDKClient(options=self.opts)
+        self.task = None  # the one prompt in flight (RoseCat 5628.3)
+
+    @property
+    def busy(self):
+        return self.task is not None and not self.task.done()
 
     async def open(self):
         await self.client.connect()
-        self.chat.out.emit("session_opened", session=self.id, sdk_session_id=self.id)
+        # No SDK session id exists yet: the CLI's own one comes with each result (RoseCat 5632).
+        self.chat.out.emit("session_opened", session=self.id)
 
     async def prompt(self, text):
         pending, last = [], 0.0
@@ -70,10 +77,17 @@ class Session:
                     self.chat.out.emit("assistant_message", session=self.id, text=text[:256 * 1024])
             elif isinstance(message, ResultMessage):
                 flush()
-                self.chat.out.emit("result", session=self.id, subtype=message.subtype, is_error=message.is_error,
+                self.chat.out.emit("result", session=self.id, sdk_session_id=message.session_id,
+                                   subtype=message.subtype, is_error=message.is_error,
                                    num_turns=message.num_turns, cost_usd=message.total_cost_usd)
 
     async def close(self, reason="end"):
+        """Cancels the prompt in flight and waits until it has stopped, then disconnects:
+        nothing of this session is emitted after `session_ended`."""
+        if self.task is not None:
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+            self.task = None
         try:
             await self.client.disconnect()
         finally:
@@ -95,7 +109,6 @@ class Chat:
         self.e2e = None
         self.out = Emitter()
         self.sessions = {}
-        self.tasks = {}
 
     def error(self, code, message, session=None):
         self.out.emit("error", session=session, code=code, message=message[:1024])
@@ -106,17 +119,16 @@ class Chat:
             self.e2e = frame.get("e2e")
             atomic_write(self.home.scratchpad / "helper-hello.json", json.dumps(frame), 0o600)
         elif kind == "open_session":
-            session = Session(self, sid)
-            self.sessions[sid] = session
-            await session.open()
+            await self._open(sid)
         elif kind == "prompt" and sid in self.sessions:
-            self.tasks[sid] = asyncio.create_task(self._prompt(self.sessions[sid], frame.get("text", "")))
+            session = self.sessions[sid]
+            if session.busy:
+                self.error("busy", "a prompt is already running in this session", sid)
+            else:
+                session.task = asyncio.create_task(self._prompt(session, frame.get("text", "")))
         elif kind == "interrupt" and sid in self.sessions:
             await self.sessions[sid].client.interrupt()
         elif kind == "end_session" and sid in self.sessions:
-            task = self.tasks.pop(sid, None)
-            if task is not None:
-                task.cancel()
             await self.sessions.pop(sid).close("end")
         elif kind == "shutdown":
             return False
@@ -125,6 +137,23 @@ class Chat:
         else:
             self.error("protocol", f"unexpected frame {kind!r}" if kind in APP_FRAMES else "unknown frame type", sid)
         return True
+
+    async def _open(self, sid):
+        """A live id is never replaced (RoseCat 5633); a session that cannot open drops
+        its route and is reported, and the helper goes on."""
+        if sid in self.sessions:
+            self.error("protocol", "session already open", sid)
+            return
+        session = Session(self, sid)
+        try:
+            await session.open()
+        except Exception as exc:  # noqa: BLE001 - reported as a frame, never with the token
+            session.route.close()
+            with contextlib.suppress(Exception):
+                await session.client.disconnect()
+            self.error("sdk", f"session could not open ({type(exc).__name__})", sid)
+            return
+        self.sessions[sid] = session
 
     async def _prompt(self, session, text):
         try:
