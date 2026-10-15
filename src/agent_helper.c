@@ -60,9 +60,10 @@ int zb_agent_config_changed(const char *home);
 #define ZB_TEXT_NO_TOKEN "Add a Claude token in the window that opened" /* S4.1 */
 #define ZB_TEXT_RUNTIME "Agent runtime not set up: run zigBrowser --agent-setup"
 #define ZB_TEXT_TOO_LONG "Message too long (64 KiB at most)"
+#define ZB_TEXT_REMOVED "The token was removed: the agent stopped" /* S4.2 */
 #define ZB_TEXT_CONFIG "Agent configuration changed: run zigBrowser --agent-setup again" /* S3.10 */
 
-enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE };
+enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE, H_STOPPING };
 
 typedef struct {
   unsigned int win;
@@ -104,6 +105,9 @@ static struct {
   gint64 crashed_at;
   guint restart_timer;
   int rejections, restart_now, stopping;
+  /* The token was removed (S4.2): this helper is being stopped on purpose; once it
+   * has exited the agent is idle, and a prompt sent meanwhile starts it afresh. */
+  pid_t removing;
   /* While unavailable (no sandbox, no network, a refused seam): what every
    * later Send shows again. */
   const char *down_reason, *down_text;
@@ -115,6 +119,7 @@ static void start(void);
 /* No sandbox, no network or a refused seam: no helper runs in this browser. */
 static void go_down(const char *reason, const char *text) {
   zb_helper.state = H_UNAVAILABLE;
+  zb_helper.removing = 0; /* a removal under way ends here too */
   zb_helper.down_reason = reason;
   zb_helper.down_text = text;
   zb_drawer_agent_status(0, "unavailable", reason);
@@ -399,6 +404,46 @@ static void forget_process(void) {
   }
 }
 
+/* A removed token's helper is gone: idle, and a prompt sent meanwhile starts afresh
+ * (its token fetch finds none, so the Secrets window opens). */
+static void removal_done(void) {
+  zb_helper.removing = 0;
+  zb_helper.restart_now = 0;
+  zb_helper.state = H_IDLE;
+  zb_drawer_agent_status(0, "stopped", "-");
+  if (zb_helper.wins == NULL) {
+    return;
+  }
+  GHashTableIter it;
+  gpointer key, value;
+  g_hash_table_iter_init(&it, zb_helper.wins);
+  while (g_hash_table_iter_next(&it, &key, &value)) {
+    if (((ZbWin *)value)->pending->len > 0) {
+      start();
+      return;
+    }
+  }
+}
+
+/* The removal's ladder, without blocking the main loop: shutdown was sent, then
+ * SIGTERM after ZB_SHUTDOWN_MS, then SIGKILL after ZB_TERM_MS more. */
+static gboolean on_removal_kill(gpointer data) {
+  pid_t pid = GPOINTER_TO_INT(data);
+  if (zb_helper.removing == pid && zb_helper.pid == pid) {
+    kill(-pid, SIGKILL);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean on_removal_term(gpointer data) {
+  pid_t pid = GPOINTER_TO_INT(data);
+  if (zb_helper.removing == pid && zb_helper.pid == pid) {
+    kill(-pid, SIGTERM);
+    g_timeout_add(ZB_TERM_MS, on_removal_kill, data);
+  }
+  return G_SOURCE_REMOVE;
+}
+
 static void on_helper_exit(GObject *source, GAsyncResult *res, gpointer data) {
   (void)data;
   GSubprocess *proc = G_SUBPROCESS(source);
@@ -408,6 +453,10 @@ static void on_helper_exit(GObject *source, GAsyncResult *res, gpointer data) {
   int exited = g_subprocess_get_if_exited(proc);
   int value = exited ? g_subprocess_get_exit_status(proc) : g_subprocess_get_term_sig(proc);
   forget_process();
+  if (zb_helper.removing != 0) {
+    removal_done();
+    return;
+  }
   if (zb_helper.stopping) {
     return;
   }
@@ -707,6 +756,31 @@ void zb_agent_helper_send(unsigned int win, const char *text) {
     return;
   }
   dispatch(w);
+}
+
+void zb_agent_helper_token_removed(void) {
+  if (!zb_helper.configured || zb_helper.state == H_UNAVAILABLE || zb_helper.state == H_STOPPING) {
+    return;
+  }
+  if (zb_helper.restart_timer != 0) { /* a crashed helper would come back with the old token */
+    g_source_remove(zb_helper.restart_timer);
+    zb_helper.restart_timer = 0;
+  }
+  if (zb_helper.pid <= 0) {
+    if (zb_helper.state == H_CRASHED) {
+      zb_helper.state = H_IDLE;
+    }
+    return;
+  }
+  /* What the windows were waiting for would have used the removed token. */
+  fail_waiting("stopped", "-", ZB_TEXT_REMOVED);
+  zb_helper.removing = zb_helper.pid;
+  zb_helper.state = H_STOPPING;
+  write_frame(zb_agent_out_shutdown()); /* chat ends every session, so each CLI exits */
+  if (zb_helper.in != NULL) {
+    g_output_stream_close(zb_helper.in, NULL, NULL);
+  }
+  g_timeout_add(ZB_SHUTDOWN_MS, on_removal_term, GINT_TO_POINTER(zb_helper.pid));
 }
 
 void zb_agent_helper_window_closed(unsigned int win) {

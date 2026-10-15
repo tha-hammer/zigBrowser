@@ -35,6 +35,13 @@ void zb_agent_helper_window_closed(unsigned int win_id);
  * group, 1 s, SIGKILL (D7). A no-op when no helper runs. */
 void zb_agent_helper_stop(void);
 
+/* The stored token was removed (S4.2; the Secrets window's Remove): every session
+ * ends and the helper stops (shutdown, then SIGTERM and SIGKILL on timers; the main
+ * loop never blocks), because it holds the token it read at start. Then the agent is
+ * idle, and the next Send starts afresh (no token: the Secrets window opens). No
+ * helper running: nothing to stop. GTK main thread. */
+void zb_agent_helper_token_removed(void);
+
 /* Implemented by agent_drawer.c. `win_id` 0 means every drawer. */
 void zb_drawer_agent_status(unsigned int win_id, const char *state, const char *reason);
 void zb_drawer_agent_message(unsigned int win_id, const char *role, const char *text, size_t len);
