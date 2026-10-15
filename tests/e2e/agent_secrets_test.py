@@ -643,6 +643,124 @@ def case_remove_session(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+# --- RoseCat 5813: a credential chosen before Remove never starts a helper afterwards -------
+def agentnet_ready(b) -> bool:
+    return any(line.startswith("AGENTNET\tready") for line in list(b.out))
+
+
+REMOVED_BUBBLE = ("system", "The token was removed: the agent stopped")
+
+
+def marks(b) -> tuple[int, int]:
+    """Where window 1's DRAWER status and msg rows stand now."""
+    return len(b.rows("status", 1)), len(b.rows("msg", 1))
+
+
+def removed_token_unused(b, api, token: str, check, label: str, mark=None) -> None:
+    """After a Remove that raced the helper's start: no request ever carries the removed
+    token, no process holds it, and the next Send (the removal done) opens the Secrets
+    window again. With `mark` (rows before the Remove click), the prompt that was waiting
+    is decided exactly once (BlackRobin 5815): one "token was removed" bubble, and no
+    fresh start before the next Send."""
+    time.sleep(6.0)  # past every held-back answer (4 s)
+    if mark is not None:
+        bubbles = [tuple(r.fields[:2]) for r in b.rows("msg", 1)[mark[1]:]]
+        check(bubbles.count(REMOVED_BUBBLE) == 1, f"{label}: the waiting prompt is decided once ({bubbles})", b)
+        states = [r.fields[0] for r in b.rows("status", 1)[mark[0]:]]
+        check("starting" not in states, f"{label}: no fresh start before the next Send ({states})", b)
+    bearers = [r for r in api.messages_requests() if r["headers"].get("authorization") == f"Bearer {token}"]
+    check(bearers == [], f"{label}: no request carries the removed token ({len(bearers)})", b)
+    check(not needle_in_proc(token), f"{label}: no process holds the removed token", b)
+    before = len(secrets_lines(b))
+    send_prompt(b, "and again")
+    check(b.wait(lambda: any(k == "status" and f[0] == "empty" for k, f in secrets_lines(b)[before:]), 20),
+          f"{label}: the next Send opens the Secrets window (no token)", b)
+    check([r for r in api.messages_requests() if r["headers"].get("authorization") == f"Bearer {token}"] == [],
+          f"{label}: still no request with the removed token", b)
+
+
+def case_remove_during_fetch(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5813, interleaving 1: Send starts the helper's token fetch, which copies the
+    stored token but answers 4 s late (the lookup seam); Remove is clicked meanwhile. The late
+    answer must not start a helper with the removed token."""
+    token = canary()
+    world = provisioned(binary, tmp, "remove-fetch")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "lookup=4000"}), api, "remove-fetch")
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20), "no token: the Secrets window opens", b)
+            check(b.wait(agentnet_ready, 15), "netd is ready (the next fetch starts at once)", b)
+            paste_and_save(b, token)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
+            send_prompt(b, "go")  # the fetch starts now; its answer is held back 4 s
+            mark = marks(b)
+            click_rect(b, secrets_rect(b, "remove"))
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 10), "Remove: SECRETS status empty", b)
+            check(kr.lookup() is None, "the keyring item is gone")
+            removed_token_unused(b, api, token, check, "remove-during-fetch", mark)
+        finally:
+            b.stop()
+
+
+def case_remove_during_net(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5813, interleaving 2: the token is saved through the Account button, so the
+    first Send starts netd (H_WAIT_NET); Remove is clicked at once, and its keyring clear
+    answers 4 s late (the clear seam), so the fetch that follows netd's ready still finds the
+    old item. That credential must not start a helper either."""
+    token = canary()
+    world = provisioned(binary, tmp, "remove-net")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "clear=4000"}), api, "remove-net")
+        try:
+            open_drawer(b)
+            b.wait(lambda: b.rows("account", 1) != [], 10)
+            click_account(b)
+            check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20), "Account opens the Secrets window", b)
+            paste_and_save(b, token)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
+            check(not agentnet_ready(b), "no netd before the first Send (timing precondition)", b)
+            send_prompt(b, "go")  # the first Send: netd starts (H_WAIT_NET), then the fetch
+            mark = marks(b)
+            click_rect(b, secrets_rect(b, "remove"))
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 10), "Remove: SECRETS status empty", b)
+            removed_token_unused(b, api, token, check, "remove-during-net", mark)
+            check(kr.lookup() is None, "the keyring item is gone")
+        finally:
+            b.stop()
+
+
+def case_send_during_clear(binary: Path, tmp: Path, check) -> None:
+    """BlackRobin 5815, the store side: Remove with no helper yet, its keyring clear answering
+    6 s late (the clear seam), then a Send at once. That Send starts after the Remove, so the
+    helper's own generation cannot reject it; the store must not hand out the item it is
+    deleting. The Send finds no token: the drawer says so, and the old token is never used."""
+    token = canary()
+    world = provisioned(binary, tmp, "send-clear")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "clear=6000"}), api, "send-clear")
+        try:
+            open_drawer(b)
+            b.wait(lambda: b.rows("account", 1) != [], 10)
+            click_account(b)
+            check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20), "Account opens the Secrets window", b)
+            paste_and_save(b, token)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
+            mark = marks(b)
+            click_rect(b, secrets_rect(b, "remove"))
+            send_prompt(b, "go")  # while the clear is still running
+            check(b.wait(lambda: any(r.fields[1:2] == ("no-token",) for r in b.rows("status", 1)[mark[0]:]), 20),
+                  "the Send finds no token (status no-token)", b)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 15), "Remove: SECRETS status empty", b)
+            time.sleep(2.0)
+            bearers = [r for r in api.messages_requests() if r["headers"].get("authorization") == f"Bearer {token}"]
+            check(bearers == [], f"no request carries the removed token ({len(bearers)})", b)
+            check(not needle_in_proc(token), "no process holds the removed token", b)
+            check(kr.lookup() is None, "the keyring item is gone")
+        finally:
+            b.stop()
+
+
 # --- RoseCat 5648: the active store, stale completions, the opening lookup, Remove ------------
 DELAY_ENV = "ZIGBROWSER_AGENT_SECRETS_TEST_DELAY"
 
@@ -1106,6 +1224,10 @@ CASES = {
     "handoff": case_handoff,
     "remove-session": case_remove_session,
     "hooks": case_hooks,
+    # RoseCat 5813: Remove racing the helper's start (S4b).
+    "remove-during-fetch": case_remove_during_fetch,
+    "remove-during-net": case_remove_during_net,
+    "send-during-clear": case_send_during_clear,
 }
 S4A_CASES = ("secret-service", "file-flag", "rejected", "no-keyring", "remove", "unreachable",
              "fallback-persists", "stale-store", "lookup-race", "remove-both")
