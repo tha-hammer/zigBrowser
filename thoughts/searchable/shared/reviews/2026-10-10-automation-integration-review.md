@@ -9337,3 +9337,70 @@ the red commit alone is not a completed slice.
 The newest approved linear push-through SHA remains **`dc52885`**: the older
 S4a/MS0 blockers remain in the range, and `10474a0`/`6f65893` do not yet have
 reviewed green follow-ups.
+
+## S4a Account and canary closure (`a335080`, `d81ad8e`)
+
+**Explicit verdict for `a335080`: APPROVED (red).** This extends the earlier
+Account red through the two missing contracts rather than merely adding more
+of the same state:
+
+- `account-button` first proves that no Secrets window or `SECRETS status`
+  exists, opens it by a real X click while the helper runtime is deliberately
+  missing, closes and reopens it, then drives GTK focus from the real drawer
+  input to `DRAWER focus account` and activates the button with Space
+  (`tests/e2e/agent_secrets_test.py@a335080:818-865`).
+- `account-after-no-token` provisions a working runtime, reaches the distinct
+  `unavailable/no-token` state through a real Send, closes the automatically
+  opened window, proves it stays absent, and only then clicks Account and
+  requires a new visible Secrets window (`:868-892`).
+
+On the pre-green `5b2d213` production tree these cases failed on the absent
+Account row (6 checks, 2 failed), as reported with the commit. The no-op click
+mutant fails four of thirteen checks. This closes the state-gating and
+keyboard-access test gaps in finding 5714.
+
+**Explicit verdict for `d81ad8e`: APPROVED.** The Account button is created
+only after the provisioned agent home has configured the Secrets subsystem,
+is a native named/accessibly named GTK button, stays sensitive independent of
+helper status, and its sole handler presents the native Secrets window with
+the owning browser toplevel (`src/agent_drawer.c@d81ad8e:938-968,1016-1023`).
+No state branch, Send, helper start, page bridge or socket route lies in that
+handler. Its allocation and focus are reported through the strict D7b grammar,
+and detach disconnects its signal. The two real-binary cases above exercise
+pointer, close/reopen, no-token and keyboard paths while retaining the earlier
+no-WebView and `page.list` isolation assertions.
+
+The canary green keeps the required four-character leak scan but replaces the
+hex tail—which could collide with unrelated netd nonces—with 40 characters
+from an uppercase alphabet disjoint from the seeded hex/decimal, protocol-tag
+and normal diagnostic corpus. Uppercase is typed through real Shift-modified X
+keys (`tests/e2e/agent_secrets_test.py@d81ad8e:67-86,267-274,895-916`). The
+browser-free self-test independently passed **1 check, 0 failed (0/50
+collisions)**, and `build.zig@d81ad8e:817-823` now includes both Account cases
+and the canary self-test in the normal S4a e2e step. The unrelated relay-test
+flake fix waits for the one expected inner relay instead of treating one
+transient empty `/proc` sample as final; it preserves the exactly-one check.
+
+BlueBeaver's clean-export private-Xvfb gate at the exact committed blobs was
+GREEN: **Build Summary: 126/126 steps succeeded; 864/864 tests passed**. No
+browser was run on the real display during this review.
+
+My independent clean-export private-Xvfb gate at exact `d81ad8e` was started
+while the advertised slot was free, but another full gate began seconds later,
+so it was not a quiet-host acceptance run. The S4a step itself was GREEN:
+**80 checks, 0 failed**, including both Account cases and the canary self-test.
+The overall run ended **124/126 steps succeeded; 863/864 tests passed** because
+the unrelated live WebKit unit `automation bridge drives a live WebKitGTK
+page` reported `PagePort maps timeout to Timeout: expected 0, found 1` under
+the two concurrent gates. That result does not contradict the exact quiet
+green gate above or any changed S4a path; it is recorded rather than presented
+as an acceptance gate. The disposable export and cache were deleted by trap.
+
+**S4a code/test review is APPROVED again.** Finding 5695 (no manual account
+path), finding 5714 (one-state-only red) and the canary false-positive finding
+5709 are CLOSED by `a335080`/`d81ad8e`. Under the plan's UI-slice rule, final
+S4a acceptance still awaits the orchestrator's user-observed real-screen run
+of the Secrets window and Account button using a genuinely provisioned
+throwaway agent home; that check may now proceed. The separate user
+requirement that drawer/status text be selectable and copyable remains open
+and is not part of these commits.
