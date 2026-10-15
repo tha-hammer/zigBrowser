@@ -8635,3 +8635,92 @@ Because both commits are blocked at this review cut, the newest approved
 linear push-through SHA from `828a309` remains **`828a309`**. No push or
 history rewrite was performed; no live browser, profile, socket or DISPLAY
 `:0` was used.
+
+## S3n2 native-spawn test closure and hook hardening (`f302c01`, `9ae1b5b`, `c8f058f`)
+
+### Explicit verdicts
+
+**Explicit verdict for `f302c01`: APPROVED.** This test-only follow-up closes
+both blockers and the SHOULD from the `e96c607` review. Its no-flag case gives
+both app-owned network seams hostile values, drives Send through real X input,
+and proves the production netd argv, no refusal and no `AGENTNET` protocol row
+(`tests/e2e/agent_netd_spawn_test.py@f302c01:343-387`). Removing either
+`--e2e-protocol` guard is therefore observable. Its two browser-death cases
+SIGKILL only the browser while netd is respectively still starting and fully
+ready, snapshot the relevant PID or complete launcher/bwrap/server tree, and
+require every process gone within two seconds—before xsession's eight-second
+guardian can hide a missing parent-death link (`:390-427`). The two-drawer
+case proves one process and one start globally, exactly one failure bubble in
+each waiting drawer, and a later Send adding a bubble only to its own drawer
+(`:430-455`). No production or UI code changes in this commit.
+
+**Explicit verdict for `9ae1b5b`: APPROVED.** The production hook runner now
+honours the required close/filter ordering: it validates and builds the fresh
+environment, closes every inherited fd at or above 3, creates one inheritable
+filter memfd at fd 10 or higher, and passes only that fd to nested bwrap's
+`--seccomp` before `--` (`agent/host/zb_agent_host/hook_run.py@9ae1b5b:88-101,104-145`).
+The x86-64 classic-BPF program kills a foreign ABI, refuses x32, denies the
+complete §3c.6 namespace/mount/io_uring set, returns ENOSYS for `clone3`, and
+denies legacy `clone` only when a `CLONE_NEW*` bit is present, leaving ordinary
+forks, subprocesses and threads usable (`:40-85`). Because bwrap installs the
+filter only after creating its namespace and mounts, the filter constrains the
+relay and hook rather than preventing construction of the sandbox.
+
+The tests cross the production chain through the real outer sandbox, nested
+bwrap, inner relay and hook. They exercise live syscall denials and allowed
+fork/subprocess/thread/Bun behavior; census both the hook PID namespace and
+the exec boundary so neither the caller's canary descriptors nor the filter
+memfd survive; compare sealed and frozen-unsealed exit statuses; pass 1 MiB in
+both stdio directions and check prompt EOF; forward SIGTERM to a trap; pin the
+relay's descriptor classes; and prove no orphan after hook exit, relay death,
+nested-bwrap TERM or browser death
+(`agent/host/tests/test_hook_net.py@9ae1b5b:193-337,339-432`). BlackRobin's
+recorded mutants fail when `--seccomp` or `--unshare-pid` is removed, the
+filter is created before close-all, an inherited fd is exempted, or relay
+status/signal/stdio behavior is changed. The registered paired measurement
+(five warm-ups, 40 samples per arm) was: sealed 34.5/36.4/37.0 ms,
+unsealed 18.4/19.5/19.9 ms and paired overhead 16.2/17.7/17.7 ms
+(median/p90/p95). This satisfies the measurement contract without turning its
+approximately-15-ms expectation into a budget.
+
+**Explicit verdict for `c8f058f`: APPROVED.** The environment route is gone
+from the production contract, setup, token helper and native setup argv.
+Setup has one outcome: a successful real R1 descriptor probe writes an R1
+record; otherwise it refuses without publishing
+(`agent/host/zb_agent_host/setup.py@c8f058f:646-706`). The native parser maps
+every `--agent-setup --agent-token-route` spelling—including a missing value
+and mixed option order—to a dedicated refusal, and `main` writes one stable
+diagnostic and exits 2 before setup can mutate the agent home
+(`src/cli.zig@c8f058f:38-48,130,485-495`; `src/main.zig@c8f058f:44-47`). Unit,
+contract and real-binary setup tests cover successful R1, a failed descriptor
+probe, absence of `RISK_LINE`/`r3_env`/`--route`, and the removed flag's
+exit-2/no-write behavior. An exact-tree search finds no production R3 branch.
+
+Rev 16 also requires a legacy `token-route.json` containing `"route":"R3"`
+to refuse. There is no production consumer of that record at this SHA—setup
+is its sole writer—so adding a test-only reader here would bypass the path the
+requirement is intended to protect. This is an explicit S3b carry-forward:
+the first production reader used by Send/chat must reject the legacy value
+with a failing-first test. It does not block removal of every currently
+reachable R3 route in `c8f058f`. The §3c.7 sandboxed setup probe remains the
+last unimplemented S3n2 slice and is likewise not implied complete by this
+approval.
+
+### Independent clean gate and push-through boundary
+
+My bounded full gate used a clean archive of exact `c8f058f`, a fresh cache
+below `/run/user/1000`, and private Xvfb. It passed **Build Summary: 112/112
+steps succeeded; 826/826 tests passed**. The native-spawn suite reported
+63 checks with zero failures; the hook-network module passed 18/18, including
+filter and lifecycle parity; the complete setup e2e reported 83 checks with
+zero failures. The EXIT trap deleted the export and cache immediately, and a
+post-gate process/path census found neither a matching process nor a leftover
+tree. Mail 5599 released the gate slot with the exact summary.
+
+Accordingly the newest approved linear push-through SHA from `828a309` is
+**`c8f058f`**: `f302c01`, `9ae1b5b` and `c8f058f` are all explicitly approved.
+The visible `Agent network unavailable` bubble was introduced by the earlier
+`e96c607` production commit; `f302c01` adds only tests and therefore draws
+nothing new. The previously requested real-screen observation of that state
+remains applicable to the production UI chain. No push or history rewrite was
+performed; no live browser, profile, socket or DISPLAY `:0` was used.
