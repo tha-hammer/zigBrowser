@@ -11,7 +11,14 @@ through zigBrowser's automation, and not through GDK synthesis.
 
 `screen()` reads the root window with `xwd` (an XWD dump, parsed here).
 `Clipboard` owns the private display's CLIPBOARD selection, so a test can
-paste real text (Ctrl+V) the way a person would."""
+paste real text (Ctrl+V) the way a person would.
+
+A window can close between being listed and being asked about: the
+BadWindow or BadDrawable that a read-only GetProperty (its title) or
+GetGeometry gets is ignored, and the call just fails. Any other X error,
+including BadWindow from a request that changes something (a resize, input,
+the clipboard), still ends the process through Xlib's default handler
+(test_xinput_errors.py; BlackRobin 5773, RoseCat 5786)."""
 
 from __future__ import annotations
 
@@ -33,6 +40,41 @@ KEYSYMS = {
     "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53, "Down": 0xFF54,
     "Shift_L": 0xFFE1, "Control_L": 0xFFE3,
 }
+
+
+class _XErrorEvent(ctypes.Structure):  # XErrorEvent (Xlib.h)
+    _fields_ = [("type", ctypes.c_int), ("display", ctypes.c_void_p), ("resourceid", ctypes.c_ulong),
+                ("serial", ctypes.c_ulong), ("error_code", ctypes.c_ubyte), ("request_code", ctypes.c_ubyte),
+                ("minor_code", ctypes.c_ubyte)]
+
+
+_X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(_XErrorEvent))
+_BAD_WINDOW, _BAD_DRAWABLE = 3, 9  # X.h
+_X_GET_GEOMETRY, _X_GET_PROPERTY = 14, 20  # Xproto.h: the reads toplevels() makes of a listed window
+_handler: list = []  # [our handler, Xlib's previous one]: kept alive while the process runs
+
+
+def _install_error_handler(x) -> None:
+    """Once per process (Xlib's handler is global): ignore BadWindow and BadDrawable from
+    the read-only GetProperty and GetGeometry only; hand every other error to the previous
+    handler (Xlib's default prints it and exits)."""
+    if _handler:
+        return
+    x.XSetErrorHandler.restype = _X_ERROR_HANDLER
+    x.XSetErrorHandler.argtypes = [_X_ERROR_HANDLER]
+
+    def on_error(dpy, event):
+        if event.contents.error_code in (_BAD_WINDOW, _BAD_DRAWABLE) and \
+                event.contents.request_code in (_X_GET_GEOMETRY, _X_GET_PROPERTY):
+            return 0  # the window went away between listing it and reading it
+        previous = _handler[1]
+        if previous:
+            return previous(dpy, event)
+        os.write(2, f"X Error {event.contents.error_code} (request {event.contents.request_code})\n".encode())
+        os._exit(1)
+
+    ours = _X_ERROR_HANDLER(on_error)
+    _handler.extend([ours, x.XSetErrorHandler(ours)])
 
 
 class XInputError(RuntimeError):
@@ -85,6 +127,7 @@ class XInput:
         t.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
         t.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
         t.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        _install_error_handler(x)
         previous = os.environ.get("XAUTHORITY")
         os.environ["XAUTHORITY"] = xauth
         try:

@@ -7,9 +7,12 @@ lists the root's children, then asks each for its title, and a window that
 closed in between (the Secrets window, a popup) makes the request fail.
 Xlib's default error handler then exits the whole test process. Here the
 same request is made deterministically, on a window this test destroyed
-first. BadWindow and BadDrawable about such a window are ignored (the call
-reports failure, and toplevels() skips the window); any other X error still
-ends the process as before, so a real fault cannot pass silently.
+first. BadWindow and BadDrawable from the read-only requests toplevels()
+makes (GetProperty for the title, GetGeometry) are ignored: the call reports
+failure, and toplevels() skips the window. Any other X error still ends the
+process as before, including BadWindow from a request that changes
+something (a resize of the gone window), so a real fault cannot pass
+silently (RoseCat 5786).
 
 Run only under `xsession.py --xvfb` (a private display, :200-:399); it
 refuses any other display."""
@@ -52,6 +55,16 @@ if what == "fetch-name":
     ok = x.XFetchName(dpy, w, ctypes.byref(title))
     xi._sync()
     print("fetch", ok, flush=True)
+elif what == "geometry":  # GetGeometry on a gone window: BadDrawable
+    root, gx, gy = ctypes.c_ulong(), ctypes.c_int(), ctypes.c_int()
+    gw, gh, gb, gd = ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint()
+    ok = x.XGetGeometry(dpy, w, ctypes.byref(root), ctypes.byref(gx), ctypes.byref(gy), ctypes.byref(gw),
+                        ctypes.byref(gh), ctypes.byref(gb), ctypes.byref(gd))
+    xi._sync()
+    print("geometry", ok, flush=True)
+elif what == "resize-gone":  # a request that changes something: BadWindow stays fatal
+    xi.resize(w, 300, 300)
+    xi._sync()
 elif what == "toplevels":
     print("toplevels", [t[0] for t in xi.toplevels()].count(w), flush=True)
 print("survived", flush=True)
@@ -85,6 +98,18 @@ class VanishedWindowTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("toplevels 0", done.stdout)
         self.assertNotIn("X Error", done.stderr)
+
+    def test_a_geometry_read_of_a_destroyed_window_does_not_end_the_process(self):
+        done = child("geometry")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("geometry 0", done.stdout, "the call reports failure")
+        self.assertNotIn("X Error", done.stderr)
+
+    def test_a_resize_of_a_destroyed_window_still_ends_the_process(self):
+        done = child("resize-gone")
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("survived", done.stdout)
+        self.assertIn("BadWindow", done.stderr)
 
     def test_any_other_x_error_still_ends_the_process(self):
         done = child("bad-value")
