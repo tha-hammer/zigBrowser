@@ -31,13 +31,20 @@ CONFIG_BUBBLE = "Agent configuration changed: run zigBrowser --agent-setup again
 REPLY = "zb-config-check-reply"
 
 
-def prepared(binary: Path, tmp: Path, name: str):
-    """A fresh agent home of its own (each case changes its tree), scripted fake host."""
+RESULT = {"type": "result", "session": "$SESSION", "sdk_session_id": "fake-sdk-session",
+          "subtype": "success", "is_error": False, "num_turns": 1, "cost_usd": None}
+
+
+def prepared(binary: Path, tmp: Path, name: str, end: bool = False):
+    """A fresh agent home of its own (each case changes its tree), scripted fake host.
+    With `end`, every prompt's session also ends (result, then a real session_ended)."""
     w = life.world(binary, tmp, f"cfg-{name}")
     scratch = w.agent / "scratchpad"
     for leftover in ("fake-host-runs", "fake-host-frames.jsonl"):
         (scratch / leftover).unlink(missing_ok=True)
     reply = [{"frame": {"type": "assistant_message", "session": "$SESSION", "text": REPLY}}]
+    if end:
+        reply += [{"frame": RESULT}, {"frame": {"type": "session_ended", "session": "$SESSION", "reason": "end"}}]
     (scratch / "fake-host-script.json").write_text(json.dumps({"runs": [{"on_prompt": reply}]}))
     return w
 
@@ -49,13 +56,18 @@ def start(binary: Path, tmp: Path, w, label: str):
     return b
 
 
-def prompts(w) -> list[str]:
-    """The text of every prompt frame the helper received."""
+def prompt_frames(w) -> list[tuple[str, str]]:
+    """(session, text) of every prompt frame the helper received."""
     path = w.agent / "scratchpad" / "fake-host-frames.jsonl"
     if not path.exists():
         return []
     frames = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    return [f.get("text", "") for f in frames if f.get("type") == "prompt"]
+    return [(f.get("session", ""), f.get("text", "")) for f in frames if f.get("type") == "prompt"]
+
+
+def prompts(w) -> list[str]:
+    """The text of every prompt frame the helper received."""
+    return [text for _session, text in prompt_frames(w)]
 
 
 def helper_runs(w) -> int:
@@ -79,6 +91,7 @@ def refused(b, check, w, text: str, win: int, what: str) -> None:
     """Sending `text` in window `win` is refused before anything reaches the helper."""
     before = set(life.descendants(b.proc.pid))
     runs = helper_runs(w)
+    replies = life.bubbles(b, win).count(("assistant", REPLY))
     life.send(b, text, win=win)
     check(b.wait(lambda: ("unavailable", "config-changed") in life.statuses(b, win), 20),
           f"{what}: window {win} is unavailable config-changed ({life.statuses(b, win)})", b)
@@ -88,7 +101,7 @@ def refused(b, check, w, text: str, win: int, what: str) -> None:
     check(text not in prompts(w), f"{what}: the prompt never reaches the helper ({prompts(w)})")
     check(helper_runs(w) == runs, f"{what}: no helper is started for it ({helper_runs(w)} runs, was {runs})")
     check(life.new_children(b, before) == [], f"{what}: nothing starts ({life.new_children(b, before)})")
-    check(("assistant", REPLY) not in life.bubbles(b, win), f"{what}: window {win} gets no reply")
+    check(life.bubbles(b, win).count(("assistant", REPLY)) == replies, f"{what}: window {win} gets no new reply")
 
 
 # Each change, made from outside the sandbox before the session.
@@ -178,8 +191,39 @@ def case_manifest_bad(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+def case_same_window(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5761: the check runs again for the same window's next session, the first
+    after a real session_ended. Unchanged, that session runs as a new one (s-1-2);
+    with settings.json edited after session 1 ended, it is refused."""
+    for changed in (False, True):
+        what = "changed after session 1 ended" if changed else "unchanged after session 1 ended"
+        w = prepared(binary, tmp, f"same{int(changed)}", end=True)
+        b = start(binary, tmp, w, f"cfg-same{int(changed)}")
+        try:
+            if not answered(b, check, "one", 1):
+                continue
+            check(b.wait(lambda: ("ready", "-") in life.statuses(b, 1)[-1:], 10), f"{what}: session 1's result arrived", b)
+            time.sleep(1.5)  # its session_ended follows the result in the same write
+            if changed:
+                edit_settings(w.agent / ".claude")
+                refused(b, check, w, "two", 1, what)
+                check(prompt_frames(w) == [("s-1-1", "one")], f"{what}: only session 1's prompt reached the helper ({prompt_frames(w)})")
+            else:
+                life.send(b, "two", win=1)
+                check(b.wait(lambda: life.bubbles(b, 1).count(("assistant", REPLY)) >= 2, 30),
+                      f"{what}: the next session answers ({life.bubbles(b, 1)})", b)
+                check(prompt_frames(w) == [("s-1-1", "one"), ("s-1-2", "two")],
+                      f"{what}: the second prompt opened a new session ({prompt_frames(w)})")
+            rejected = [line for line in b.err if "rejected frame" in line]
+            check(rejected == [], f"{what}: the result and session_ended were valid frames ({rejected})")
+        finally:
+            life.release_x(b)
+            b.stop()
+
+
 CASES = {"unchanged": case_unchanged, "changed-between": case_changed_between,
-         "changed-before": case_changed_before, "manifest-bad": case_manifest_bad}
+         "changed-before": case_changed_before, "manifest-bad": case_manifest_bad,
+         "same-window": case_same_window}
 
 
 def main() -> int:
