@@ -790,11 +790,41 @@ def open_drawer(b) -> None:
         b.wait_row("open", 1, timeout=10)
 
 
-def case_account_button(binary: Path, tmp: Path, check) -> None:
-    """RoseCat 5695 (D1, D11): the drawer header's Account button opens the Secrets window
-    without any Send, here with the agent runtime missing; closed, it opens again on the next
-    click. The window stays unreachable from pages and the socket."""
+def click_account(b) -> None:
     from agent_common import centre
+    b.x.click(*centre(b.rows("account", 1)[-1].rect()))
+
+
+def opens_now(b, seen: int, timeout: float = 15) -> bool:
+    """A Secrets status row after the first `seen` ones, with the window on screen."""
+    return b.wait(lambda: secrets_status(b)[seen:] != [] and bool(b.x.toplevels("Claude Agent account")), timeout)
+
+
+def closed(b) -> bool:
+    close_secrets_window(b)
+    return b.wait(lambda: not b.x.toplevels("Claude Agent account"), 5)
+
+
+def keyboard_account(b) -> bool:
+    """Focus the drawer's input, then Ctrl+Shift+Tab (a text view keeps plain Tab for itself)
+    until the Account button reports focus (at most 12 presses), then Space."""
+    x, y, w, h = b.rows("open", 1)[-1].rect()
+    b.x.click(x + w // 3, y + h - 24)  # the input row runs along the panel's bottom edge
+    for _ in range(12):
+        before = len(b.rows("focus", 1))
+        b.x.key("Tab", ("Control_L", "Shift_L"))
+        b.wait(lambda: len(b.rows("focus", 1)) > before, 2)
+        if b.rows("focus", 1)[-1].fields[:1] == ("account",):
+            b.x.key("space")
+            return True
+    return False
+
+
+def case_account_button(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5695, 5714 (D1, D11): the drawer header's Account button opens the Secrets
+    window without any Send, here with the agent runtime missing: by an X click, again after
+    the window was closed, and by the keyboard (Ctrl+Shift+Tab to `focus account`, then Space).
+    Before each, no Secrets window is open. The window stays unreachable from the page."""
     world = provisioned(binary, tmp, "account")
     with fake_api(tmp) as api:
         bus = dict(no_session_bus_env({}, tmp), ZB_AGENT_HOST_PYTHON="/nonexistent/zb-no-runtime/python")
@@ -805,18 +835,49 @@ def case_account_button(binary: Path, tmp: Path, check) -> None:
             check(row is not None, "the open drawer reports its Account button (DRAWER account <rect>)", b)
             if row is None:
                 return
-            b.x.click(*centre(row.rect()))
-            check(b.wait(lambda: secrets_status(b)[:1] == ["no-keyring"], 15),
-                  f"one click opens the Secrets window, no Send needed ({secrets_status(b)})", b)
+            check(secrets_status(b) == [] and not b.x.toplevels("Claude Agent account"),
+                  "no Secrets window before the click", b)
+            click_account(b)
+            check(opens_now(b, 0), f"one click opens the Secrets window, no Send needed ({secrets_status(b)})", b)
             check([r for r in b.rows("msg", 1)] == [], "no message was sent", b)
             tree = [f[0] for k, f in secrets_lines(b) if k == "tree"]
             check(tree != [] and "WebKitWebView" not in tree[0], f"its tree has no WebKitWebView: {tree[:1]}", b)
             check(len(b.zb.page.list()["pages"]) == 1, "page.list does not list it", b)
-            close_secrets_window(b)
-            check(b.wait(lambda: not b.x.toplevels("Claude Agent account"), 5), "the window closed", b)
+            check(closed(b), "the window closed", b)
             seen = len(secrets_status(b))
-            b.x.click(*centre(b.rows("account", 1)[-1].rect()))
-            check(b.wait(lambda: secrets_status(b)[seen:][:1] == ["no-keyring"], 15), "the next click opens it again", b)
+            click_account(b)
+            check(opens_now(b, seen), "the next click opens it again", b)
+            check(closed(b), "closed again", b)
+            seen = len(secrets_status(b))
+            check(keyboard_account(b), f"Ctrl+Shift+Tab reaches the Account button ({[r.fields for r in b.rows('focus', 1)][-6:]})", b)
+            check(opens_now(b, seen), "Space on the focused Account button opens the Secrets window", b)
+        finally:
+            b.stop()
+
+
+def case_account_after_no_token(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5714: the Account button also opens the Secrets window in another agent state:
+    after a Send found no token (`DRAWER status unavailable no-token`, the window opened and
+    was closed), with a working runtime."""
+    world = provisioned(binary, tmp, "account-no-token")
+    with fake_api(tmp) as api:
+        b = launch(binary, tmp, world, no_session_bus_env({}, tmp), api, "account-no-token",
+                   ["--agent-secret-store", "file"])
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: ("unavailable", "no-token") in [r.fields for r in b.rows("status", 1)], 30),
+                  f"the agent is unavailable for want of a token ({[r.fields for r in b.rows('status', 1)]})", b)
+            check(opens_now(b, 0), "the Send opened the Secrets window", b)
+            check(closed(b), "the window closed", b)
+            seen = len(secrets_status(b))
+            time.sleep(1.0)
+            check(secrets_status(b)[seen:] == [] and not b.x.toplevels("Claude Agent account"),
+                  "no Secrets window before the click", b)
+            row = b.rows("account", 1)
+            check(row != [], "the Account button is reported", b)
+            if row:
+                click_account(b)
+                check(opens_now(b, seen), "a click on Account opens it in this state too", b)
         finally:
             b.stop()
 
@@ -962,6 +1023,7 @@ CASES = {
     "remove-both": case_remove_both,
     "remove-close": case_remove_close,
     "account-button": case_account_button,
+    "account-after-no-token": case_account_after_no_token,
     "canary-self-test": case_canary_self_test,
     # S4b: the hand-off through S3b's helper (its build step runs these with --only).
     "handoff": case_handoff,
