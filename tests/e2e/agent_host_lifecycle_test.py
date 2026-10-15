@@ -534,6 +534,45 @@ def case_window_close(binary: Path, tmp: Path, check) -> None:
         fake.close()
 
 
+def case_late_error(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5699: a valid session-scoped frame can arrive after its window closed.
+    A late error of the closed popup's session is accepted (no strike), shown in no
+    surviving drawer, followed by a valid session_ended, and the opener still answers."""
+    rt = runtime_dir()
+    w = world(binary, tmp)
+    scratch = w.agent / "scratchpad"
+    for name in ("fake-host-runs", "fake-host-frames.jsonl"):
+        (scratch / name).unlink(missing_ok=True)
+    late = "late error of a closed popup"
+    reply = [{"frame": {"type": "assistant_message", "session": "$SESSION", "text": "fake reply"}},
+             {"frame": {"type": "result", "session": "$SESSION", "sdk_session_id": "fake-sdk-session",
+                        "subtype": "success", "is_error": False, "num_turns": 1, "cost_usd": None}}]
+    on_end = [{"frame": {"type": "error", "session": "$SESSION", "code": "sdk", "message": late}},
+              {"frame": {"type": "session_ended", "session": "$SESSION", "reason": "end"}}]
+    (scratch / "fake-host-script.json").write_text(json.dumps({"runs": [{"on_prompt": reply, "on_end": on_end}]}))
+    b = launch(binary, tmp, "late-error", env_for(w, rt, {"ZIGBROWSER_AGENT_HOST_CMD": str(FAKE_HOST_SCRIPT)}))
+    try:
+        send(b, "one")
+        check(b.wait(lambda: ("assistant", "fake reply") in bubbles(b, 1), 30), "window 1 got its reply", b)
+        b.wait_page()
+        b.ev("(window.open('frame.html'), 1)")
+        check(b.wait(lambda: b.rows("icon", 2) != [], 20), "the popup has its own drawer", b)
+        send(b, "two", win=2)
+        check(b.wait(lambda: ("assistant", "fake reply") in bubbles(b, 2), 30), "the popup got its reply", b)
+        b.zb.call("page.close", {"window_id": "window-2"})
+        frames_log = scratch / "fake-host-frames.jsonl"
+        check(b.wait(lambda: frames_log.exists() and '"end_session"' in frames_log.read_text(), 20),
+              "the helper got the popup's end_session")
+        time.sleep(2.0)
+        shown = [(win, role, text) for win in (1, 3) for role, text in bubbles(b, win) if late in text]
+        check(shown == [], f"the closed popup's late error is shown in no surviving drawer ({shown})")
+        check([l for l in b.err if "rejected frame" in l] == [], "the late error and session_ended strike nothing")
+        send(b, "again")
+        check(b.wait(lambda: bubbles(b, 1).count(("assistant", "fake reply")) >= 2, 30), "the opener still answers", b)
+    finally:
+        b.stop()
+
+
 def case_sandbox_missing(binary: Path, tmp: Path, check) -> None:
     """S3.4 (f): no bwrap: "Agent sandbox unavailable", and no helper runs."""
     rt, fake = runtime_dir(), Fake(tmp)
@@ -601,16 +640,27 @@ def case_home_locked(binary: Path, tmp: Path, check) -> None:
     from agent_common import Inotify
     fake = Fake(tmp)
     w = world(binary, tmp)
-    a = launch(binary, tmp, "owner-a", env_for(w, runtime_dir(), fake.seams()))
+    # A's helper is the scripted fake (no Claude CLI, no hooks): once its reply is in, A
+    # truly does nothing, so any event on the agent home is B's. A real CLI (and its hooks)
+    # may read its working directory on its own, which would blur the oracle.
+    scratch = w.agent / "scratchpad"
+    for name in ("fake-host-runs", "fake-host-frames.jsonl"):
+        (scratch / name).unlink(missing_ok=True)
+    reply = [{"frame": {"type": "assistant_message", "session": "$SESSION", "text": REPLY}},
+             {"frame": {"type": "result", "session": "$SESSION", "sdk_session_id": "fake-sdk-session",
+                        "subtype": "success", "is_error": False, "num_turns": 1, "cost_usd": None}}]
+    (scratch / "fake-host-script.json").write_text(json.dumps({"runs": [{"on_prompt": reply}]}))
+    host = {**fake.seams(), "ZIGBROWSER_AGENT_HOST_CMD": str(FAKE_HOST_SCRIPT)}
+    a = launch(binary, tmp, "owner-a", env_for(w, runtime_dir(), host))
     bb = None
     try:
         send(a, "hi")
         if not wait_ready(a, check, "A"):
             return
-        a.wait(lambda: ("assistant", REPLY) in bubbles(a), 90)
+        a.wait(lambda: ("assistant", REPLY) in bubbles(a), 30)
         time.sleep(1.0)
         oracle = Inotify(w.agent / "workspace", w.agent / ".claude")  # A is idle from here
-        bb = launch(binary, tmp, "owner-b", env_for(w, runtime_dir(), fake.seams()))
+        bb = launch(binary, tmp, "owner-b", env_for(w, runtime_dir(), host))
         bb.wait(lambda: bb.rows("icon", 1) != [], 20)
         time.sleep(2.0)
         before = set(descendants(bb.proc.pid))
@@ -653,6 +703,7 @@ CASES = {
     "crash": case_crash,
     "quit": case_quit,
     "window-close": case_window_close,
+    "late-error": case_late_error,
     "sandbox-missing": case_sandbox_missing,
     "inert": case_inert,
     "home-locked": case_home_locked,
