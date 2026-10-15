@@ -8504,3 +8504,43 @@ listed in the prior review (hook filter and lifecycle parity, R3 removal,
 setup probe and native spawn wiring) remains future work and is not implied
 complete by this approval. No push or history rewrite was performed; no live
 browser, profile, token, socket or DISPLAY `:0` was used.
+
+## P0.4 exact `/run` remount cleanup (`1e17ef4`)
+
+**Explicit verdict for `1e17ef4`: APPROVED.** This test-only follow-up closes
+the non-blocking hygiene note from the `365a463` review. P0.4 still overlays a
+private `/run`, but now binds back only each requested keep path that actually
+lies below `/run`, before mounting the test bridges read-only
+(`agent/host/tests/test_contract.py@1e17ef4:53-63`). The production-shaped
+call supplies exactly the resolved helper checkout and this test's agent-home
+root (`test_contract.py@1e17ef4:181-185`); paths outside `/run` need no extra
+mount because the initial host bind already exposes them. The change neither
+alters production code nor broadens a hook's nested bridges-only namespace.
+
+The strengthened regression creates the checkout and agent home under one
+`/run/user/<uid>` subtree, a canary in a separate sibling subtree, and proves
+all four required observations in one invocation: the host package imports,
+the home marker is readable, the bridge mount is present, and the sibling is
+absent (`test_contract.py@1e17ef4:220-248`). I independently exercised the
+test at exact `1e17ef4`: it passed. Replacing only the helper with `365a463`'s
+broad top-level `/run` restoration made the same test fail with
+`sibling-seen`; replacing it with `3b217b2`'s prefix made it fail with
+`ModuleNotFoundError: No module named 'zb_agent_host'`. The test therefore
+kills both the overbroad intermediate implementation and the original
+path-dependent failure, rather than merely asserting the new argv text.
+
+My independent bounded full gate used a clean archive of exact `1e17ef4`, an
+export and fresh cache below `/run/user/1000`, and private Xvfb. It passed
+**Build Summary: 109/109 steps succeeded; 817/817 tests passed**. The gate's
+P0.4 regression passed in the 24/24 contract module, and its S3n2 measurement
+reported sealed hooks at 34.0/35.8/37.6 ms, unsealed hooks at
+18.4/19.5/20.6 ms, and paired overhead at 15.6/16.9/17.0 ms
+(median/p90/p95, n=40 per arm, five warm-ups). The EXIT trap deleted the
+throwaway export and cache immediately.
+
+The newest approved linear push-through SHA is therefore **`1e17ef4`**. This
+approval is intentionally limited to the P0.4 cleanup and the previously
+approved S3n2 network chain; hook filter/lifecycle parity, R3 removal, the
+setup probe and native spawn wiring remain later slices. No push or history
+rewrite was performed; no live browser, profile, socket or DISPLAY `:0` was
+used.
