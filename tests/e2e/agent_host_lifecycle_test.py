@@ -32,8 +32,11 @@ sys.path.insert(0, str(HERE))
 
 CANARY = "sk-ant-oat01-ZBCANARY-lifecycle-0123456789abcdef"
 REPLY = "Hello from the agent"
-HELPER_ENV = {"PATH", "LANG", "HOME", "CLAUDE_CONFIG_DIR", "TMPDIR", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-              "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"}
+# The helper's environment, written out independently of options.HELPER_ENV_NAMES. The
+# browser is always started with LANG and LC_ALL (env_for), so both are expected
+# (RoseCat 5686: an inherited LC_ALL made the old set environment-dependent).
+HELPER_ENV = {"PATH", "LANG", "LC_ALL", "HOME", "CLAUDE_CONFIG_DIR", "TMPDIR",
+              "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK"}
 FAKE_HOST_SCRIPT = REPO / "tests" / "fixtures" / "agent" / "fake_host.py"
 
 # The fixture SAI's Stop hook, replaced: with <agent home>/scratchpad/sleepy-stop present it
@@ -115,6 +118,7 @@ def env_for(w, rt: Path | None, extra: dict[str, str] | None = None, hostile: bo
     for name in [n for n in env if n.startswith("ZIGBROWSER_AGENT_")]:
         env.pop(name)
     env.update(w.env())
+    env.update({"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})  # fixed, so the helper's environment is too
     if rt is not None:
         env["XDG_RUNTIME_DIR"] = str(rt)
     if hostile:  # S3.2: none of these may reach the helper
@@ -384,8 +388,11 @@ def case_frames(binary: Path, tmp: Path, check) -> None:
     for name in ("fake-host-runs", "fake-host-frames.jsonl"):
         (scratch / name).unlink(missing_ok=True)
     secret = "zb-frame-secret-text"
-    bad = [{"raw": "{not json " + secret}, {"raw": json.dumps({"v": 1, "seq": 1, "type": "frobnicate", "x": secret})},
-           {"frame": {"type": "assistant_message", "session": "s-9-9", "text": secret}}]
+    bad = [{"stderr": f"stderr says {CANARY} and {secret}"},
+           {"raw": "{not json " + secret}, {"raw": json.dumps({"v": 1, "seq": 1, "type": "frobnicate", "x": secret})},
+           {"frame": {"type": "assistant_message", "session": "s-9-9", "text": secret}},
+           # Left in the pipe as the helper is condemned (RoseCat 5682): never parsed, never counted.
+           {"repeat": ["{still junk " + secret, 400]}, {"stderr": "after the third"}]
     script = {"runs": [{"on_prompt": bad},
                        {"on_prompt": [{"frame": {"type": "assistant_message", "session": "$SESSION", "text": "valid after restart"}},
                                       {"frame": {"type": "result", "session": "$SESSION", "sdk_session_id": "fake-sdk-session", "subtype": "success",
@@ -402,6 +409,11 @@ def case_frames(binary: Path, tmp: Path, check) -> None:
         check(b.wait(lambda: ("assistant", "valid after restart") in bubbles(b), 30), "the valid frame is shown", b)
         time.sleep(1.0)
         check(bubbles(b).count(("assistant", "valid after restart")) == 1, "shown once")
+        check(len(rejected()) == 3, f"exactly three rejections: nothing the old helper left behind counts ({len(rejected())})")
+        starts = [s for s in statuses(b) if s[0] == "starting"]
+        check(len(starts) == 2, f"exactly one restart ({statuses(b)})")
+        check(not any(CANARY in l or "stderr says" in l for l in b.err + b.out),
+              "the helper's stderr reaches no log or row (D7 rev 16.7)")
         check((scratch / "fake-host-token-0").read_text() == str(len(CANARY)), "the fake got the token on fd 3")
     finally:
         b.stop()
@@ -491,6 +503,7 @@ def case_window_close(binary: Path, tmp: Path, check) -> None:
         second = set(cli_pids(b.proc.pid)) - first
         check(len(first) == 1 and len(second) == 1, f"one CLI per window's session ({first}, {second})")
         chat = chat_pid(b.proc.pid)
+        rejected = lambda: [l for l in b.err if "rejected frame" in l]  # noqa: E731
         b.zb.call("page.close", {"window_id": "window-2"})
         deadline = time.monotonic() + 15.0  # the SDK gives a CLI 5 s after stdin EOF, then terminates it
         while time.monotonic() < deadline and any(alive(p) for p in second):
@@ -498,6 +511,22 @@ def case_window_close(binary: Path, tmp: Path, check) -> None:
         check(not any(alive(p) for p in second), "window 2's CLI exits")
         check(all(alive(p) for p in first) and chat is not None and alive(chat),
               "window 1's CLI and the helper stay")
+        time.sleep(1.0)
+        check(rejected() == [], f"closing the window rejects no frame: its session_ended is valid ({rejected()})")
+        # RoseCat 5681: repeated closes never add up to a restart, including a close
+        # before the session was even opened (session_opened and session_ended arrive later).
+        for n, wait_reply in ((3, True), (4, True), (5, True), (6, False)):
+            b.ev("(window.open('frame.html'), 1)")
+            if not check(b.wait(lambda: b.rows("icon", n) != [], 20), f"popup {n} has its drawer", b):
+                break
+            send(b, f"popup {n}", win=n)
+            if wait_reply:
+                b.wait(lambda: ("assistant", REPLY) in bubbles(b, n), 90)
+            b.zb.call("page.close", {"window_id": f"window-{n}"})
+        time.sleep(3.0)
+        check(rejected() == [], f"four more closes, one before session_opened: no rejected frame ({rejected()})")
+        starts = [s for s in statuses(b, 1) if s[0] == "starting"]
+        check(len(starts) == 1 and alive(chat), f"the helper was never restarted ({statuses(b, 1)})")
         send(b, "again")
         check(b.wait(lambda: bubbles(b, 1).count(("assistant", REPLY)) >= 2, 90), "window 1's session still answers", b)
     finally:

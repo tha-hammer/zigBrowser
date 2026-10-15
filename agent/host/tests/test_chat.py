@@ -3,6 +3,7 @@ helper's `chat` command over its real pipes, and `launch`, which builds the
 sandbox argv (own network, netd's egress, the outer relay as its command) and
 execs bwrap in place. The token arrives on fd 3; the Messages API is P0's fake."""
 
+import asyncio
 import json
 import os
 import queue
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -323,6 +325,50 @@ class PromptLifecycleTest(unittest.TestCase):
         self.assertEqual([f["type"] for f in frames], ["session_ended"], frames)
         self.assertEqual(self.h.proc.wait(timeout=30), 0)
         self.assertNotIn("Traceback", self.h.proc.stderr.read())
+
+
+class CancelThenAwaitTest(unittest.IsolatedAsyncioTestCase):
+    """RoseCat 5681: Session.close must not disconnect or end the session while the
+    cancelled prompt is still cleaning up. The prompt here holds out after its
+    cancellation until `cleanup` is set, which a real SDK reply would mask."""
+
+    async def test_close_waits_for_the_cancelled_prompt_before_disconnect_and_session_ended(self):
+        events, cleanup = [], asyncio.Event()
+
+        class Client:
+            async def disconnect(self):
+                events.append("disconnect")
+
+        class Route:
+            def close(self):
+                events.append("route closed")
+
+        class Out:
+            def emit(self, kind, **_fields):
+                events.append(kind)
+
+        async def stubborn():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                events.append("cancelled")
+                await cleanup.wait()
+                events.append("cleanup done")
+                raise
+
+        session = chat.Session.__new__(chat.Session)
+        session.chat, session.id = types.SimpleNamespace(out=Out()), "s-1-1"
+        session.client, session.route = Client(), Route()
+        session.task = asyncio.create_task(stubborn())
+        self.addCleanup(cleanup.set)  # a failing run must still let the prompt finish
+        await asyncio.sleep(0)
+        closing = asyncio.create_task(session.close("end"))
+        await asyncio.sleep(0.2)
+        early = list(events)
+        cleanup.set()
+        self.assertEqual(early, ["cancelled"], "nothing closes while the prompt is still cleaning up")
+        await asyncio.wait_for(closing, 5)
+        self.assertEqual(events, ["cancelled", "cleanup done", "disconnect", "route closed", "session_ended"])
 
 
 class SessionOptionsTest(unittest.TestCase):

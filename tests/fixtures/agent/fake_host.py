@@ -13,7 +13,9 @@ reads the token from fd 3 to EOF (it records only its length), prints `ready`, t
 answers every `prompt` with its ITEMs in order:
 - {"raw": "TEXT"}: TEXT as one stdout line, as it is (a bad frame);
 - {"frame": {...}}: the frame with "v": 1 and the next seq added, and the value
-  "$SESSION" replaced by the prompt's session.
+  "$SESSION" replaced by the prompt's session;
+- {"repeat": ["TEXT", N]}: TEXT as N stdout lines in one write (left in the pipe);
+- {"stderr": "TEXT"}: TEXT as one stderr line.
 Every app frame it reads is appended to <home>/scratchpad/fake-host-frames.jsonl.
 `shutdown` or EOF ends it with exit 0. Standard library only."""
 
@@ -78,6 +80,13 @@ for line in sys.stdin:
                 seq += 1
                 sys.stdout.write(item["raw"] + "\n")
                 sys.stdout.flush()
+            elif "repeat" in item:
+                text, count = item["repeat"]
+                sys.stdout.write((text + "\n") * count)
+                sys.stdout.flush()
+            elif "stderr" in item:
+                sys.stderr.write(item["stderr"] + "\n")
+                sys.stderr.flush()
             else:
                 emit(fill(item["frame"], frame["session"]))
 sys.exit(0)
