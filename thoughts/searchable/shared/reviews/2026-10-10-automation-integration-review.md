@@ -9137,3 +9137,60 @@ native Secrets window is ready for the orchestrator's throwaway-profile
 real-screen check. The linear push-through SHA nevertheless remains
 **`dc52885`**: the interleaved MS0 commit `4fffdd8` is still blocked before this
 S4a follow-up in history.
+
+## Real-screen S4a follow-up and selectable drawer text (2026-10-15)
+
+**The S4a real-screen condition is NOT MET.** On the user's NVIDIA X11 screen,
+a clean export of `adbb8a0` with a throwaway profile/home, dead D-Bus, explicit
+file store and media source off did not reach the Secrets window. Send instead
+showed “Agent runtime not set up: run zigBrowser --agent-setup”. This is not a
+rendering verdict for the native window: the recipe's hand-made empty
+`dist-1/current` tree no longer satisfies S3b's runtime validation, so the UI
+under test was never created.
+
+The runtime-before-token order itself matches the approved plan. S4.1 and
+Closure Test S4 take a home provisioned by the real `--agent-setup` as their
+source (`chat-drawer-tdd-plan.md:1890-1897,1928-1936`), while S3.2 requires a
+missing runtime to produce `runtime-missing`. Production validates the runtime
+when configuring the helper (`src/app.zig@adbb8a0:193-208`), and
+`zb_agent_helper_send` returns that configured unavailability before its
+lock/netd/token path (`src/agent_helper.c@adbb8a0:574-605`). The corrected
+real-screen recipe must therefore provision a genuine throwaway agent home
+offline and must be verified under private Xvfb on that exact build first.
+
+**BLOCKER — S4a has no manual account path.** D1 and D11 say S4 adds an account
+button to the drawer header and that this button opens Secrets independently
+of Send (`chat-drawer-tdd-plan.md:223,529-534`). At `adbb8a0`, the header has
+only title, status and minus (`src/agent_drawer.c@adbb8a0:922-938`); the sole
+`zb_secrets_window_present` call is the automatic `no-token` status path
+(`:588-600`). A user therefore cannot reach the Secrets window without Send,
+and cannot repair credentials while the runtime check fails. Mail 5695 sent
+this to BlueBeaver and BlackRobin. Required red: with an intentionally missing
+runtime, a real X click on an accessible account button opens the native
+Secrets window, while it remains absent from `page.list`, page worlds and the
+automation socket. This finding supersedes the S4a approval immediately above:
+**S4a is REOPENED / BLOCKED**, and its real-screen check must be rerun after
+both the manual path and the recipe are fixed.
+
+**NEW USER REQUIREMENT — every displayed drawer text is selectable and
+copyable.** Every user, assistant, system and error message bubble, plus the
+header status text, must support mouse selection and Ctrl+C. Merely making a
+GTK label focusable, exposing text through an e2e row, or copying through a
+test seam is insufficient.
+
+BlackRobin owns the implementation. Its failing-first, real-binary test must
+run under a private Xvfb and, for each of the four bubble roles plus status:
+
+1. create the visible text through the production drawer/helper path;
+2. use real X pointer input to select a distinctive substring in the rendered
+   widget;
+3. send real Ctrl+C; and
+4. read the private display's clipboard and require exactly that selected
+   substring (with a pre-seeded decoy proving the clipboard changed).
+
+The test must not obtain the text from `DRAWER` rows, widget introspection or
+an app-owned copy seam as its oracle. Existing scrolling, wrapping, click,
+focus and page-isolation assertions remain. Because this changes the drawer's
+native widgets and real pointer/keyboard interaction, it is a UI change under
+§7.1: after private-Xvfb green, the user must confirm mouse selection and
+Ctrl+C on the real screen before the requirement closes.
