@@ -9567,3 +9567,91 @@ Accordingly **no post-`dc52885` contiguous green prefix is currently fully
 approved**. The newest confirmed linear push-through SHA remains
 **`dc52885`**. Once the MS0 rework and token-shape green land, the cumulative
 closures above can be reassessed together at the resulting later SHA.
+
+## MS0 rework after the history replacement (`086f757`, `9d2d1f0`, `be2be38`)
+
+The authoritative SHAs are the three above. The earlier `a350de0`, `935a8f7`
+and `93f91d3` were removed from the branch by the prohibited mixed reset and
+must not be used as push or review targets. Patch-id comparison shows that
+`086f757` is byte-for-byte the same patch as `a350de0`, and `be2be38` is the
+same patch as `93f91d3`. `9d2d1f0` differs from `935a8f7` by one fix-forward
+hunk: `hook_run.resolve_bridges` now uses the existing fixed bridge directory
+when `runtime/net.json` is absent or malformed
+(`agent/host/zb_agent_host/hook_run.py@9d2d1f0:155-164`). That compatibility
+hunk is reasonable and closes the missing-manifest failures in the directly
+constructed hook-test homes. No later correction may use reset, amend or
+rebase; every correction below must be a new commit.
+
+**Explicit verdict for `086f757`: APPROVED as the partial MS0 oracle/share
+slice.** Its frozen `reference_launch` and `reference_build_argv` do not call
+the implementation under test, cover seven launch variants, and drive the
+real `launch.build_argv` branches
+(`agent/host/tests/test_backend_contract.py@086f757:54-136,159-312`). The
+immutable `Mount` sequence, namespace set, workdir and seccomp descriptor are
+semantic fields, and the Linux argv's bind sequence is checked as their exact
+projection (`agent/host/zb_agent_host/sandbox.py@086f757:48-84,147-205`). In a
+clean export I inserted `--wrong-ms0-mutant` into the production backend; **16
+assertions failed**, whereas the unmodified unit passed. This cumulatively
+closes `4fffdd8`'s self-referential-golden blocker and the mount/share portion
+of the former `7301c5d` blocker. It does not claim to finish MS0.
+
+**Explicit verdict for `9d2d1f0`: BLOCKED.** Two real projections are good:
+changing the backend endpoint changes the CLI proxy, and changing its egress
+directory changes the outer relay argv. The remainder does not yet implement
+the composed contract accepted in mail 5707 and repeated in the macOS rev-6
+plan at lines 328-351:
+
+1. `LaunchSpec` still ends at `argv`, `unshare`, `mounts`, `workdir` and
+   `seccomp_fd` (`sandbox.py@9d2d1f0:60-84`). Network is an adjacent group of
+   backend methods, not an immutable field projected by the consumers. The
+   backend also supplies no egress allowlist/policy at all: production netd
+   still owns the independent `API_HOST = "api.anthropic.com"` literal
+   (`agent/host/zb_agent_host/netd.py@9d2d1f0:41`), despite the plan requiring
+   the backend to supply endpoint **and policy**.
+2. `BridgePolicy.ports` is description-only. Setup serializes only
+   `bridges_dir` (`setup.py@9d2d1f0:465-470`), the hook runner passes only that
+   directory (`hook_run.py@9d2d1f0:107-130,146-151`), and the copied production
+   relay still binds its own fixed `BRIDGES` map
+   (`relay.py@9d2d1f0:33-35,137-150`). Changing the backend ports therefore
+   changes metadata but no listener/profile/argv. The purported consumer test
+   only compares backend metadata to backend metadata, while the directory
+   test writes `net.json` itself and bypasses setup's producer
+   (`test_backend_contract.py@9d2d1f0:336-356`). A changed backend policy must
+   traverse the real setup-to-hook chain and alter the real relay/profile; the
+   test must fail when that projection is removed.
+
+**Explicit verdict for `be2be38`: BLOCKED.** Naming the current Linux values
+as `ZbSpawnPolicy` and making `zb_agent_die_with_browser` read them is useful,
+and the helper still runs `setpgid` before the parent-death setup
+(`src/agent_helper.c@be2be38:462-483`). But it is not yet the parameterized
+spawn seam agreed in mails 5707/5708. `zb_agent_run_sync` still accepts only a
+raw `spawn_delay_ms` and constructs `zb_spawn_policy_linux(...)` internally
+(`src/agent_host.h@be2be38:44-51`; `src/agent_host.c@be2be38:62-67`); netd and
+the helper likewise select that Linux policy themselves
+(`src/agent_host.c@be2be38:241-255`; `src/agent_helper.c@be2be38:479-483`). A
+backend/caller cannot inject a policy into the real spawn. There is also no
+matching immutable lifetime field or fd-3/broker inherited-channel contract
+in `LaunchSpec`, and no changed-policy injection test pins those real
+consumers. Per the ruling mailed as 5750, the Python composed spec remains the
+portable contract; the native `ZbSpawnPolicy` is its platform realization,
+not a replacement for it. Thread a caller-supplied policy through
+`zb_agent_run_sync`/child setup, mirror it in `LaunchSpec`, and drive changed
+values through the production spawn seam in a failing-first test.
+
+Gate evidence is green but does not waive those contract blockers. JadeBeacon's
+clean exact-`be2be38` export reported **Build Summary: 127/127 steps succeeded;
+864/864 tests passed** with Zig exit 0. I then ran an independent exact export,
+alone on the host, under private Xvfb with a 1500-second timeout; it also exited
+0. Its scary inner `failed command` diagnostic belonged to an intentional
+negative nested test, not the top-level gate. Both exports were deleted after
+their runs; no live display, socket, profile, or worktree change was used. An
+already-running gate of the superseded `93f91d3` had gone red under concurrent
+load and the pre-fallback hook runtime; it has no acceptance weight and its
+tree was also deleted.
+
+The old `4fffdd8` test-oracle defect is now **CLOSED by `086f757`**, but
+`7301c5d`'s network/spawn/composed-spec finding remains **OPEN (JadeBeacon)**
+through `9d2d1f0`/`be2be38`. Independently, `ba19159` is still a red-only,
+unregistered token-shape commit with no committed green. Therefore there is
+still no approved contiguous post-origin prefix past the prior boundary. The
+newest approved push-through SHA remains **`dc52885`**.
