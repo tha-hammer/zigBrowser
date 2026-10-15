@@ -821,6 +821,30 @@ def case_account_button(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+def case_canary_self_test(binary: Path, tmp: Path, check) -> None:
+    """The leak scan (any 4 consecutive canary characters, S4.1) can only be trusted if the
+    canary's random part cannot occur by chance in what the browser prints: random hex
+    (netd's socket directory, nonces), numbers (pids, rects), lowercase words and the row
+    tags (BlackRobin 5709: a hex tail matched 4 characters of a hex socket name). No browser
+    runs here."""
+    import random
+    rng = random.Random(5709)
+    corpus = "\n".join([
+        "".join(rng.choice("0123456789abcdef") for _ in range(200_000)),
+        " ".join(str(rng.randrange(0, 1 << 32)) for _ in range(20_000)),
+        "DRAWER\t1\topen\t0,461,1024,307\nSECRETS\tstatus\tempty\nAGENTNET\tready\nWINCOUNT\t1\nNAV\tTITLE\tLOAD_FAIL",
+        "zigBrowser: agent: network unavailable (XDG_RUNTIME_DIR) Gtk-WARNING GLib-GObject-CRITICAL",
+    ])
+    hits = {}
+    for _ in range(50):
+        token = canary()
+        found = [w for w in leaks(corpus, token) if w not in "sk-ant-oat01-zbcanary-"]  # the fixed prefix is no secret
+        if found:
+            hits[token[-12:]] = found[:3]
+    check(hits == {}, f"no canary's random part shares a 4-character run with random output ({len(hits)} of 50: "
+                      f"{list(hits.items())[:2]})")
+
+
 def needle_in_proc(token: str) -> list[str]:
     hits = []
     for pid in filter(str.isdigit, os.listdir("/proc")):
@@ -938,6 +962,7 @@ CASES = {
     "remove-both": case_remove_both,
     "remove-close": case_remove_close,
     "account-button": case_account_button,
+    "canary-self-test": case_canary_self_test,
     # S4b: the hand-off through S3b's helper (its build step runs these with --only).
     "handoff": case_handoff,
     "remove-session": case_remove_session,
