@@ -1,65 +1,14 @@
-//! The Claude Agent token store's pure checks (src/agent_secrets.zig):
-//! the token shape (plan S4.1) and the read-only loader of the explicit file
-//! store, agent-home/secrets/claude-token (D11; S3b reads it, S4 writes it).
+//! The Claude Agent token store's pure checks (src/agent_secrets.zig): the
+//! read-only loader of the explicit file store, agent-home/secrets/claude-token
+//! (D11; S3b reads it, S4 writes it), and the file store's write side.
 //! Canary tokens only.
 const std = @import("std");
 const secrets = @import("agent_secrets");
 
 const canary = "sk-ant-oat01-ZBCANARY-0123456789abcdef";
 
-test "validToken: one line of 16 to 512 printable characters, no spaces" {
-    try std.testing.expect(secrets.validToken(canary));
-    try std.testing.expect(secrets.validToken("a" ** 16));
-    try std.testing.expect(secrets.validToken("~" ** 512));
-    try std.testing.expect(secrets.validToken("!\"#$%&'()*+,-./0123456789:;<=>?@[\\]^_`{|}~"));
-    for ([_][]const u8{
-        "",
-        "a" ** 15,
-        "a" ** 513,
-        "sk-ant-oat01 ZBCANARY-0123456789",
-        "sk-ant-oat01-ZBCANARY-0123456789\n",
-        "sk-ant-oat01-ZBCANARY-0123456789\r",
-        "\tsk-ant-oat01-ZBCANARY-0123456789",
-        "sk-ant-oat01-ZBCANARY-0123456789\x7f",
-        "sk-ant-oat01-ZBCANARY-0123456789\x00",
-        "sk-ant-oat01-ZBCANARY-é-0123456789",
-    }) |bad| try std.testing.expect(!secrets.validToken(bad));
-}
-
-/// The oracle: `^[\x21-\x7e]{16,512}$` restated with std.ascii (printable and
-/// not a space), not with validToken's own range test.
-fn referenceToken(text: []const u8) bool {
-    if (text.len < 16 or text.len > 512) return false;
-    for (text) |c| {
-        if (!std.ascii.isPrint(c) or c == ' ') return false;
-    }
-    return true;
-}
-
-test "property (oracle): validToken matches ^[\\x21-\\x7e]{16,512}$ over 10k generated strings" {
-    var prng = std.Random.DefaultPrng.init(0x5EC_2E7);
-    const random = prng.random();
-    const odd = [_]u8{ ' ', '\t', '\n', '\r', 0x00, 0x7f, 0x80, 0xc3, 0xff, 0x20, 0x21, 0x7e };
-    var buf: [600]u8 = undefined;
-    var accepted: usize = 0;
-    for (0..10_000) |_| {
-        // Lengths cluster around the bounds; most bytes are valid, so both
-        // outcomes are common.
-        const len: usize = switch (random.uintLessThan(u8, 4)) {
-            0 => random.intRangeAtMost(usize, 14, 18),
-            1 => random.intRangeAtMost(usize, 510, 514),
-            2 => random.uintAtMost(usize, 30),
-            else => random.uintAtMost(usize, buf.len),
-        };
-        for (buf[0..len]) |*c| {
-            c.* = if (random.uintLessThan(u8, 40) == 0) odd[random.uintLessThan(usize, odd.len)] else random.intRangeAtMost(u8, 0x21, 0x7e);
-        }
-        const text = buf[0..len];
-        try std.testing.expectEqual(referenceToken(text), secrets.validToken(text));
-        if (referenceToken(text)) accepted += 1;
-    }
-    try std.testing.expect(accepted > 1000 and accepted < 9000);
-}
+// The token shape (validToken, tokenFromPaste) and its property test live in
+// tests/agent_secrets_shape_test.zig.
 
 /// A temporary agent home with `secrets/` (dir_mode) and, unless null,
 /// `secrets/claude-token` (file_mode) holding `content`.

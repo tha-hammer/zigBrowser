@@ -14,7 +14,10 @@
 
 /* src/agent_secrets.zig (C exports, Linux only). Each takes the token's
  * bytes without a terminator and never keeps them. */
-int zb_secrets_valid_token(const char *text, size_t len);
+/* 1 when the paste, trimmed of surrounding ASCII whitespace, is a setup
+ * token (^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$): it is text[*start..] for
+ * *token_len bytes. 0 otherwise. */
+int zb_secrets_token_from_paste(const char *text, size_t len, size_t *start, size_t *token_len);
 /* 0 on success. Creates secrets/ (0700) if needed, then writes the token
  * to a fresh 0600 file and renames it into place. */
 int zb_secrets_store_file(const char *agent_home, const char *token, size_t len);
@@ -235,12 +238,16 @@ static void on_save(GtkWidget *button, gpointer unused) {
     return;
   }
   /* Read once, then clear the entry at once, whatever happens next. */
-  char *token = g_strdup(gtk_entry_get_text(GTK_ENTRY(secrets.entry)));
+  char *pasted = g_strdup(gtk_entry_get_text(GTK_ENTRY(secrets.entry)));
   gtk_entry_set_text(GTK_ENTRY(secrets.entry), "");
   wipe_pending();
-  if (!zb_secrets_valid_token(token, strlen(token))) {
-    explicit_bzero(token, strlen(token));
-    g_free(token);
+  size_t start = 0, len = 0;
+  int ok = zb_secrets_token_from_paste(pasted, strlen(pasted), &start, &len);
+  /* Only the trimmed token is kept; the paste is wiped either way. */
+  char *token = ok ? g_strndup(pasted + start, len) : NULL;
+  explicit_bzero(pasted, strlen(pasted));
+  g_free(pasted);
+  if (!ok) {
     set_state(STATE_REJECTED, TEXT_REJECTED);
     return;
   }

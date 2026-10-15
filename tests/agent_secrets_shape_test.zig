@@ -128,8 +128,11 @@ test "property (oracle): validToken matches ^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$
             1 => random.intRangeAtMost(usize, 496, 502),
             else => random.uintAtMost(usize, 120),
         };
-        for (buf[p.len..][0..suffix_len]) |*c| {
-            c.* = if (random.uintLessThan(u8, 60) == 0) odd[random.uintLessThan(usize, odd.len)] else suffix_chars[random.uintLessThan(usize, suffix_chars.len)];
+        for (buf[p.len..][0..suffix_len]) |*c| c.* = suffix_chars[random.uintLessThan(usize, suffix_chars.len)];
+        // One string in four gets one odd byte somewhere (per string, not per
+        // byte, so long suffixes stay valid often enough).
+        if (suffix_len > 0 and random.uintLessThan(u8, 4) == 0) {
+            buf[p.len + random.uintLessThan(usize, suffix_len)] = odd[random.uintLessThan(usize, odd.len)];
         }
         const text = buf[0 .. p.len + suffix_len];
         try std.testing.expectEqual(referenceToken(text), secrets.validToken(text));

@@ -9,16 +9,34 @@
 const std = @import("std");
 const linux = std.os.linux;
 
-pub const min_token_len = 16;
+/// The long-lived token `claude setup-token` prints; nothing else is a token
+/// (API keys are out of scope, plan section 5).
+pub const token_prefix = "sk-ant-oat01-";
+/// RFC 6819 section 5.1.4.2.2 asks at least 128 bits of a token handle: 22
+/// characters of the 64-symbol suffix alphabet carry 132 (RoseCat 5731).
+pub const min_suffix_len = 22;
+pub const min_token_len = token_prefix.len + min_suffix_len;
 pub const max_token_len = 512;
 
-/// One line of 16-512 printable non-space characters: ^[\x21-\x7e]{16,512}$.
+/// A setup token, one rule for Save, store and load (the user's requirement
+/// after the S4a real-screen check): ^sk-ant-oat01-[A-Za-z0-9_-]{22,499}$.
 pub fn validToken(text: []const u8) bool {
     if (text.len < min_token_len or text.len > max_token_len) return false;
-    for (text) |c| {
-        if (c < 0x21 or c > 0x7e) return false;
+    if (!std.mem.startsWith(u8, text, token_prefix)) return false;
+    for (text[token_prefix.len..]) |c| {
+        switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '_', '-' => {},
+            else => return false,
+        }
     }
     return true;
+}
+
+/// A pasted token: surrounding ASCII whitespace (SP HT CR LF VT FF) trimmed,
+/// then validToken. The token as a slice of `text`, or null.
+pub fn tokenFromPaste(text: []const u8) ?[]const u8 {
+    const token = std.mem.trim(u8, text, &std.ascii.whitespace);
+    return if (validToken(token)) token else null;
 }
 
 pub const secrets_dir = "secrets";
@@ -327,7 +345,7 @@ pub fn parseTestDelay(text: []const u8) error{BadTestDelay}!TestDelay {
 
 comptime {
     if (@import("builtin").os.tag == .linux) {
-        @export(&zb_secrets_valid_token, .{ .name = "zb_secrets_valid_token" });
+        @export(&zb_secrets_token_from_paste, .{ .name = "zb_secrets_token_from_paste" });
         @export(&zb_secrets_store_file, .{ .name = "zb_secrets_store_file" });
         @export(&zb_secrets_remove_file, .{ .name = "zb_secrets_remove_file" });
         @export(&zb_secrets_file_present, .{ .name = "zb_secrets_file_present" });
@@ -337,8 +355,12 @@ comptime {
     }
 }
 
-fn zb_secrets_valid_token(text: [*]const u8, len: usize) callconv(.c) c_int {
-    return @intFromBool(validToken(text[0..len]));
+/// 1 with the trimmed token at text[*start..][0..*out_len], or 0.
+fn zb_secrets_token_from_paste(text: [*]const u8, len: usize, start: *usize, out_len: *usize) callconv(.c) c_int {
+    const token = tokenFromPaste(text[0..len]) orelse return 0;
+    start.* = @intFromPtr(token.ptr) - @intFromPtr(text);
+    out_len.* = token.len;
+    return 1;
 }
 
 fn zb_secrets_store_file(agent_home: [*:0]const u8, token: [*]const u8, len: usize) callconv(.c) c_int {

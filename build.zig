@@ -383,6 +383,16 @@ pub fn build(b: *std.Build) void {
     agent_secrets_tests_module.addImport("agent_secrets", agent_secrets_module);
     const run_agent_secrets_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_tests_module }));
     run_agent_secrets_tests.skip_foreign_checks = true;
+    // The setup-token shape (the user's requirement after the S4a real-screen check).
+    const agent_secrets_shape_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_secrets_shape_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_secrets_shape_tests_module.addImport("agent_secrets", agent_secrets_module);
+    const run_agent_secrets_shape_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_shape_tests_module }));
+    run_agent_secrets_shape_tests.skip_foreign_checks = true;
     // S4.1 edge: the libsecret dlopen fails (built against a missing library;
     // in the browser WebKitGTK has it loaded already). GTK hosts only.
     const agent_secrets_dlopen_module = b.createModule(.{
@@ -827,7 +837,7 @@ pub fn build(b: *std.Build) void {
     const agent_secrets_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable,fallback-persists,stale-store,lookup-race,remove-both,remove-close,account-button,account-after-no-token,canary-self-test",
+        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable,fallback-persists,stale-store,lookup-race,remove-both,remove-close,account-button,account-after-no-token,canary-self-test,shape,shape-file",
         "agent-secrets-e2e",
     });
     agent_secrets_e2e.addArtifactArg(exe);
@@ -1074,9 +1084,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_drawer_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
+    test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
     const agent_secrets_step = b.step("test-agent-secrets", "Run the Claude Agent token store's unit tests");
     agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
+    agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
