@@ -41,7 +41,7 @@ WIN_W, WIN_H = 1024, 768
 
 RECT = r"-?\d+,-?\d+,\d+,\d+"
 TEXT = r"[^\t]{0,4100}"  # 4 KiB cap plus the "…" marker
-REASON = r"-|runtime-missing|sandbox|hook-isolation|config-changed|cli-changed|no-token|home-locked|exit-\d+|signal-\d+"
+REASON = r"-|runtime-missing|sandbox|hook-isolation|config-changed|cli-changed|no-token|home-locked|network|exit-\d+|signal-\d+"
 
 # kind -> one regex per field after <win> and <kind>.
 DRAWER_KINDS: dict[str, list[str]] = {

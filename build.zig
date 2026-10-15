@@ -350,6 +350,22 @@ pub fn build(b: *std.Build) void {
     const run_agent_net_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_net_tests_module }));
     run_agent_net_tests.skip_foreign_checks = true;
 
+    // Chat drawer S3b: the helper's launch argv and environment, the app's
+    // frames, the runtime-lock check and the backoff (src/agent_helper.zig).
+    const agent_helper_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_helper.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const agent_helper_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_helper_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_helper_tests_module.addImport("agent_helper", agent_helper_module);
+    const run_agent_helper_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_helper_tests_module }));
+    run_agent_helper_tests.skip_foreign_checks = true;
+
     // Chat drawer S4a: the token's shape and the explicit file store, read and
     // write (src/agent_secrets.zig).
     const agent_secrets_module = b.createModule(.{
@@ -785,6 +801,16 @@ pub fn build(b: *std.Build) void {
         "agent-netd-spawn-e2e",
     });
     agent_netd_spawn_e2e.addArtifactArg(exe);
+    // Chat drawer S3b: the first Send starts a confined helper, its frames are
+    // validated natively, and every exit path cleans it up (Closure Test S3).
+    // The whole run sits in a network namespace of its own: nothing real is reachable.
+    const agent_host_lifecycle_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_host_lifecycle_test.py --binary \"$1\"",
+        "agent-host-lifecycle-e2e",
+    });
+    agent_host_lifecycle_e2e.addArtifactArg(exe);
     // Chat drawer S4a: the Secrets window stores a typed token in a private
     // keyring or the explicit 0600 file, and Send with no token opens it. The
     // S4b cases (handoff, remove-session, hooks) join after S3b's helper.
@@ -1043,6 +1069,7 @@ pub fn build(b: *std.Build) void {
     agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
+    test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
     test_step.dependOn(&run_automation_error_tests.step);
@@ -1092,6 +1119,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);
     test_step.dependOn(&agent_netd_spawn_e2e.step);
+    test_step.dependOn(&agent_host_lifecycle_e2e.step);
     test_step.dependOn(&agent_secrets_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&real_screen_input_xvfb.step);
