@@ -1137,7 +1137,8 @@ pub fn build(b: *std.Build) void {
     // stops a step on a display that is not a private Xvfb.
     const display_guard_probe = b.addSystemCommand(&.{ "sh", "-c", "echo display-guard-probe ran" });
     b.step("display-guard-probe", "Print one line (the display guard's test target)").dependOn(&display_guard_probe.step);
-    const display_guard_test = b.addSystemCommand(&.{ "python3", "tests/display_guard_test.py", "--zig", b.graph.zig_exe });
+    // The nested builds share this build's cache (`zig build run` compiles the browser).
+    const display_guard_test = b.addSystemCommand(&.{ "python3", "tests/display_guard_test.py", "--zig", b.graph.zig_exe, "--cache-dir", b.cache_root.path orelse ".zig-cache" });
     test_step.dependOn(&display_guard_test.step);
 
     guardDisplay(b);
