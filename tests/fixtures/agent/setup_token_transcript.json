@@ -1,0 +1,50 @@
+{
+  "source": "claude setup-token (Claude Code v2.1.301), run by the user on the real screen in a throwaway CLAUDE_CONFIG_DIR, 2026-10-16; redacted before any agent saw it",
+  "notes": [
+    "Spaces between some words were lost to terminal cursor moves; runs that merged into long strings were replaced with <REDACTED> (non-secret prose).",
+    "The pasted authorization code is echoed masked as asterisks; its visible tail was removed."
+  ],
+  "lines": [
+    "\u001b7\u001b8\u001b\u001b\u001bWelcometoClaudeCodev2.1.301",
+    "<REDACTED>(1-year)<REDACTED>.Claudesubscriptionrequired.",
+    "\u001b\u00b7Openingbrowsertosignin\u2026",
+    "Browser didn't open? Use the url below to sign in (c to copy)",
+    "https://claude.com/cai/oauth/authorize?code=true&client_id=<CLIENT_ID>&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=<CHALLENGE>&code_challenge_method=S256&state=<STATE>",
+    "Pastecodehereifprompted>",
+    "\u001b\u000f\u001b\u001b\u001b\u001b\u000f\u001b\u001b\u001b",
+    "<PASTED_CODE_MASKED>",
+    "\u2713 Long-lived authentication token created successfully!",
+    "Your OAuth token (valid for 1 year):",
+    "<TOKEN>",
+    "Storethistokensecurely.Youwon'tbeabletoseeitagain.",
+    "Usethistokenbysetting:exportCLAUDE_CODE_OAUTH_TOKEN=<token>",
+    "\u001b\u001b\u001b\u000f\u001b7\u001b8"
+  ],
+  "authorize_url": {
+    "scheme_host_path": "https://claude.com/cai/oauth/authorize",
+    "param_names": [
+      "code",
+      "client_id",
+      "response_type",
+      "redirect_uri",
+      "scope",
+      "code_challenge",
+      "code_challenge_method",
+      "state"
+    ],
+    "fixed_values": {
+      "code": "true",
+      "response_type": "code",
+      "scope": "user:inference",
+      "code_challenge_method": "S256",
+      "redirect_uri": "https://platform.claude.com/oauth/code/callback"
+    }
+  },
+  "redirect_kind": "manual-code-page",
+  "flow": [
+    "CLI opens the browser to the authorize URL and also prints it ('Browser didn't open? Use the url below to sign in (c to copy)')",
+    "user signs in; the callback page shows a code",
+    "CLI prompt: 'Paste code here if prompted >' (input masked)",
+    "CLI prints success, 'Your OAuth token (valid for 1 year):', the token on its own line, and 'export CLAUDE_CODE_OAUTH_TOKEN=<token>'"
+  ]
+}
