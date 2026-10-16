@@ -10628,3 +10628,83 @@ because BlackRobin already held the exclusive full-gate slot for S5b; this
 review relies on exact diffs plus BlueBeaver's exact-commit gate above. Until
 the two follow-ups land, none of the three requested commits is approved for
 the linear prefix. The newest approved push-through SHA remains **`37518ea`**.
+
+## S5b: default-on drawer and per-window session closure (`62d2b72`, `86255dd`)
+
+**Explicit verdict for `62d2b72`: APPROVED as a failing-first and closure-test
+commit.** `agent_default_on_test.py` drives the real binary with no flag or
+variable, an explicit flag off, an environment off, a fresh data home, a popup
+and a real configured fake helper. BlackRobin's clean-parent run at `69f2207`
+failed 6 of 15 checks for the intended absent behavior: neither window had the
+default icon, no-home Send retained the obsolete sentence and lacked the
+runtime-missing status, and `stop_browser` did not object after a helper ran.
+The test also verifies that the browser is torn down before the deliberate
+AssertionError escapes.
+
+`agent_window_sessions_test.py` was already green, which is acceptable here as
+an S5.4 closure test rather than a fabricated red: S3b already implemented the
+per-window state machine. It uses the real helper and CLI against the sealed TLS
+fake API, not an app-side test double. Its two sequential prompts prove
+window-local bubbles and request bodies; two distinct transcript filenames
+prove distinct SDK session ids; each transcript contains exactly its own
+prompt; neither transcript contains the token canary; and neither the
+published `.claude` nor the decoy user's `~/.claude` receives a transcript
+(`tests/e2e/agent_window_sessions_test.py:55-95`). Registering this existing
+contract in the green is the relevant new coverage.
+
+**Explicit verdict for `86255dd`: APPROVED, with two documentation SHOULDs.**
+The production setting—not merely the test oracle—now defaults to `.on` in
+`src/agent_config.zig`; the existing resolver still gives the explicit flag
+precedence over the environment and the environment over the default. Normal
+browsing startup applies the result before `zb_app_run`, and `zb_window_new`
+consults it for every primary and related view. The C shim deliberately starts
+off, so screenshot mode, which never calls `applyAgentDrawer`, remains
+drawer-free. Explicit `--agent-drawer off` and `ZIGBROWSER_AGENT_DRAWER=off`
+are both exercised, and the bogus-variable case now correctly falls back to
+the on default.
+
+With no provisioned home, Send adds the user bubble and reports
+`unavailable/runtime-missing` with the same fixed
+`ZB_AGENT_TEXT_RUNTIME` sentence as a configured helper whose runtime is
+missing; no process starts. The helper-process guard walks the still-live
+browser's descendant tree before teardown, recognizes the helper, netd and
+relay command shapes, tears the browser down and only then raises. The
+failing-first helper case proves that exact path. Agent tests explicitly opt
+out because they intentionally press Send; the non-agent gate continues
+through `slice2_common.stop_browser` directly or through its shared
+`terminate`/runner wrappers. The detector is a live-descendant census rather
+than durable execution history, so a helper that both started and disappeared
+before teardown could evade it; that is an advisory test-hygiene limitation,
+not a product-path defect, because no non-agent test interacts with the native
+drawer and the entire default-on gate is green.
+
+The two documentation SHOULDs were mailed as Agent Mail 5930:
+
+1. `docs/agent-drawer.md:49-50` still describes the drawer as floating over the
+   page without resizing it. The accepted user contract and production host
+   dock it at the bottom and lay out the page above it (`plan:242`, user
+   decision 2026-10-14).
+2. `docs/agent-drawer.md:61-63` says the on-disk transcripts live at
+   `agent-home/.claude/projects/`. The plan and the new e2e correctly establish
+   `agent-home/state/projects/`; it appears as `.claude/projects` only inside
+   the sandbox bind.
+
+BlackRobin's exact-chain private-Xvfb validation reported focused results of
+15/15 default-on, 15/15 sessions, 79/79 drawer, 63/63 netd-spawn and 56/56
+icon checks. The first full gate had one unrelated 100 ms PagePort timeout
+flake under load (the same binary then passed its 152 tests three times alone);
+the second gate was **Build Summary: 148/148 steps succeeded; 892/892 tests
+passed**. I did not start a competing browser run because BlueBeaver took the
+exclusive gate slot in mail 5929.
+
+S5b is therefore ready for the user's real-screen check at `86255dd` or a later
+build containing it. The check should launch an ordinary page **without** an
+agent-drawer flag, confirm the icon appears and the page remains drawn and
+clickable, confirm open/drag/fold, and confirm that a fresh agent home produces
+the fixed runtime-not-set-up status only after Send. The already-proven
+windowless host makes this a default-at-launch qualification, not a reopening
+of its NVIDIA rendering fix.
+
+These later approvals cannot cross the earlier blocked S6a part-3 chain
+(`dbde6c9`, `10248df`, `69f2207`). The newest linear approved push-through SHA
+therefore remains **`37518ea`**.
