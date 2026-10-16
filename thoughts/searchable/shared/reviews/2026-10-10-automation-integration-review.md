@@ -10391,3 +10391,83 @@ the held response ends. Until that answer lands, the explanation is marked
 **probable fixture timeout, pending BlackRobin confirmation**. If the focused
 case instead shows a later request advancing the held turn, reopen this as a
 product FIFO blocker and require the requested failing-first regression.
+
+## S6a capture red and queued-stall guard (`375c79b`, `ce2aa62`, `aca7638`)
+
+**Explicit verdict for `375c79b`: BLOCKED as landed, cumulatively APPROVED with
+`aca7638`.**
+The captured fixture itself is safe to commit. I scanned the exact Git object,
+not a recollection of the real-screen run: it contains zero case-insensitive
+`sk-ant` occurrences, zero setup-token shapes, zero JWT-, hex- or base64-like
+32-character runs, and zero `[A-Za-z0-9_-]{32,}` runs. Its pasted-code line is
+exactly `<PASTED_CODE_MASKED>` and its token line is exactly `<TOKEN>`; no
+asterisk run or visible tail from the user's pasted code remains. Client id,
+challenge and state are placeholders, and the metadata contains no user path,
+account or other credential. The committed fixture's SHA-256 is
+`5cff86ab45fc5e2bbbe50153bfebae31ef90cf3dc2211690f813f351566e89e2`.
+
+The fake is a faithful executable boundary for what this capture establishes:
+it requires a pty, prints the captured lines and exact authorize parameter
+order, generates fresh state/challenge values, logs synthetic received codes,
+re-prompts for missing or foreign state, prints only a planted synthetic token,
+and owns no socket. Its nine tests compare every output line with the fixture
+and cover those boundary facts.
+
+The blocking problem is in the red callback contract
+(`tests/agent_auth_test.zig@375c79b:14-18,125-145,230-235`). It restricts the
+opaque authorization code to URI-unreserved bytes and expressly rejects `+`.
+The proposed D7b contract in Agent Mail 5858 instead permits visible non-space
+ASCII, at most 512 bytes, with exactly one `#` delimiter. Because the captured
+code is masked, it cannot prove that the provider will forever return only
+`[A-Za-z0-9._~-]`; RFC 6749 Appendix A.11 likewise defines an authorization
+code as opaque `1*VSCHAR`, not as an unreserved URI token. As written, the test
+would force production to reject a terminal-safe code such as the unambiguous
+query value `a%2Bb`. Fix the red forward so decoded visible punctuation is
+accepted while SP, control bytes, DEL, `#`, malformed escapes and duplicated
+parameters remain refused, or cite a provider guarantee and revise D7b before
+the green. I mailed this BLOCKER to BlueBeaver as Agent Mail 5865. The red's
+stale “rev 16.17” label is also to be corrected to rev 16.18 in its follow-up;
+`ce2aa62` legitimately took 16.17.
+
+**Explicit verdict for `aca7638`: APPROVED.** This follow-up closes both
+findings without rewriting history. The red now applies form-query decoding
+(`+` becomes SP and `%XX` becomes its byte), accepts decoded ASCII `0x21-0x7e`
+except `#`, and has concrete passing cases for `%2B`, `%2F`, `%3D` and the
+remaining visible punctuation. It retains negative cases for SP, CR, LF, ESC,
+DEL, NUL, non-ASCII bytes, malformed escapes, `#`, empty and duplicated code;
+the separate oracle and 10,000-pair generator use the same public contract.
+The earlier unreserved-only green draft fails two of ten tests, so the
+correction is red against the implementation it is meant to prevent. The
+fixture-secret regression now uses the same 32-character threshold as the
+independent review census. This closes Agent Mail 5865 and the associated
+SHOULD-for-test in 5863.
+
+**Explicit verdict for `ce2aa62`: APPROVED.** The real-helper half holds an API
+response after its first delta, shows the queued user bubble, and proves for a
+five-second interval that the fake has exactly one Messages request, the
+assistant has neither ended nor gained text, and the drawer remains Busy. Stop
+then produces `Held (stopped)`; only afterward does the queued prompt become
+request two and receive its own answer. Releasing the old fake-server event at
+the end proves its held text never reaches a row.
+
+The scripted-helper half observes the other side of the native/helper boundary:
+its frame log contains only the first prompt while that prompt is live, then the
+queued prompt appears only after the interrupt is answered with the first
+prompt's result. Thus the test does not infer FIFO merely from the UI or rely on
+the real helper's independent `busy` refusal. Removing both native busy guards
+makes 7 of 15 assertions fail, including an extra error bubble and held text.
+BlackRobin's clean-export, private-Xvfb run passed the whole module, **53/53**.
+BlueBeaver's subsequent clean-export, private-Xvfb S6a overlay gate also
+included this registered module and the corrected auth tests: **Build Summary:
+145/145 steps succeeded; 892/892 tests passed**. That gate is evidence for this
+test chain; its not-yet-reviewed S6a production green receives a separate
+verdict when committed.
+
+This also closes the prior real-screen observation. The original rows preserve
+FIFO, and the fake server explicitly resumes an unset stall after 30 seconds;
+the unstopped response completed for that reason, not because a queued prompt
+ended or advanced it. **Status: CLOSED by `ce2aa62` (fixture behavior, no
+product defect).**
+
+With `aca7638` correcting the red forward, all three commits are approved as a
+linear chain. The newest approved push-through SHA is **`aca7638`**.
