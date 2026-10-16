@@ -418,6 +418,20 @@ pub fn build(b: *std.Build) void {
     agent_secrets_shape_tests_module.addImport("agent_secrets", agent_secrets_module);
     const run_agent_secrets_shape_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_shape_tests_module }));
     run_agent_secrets_shape_tests.skip_foreign_checks = true;
+
+    // Chat drawer S6.2 (A2): the auth window's callback check (src/agent_auth.zig).
+    const agent_auth_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_auth_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_auth_tests_module.addImport("agent_auth", b.createModule(.{
+        .root_source_file = b.path("src/agent_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_auth_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_tests_module }));
+    run_agent_auth_tests.skip_foreign_checks = true;
     // S4.1 edge: the libsecret dlopen fails (built against a missing library;
     // in the browser WebKitGTK has it loaded already). GTK hosts only.
     const agent_secrets_dlopen_module = b.createModule(.{
@@ -940,6 +954,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "cd tests/e2e && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY python3 xsession.py --xvfb -- env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_xinput_errors",
     });
+    // Chat drawer S6: the setup-token fake matches the real CLI's capture
+    // (tests/fixtures/agent/setup_token_transcript.json) line for line, on a pty.
+    const fake_setup_token_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v fake_claude_setup_token_test",
+    });
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -1189,6 +1210,11 @@ pub fn build(b: *std.Build) void {
     agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
+    test_step.dependOn(&run_agent_auth_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
+    const agent_auth_step = b.step("test-agent-auth", "Run the Claude Agent sign-in's callback check and setup-token fake tests");
+    agent_auth_step.dependOn(&run_agent_auth_tests.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
