@@ -111,7 +111,7 @@ class FakeSetupTokenTest(unittest.TestCase):
     def test_fixture_holds_no_secret(self):
         text = TRANSCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("sk-ant", text)
-        self.assertEqual(re.findall(r"[A-Za-z0-9_-]{40,}", text), [])
+        self.assertEqual(re.findall(r"[A-Za-z0-9_-]{32,}", text), [])  # the review census (RoseCat 5863)
         self.assertEqual(self.transcript["redirect_kind"], "manual-code-page")
 
     def test_output_matches_the_capture_line_for_line(self):

@@ -9,13 +9,17 @@
 //! - there is no user info, the host equals the redirect_uri's (ASCII case
 //!   aside) and so does the port (an absent port is the scheme's default);
 //! - the path equals the redirect_uri's byte for byte (no decoding);
-//! - exactly one `state` parameter, percent-decoded, equals the authorize URL's
-//!   one `state` (also decoded).
+//! - exactly one `state` parameter, decoded, equals the authorize URL's one
+//!   `state` (also decoded).
+//! A value is decoded as the code page's URLSearchParams decodes it ('+' is a
+//! space, %XX a byte), except that a malformed escape refuses it.
 //! That much is `checkCallback`, the plan's invariant. `callbackCode` also
-//! needs exactly one non-empty `code`, and a code and state of unreserved
-//! characters only ([A-Za-z0-9._~-]), so nothing the page sends can reach the
-//! CLI's terminal as a newline, a '#' or a control byte; the result is at most
-//! 512 bytes. A refusal is a reason (D7b's `AUTH blocked <reason>` word).
+//! needs exactly one non-empty `code`. The code is opaque (the capture masks
+//! it), so code and state may hold any visible ASCII but '#' (D7b's `code`
+//! frame, RoseCat 5865): nothing the page sends reaches the CLI's terminal as a
+//! space, a newline, a second '#', a control byte, DEL or a non-ASCII byte. The
+//! result is at most 512 bytes. A refusal is a reason (D7b's
+//! `AUTH blocked <reason>` word).
 //! The oracle below is a separate reference parse with std.Uri.
 const std = @import("std");
 const auth = @import("agent_auth");
@@ -69,6 +73,10 @@ test "a callback to the redirect_uri with the state and a code gives code#state"
     // The default port written out, and case in the scheme and host.
     try expectCode("https://platform.claude.com:443/oauth/code/callback?code=c&state=" ++ state, "c#" ++ state);
     try expectCode("HTTPS://Platform.Claude.COM/oauth/code/callback?code=c&state=" ++ state, "c#" ++ state);
+    // Visible punctuation in an opaque code (RoseCat 5865).
+    try expectCode(redirect ++ "?code=a%2Bb&state=" ++ state, "a+b#" ++ state);
+    try expectCode(redirect ++ "?code=x%2Fy%3D%3D&state=" ++ state, "x/y==#" ++ state);
+    try expectCode(redirect ++ "?code=!$%27()*,;:@%5B%5D%7B%7D%7C%5C%5E%60%22%3C%3E%3F&state=" ++ state, "!$'()*,;:@[]{}|\\^`\"<>?#" ++ state);
     // A percent-encoded state that decodes to the same bytes.
     try expectCode(redirect ++ "?code=c&state=%5Ab3_state-0123456789abcdefghijklmnopqrstuvw", "c#" ++ state);
 }
@@ -130,8 +138,14 @@ test "a missing, empty, doubled or unsafe code is refused (code), the state pass
         "?code=a%23b&state=" ++ state, // a '#' would split the CLI's code#state
         "?code=a%0Ab&state=" ++ state, // a newline would end the CLI's line
         "?code=a%03b&state=" ++ state, // Ctrl-C at the CLI's terminal
+        "?code=a%0Db&state=" ++ state, // a carriage return ends it too
+        "?code=a%1Bb&state=" ++ state, // ESC
+        "?code=a%7Fb&state=" ++ state, // DEL
+        "?code=a%00b&state=" ++ state,
+        "?code=a%C3%A9&state=" ++ state, // not ASCII
         "?code=a%20b&state=" ++ state,
-        "?code=a+b&state=" ++ state,
+        "?code=a+b&state=" ++ state, // '+' is a space, as the code page reads it
+        "?code=a%&state=" ++ state,
         "?code=%zz&state=" ++ state,
     }) |query| {
         var buf: [512]u8 = undefined;
@@ -187,13 +201,17 @@ fn raw(c: std.Uri.Component) []const u8 {
     };
 }
 
-/// Strict percent-decoding into `out`; null on a malformed escape.
+/// URLSearchParams decoding ('+' is a space) into `out`; null on a malformed
+/// escape.
 fn decode(out: []u8, v: []const u8) ?[]const u8 {
     var i: usize = 0;
     var n: usize = 0;
     while (i < v.len) : (n += 1) {
         if (n >= out.len) return null;
-        if (v[i] == '%') {
+        if (v[i] == '+') {
+            out[n] = ' ';
+            i += 1;
+        } else if (v[i] == '%') {
             if (i + 3 > v.len) return null;
             out[n] = std.fmt.parseInt(u8, v[i + 1 .. i + 3], 16) catch return null;
             i += 3;
@@ -227,11 +245,9 @@ fn defaultPort(uri: std.Uri) u16 {
     return 0;
 }
 
-fn unreserved(s: []const u8) bool {
-    for (s) |c| switch (c) {
-        'A'...'Z', 'a'...'z', '0'...'9', '.', '_', '~', '-' => {},
-        else => return false,
-    };
+/// Visible ASCII but '#'.
+fn visible(s: []const u8) bool {
+    for (s) |c| if (c < 0x21 or c > 0x7e or c == '#') return false;
     return true;
 }
 
@@ -262,7 +278,7 @@ fn oracle(a: []const u8, n: []const u8, out: []u8) Oracle {
     const ns = one(un.query, "state", &nsbuf) orelse return no;
     if (!std.mem.eql(u8, ns, s)) return no;
     const c = one(un.query, "code", &cbuf) orelse return .{ .ok = true };
-    if (c.len == 0 or !unreserved(c) or !unreserved(s) or c.len + 1 + s.len > 512) return .{ .ok = true };
+    if (c.len == 0 or !visible(c) or !visible(s) or c.len + 1 + s.len > 512) return .{ .ok = true };
     const got = std.fmt.bufPrint(out, "{s}#{s}", .{ c, s }) catch unreachable;
     return .{ .ok = true, .code = got };
 }
@@ -352,7 +368,7 @@ test "property (oracle): checkCallback and callbackCode agree with a std.Uri ref
                 4 => std.fmt.bufPrint(&part_buf, "state=", .{}),
                 5 => std.fmt.bufPrint(&part_buf, "state={s}", .{s_enc}),
                 6, 7, 8 => std.fmt.bufPrint(&part_buf, "code={s}", .{c}),
-                9 => std.fmt.bufPrint(&part_buf, "code={s}", .{pick(random, &.{ "", "a%23b", "a%0Ab", "a+b", "%zz", "a%41" })}),
+                9 => std.fmt.bufPrint(&part_buf, "code={s}", .{pick(random, &.{ "", "a%23b", "a%0Ab", "a+b", "%zz", "a%41", "a%2Bb", "x%2F%3D", "%7E!", "a%7Fb", "a%C3%A9" })}),
                 else => std.fmt.bufPrint(&part_buf, "x=1", .{}),
             } catch unreachable;
             if (i > 0) {
