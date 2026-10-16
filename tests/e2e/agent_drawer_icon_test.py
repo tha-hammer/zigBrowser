@@ -9,8 +9,9 @@ a `DRAWER` row (validated against D7b by agent_common.parse_row), the
 page's own click log read through the automation socket, or an xwd capture.
 
 Cases (each its own browser and display):
-- off (no flag, no variable) with a popup: no DRAWER row at all
-- ZIGBROWSER_AGENT_DRAWER=bogus: stderr says it is ignored; no DRAWER row
+- off (--agent-drawer off) with a popup: no DRAWER row at all
+- ZIGBROWSER_AGENT_DRAWER=bogus: stderr says it is ignored; the default applies, and
+  since S5.5 that is on: the icon row (agent_default_on_test.py checks the default)
 - --screenshot ... --agent-drawer on: usage, no DRAWER row
 - ZIGBROWSER_AGENT_DRAWER=on with a popup: one icon row per window id
 - clicks (S1.3, S1.5): the icon's pixels; four clicks 1 px outside its
@@ -66,7 +67,7 @@ GLYPH_RGB = (0xFF, 0xFF, 0xFF)
 
 # --- cases ------------------------------------------------------------------
 def case_off(binary: Path, tmp: Path, check: Checks) -> None:
-    b = Browser(binary, tmp, "off", [], profile=tmp / "p-off")
+    b = Browser(binary, tmp, "off", ["--agent-drawer", "off"], profile=tmp / "p-off")
     try:
         check(b.wait_page(), "off: page loaded", b)
         check(b.open_popup(), "off: a popup opened (two windows)", b)
@@ -78,7 +79,7 @@ def case_off(binary: Path, tmp: Path, check: Checks) -> None:
     try:
         check(bogus.wait_page(), "bogus variable: page loaded", bogus)
         time.sleep(0.5)
-        check(bogus.rows() == [], "bogus variable: no DRAWER row", bogus)
+        check(bogus.wait(lambda: bogus.rows("icon", 1) != [], 10), "bogus variable: the default applies (on): the icon", bogus)
         check(f"zigBrowser: {ENV}=bogus ignored" in bogus.err, "bogus variable: stderr says it is ignored", bogus)
     finally:
         bogus.stop()

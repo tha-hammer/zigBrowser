@@ -117,7 +117,7 @@ fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserE
 /// to agent_host.c, which starts netd on the drawer's first Send. No
 /// XDG_RUNTIME_DIR, or a bad e2e seam (read only with --e2e-protocol),
 /// configures a refusal line instead. Without a provisioned home nothing is
-/// configured, and Send says "Agent not available yet" as before. Returns what
+/// configured, and Send says the runtime is not set up (S5.5). Returns what
 /// the helper's launch needs (S3b), or null without a provisioned home.
 fn configureAgentNet(arena: std.mem.Allocator, io: std.Io, e2e: bool) !?AgentNet {
     if (comptime builtin.os.tag != .linux) return null;

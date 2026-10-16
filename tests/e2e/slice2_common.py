@@ -35,13 +35,54 @@ def xsession_prefix(xvfb: bool, screen: str | None = None) -> list[str]:
     return prefix + ["--"]
 
 
-def stop_browser(proc: subprocess.Popen, grace_sec: float = 8.0) -> int | None:
+# An agent helper's processes (chat-drawer plan S5.5): the helper's launch
+# (`python -m zb_agent_host ...`), netd (`.../zb_agent_host/netd.py`) and the relay.
+AGENT_HELPER_MARKERS = ("zb_agent_host", "zb-net-relay")
+
+
+def agent_helper_processes(root: int) -> list[list[str]]:
+    """The argv of every live descendant of `root` that is an agent helper process."""
+    kids: dict[int, list[int]] = {}
+    for entry in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            fields = Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if fields[0] != "Z":
+            kids.setdefault(int(fields[1]), []).append(int(entry))
+    found, todo = [], [root]
+    while todo:
+        for child in kids.get(todo.pop(), []):
+            todo.append(child)
+            try:
+                argv = [a.decode(errors="replace") for a in Path(f"/proc/{child}/cmdline").read_bytes().split(b"\0") if a]
+            except OSError:
+                continue
+            if any(marker in arg for arg in argv for marker in AGENT_HELPER_MARKERS):
+                found.append(argv[:4])
+    return found
+
+
+def stop_browser(proc: subprocess.Popen, grace_sec: float = 8.0, agent_helpers_allowed: bool = False) -> int | None:
     """Shared teardown for a browser started with an xsession prefix: SIGINT
     (a clean shutdown); a browser still running after `grace_sec` gets
     SIGKILL with its whole process group (browser and WebKit helpers). After
     a clean exit the helpers are left to exit on their own (tests assert
     that); the guardian ends any that linger, then removes the private
-    display. Safe to call more than once. Returns the browser's exit status."""
+    display. Safe to call more than once. Returns the browser's exit status.
+
+    The drawer is on by default (S5.5), and nothing starts an agent helper
+    until its Send: unless `agent_helpers_allowed` (the agent tests), a
+    helper process found under the browser fails the test with an
+    AssertionError, after the teardown."""
+    helpers = agent_helper_processes(proc.pid) if proc.poll() is None and not agent_helpers_allowed else []
+    code = _stop(proc, grace_sec)
+    if helpers:
+        raise AssertionError(f"an agent helper ran in a test that never pressed Send: {helpers}")
+    return code
+
+
+def _stop(proc: subprocess.Popen, grace_sec: float) -> int | None:
     if proc.poll() is None:
         try:
             proc.send_signal(signal.SIGINT)

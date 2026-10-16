@@ -58,7 +58,6 @@ int zb_agent_config_changed(const char *home);
 #define ZB_TEXT_SANDBOX "Agent sandbox unavailable"
 #define ZB_TEXT_LOCKED "Agent unavailable: another zigBrowser is using the agent home"
 #define ZB_TEXT_NO_TOKEN "Add a Claude token in the window that opened" /* S4.1 */
-#define ZB_TEXT_RUNTIME "Agent runtime not set up: run zigBrowser --agent-setup"
 #define ZB_TEXT_TOO_LONG "Message too long (64 KiB at most)"
 #define ZB_TEXT_REMOVED "The token was removed: the agent stopped" /* S4.2 */
 #define ZB_TEXT_CONFIG "Agent configuration changed: run zigBrowser --agent-setup again" /* S3.10 */
@@ -567,7 +566,7 @@ static void spawn_with(char *token) {
     close(fds[1]);
     zb_secrets_free(token);
     zb_helper.state = H_IDLE;
-    fail_waiting("unavailable", "runtime-missing", ZB_TEXT_RUNTIME);
+    fail_waiting("unavailable", "runtime-missing", ZB_AGENT_TEXT_RUNTIME);
     return;
   }
   /* The token: written once, the pipe closed, our copy wiped (zb_secrets_free). */

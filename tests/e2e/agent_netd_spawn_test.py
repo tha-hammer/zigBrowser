@@ -5,7 +5,8 @@ stops it.
 
 Until S3b spawns the helper, the agent starts on the drawer's first Send,
 and only when the agent home is provisioned (its `current` build exists;
-otherwise Send says "Agent not available yet" as before and nothing starts):
+otherwise Send says "Agent runtime not set up: run zigBrowser --agent-setup" (S5.5)
+and nothing starts):
 - the browser starts `<venv python> -I -S <agent-host>/zb_agent_host/netd.py
   --sockdir $XDG_RUNTIME_DIR/zigbrowser-agent-<browser pid>-<16 hex> --bwrap
   /usr/bin/bwrap --net-manifest <agent home>/runtime/net.json` (MS0; the
@@ -236,7 +237,7 @@ def case_ready(binary: Path, tmp: Path, check) -> None:
 
 
 def case_not_set_up(binary: Path, tmp: Path, check) -> None:
-    """No provisioned agent home: Send says "Agent not available yet" and starts no netd."""
+    """No provisioned agent home: Send says the runtime is not set up (S5.5) and starts no netd."""
     import agent_setup_test
     from agent_common import host_python
     agent_setup_test.PYTHON = host_python()
@@ -245,7 +246,8 @@ def case_not_set_up(binary: Path, tmp: Path, check) -> None:
     b = launch(binary, tmp, "unset", env_for(fresh, rt))
     try:
         send(b, "hello")
-        check(b.wait(lambda: ("system", "Agent not available yet") in bubbles(b), 10), "Send says 'Agent not available yet'", b)
+        check(b.wait(lambda: ("system", "Agent runtime not set up: run zigBrowser --agent-setup") in bubbles(b), 10),
+              "Send says the runtime is not set up", b)
         time.sleep(1.0)
         check(netd_launchers(rt) == [] and agentnet_rows(b) == [], "no netd and no AGENTNET row", b)
     finally:

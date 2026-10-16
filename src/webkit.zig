@@ -82,7 +82,7 @@ pub fn applyMediaSource(flag: ?media_config.MediaSource) void {
 }
 
 /// Applies the startup agent-drawer switch (agent_config.zig): `flag`
-/// (--agent-drawer), else ZIGBROWSER_AGENT_DRAWER, else off. Every browsing
+/// (--agent-drawer), else ZIGBROWSER_AGENT_DRAWER, else on (S5.5). Every browsing
 /// window created from now on, popups included, gets the floating "S" icon
 /// when on (src/agent_drawer.c). Call before zb_app_run. Prints the
 /// effective choice when it is not the default, and a variable that is not
@@ -113,8 +113,9 @@ test "the stderr 'page not responding' line and page.health use one debounce" {
     try std.testing.expectEqual(@as(u64, c.ZB_UNRESPONSIVE_DEBOUNCE_MS), @import("automation_server.zig").health_debounce_ms);
 }
 
-test "the shim's agent-drawer setting before any startup setting is the built-in default (off)" {
-    try std.testing.expectEqual(agent_config.AgentDrawer.off, agent_config.default_agent_drawer);
+test "the shim starts with the drawer off: only the browsing-window startup applies the switch (default on)" {
+    // Screenshot mode never calls applyAgentDrawer, so its window has no drawer.
+    try std.testing.expectEqual(agent_config.AgentDrawer.on, agent_config.default_agent_drawer);
     try std.testing.expectEqual(@as(c_int, 0), c.zb_app_get_agent_drawer());
 }
 

@@ -808,6 +808,23 @@ pub fn build(b: *std.Build) void {
         "agent-chat-e2e",
     });
     agent_chat_e2e.addArtifactArg(exe);
+    // Chat drawer S5b (S5.4): one session per window, transcripts in the agent's own home.
+    const agent_window_sessions_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_window_sessions_test.py --binary \"$1\"",
+        "agent-window-sessions-e2e",
+    });
+    agent_window_sessions_e2e.addArtifactArg(exe);
+    // Chat drawer S5b (S5.5, user answer 1): the drawer is on by default; with no agent
+    // home Send says the runtime is not set up; stop_browser fails a test a helper ran in.
+    const agent_default_on_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_default_on_test.py --binary \"$1\"",
+        "agent-default-on-e2e",
+    });
+    agent_default_on_e2e.addArtifactArg(exe);
     // Chat drawer S3c (plan S3.10, section 2): a `.claude` changed outside the
     // sandbox refuses the next session; the writable state directories do not.
     const agent_config_check_e2e = b.addSystemCommand(&.{
@@ -1262,6 +1279,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_drawer_e2e.step);
     test_step.dependOn(&agent_drawer_copy_e2e.step);
     test_step.dependOn(&agent_chat_e2e.step);
+    test_step.dependOn(&agent_window_sessions_e2e.step);
+    test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
     test_step.dependOn(&ipc_roundtrip_e2e.step);

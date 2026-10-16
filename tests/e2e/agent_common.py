@@ -234,7 +234,7 @@ class Browser:
         if self._x is not None:
             self._x.close()
             self._x = None
-        code = stop_browser(self.proc)
+        code = stop_browser(self.proc, agent_helpers_allowed=True)  # agent tests press Send (S5.5)
         time.sleep(0.2)
         return code
 

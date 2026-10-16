@@ -3,9 +3,9 @@
 //! Pure: cli.zig parses the flag; webkit.zig reads the environment and
 //! applies the result.
 //!
-//! The default stays `off` until slice S5 of the chat-drawer plan
+//! The default is `on` since slice S5b of the chat-drawer plan
 //! (thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md,
-//! D2): with it off, every window's widget tree is exactly
+//! S5.5, user answer 1). With it off, every window's widget tree is exactly
 //! GtkWindow -> WebKitWebView, as before the drawer existed.
 
 const std = @import("std");
@@ -14,7 +14,7 @@ const env_switch = @import("env_switch.zig");
 pub const AgentDrawer = enum { on, off };
 
 /// The built-in choice when neither the flag nor the variable is given.
-pub const default_agent_drawer: AgentDrawer = .off;
+pub const default_agent_drawer: AgentDrawer = .on;
 
 /// The environment variable read when no `--agent-drawer` flag is given.
 pub const env_name = "ZIGBROWSER_AGENT_DRAWER";
@@ -59,9 +59,9 @@ test "only on and off parse" {
     }
 }
 
-test "the built-in default keeps the drawer off" {
-    try std.testing.expectEqual(AgentDrawer.off, default_agent_drawer);
-    try std.testing.expectEqual(Resolved{ .value = .off }, resolve(null, null));
+test "the built-in default turns the drawer on (S5.5)" {
+    try std.testing.expectEqual(AgentDrawer.on, default_agent_drawer);
+    try std.testing.expectEqual(Resolved{ .value = .on }, resolve(null, null));
 }
 
 test "the flag wins over the variable, which wins over the default" {
@@ -74,25 +74,25 @@ test "the flag wins over the variable, which wins over the default" {
 
 test "a variable that is not on or off keeps the default and is reported; a flag makes it irrelevant" {
     const bad = resolve(null, "yes");
-    try std.testing.expectEqual(AgentDrawer.off, bad.value);
+    try std.testing.expectEqual(AgentDrawer.on, bad.value);
     try std.testing.expectEqualStrings("yes", bad.bad_env.?);
     try std.testing.expectEqualStrings("", resolve(null, "").bad_env.?);
     try std.testing.expectEqual(Resolved{ .value = .on }, resolve(.on, "bogus"));
 }
 
 /// The reference the property test compares against: "flag ?? parse(env)
-/// ?? off", written as a table lookup rather than as `resolve`'s branches.
+/// ?? on", written as a table lookup rather than as `resolve`'s branches.
 fn referenceResolve(flag: ?AgentDrawer, env: ?[]const u8) Resolved {
     const parsed: ?AgentDrawer = if (env) |text|
         (if (std.mem.eql(u8, text, "on")) .on else if (std.mem.eql(u8, text, "off")) .off else null)
     else
         null;
-    const value = flag orelse parsed orelse AgentDrawer.off;
+    const value = flag orelse parsed orelse AgentDrawer.on;
     const bad = flag == null and env != null and parsed == null;
     return .{ .value = value, .bad_env = if (bad) env else null };
 }
 
-test "property (oracle): resolve equals flag ?? parse(env) ?? off for every flag and env up to 16 bytes" {
+test "property (oracle): resolve equals flag ?? parse(env) ?? on for every flag and env up to 16 bytes" {
     var prng = std.Random.DefaultPrng.init(0x5A_D7A3);
     const random = prng.random();
     const alphabet = "onfON \x00\t-1";

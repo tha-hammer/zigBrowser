@@ -4,8 +4,8 @@
  * a scrolling message list and an input row. '-', Escape and
  * Ctrl+Shift+Space minimize it into the icon's last position with a short
  * animation. Text is only ever set with gtk_label_set_text: model output
- * stays inert. No agent is connected yet (slice S2): Send answers "Agent
- * not available yet". */
+ * stays inert. Send hands the text to the agent (agent_helper.c); with no
+ * provisioned agent home it says the runtime is not set up (S5.5). */
 
 #include "agent_drawer.h"
 #include "agent_helper.h"
@@ -39,7 +39,6 @@ unsigned int zb_drawer_demo_messages(void);
 unsigned int zb_drawer_anim_ms(void);
 
 enum { ZB_GESTURE_DRAG = 1 };
-#define ZB_NO_AGENT_TEXT "Agent not available yet"
 #define ZB_STOPPED_TEXT "(stopped)" /* S5.2 */
 /* netd could not start or stopped (plan rev 16.2 §3c.2): shown on that Send and
  * every later one; netd is never started again in this browser. */
@@ -739,8 +738,9 @@ static void send_input(ZbDrawer *d) {
     add_message(d, "user", text);
     if (zb_agent_helper_configured()) {
       zb_agent_helper_send(d->win_id, text);
-    } else {
-      add_message(d, "system", ZB_NO_AGENT_TEXT);
+    } else { /* no provisioned agent home (app.zig): the same as a missing runtime (S5.5) */
+      zb_drawer_agent_status(d->win_id, "unavailable", "runtime-missing");
+      add_message(d, "system", ZB_AGENT_TEXT_RUNTIME);
     }
     gtk_text_buffer_set_text(buffer, "", 0);
   }

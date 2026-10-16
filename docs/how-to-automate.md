@@ -74,6 +74,16 @@ Instagram window's web process. The default is `on`. While it is off,
 that have a plain-video fallback use it. Details: `docs/how-to-run.md` ("Media
 Source Extensions").
 
+### The Claude Agent drawer (Linux): `--agent-drawer on|off`
+
+Every browsing window shows the drawer's floating **S** icon by default. It
+is a native GTK widget over the page, not page content: automation input
+goes to the page itself, `page.screenshot` captures only the page, and the
+socket has no drawer or agent methods. Nothing starts an agent until someone
+presses Send in a drawer. To run without it, start the browser with
+`--agent-drawer off` (or `ZIGBROWSER_AGENT_DRAWER=off`). Details:
+`docs/agent-drawer.md`.
+
 ## Connect: socket, framing and token
 
 - **Transport:** a Unix socket, mode 0600 (only your user can connect).
