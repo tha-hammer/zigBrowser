@@ -8,7 +8,8 @@ The browser starts it before the helper, outside the agent sandbox:
 
 PATH is the backend's network manifest, the agent home's runtime/net.json (MS0;
 BlueBeaver 5755, JadeBeacon 5762): its `egress.allow` replaces the built-in
-api.anthropic.com and its `ports` replace the bridges 51091 and 31337. netd reads
+api.anthropic.com and its `ports` replace the bridges 51091 and 31337 (an empty
+`ports` means no bridges at all: the sign-in's runtime/net-login.json, rev 16.18.1). netd reads
 it here, before bwrap, and hands the sandboxed side the checked values; a missing
 file, or one with neither key, means the built-in values, and any other fault exits 2
 before anything exists.
@@ -460,7 +461,7 @@ class Netd:
 
     def start(self):
         os.umask(0o077)
-        for name in ("egress", "bridges"):
+        for name in ("egress", "bridges") if self.bridges else ("egress",):
             os.mkdir(os.path.join(self.sockdir, name), 0o700)
         os.umask(0o177)  # sockets are born 0600: there is no window with a wider mode
         self.listen(os.path.join(self.sockdir, "egress", "proxy.sock"), self.egress)
@@ -518,7 +519,7 @@ def _port(text):
 
 def parse_args(argv):
     opts = {"sockdir": None, "bwrap": None, "manifest": None, "ready_delay": None, "allow": [], "bridge": [], "resolve": [],
-            "host": [], "port": [], "record": False, "serve": False}
+            "host": [], "port": [], "record": False, "serve": False, "no_bridges": False}
     single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest",
               "--test-ready-delay": "ready_delay"}
     # --allow-host and --bridge-port carry the checked manifest to the sandboxed side.
@@ -541,14 +542,19 @@ def parse_args(argv):
         elif arg == "--serve":
             opts["serve"] = True
             i += 1
+        elif arg == "--no-bridges":  # a manifest's empty `ports`, carried to the sandboxed side
+            opts["no_bridges"] = True
+            i += 1
         else:
             raise ValueError(f"unknown argument {arg!r}")
     if not opts["sockdir"]:
         raise ValueError("--sockdir is required")
     if opts["serve"] and opts["manifest"] is not None:
         raise ValueError("--net-manifest is read before the sandbox")
-    if not opts["serve"] and (opts["host"] or opts["port"]):
-        raise ValueError("--allow-host and --bridge-port belong to the sandboxed side")
+    if not opts["serve"] and (opts["host"] or opts["port"] or opts["no_bridges"]):
+        raise ValueError("--allow-host, --bridge-port and --no-bridges belong to the sandboxed side")
+    if opts["no_bridges"] and opts["port"]:
+        raise ValueError("--no-bridges takes no --bridge-port")
     if opts["manifest"] is not None and not os.path.isabs(opts["manifest"]):
         raise ValueError("--net-manifest needs an absolute path")
     if opts["ready_delay"] is not None:
@@ -570,8 +576,8 @@ def network(opts):
     the built-in values."""
     if opts["serve"]:
         hosts = tuple(opts["host"]) or (API_HOST,)
-        ports = tuple(_port(p) for p in opts["port"]) or BRIDGE_PORTS
-        check_network(hosts, ports)
+        ports = () if opts["no_bridges"] else tuple(_port(p) for p in opts["port"]) or BRIDGE_PORTS
+        check_network(hosts, ports, no_ports=opts["no_bridges"])
         return hosts, ports, False
     if opts["manifest"] is not None:
         loaded = load_manifest(opts["manifest"])
@@ -580,14 +586,15 @@ def network(opts):
     return (API_HOST,), BRIDGE_PORTS, False
 
 
-def check_network(hosts, ports):
-    """1-8 distinct DNS names and 1-8 distinct ports (1-65535). Fixed words only: the
-    values may come from a file."""
+def check_network(hosts, ports, no_ports=False):
+    """1-8 distinct DNS names and 1-8 distinct ports (1-65535), or no ports at all
+    when `no_ports` (a manifest's empty list). Fixed words only: the values may come
+    from a file."""
     if not all(isinstance(h, str) and valid_dns_name(h) for h in hosts) or \
             not 1 <= len(hosts) <= NETWORK_LIST_MAX or len(set(hosts)) != len(hosts):
         raise ValueError("network manifest refused (egress.allow)")
     if not all(type(p) is int and 0 < p < 65536 for p in ports) or \
-            not 1 <= len(ports) <= NETWORK_LIST_MAX or len(set(ports)) != len(ports):
+            not (0 if no_ports else 1) <= len(ports) <= NETWORK_LIST_MAX or len(set(ports)) != len(ports):
         raise ValueError("network manifest refused (ports)")
 
 
@@ -634,7 +641,7 @@ def load_manifest(path):
         raise ValueError("network manifest refused (egress.allow)")
     if not isinstance(ports, list):
         raise ValueError("network manifest refused (ports)")
-    check_network(hosts, ports)
+    check_network(hosts, ports, no_ports=not ports)
     return tuple(hosts), tuple(ports)
 
 
@@ -756,6 +763,8 @@ def main(argv):
                     serve_argv += ["--allow-host", host]
                 for port in ports:
                     serve_argv += ["--bridge-port", str(port)]
+                if not ports:
+                    serve_argv.append("--no-bridges")
             os.execv(bwrap, sandbox_argv(bwrap, sockdir, serve_argv))
         finally:
             os._exit(EXIT_NO_SANDBOX)

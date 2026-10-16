@@ -14,7 +14,8 @@ agent home). The file must be a regular file of ours, not group- or
 world-writable, at most 64 KiB, opened without following a link and without
 blocking. `egress.allow` is 1 to 8 distinct DNS names (netd's own
 valid_dns_name: lowercase, no IP literal, no wildcard); `ports` is 1 to 8
-distinct integers 1-65535. The allow-list replaces the built-in
+distinct integers 1-65535, or empty: no bridges at all (the sign-in's
+runtime/net-login.json, rev 16.18.1; test_netd_login.py). The allow-list replaces the built-in
 api.anthropic.com; the ports replace 51091 and 31337, so netd serves
 bridges/port-<P>.sock for exactly those. Anything else exits 2 before netd is
 ready, and the error names no manifest content. A missing file, or a
@@ -147,7 +148,6 @@ class ManifestTest(unittest.TestCase):
             "allow not a string": manifest(allow=(7,), note=CANARY),
             "allow not a list": manifest(egress={"allow": f"{CANARY}.com"}),
             "ports missing": {"egress": {"allow": ["api.anthropic.com"]}, "note": CANARY},
-            "ports empty": manifest(ports=(), note=CANARY),
             "ports nine": manifest(ports=range(40141, 40150), note=CANARY),
             "ports duplicate": manifest(ports=(51091, 51091), note=CANARY),
             "port zero": manifest(ports=(0,), note=CANARY),
