@@ -28,6 +28,15 @@ int zb_secrets_load_file(const char *agent_home, char **out, const char **word) 
   return 0;
 }
 
+/* src/agent_secrets.zig's paste check, stubbed: never reached here (libsecret
+ * is missing, so no keyring item is ever read). */
+int zb_secrets_token_from_paste(const char *text, size_t len, size_t *start, size_t *token_len) {
+  (void)text;
+  *start = 0;
+  *token_len = len;
+  return 1;
+}
+
 static GMainLoop *loop;
 static int pending;
 

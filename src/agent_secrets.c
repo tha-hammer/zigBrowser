@@ -104,6 +104,17 @@ static GHashTable *token_attributes(void) {
   return attrs;
 }
 
+/* src/agent_secrets.zig: 1 when the paste, trimmed, is a setup token. */
+int zb_secrets_token_from_paste(const char *text, size_t len, size_t *start, size_t *token_len);
+
+/* Whether a keyring item is exactly a setup token (no trimming): another
+ * same-user program can plant anything there, and only the setup-token shape
+ * is ever handed out or called connected (RoseCat 5763/5794). */
+static int setup_token_shape(const char *text) {
+  size_t len = strlen(text), start = 0, n = 0;
+  return zb_secrets_token_from_paste(text, len, &start, &n) && start == 0 && n == len;
+}
+
 /* A failure is reported by its GError domain and code only: no message
  * text, which could in principle quote what was sent. */
 static void report(const char *what, GError *error) {
@@ -198,8 +209,8 @@ static void lookup_thread(GTask *task, gpointer source, gpointer task_data, GCan
     gchar *found = ss.lookupv(&zb_token_schema, attrs, NULL, &error);
     if (error != NULL) {
       report("lookup", error);
-    } else if (found == NULL) {
-      call->result = ZB_SECRETS_ABSENT;
+    } else if (found == NULL || !setup_token_shape(found)) {
+      call->result = ZB_SECRETS_ABSENT; /* a planted item of another shape is no token */
     } else {
       call->token = g_strdup(found);
       call->result = ZB_SECRETS_OK;
@@ -315,6 +326,9 @@ static void token_fetch_thread(GTask *task, gpointer source, gpointer task_data,
         report("lookup", error);
       } else if (found == NULL) {
         fetch->result = ZB_TOKEN_ABSENT;
+      } else if (!setup_token_shape(found)) {
+        fprintf(stderr, "zigBrowser: agent secrets: keyring token refused (bad-shape)\n");
+        fetch->result = ZB_TOKEN_REFUSED; /* like a bad token file: never handed out */
       } else {
         fetch->token = g_strdup(found);
         fetch->result = ZB_TOKEN_OK;
