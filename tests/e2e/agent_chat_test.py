@@ -6,6 +6,8 @@
 - stop: a real X click on Stop interrupts the running reply; the bubble ends with
   "(stopped)", and the next prompt runs in the same session (its API request carries the
   first prompt too);
+- queued-during-stall: a prompt typed while the reply stalls waits; it neither ends the
+  stalled reply nor shows its held text; after Stop it runs;
 - errors: a 401 shows "Claude rejected the saved token. Open Account to replace it.", a
   529 shows "Claude is busy; try again shortly.", and no row, bubble or log holds the
   API's own error text;
@@ -13,10 +15,10 @@
 - stop-then-error: an interrupt that ends in an error ends Stop too: the next reply shows.
 
 The real binary runs on its own Xvfb (xsession.py) in a network namespace of its own
-(re-exec'd as --sealed-child). stream, stop and errors run the real helper and the real
-Claude CLI against the TLS fake Messages API through relay -> netd (the lifecycle
-test's seams); agent-error and stop-then-error use the scripted fake_host.py in the
-helper's place.
+(re-exec'd as --sealed-child). stream, stop, queued-during-stall and errors run the
+real helper and the real Claude CLI against the TLS fake Messages API through relay ->
+netd (the lifecycle test's seams); agent-error and stop-then-error use the scripted
+fake_host.py in the helper's place.
 Exit 1 when Xvfb, xauth, bwrap, the venv or the binary is missing."""
 
 from __future__ import annotations
@@ -160,6 +162,95 @@ def case_stop(binary: Path, tmp: Path, check) -> None:
         fake.close()
 
 
+def case_queued_during_stall(binary: Path, tmp: Path, check) -> None:
+    """S5.2 with a prompt typed while the reply stalls (the user's first real-screen run,
+    2026-10-16): the queued prompt waits in the app and never reaches the helper, so it
+    neither ends the stalled turn nor shows its held text; Stop ends the turn and the
+    queued prompt then runs. (The fake API releases a stall by itself after 30 s, which
+    is what completed that run's unstopped "stop" reply; this case stays well inside it.)"""
+    stall = threading.Event()
+    fake = life.Fake(tmp, turns=[{"deltas": ["Held ", "only after Stop"], "stall": stall}, {"text": "queued reply"}])
+    b = start(binary, tmp, "queued-during-stall", fake)
+    try:
+        life.send(b, "first")
+        if not check(b.wait(lambda: any(r.fields[1] == "Held " for r in b.rows("delta", 1)), 90),
+                     "the first delta arrives while the API holds the rest", b):
+            return
+        life.send(b, "queued")
+        check(b.wait(lambda: ("user", "queued") in life.bubbles(b), 10), f"the queued prompt is shown ({life.bubbles(b)})", b)
+        time.sleep(5.0)
+        check(len(fake.api.messages_requests()) == 1,
+              f"while the reply stalls, the queued prompt sends no request ({len(fake.api.messages_requests())} requests)")
+        check(not any(role == "assistant" for role, _ in life.bubbles(b)) and len(b.rows("delta", 1)) == 1,
+              f"while the reply stalls, nothing ends it and nothing more shows ({life.bubbles(b)})", b)
+        check(life.statuses(b)[-1:] == [("busy", "-")], f"the window is still busy ({life.statuses(b)})")
+        rect = stop_rect(b)
+        if not check(rect is not None, "the drawer reports its Stop button", b):
+            return
+        b.x.click(rect[0] + rect[2] // 2, rect[1] + rect[3] // 2)
+        check(b.wait(lambda: ("assistant", f"Held {STOPPED}") in life.bubbles(b), 30),
+              f"Stop ends the stalled reply with '(stopped)' ({life.bubbles(b)})", b)
+        check(b.wait(lambda: ("assistant", "queued reply") in life.bubbles(b), 60),
+              f"then the queued prompt runs and is answered ({life.bubbles(b)})", b)
+        requests = fake.api.messages_requests()
+        check(len(requests) == 2 and last_user_text(requests[-1]) == "queued",
+              f"the queued prompt's request is the second one ({len(requests)} requests)")
+        stall.set()
+        time.sleep(2.0)
+        held = [line for line in b.out if "only after Stop" in line]
+        check(held == [], f"the stalled reply's held text never shows ({held[:2]})")
+    finally:
+        stall.set()
+        life.release_x(b)
+        b.stop()
+        fake.close()
+    queued_waits_in_the_app(binary, tmp, check)
+
+
+def queued_waits_in_the_app(binary: Path, tmp: Path, check) -> None:
+    """The app's own queue, seen from the helper's side: the real chat helper also runs a
+    session's prompts one at a time, so the run above holds even if the app sent early.
+    Here the scripted helper's reply never ends; the queued prompt's frame reaches it only
+    after Stop's interrupt is answered with the prompt's result."""
+    w = life.world(binary, tmp)
+    scratch = w.agent / "scratchpad"
+    for name in ("fake-host-runs", "fake-host-frames.jsonl"):
+        (scratch / name).unlink(missing_ok=True)
+    opened = {"frame": {"type": "session_opened", "session": "$SESSION"}}
+    delta = {"frame": {"type": "assistant_delta", "session": "$SESSION", "text": "Held "}}
+    result = {"frame": {"type": "result", "session": "$SESSION", "sdk_session_id": "fake-sdk-session",
+                        "subtype": "error_during_execution", "is_error": True, "num_turns": 1, "cost_usd": None}}
+    (scratch / "fake-host-script.json").write_text(json.dumps(
+        {"runs": [{"on_prompt": [opened, delta], "on_interrupt": [result]}]}))
+    frames_path = scratch / "fake-host-frames.jsonl"
+
+    def prompts() -> list[str]:
+        if not frames_path.exists():
+            return []
+        frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line.strip()]
+        return [f.get("text", "") for f in frames if f.get("type") == "prompt"]
+
+    b = life.launch(binary, tmp, "queued-in-app",
+                    life.env_for(w, life.runtime_dir(), {"ZIGBROWSER_AGENT_HOST_CMD": str(life.FAKE_HOST_SCRIPT)}))
+    try:
+        life.send(b, "first")
+        if not check(b.wait(lambda: len(b.rows("delta", 1)) == 1, 30), "scripted: the first reply starts and never ends", b):
+            return
+        life.send(b, "queued")
+        check(b.wait(lambda: ("user", "queued") in life.bubbles(b), 10), "scripted: the queued prompt is shown", b)
+        time.sleep(3.0)
+        check(prompts() == ["first"], f"scripted: while a reply runs, the app holds the queued prompt ({prompts()})")
+        rect = stop_rect(b)
+        if not check(rect is not None, "scripted: the drawer reports its Stop button", b):
+            return
+        b.x.click(rect[0] + rect[2] // 2, rect[1] + rect[3] // 2)
+        check(b.wait(lambda: prompts() == ["first", "queued"], 20),
+              f"scripted: after the stopped prompt's result, the queued prompt goes to the helper ({prompts()})", b)
+    finally:
+        life.release_x(b)
+        b.stop()
+
+
 def case_errors(binary: Path, tmp: Path, check) -> None:
     """S5.3: 401 and 529 are shown plainly; the API's own error text goes nowhere."""
     def respond(entry, index):
@@ -267,8 +358,8 @@ def case_stop_then_error(binary: Path, tmp: Path, check) -> None:
         b.stop()
 
 
-CASES = {"stream": case_stream, "stop": case_stop, "errors": case_errors, "agent-error": case_agent_error,
-         "stop-then-error": case_stop_then_error}
+CASES = {"stream": case_stream, "stop": case_stop, "queued-during-stall": case_queued_during_stall,
+         "errors": case_errors, "agent-error": case_agent_error, "stop-then-error": case_stop_then_error}
 
 
 def main() -> int:
