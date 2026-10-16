@@ -785,6 +785,15 @@ pub fn build(b: *std.Build) void {
         "agent-drawer-copy-e2e",
     });
     agent_drawer_copy_e2e.addArtifactArg(exe);
+    // Chat drawer S5a (S5.1-S5.3 and the S5 closure): the streamed reply grows one
+    // bubble, Stop interrupts, and errors are plain sentences.
+    const agent_chat_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_chat_test.py --binary \"$1\"",
+        "agent-chat-e2e",
+    });
+    agent_chat_e2e.addArtifactArg(exe);
     // Chat drawer S3c (plan S3.10, section 2): a `.claude` changed outside the
     // sandbox refuses the next session; the writable state directories do not.
     const agent_config_check_e2e = b.addSystemCommand(&.{
@@ -855,6 +864,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat",
+    });
+    // Chat drawer S5a (S5.3, rev 16.14): API errors become plain error frames with
+    // the real CLI; the e2e-only no-retry setting; interrupt ends the prompt.
+    const agent_host_chat_errors = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_errors",
     });
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
@@ -1212,6 +1228,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_drawer_icon_e2e.step);
     test_step.dependOn(&agent_drawer_e2e.step);
     test_step.dependOn(&agent_drawer_copy_e2e.step);
+    test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
     test_step.dependOn(&ipc_roundtrip_e2e.step);
@@ -1222,6 +1239,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_chat.step);
+    test_step.dependOn(&agent_host_chat_errors.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);

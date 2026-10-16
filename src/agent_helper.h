@@ -28,6 +28,10 @@ int zb_agent_helper_configured(void);
 /* The drawer of window `win_id` sends `text` (UTF-8, not empty). */
 void zb_agent_helper_send(unsigned int win_id, const char *text);
 
+/* The drawer of window `win_id` pressed Stop: its running reply is interrupted (S5.2).
+ * Nothing runs: nothing happens. */
+void zb_agent_helper_interrupt(unsigned int win_id);
+
 /* Window `win_id` closes: `end_session` for its session only. */
 void zb_agent_helper_window_closed(unsigned int win_id);
 
@@ -46,5 +50,7 @@ void zb_agent_helper_token_removed(void);
 void zb_drawer_agent_status(unsigned int win_id, const char *state, const char *reason);
 void zb_drawer_agent_message(unsigned int win_id, const char *role, const char *text, size_t len);
 void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char *text, size_t len);
+/* Window `win_id`'s reply was stopped: its bubble ends with "(stopped)" (S5.2). */
+void zb_drawer_agent_stopped(unsigned int win_id);
 
 #endif

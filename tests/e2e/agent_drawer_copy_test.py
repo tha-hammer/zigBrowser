@@ -34,6 +34,7 @@ import agent_host_lifecycle_test as life  # noqa: E402 - its world, seams and pr
 
 DECOY = "zb-decoy-clipboard-text"
 WORDS = {"user": "zbcopyuser7f3a", "assistant": "zbcopyassist91c", "error": "zbcopyerror5d2"}
+AGENT_ERROR = "Agent error"  # S5.3 (rev 16.14): an error bubble shows a fixed sentence, never the frame's message
 CRASH = "Agent stopped (signal 9). Send to restart."
 
 CLIPBOARD_OWNER = (
@@ -116,12 +117,12 @@ def case_copy(binary: Path, tmp: Path, check) -> None:
     b = life.launch(binary, tmp, "copy", life.env_for(w, rt, {"ZIGBROWSER_AGENT_HOST_CMD": str(life.FAKE_HOST_SCRIPT)}))
     try:
         life.send(b, WORDS["user"])
-        check(b.wait(lambda: ("error", WORDS["error"]) in life.bubbles(b), 30), "the assistant and error bubbles are shown", b)
+        check(b.wait(lambda: ("error", AGENT_ERROR) in life.bubbles(b), 30), "the assistant and error bubbles are shown", b)
         check(b.wait(lambda: ("ready", "-") in life.statuses(b), 30), "the status says Ready", b)
         time.sleep(0.5)
         copy_and_check(b, check, "user", WORDS["user"], clicks=2)
         copy_and_check(b, check, "assistant", WORDS["assistant"], clicks=2)
-        copy_and_check(b, check, "error", WORDS["error"], clicks=2)
+        copy_and_check(b, check, "error", AGENT_ERROR, clicks=3)
         copy_and_check(b, check, "status", "Ready", clicks=2)
         helper = next((p for p in life.children_map().get(b.proc.pid, [])
                        if any(a.endswith("fake_host.py") for a in life.argv_of(p))), None)

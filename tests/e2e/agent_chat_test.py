@@ -9,12 +9,14 @@
 - errors: a 401 shows "Claude rejected the saved token. Open Account to replace it.", a
   529 shows "Claude is busy; try again shortly.", and no row, bubble or log holds the
   API's own error text;
-- agent-error: a helper error (protocol or sdk) shows "Agent error", never its message.
+- agent-error: a helper error (protocol or sdk) shows "Agent error", never its message;
+- stop-then-error: an interrupt that ends in an error ends Stop too: the next reply shows.
 
 The real binary runs on its own Xvfb (xsession.py) in a network namespace of its own
 (re-exec'd as --sealed-child). stream, stop and errors run the real helper and the real
 Claude CLI against the TLS fake Messages API through relay -> netd (the lifecycle
-test's seams); agent-error uses the scripted fake_host.py in the helper's place.
+test's seams); agent-error and stop-then-error use the scripted fake_host.py in the
+helper's place.
 Exit 1 when Xvfb, xauth, bwrap, the venv or the binary is missing."""
 
 from __future__ import annotations
@@ -45,6 +47,18 @@ def start(binary: Path, tmp: Path, label: str, fake):
 
 def request_text(entry) -> str:
     return json.dumps(entry.get("body"))
+
+
+def last_user_text(entry) -> str:
+    """The newest prompt's text: the request's last user turn's last text block. Each
+    request carries the session's earlier turns, and after a failed turn the CLI puts the
+    next prompt into that same user turn (["auth-case\\n", "busy-case"], observed)."""
+    users = [m for m in (entry.get("body") or {}).get("messages") or [] if m.get("role") == "user"]
+    content = users[-1].get("content") if users else ""
+    if isinstance(content, str):
+        return content
+    texts = [block.get("text", "") for block in content or [] if isinstance(block, dict) and block.get("type") == "text"]
+    return texts[-1] if texts else ""
 
 
 def stop_rect(b, win: int = 1):
@@ -149,7 +163,7 @@ def case_stop(binary: Path, tmp: Path, check) -> None:
 def case_errors(binary: Path, tmp: Path, check) -> None:
     """S5.3: 401 and 529 are shown plainly; the API's own error text goes nowhere."""
     def respond(entry, index):
-        text = request_text(entry)
+        text = last_user_text(entry)
         if "auth-case" in text:
             return {"status": 401, "body": {"type": "error", "error": {"type": "authentication_error", "message": SERVER_CANARY}}}
         if "busy-case" in text:
@@ -213,10 +227,48 @@ def case_agent_error(binary: Path, tmp: Path, check) -> None:
     place of its result, so a second ending frame for the same prompt shows nothing more."""
     agent_error_run(binary, tmp, check, "protocol", [error_frame("protocol")])
     agent_error_run(binary, tmp, check, "sdk", [error_frame("sdk")])
-    agent_error_run(binary, tmp, check, "second-ending-frame", [error_frame("sdk"), error_frame("protocol")])
+    # The session is confirmed first, as the real helper does: an unconfirmed session's
+    # error forgets the session, so its second frame would be dropped as unknown and
+    # never reach the "no prompt runs" rule (its mutant survived without this).
+    opened = {"frame": {"type": "session_opened", "session": "$SESSION"}}
+    agent_error_run(binary, tmp, check, "second-ending-frame", [opened, error_frame("sdk"), error_frame("protocol")])
 
 
-CASES = {"stream": case_stream, "stop": case_stop, "errors": case_errors, "agent-error": case_agent_error}
+def case_stop_then_error(binary: Path, tmp: Path, check) -> None:
+    """S5.2 with an interrupt that ends in an error, not a result: the window's Stop state
+    ends with that prompt, so the next prompt's reply shows. The scripted helper streams
+    one delta per prompt and answers the interrupt with an sdk error."""
+    w = life.world(binary, tmp)
+    scratch = w.agent / "scratchpad"
+    for name in ("fake-host-runs", "fake-host-frames.jsonl"):
+        (scratch / name).unlink(missing_ok=True)
+    delta = {"frame": {"type": "assistant_delta", "session": "$SESSION", "text": "Hello "}}
+    opened = {"frame": {"type": "session_opened", "session": "$SESSION"}}
+    (scratch / "fake-host-script.json").write_text(json.dumps(
+        {"runs": [{"on_prompt": [opened, delta], "on_interrupt": [error_frame("sdk")]}]}))
+    b = life.launch(binary, tmp, "stop-then-error",
+                    life.env_for(w, life.runtime_dir(), {"ZIGBROWSER_AGENT_HOST_CMD": str(life.FAKE_HOST_SCRIPT)}))
+    try:
+        life.send(b, "first")
+        if not check(b.wait(lambda: len(b.rows("delta", 1)) == 1, 30), "the first prompt's delta arrives", b):
+            return
+        rect = stop_rect(b)
+        if not check(rect is not None, "the drawer reports its Stop button", b):
+            return
+        b.x.click(rect[0] + rect[2] // 2, rect[1] + rect[3] // 2)
+        check(b.wait(lambda: ("error", AGENT_ERROR_TEXT) in life.bubbles(b), 30),
+              f"the interrupt's error shows 'Agent error' ({life.bubbles(b)})", b)
+        check(b.wait(lambda: life.statuses(b)[-1:] == [("ready", "-")], 30), f"Ready again ({life.statuses(b)})", b)
+        life.send(b, "second")
+        check(b.wait(lambda: len(b.rows("delta", 1)) == 2, 30),
+              f"the next prompt's reply streams: Stop ended with the errored prompt ({[r.fields for r in b.rows('delta', 1)]})", b)
+    finally:
+        life.release_x(b)
+        b.stop()
+
+
+CASES = {"stream": case_stream, "stop": case_stop, "errors": case_errors, "agent-error": case_agent_error,
+         "stop-then-error": case_stop_then_error}
 
 
 def main() -> int:

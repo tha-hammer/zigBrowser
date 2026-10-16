@@ -49,6 +49,7 @@ DRAWER_KINDS: dict[str, list[str]] = {
     "open": [RECT],
     "minus": [RECT],
     "account": [RECT],
+    "stop": [RECT],
     "anim": [r"\d+", RECT, RECT],
     "minimized": [RECT],
     "fold": [r"\d+", RECT],

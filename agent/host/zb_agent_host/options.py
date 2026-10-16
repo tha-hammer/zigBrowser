@@ -90,7 +90,8 @@ def helper_environ(home, inherited):
     return env
 
 
-def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS, ca_file=None):
+def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS, ca_file=None,
+            max_retries=None):
     fixed = {**home_env(home), "DISABLE_AUTOUPDATER": "1", "MCP_TOOL_TIMEOUT": str(mcp_tool_timeout_ms)}
     clash = sorted(set(route_env) & set(fixed))
     if clash:
@@ -103,18 +104,22 @@ def cli_env(home, route_env, base_url=None, proxy=None, mcp_tool_timeout_ms=MCP_
         env.update({"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy, "NO_PROXY": "127.0.0.1,localhost"})
     if ca_file:
         env["NODE_EXTRA_CA_CERTS"] = ca_file  # the e2e fake's CA (§3c.4); the CLI's environment only
+    if max_retries is not None:
+        # Only chat under the e2e test base URL sets it (S5a, rev 16.14): the CLI retries
+        # a 429 or 529 ten times, about 185 s, which no e2e of the plain message can wait.
+        env["CLAUDE_CODE_MAX_RETRIES"] = str(max_retries)
     return env
 
 
 def build(home, *, route_env, cli_path=None, base_url=None, proxy=None, mcp_servers=None,
           allowed_tools=(), can_use_tool=None, mcp_tool_timeout_ms=MCP_TOOL_TIMEOUT_MS,
-          stderr=None, extra_args=None, ca_file=None):
+          stderr=None, extra_args=None, ca_file=None, max_retries=None):
     return ClaudeAgentOptions(
         setting_sources=["user"],
         cwd=str(home.workspace),
         tools=[],
         permission_mode="default",
-        env=cli_env(home, route_env, base_url, proxy, mcp_tool_timeout_ms, ca_file),
+        env=cli_env(home, route_env, base_url, proxy, mcp_tool_timeout_ms, ca_file, max_retries),
         cli_path=cli_path,
         mcp_servers=dict(mcp_servers or {}),
         allowed_tools=list(allowed_tools),

@@ -45,6 +45,17 @@ test "every valid helper frame type is accepted" {
     try expectOk(&v, "{\"v\":1,\"seq\":8,\"type\":\"session_ended\",\"session\":\"s-1-1\",\"reason\":\"end\"}");
 }
 
+test "every error code of the frame table is accepted (rev 16.14 adds overloaded)" {
+    var v = try fresh();
+    defer v.deinit();
+    const codes = [_][]const u8{ "auth", "busy", "overloaded", "protocol", "overflow", "sdk", "sandbox" };
+    var buf: [160]u8 = undefined;
+    for (codes, 1..) |code, seq| {
+        const line = try std.fmt.bufPrint(&buf, "{{\"v\":1,\"seq\":{d},\"type\":\"error\",\"session\":null,\"code\":\"{s}\",\"message\":\"x\"}}", .{ seq, code });
+        try expectOk(&v, line);
+    }
+}
+
 test "each kind of bad frame is rejected with its reason" {
     var v = try fresh();
     defer v.deinit();

@@ -62,6 +62,11 @@ int zb_agent_config_changed(const char *home);
 #define ZB_TEXT_TOO_LONG "Message too long (64 KiB at most)"
 #define ZB_TEXT_REMOVED "The token was removed: the agent stopped" /* S4.2 */
 #define ZB_TEXT_CONFIG "Agent configuration changed: run zigBrowser --agent-setup again" /* S3.10 */
+/* S5.3 (rev 16.14): one fixed sentence per error code; a frame's message is never shown. */
+#define ZB_TEXT_AUTH "Claude rejected the saved token. Open Account to replace it."
+#define ZB_TEXT_OVERLOADED "Claude is busy; try again shortly."
+#define ZB_TEXT_OVERFLOW "Agent output overflow"
+#define ZB_TEXT_AGENT_ERROR "Agent error"
 
 enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE, H_STOPPING };
 
@@ -72,6 +77,7 @@ typedef struct {
   int open, busy;
   int confirmed; /* the helper answered session_opened */
   int checking;  /* a new session's config check runs (its prompt waits in pending) */
+  int stopping;  /* Stop sent `interrupt`: the prompt's frames until its result are dropped */
   GPtrArray *pending; /* prompts (char *) waiting for a ready helper */
 } ZbWin;
 
@@ -216,6 +222,7 @@ static void flush(ZbWin *w) {
     }
     write_frame(frame);
     w->busy = 1;
+    w->stopping = 0; /* a stopped prompt that ended without its result (error, crash) */
     zb_drawer_agent_status(w->win, "busy", "-");
   }
 }
@@ -234,6 +241,13 @@ static void flush_all(void) {
 
 /* --- one helper frame -------------------------------------------------------- */
 
+static const char *error_text(const char *code, size_t len) {
+  if (len == 4 && memcmp(code, "auth", 4) == 0) return ZB_TEXT_AUTH;
+  if (len == 10 && memcmp(code, "overloaded", 10) == 0) return ZB_TEXT_OVERLOADED;
+  if (len == 8 && memcmp(code, "overflow", 8) == 0) return ZB_TEXT_OVERFLOW;
+  return ZB_TEXT_AGENT_ERROR;
+}
+
 static void on_frame(const ZbAgentFrame *f) {
   ZbWin *w = win_of_session(f->session, f->session_len);
   unsigned int win = w != NULL ? w->win : 0;
@@ -245,18 +259,22 @@ static void on_frame(const ZbAgentFrame *f) {
     flush_all();
     break;
   case ZB_FRAME_DELTA:
-    if (w != NULL) {
+    if (w != NULL && !w->stopping) {
       zb_drawer_agent_delta(win, w->session, f->text, f->text_len);
     }
     break;
   case ZB_FRAME_MESSAGE:
-    if (w != NULL) {
+    if (w != NULL && !w->stopping) {
       zb_drawer_agent_message(win, "assistant", f->text, f->text_len);
     }
     break;
   case ZB_FRAME_RESULT:
     zb_helper.restarts = 0;
     if (w != NULL) {
+      if (w->stopping) { /* the interrupted prompt's end */
+        w->stopping = 0;
+        zb_drawer_agent_stopped(win);
+      }
       w->busy = 0;
       zb_drawer_agent_status(win, "ready", "-");
       flush(w);
@@ -266,7 +284,13 @@ static void on_frame(const ZbAgentFrame *f) {
     if (f->session != NULL && w == NULL) {
       break; /* its window closed: the session's error goes nowhere (RoseCat 5699) */
     }
-    zb_drawer_agent_message(win, "error", f->text, f->text_len); /* win 0: a helper-wide error */
+    if (w != NULL && !w->busy) {
+      break; /* no prompt runs: a second ending frame of an ended prompt shows nothing (rev 16.15) */
+    }
+    { /* win 0: a helper-wide error */
+      const char *text = error_text(f->code, f->code_len);
+      zb_drawer_agent_message(win, "error", text, strlen(text));
+    }
     if (w != NULL) { /* a session's error ends its prompt (chat's _prompt) */
       if (!w->confirmed) { /* it never opened: the next prompt opens a new one */
         zb_agent_frames_close_session(w->session);
@@ -758,6 +782,15 @@ void zb_agent_helper_send(unsigned int win, const char *text) {
     return;
   }
   dispatch(w);
+}
+
+void zb_agent_helper_interrupt(unsigned int win) {
+  ZbWin *w = zb_helper.wins != NULL ? g_hash_table_lookup(zb_helper.wins, GUINT_TO_POINTER(win)) : NULL;
+  if (w == NULL || !w->open || !w->busy || w->stopping || zb_helper.state != H_READY) {
+    return;
+  }
+  w->stopping = 1;
+  write_frame(zb_agent_out_session(0, w->session));
 }
 
 void zb_agent_helper_token_removed(void) {

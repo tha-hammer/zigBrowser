@@ -6,7 +6,7 @@ browser in the helper's place only through ZIGBROWSER_AGENT_HOST_CMD under
 The agent home is PYTHONPATH minus /runtime/host. The test writes the script to
 <home>/scratchpad/fake-host-script.json:
 
-    {"runs": [{"on_prompt": [ITEM, ...], "on_end": [ITEM, ...]}, ...]}
+    {"runs": [{"on_prompt": [ITEM, ...], "on_end": [ITEM, ...], "on_interrupt": [ITEM, ...]}, ...]}
 
 Run n (counted in <home>/scratchpad/fake-host-runs) uses runs[n], or the last one. It
 reads the token from fd 3 to EOF (it records only its length), prints `ready`, then
@@ -17,7 +17,8 @@ answers every `prompt` with its ITEMs in order:
 - {"repeat": ["TEXT", N]}: TEXT as N stdout lines in one write (left in the pipe);
 - {"stderr": "TEXT"}: TEXT as one stderr line.
 It answers every `end_session` with its "on_end" ITEMs, "$SESSION" being the ended
-session (without "on_end", nothing).
+session (without "on_end", nothing), and every `interrupt` with its "on_interrupt" ITEMs
+(S5a; without them, nothing).
 Every app frame it reads is appended to <home>/scratchpad/fake-host-frames.jsonl.
 `shutdown` or EOF ends it with exit 0. Standard library only."""
 
@@ -76,7 +77,7 @@ for line in sys.stdin:
     frame = json.loads(line)
     if frame.get("type") == "shutdown":
         break
-    kind = {"prompt": "on_prompt", "end_session": "on_end"}.get(frame.get("type"))
+    kind = {"prompt": "on_prompt", "end_session": "on_end", "interrupt": "on_interrupt"}.get(frame.get("type"))
     if kind is not None:
         for item in script.get(kind, []):
             if "raw" in item:

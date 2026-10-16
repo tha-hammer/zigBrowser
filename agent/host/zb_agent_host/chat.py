@@ -33,6 +33,13 @@ TOOL_DEADLINE_S = int(options.TOOL_DEADLINE_S)
 APP_FRAMES = ("hello", "open_session", "prompt", "interrupt", "end_session", "shutdown", "tool_result")
 
 
+# S5.3 (rev 16.14): the CLI reports an API error as an AssistantMessage whose `error`
+# names it, and whose text echoes the server's own message. That text is never sent on:
+# the prompt ends with an `error` frame in place of its `result` (one ending frame per
+# prompt), and the app shows one fixed sentence per code.
+API_ERROR_CODES = {"authentication_failed": "auth", "rate_limit": "overloaded", "server_error": "overloaded"}
+
+
 class Session:
     def __init__(self, chat, session_id):
         self.chat, self.id = chat, session_id
@@ -54,6 +61,7 @@ class Session:
 
     async def prompt(self, text):
         pending, last = [], 0.0
+        api_error = None
         loop = asyncio.get_running_loop()
 
         def flush():
@@ -70,11 +78,16 @@ class Session:
                     pending.append(delta.get("text", ""))
                     if loop.time() - last >= DELTA_INTERVAL_S:
                         flush()
+            elif isinstance(message, AssistantMessage) and message.error is not None:
+                pending = []  # deltas of an error message are its text too
+                api_error = message.error
             elif isinstance(message, AssistantMessage):
                 flush()
                 text = "".join(b.text for b in message.content if isinstance(b, TextBlock))
                 if text:
                     self.chat.out.emit("assistant_message", session=self.id, text=text[:256 * 1024])
+            elif isinstance(message, ResultMessage) and api_error is not None:
+                self.chat.error(API_ERROR_CODES.get(api_error, "sdk"), f"the API refused the request ({api_error})", self.id)
             elif isinstance(message, ResultMessage):
                 flush()
                 self.chat.out.emit("result", session=self.id, sdk_session_id=message.session_id,
@@ -98,7 +111,9 @@ class Session:
 def session_options(home, *, route_env, cli_path, e2e, test_ca, stderr=None):
     """One session's ClaudeAgentOptions: the relay is the CLI's only proxy, whatever
     hello carried; hello's e2e object (§7 seams) may name only the test base URL."""
-    return options.build(home, route_env=route_env, cli_path=cli_path, base_url=(e2e or {}).get("test_base_url"),
+    base_url = (e2e or {}).get("test_base_url")
+    return options.build(home, route_env=route_env, cli_path=cli_path, base_url=base_url,
+                         max_retries=0 if base_url else None,
                          proxy=options.relay_proxy_url(), ca_file=test_ca, stderr=stderr)
 
 

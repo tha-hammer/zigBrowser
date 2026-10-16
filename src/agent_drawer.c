@@ -40,6 +40,7 @@ unsigned int zb_drawer_anim_ms(void);
 
 enum { ZB_GESTURE_DRAG = 1 };
 #define ZB_NO_AGENT_TEXT "Agent not available yet"
+#define ZB_STOPPED_TEXT "(stopped)" /* S5.2 */
 /* netd could not start or stopped (plan rev 16.2 §3c.2): shown on that Send and
  * every later one; netd is never started again in this browser. */
 /* S4.1: no token is stored (or the store did not answer); the Secrets window opens. */
@@ -79,6 +80,10 @@ struct ZbDrawer {
   GtkWidget *input;
   GtkWidget *send;
   GtkWidget *stop;
+  /* S5.1: the assistant bubble the running reply grows in, and its text so far;
+   * NULL until the reply's first delta and again once it is whole. */
+  GtkWidget *streaming;
+  GString *stream_text;
   GtkAdjustment *vadj;
   int open;
   int report_open; /* the `open` and `minus` rows wait for the panel's allocation */
@@ -578,7 +583,8 @@ static void report_text(ZbDrawer *d, GtkWidget *label, const char *role) {
   g_signal_connect_after(label, "draw", G_CALLBACK(on_text_drawn), d);
 }
 
-static void add_message(ZbDrawer *d, const char *role, const char *text) {
+/* A bubble on screen; its `msg` row is bubble_row's. */
+static GtkWidget *new_bubble(ZbDrawer *d, const char *role, const char *text) {
   GtkWidget *label = gtk_label_new(NULL);
   gtk_label_set_text(GTK_LABEL(label), text);
   gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
@@ -597,7 +603,10 @@ static void add_message(ZbDrawer *d, const char *role, const char *text) {
                         : strcmp(role, "assistant") == 0 ? "assistant"
                         : strcmp(role, "error") == 0     ? "error"
                                                          : "system");
+  return label;
+}
 
+static void bubble_row(ZbDrawer *d, const char *role, const char *text) {
   size_t len = strlen(text);
   size_t keep = zb_drawer_row_text_len(text, len);
   char *capped = keep < len ? g_strdup_printf("%.*s…", (int)keep, text) : g_strdup(text);
@@ -606,6 +615,19 @@ static void add_message(ZbDrawer *d, const char *role, const char *text) {
   if (d->open && !d->stick_bottom) {
     set_unread(d, 1);
   }
+}
+
+static void add_message(ZbDrawer *d, const char *role, const char *text) {
+  new_bubble(d, role, text);
+  bubble_row(d, role, text);
+}
+
+/* The streaming bubble is whole: `text` is its last word, and its row is written. */
+static void end_stream(ZbDrawer *d, const char *text) {
+  gtk_label_set_text(GTK_LABEL(d->streaming), text);
+  bubble_row(d, "assistant", text);
+  d->streaming = NULL;
+  g_string_truncate(d->stream_text, 0);
 }
 
 /* --- the agent's reports (agent_helper.h; S3b) ------------------------------- */
@@ -627,6 +649,7 @@ void zb_drawer_agent_status(unsigned int win_id, const char *state, const char *
     }
     drawer_row(d, "status", state, reason, NULL);
     gtk_label_set_text(GTK_LABEL(d->status), status_text(state, reason));
+    gtk_widget_set_sensitive(d->stop, strcmp(state, "busy") == 0); /* S5.2 */
     if (strcmp(reason, "no-token") == 0) { /* S4.1: the Secrets window opens */
       GtkWidget *top = gtk_widget_get_toplevel(d->input);
       zb_secrets_window_present(top != NULL && GTK_IS_WINDOW(top) ? GTK_WINDOW(top) : NULL);
@@ -638,14 +661,24 @@ void zb_drawer_agent_message(unsigned int win_id, const char *role, const char *
   char *copy = g_strndup(text, len);
   for (GList *l = zb_drawers; l != NULL; l = l->next) {
     ZbDrawer *d = l->data;
-    if (win_id == 0 || d->win_id == win_id) {
-      add_message(d, role, copy);
+    if (win_id != 0 && d->win_id != win_id) {
+      continue;
     }
+    if (d->streaming != NULL && strcmp(role, "assistant") == 0) {
+      end_stream(d, copy);
+      continue;
+    }
+    if (d->streaming != NULL) { /* an error mid-reply: the bubble keeps what it shows */
+      char *partial = g_strdup(d->stream_text->str);
+      end_stream(d, partial);
+      g_free(partial);
+    }
+    add_message(d, role, copy);
   }
   g_free(copy);
 }
 
-/* S3b reports a coalesced delta as a row; S5 streams it into the bubble. */
+/* A coalesced delta: its row, and its text grows the reply's one bubble (S5.1). */
 void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char *text, size_t len) {
   for (GList *l = zb_drawers; l != NULL; l = l->next) {
     ZbDrawer *d = l->data;
@@ -654,8 +687,43 @@ void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char 
       char *capped = g_strdup_printf("%.*s%s", (int)keep, text, keep < len ? "…" : "");
       drawer_row(d, "delta", session, capped, NULL);
       g_free(capped);
+      g_string_append_len(d->stream_text, text, (gssize)len);
+      if (d->streaming == NULL) {
+        d->streaming = new_bubble(d, "assistant", d->stream_text->str);
+      } else {
+        gtk_label_set_text(GTK_LABEL(d->streaming), d->stream_text->str);
+      }
     }
   }
+}
+
+/* The window's reply was stopped (S5.2): its bubble keeps what it showed and ends
+ * with "(stopped)"; with nothing shown yet, the bubble is just that. */
+void zb_drawer_agent_stopped(unsigned int win_id) {
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (d->win_id != win_id) {
+      continue;
+    }
+    if (d->streaming == NULL) {
+      add_message(d, "assistant", ZB_STOPPED_TEXT);
+      continue;
+    }
+    GString *text = g_string_new(d->stream_text->str);
+    if (text->len > 0 && text->str[text->len - 1] != ' ') {
+      g_string_append_c(text, ' ');
+    }
+    g_string_append(text, ZB_STOPPED_TEXT);
+    end_stream(d, text->str);
+    g_string_free(text, TRUE);
+  }
+}
+
+static void on_stop_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  ZbDrawer *d = data;
+  zb_agent_helper_interrupt(d->win_id);
+  gtk_widget_grab_focus(d->input); /* Stop greys out: the next prompt is typed at once */
 }
 
 /* Send: the user's bubble, then the agent (agent_helper.c): with a provisioned
@@ -723,6 +791,8 @@ static void on_panel_allocated(GtkWidget *widget, GdkRectangle *allocation, gpoi
   ZbDrawerRect minus = widget_rect(d, d->minus);
   drawer_rect_row(d, "open", &panel);
   drawer_rect_row(d, "minus", &minus);
+  ZbDrawerRect stop = widget_rect(d, d->stop);
+  drawer_rect_row(d, "stop", &stop);
   if (d->account != NULL) {
     ZbDrawerRect account = widget_rect(d, d->account);
     drawer_rect_row(d, "account", &account);
@@ -1056,6 +1126,7 @@ static void build_panel(ZbDrawer *d) {
   g_signal_connect(d->list, "set-focus-child", G_CALLBACK(on_list_focus_child), d);
   g_signal_connect(d->minus, "clicked", G_CALLBACK(on_minus_clicked), d);
   g_signal_connect(d->send, "clicked", G_CALLBACK(on_send_clicked), d);
+  g_signal_connect(d->stop, "clicked", G_CALLBACK(on_stop_clicked), d);
   g_signal_connect(d->unread, "clicked", G_CALLBACK(on_unread_clicked), d);
   g_signal_connect(d->input, "key-press-event", G_CALLBACK(on_input_key), d);
   g_signal_connect(d->vadj, "changed", G_CALLBACK(on_list_changed), d);
@@ -1096,6 +1167,7 @@ ZbDrawer *zb_drawer_attach(GtkWidget *toplevel, GtkWidget *view, guint32 win_id,
   d->toplevel = toplevel;
   d->has_ratios = zb_drawer_start_ratios(&d->ratios);
   d->stick_bottom = 1;
+  d->stream_text = g_string_new(NULL);
 
   /* The page, then the floats in drawing order (D2-D5). */
   d->host = drawer_host_new(d);
@@ -1153,5 +1225,6 @@ void zb_drawer_detach(ZbDrawer *d) {
   g_atomic_int_add(&zb_drawer_live, -1);
   zb_drawers = g_list_remove(zb_drawers, d);
   g_free(d->windows_reported);
+  g_string_free(d->stream_text, TRUE);
   g_free(d);
 }
