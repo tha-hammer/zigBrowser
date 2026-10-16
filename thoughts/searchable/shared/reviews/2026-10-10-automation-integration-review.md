@@ -10351,3 +10351,43 @@ blocker in this review. The planted-keyring fix draws no new UI.
 
 All five requested commits are approved. The newest linear approved
 push-through SHA is **`6b34512`**.
+
+## S5a real-screen acceptance at `6b34512` (2026-10-16)
+
+**Status: USER-ACCEPTED on the real screen.** The orchestrator ran a clean
+export of `6b34512` on the user's NVIDIA X11 screen with the throwaway S5a
+home/profile, fake TLS API and media source disabled. The user confirmed all
+three new visible states:
+
+- one assistant bubble grew in place to “Streaming slowly into one bubble”;
+- Stop finalized the partial bubble as “This will be stopped (stopped)” and
+  restored the Ready state; and
+- authentication and overload failures rendered only the fixed sentences
+  “Claude rejected the saved token. Open Account to replace it.” and “Claude
+  is busy; try again shortly.”
+
+Neither the protocol rows nor stderr contained `SERVER TEXT` or `API Error`.
+The supplied screenshots also showed selected bubble text, reconfirming the
+previously accepted copyable-text behavior. This closes S5a's required
+real-screen check; no visual S5a blocker remains.
+
+**Observation pending owner confirmation, not presently a product blocker.**
+During the first, deliberately out-of-order try, the user submitted `stream`,
+`stop`, `again` and `token` while the first turn was still streaming. The
+queued `stop` turn eventually rendered “This will be stopped but this never
+shows” without a Stop click. The saved rows show FIFO was preserved: the first
+turn reached Ready before `stop` became Busy, and `stop` reached Ready before
+`again`, `token` and `busy` ran. Production likewise refuses to flush a queued
+prompt while the window is busy (`src/agent_helper.c:201-227`).
+
+The test server does not actually stall forever. Its documented and enforced
+`STALL_MAX_S = 30.0` makes an unset event resume after 30 seconds
+(`tests/e2e/fake_anthropic_api.py:10-15,35,64-83`), at which point it emits the
+second delta and completes normally. That exactly explains the observed text;
+a later queued request or SDK retry need not release the stream. I sent
+BlackRobin the row trace in Agent Mail 5860. BlackRobin is running a focused
+`queued-during-stall` case to confirm that no later API request starts before
+the held response ends. Until that answer lands, the explanation is marked
+**probable fixture timeout, pending BlackRobin confirmation**. If the focused
+case instead shows a later request advancing the held turn, reopen this as a
+product FIFO blocker and require the requested failing-first regression.
