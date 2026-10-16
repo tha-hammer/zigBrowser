@@ -437,6 +437,25 @@ pub fn build(b: *std.Build) void {
         .root_module = agent_secrets_dlopen_module,
     }));
     run_agent_secrets_dlopen_test.skip_foreign_checks = true;
+    // S4.2 edge (BlackRobin 5815): a token fetch that overlaps Remove's keyring clear
+    // answers ABSENT. Built like the dlopen test, so every clear answers at once.
+    const agent_secrets_clear_fetch_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_secrets_clear_fetch_module.addIncludePath(b.path("src"));
+    agent_secrets_clear_fetch_module.addCSourceFile(.{ .file = b.path("tests/agent_secrets_clear_fetch_test.c"), .flags = &.{"-std=gnu11"} });
+    agent_secrets_clear_fetch_module.addCSourceFile(.{
+        .file = b.path("src/agent_secrets.c"),
+        .flags = &.{ "-std=gnu11", "-DZB_LIBSECRET_SONAME=\"libzb-missing-secret.so.0\"" },
+    });
+    agent_secrets_clear_fetch_module.linkSystemLibrary("gio-2.0", .{ .use_pkg_config = .force });
+    const run_agent_secrets_clear_fetch_test = b.addRunArtifact(b.addExecutable(.{
+        .name = "agent-secrets-clear-fetch-test",
+        .root_module = agent_secrets_clear_fetch_module,
+    }));
+    run_agent_secrets_clear_fetch_test.skip_foreign_checks = true;
 
     const config_schema_module = b.createModule(.{
         .root_source_file = b.path("src/config_schema.zig"),
@@ -879,7 +898,7 @@ pub fn build(b: *std.Build) void {
     const agent_secrets_e2e = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable,fallback-persists,stale-store,lookup-race,remove-both,remove-close,account-button,account-after-no-token,canary-self-test,shape,shape-file",
+        "python3 tests/e2e/agent_secrets_test.py --binary \"$1\" --only secret-service,file-flag,rejected,no-keyring,remove,unreachable,fallback-persists,stale-store,lookup-race,remove-both,remove-close,account-button,account-after-no-token,canary-self-test,shape,shape-file,handoff,remove-session,hooks,remove-during-fetch,remove-during-net,send-during-clear,replace-during-fetch",
         "agent-secrets-e2e",
     });
     agent_secrets_e2e.addArtifactArg(exe);
@@ -1148,10 +1167,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_secrets_tests.step);
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     const agent_secrets_step = b.step("test-agent-secrets", "Run the Claude Agent token store's unit tests");
     agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
     agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
+    if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);

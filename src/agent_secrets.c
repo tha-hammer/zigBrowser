@@ -130,7 +130,16 @@ typedef struct {
   ZbSecretsLookupDone lookup_done;
   gpointer data;
   ZbSecretsResult result;
+  int clear; /* Remove's keyring clear (see clears_running) */
 } SsCall;
+
+/* Remove's keyring clear runs on a worker thread and can answer late. Until it
+ * has answered, the store hands out no token: a token fetch that overlaps a
+ * clear (started while one runs, or answered after one started) answers
+ * ZB_TOKEN_ABSENT and wipes what it read (BlackRobin 5815, RoseCat 5813). Main
+ * thread only: both counters change only in main-thread code. */
+static guint clears_running;
+static guint clears_started;
 
 static void ss_call_free(gpointer p) {
   SsCall *call = p;
@@ -209,6 +218,9 @@ static void call_done(GObject *source, GAsyncResult *res, gpointer user_data) {
   (void)source;
   (void)user_data;
   SsCall *call = g_task_get_task_data(G_TASK(res));
+  if (call->clear) {
+    clears_running--;
+  }
   if (call->lookup_done != NULL) {
     char *token = call->token; /* handed over to the callback */
     call->token = NULL;
@@ -237,6 +249,9 @@ void zb_secrets_service_clear_async(ZbSecretsDone done, gpointer data) {
   SsCall *call = g_new0(SsCall, 1);
   call->done = done;
   call->data = data;
+  call->clear = 1;
+  clears_running++;
+  clears_started++;
   run(clear_thread, call);
 }
 
@@ -260,6 +275,8 @@ typedef struct {
   void *data;
   ZbTokenResult result;
   char *token;
+  int overlapped;      /* a clear was running when the fetch started */
+  guint clears_before; /* clears_started then */
 } TokenFetch;
 
 static void token_fetch_free(gpointer p) {
@@ -317,6 +334,12 @@ static void token_fetch_done(GObject *source, GAsyncResult *res, gpointer user_d
   (void)source;
   (void)user_data;
   TokenFetch *fetch = g_task_get_task_data(G_TASK(res));
+  if (fetch->result == ZB_TOKEN_OK &&
+      (fetch->overlapped || clears_running > 0 || clears_started != fetch->clears_before)) {
+    fetch->result = ZB_TOKEN_ABSENT; /* the token is being removed: never handed out */
+    wipe_free(fetch->token);
+    fetch->token = NULL;
+  }
   if (fetch_observer != NULL) {
     fetch_observer(fetch->result);
   }
@@ -331,6 +354,8 @@ void zb_agent_token_fetch(int store, const char *agent_home, ZbTokenDone done, v
   fetch->agent_home = g_strdup(agent_home != NULL ? agent_home : "");
   fetch->done = done;
   fetch->data = data;
+  fetch->overlapped = clears_running > 0;
+  fetch->clears_before = clears_started;
   GTask *task = g_task_new(NULL, NULL, token_fetch_done, NULL);
   g_task_set_task_data(task, fetch, token_fetch_free);
   if (fetch_observer != NULL) {

@@ -7,6 +7,7 @@
 #include "agent_secrets_window.h"
 
 #include "agent_drawer.h" /* zb_emit_protocol_row */
+#include "agent_helper.h" /* zb_agent_helper_token_removed */
 #include "agent_secrets.h"
 
 #include <stdio.h>
@@ -325,6 +326,11 @@ static void on_remove(GtkWidget *button, gpointer unused) {
     secrets.file_choice = 0; /* nothing is left for this session's file choice to select */
   }
   zb_secrets_service_clear_async(on_cleared, begin_operation());
+  /* The helper read the token once at its start: it stops now (every session ends,
+   * so each Claude CLI exits), and the next Send starts afresh with whatever is then
+   * stored (plan S4.2). Like the removal, this is the operation's, not the window's:
+   * it happens at the click, even if the window closes before the keyring answers. */
+  zb_agent_helper_token_removed();
 }
 
 /* --- where things are (e2e rows) --------------------------------------------- */
