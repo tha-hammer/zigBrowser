@@ -10565,3 +10565,66 @@ they do not change the production/build graph covered by the exact `12dcb61`
 gate. With the plan blockers closed by `a3bf4ee`, every commit after origin is
 now explicitly reviewed. The newest approved push-through SHA is
 **`a3bf4ee`**.
+
+## S6a part 3: login-network reds and netd green (`dbde6c9`, `10248df`, `69f2207`)
+
+**Explicit verdict for `dbde6c9`: BLOCKED-for-tests.**
+The six netd cases pin the correct privilege split: an explicit empty `ports`
+list creates only `egress/proxy.sock`; the login manifest admits exactly the API
+and platform hosts through vetted test addresses; a chat manifest still refuses
+the platform host and keeps its two bridges; a test bridge cannot be smuggled
+into the empty set; shutdown removes the socket directory; and nine ports remain
+invalid. Reachability tests use the sealed netd fixture, so they exercise the
+real manifest/parser/bwrap/serve chain without external network access. Three
+of the six fail against the parent implementation, and the other three preserve
+the surrounding fail-closed and cleanup contracts. But its own module contract
+also says omission of the `ports` key preserves the built-in bridges
+(`agent/host/tests/test_netd_login.py:8-9`), and none of the six cases exercises
+that rule. This red must either gain that case or have its prose corrected
+forward with the plan before it is a complete failing-first contract.
+
+**Explicit verdict for `10248df`: BLOCKED-for-tests.** Its seven backend cases
+correctly require a second immutable network capability, the unchanged chat
+capability, an egress-only login launch spec, refusal when that egress directory
+is absent, a backend-derived manifest, injection of a changed login capability,
+and consumption of the resulting manifest by the real netd. The five reported
+mutants cover the main abstraction gaps.
+
+The red does not, however, test the commit point assigned to S6a by the approved
+plan. `agent/host/tests/test_login_network.py:90-117` calls
+`setup.login_net_manifest()` and manually writes its return value to a temporary
+manifest, but it never drives `setup.stage()` or otherwise observes
+`runtime/net-login.json`. Rev 16.18.1 requires the S6a backend test to prove
+that setup publishes both manifests (`plan:627,631`). A green can therefore add
+the pure producer and launch spec while forgetting the actual stage write, yet
+pass all seven cases. Add a failing-first publication assertion in this slice;
+deferring it to S6b would leave S6a green without its planned closure edge.
+
+**Explicit verdict for `69f2207`: BLOCKED.** The production shape is otherwise
+good. The outer process validates the manifest, turns the empty bridge set into
+one fixed `--no-bridges` flag, refuses that internal flag on the outer command
+line or together with a bridge port, and the sealed child consequently creates
+only `egress/`. Cleanup tolerates the intentionally absent bridge directory.
+Nonempty lists retain the 1-to-8 distinct-port validation, the test seam cannot
+name a nonexistent bridge, and `test_netd_login` is registered in the full
+gate. BlueBeaver reports a clean-export private-Xvfb gate at exact `69f2207`:
+**Build Summary: 146/146 steps succeeded; 892/892 tests passed**, with four
+killed mutants.
+
+One advertised manifest rule remains the opposite of production. Rev 16.18.1
+says a missing `ports` keeps the built-in two (`plan:628`), and the new red
+repeats that statement (`agent/host/tests/test_netd_login.py:8-9`). Yet
+`agent/host/zb_agent_host/netd.py:637-644` refuses a manifest without the key,
+and `agent/host/tests/test_netd_manifest.py:148-154` deliberately retains
+`"ports missing"` in its malformed table. The present behavior is the safer
+fail-closed choice: a partially written login manifest must not silently gain
+the two hook bridges. Correct the plan and red prose forward to say a partial
+manifest missing `ports` remains invalid (while a missing/legacy manifest with
+neither network key retains the historical defaults), or implement and test
+the promised fallback. Do not leave the contract and implementation opposed.
+
+I mailed both findings as Agent Mail 5925. I ran no local build or browser test
+because BlackRobin already held the exclusive full-gate slot for S5b; this
+review relies on exact diffs plus BlueBeaver's exact-commit gate above. Until
+the two follow-ups land, none of the three requested commits is approved for
+the linear prefix. The newest approved push-through SHA remains **`37518ea`**.
