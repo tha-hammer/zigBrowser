@@ -203,6 +203,20 @@ class PrivateKeyring:
             raise RuntimeError(f"keyring lookup failed: {done.stderr.strip()[-300:]}")
         return done.stdout or None
 
+    def plant(self, value: str) -> None:
+        """Stores `value` as the token item through libsecret, the way another same-user
+        program could (RoseCat 5763 advisory): the browser never wrote it."""
+        code = ("import gi, sys; gi.require_version('Secret', '1'); from gi.repository import Secret\n"
+                f"s = Secret.Schema.new({self.SCHEMA!r}, Secret.SchemaFlags.NONE,"
+                " {'account': Secret.SchemaAttributeType.STRING})\n"
+                "ok = Secret.password_store_sync(s, {'account': 'default'}, Secret.COLLECTION_DEFAULT,"
+                " 'planted', sys.argv[1], None)\n"
+                "sys.exit(0 if ok else 1)")
+        done = subprocess.run(["/usr/bin/python3", "-I", "-c", code, value], env=self.env, capture_output=True,
+                              text=True, timeout=20)
+        if done.returncode != 0:
+            raise RuntimeError(f"keyring store failed: {done.stderr.strip()[-300:]}")
+
     def close(self) -> None:
         owner = re.search(r"uint32 (\d+)", self._gdbus("GetConnectionUnixProcessID", "org.freedesktop.secrets"))
         for pid in ([int(owner.group(1))] if owner else []) + [self.dbus_pid]:
@@ -906,6 +920,35 @@ def case_replace_during_fetch(binary: Path, tmp: Path, check) -> None:
             b.stop()
 
 
+def case_planted_keyring(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5763/5794 advisory: an item planted in the Secret Service by another same-user
+    program, not of the setup-token shape, is refused on fetch like a bad token file: no helper
+    starts with it, no request or process carries it, the window does not call it connected,
+    and the only trace is a fixed refusal line (never its bytes)."""
+    planted = "sk-ant-api03-" + "".join(secrets.choice(CANARY_TAIL) for _ in range(40))  # an API key's shape
+    world = provisioned(binary, tmp, "planted")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
+        kr.plant(planted)
+        check(kr.lookup() == planted, "precondition: the planted item is in the keyring")
+        b = launch(binary, tmp, world, kr.bus_env, api, "planted")
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: any(r.fields[1:2] == ("no-token",) for r in b.rows("status", 1)), 20),
+                  "the Send finds no usable token (status no-token)", b)
+            check(b.wait(lambda: secrets_status(b) != [], 20), "the Secrets window opens", b)
+            check("connected-secret-service" not in secrets_status(b),
+                  f"the window does not call the planted item connected ({secrets_status(b)})", b)
+            time.sleep(3.0)
+            check(api.messages_requests() == [], f"no request reached the fake API ({len(api.messages_requests())})", b)
+            check(not needle_in_proc(planted), "no process holds the planted item", b)
+            printed = "\n".join(b.out + b.err)
+            check(not leaks(printed, planted), "no run of the planted item in rows, stdout or stderr", b)
+            check("zigBrowser: agent secrets: keyring token refused (bad-shape)" in printed,
+                  "one fixed refusal line names the reason", b)
+        finally:
+            b.stop()
+
+
 # --- RoseCat 5648: the active store, stale completions, the opening lookup, Remove ------------
 DELAY_ENV = "ZIGBROWSER_AGENT_SECRETS_TEST_DELAY"
 
@@ -1378,6 +1421,8 @@ CASES = {
     "remove-during-net": case_remove_during_net,
     "send-during-clear": case_send_during_clear,
     "replace-during-fetch": case_replace_during_fetch,
+    # RoseCat 5763/5794 advisory: a planted keyring item is shape-checked on fetch.
+    "planted-keyring": case_planted_keyring,
 }
 S4A_CASES = ("secret-service", "file-flag", "rejected", "no-keyring", "remove", "unreachable",
              "fallback-persists", "stale-store", "lookup-race", "remove-both")
