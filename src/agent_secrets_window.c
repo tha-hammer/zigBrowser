@@ -88,9 +88,12 @@ static Secrets secrets;
 /* src/agent_secrets.zig: the active store (explicit -1 for no flag). */
 int zb_secrets_effective_store(int explicit_store, int session_file_choice, const char *agent_home);
 /* 0 with the delays filled in, -1 for a bad value. */
-int zb_secrets_parse_test_delay(const char *text, unsigned *lookup_ms, unsigned *store_ms, unsigned *clear_ms);
+int zb_secrets_parse_test_delay(const char *text, unsigned *lookup_ms, unsigned *store_ms, unsigned *clear_ms,
+                                unsigned *preclear_ms);
 
 #define TEST_DELAY_ENV "ZIGBROWSER_AGENT_SECRETS_TEST_DELAY"
+
+static void on_fetch_observed(int result);
 
 void zb_secrets_window_configure(const ZbSecretsConfig *config) {
   secrets.config = *config;
@@ -105,11 +108,12 @@ void zb_secrets_window_setup(int store, const char *agent_home, int e2e_protocol
   zb_secrets_window_configure(&config);
   secrets.explicit_store = store == ZB_SECRET_STORE_FILE || store == ZB_SECRET_STORE_SERVICE ? store : -1;
   secrets.configured = 1;
+  zb_secrets_set_fetch_observer(e2e_protocol ? on_fetch_observed : NULL);
   const char *delay = e2e_protocol ? g_getenv(TEST_DELAY_ENV) : NULL;
   if (delay != NULL) {
-    unsigned lookup_ms = 0, store_ms = 0, clear_ms = 0;
-    if (zb_secrets_parse_test_delay(delay, &lookup_ms, &store_ms, &clear_ms) == 0) {
-      zb_secrets_set_test_delay(lookup_ms, store_ms, clear_ms);
+    unsigned lookup_ms = 0, store_ms = 0, clear_ms = 0, preclear_ms = 0;
+    if (zb_secrets_parse_test_delay(delay, &lookup_ms, &store_ms, &clear_ms, &preclear_ms) == 0) {
+      zb_secrets_set_test_delay(lookup_ms, store_ms, clear_ms, preclear_ms);
     } else {
       fprintf(stderr, "zigBrowser: agent: bad " TEST_DELAY_ENV "\n");
     }
@@ -132,6 +136,14 @@ int zb_secrets_window_open(void) { return secrets.window != NULL; }
 static void secrets_row(const char *kind, const char *a, const char *b) {
   const char *fields[] = {kind, a, b};
   zb_emit_protocol_row(secrets.config.e2e_protocol, "SECRETS", fields, b != NULL ? 3 : 2);
+}
+
+/* `SECRETS fetch begin` when a token fetch starts and `SECRETS fetch <result>`
+ * when it answers (e2e only): with `SECRETS remove click`, a test can see that a
+ * Remove fell between the two (RoseCat 5821). */
+static void on_fetch_observed(int result) {
+  static const char *const words[] = {"ok", "absent", "unavailable", "refused"};
+  secrets_row("fetch", result >= 0 && result <= 3 ? words[result] : "begin", NULL);
 }
 
 static void wipe_pending(void) {
@@ -306,6 +318,7 @@ static void on_remove(GtkWidget *button, gpointer unused) {
     return;
   }
   wipe_pending();
+  secrets_row("remove", "click", NULL);
   secrets.removing_store = zb_secrets_window_store();
   secrets.removed_file = zb_secrets_remove_file(secrets.agent_home) == 0;
   if (secrets.removed_file) {

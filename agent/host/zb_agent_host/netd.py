@@ -4,7 +4,7 @@ The browser starts it before the helper, outside the agent sandbox:
 
     python -I -m zb_agent_host.netd --sockdir DIR --bwrap BWRAP [--net-manifest PATH]
         [--test-allow NAME=PORT] [--test-bridge 51091=PORT] [--test-bridge 31337=PORT]
-        [--test-resolve NAME=ADDR[,ADDR...]] [--test-record-connects]
+        [--test-resolve NAME=ADDR[,ADDR...]] [--test-record-connects] [--test-ready-delay MS]
 
 PATH is the backend's network manifest, the agent home's runtime/net.json (MS0;
 BlueBeaver 5755, JadeBeacon 5762): its `egress.allow` replaces the built-in
@@ -30,7 +30,9 @@ sandbox's mount point there, so the waiting parent removes the then-empty DIR an
 with bwrap's status. A signal to the spawned PID is death without cleanup, as a crash.
 
 The --test-* options are honoured as given: the app passes them only under
---e2e-protocol (§3c.4, §3c.5). Standard library only."""
+--e2e-protocol (§3c.4, §3c.5). --test-ready-delay MS (1-4000) holds the ready line
+that long after the sockets exist, so a test can act while the browser still waits
+for the network (RoseCat 5830). Standard library only."""
 
 import ipaddress
 import json
@@ -515,9 +517,10 @@ def _port(text):
 
 
 def parse_args(argv):
-    opts = {"sockdir": None, "bwrap": None, "manifest": None, "allow": [], "bridge": [], "resolve": [],
+    opts = {"sockdir": None, "bwrap": None, "manifest": None, "ready_delay": None, "allow": [], "bridge": [], "resolve": [],
             "host": [], "port": [], "record": False, "serve": False}
-    single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest"}
+    single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest",
+              "--test-ready-delay": "ready_delay"}
     # --allow-host and --bridge-port carry the checked manifest to the sandboxed side.
     multi = {"--test-allow": "allow", "--test-bridge": "bridge", "--test-resolve": "resolve",
              "--allow-host": "host", "--bridge-port": "port"}
@@ -548,6 +551,11 @@ def parse_args(argv):
         raise ValueError("--allow-host and --bridge-port belong to the sandboxed side")
     if opts["manifest"] is not None and not os.path.isabs(opts["manifest"]):
         raise ValueError("--net-manifest needs an absolute path")
+    if opts["ready_delay"] is not None:
+        text = opts["ready_delay"]
+        if not (text.isascii() and text.isdigit() and text[0] != "0" and int(text) <= 4000):
+            raise ValueError(f"--test-ready-delay needs 1-4000 ms: {text!r}")
+        opts["ready_delay"] = int(text)
     allow = _pairs(opts["allow"], "--test-allow", _port)
     for name in allow:
         if not valid_dns_name(name):
@@ -692,9 +700,11 @@ def sandbox_argv(bwrap, sockdir, serve_argv):
     return argv
 
 
-def serve(sockdir, allow, bridges, resolve, record, hosts):
+def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None):
     netd = Netd(sockdir, allow, bridges, resolve, record, hosts)
     netd.start()
+    if ready_delay:
+        time.sleep(ready_delay / 1000)  # the e2e hold: the sockets exist, the line waits
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: done.set())
     signal.signal(signal.SIGINT, lambda *_: done.set())
@@ -726,7 +736,7 @@ def main(argv):
     sockdir = opts["sockdir"]
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))  # nothing the browser leaked goes further
     if opts["serve"]:
-        return serve(sockdir, allow, bridges, resolve, opts["record"], hosts)
+        return serve(sockdir, allow, bridges, resolve, opts["record"], hosts, opts["ready_delay"])
     bwrap = opts["bwrap"] or "/usr/bin/bwrap"
     if not os.access(bwrap, os.X_OK):
         log("network unavailable (bwrap)")

@@ -316,6 +316,28 @@ def tree_of(pid):
     return out
 
 
+class ReadyDelayTest(unittest.TestCase):
+    """--test-ready-delay MS (e2e only; RoseCat 5830): the sockets exist at once, the ready
+    line waits MS; a bad value exits 2."""
+
+    def test_the_ready_line_waits_while_the_sockets_already_exist(self):
+        d = Netd(self, "--test-ready-delay", "1500", start=False)
+        started = time.monotonic()
+        d.start()
+        deadline = time.monotonic() + 1.0
+        while not (d.dir / "egress" / "proxy.sock").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue((d.dir / "egress" / "proxy.sock").exists(), "the sockets exist before the line")
+        self.assertTrue(d.ready(), d.err)
+        self.assertGreaterEqual(time.monotonic() - started, 1.4)
+
+    def test_a_bad_ready_delay_exits_2(self):
+        for value in ("0", "4001", "01", "-1", "1.5", "x"):
+            with self.subTest(value):
+                d = Netd(self, "--test-ready-delay", value, start=False).start()
+                self.assertEqual(d.proc.wait(timeout=10), 2)
+
+
 class ParserTest(unittest.TestCase):
     """§3c.3: only CONNECT <allowlisted host>:443 HTTP/1.1. Every refusal has
     its exact status, an empty body, and makes zero upstream attempts."""

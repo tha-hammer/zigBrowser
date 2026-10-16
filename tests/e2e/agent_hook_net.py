@@ -93,9 +93,14 @@ def install_probe(directory: Path) -> Path:
     return target
 
 
-def probe_command(probe: Path, out: Path, nonce: str | None = None) -> tuple[str, str]:
-    """(the hook command line, its nonce)."""
+def probe_command(probe: Path, out: Path | None, nonce: str | None = None) -> tuple[str, str]:
+    """(the hook command line, its nonce). With `out` None the command has the
+    shape setup accepts for a provisioned hook (RoseCat 5841): bare `python3` (found
+    on the source PATH), the probe in the copied SAI, and the nonce, never a path;
+    the probe writes $HOME/scratchpad/hook-net-<nonce>.json itself."""
     nonce = nonce or secrets.token_hex(8)
+    if out is None:
+        return f"python3 -I -S {probe} {nonce}", nonce
     return f"/usr/bin/python3 -I -S {probe} {out} {nonce}", nonce
 
 

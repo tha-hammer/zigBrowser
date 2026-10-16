@@ -57,6 +57,9 @@ sys.path.insert(0, str(HERE))
 
 SECRETS_STATES = ("empty", "connected-secret-service", "connected-file", "no-keyring", "rejected")
 SECRETS_CONTROLS = ("entry", "save", "remove", "file")
+# `SECRETS fetch <word>` (a token fetch began, or answered) and `SECRETS remove click`: e2e-only
+# rows that make the order of a Remove and a fetch observable (RoseCat 5821).
+FETCH_WORDS = ("begin", "ok", "absent", "unavailable", "refused")
 # Every sentence the status line may show (src/agent_secrets_window.c): never the token.
 SECRETS_TEXTS = ("No token is stored.", "Connected. The token is stored in the system keyring.",
                  "Connected. The token is stored in a private file.", "That doesn't look like a token.",
@@ -101,6 +104,8 @@ def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
     ok = (kind == "status" and len(fields) == 1 and fields[0] in SECRETS_STATES) or \
          (kind == "text" and len(fields) == 1 and fields[0] in SECRETS_TEXTS) or \
          (kind == "tree" and len(fields) == 1 and re.fullmatch(r"[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*", fields[0])) or \
+         (kind == "fetch" and fields in tuple((w,) for w in FETCH_WORDS)) or \
+         (kind == "remove" and fields == ("click",)) or \
          (kind == "rect" and len(fields) == 2 and fields[0] in SECRETS_CONTROLS
           and re.fullmatch(r"-?\d+,-?\d+,\d+,\d+", fields[1]))
     if not ok:
@@ -116,11 +121,24 @@ def secrets_rows(lines: list[str]) -> list[tuple[str, tuple[str, ...]]]:
 DEAD_BUS = "unix:path=/nonexistent/zigbrowser-test-no-session-bus"
 
 
+RUNTIME_DIRS: list[Path] = []
+
+
+def short_runtime_dir() -> Path:
+    """A private, empty runtime dir short enough for netd's sockets (sun_path is 107 bytes);
+    removed at exit."""
+    run = Path(tempfile.mkdtemp(prefix="zbs-", dir="/tmp"))
+    run.chmod(0o700)
+    if not RUNTIME_DIRS:
+        import atexit
+        atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True) for d in RUNTIME_DIRS])
+    RUNTIME_DIRS.append(run)
+    return run
+
+
 def no_session_bus_env(env: dict[str, str], tmp: Path) -> dict[str, str]:
     """`env` with no usable session bus: a dead address and a private, empty runtime dir."""
-    run = Path(tempfile.mkdtemp(prefix="run-", dir=tmp))
-    run.chmod(0o700)
-    return dict(env, DBUS_SESSION_BUS_ADDRESS=DEAD_BUS, XDG_RUNTIME_DIR=str(run))
+    return dict(env, DBUS_SESSION_BUS_ADDRESS=DEAD_BUS, XDG_RUNTIME_DIR=str(short_runtime_dir()))
 
 
 def assert_not_user_bus(env: dict[str, str]) -> None:
@@ -221,10 +239,12 @@ def net_test_env(api, decoys) -> dict[str, str]:
             "ZIGBROWSER_AGENT_TEST_BASE_URL": f"https://{FAKE_HOST}"}
 
 
-def launch(binary: Path, tmp: Path, world, bus_env: dict[str, str], api, label: str, args: list[str] = ()):
+def launch(binary: Path, tmp: Path, world, bus_env: dict[str, str], api, label: str, args: list[str] = (),
+           net_extra: str = ""):
     """zigBrowser with the drawer on, the provisioned agent home of `world` (S3a), the TLS
     fake Messages API reached only through netd, private bridge decoys (b.decoys), and exactly
-    the session bus `bus_env` gives it (a private keyring's, or a dead one)."""
+    the session bus `bus_env` gives it (a private keyring's, or a dead one). `net_extra`: more
+    netd seam pairs (e.g. `--test-ready-delay ms=2500`)."""
     from agent_common import Browser
     from agent_hook_net import HookNetDecoys
     from slice2_common import isolate_profile_env
@@ -234,6 +254,8 @@ def launch(binary: Path, tmp: Path, world, bus_env: dict[str, str], api, label: 
     env.update(world.env())
     env.update(bus_env)
     env.update(net_test_env(api, decoys))
+    if net_extra:
+        env["ZIGBROWSER_AGENT_NET_TEST"] += " " + net_extra
     assert_not_user_bus(env)
     b = Browser(binary, tmp, label, ["--agent-drawer", "on", *args], env=env)
     b.decoys = decoys
@@ -250,6 +272,12 @@ def launch(binary: Path, tmp: Path, world, bus_env: dict[str, str], api, label: 
 
 def secrets_lines(b) -> list[tuple[str, tuple[str, ...]]]:
     return secrets_rows(list(b.out))
+
+
+def window_lines(b) -> list[tuple[str, tuple[str, ...]]]:
+    """The Secrets window's own rows (status, text, tree, rect): not the e2e-only fetch
+    observer's or the Remove click's, which say nothing about the window being open."""
+    return [(k, f) for k, f in secrets_lines(b) if k in ("status", "text", "tree", "rect")]
 
 
 def secrets_status(b) -> list[str]:
@@ -384,7 +412,7 @@ def scan_for(token: str, b, world, api) -> list[str]:
     if leaks(text, token):
         found.append(f"stdout/stderr ({leaks(text, token)[:2]})")
     store = world.agent / "secrets" / "claude-token"
-    for root in (world.agent, b.dir):
+    for root in (world.data, b.dir):  # the agent home and the profile are both under the data dir
         for path in root.rglob("*"):
             try:
                 if path.is_file() and not path.is_symlink() and path != store and needle in path.read_bytes():
@@ -457,8 +485,10 @@ def case_handoff(binary: Path, tmp: Path, check) -> None:
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20),
                   "SECRETS status connected-secret-service", b)
             send_prompt(b, "hello again")
-            check(b.wait(lambda: any(r["headers"].get("authorization") == f"Bearer {token}" for r in api.messages_requests()), 60),
-                  "the fake API received Bearer <canary>", b)
+            check(b.wait(lambda: any(r["headers"].get("authorization") == f"Bearer {token}" for r in api.messages_requests()), 90),
+                  "the fake API received Bearer <canary>, through relay and netd", b)
+            check(b.wait(lambda: ("assistant", "Scripted reply.") in [r.fields for r in b.rows("msg", 1)], 60),
+                  "the fake's reply is shown in the drawer", b)
             check(scan_for(token, b, world, api) == [], f"the canary is nowhere else: {scan_for(token, b, world, api)}", b)
         finally:
             b.stop()
@@ -648,7 +678,51 @@ def agentnet_ready(b) -> bool:
     return any(line.startswith("AGENTNET\tready") for line in list(b.out))
 
 
+def secrets_events(b) -> list[str]:
+    """The fetch and remove rows, in order: "fetch begin", "fetch ok", ..., "remove click"."""
+    return [f"{k} {f[0]}" for k, f in secrets_lines(b) if k in ("fetch", "remove")]
+
+
+def ordered(b) -> list[str]:
+    """In stdout order: "fetch <word>", "remove click", "status <state>" (the Secrets
+    window's), "agentnet ready" and "drawer starting" (window 1's agent status)."""
+    out = []
+    for line in list(b.out):
+        line = line.rstrip("\n")
+        if line.startswith("AGENTNET\tready"):
+            out.append("agentnet ready")
+        elif line.startswith("DRAWER\t1\tstatus\tstarting"):
+            out.append("drawer starting")
+        elif line.startswith(("SECRETS\tfetch\t", "SECRETS\tremove\t", "SECRETS\tstatus\t")):
+            kind, fields = parse_secrets_row(line)
+            out.append(f"{kind} {fields[0]}")
+    return out
+
+
+def answered(event: str) -> bool:
+    return event.startswith("fetch ") and event != "fetch begin"
+
+
+def remove_before_answer(b, since: int, fetch_begun: bool) -> bool:
+    """Observable precondition (RoseCat 5821): among the events after `since`, the Remove
+    click came before any fetch answered, so no helper could have started yet (a helper
+    starts only after its fetch answers). With `fetch_begun`, a fetch had also begun first:
+    the helper was waiting for that token at the click."""
+    ev = secrets_events(b)[since:]
+    if "remove click" not in ev:
+        return False
+    before = ev[:ev.index("remove click")]
+    return not any(answered(e) for e in before) and (not fetch_begun or "fetch begin" in before)
+
 REMOVED_BUBBLE = ("system", "The token was removed: the agent stopped")
+
+
+def rows_after_remove(b) -> list:
+    """Window 1's DRAWER rows printed after the (last) `SECRETS remove click` line."""
+    from agent_common import drawer_rows
+    out = list(b.out)
+    cut = max((i for i, line in enumerate(out) if line.startswith("SECRETS\tremove\tclick")), default=len(out))
+    return [r for r in drawer_rows(out[cut + 1:]) if r.win == 1]
 
 
 def marks(b) -> tuple[int, int]:
@@ -664,9 +738,10 @@ def removed_token_unused(b, api, token: str, check, label: str, mark=None) -> No
     fresh start before the next Send."""
     time.sleep(6.0)  # past every held-back answer (4 s)
     if mark is not None:
-        bubbles = [tuple(r.fields[:2]) for r in b.rows("msg", 1)[mark[1]:]]
+        after = rows_after_remove(b)  # in stdout order, so the Send's own rows are never counted
+        bubbles = [tuple(r.fields[:2]) for r in after if r.kind == "msg"]
         check(bubbles.count(REMOVED_BUBBLE) == 1, f"{label}: the waiting prompt is decided once ({bubbles})", b)
-        states = [r.fields[0] for r in b.rows("status", 1)[mark[0]:]]
+        states = [r.fields[0] for r in after if r.kind == "status"]
         check("starting" not in states, f"{label}: no fresh start before the next Send ({states})", b)
     bearers = [r for r in api.messages_requests() if r["headers"].get("authorization") == f"Bearer {token}"]
     check(bearers == [], f"{label}: no request carries the removed token ({len(bearers)})", b)
@@ -690,12 +765,17 @@ def case_remove_during_fetch(binary: Path, tmp: Path, check) -> None:
         try:
             send_prompt(b, "hello")
             check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 20), "no token: the Secrets window opens", b)
-            check(b.wait(agentnet_ready, 15), "netd is ready (the next fetch starts at once)", b)
+            check(b.wait(lambda: agentnet_ready(b), 15), "netd is ready (the next fetch starts at once)", b)
             paste_and_save(b, token)
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
+            since = len(secrets_events(b))
             send_prompt(b, "go")  # the fetch starts now; its answer is held back 4 s
+            check(b.wait(lambda: "fetch begin" in secrets_events(b)[since:], 10), "the Send's token fetch began", b)
             mark = marks(b)
             click_rect(b, secrets_rect(b, "remove"))
+            check(b.wait(lambda: "remove click" in secrets_events(b)[since:], 10), "the Remove click is seen", b)
+            check(remove_before_answer(b, since, fetch_begun=True),
+                  f"precondition: Remove came while the fetch was held ({secrets_events(b)[since:]})", b)
             check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 10), "Remove: SECRETS status empty", b)
             check(kr.lookup() is None, "the keyring item is gone")
             removed_token_unused(b, api, token, check, "remove-during-fetch", mark)
@@ -705,13 +785,16 @@ def case_remove_during_fetch(binary: Path, tmp: Path, check) -> None:
 
 def case_remove_during_net(binary: Path, tmp: Path, check) -> None:
     """RoseCat 5813, interleaving 2: the token is saved through the Account button, so the
-    first Send starts netd (H_WAIT_NET); Remove is clicked at once, and its keyring clear
-    answers 4 s late (the clear seam), so the fetch that follows netd's ready still finds the
-    old item. That credential must not start a helper either."""
+    first Send starts netd (H_WAIT_NET); Remove is clicked at once, and its keyring clear waits
+    4 s before it deletes (the preclear seam, RoseCat 5821), so a fetch after netd's ready can
+    still read the old item. netd holds its ready line 2.5 s (RoseCat 5830), and the rows show
+    the click came before netd was ready and before any fetch began: the helper was in
+    H_WAIT_NET. That credential must not start a helper either."""
     token = canary()
     world = provisioned(binary, tmp, "remove-net")
     with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
-        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "clear=4000"}), api, "remove-net")
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "preclear=4000"}), api, "remove-net",
+                   net_extra="--test-ready-delay ms=2500")
         try:
             open_drawer(b)
             b.wait(lambda: b.rows("account", 1) != [], 10)
@@ -720,10 +803,19 @@ def case_remove_during_net(binary: Path, tmp: Path, check) -> None:
             paste_and_save(b, token)
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
             check(not agentnet_ready(b), "no netd before the first Send (timing precondition)", b)
-            send_prompt(b, "go")  # the first Send: netd starts (H_WAIT_NET), then the fetch
+            since = len(ordered(b))
+            send_prompt(b, "go")  # the first Send: the config check, then netd starts (H_WAIT_NET)
+            check(b.wait(lambda: "drawer starting" in ordered(b)[since:], 10), "the helper is starting", b)
             mark = marks(b)
             click_rect(b, secrets_rect(b, "remove"))
-            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 10), "Remove: SECRETS status empty", b)
+            check(b.wait(lambda: "remove click" in ordered(b)[since:], 10), "the Remove click is seen", b)
+            order = ordered(b)[since:]
+            at = order.index("remove click") if "remove click" in order else -1
+            check(at >= 0 and "drawer starting" in order[:at] and "agentnet ready" not in order[:at]
+                  and "fetch begin" not in order[:at],
+                  f"precondition: Remove came after the start and before netd was ready or any fetch began "
+                  f"(H_WAIT_NET; {order})", b)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 15), "Remove: SECRETS status empty", b)
             removed_token_unused(b, api, token, check, "remove-during-net", mark)
             check(kr.lookup() is None, "the keyring item is gone")
         finally:
@@ -731,14 +823,14 @@ def case_remove_during_net(binary: Path, tmp: Path, check) -> None:
 
 
 def case_send_during_clear(binary: Path, tmp: Path, check) -> None:
-    """BlackRobin 5815, the store side: Remove with no helper yet, its keyring clear answering
-    6 s late (the clear seam), then a Send at once. That Send starts after the Remove, so the
+    """BlackRobin 5815, the store side: Remove with no helper yet, its keyring clear waiting 6 s
+    before it deletes (the preclear seam, RoseCat 5821), then a Send at once. That Send starts after the Remove, so the
     helper's own generation cannot reject it; the store must not hand out the item it is
     deleting. The Send finds no token: the drawer says so, and the old token is never used."""
     token = canary()
     world = provisioned(binary, tmp, "send-clear")
     with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
-        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "clear=6000"}), api, "send-clear")
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "preclear=6000"}), api, "send-clear")
         try:
             open_drawer(b)
             b.wait(lambda: b.rows("account", 1) != [], 10)
@@ -747,16 +839,69 @@ def case_send_during_clear(binary: Path, tmp: Path, check) -> None:
             paste_and_save(b, token)
             check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
             mark = marks(b)
+            since = len(ordered(b))
             click_rect(b, secrets_rect(b, "remove"))
             send_prompt(b, "go")  # while the clear is still running
+            check(b.wait(lambda: "fetch begin" in ordered(b)[since:], 15), "the Send's fetch began", b)
+            order = ordered(b)[since:]
+            check("remove click" in order and order.index("remove click") < order.index("fetch begin")
+                  and "status empty" not in order[:order.index("fetch begin")],
+                  f"precondition: the fetch began after Remove and before its clear answered ({order})", b)
             check(b.wait(lambda: any(r.fields[1:2] == ("no-token",) for r in b.rows("status", 1)[mark[0]:]), 20),
                   "the Send finds no token (status no-token)", b)
-            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 15), "Remove: SECRETS status empty", b)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 20), "Remove: SECRETS status empty", b)
             time.sleep(2.0)
             bearers = [r for r in api.messages_requests() if r["headers"].get("authorization") == f"Bearer {token}"]
             check(bearers == [], f"no request carries the removed token ({len(bearers)})", b)
             check(not needle_in_proc(token), "no process holds the removed token", b)
             check(kr.lookup() is None, "the keyring item is gone")
+        finally:
+            b.stop()
+
+
+def case_replace_during_fetch(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 5822, why the generation exists: a fetch begun before Remove (its answer held
+    6 s) must lose even when, by the time it answers, a replacement token is saved and a new
+    Send's fetch is pending (the helper is waiting for a token again, so its state alone
+    cannot tell the answers apart). Only the replacement is ever used, and the new prompt is
+    answered."""
+    old, new = canary(), canary()
+    world = provisioned(binary, tmp, "replace-fetch")
+    with PrivateKeyring(tmp) as kr, fake_api(tmp, [{"text": "Scripted reply."}] * 4) as api:
+        b = launch(binary, tmp, world, dict(kr.bus_env, **{DELAY_ENV: "lookup=6000"}), api, "replace-fetch")
+        try:
+            send_prompt(b, "hello")
+            check(b.wait(lambda: secrets_status(b)[:1] == ["empty"], 25), "no token: the Secrets window opens", b)
+            paste_and_save(b, old)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 20), "the first token is stored", b)
+            since = len(secrets_events(b))
+            send_prompt(b, "go")
+            check(b.wait(lambda: "fetch begin" in secrets_events(b)[since:], 10), "the Send's fetch began (old token)", b)
+            click_rect(b, secrets_rect(b, "remove"))
+            check(b.wait(lambda: "remove click" in secrets_events(b)[since:], 10), "the Remove click is seen", b)
+            check(remove_before_answer(b, since, fetch_begun=True),
+                  f"precondition: Remove came while the fetch was held ({secrets_events(b)[since:]})", b)
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["empty"], 10), "Remove: SECRETS status empty", b)
+            paste_and_save_bad(b, new)  # the replacement, pasted: quick
+            check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-secret-service"], 10) and kr.lookup() == new,
+                  "the replacement token is stored", b)
+            status_mark = len(b.rows("status", 1))
+            send_prompt(b, "go again")
+            check(b.wait(lambda: secrets_events(b)[since:].count("fetch begin") >= 2, 10), "the second fetch began", b)
+            ev = secrets_events(b)[since:]
+            begins = [i for i, e in enumerate(ev) if e == "fetch begin"]
+            first_answer = next((i for i, e in enumerate(ev) if answered(e)), len(ev))
+            check(len(begins) >= 2 and begins[1] < first_answer,
+                  f"precondition: the second fetch began before the first answered ({ev})", b)
+            check(b.wait(lambda: any(r["headers"].get("authorization") == f"Bearer {new}" for r in api.messages_requests()), 90),
+                  "the replacement token reached the fake API", b)
+            check(b.wait(lambda: ("assistant", "Scripted reply.") in [tuple(r.fields[:2]) for r in b.rows("msg", 1)], 60),
+                  "the new prompt is answered", b)
+            reasons = [r.fields[1] for r in b.rows("status", 1)[status_mark:] if len(r.fields) > 1]
+            check("no-token" not in reasons, f"the stale answer never made the helper think no token is stored ({reasons})", b)
+            bearers = [r for r in api.messages_requests() if r["headers"].get("authorization") == f"Bearer {old}"]
+            check(bearers == [], f"no request carries the removed token ({len(bearers)})", b)
+            check(not needle_in_proc(old), "no process holds the removed token", b)
         finally:
             b.stop()
 
@@ -839,7 +984,7 @@ def case_fallback_persists(binary: Path, tmp: Path, check) -> None:
             send_prompt(b, "after a restart")
             found, seen = token_was_found(b, 0, 0)
             check(found, f"after a restart without the flag the file token is still the one used ({seen})", b)
-            check(secrets_lines(b) == [], f"and no Secrets window opens ({secrets_lines(b)[:3]})", b)
+            check(window_lines(b) == [], f"and no Secrets window opens ({window_lines(b)[:3]})", b)
         finally:
             b.stop()
 
@@ -965,11 +1110,11 @@ def case_remove_close(binary: Path, tmp: Path, check) -> None:
             clicked = time.monotonic()
             close_secrets_window(b)
             check(b.wait(lambda: not b.x.toplevels("Claude Agent account"), 5), "the window closed during Remove", b)
-            rows = len(secrets_lines(b))
+            rows = len(window_lines(b))
             b.wait(lambda: time.monotonic() - clicked > 6.0, 10)  # past the held-back clear answer
             check(not store.exists(), "the file is gone although the window closed first")
             check(kr.lookup() is None, "and so is the keyring item")
-            check(secrets_lines(b)[rows:] == [], f"the late answer changed no row ({secrets_lines(b)[rows:]})", b)
+            check(window_lines(b)[rows:] == [], f"the late answer changed no row ({window_lines(b)[rows:]})", b)
         finally:
             b.stop()
 
@@ -1147,8 +1292,11 @@ def case_hooks(binary: Path, tmp: Path, check) -> None:
 
     Red until S3b runs a session from the browser and S3n2's app side starts netd; the env
     dumps and notify POSTs of S3c's hook fixture join this case when it lands."""
+    import agent_setup_test
+    from agent_common import host_python
     from agent_hook_net import hook_network_failures, install_probe, probe_command
     from agent_setup_test import World, run_setup
+    agent_setup_test.PYTHON = host_python()  # World.env reads it (set only by that file's main)
     token = canary()
     world = World(tmp, "hooks")
     probe = install_probe(world.source / "hooks")
@@ -1156,10 +1304,11 @@ def case_hooks(binary: Path, tmp: Path, check) -> None:
     settings = world.settings()
     settings["hooks"] = {}
     for event in HOOK_EVENTS:
-        out = world.agent / "scratchpad" / f"hook-net-{event}.json"
-        command, nonce = probe_command(Path("~/.claude/hooks") / probe.name, out)
+        # The probe in the copied SAI (~ is the agent home when the hook runs); it writes its
+        # record to the agent home's scratchpad itself: setup refuses any other path token.
+        command, nonce = probe_command(Path("~/.claude/hooks") / probe.name, None)
         settings["hooks"][event] = [{"hooks": [{"type": "command", "command": command}]}]
-        results[event] = (out, nonce)
+        results[event] = (world.agent / "scratchpad" / f"hook-net-{nonce}.json", nonce)
     world.write_settings(settings)
     rc, _out, err, _events, _seen = run_setup(binary, world)
     check(rc == 0, f"--agent-setup provisions the probe hooks (rc={rc}: {err.strip()[-200:]})")
@@ -1228,6 +1377,7 @@ CASES = {
     "remove-during-fetch": case_remove_during_fetch,
     "remove-during-net": case_remove_during_net,
     "send-during-clear": case_send_during_clear,
+    "replace-during-fetch": case_replace_during_fetch,
 }
 S4A_CASES = ("secret-service", "file-flag", "rejected", "no-keyring", "remove", "unreachable",
              "fallback-persists", "stale-store", "lookup-race", "remove-both")

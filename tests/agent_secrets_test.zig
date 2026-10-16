@@ -311,13 +311,14 @@ test "fileExists: any entry named secrets/claude-token counts (a refused one too
     }
 }
 
-test "parseTestDelay: lookup=, store=, clear= in milliseconds (0-10000), each at most once" {
-    const all = try secrets.parseTestDelay("lookup=3000,store=4000,clear=0");
-    try std.testing.expectEqual(secrets.TestDelay{ .lookup_ms = 3000, .store_ms = 4000, .clear_ms = 0 }, all);
+test "parseTestDelay: lookup=, store=, clear=, preclear= in milliseconds (0-10000), each at most once" {
+    const all = try secrets.parseTestDelay("lookup=3000,store=4000,clear=0,preclear=5000");
+    try std.testing.expectEqual(secrets.TestDelay{ .lookup_ms = 3000, .store_ms = 4000, .clear_ms = 0, .preclear_ms = 5000 }, all);
+    try std.testing.expectEqual(secrets.TestDelay{ .preclear_ms = 10000 }, try secrets.parseTestDelay("preclear=10000"));
     try std.testing.expectEqual(secrets.TestDelay{ .store_ms = 10000 }, try secrets.parseTestDelay("store=10000"));
     try std.testing.expectEqual(secrets.TestDelay{ .clear_ms = 1, .lookup_ms = 2 }, try secrets.parseTestDelay("clear=1,lookup=2"));
     const bad = [_][]const u8{ "", ",", "lookup", "lookup=", "lookup=-1", "lookup=+1", "lookup=01", "lookup=10001",
-        "lookup=1x", "fetch=1", "lookup=1,lookup=2", "lookup=1,", ",lookup=1", "lookup=1 ,store=2", "LOOKUP=1" };
+        "lookup=1x", "fetch=1", "lookup=1,lookup=2", "preclear=1,preclear=2", "preclear=10001", "PRECLEAR=1", "pre-clear=1", "lookup=1,", ",lookup=1", "lookup=1 ,store=2", "LOOKUP=1" };
     for (bad) |text| {
         if (secrets.parseTestDelay(text)) |_| {
             std.debug.print("accepted: {s}\n", .{text});

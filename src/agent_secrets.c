@@ -57,13 +57,18 @@ static GMutex ss_lock;
 /* ZIGBROWSER_AGENT_SECRETS_TEST_DELAY (--e2e-protocol only): each Secret
  * Service answer is held back this long after the call, so a test can make
  * an old answer land late (RoseCat 5648). Zero in production. */
-static guint delay_lookup_ms, delay_store_ms, delay_clear_ms;
+static guint delay_lookup_ms, delay_store_ms, delay_clear_ms, delay_preclear_ms;
 
-void zb_secrets_set_test_delay(unsigned lookup_ms, unsigned store_ms, unsigned clear_ms) {
+void zb_secrets_set_test_delay(unsigned lookup_ms, unsigned store_ms, unsigned clear_ms, unsigned preclear_ms) {
   delay_lookup_ms = lookup_ms;
   delay_store_ms = store_ms;
   delay_clear_ms = clear_ms;
+  delay_preclear_ms = preclear_ms;
 }
+
+static ZbTokenFetchObserver fetch_observer;
+
+void zb_secrets_set_fetch_observer(ZbTokenFetchObserver observer) { fetch_observer = observer; }
 
 static void hold_back(guint ms) {
   if (ms > 0) {
@@ -159,6 +164,7 @@ static void clear_thread(GTask *task, gpointer source, gpointer task_data, GCanc
   (void)cancellable;
   SsCall *call = task_data;
   call->result = ZB_SECRETS_UNAVAILABLE;
+  hold_back(delay_preclear_ms); /* e2e only: the item is still there meanwhile (RoseCat 5821) */
   if (ss_load()) {
     GError *error = NULL;
     GHashTable *attrs = token_attributes();
@@ -311,6 +317,9 @@ static void token_fetch_done(GObject *source, GAsyncResult *res, gpointer user_d
   (void)source;
   (void)user_data;
   TokenFetch *fetch = g_task_get_task_data(G_TASK(res));
+  if (fetch_observer != NULL) {
+    fetch_observer(fetch->result);
+  }
   char *token = fetch->token; /* handed over to the callback */
   fetch->token = NULL;
   fetch->done(fetch->result, token, fetch->data);
@@ -324,6 +333,9 @@ void zb_agent_token_fetch(int store, const char *agent_home, ZbTokenDone done, v
   fetch->data = data;
   GTask *task = g_task_new(NULL, NULL, token_fetch_done, NULL);
   g_task_set_task_data(task, fetch, token_fetch_free);
+  if (fetch_observer != NULL) {
+    fetch_observer(-1);
+  }
   g_task_run_in_thread(task, token_fetch_thread);
   g_object_unref(task);
 }

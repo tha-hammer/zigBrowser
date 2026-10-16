@@ -77,6 +77,31 @@ test "ZIGBROWSER_AGENT_NET_TEST: every other value refuses" {
     }
 }
 
+test "ZIGBROWSER_AGENT_NET_TEST: --test-ready-delay ms=1-4000, at most once, last in netd's argv (RoseCat 5830)" {
+    const held = try net.parseNetTest("--test-ready-delay ms=2500 --test-allow fake.zb.invalid=40001");
+    try std.testing.expectEqual(@as(?u16, 2500), held.ready_delay_ms);
+    try std.testing.expectEqual(@as(?u16, 40001), held.allow);
+    try std.testing.expectEqual(@as(?u16, 4000), (try net.parseNetTest("--test-ready-delay ms=4000")).ready_delay_ms);
+    for ([_][]const u8{
+        "--test-ready-delay ms=0",
+        "--test-ready-delay ms=4001",
+        "--test-ready-delay ms=01",
+        "--test-ready-delay ms=",
+        "--test-ready-delay 2500",
+        "--test-ready-delay s=2500",
+        "--test-ready-delay ms=1 --test-ready-delay ms=2",
+    }) |value| {
+        if (net.parseNetTest(value)) |_| {
+            std.debug.print("accepted: {s}\n", .{value});
+            return error.TestExpectedError;
+        } else |err| try std.testing.expectEqual(error.BadNetTest, err);
+    }
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const argv = try net.netdArgv(arena.allocator(), "/v/bin/python", "/pkg", "/d", "/usr/bin/bwrap", null, try net.parseNetTest("--test-ready-delay ms=2500 --test-bridge 31337=40003"));
+    try expectArgv(&.{ "/v/bin/python", "-I", "-S", "/pkg/zb_agent_host/netd.py", "--sockdir", "/d", "--bwrap", "/usr/bin/bwrap", "--test-bridge", "31337=40003", "--test-ready-delay", "2500" }, argv);
+}
+
 test "netd's argv: exact, with the seam's pairs only when given" {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();

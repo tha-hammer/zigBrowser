@@ -2,6 +2,11 @@
 S4.4, S7.6). A hook runs it as
 
     /usr/bin/python3 -I -S hook_net_probe.py <out.json> <nonce>
+    /usr/bin/python3 -I -S hook_net_probe.py <nonce>
+
+(the second form writes $HOME/scratchpad/hook-net-<nonce>.json: a hook that setup
+provisions may name no path outside the copied SAI, so its record goes where the
+agent home's writable scratchpad is; S4.4)
 
 and it records, without raising, what the hook's network can reach:
 - each bridge (127.0.0.1:51091 and :31337): it sends `bridge-<port>-<nonce>`,
@@ -151,4 +156,8 @@ def main(out, nonce):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2:
+        scratch = os.path.join(os.environ["HOME"], "scratchpad")
+        os.makedirs(scratch, exist_ok=True)
+        sys.exit(main(os.path.join(scratch, f"hook-net-{sys.argv[1]}.json"), sys.argv[1]))
     sys.exit(main(sys.argv[1], sys.argv[2]))

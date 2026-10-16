@@ -307,16 +307,18 @@ pub fn fileExists(agent_home: []const u8) bool {
 // --- the e2e-only answer delays (ZIGBROWSER_AGENT_SECRETS_TEST_DELAY) ------------
 
 /// How long each Secret Service answer is held back after the call, so a test
-/// can make an old answer land late (honoured only with --e2e-protocol).
-pub const TestDelay = struct { lookup_ms: u32 = 0, store_ms: u32 = 0, clear_ms: u32 = 0 };
+/// can make an old answer land late, and `preclear_ms`: how long Remove's clear
+/// waits before it deletes, so a test can read the item while a clear is under
+/// way (RoseCat 5821; honoured only with --e2e-protocol).
+pub const TestDelay = struct { lookup_ms: u32 = 0, store_ms: u32 = 0, clear_ms: u32 = 0, preclear_ms: u32 = 0 };
 pub const max_test_delay_ms = 10_000;
 
-/// `lookup=MS,store=MS,clear=MS`, any of them, each at most once; MS is
+/// `lookup=MS,store=MS,clear=MS,preclear=MS`, any of them, each at most once; MS is
 /// decimal 0-10000 with no sign and no leading zero.
 pub fn parseTestDelay(text: []const u8) error{BadTestDelay}!TestDelay {
     if (text.len == 0) return error.BadTestDelay;
     var out: TestDelay = .{};
-    var seen = [_]bool{ false, false, false };
+    var seen = [_]bool{ false, false, false, false };
     var it = std.mem.splitScalar(u8, text, ',');
     while (it.next()) |pair| {
         const eq = std.mem.indexOfScalar(u8, pair, '=') orelse return error.BadTestDelay;
@@ -329,13 +331,14 @@ pub fn parseTestDelay(text: []const u8) error{BadTestDelay}!TestDelay {
             ms = ms * 10 + (ch - '0');
         }
         if (ms > max_test_delay_ms) return error.BadTestDelay;
-        const index: usize = if (std.mem.eql(u8, name, "lookup")) 0 else if (std.mem.eql(u8, name, "store")) 1 else if (std.mem.eql(u8, name, "clear")) 2 else return error.BadTestDelay;
+        const index: usize = if (std.mem.eql(u8, name, "lookup")) 0 else if (std.mem.eql(u8, name, "store")) 1 else if (std.mem.eql(u8, name, "clear")) 2 else if (std.mem.eql(u8, name, "preclear")) 3 else return error.BadTestDelay;
         if (seen[index]) return error.BadTestDelay;
         seen[index] = true;
         switch (index) {
             0 => out.lookup_ms = ms,
             1 => out.store_ms = ms,
-            else => out.clear_ms = ms,
+            2 => out.clear_ms = ms,
+            else => out.preclear_ms = ms,
         }
     }
     return out;
@@ -423,11 +426,12 @@ fn zb_secrets_effective_store(explicit: c_int, session_file_choice: c_int, agent
     return @intFromEnum(effectiveStore(flag, session_file_choice != 0, fileExists(std.mem.span(agent_home))));
 }
 
-/// 0 with the three delays filled in, -1 for a bad value.
-fn zb_secrets_parse_test_delay(text: [*:0]const u8, lookup_ms: *c_uint, store_ms: *c_uint, clear_ms: *c_uint) callconv(.c) c_int {
+/// 0 with the four delays filled in, -1 for a bad value.
+fn zb_secrets_parse_test_delay(text: [*:0]const u8, lookup_ms: *c_uint, store_ms: *c_uint, clear_ms: *c_uint, preclear_ms: *c_uint) callconv(.c) c_int {
     const d = parseTestDelay(std.mem.span(text)) catch return -1;
     lookup_ms.* = d.lookup_ms;
     store_ms.* = d.store_ms;
     clear_ms.* = d.clear_ms;
+    preclear_ms.* = d.preclear_ms;
     return 0;
 }

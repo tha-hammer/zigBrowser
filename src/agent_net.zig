@@ -8,9 +8,11 @@
 //! helper only as arguments, never through an environment (§3c.4):
 //! - ZIGBROWSER_AGENT_NET_TEST: netd's test options, exactly pairs of
 //!   `--test-allow fake.zb.invalid=<port>` (at most once) and
-//!   `--test-bridge 51091|31337=<port>` (at most once each), separated by
-//!   single spaces; ports are decimal 1-65535, no sign, no leading zero
-//!   (BlackRobin 5570);
+//!   `--test-bridge 51091|31337=<port>` (at most once each) and
+//!   `--test-ready-delay ms=<1-4000>` (at most once: netd holds its ready
+//!   line that long, so a test can act while the helper waits for the
+//!   network; RoseCat 5830), separated by single spaces; numbers are decimal,
+//!   no sign, no leading zero (BlackRobin 5570);
 //! - ZIGBROWSER_AGENT_NET_TEST_CA: the fake API's test CA, an absolute path
 //!   to a regular file that is not a link, passed to `launch` as --test-ca.
 
@@ -48,7 +50,11 @@ pub const NetTest = struct {
     allow: ?u16 = null,
     bridge_51091: ?u16 = null,
     bridge_31337: ?u16 = null,
+    ready_delay_ms: ?u16 = null,
 };
+
+/// The longest ready hold: under the browser's 5 s wait for `netd ready`.
+pub const max_ready_delay_ms = 4000;
 
 /// ZIGBROWSER_AGENT_NET_TEST's grammar; anything else is error.BadNetTest.
 pub fn parseNetTest(text: []const u8) error{BadNetTest}!NetTest {
@@ -66,6 +72,8 @@ pub fn parseNetTest(text: []const u8) error{BadNetTest}!NetTest {
             &out.bridge_51091
         else if (std.mem.eql(u8, option, "--test-bridge") and std.mem.eql(u8, name, "31337"))
             &out.bridge_31337
+        else if (std.mem.eql(u8, option, "--test-ready-delay") and std.mem.eql(u8, name, "ms") and port <= max_ready_delay_ms)
+            &out.ready_delay_ms
         else
             return error.BadNetTest;
         if (slot.* != null) return error.BadNetTest;
@@ -99,6 +107,7 @@ pub fn netdArgv(a: std.mem.Allocator, python: []const u8, package_dir: []const u
         if (s.allow) |port| try argv.appendSlice(a, &.{ "--test-allow", try std.fmt.allocPrint(a, fake_host ++ "={d}", .{port}) });
         if (s.bridge_51091) |port| try argv.appendSlice(a, &.{ "--test-bridge", try std.fmt.allocPrint(a, "51091={d}", .{port}) });
         if (s.bridge_31337) |port| try argv.appendSlice(a, &.{ "--test-bridge", try std.fmt.allocPrint(a, "31337={d}", .{port}) });
+        if (s.ready_delay_ms) |ms| try argv.appendSlice(a, &.{ "--test-ready-delay", try std.fmt.allocPrint(a, "{d}", .{ms}) });
     }
     return argv.toOwnedSlice(a);
 }
