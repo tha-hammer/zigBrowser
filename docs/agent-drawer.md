@@ -46,8 +46,10 @@ the flag, and its window has no drawer.
 
 ## The drawer
 
-- It floats over the bottom of the page: the full width, and 40% of the
-  height (at least 220 px, at most 70%). The page is not resized.
+- It docks at the bottom of the window: the full width, and 40% of the
+  height (at least 220 px, at most 70%). While it is open, the page is laid
+  out above it, so the page is resized when the drawer opens and closes (a
+  floating panel over the page blanked an NVIDIA screen).
 - From top to bottom it has a header ("Claude Agent", the status, and **-**),
   the message list, and the input row (text, Send, Stop).
 - **Enter** sends the message. **Shift+Enter** starts a new line.
@@ -59,8 +61,9 @@ the flag, and its window has no drawer.
 ## The conversation
 
 - Each window has its own conversation (its own session), popups included.
-  Closing the window ends it. The agent keeps its transcripts in its own home
-  (`agent-home/.claude/projects/`).
+  Closing the window ends it. The agent keeps its transcripts in its own home,
+  in `agent-home/state/projects/` (the agent sees that folder as
+  `.claude/projects` inside its sandbox).
 - The reply streams into one bubble that grows as it arrives. The header shows
   "Working…" while it runs.
 - **Stop** is live while a reply runs. It stops the reply, which ends with
