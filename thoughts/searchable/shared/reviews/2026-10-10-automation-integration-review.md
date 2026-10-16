@@ -10262,3 +10262,92 @@ push-through SHA is **`51b21b3`**. The intervening S5a red-only commits
 `3ca5dea` and `f60e9e9` still lack their promised failing-first runs and formal
 verdict, so they prevent a linear push through `463e707`; this S4b verdict does
 not silently approve those unrelated commits.
+
+## S5a conversation and planted-keyring closure (`3ca5dea`, `f60e9e9`, `905e5a3`, `fb55315`, `6b34512`)
+
+**Explicit verdict for `3ca5dea`: APPROVED as the failing-first base,
+cumulatively corrected by `f60e9e9` and `905e5a3`.** Its real-binary cases
+drive the private-Xvfb UI with X input and clipboard selection, the production
+helper and bundled Claude CLI through relay/netd to the fake TLS API. The
+stream case therefore proves that a visible label grows before the held API
+continues, not merely that a protocol row exists. BlackRobin's clean-export
+red run on the prior implementation failed 17 of 26 e2e checks: there was no
+growing bubble, no Stop row or interrupt behavior, and raw API/helper error
+text appeared instead of the fixed sentences. The companion real-CLI error
+suite failed its 401/429/529 cases and errored because the retry option did not
+exist. The interrupt unit was already green and is correctly recorded as a
+pin of existing SDK behavior, not claimed as an invented red.
+
+**Explicit verdict for `f60e9e9`: APPROVED as the failing-first correction,
+cumulatively completed by `905e5a3`.** It changes the contract from “two helper
+errors make two bubbles” to one ending frame per prompt and adds the
+second-ending-frame negative case. During green work its first fixture was
+shown to be non-discriminating because an unconfirmed session is forgotten
+after the first error; `905e5a3` fixes that setup by emitting
+`session_opened` first. With that correction, removing the native no-busy
+guard produces two “Agent error” bubbles and the test fails. This is valid
+failing-first evidence for the intended production rule rather than a test
+which passes because the validator discarded an unknown session.
+
+**Explicit verdict for `905e5a3`: APPROVED.** The helper maps frame codes to
+fixed user sentences and never renders a frame's message; a session error with
+no running prompt is dropped as a second ending frame
+(`src/agent_helper.c@905e5a3:244-301`). Stop is per-window, valid only for an
+open busy session, emits one interrupt and suppresses that prompt's later
+deltas/messages until its ending frame; a new prompt resets the stopping state
+(`src/agent_helper.c@905e5a3:215-226,261-301,787-794`). The drawer owns one
+stream label and buffer per window, finalizes exactly one message row, appends
+“(stopped)” to the partial bubble, and returns focus to the input
+(`src/agent_drawer.c@905e5a3:586-720,1126-1131`). All of this remains on the
+GTK main context, and the stream buffer is allocated/destroyed with its drawer.
+
+At the helper boundary, an SDK `AssistantMessage.error` discards its raw text
+deltas and produces one error frame in place of the result; production keeps
+the CLI's normal retry policy, while `CLAUDE_CODE_MAX_RETRIES=0` is added only
+when hello carries the e2e test base URL
+(`agent/host/zb_agent_host/chat.py@905e5a3:36-95,111-117`;
+`agent/host/zb_agent_host/options.py@905e5a3:93-122`). The full-gate e2e passed
+38/38 checks: streamed on-screen selection, stopped partial text, same-session
+continuation, fixed 401/529 sentences, no raw server text, one error bubble,
+and recovery when an interrupt ends with an error. The stop-state-reset and
+second-ending-frame mutants both fail. The two new steps are dependencies of
+the full `test` step, so they cannot be bypassed by the gate.
+
+**Explicit verdict for `fb55315`: APPROVED as failing-first.** It plants an
+API-key-shaped value through libsecret itself on a private D-Bus/keyring, then
+uses the real binary and Send path. On `905e5a3`, two clean runs each failed
+four of eight checks: the planted value started the helper and reached the fake
+API. The regression requires no fake handoff seam: it checks the private
+Secret Service precondition, no-token status and Secrets window, no connected
+claim, no API request, no process copy, no row/log copy, and a fixed refusal
+line (`tests/e2e/agent_secrets_test.py@fb55315:923-949`).
+
+**Explicit verdict for `6b34512`: APPROVED.** Both Secret Service read paths
+reuse the single Zig setup-token parser and additionally require its trimmed
+slice to equal the complete stored value. The window lookup treats a malformed
+item as absent, while the helper fetch returns `ZB_TOKEN_REFUSED` with only the
+fixed `bad-shape` line. Neither branch duplicates the secret; libsecret's
+original is released with `secret_password_free`, which wipes its allocation
+(`src/agent_secrets.c@6b34512:107-116,201-224,319-344`). The no-fetch-check
+mutant fails four assertions and the no-window-check mutant makes the connected
+assertion fail. `planted-keyring` is registered in the full Secrets e2e; my
+independent run passed the complete 222-check suite, including all eight
+planted-item assertions. This closes the earlier planted-keyring S4 advisory.
+
+I independently ran exact `6b34512` from a clean `git archive`, a fresh cache,
+a 1,800-second bound and private Xvfb (seed `0xe1b462d8`): **Build Summary:
+142/142 steps succeeded; 882/882 tests passed**. The top-level process exited
+0. An intermediate “failed command” line was the output of an expected nested
+negative-path test; its containing step passed. The EXIT trap deleted the
+throwaway export, and no live display, socket, profile or real keyring was
+used.
+
+S5a adds visibly growing assistant bubbles, an active Stop state and fixed
+error bubbles. Its code and automated closure are approved, and BlackRobin's
+throwaway real-screen recipe has passed its private-Xvfb dry run; **S5a is now
+ready for the user's real-screen check** of those three states. That visual
+acceptance is still to be recorded, but it does not reveal a code or gate
+blocker in this review. The planted-keyring fix draws no new UI.
+
+All five requested commits are approved. The newest linear approved
+push-through SHA is **`6b34512`**.
