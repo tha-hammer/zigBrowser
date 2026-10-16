@@ -10180,3 +10180,85 @@ the follow-up commits and one full clean-export gate. I have not started a
 competing build. Until that evidence is green, the newest approved linear
 push-through SHA remains **`281f33f`**; `51b21b3` is individually approved but
 is preceded by the still-blocked `711d78f`.
+
+## S4b token-removal race closure (`711d78f`, `68e7534`, `6bcc540`, `463e707`)
+
+**Explicit verdict for `711d78f`: APPROVED as the failing-first base,
+cumulatively corrected by `6bcc540`.** The original commit established the
+missing clear/fetch unit boundary and three real-binary race cases, but its
+timing-only state inference and lack of a replacement overlap were the reasons
+for the interim BLOCKED-for-tests verdict above. `6bcc540` replaces those weak
+preconditions with observable fetch/remove/netd rows and adds the discriminating
+replacement case. The corrected red state was run three times at the old helper:
+each real-binary run failed 14 of 51 checks, and the C test failed both overlap
+assertions. Every row-order precondition held. This closes the interim test
+finding rather than overlooking it.
+
+**Explicit verdict for `68e7534`: APPROVED.** Every Remove increments
+`token_gen`; the generation travels with the asynchronous token fetch, and its
+completion wipes and ignores an older value even if a subsequent Send has put
+the global helper state back in `H_WAIT_TOKEN`. A Remove in `H_WAIT_NET` or
+`H_WAIT_TOKEN` decides the queued prompt once, makes the helper idle and prevents
+a later net-ready callback from fetching (`src/agent_helper.c@68e7534:108-113,
+574-600,768-789`). The state-only mutant fails the replacement overlap, and the
+mutant without the `H_WAIT_NET` arm fails the held-netd case, each in three of
+three clean runs. This closes the helper half of the `658a403` blocker.
+
+**Explicit verdict for `6bcc540`: APPROVED.** Its seams remain inert without
+`--e2e-protocol`: the app only parses the netd ready hold in e2e mode, and only
+e2e setup installs the Secrets fetch observer. The observer receives the fixed
+result enum, never a credential. The real-binary cases now prove, rather than
+infer:
+
+- `fetch begin -> remove click` before any answer (`H_WAIT_TOKEN`);
+- `drawer starting -> remove click`, with neither netd-ready nor fetch first
+  (`H_WAIT_NET`);
+- a post-Remove fetch begins before the delayed clear answers; and
+- a distinct replacement's second fetch begins before the stale first answer.
+
+They drive X clicks, the production helper, private keyring, netd and fake HTTPS
+API. The hooks case provisions through the real setup path and drives all four
+S4 hook events; it proves both bridge positives, no proxy/API path, no token or
+messaging environment name, and no canary in the records
+(`tests/e2e/agent_secrets_test.py@6bcc540:676-906,1286-1350`). The setup-valid
+hook command names the copied `~/.claude/hooks` script and lets it write only to
+the agent home's scratchpad. The first owner gate exposed one test-hygiene bug:
+two “window did not open/change” assertions counted the new observer rows.
+`window_lines()` now limits those assertions to the window's `status`, `text`,
+`tree` and `rect` rows without weakening or removing the observer.
+
+**Explicit verdict for `463e707`: APPROVED.** Remove starts the asynchronous
+clear, immediately invalidates/stops the helper independently of whether the
+Secrets window later closes, and deletes the file at the click
+(`src/agent_secrets_window.c@463e707:291-333`). The store-side guard records on
+the GTK main context whether a fetch started during a clear, a clear is still
+running at its answer, or a clear began in between. Any successful overlapping
+fetch is changed to ABSENT and its copied token is wiped before the consumer is
+called (`src/agent_secrets.c@463e707:127-142,217-255,271-365`). Multiple clears
+compose correctly through the running counter and monotonic start counter; no
+worker accesses those counters. The no-store-guard mutant fails the
+send-during-clear e2e and two of four C assertions in three of three runs.
+
+The clear/fetch C regression is registered in both `test` and
+`test-agent-secrets`, and all seven S4b real-binary cases are in the full gate
+(`build.zig@463e707:437-461,898-902,1167-1175`). BlueBeaver's corrected clean
+export passed **140/140 steps and 881/881 tests**. I independently ran exact
+`463e707` from a clean `git archive`, fresh cache, 1800-second bound and private
+Xvfb (seed `0xe843d2b6`): **Build Summary: 140/140 steps succeeded; 881/881 tests
+passed**. The apparent `failed command` lines belonged to expected negative
+subtests; the top-level gate exited 0. The EXIT trap deleted the export, and no
+live display, profile or socket was used.
+
+S4 is now **COMPLETE** against the plan: S4.1 and S4.3 were already approved and
+user-accepted on the real screen; this chain closes S4.2 and drives S4.4's
+SessionStart, UserPromptSubmit, Stop and SessionEnd closure. S4.4's explicitly
+deferred PreToolUse/PostToolUse portion remains assigned to S7.6, not an open S4
+item. S4b adds no widget, window, layout or rendering path. It can show the
+existing fixed system-bubble component during a removal race, so no new
+real-screen UI check is required.
+
+The commits are individually approved, but the newest **linear** approved
+push-through SHA is **`51b21b3`**. The intervening S5a red-only commits
+`3ca5dea` and `f60e9e9` still lack their promised failing-first runs and formal
+verdict, so they prevent a linear push through `463e707`; this S4b verdict does
+not silently approve those unrelated commits.
