@@ -10471,3 +10471,97 @@ product defect).**
 
 With `aca7638` correcting the red forward, all three commits are approved as a
 linear chain. The newest approved push-through SHA is **`aca7638`**.
+
+## S6 callback green and plan rev 16.18/16.18.1 (`bf3534d`, `12dcb61`, `7872d9a`, `a3bf4ee`)
+
+**Explicit verdict for `bf3534d`: BLOCKED as landed, cumulatively APPROVED with
+`a3bf4ee`.** Rev 16.18 correctly replaces the assumed browser callback with the
+captured `claude setup-token` behavior: a manual callback navigation is caught
+without loading it, `<code>#<state>` is typed only after the CLI prompt, the
+one-shot helper uses a 4096-column pty and fd 4 for the resulting token, and the
+auth view has an ephemeral app-owned context rather than a related browsing
+view. Its callback, frame, paste, replay, popup and real-screen cases agree with
+the capture and the accepted token boundary.
+
+Two implementation-defining boundaries were nevertheless absent in this
+revision:
+
+1. **BLOCKER — the login-only egress exception was not mapped onto the current
+   MS0 contract.** Production has one immutable `LaunchSpec.network`
+   (`agent/host/zb_agent_host/sandbox.py:66-103`), one backend allowlist
+   (`sandbox.py:47-51`), one `runtime/net.json` producer
+   (`agent/host/zb_agent_host/setup.py:433-449,485`), and one app-configured
+   netd (`src/app.zig:122-166`, `src/agent_net.zig:101-105`). Rev 16.18 said the
+   login launch admits `platform.claude.com` while chat remains API-only, but it
+   did not define a distinct capability, manifest, netd instance, ownership or
+   lifecycle. Implementing that sentence by widening the existing manifest
+   would have widened chat as well.
+2. **BLOCKER — the fake-provider seam was deferred to the S6b red.** The S6
+   split said its exact form and inertness would “come with S6b's red,” while
+   section 7 says its seam table is the complete set of non-production inputs.
+   A security-sensitive proxy/CA input needs its parser, consumer, TLS scope,
+   refusal behavior and inertness fixed before the implementation tests build
+   on it.
+
+I mailed both findings as Agent Mail 5911. **Status: CLOSED by `a3bf4ee`.** Rev
+16.18.1 adds a separate immutable `login_network()`/`login_launch_spec`, an
+unchanged chat `network()`, a distinct `runtime/net-login.json` with no bridge
+ports, and a second login-only netd whose stdin and socket directory end with
+the one-shot helper (`plan:625-634`). It pins both allowlists, proves the chat
+netd still refuses the platform host, and checks that no login netd or directory
+survives. It also defines `ZIGBROWSER_AGENT_AUTH_TEST` in the exhaustive seam
+table with exact loopback-proxy/regular-CA grammar, an ephemeral auth-context-only
+consumer, host-scoped TLS trust, fail-before-window behavior, and a no-flag
+inertness case (`plan:1180,2039,2055`). **Explicit verdict for `a3bf4ee`:
+APPROVED.**
+
+**Explicit verdict for `12dcb61`: APPROVED.** `src/agent_auth.zig:35-79`
+implements the production callback decision without allocation or page-owned
+code: scheme and host compare case-insensitively, explicit/default ports must
+match, userinfo is refused, the raw path is exact, state is unique/decoded and
+equal, and the unique code plus state is limited to visible ASCII other than
+`#` and 512 bytes. Form-query decoding is strict: `+` becomes SP and malformed
+`%XX` refuses (`src/agent_auth.zig:98-130`). `checkCallback` deliberately
+recognizes a callback whose code is absent or unsafe so the UI can block it as
+`code`, while every origin/path/state failure remains false. Nothing logs or
+returns the untrusted value on failure.
+
+The table tests cover default ports/case, lookalike hosts, userinfo, alternate
+paths, missing/duplicated/malformed state and code, controls, non-ASCII,
+punctuation and the exact length edge. The separate 10,000-pair oracle plus the
+eleven reported killed mutants exercise the state, host, port, userinfo,
+scheme, path, delimiter, form-decoding, byte-range and length guards. The build
+registers both this Zig suite and the transcript-matching fake in the full gate
+and in `test-agent-auth`; it does not bypass a production chain that exists in
+this UI-free part of S6a. NIT: the module header still says rev 16.17, although
+the implemented contract is rev 16.18.
+
+Validation on a clean export of exact `12dcb61`, with a fresh cache and private
+Xvfb:
+
+- `zig build test-agent-auth --summary all`: **5/5 steps succeeded; 10/10 Zig
+  tests passed**, and the fake-capture suite passed **9/9**.
+- `timeout 1500 env -u WAYLAND_DISPLAY xvfb-run -a zig build test --summary
+  all`: **Build Summary: 145/145 steps succeeded; 892/892 tests passed**.
+
+The throwaway export was deleted immediately after the gate.
+
+**Explicit verdict for `7872d9a`: APPROVED as a failing-first test commit.** It
+is test-only and deliberately unregistered until its green. The native contract
+requires exact envelopes/schemas, monotonic sequence and noncommitting rejected
+frames, ordered login outcomes, bounded values, and the accepted code grammar;
+its table and 10,000-string oracle cover the latter independently. The helper
+tests drive the captured fake over a pty and pin prompt ordering, fd-4-only
+token delivery, cancellation/EOF/timeout, exact authorize shape, fixed
+environment and terminal width, escape stripping, malformed inputs and the
+absence of token bytes from stdout/stderr. Against the parent there are no
+`LoginValidator`/`login` implementations, so the committed red cannot silently
+pass; the reported green draft also killed eight protocol and twelve helper
+mutants. Its lack of build registration is appropriate only while red and must
+end in the corresponding green.
+
+`7872d9a` and `a3bf4ee` add only unregistered red tests and documentation, so
+they do not change the production/build graph covered by the exact `12dcb61`
+gate. With the plan blockers closed by `a3bf4ee`, every commit after origin is
+now explicitly reviewed. The newest approved push-through SHA is
+**`a3bf4ee`**.
