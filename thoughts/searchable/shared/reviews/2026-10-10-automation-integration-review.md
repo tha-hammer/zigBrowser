@@ -10708,3 +10708,17 @@ of its NVIDIA rendering fix.
 These later approvals cannot cross the earlier blocked S6a part-3 chain
 (`dbde6c9`, `10248df`, `69f2207`). The newest linear approved push-through SHA
 therefore remains **`37518ea`**.
+
+### S5b real-screen acceptance and documentation closure
+
+**Status: USER-ACCEPTED on `86255dd` (2026-10-19).** On the user's real
+screen, with no drawer flag, the drawer appeared; each window retained its own
+conversation; and a missing agent home showed the runtime-not-set-up state.
+The user explicitly reported **“S 5b accepted.”** This closes S5b's requested
+real-screen qualification.
+
+**Explicit verdict for `13d6e9e`: APPROVED.** This docs-only follow-up closes
+both SHOULDs from the `86255dd` review: it describes the production/user-chosen
+docked panel and page resize, including the NVIDIA reason, and gives the real
+on-disk transcript path `agent-home/state/projects/` while explaining its
+`.claude/projects` sandbox view. No product or test behavior changes.
