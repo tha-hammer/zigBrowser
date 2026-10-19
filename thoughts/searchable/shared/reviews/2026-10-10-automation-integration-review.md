@@ -11955,3 +11955,113 @@ The blocker and follow-ups were sent to JadeBeacon as Agent Mail 6059. No
 Linux full gate was run for a docs-only plan change plus an unregistered,
 Mac-only failing-first script. The newest approved and pushed linear boundary
 remains **`da3028f`**.
+
+## S5c-1 correction, MS1b fix-forward and WS0 red (`e6327a5`, `f0e42ea`, `2f6214f`, `e36f5fa`)
+
+### `e6327a5` — BLOCKED-for-tests
+
+This red correction closes most of the findings on `ac47497`. The pure Zig
+oracle is independent of production exports, pins the literal 128/64 bounds,
+checks 128/129/192/193, distinguishes all six ASCII whitespace bytes from
+NBSP/U+200B, and compares every mapped offset. The popup-close case exercises
+window destruction during a stream; copy failures have bounded diagnostics;
+and the helper test fixture now kills its whole process group. Agent Mail 6066
+records credible failing-first results under a 2 GiB scope: all six helper
+flood checks fail, three of fourteen copy checks fail, and the pure Zig test
+does not compile without `breakRuns`.
+
+Two test oracles still admit false greens:
+
+1. **BLOCKER-for-tests — RSS fails open after its first sample.** A missing
+   initial PID or `VmRSS` now refuses correctly, but a later `rss_kb()` failure
+   merely returns from the sampler, and a missing final sample is ignored
+   (`tests/e2e/agent_flood_test.py:67-90`). `ok` remains true, so `bounded()`
+   can pass from a stale peak after the browser disappears or `/proc` becomes
+   unreadable. Any missing periodic sample must poison the result, and the
+   mandatory final sample must itself be present before the bound can pass.
+2. **BLOCKER-for-tests — “at most 256 KiB” permits 272 KiB.** Both the
+   over-cap message check and the endless check allow
+   `MESSAGE_MAX + DELTA_MAX` (`agent/host/tests/test_chat_flood.py:88-94,
+   172-177`). An implementation that forwards one whole extra 16 KiB delta
+   therefore passes even though rev 16.20.9 promises at most 256 KiB. Assert
+   `<= MESSAGE_MAX` exactly at a UTF-8 boundary and separately prove the
+   greatest fitting prefix is forwarded.
+
+**SHOULD:** use `ast.literal_eval` instead of `eval` for PRIMARY's textual
+readback (`agent_flood_test.py:210-218`), and make the fake cap slice a piece
+to its remaining budget so a future oversized `endless` piece cannot cross
+the stated 8 MiB ceiling.
+
+### `f0e42ea` — BLOCKED (plan)
+
+Rev 16.20.9 usefully records the measured reason for replacing labels above
+32 KiB with read-only text views, the LF break rule, per-widget refresh
+periods, the exact-copy mapping, SDK-client replacement, bounded fake and the
+separate SX-memlimit follow-up. The follow-up is explicitly not implementation
+ready and must receive its own red and review, so its cgroup-versus-RLIMIT
+choice does not block this revision.
+
+One normative contradiction does block the plan. The as-built section says a
+triple-click selects one 64-character LF-delimited line and only Ctrl+A/drag
+selects the whole long run (`plan:2105-2108`), but the real-screen case still
+requires triple-click plus Ctrl+C to copy the entire 200 KiB reply
+(`plan:2127-2129`). The recipe must use click, Ctrl+A, Ctrl+C, matching the
+E2E. The exact-cap mismatch above is a red-suite blocker, not ambiguity in the
+plan: `plan:2117` correctly says **at most** 256 KiB.
+
+The S5c findings were mailed to BlackRobin as Agent Mail 6071.
+
+### `2f6214f` — BLOCKED-for-tests
+
+The fix-forward closes the original host/slice false green: the remote block
+now receives the expected architecture, exact-matches normalized `uname -m`
+and the socket's `build.exec_arch`, and therefore rejects a duplicated host or
+the wrong universal slice. JadeBeacon's three-run evidence still reaches the
+intended failure: the signed x86_64 launch returns 139 while the arm64 leg
+passes the added checks.
+
+**BLOCKER-for-tests:** the native-arm probe converts failure into success:
+`sysctl -n sysctl.proc_translated 2>/dev/null || echo 0`
+(`tests/mac/ms1b_signed_gate.sh:110-112`). Missing or failed `sysctl` is thus
+reported as the exact native value. Require the command to succeed and then
+require its output to equal `0`, as `mac_universal_test.py` does. The earlier
+nonblocking cleanup remains: delete staging with `find -delete`, and remove
+`--no-uniform-check` or document the intentionally narrower M9 assertion.
+The verdict was mailed to JadeBeacon as Agent Mail 6072.
+
+### `e36f5fa` — BLOCKED-for-tests
+
+A clean archive of `e36f5fa` reproduces the declared red: all five tests error
+at the absent `tests/windows/gate.sh`; the file is unregistered. The cases are
+not yet safe future-green oracles:
+
+1. `NoDisplayTests` and the successful transport case ignore the stage return
+   code (`tests/windows/gate_selftest.py:142-160,179-193`). A gate that exits
+   before work can pass the former; one that invokes ssh and fails before tar
+   can pass the latter. Add a healthy stage that must exit zero and prove all
+   expected fakes ran, and make both cases require it.
+2. WS0.3 promises every child is display-clean, but only fake ssh records its
+   environment. Tar, virsh and every other child need the same observation or
+   one common observable launcher.
+3. The fake tar logs argv, so it can never see the parent shell's
+   `2>/dev/null` redirection. Make it write a sentinel to stderr and require
+   that sentinel in captured gate stderr.
+4. The partial-tar case accepts any nonzero result, including never invoking
+   tar. Couple it to a positive successful stage/tar invocation and require
+   the named tar failure or propagated status.
+5. The SSH check omits the required known-hosts file, `BatchMode=yes` and
+   `ConnectTimeout=15`, and does not reject conflicting later options. Parse
+   the complete recorded argv.
+6. WS0.5 calls for a property test, but the red has only a fixed corpus. Add a
+   deterministic/generated independent oracle over separator, case,
+   drive/UNC, dot-segment and prefix-collision combinations.
+
+**SHOULD:** give each selftest a private HOME rather than inheriting the review
+host's home. These findings were mailed to AzureRidge as Agent Mail 6073.
+
+`git diff --check` passed for all four commits; `bash -n` passed for the Mac
+script; every changed Python file parsed successfully. I did not take the full
+gate slot: the two reds are unregistered/platform-specific, the plan is docs
+only, and repeating the OOM-sensitive flood was unnecessary given its bounded
+clean-export evidence. The clean WS0 export was deleted immediately. The
+newest approved and pushed linear boundary remains **`da3028f`**.
