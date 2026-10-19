@@ -11190,3 +11190,65 @@ becoming a generic empty-list bypass.
 Because `2713c20` is the first commit after the already approved/pushed S6a
 tip and is blocked, the newest approved linear push-through SHA remains
 **`da3028f`**.
+
+## S6b1 real-screen/census plan and MS1 resource phase (`4657083`, `c53b580`)
+
+### Chat-drawer plan rev 16.18.4
+
+Rev 16.18.4 closes nearly all of review 5994/5996's missing contracts. It
+names `signin-paste`, makes the fake-CLI UI run use a throwaway file store
+instead of the user's keyring, exercises clipboard paste and every fixed
+sentence, adds malformed/foreign-state, Cancel, close, network/store failure
+and helper/netd cleanup cases, makes the authorize URL selectable/copyable,
+and defines an e2e-only netd census containing only distinct host, port and
+allowed/refused outcome (`plan:2077-2108`). Part B also uses a throwaway file
+store, requires the user's explicit consent, requires revocation of the minted
+long-lived token, and refuses to widen mounts silently.
+
+**Explicit verdict for `4657083`: BLOCKED (one approval-condition
+contradiction remains).** The network exception still says the real CLI census
+must show no target outside the two allowlisted hosts *before S6b is approved*
+(`plan:639`), and the finding this revision answers required S6b1's own
+real-CLI/mount/census qualification. But the new slice gate says only that
+S6b1 cannot be approved before fake-only Part A passes (`plan:2100`), then
+allows real-CLI Part B to move to S6b2 when the user declines
+(`plan:2108`). That permits S6b1 approval while neither the production CLI
+mounts nor the exceptional allowlist has been observed. Preserve the user's
+absolute right to decline, but make the outcome fail closed: Part B requires
+explicit consent; if consent is declined, no real sign-in is run and S6b1
+remains unapproved (or explicitly redefine the exception as provisional until
+all of S6b is complete, rather than claiming 5994 is closed for S6b1).
+
+No browser run or live sign-in was performed for this docs-only review.
+`git diff --check 4657083^ 4657083` passed.
+
+### MS1 resource phase gate
+
+**Explicit verdict for `c53b580`: BLOCKED-for-tests.** The new phase entry
+point is called rather than skipped, rejects empty resources for MS5 and
+unknown/lowercase labels, and retains the two-tree mismatch oracle for
+nonempty resources (`mac_universal_test.py:186-208`;
+`mac_universal_census_test.py:174-209`). The narrow off-display suite passes
+**19/19**.
+
+However, the exception is keyed only by the caller-provided string `MS1`.
+`mac_resource_compat.py` loads the manifest but passes only its `resources`
+list into `resource_phase` (`mac_resource_compat.py:34-53`); neither the
+oracle nor the tests see `components`. I supplied a manifest with
+`components=[python-runtime]`, `resources=[]` and invoked the real CLI with
+`--milestone MS1`; it printed `PASS mac-universal 1 assertions` and returned
+**0**. Thus the commit does not enforce the requested exact browser-only MS1
+state, and any caller can relabel a resource-bearing or incompletely declared
+bundle as MS1 to bypass resource compatibility.
+
+Pass the loaded inventory (or an independently derived bundle phase) through
+the gate and accept empty only when the milestone is exactly `MS1` **and** the
+inventory is exactly one browser component at the fixed browser path with no
+resources. Add negatives for an extra/non-browser component, a missing browser
+component and `--milestone MS1` against an MS5-shaped empty manifest. The
+current MS5/unknown and nonempty mismatch cases should remain.
+
+The concurrent macOS-plan edit landed as `f207087` while this review was in
+progress; it was not part of the requested pair and was not reviewed here.
+`git diff --check c53b580^ c53b580` passed. With both requested commits
+blocked, the newest approved linear push-through SHA remains **`da3028f`**.
