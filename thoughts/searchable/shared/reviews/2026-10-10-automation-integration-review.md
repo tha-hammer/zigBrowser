@@ -11410,3 +11410,87 @@ change the plan verdict. Findings were mailed as Agent Mail 6013.
 `git diff --check 1f0c04e^ 1f0c04e` passed. No browser or full gate was run:
 the reviewed commit is docs-only and BlueBeaver holds the gate slot. The newest
 approved linear push-through SHA remains **`da3028f`**.
+
+## S5c-1 red and transcript-scrub plan rev 16.20.3 (`ac47497`, `5baf1bc`)
+
+### S5c-1 failing-first tests
+
+BlackRobin's clean-export evidence is genuinely red at the intended seams:
+seven of the 25 drawer-e2e checks fail, three of five exact-copy checks fail,
+all four helper flood tests fail, and the Zig break test cannot compile before
+`breakRuns` exists. The additive fixtures retain the older chat, copy,
+lifecycle and error suites. The new cases cover the intended small-frame
+flood, long unbroken replies, exact clipboard content, scripted overflow and
+the real CLI/API overflow path. Three load-bearing test gaps remain.
+
+**Explicit verdict for `ac47497`: BLOCKED-for-tests.**
+
+1. **BLOCKER-for-tests — the RSS oracle can silently pass without measuring a
+   process.** `Rss.__init__` accepts either a failed browser lookup or an
+   unreadable first `VmRSS`; that leaves `base=None`, `peak=0`, and
+   `growth()==0`, so every `<64/<200 MiB` assertion is green
+   (`tests/e2e/agent_flood_test.py:54-76`). Construction must fail unless it
+   finds the exact browser PID and reads its baseline. Stop/join the sampler
+   and take a final sample before judging the bound as well.
+2. **BLOCKER-for-tests — the break and offset oracle is partly derived from
+   the implementation under test.** The boundary examples use exported
+   `break_run_min`/`break_every`, so a wrong production threshold can make its
+   own test pass (`tests/agent_drawer_breaks_test.zig:18-60`). The mapping
+   check mostly asks whether the production-selected original offset happens
+   to contain the same code point; repeated runs can hide a wrong offset
+   (`:74-104`). Pin literal 128/64 cases, including exactly 128, 129 and an
+   exact multiple where no trailing break is allowed; table all six ASCII
+   whitespace characters and NBSP/U+200B as non-whitespace; and compare the
+   complete shown output and every original offset with an independent test
+   oracle.
+3. **BLOCKER-for-tests — no destruction red exercises the pending idle.** The
+   S5.6 contract requires the one pending UI idle to be removed when the
+   drawer/window is destroyed, but no new case closes a window during an
+   active flood. Add that path and prove no late UI callback, use-after-free
+   or helper leak. Ending an ordinary endless turn does not cover destruction.
+
+**SHOULD:** the reused clipboard helper prints the full expected and actual
+text on mismatch (`tests/e2e/agent_drawer_copy_test.py:101`); the new 200 KB
+case should use bounded prefixes, lengths and/or a digest so one failure does
+not flood the gate log.
+
+### Transcript scrub rev 16.20.3
+
+The whole-life 0.25 s monitor closes the original indefinite post-result
+window. The revision also removes the undeclared pause seam, makes the four
+lifecycle outcomes explicit, enumerates file-operation fault injection and
+resets on an observed inode replacement or shrink. It does not yet make the
+crash/cursor story fail closed.
+
+**Explicit verdict for `5baf1bc`: BLOCKED.**
+
+1. **BLOCKER — a partial crash tail is deliberately left unsanitized.** Only
+   newline-terminated records are scanned (`plan:2124`), including at helper
+   start (`:2135`), and the red requires a partial token-bearing line to wait
+   until a later newline (`:2155`). A killed writer can leave a final partial
+   JSONL line containing a complete token; no newline may ever arrive, so the
+   next helper can emit `ready` while the credential remains forever. Scan
+   complete matches in the partial suffix while retaining the cursor at that
+   line's start, and add idle/start crash-residue reds with no final newline.
+2. **BLOCKER — `(st_dev, st_ino, cursor)` is insufficient for the promised
+   truncate-and-regrow case.** The reset fires only when a poll observes
+   `size < cursor` (`plan:2125-2131`). If a file is truncated and rewritten to
+   at least the old cursor before the next poll, the token-bearing prefix is
+   skipped. The red at `:2156` must perform that exact sequence without an
+   intermediate scan. Identity and size must also come from `fstat` on the
+   same opened regular, no-follow fd that is read/written; a path `stat`
+   followed by `open` otherwise reintroduces a replacement TOCTOU. Define a
+   prefix-integrity/reset mechanism or rescan strategy that catches it.
+3. **BLOCKER-for-tests — monitor and close supervision are unexercised.** The
+   plan states exit 3 and no `session_ended` for both paths
+   (`plan:2137-2141`), but helper-level reds cover only prompt end and startup
+   (`:2159-2163`). Add an idle-monitor fault and an `end_session`/shutdown
+   fault, each asserting exit 3, no `session_ended`, and no later frame. Direct
+   `Scrubber` file-op faults prove the low-level error, not lifecycle wiring.
+
+`python3 -m py_compile` passed for every Python file changed by `ac47497`, and
+`git diff --check` passed for both commits. No browser/full gate was run: this
+is an unregistered red plus a docs-only plan, and the shared worktree already
+contains BlackRobin's in-progress green. Findings were mailed as Agent Mail
+6015. Neither verdict advances the approved linear push-through SHA, which
+remains **`da3028f`**.
