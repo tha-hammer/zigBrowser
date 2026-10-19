@@ -172,6 +172,14 @@ pub fn build(b: *std.Build) void {
     const agent_runtime = b.addSystemCommand(&.{ "sh", "tools/install_agent_runtime.sh", b.install_prefix });
     b.step("agent-runtime", "Install the Claude Agent helper runtime into the install prefix").dependOn(&agent_runtime.step);
 
+    // MS1 (macOS launch, plan rev 6 ed13e5e): the two-host, two-arch universal gate. The
+    // per-arch builds are NATIVE on each Mac over Tailscale SSH (no -Dtarget); gate.sh runs the
+    // Intel (x86_64) leg always and the Apple-Silicon (arm64) leg only when ZB_MAC_ARM_HOST is
+    // configured, otherwise it prints a loud "NOT RUN: arm64 host not configured" and fails
+    // closed (never a silent pass). Driven from Linux; does not affect the Linux build/gate.
+    const mac_gate = b.addSystemCommand(&.{ "bash", "tests/mac/gate.sh" });
+    b.step("mac-gate", "Run the macOS two-host universal/arch gate over Tailscale SSH").dependOn(&mac_gate.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

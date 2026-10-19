@@ -259,6 +259,10 @@ def main() -> int:
     ap.add_argument("--expect-arch", required=True, choices=sorted(BOTH),
                     help="the arch THIS host must natively execute")
     ap.add_argument("--entitlements", required=True, help="packaging/macos/entitlements.plist")
+    ap.add_argument("--signed-binary", default=None,
+                    help="an ad-hoc-SIGNED copy of the universal binary for the MS1.3 `codesign -d` "
+                         "check (static; never run). MS1 RUNS the unsigned --binary (MS1.1/MS1.2); "
+                         "running a signed binary is proved by MS1b, not MS1. Defaults to --binary.")
     ap.add_argument("--reported-arch", default=None,
                     help="arch the running app reported over the socket (gate.sh supplies it); "
                          "its ABSENCE fails MS1.2 closed — it is never optional")
@@ -289,13 +293,22 @@ def main() -> int:
         if args.reported_arch is None:
             raise FailClosed("MS1.2: no --reported-arch (app did not report executing arch "
                              "over the socket); lipo/--version alone cannot pass")
-        c.ok(args.reported_arch == args.expect_arch,
-             f"app reported arch {args.reported_arch!r} != executing {args.expect_arch!r}")
+        # The span's build.exec_arch is zig's cpu tag ("aarch64"/"x86_64"); normalize it to the
+        # gate's arch names ("arm64"/"x86_64") the same way uname -m is normalized above.
+        reported_norm = ARM if args.reported_arch in ("arm64", "aarch64") else args.reported_arch
+        c.ok(reported_norm == args.expect_arch,
+             f"app reported arch {args.reported_arch!r} (normalized {reported_norm!r}) != "
+             f"executing {args.expect_arch!r}")
 
-        # MS1.3 — the manifest is the single source of truth; the signature matches it exactly.
+        # MS1.3 — the manifest is the single source of truth; the SIGNED binary's entitlements
+        # match it exactly. This is a STATIC `codesign -d` check (the signed binary is never run;
+        # MS1 runs the unsigned --binary above). MS1 does NOT prove a signed binary runs — MS1b does.
+        signed = Path(args.signed_binary) if args.signed_binary else binary
+        if not signed.is_file():
+            raise FailClosed(f"signed binary not found: {signed}")
         want = manifest_keys(Path(args.entitlements))
         c.ok(bool(want), "entitlements manifest has no keys")
-        got = codesign_entitlement_keys(binary)
+        got = codesign_entitlement_keys(signed)
         c.ok(got == want, f"signed entitlements {sorted(got)} != manifest {sorted(want)}")
     except FailClosed as e:
         print(f"NOT RUN / FAIL CLOSED: {e}", file=sys.stderr)

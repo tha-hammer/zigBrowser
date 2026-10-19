@@ -1,6 +1,7 @@
 //! M11: the engine records exactly one root automation.command span per
 //! command, child spans share its trace, and raw values never reach the sink.
 const std = @import("std");
+const builtin = @import("builtin");
 const automation = @import("automation");
 const fakes = @import("automation/fake_page_port.zig");
 
@@ -504,6 +505,39 @@ test "RecentTraceStore returns a trace's spans, root first, in the CLI shape" {
     try std.testing.expectEqualStrings("automation.platform.eval", spans[1].object.get("name").?.string);
     try std.testing.expectEqualStrings("r1", spans[1].object.get("parent_span_id").?.string);
     try std.testing.expectEqual(@as(i64, 7), spans[1].object.get("duration_ms").?.integer);
+}
+
+// MS1.2 (BlackRobin 5971): the command span must carry build.exec_arch FROM the BuildInfo it is
+// given — this is what tests/mac/gate.sh reads back to prove the executing slice's arch (no Rosetta).
+fn execArchFromSpan(trace: []const u8, build: telemetry.BuildInfo) ![]const u8 {
+    var store = telemetry.RecentTraceStore.init(gpa, 2);
+    defer store.deinit();
+    var attrs = rootAttrs(trace, "r1");
+    attrs.build = build;
+    try store.sink().recordCommandSpan(attrs);
+    const json = try store.queryJson(gpa, trace);
+    defer gpa.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+    defer parsed.deinit();
+    const spans = parsed.value.object.get("spans").?.array.items;
+    const attrsObj = spans[0].object.get("attributes").?.object;
+    const value = attrsObj.get("build.exec_arch") orelse return error.TestNoExecArch;
+    return gpa.dupe(u8, value.string);
+}
+
+test "MS1.2: build.exec_arch is the span's copy of BuildInfo.exec_arch, not a hard-coded value" {
+    // A SENTINEL that is neither a real arch name: a mutant that hard-codes the attribute (e.g.
+    // putAttr(\"build.exec_arch\", \"x86_64\")) would show \"x86_64\" here and FAIL on ANY arch.
+    const got = try execArchFromSpan("t-arch-sentinel", .{ .exec_arch = "canary-exec-arch-42" });
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("canary-exec-arch-42", got);
+}
+
+test "MS1.2: BuildInfo.exec_arch defaults to the executing cpu arch, and the span carries it" {
+    try std.testing.expectEqualStrings(@tagName(builtin.cpu.arch), (telemetry.BuildInfo{}).exec_arch);
+    const got = try execArchFromSpan("t-arch-default", .{});
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(@tagName(builtin.cpu.arch), got);
 }
 
 test "RecentTraceStore: unknown trace is empty; oldest traces are evicted at capacity" {

@@ -151,6 +151,12 @@ pub const BuildInfo = struct {
     /// automation.js `version` string.
     script_version: []const u8 = "phase1-m4-actionability",
     api_version: []const u8 = "phase1",
+    /// MS1.2: the arch of the slice that is actually EXECUTING, read back over the socket to
+    /// prove the arm64 host runs the arm64 slice natively (not x86_64 under Rosetta). This is
+    /// the executing slice's compile-time arch, which on a universal binary equals whichever
+    /// slice the loader chose — combined with the gate's external `sysctl.proc_translated==0`
+    /// check (tests/mac/gate.sh) it is the anti-Rosetta proof.
+    exec_arch: []const u8 = @tagName(builtin.cpu.arch),
 };
 
 pub const ChildSpan = struct {
@@ -296,6 +302,10 @@ pub const InMemoryTelemetrySink = struct {
         try self.putAttr(&attributes, "git.sha", attrs.build.git_sha);
         try self.putAttr(&attributes, "automation.script.version", attrs.build.script_version);
         try self.putAttr(&attributes, "api.version", attrs.build.api_version);
+        // MS1.2 (BlackRobin 5971): the EXECUTING slice's arch, read back by tests/mac/gate.sh via
+        // telemetry.query to prove the arm64 host runs the arm64 slice natively (not Rosetta).
+        // Zig's tag name — "x86_64" or "aarch64", which gate.sh normalizes to arm64.
+        try self.putAttr(&attributes, "build.exec_arch", attrs.build.exec_arch);
         if (attrs.selector_match_count) |count| try self.putAttr(&attributes, "selector.match_count", count);
 
         const redacted = attrs.redacted;

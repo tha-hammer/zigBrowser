@@ -121,6 +121,13 @@ def main() -> int:
     parser.add_argument("--index", default="tests/fixtures/app/index.html")
     parser.add_argument("--capture-path", default=None)
     parser.add_argument("--timeout-sec", type=float, default=35.0)
+    # Opt-in (default off, so existing M9/Linux usage is unchanged): capture + the title/protocol
+    # checks run here, but the PIL-based nonuniform check is DEFERRED to the caller, which analyzes
+    # the PNG on a host that has Pillow. Used by the MS1 two-host gate, where the arm Mac has no
+    # Pillow: the render still happens on the arm host; tests/mac/gate.sh routes the PNG to the
+    # Intel host's PIL. The capture-missing check below still runs, so a missing PNG still fails.
+    parser.add_argument("--no-uniform-check", action="store_true",
+                        help="skip the local PIL nonuniform check; the caller analyzes the PNG elsewhere")
     args = parser.parse_args()
 
     enabled, reason = hw_gate_ready()
@@ -166,6 +173,10 @@ def main() -> int:
         print("FAIL\tm9-render-capture-missing")
         print_fail_context("m9-render-capture-missing", result)
         return 1
+
+    if args.no_uniform_check:
+        print(f"PASS\tm9-render-webview-screenshot\t{capture_path}\tuniformity deferred to the caller's PIL host")
+        return 0
 
     ok_png, detail = check_nonuniform_png(capture_path)
     if not ok_png:

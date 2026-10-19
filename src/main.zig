@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const app = @import("app.zig");
 const cli = @import("cli.zig");
@@ -6,6 +7,16 @@ const errors = @import("errors.zig");
 const render_config = @import("render_config.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
+
+/// MS1 (2026-10-19): zig 0.16's segfault handler mishandles the x86_64 macOS signal
+/// `ucontext_t` — `std.debug.cpu_context.fromPosixSignalContext` panics "incorrect alignment"
+/// (`@alignCast`). An ad-hoc code-signed x86_64 binary takes a signal that handler would catch
+/// and aborts at startup, while the unsigned binary runs cleanly. We therefore disable zig's
+/// segfault handler on macOS ONLY; every other target keeps the exact default
+/// (`std.debug.default_enable_segfault_handler`), so the Linux build is unchanged.
+pub const std_options: std.Options = .{
+    .enable_segfault_handler = builtin.os.tag != .macos and std.debug.default_enable_segfault_handler,
+};
 
 comptime {
     _ = @import("ipc.zig");
