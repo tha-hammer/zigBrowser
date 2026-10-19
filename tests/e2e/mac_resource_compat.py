@@ -45,12 +45,13 @@ def main() -> int:
     try:
         inv = mu.load_inventory(Path(args.manifest))
         required = inv["resources"]
-        # resource_phase is the typed gate: it is CALLED at every milestone (MS1 included),
-        # accepts empty only for MS1, fails closed for any other empty, and otherwise runs
-        # the two-tree oracle (RoseCat 5995). We digest only when there is something to compare.
+        # resource_phase is the typed gate: it is CALLED at every milestone (MS1 included) and
+        # takes the WHOLE inventory, so an empty resource set is accepted only for the exact
+        # browser-only MS1 bundle (not merely the MS1 label); any other empty fails closed, and a
+        # nonempty set runs the two-tree oracle (RoseCat 5995/6002). Digest only when comparing.
         a = digest_tree(args.tree_a, required) if required else {}
         b = digest_tree(args.tree_b, required) if required else {}
-        mu.resource_phase(args.milestone, required, a, b, c)
+        mu.resource_phase(args.milestone, inv, a, b, c)
     except mu.FailClosed as e:
         print(f"NOT RUN / FAIL CLOSED: {e}", file=sys.stderr)
         return 2

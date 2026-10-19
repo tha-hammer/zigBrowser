@@ -183,27 +183,33 @@ def component_census(macho_archs: dict[str, set[str]], inventory: dict,
              f"required resource {res.get('role', res['path'])!r} missing: {res['path']}")
 
 
-# MS1.1 resource-phase policy (RoseCat 5995): an empty resource inventory is a typed,
-# fail-closed state, not a skip. It is accepted ONLY for the browser-only MS1 milestone
-# (the universal browser is a single fat Mach-O with no non-exec resource); EVERY other
-# milestone that ships resources — MS5 onward — MUST declare a nonempty set, else fail
-# closed. A mutant that drops this check (so empty always passes) is caught by the
-# "unqualified/MS5 empty fails" tests, so the exception cannot be confused with deleting
-# the resource check.
-EMPTY_ALLOWED_MILESTONES = frozenset({"MS1"})
+# MS1.1 resource-phase policy (RoseCat 5995/6002): an empty resource inventory is a typed,
+# fail-closed state, not a skip. It is accepted ONLY for the EXACT browser-only MS1 bundle —
+# milestone `MS1` AND exactly one component, the browser, at the fixed browser path, AND no
+# resources. Checking the `--milestone` label alone was a bypass: an MS5-shaped manifest
+# (python-runtime/claude-cli, no resources) relabeled MS1 wrongly passed (RoseCat 6002). Every
+# other shape with no resources — MS5, an extra/non-browser component, an unknown label — fails
+# closed, so the empty-allowed exception cannot be confused with deleting the resource check.
+MS1_MILESTONE = "MS1"
+MS1_BROWSER_GLOB = "bin/zigBrowser"
 
 
-def resource_phase(milestone: str, required: list, tree_a: dict[str, str],
+def resource_phase(milestone: str, inventory: dict, tree_a: dict[str, str],
                    tree_b: dict[str, str], c: Checks) -> None:
-    """The typed phase gate around `resource_compat`. With no declared resources, pass
-    ONLY for a browser-only milestone in EMPTY_ALLOWED_MILESTONES; otherwise fail closed.
-    With resources, run the two-tree oracle. This is what the green invokes at every
-    milestone (MS1 included — it is CALLED, not skipped), so the empty-allowed state is
-    explicit and mutation-resistant."""
+    """The typed phase gate around `resource_compat`, taking the WHOLE inventory. With no
+    declared resources, pass ONLY for the exact browser-only MS1 bundle (milestone MS1 + one
+    component at the fixed browser path + no resources); otherwise fail closed. With resources,
+    run the two-tree oracle. The green invokes this at every milestone (MS1 included — CALLED,
+    not skipped), so the empty-allowed state is explicit, shape-checked and mutation-resistant."""
+    required = inventory.get("resources") or []
     if not required:
-        c.ok(milestone in EMPTY_ALLOWED_MILESTONES,
-             f"empty resource inventory is allowed only for the browser-only MS1 milestone, "
-             f"not {milestone!r} — a milestone that ships resources must declare them")
+        comps = inventory.get("components") or []
+        browser_only = len(comps) == 1 and comps[0].get("path_glob") == MS1_BROWSER_GLOB
+        c.ok(milestone == MS1_MILESTONE and browser_only,
+             f"an empty resource inventory is accepted only for the exact browser-only MS1 bundle "
+             f"(milestone {MS1_MILESTONE} + exactly one component at {MS1_BROWSER_GLOB!r} + no "
+             f"resources); got milestone={milestone!r}, components="
+             f"{[x.get('path_glob') for x in comps]}")
         return
     resource_compat(tree_a, tree_b, required, c)
 

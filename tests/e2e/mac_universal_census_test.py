@@ -172,40 +172,62 @@ class ResourceCompatTest(unittest.TestCase):
 
 
 class ResourcePhaseTest(unittest.TestCase):
-    """5995: the empty-resource exception is a typed, fail-closed phase policy — empty is
-    accepted ONLY for browser-only MS1, and a dropped check is caught by the non-MS1 cases."""
+    """5995/6002: the empty-resource exception is a typed, shape-checked, fail-closed phase gate.
+    Empty is accepted ONLY for the EXACT browser-only MS1 bundle (one component at the fixed
+    browser path, no resources); the MS1 label alone is not enough (RoseCat's bypass)."""
 
-    REQ = INVENTORY["resources"]
     PATH = "lib/zigbrowser/agent-host/runtime.json"
+    RES = [{"role": "agent-runtime-manifest", "path": PATH}]
+    BROWSER = {"role": "browser", "path_glob": "bin/zigBrowser"}
+    PY = {"role": "python-runtime", "path_glob": "lib/zigbrowser/agent-host/venv/bin/python3"}
+    CLI = {"role": "claude-cli", "path_glob": "lib/.../_bundled/claude"}
 
-    def phase(self, milestone, required, a=None, b=None):
+    def phase(self, milestone, inventory, a=None, b=None):
         c = mu.Checks()
-        mu.resource_phase(milestone, required, a or {}, b or {}, c)
+        mu.resource_phase(milestone, inventory, a or {}, b or {}, c)
         return c
 
-    def test_ms1_empty_resources_passes(self):
-        c = self.phase("MS1", [])
-        self.assertEqual(c.failures, [], "browser-only MS1 with no resource must pass the phase gate")
+    def inv(self, components, resources):
+        return {"components": components, "resources": resources}
+
+    def test_ms1_browser_only_empty_passes(self):
+        c = self.phase("MS1", self.inv([self.BROWSER], []))
+        self.assertEqual(c.failures, [], "exact browser-only MS1 with no resource must pass")
         self.assertGreater(c.ran, 0, "the gate must actually assert for MS1 (called, not skipped)")
 
     def test_ms5_empty_resources_fails(self):
-        c = self.phase("MS5", [])
-        self.assertTrue(c.failures, "MS5 must declare resources — an empty set must fail closed")
+        c = self.phase("MS5", self.inv([self.BROWSER], []))
+        self.assertTrue(c.failures, "MS5 with no resource must fail closed")
 
     def test_unqualified_empty_fails(self):
-        # A missing/unknown milestone with an empty set must NOT be accepted (mutation guard:
-        # a dropped milestone check would wrongly pass this).
         for milestone in ("", "unknown", "ms1"):
-            c = self.phase(milestone, [])
+            c = self.phase(milestone, self.inv([self.BROWSER], []))
             self.assertTrue(c.failures, f"unqualified empty ({milestone!r}) must fail closed")
 
+    def test_ms1_extra_component_fails(self):
+        # Browser + an extra component is not the exact browser-only shape.
+        c = self.phase("MS1", self.inv([self.BROWSER, self.PY], []))
+        self.assertTrue(c.failures, "MS1 with an extra component must fail closed")
+
+    def test_ms1_non_browser_component_fails(self):
+        # RoseCat 6002's exact bypass: one non-browser component, empty resources, labeled MS1.
+        c = self.phase("MS1", self.inv([self.PY], []))
+        self.assertTrue(c.failures, "MS1 with a single non-browser component must fail closed")
+
+    def test_ms5_shaped_empty_relabeled_ms1_fails(self):
+        # An MS5-shaped manifest (python + CLI, no resources) relabeled MS1 must not pass.
+        c = self.phase("MS1", self.inv([self.PY, self.CLI], []))
+        self.assertTrue(c.failures, "an MS5-shaped empty manifest relabeled MS1 must fail closed")
+
     def test_ms5_nonempty_mismatch_still_fails(self):
-        c = self.phase("MS5", self.REQ, {self.PATH: "aa"}, {self.PATH: "bb"})
+        c = self.phase("MS5", self.inv([self.BROWSER, self.PY], self.RES),
+                       {self.PATH: "aa"}, {self.PATH: "bb"})
         self.assertTrue(any("differs across arches" in f for f in c.failures),
-                        f"a nonempty MS5 mismatch must still fail via the phase gate; got {c.failures}")
+                        f"a nonempty MS5 mismatch must still fail; got {c.failures}")
 
     def test_ms5_nonempty_identical_passes(self):
-        c = self.phase("MS5", self.REQ, {self.PATH: "aa"}, {self.PATH: "aa"})
+        c = self.phase("MS5", self.inv([self.BROWSER, self.PY], self.RES),
+                       {self.PATH: "aa"}, {self.PATH: "aa"})
         self.assertEqual(c.failures, [], "a nonempty MS5 match must pass the phase gate")
 
 
