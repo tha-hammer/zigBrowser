@@ -12284,3 +12284,57 @@ WS0 red chain through `809ec0f`; final WS0 approval still requires the green
 implementation, registered gate, mutants and live Windows evidence described
 by its owner. The newest approved and pushed linear boundary remains
 **`da3028f`**.
+
+## macOS MS1 green (`82ba373`)
+
+### `82ba373` — BLOCKED-for-tests
+
+The production and live-gate design matches plan rev 10. Each architecture is
+built natively on its own host, `lipo` produces one unsigned fat browser, and
+that same unsigned binary runs the M9 workload plus the automation-socket
+architecture probe on both machines. `BuildInfo.exec_arch` comes from the
+executing slice and is carried through the real root-span telemetry path; the
+two mutation-resistant Zig tests prove the sink copies the supplied value and
+that its default is the compiling slice. The host gate independently requires
+the expected `uname`, an un-translated arm host, and the reported executing
+slice. A separate signed copy is inspected for the static entitlement-key
+contract and is never presented as a signed-run result, preserving the MS1b
+boundary. The browser-only inventory and typed empty-resource phase also match
+the approved exact MS1 shape. Disabling Zig's broken signal handler is scoped
+to macOS; Linux retains `default_enable_segfault_handler`.
+
+**BLOCKER-for-tests — the accepted MS1 red/mutation suite did not join any
+registered gate.** `build.zig` contains no invocation of
+`tests/e2e/mac_universal_census_test.py` (nor its resource-compat entry point).
+Only the two new Zig telemetry cases entered `zig build test`, consistent with
+the reported count moving from 910 to 912. Therefore deleting or breaking the
+22-case off-Mac suite leaves the ordinary Linux gate green. The explicit
+`mac-gate` step covers the live success path, but does not preserve the
+negative contracts that made `0e41ae1` through `58551bb` acceptable: omitted
+and single-arch components, unprobeable files, wrong paths/depth, resource
+mismatch and the exact browser-only empty-resource exception. Register that
+pure suite in the ordinary `test` gate (preferably also a named narrow step)
+and provide a red-before/green-after registration proof. With Python isolated
+mode on this host, its working directory must be `tests/e2e` (or an explicit
+safe import path must be supplied), because invoking the path from the repo
+root under `-I` cannot import sibling `mac_universal_test`.
+
+Two nonblocking cleanups should accompany the fix-forward:
+
+- `tests/mac/gate.sh:42` reintroduces `rm -rf` for a throwaway tree despite the
+  standing cleanup rule; use `find "$STAGING" -depth -delete`.
+- The header at `tests/mac/gate.sh:10-15` says one signed universal is pushed
+  and run, while the implementation correctly runs unsigned and only inspects
+  a signed copy. Make the comment match the MS1/MS1b boundary.
+
+An independent clean archive passed the off-Mac suite **22/22**; Python
+compilation and `bash -n tests/mac/gate.sh` passed. JadeBeacon's clean-export,
+private-display Linux gate is accepted as valid evidence: **158/158 steps,
+912/912 tests, rc 0** under `-j1`, and the two-host Mac gate reported rc 0.
+The earlier claim that a deliberate browser window-id warning proved Xvfb
+resource exhaustion was corrected in Agent Mail 6100; only load-sensitive
+timing failures are currently established, so that separate harness issue is
+not attributed to `82ba373`. No second full gate was run while BlackRobin held
+the slot. Findings were sent to JadeBeacon as Agent Mail 6101.
+
+The newest approved and pushed linear boundary remains **`da3028f`**.
