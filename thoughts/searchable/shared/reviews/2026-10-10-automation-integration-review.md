@@ -11078,3 +11078,115 @@ The block is therefore not against the scope decision; it is against an
 inventory/test contract that cannot represent the artifacts the revised
 milestones actually ship. Findings were mailed to JadeBeacon before the MS1
 green.
+
+## S6b1 split and paste-path red (`2713c20`, `f18a5f1`)
+
+### Plan rev 16.18.3
+
+The architectural split is sound. S6b1 can prove the Secrets-window → native
+login owner → dedicated login netd → sandboxed one-shot helper → fd 4 → S4
+store chain without pretending that the auth WebView already exists. The plan
+also keeps chat's network capability unchanged, gives the login netd its own
+directory and lifetime, and leaves the callback/isolation surface wholly in
+S6b2 (`plan:2053-2073`). Moving that ownership into the new
+`agent_login.c` avoids coupling login lifetime to the long-lived chat helper.
+
+**Explicit verdict for `2713c20`: BLOCKED (one slice-gate contract is still
+missing).** The global UI rule says every UI slice adds and names its own
+real-hardware case and cannot be approved before the user's screen passes it
+(`plan:1209-1235,1393`). S6b1 adds four Secrets-window controls and seven
+sentences, and its security boundary explicitly depends on discovering whether
+the real `claude setup-token` needs another writable config path
+(`plan:2054-2064`). Nevertheless the split assigns “the real-screen check”
+only to S6b2 (`plan:2073`), and the login-network census still says merely
+“during S6b's” check (`plan:639`). Rev 16.18.4 must give **S6b1 its own named
+real-screen case**: exercise the paste UI and fixed sentences with the real
+setup-token flow, record the CONNECT census, and prove the current read-only
+mounts suffice (or revise them before S6b1 approval). S6b2 then keeps its
+separate auth-window/callback/isolation real-screen case. This prevents the
+new UI and the allowlist exception from landing one slice before their required
+hardware and real-CLI qualification.
+
+### Failing-first e2e
+
+The committed red is genuinely red at the outer production trigger: it opens
+the drawer and Secrets window with X input, clicks the planned Sign-in control,
+and observes the store/fake/lifetime boundaries rather than calling native
+login functions directly. The fake's scratchpad relocation is coherent with
+the sandbox, contains only a synthetic setup-token-shaped canary, and its
+narrow test passes **10/10**. `py_compile` also passes for all five changed
+Python files. BlueBeaver supplied repeatable clean-export red evidence: three
+runs, each 15 checks with the same seven intended failures.
+
+**Explicit verdict for `f18a5f1`: BLOCKED-for-tests.** Its direction and red
+evidence are accepted, but a correct green cannot satisfy the committed test
+as written and several claims are not actually proved:
+
+1. **BLOCKER-for-tests — process census false-positive.** `procs()` matches a
+   needle anywhere in every argv, so `login_netds()` counts bwrap/launcher and
+   `--serve` wrappers as netd processes (`agent_login_test.py:161-177`). The
+   `during-sign-in` assertion requires exactly one (`:255-265`). Restrict the
+   census to the real serving process, using the existing netd-launcher pattern.
+   BlueBeaver independently hit this in the green draft.
+2. **BLOCKER-for-tests — the inert X input is not aimed.** After discovering
+   the Secrets toplevel, the no-window-manager Xvfb case sends Alt+I without
+   focusing that window (`:327-344`). A correct mnemonic therefore remains
+   unreachable. Focus the named Secrets toplevel before input and retain the
+   private-display guard. BlueBeaver independently hit this too.
+3. **BLOCKER-for-tests — “paste path” never pastes and never rejects malformed
+   input.** `SignIn.paste` synthesizes one key at a time (`:83-92,146-150`),
+   despite the contract being a pasted `<code>#<state>`. Use the existing
+   private-Xvfb `Clipboard` plus Ctrl+V for this synthetic, non-secret code, and
+   add a malformed value (no `#`, extra `#`, internal whitespace, or invalid
+   byte) that shows “That doesn't look like a sign-in code.”, sends no code to
+   the fake, and stores nothing. Otherwise a product that breaks Ctrl+V or
+   forwards grammar-invalid input passes S6.4.
+4. **BLOCKER-for-tests — close does not prove its stated teardown.** The file
+   header and commit message say closing the Secrets window leaves no login
+   helper, netd or directory, but `case_close` checks only the cancelled row,
+   empty store, netd and directory (`:293-305`); only `case_cancel` checks
+   `login_helpers() == []` (`:276-288`). Add the helper assertion before the
+   enclosing browser teardown, so `Browser.stop()` cannot mask an orphan.
+
+**SHOULD for the green:** assert the fixed `SECRETS text` sentences at the
+relevant states and add focused failure-path coverage for `error-network` and
+`error-store`; the plan exposes those as UI contracts, but this red currently
+reads only `rect`, `login` and `status`. Also remove the unused `shutil`,
+`subprocess` and `e2e_cli` parameter while fixing the test.
+
+No browser or full gate was run: the e2e is intentionally unregistered/red and
+JadeBeacon held the gate slot. Only the display-free fake unit test and Python
+syntax checks were run locally.
+
+## macOS plan rev 8 (`774ce31`)
+
+Rev 8 **closes the first rev-7 representation blocker**. It now types
+`python-runtime` and `claude-cli` as fat native components while classifying
+the generated `runtime/bin/zb-claude` Python wrapper as a byte-compatible
+resource (`macOS plan:948-974`). That matches production's shebang template and
+real output path; the prior impossible `venv/bin/zb-claude` Mach-O role is gone.
+
+**Explicit verdict for `774ce31`: BLOCKED (the empty-resource exception is
+prose-only, not a fail-closed phase contract).** Rev 8 declares MS1's
+`resources: []`, but resolves the oracle conflict by not invoking
+`resource_compat` at all (`macOS plan:447-463`). There is no typed milestone or
+policy field consumed by the oracle, nor a red test proving that empty is
+accepted only for browser-only MS1 and refused for MS5. Thus an implementation
+can delete the invocation (or accidentally ship an undeclared resource) and
+look identical to the intended exception; the oracle's current
+fail-closed-on-empty rule never sees it.
+
+Rev 9 must make the exception executable and mutation-resistant. For example,
+add an explicit inventory policy/milestone value whose only legal MS1 state is
+`components={browser}, resources=[]`, still invoke a validating census/oracle
+entry point, and add tests that (a) this exact MS1 state passes, (b) empty
+resources without the MS1 declaration fail, and (c) MS5's resource-bearing
+inventory remains nonempty/fail-closed. An equivalent independent MS1 oracle
+is acceptable, but a build-script conditional that merely skips
+`mac_resource_compat.py` is not. The MS5 role/resource typing itself is
+approved; this finding is only about preventing the MS1 exception from
+becoming a generic empty-list bypass.
+
+Because `2713c20` is the first commit after the already approved/pushed S6a
+tip and is blocked, the newest approved linear push-through SHA remains
+**`da3028f`**.
