@@ -1,21 +1,22 @@
 {
   "_comment": [
-    "MS1.1 required-component inventory (plan rev 6, macOS plan:396-401). The universal",
-    "macOS app bundles native Mach-O code beyond the browser; EVERY bundled Mach-O must be",
-    "fat (x86_64 + arm64), and these required roles must all be present. The census",
-    "(tests/e2e/mac_universal_test.py) scans the bundle for every Mach-O and requires each",
-    "fat, so an UNLISTED single-arch binary cannot sneak through, AND requires each role",
-    "below to be present, so a green cannot ship only zigBrowser fat and drop the runtime.",
-    "'match' is the file basename a bundled Mach-O for that role must have. Non-executable",
-    "resources are listed under 'resources' and must be present; their byte-compatibility",
-    "across the two per-arch trees is verified by packaging/macos/build-dmg.sh before lipo",
-    "(the MS1 green), which this per-host census cannot do with a single arch tree."
+    "MS1.1 required-component inventory (plan rev 6, macOS plan:396-401; RoseCat 5968/5974).",
+    "The universal macOS app bundles native Mach-O code beyond the browser. The census",
+    "(tests/e2e/mac_universal_test.py) scans the WHOLE bundle for every Mach-O and requires",
+    "each fat (x86_64 + arm64) — so an unlisted single-arch binary cannot sneak through — AND",
+    "requires every role below present AT ITS EXACT path pattern, so a stray python3/claude/",
+    "zb-claude in the wrong location cannot satisfy a role. 'path_glob' is an fnmatch pattern",
+    "on the bundle-root-relative path. Probing fails closed: a file `file` cannot classify",
+    "rejects the census. Non-executable 'resources' must be present, and their byte-equality",
+    "across the two per-arch trees is enforced before lipo by the resource_compat oracle",
+    "(tests/e2e/mac_resource_compat.py), which packaging/macos/build-dmg.sh (the MS1 green)",
+    "routes both arch trees through; a single-arch tree here cannot do that comparison."
   ],
   "components": [
-    {"role": "browser", "match": "zigBrowser"},
-    {"role": "python-runtime", "match": "python3"},
-    {"role": "claude-cli", "match": "claude"},
-    {"role": "helper-launcher", "match": "zb-claude"}
+    {"role": "browser", "path_glob": "bin/zigBrowser"},
+    {"role": "python-runtime", "path_glob": "lib/zigbrowser/agent-host/venv/bin/python3"},
+    {"role": "claude-cli", "path_glob": "lib/zigbrowser/agent-host/venv/lib/*/site-packages/claude_agent_sdk/_bundled/claude"},
+    {"role": "helper-launcher", "path_glob": "lib/zigbrowser/agent-host/venv/bin/zb-claude"}
   ],
   "resources": [
     {"role": "agent-runtime-manifest", "path": "lib/zigbrowser/agent-host/runtime.json"}

@@ -10,28 +10,32 @@ Behaviors:
   MS1.1  a COMPLETE component census (no false-green): the bundle is scanned for
          EVERY Mach-O and each must be fat (x86_64 + arm64), so an unlisted
          single-arch binary cannot sneak through; and every required role in the
-         inventory (packaging/macos/universal_components.json) must be present, so
-         a green cannot ship only zigBrowser fat and drop the Python runtime, the
-         Claude CLI or the helper launcher. The inventory must be nonempty, and a
-         bundle with zero Mach-O is itself fail-closed. Declared non-executable
-         resources must be present (their cross-arch byte-compatibility is checked
-         by build-dmg.sh before lipo — a single arch tree here cannot).
+         inventory (packaging/macos/universal_components.json) must be present AT
+         ITS EXACT PATH PATTERN, so a stray `python3`/`claude`/`zb-claude` in the
+         wrong place cannot satisfy a role. Probing fails CLOSED: if `file` cannot
+         classify a bundled file, the whole census is rejected (never dropped).
+         The inventory must be nonempty; a zero-Mach-O bundle is itself
+         fail-closed. Non-executable resources must be present, and their
+         byte-compatibility across the two per-arch trees is checked by the pure
+         `resource_compat` oracle before `lipo -create` (plan:396-401) — the green
+         packaging step routes both trees through it (tests/e2e/mac_resource_compat.py).
   MS1.2  executing-arch proof (no Rosetta false-green): uname -m matches the
          expected arch; on arm64 `sysctl.proc_translated` is 0; and the running
          app reported its EXECUTING arch over the socket (passed in via
          --reported-arch by gate.sh, which does the socket round-trip). lipo
          -archs + --version alone do NOT pass — the runtime readback is required.
   MS1.3  packaging/macos/entitlements.plist exists and lists EXACTLY the keys that
-         `codesign -d --entitlements -` reports on the ad-hoc-signed binary.
+         `codesign -d` reports on the ad-hoc-signed binary.
   MS1.4  fail-closed on missing GUI/arch/SDK/zero-assertions.
 
-The census logic (`component_census`) is a pure function so it can be exercised
-off-Mac with fixtures (tests/e2e/mac_universal_census_test.py), including the
-mutant that omits a required component or ships one single-arch — both must fail.
+The census logic (`census_scan`, `component_census`, `resource_compat`) is pure so
+it can be exercised off-Mac with fixtures (tests/e2e/mac_universal_census_test.py):
+a probe failure, a missing/wrong-located component, a single-arch component, an
+empty bundle/inventory, and a mismatched resource must each fail.
 """
 import argparse
+import fnmatch
 import json
-import os
 import plistlib
 import subprocess
 import sys
@@ -86,6 +90,43 @@ def lipo_archs(path: Path) -> set[str]:
     return set(_run(["lipo", "-archs", str(path)]).split())
 
 
+def probe_archs(path: str, run=None):
+    """FAIL-CLOSED Mach-O probe. Returns the arch set if `path` is Mach-O, None if it
+    is definitively NOT Mach-O, and raises FailClosed if `file` cannot classify it
+    (nonzero rc, any stderr, or a 'cannot open' message) — an unprobeable file must
+    reject the census, never silently drop out of it (RoseCat 5974)."""
+    runner = run or (lambda cmd: subprocess.run(cmd, capture_output=True, text=True))
+    r = runner(["file", "-b", "--", str(path)])
+    out = (r.stdout or "")
+    err = (r.stderr or "")
+    if r.returncode != 0 or err.strip() or "cannot open" in out.lower() or "error" in err.lower():
+        raise FailClosed(f"could not probe file type of {path} (rc={r.returncode}): "
+                         f"{out.strip()} {err.strip()}".strip())
+    if "Mach-O" not in out:
+        return None
+    return lipo_archs(Path(path))
+
+
+def census_scan(entries, probe) -> dict[str, set[str]]:
+    """Pure scan: `entries` is [(rel, abspath), ...]; `probe` maps an abspath to its
+    arch set, None (not Mach-O), or raises FailClosed (unprobeable). A probe failure
+    PROPAGATES, rejecting the whole bundle. Returns {rel: archs} for the Mach-O found."""
+    found: dict[str, set[str]] = {}
+    for rel, ab in entries:
+        archs = probe(ab)
+        if archs is not None:
+            found[rel] = archs
+    return found
+
+
+def scan_macho(root: Path, probe=probe_archs) -> dict[str, set[str]]:
+    """Every real (non-symlink) file under `root`, probed fail-closed. Scanning the
+    WHOLE bundle — not a caller-supplied list — makes the census complete."""
+    entries = [(str(p.relative_to(root)), str(p))
+               for p in sorted(root.rglob("*")) if p.is_file() and not p.is_symlink()]
+    return census_scan(entries, probe)
+
+
 def load_inventory(path: Path) -> dict:
     if not path.is_file():
         raise FailClosed(f"component inventory missing: {path}")
@@ -93,47 +134,52 @@ def load_inventory(path: Path) -> dict:
         data = json.load(fh)
     comps = data.get("components") or []
     resources = data.get("resources") or []
-    # MS1.1: the inventory itself must be nonempty — an empty required set would let a
-    # green pass with nothing checked (the exact false-green RoseCat 5968 blocked).
+    # MS1.1: the inventory must be nonempty — an empty required set would let a green
+    # pass with nothing checked (the false-green RoseCat 5968 blocked).
     if not comps:
         raise FailClosed(f"component inventory lists no required components: {path}")
     for comp in comps:
-        if not comp.get("match"):
-            raise FailClosed(f"inventory component without a 'match': {comp}")
+        if not comp.get("path_glob"):
+            raise FailClosed(f"inventory component without a 'path_glob' (SHOULD, 5974): {comp}")
     return {"components": comps, "resources": resources}
-
-
-def scan_macho(root: Path) -> dict[str, set[str]]:
-    """Every real (non-symlink) Mach-O under `root`, mapped to its arch slices.
-    Scanning the WHOLE bundle — not a caller-supplied list — is what makes the
-    census complete: an unlisted single-arch binary is still found and must be fat."""
-    found: dict[str, set[str]] = {}
-    for p in root.rglob("*"):
-        if not p.is_file() or p.is_symlink():
-            continue
-        kind = subprocess.run(["file", "-b", str(p)], capture_output=True, text=True).stdout
-        if "Mach-O" in kind:
-            found[str(p.relative_to(root))] = lipo_archs(p)
-    return found
 
 
 def component_census(macho_archs: dict[str, set[str]], inventory: dict,
                      resource_present, c: Checks) -> None:
     """Pure census (MS1.1). `macho_archs`: every bundled Mach-O -> its arch slices.
-    `resource_present`: role-path -> bool. Fails closed on an empty bundle, any
-    non-fat Mach-O, any missing required role, or any missing declared resource."""
-    # An empty bundle scan means the build/scan is wrong — never a pass.
+    `resource_present`: rel-path -> bool. Fails closed on an empty bundle, any
+    non-fat Mach-O, any required role absent AT ITS PATH PATTERN, or any missing
+    declared resource."""
     c.ok(bool(macho_archs), "no Mach-O found in the bundle (nothing to verify — fail closed)")
     for rel, archs in sorted(macho_archs.items()):
         c.ok(archs == BOTH, f"not fat (both slices): {rel} has {sorted(archs) or 'none'}")
-    names = {os.path.basename(rel) for rel in macho_archs}
+    rels = list(macho_archs)
     for comp in inventory["components"]:
-        c.ok(comp["match"] in names,
-             f"required component {comp.get('role', comp['match'])!r} "
-             f"(a Mach-O named {comp['match']!r}) not present in the bundle")
+        glob = comp["path_glob"]
+        # Match the full relative path pattern, not just a basename: a same-named
+        # Mach-O in the wrong location does NOT satisfy the role (SHOULD, 5974).
+        present = any(fnmatch.fnmatch(rel, glob) for rel in rels)
+        c.ok(present, f"required component {comp.get('role', glob)!r} not a fat Mach-O "
+                      f"at its expected location {glob!r}")
     for res in inventory["resources"]:
         c.ok(resource_present(res["path"]),
              f"required resource {res.get('role', res['path'])!r} missing: {res['path']}")
+
+
+def resource_compat(tree_a: dict[str, str], tree_b: dict[str, str],
+                    required: list, c: Checks) -> None:
+    """Pure two-tree oracle (MS1.1, plan:396-401; RoseCat 5974). `tree_a`/`tree_b` map
+    a resource rel-path to its content digest, one per arch. Each required
+    non-executable resource must be present in BOTH per-arch trees and byte-identical,
+    else it is incompatible and must REFUSE before `lipo -create`. The green packaging
+    step (build-dmg.sh via mac_resource_compat.py) runs this on the two arch trees."""
+    for res in required:
+        path = res["path"]
+        a, b = tree_a.get(path), tree_b.get(path)
+        c.ok(a is not None, f"resource {path!r} ({res.get('role', path)}) missing from the first arch tree")
+        c.ok(b is not None, f"resource {path!r} ({res.get('role', path)}) missing from the second arch tree")
+        c.ok(a is not None and b is not None and a == b,
+             f"resource {path!r} differs across arches (incompatible before lipo): {a!r} != {b!r}")
 
 
 def codesign_entitlement_keys(path: Path) -> set[str]:
@@ -176,7 +222,7 @@ def main() -> int:
         if not binary.is_file():
             raise FailClosed(f"browser binary not found: {binary} (no build / wrong host)")
 
-        # MS1.1 — complete component census over the whole bundle.
+        # MS1.1 — complete, fail-closed component census over the whole bundle.
         root = Path(args.bundle_root)
         if not root.is_dir():
             raise FailClosed(f"bundle root not a directory: {root}")
