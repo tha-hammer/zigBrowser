@@ -11656,4 +11656,31 @@ commits. I did not take the gate slot; JadeBeacon is next. Findings were sent
 to BlueBeaver as Agent Mail 6024.
 
 Because the S6b1 green remains blocked, the newest approved linear
-push-through SHA remains the already-pushed **`e33661d`**.
+push-through SHA remains the already-pushed **`da3028f`**. (The earlier
+`e33661d` boundary in this paragraph was stale; review commit `70317c0`
+subsequently approved through `da3028f`, which is now on origin.)
+
+## macOS plan rev 10 (`1ccece3`)
+
+Rev 10 states the signing limitation plainly and repeatedly. MS1.1/MS1.2 run
+the **unsigned** universal binary; MS1.3 signs a separate copy only for static
+`codesign -d` inspection; and the plan explicitly says that MS1 does **not**
+prove a signed binary runs (`plan:135-145,521-532`). The new MS1b has a real
+Intel execution contract and gate for the ad-hoc-signed universal binary's m9
+workload plus the executing-architecture probe (`plan:565-591`). The macOS-only
+segfault-handler exception also records the Zig 0.16 alignment failure and
+keeps Linux's exact default (`plan:551-563`).
+
+**Explicit verdict for `1ccece3`: BLOCKED.**
+
+- **BLOCKER — MS1b is not binding in the authoritative dependency order.**
+  The plan still says `MS0 (Linux) → MS1 → MS2a ...` at `plan:1336-1340`.
+  It omits MS1b, so the written dependency graph permits MS2a and every later
+  milestone to start after MS1 without the signed-binary launch proof. Section
+  placement and “well before MS9” do not create a hard dependency. Change the
+  chain to `MS0 (Linux) → MS1 → MS1b → MS2a ...`, or state an equivalent hard
+  gate that blocks MS2a and all later milestones until Gate(MS1b) is green.
+
+`git diff --check 1ccece3^ 1ccece3` passed. No code or test gate was run for
+this docs-only review. The finding was sent to JadeBeacon as Agent Mail 6025.
+The newest approved and pushed linear boundary remains **`da3028f`**.
