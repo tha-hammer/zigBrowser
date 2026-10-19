@@ -3,9 +3,9 @@ Secrets window's own credential controls never overlap, a sign-in has exactly on
 ending even through the file fallback, and the inert route cancels cleanly.
 
 Cases (run alone or with --only):
-- save-during-signin: while a sign-in waits for its code, typing a token into the
-  Secrets entry and clicking Save does nothing: no "Saving...", no new status, no
-  store. The keyring store is delayed (store=3000 ms), so an overlapping store
+- save-during-signin: while a sign-in waits for its code, the Secrets entry is locked
+  (typing into it leaves it empty, measured by its pixels as S4 does) and clicking
+  Save does nothing: no "Saving...", no new status, no store. The keyring store is delayed (store=3000 ms), so an overlapping store
   would be seen. After the code, the keyring holds exactly the signed-in token,
   and "Signed in." is the window's last word.
 - signin-during-save: while a manual Save's keyring store is in flight (delayed),
@@ -47,8 +47,12 @@ def case_save_during_signin(binary: Path, tmp: Path, check) -> None:
             return
         manual = sec.canary()
         mark_text, mark_status = len(lt.texts(b)), len(lt.statuses(b))
+        empty = sec.dark(sec.entry_pixels(b))
         sec.click_rect(b, lt.rect(b, "entry"))
         sec.type_text(b, manual)
+        time.sleep(0.3)
+        after = sec.dark(sec.entry_pixels(b))
+        check(after <= empty + 12, f"the token entry is locked: typing left it empty (dark {empty} -> {after})", b)
         sec.click_rect(b, lt.rect(b, "save"))
         time.sleep(2.0)
         check(TEXT_WORKING not in lt.texts(b)[mark_text:], f"Save during the sign-in started no store ({lt.texts(b)[mark_text:]})", b)
