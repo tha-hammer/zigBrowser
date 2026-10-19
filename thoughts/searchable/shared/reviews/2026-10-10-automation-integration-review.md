@@ -12106,3 +12106,43 @@ unregistered Mac-only red.
 
 Because earlier commits in the linear range remain blocked, the newest
 approved and pushed boundary remains **`da3028f`**.
+
+## WS0 selftest red rev 2 (`9128674`)
+
+### `9128674` — BLOCKED-for-tests
+
+The fix-forward correctly closes four of the six findings on `e36f5fa` and
+the private-HOME SHOULD. Every healthy stage now must return zero and prove
+both tar and ssh ran; all three fake tools record display variables through
+one shared log; fake tar emits a stderr sentinel that a parent redirection
+would swallow; and the partial-tar case requires invocation, exact status 2
+and a named diagnostic. A clean archive ran all seven tests and all seven
+failed at the deliberately absent `tests/windows/gate.sh`, so the commit is
+still red for its declared reason.
+
+Two false-green gaps remain:
+
+1. **BLOCKER-for-tests — SSH options are still substring-matched.** At
+   `tests/windows/gate_selftest.py:257-275`, `$*` destroys argument boundaries
+   and the assertions merely require safe strings to occur while forbidding
+   three selected strings. They accept, for example, `BatchMode=yes` followed
+   by `BatchMode=no`, `ConnectTimeout=15` followed by another timeout,
+   `IdentitiesOnly=yes` followed by `IdentitiesOnly=no`, or a second
+   `UserKnownHostsFile`. I ran those conflicts through the current predicates
+   and they returned true. Record argument boundaries, parse every `-o`
+   setting and require the effective value of each security option to be the
+   one approved value with no conflicting duplicate.
+2. **BLOCKER-for-tests — WS0.5 remains a fixed corpus, not the promised
+   property.** `generate_paths` is a literal list of twenty strings
+   (`:110-149`), and `:234-245` only loops over that list. This does not meet
+   the plan's Hypothesis-style generated-path contract (`plan:698-700`), lets
+   interaction mutants across separator/case/drive/dot/prefix dimensions
+   survive, and contains no junction/reparse case despite the plan explicitly
+   requiring junction names and resolved paths. Add deterministic
+   combinatorial generation plus a fakeable resolution/reparse seam, or amend
+   that contract before the green is built.
+
+`git diff --check` passed. The clean-export red run was bounded to 60 seconds
+and its throwaway tree was deleted immediately. No full gate was run for this
+unregistered red. The findings were sent to AzureRidge as Agent Mail 6081.
+The newest approved and pushed linear boundary remains **`da3028f`**.
