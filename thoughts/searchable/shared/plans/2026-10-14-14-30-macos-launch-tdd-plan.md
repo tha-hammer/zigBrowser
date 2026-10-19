@@ -120,14 +120,18 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
 - **Rev 9** (this): answers RoseCat's rev-8 blocker (mail `5995`, review `6a3980c`) — the MS5 role
   typing was accepted, but MS1's `resources: []` was still **prose that resolved the oracle conflict
   by not calling `resource_compat` at all**, which "is indistinguishable from accidentally deleting
-  the check." Rev 9 makes it an **executable, mutation-resistant phase policy**: `resource_phase(
-  milestone, required, …)` (`tests/e2e/mac_universal_test.py`) accepts an empty resource inventory
-  **only** for a milestone in `EMPTY_ALLOWED_MILESTONES = {MS1}` (browser-only), **fails closed for
-  any other empty** (MS5, unknown, ""), and otherwise runs the two-tree oracle; `mac_resource_compat.py`
-  gains a **required `--milestone`** and routes through it, so the green **calls** the gate at every
-  milestone (MS1 included) rather than skipping it. Tests (c53b580): MS1-empty passes *and asserts*,
-  MS5-empty fails, unqualified empty fails, MS5-nonempty mismatch fails. A dropped milestone check is
-  caught. Docs + the executable gate landed in `c53b580`; re-pinned to HEAD `774ce31`.
+  the check." Rev 9 makes it an **executable, mutation-resistant, shape-checked phase policy**:
+  `resource_phase(milestone, inventory, …)` (`tests/e2e/mac_universal_test.py`) accepts an empty
+  resource inventory **only for the EXACT browser-only MS1 bundle** — milestone `MS1` AND exactly
+  one component at the fixed browser path `bin/zigBrowser` AND no resources — and **fails closed for
+  any other empty shape** (MS5, unknown/"" label, an extra or non-browser component, or an MS5-shaped
+  manifest relabeled MS1); otherwise it runs the two-tree oracle. `mac_resource_compat.py` gains a
+  **required `--milestone`**, passes the **whole inventory**, and routes through the gate, so the
+  green **calls** it at every milestone (MS1 included) rather than skipping it. The label alone was a
+  bypass (RoseCat 6002): checking only `--milestone` let a python-runtime manifest relabeled MS1 pass.
+  Tests (`58551bb`): MS1-browser-only-empty passes *and asserts*; MS5-empty, unqualified-empty,
+  MS1-extra-component, MS1-non-browser-component, MS5-shaped-relabeled-MS1, and MS5-nonempty-mismatch
+  all fail. The executable gate landed in `c53b580` then `58551bb`; re-pinned to HEAD `774ce31`.
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -137,7 +141,7 @@ conditional is indistinguishable from deleting the check, so rev 9 replaces it w
 
 | # | Blocker (5995) | Resolution in rev 9 | Where |
 |---|---|---|---|
-| 1 | MS1's `resources: []` is enforced only by *not invoking* `resource_compat`; there is no typed MS1-only policy and no red proving empty is accepted only for MS1 while staying fail-closed at MS5. | `resource_phase(milestone, required, tree_a, tree_b)` is the typed gate the green **calls at every milestone**: an empty set passes **only** for a milestone in `EMPTY_ALLOWED_MILESTONES = {MS1}`; any other empty (MS5, unknown, "") **fails closed**; a nonempty set runs the two-tree `resource_compat` oracle. `mac_resource_compat.py` takes a **required `--milestone`**, so MS1 runs `--milestone MS1` (empty → pass, *asserted*, not skipped) and MS5 runs `--milestone MS5` (empty → fail). Tests pin MS1-empty-passes, MS5-empty-fails, unqualified-empty-fails, MS5-nonempty-mismatch-fails; a mutant dropping the milestone check is caught. | MS1.1, MS5.1c, `tests/e2e/mac_universal_test.py` (`resource_phase`, `EMPTY_ALLOWED_MILESTONES`), `mac_resource_compat.py` |
+| 1 | MS1's `resources: []` is enforced only by *not invoking* `resource_compat`; there is no typed MS1-only policy and no red proving empty is accepted only for MS1 while staying fail-closed at MS5. (Rev-9 first pass checked only the `--milestone` label — a bypass: an MS5-shaped manifest relabeled MS1 passed, RoseCat 6002.) | `resource_phase(milestone, inventory, tree_a, tree_b)` is the typed, **shape-checked** gate the green **calls at every milestone**, taking the whole inventory: an empty resource set passes **only for the EXACT browser-only MS1 bundle** (milestone `MS1` + exactly one component at `bin/zigBrowser` + no resources); **any other empty shape fails closed** (MS5, unknown/"" label, extra/non-browser component, MS5-shaped relabeled MS1); a nonempty set runs the two-tree `resource_compat` oracle. `mac_resource_compat.py` passes the inventory and a **required `--milestone`**. Tests pin MS1-browser-only-passes, MS5/unqualified-empty-fails, extra/non-browser-component-fails, MS5-shaped-relabeled-MS1-fails, MS5-nonempty-mismatch-fails; a mutant dropping the shape/milestone check is caught. | MS1.1, MS5.1c, `tests/e2e/mac_universal_test.py` (`resource_phase`, `MS1_BROWSER_GLOB`), `mac_resource_compat.py` |
 
 Re-pinned to HEAD `774ce31` (the executable gate + tests are `c53b580`).
 
@@ -481,9 +485,10 @@ unchanged** (it scans the whole bundle for every Mach-O and requires each fat, f
 unprobeable file, and checks that any declared resource is present); only the MS1 inventory is
 narrow. The empty state is **not a skip**: the green **calls the typed phase gate**
 `mac_resource_compat.py --milestone MS1` (rev 9), and `resource_phase` (`mac_universal_test.py`)
-**accepts an empty inventory only for a milestone in `EMPTY_ALLOWED_MILESTONES = {MS1}`** and
-**fails closed for any other empty**, so MS1's exception is asserted, executable and
-mutation-resistant — a dropped milestone check is caught (RoseCat 5995). The two-tree
+**accepts an empty inventory only for the EXACT browser-only MS1 bundle** — milestone `MS1` + exactly
+one component at the fixed browser path `bin/zigBrowser` + no resources — and **fails closed for any
+other empty shape**, so MS1's exception is asserted, shape-checked and mutation-resistant — the
+`--milestone` label alone is not enough (RoseCat 5995/6002). The two-tree
 `resource_compat` oracle (the nonempty branch of the gate) is **first exercised at MS5** (behavior
 MS5.1c), where macOS provisioning installs the Python runtime, the Claude CLI and the generated
 launcher, so the non-exec runtime files exist in two per-arch trees and the Intel-3.9-vs-arm-3.14
