@@ -1342,9 +1342,9 @@ needs MS4 (grant) + MS5 (Keychain); MS8 needs MS5 (setup) + MS6 (sandbox) + MS7 
 **MS1b (the signed x86_64 binary runs) — split out, NOT a universal blocker** (user decision
 "split it out, fix now", over "fix it before MS1"; orchestrator). Its binding edges:
 - **`MS1 → MS1b`, scheduled immediately** — MS1b is the next Mac slice JadeBeacon works on.
-- **MS1b is a HARD prerequisite of MS9** (release signing + notarization) **and of any slice or
-  real-screen check that claims a SIGNED binary runs** (e.g. a milestone that ships or exercises a
-  signed/notarized artifact must not be marked done until MS1b is green).
+- **MS1b is a HARD prerequisite of MS9** (release signing + notarization) **and of any slice, gate,
+  documentation claim, or real-screen check that claims a SIGNED binary runs** — no such claim may
+  be marked done until Gate(MS1b) is green.
 - **MS2a and every later development slice MAY proceed IN PARALLEL with MS1b, running the UNSIGNED
   universal build** (MS1 proved the unsigned universal runs on both arches). Those slices **must
   NOT claim a signed-run result** until MS1b is green; MS1 itself does not prove a signed binary runs.
