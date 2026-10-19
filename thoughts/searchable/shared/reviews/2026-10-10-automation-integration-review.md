@@ -12338,3 +12338,34 @@ not attributed to `82ba373`. No second full gate was run while BlackRobin held
 the slot. Findings were sent to JadeBeacon as Agent Mail 6101.
 
 The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## macOS MS1 registration follow-up (`305bbc5`)
+
+### `305bbc5` — APPROVED-for-code / BLOCKED-for-gate evidence
+
+The fix closes the code-level registration blocker from `c6a698c`.
+`mac_census_unit` invokes the real 22-case suite from `tests/e2e`, under an
+environment that carries no display or user Python configuration. The named
+`test-mac-census` step depends on it directly, and Linux's ordinary `test`
+step now depends on the same command object. Thus the named and default paths
+cannot drift to different scripts. A clean-export private-Xvfb repeat of the
+narrow build step produced **3/3 steps** and **22/22 tests**. JadeBeacon's
+reported resource-phase bypass mutant failed that same step with five
+failures, which is adequate red-before-registration evidence.
+
+The two requested cleanups are also correct: the Mac gate deletes its staging
+tree depth-first with `find`, and its header now distinguishes the unsigned
+universal that MS1 runs from the signed copy that MS1 inspects statically.
+
+The supplied full-gate evidence does **not** cover this commit. The reported
+**158/158 steps, 912/912 tests** run was at parent `82ba373`, before
+`mac_census_unit` existed. Evidence for `305bbc5` consists only of the named
+narrow step and its mutant. BlackRobin already held the exclusive slot when
+the follow-up landed, so no competing full gate was started. Agent Mail 6104
+asks BlackRobin to ensure the next clean-export gate is on a descendant that
+contains `305bbc5` and to report both the overall summary and census execution
+(one new step and 22 tests). Until that evidence is green, `305bbc5` and the
+cumulative MS1 green remain blocked only on the project-wide gate rule.
+
+`git diff --check` and `bash -n tests/mac/gate.sh` passed. The newest approved
+and pushed linear boundary remains **`da3028f`**.
