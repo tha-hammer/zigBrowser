@@ -428,6 +428,15 @@ pub fn build(b: *std.Build) void {
     const run_agent_secrets_shape_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_secrets_shape_tests_module }));
     run_agent_secrets_shape_tests.skip_foreign_checks = true;
 
+    // Chat drawer S6b1: the login helper's launch argv (src/agent_login.zig).
+    const run_agent_login_tests = b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_login.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }) }));
+    run_agent_login_tests.skip_foreign_checks = true;
+
     // Chat drawer S6.2 (A2): the auth window's callback check (src/agent_auth.zig).
     const agent_auth_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/agent_auth_test.zig"),
@@ -971,6 +980,15 @@ pub fn build(b: *std.Build) void {
         "agent-secrets-e2e",
     });
     agent_secrets_e2e.addArtifactArg(exe);
+    // Chat drawer S6b1 (rev 16.18.3): Sign in with Claude.ai through the paste path,
+    // the login netd and helper, and S6.1's CLAUDE_CLI inertness.
+    const agent_login_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_login_test.py --binary \"$1\"",
+        "agent-login-e2e",
+    });
+    agent_login_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -1040,6 +1058,12 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_netd_login",
+    });
+    // Rev 16.18.4: netd's --census (the sign-in's netd under --e2e-protocol).
+    const agent_host_netd_census = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_netd_census",
     });
     // Chat drawer S6 (rev 16.18.1/16.18.2): the sign-in's network is its own
     // backend capability, launch spec and published runtime/net-login.json.
@@ -1264,6 +1288,8 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_dlopen_test.step);
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     test_step.dependOn(&run_agent_auth_tests.step);
+    test_step.dependOn(&run_agent_login_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
@@ -1331,6 +1357,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
     test_step.dependOn(&agent_host_netd_login.step);
+    test_step.dependOn(&agent_host_netd_census.step);
     test_step.dependOn(&agent_host_login_network.step);
     test_step.dependOn(&agent_host_relay_ports.step);
     test_step.dependOn(&agent_host_hook_net.step);
@@ -1532,6 +1559,10 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     });
     module.addCSourceFile(.{
         .file = b.path("src/agent_secrets_window.c"),
+        .flags = &.{"-std=gnu11"},
+    });
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_login.c"),
         .flags = &.{"-std=gnu11"},
     });
 

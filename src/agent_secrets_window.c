@@ -8,6 +8,7 @@
 
 #include "agent_drawer.h" /* zb_emit_protocol_row */
 #include "agent_helper.h" /* zb_agent_helper_token_removed */
+#include "agent_login.h"   /* Sign in with Claude.ai (S6b1) */
 #include "agent_secrets.h"
 
 #include <stdio.h>
@@ -39,6 +40,17 @@ int zb_secrets_file_present(const char *agent_home);
 #define TEXT_WORKING "Saving..."
 #define TEXT_FAILED "The token could not be saved."
 #define TEXT_REMOVE_FAILED "The token could not be removed."
+/* Sign in with Claude.ai (plan S6b1, rev 16.18.3): fixed sentences only. */
+#define TEXT_SIGNIN_BUTTON "Sign _in with Claude.ai"
+#define TEXT_SIGNING "Signing in..."
+#define TEXT_NEED_CODE "Paste the code from the sign-in page."
+#define TEXT_SIGNED_SERVICE "Signed in. The token is stored in the system keyring."
+#define TEXT_SIGNED_FILE "Signed in. The token is stored in a private file."
+#define TEXT_BAD_CODE "That doesn't look like a sign-in code."
+#define TEXT_SIGNIN_FAILED "Sign-in failed."
+#define TEXT_SIGNIN_CANCELLED "Sign-in cancelled."
+#define TEXT_LINK "Open this link in your browser to sign in:"
+#define TEXT_COPY_LINK "Copy link"
 
 typedef enum {
   STATE_EMPTY,
@@ -66,6 +78,20 @@ typedef struct {
   GtkWidget *status;
   GtkWidget *file_box; /* the warning and "Save to a private file instead" */
   GtkWidget *file_button;
+  /* Sign in with Claude.ai: the button, the code entry and its Send code
+   * button (shown only while the sign-in waits for a code), and Cancel. */
+  GtkWidget *signin;
+  GtkWidget *code_box;
+  GtkWidget *code;
+  GtkWidget *send_code;
+  GtkWidget *cancel;
+  /* The sign-in link (rev 16.18.4): the authorize URL, selectable, and Copy link. */
+  GtkWidget *link_box;
+  GtkWidget *link;
+  GtkWidget *copy_link;
+  char *link_url;
+  /* The token being stored came from a sign-in: its row and sentences. */
+  int signin_store;
   /* A token the Secret Service did not take, kept only until the user
    * chooses the private file or closes the window (then wiped). It belongs
    * to the current epoch: no older answer may touch it. */
@@ -169,6 +195,9 @@ static void set_state(State state, const char *text) {
   secrets_row("status", state_rows[state], NULL);
 }
 
+/* `SECRETS login <state>` (D7b, rev 16.18.3). */
+static void login_row(const char *state) { secrets_row("login", state, NULL); }
+
 static void set_busy(int busy) {
   secrets.busy = busy;
   gtk_widget_set_sensitive(secrets.save, !busy);
@@ -221,11 +250,19 @@ static void show_current_state(void) {
 /* --- Save ------------------------------------------------------------------- */
 
 static void store_in_file(const char *token) {
+  int signin = secrets.signin_store;
+  secrets.signin_store = 0;
   if (zb_secrets_store_file(secrets.agent_home, token, strlen(token)) == 0) {
-    set_state(STATE_FILE, TEXT_FILE);
+    set_state(STATE_FILE, signin ? TEXT_SIGNED_FILE : TEXT_FILE);
+    if (signin) {
+      login_row("done");
+    }
     notify_changed(1);
   } else {
     set_state(STATE_EMPTY, TEXT_FAILED);
+    if (signin) {
+      login_row("error-store");
+    }
   }
 }
 
@@ -234,13 +271,22 @@ static void on_service_stored(ZbSecretsResult result, gpointer epoch) {
     return; /* an older window's or operation's answer: this one's token is not its to wipe */
   }
   set_busy(0);
+  int signin = secrets.signin_store;
   if (result == ZB_SECRETS_OK) {
+    secrets.signin_store = 0;
     wipe_pending();
-    set_state(STATE_SERVICE, TEXT_SERVICE);
+    set_state(STATE_SERVICE, signin ? TEXT_SIGNED_SERVICE : TEXT_SERVICE);
+    if (signin) {
+      login_row("done");
+    }
     notify_changed(1);
   } else {
-    /* No silent fallback: keep the token only for the explicit file choice. */
+    /* No silent fallback: keep the token only for the explicit file choice
+     * (a signed-in token too: its store failed, so the sign-in did). */
     set_state(STATE_NO_KEYRING, TEXT_NO_KEYRING);
+    if (signin) {
+      login_row("error-store");
+    }
   }
 }
 
@@ -286,6 +332,143 @@ static void on_save_to_file(GtkWidget *button, gpointer unused) {
   store_in_file(secrets.pending);
   wipe_pending();
   gtk_widget_set_visible(secrets.file_box, FALSE);
+}
+
+/* --- Sign in with Claude.ai (S6b1) -------------------------------------------- */
+
+/* The sign-in's controls follow its state; the window may be gone (closing it
+ * cancels the sign-in), and then only the row is written. */
+static void signin_controls(int running, int need_code) {
+  if (!running) {
+    g_free(secrets.link_url);
+    secrets.link_url = NULL;
+  }
+  if (secrets.window == NULL) {
+    return;
+  }
+  gtk_widget_set_visible(secrets.link_box, running && secrets.link_url != NULL);
+  gtk_widget_set_sensitive(secrets.signin, !running && zb_login_configured());
+  gtk_widget_set_visible(secrets.cancel, running);
+  gtk_widget_set_visible(secrets.code_box, running && need_code);
+  if (running && need_code) {
+    gtk_widget_grab_focus(secrets.code);
+  }
+}
+
+/* The token from the login helper's fd 4: stored like a pasted one, in the
+ * active store. It is wiped by agent_login.c after this returns. */
+static void store_signed_in(const char *token) {
+  secrets.signin_store = 1;
+  if (zb_secrets_window_store() == ZB_SECRET_STORE_FILE || secrets.window == NULL) {
+    if (secrets.window == NULL) {
+      /* Nowhere to show a keyring failure: only the explicit store is used. */
+      if (zb_secrets_window_store() != ZB_SECRET_STORE_FILE) {
+        secrets.signin_store = 0;
+        login_row("error-store");
+        return;
+      }
+    }
+    store_in_file(token);
+    return;
+  }
+  wipe_pending();
+  secrets.pending = g_strdup(token); /* wiped on success, on close, or after the file choice */
+  gpointer epoch = begin_operation();
+  set_status_text(TEXT_WORKING);
+  zb_secrets_service_store_async(secrets.pending, on_service_stored, epoch);
+}
+
+static void on_login_event(ZbLoginEvent event, const char *detail, void *unused) {
+  (void)unused;
+  switch (event) {
+  case ZB_LOGIN_EV_STARTING:
+    login_row("starting");
+    signin_controls(1, 0);
+    if (secrets.window != NULL) {
+      set_status_text(TEXT_SIGNING);
+    }
+    break;
+  case ZB_LOGIN_EV_AUTH_URL:
+    /* The link the user opens in their own browser (S6b2's auth window opens it too). */
+    g_free(secrets.link_url);
+    secrets.link_url = g_strdup(detail);
+    if (secrets.window != NULL) {
+      gtk_label_set_text(GTK_LABEL(secrets.link), secrets.link_url);
+      gtk_widget_set_visible(secrets.link_box, TRUE);
+    }
+    break;
+  case ZB_LOGIN_EV_NEED_CODE:
+    login_row("need-code");
+    signin_controls(1, 1);
+    if (secrets.window != NULL) {
+      set_status_text(TEXT_NEED_CODE);
+    }
+    break;
+  case ZB_LOGIN_EV_DONE:
+    signin_controls(0, 0);
+    store_signed_in(detail);
+    break;
+  case ZB_LOGIN_EV_ERROR: {
+    char row[32];
+    g_snprintf(row, sizeof row, "error-%s", detail != NULL ? detail : "cli");
+    login_row(row);
+    signin_controls(0, 0);
+    if (secrets.window != NULL) {
+      set_status_text(TEXT_SIGNIN_FAILED);
+    }
+    break;
+  }
+  case ZB_LOGIN_EV_CANCELLED:
+    login_row("cancelled");
+    signin_controls(0, 0);
+    if (secrets.window != NULL) {
+      set_status_text(TEXT_SIGNIN_CANCELLED);
+    }
+    break;
+  }
+}
+
+static void on_signin(GtkWidget *button, gpointer unused) {
+  (void)button;
+  (void)unused;
+  if (secrets.busy || zb_login_running()) {
+    return;
+  }
+  if (zb_login_start(on_login_event, NULL) != 0) {
+    set_status_text(TEXT_SIGNIN_FAILED);
+  }
+}
+
+static void on_send_code(GtkWidget *button, gpointer unused) {
+  (void)button;
+  (void)unused;
+  /* Read once, then clear the entry at once; surrounding whitespace is a
+   * paste's, never the code's. */
+  char *pasted = g_strdup(gtk_entry_get_text(GTK_ENTRY(secrets.code)));
+  gtk_entry_set_text(GTK_ENTRY(secrets.code), "");
+  char *code = g_strstrip(pasted);
+  if (zb_login_send_code(code) != 0) {
+    set_status_text(TEXT_BAD_CODE);
+  } else {
+    set_status_text(TEXT_SIGNING);
+    gtk_widget_set_visible(secrets.code_box, FALSE);
+  }
+  explicit_bzero(pasted, strlen(pasted));
+  g_free(pasted);
+}
+
+static void on_copy_link(GtkWidget *button, gpointer unused) {
+  (void)button;
+  (void)unused;
+  if (secrets.link_url != NULL) {
+    gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), secrets.link_url, -1);
+  }
+}
+
+static void on_cancel(GtkWidget *button, gpointer unused) {
+  (void)button;
+  (void)unused;
+  zb_login_cancel();
 }
 
 /* --- Remove: both stores ------------------------------------------------------ */
@@ -358,6 +541,11 @@ static gboolean report_rects(gpointer unused) {
     report_rect("save", secrets.save);
     report_rect("remove", secrets.remove);
     report_rect("file", secrets.file_button);
+    report_rect("signin", secrets.signin);
+    report_rect("code", secrets.code);
+    report_rect("send-code", secrets.send_code);
+    report_rect("cancel", secrets.cancel);
+    report_rect("copy-link", secrets.copy_link);
   }
   return G_SOURCE_REMOVE;
 }
@@ -401,6 +589,8 @@ static void on_destroy(GtkWidget *window, gpointer unused) {
   secrets.epoch++;
   secrets.window = NULL;
   secrets.busy = 0;
+  secrets.signin_store = 0;
+  zb_login_cancel(); /* closing the window cancels a running sign-in */
 }
 
 static void on_file_box_mapped(GtkWidget *widget, gpointer unused) {
@@ -438,6 +628,39 @@ static GtkWidget *build(void) {
   gtk_box_pack_start(GTK_BOX(box), buttons, FALSE, FALSE, 0);
   gtk_widget_set_can_default(secrets.save, TRUE);
 
+  /* Sign in with Claude.ai: Alt+I is its mnemonic (S6.1's no-rows case uses it). */
+  GtkWidget *signin_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  secrets.signin = gtk_button_new_with_mnemonic(TEXT_SIGNIN_BUTTON);
+  secrets.cancel = gtk_button_new_with_label("Cancel");
+  gtk_box_pack_start(GTK_BOX(signin_row), secrets.signin, FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(signin_row), secrets.cancel, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), signin_row, FALSE, FALSE, 0);
+
+  secrets.link_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  GtkWidget *link_label = gtk_label_new(TEXT_LINK);
+  gtk_label_set_xalign(GTK_LABEL(link_label), 0);
+  GtkWidget *link_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  secrets.link = gtk_label_new(NULL);
+  gtk_label_set_selectable(GTK_LABEL(secrets.link), TRUE);
+  gtk_label_set_ellipsize(GTK_LABEL(secrets.link), PANGO_ELLIPSIZE_MIDDLE);
+  gtk_label_set_xalign(GTK_LABEL(secrets.link), 0);
+  secrets.copy_link = gtk_button_new_with_label(TEXT_COPY_LINK);
+  gtk_box_pack_start(GTK_BOX(link_row), secrets.link, TRUE, TRUE, 0);
+  gtk_box_pack_end(GTK_BOX(link_row), secrets.copy_link, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(secrets.link_box), link_label, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(secrets.link_box), link_row, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), secrets.link_box, FALSE, FALSE, 0);
+
+  secrets.code_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  secrets.code = gtk_entry_new();
+  gtk_entry_set_visibility(GTK_ENTRY(secrets.code), FALSE);
+  gtk_entry_set_input_purpose(GTK_ENTRY(secrets.code), GTK_INPUT_PURPOSE_PASSWORD);
+  gtk_entry_set_max_length(GTK_ENTRY(secrets.code), 1024);
+  secrets.send_code = gtk_button_new_with_label("Send code");
+  gtk_box_pack_start(GTK_BOX(secrets.code_box), secrets.code, TRUE, TRUE, 0);
+  gtk_box_pack_end(GTK_BOX(secrets.code_box), secrets.send_code, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), secrets.code_box, FALSE, FALSE, 0);
+
   secrets.status = gtk_label_new(TEXT_EMPTY);
   gtk_label_set_xalign(GTK_LABEL(secrets.status), 0);
   gtk_label_set_line_wrap(GTK_LABEL(secrets.status), TRUE);
@@ -455,6 +678,11 @@ static GtkWidget *build(void) {
   g_signal_connect(secrets.save, "clicked", G_CALLBACK(on_save), NULL);
   g_signal_connect(secrets.remove, "clicked", G_CALLBACK(on_remove), NULL);
   g_signal_connect(secrets.file_button, "clicked", G_CALLBACK(on_save_to_file), NULL);
+  g_signal_connect(secrets.signin, "clicked", G_CALLBACK(on_signin), NULL);
+  g_signal_connect(secrets.send_code, "clicked", G_CALLBACK(on_send_code), NULL);
+  g_signal_connect(secrets.code, "activate", G_CALLBACK(on_send_code), NULL);
+  g_signal_connect(secrets.cancel, "clicked", G_CALLBACK(on_cancel), NULL);
+  g_signal_connect(secrets.copy_link, "clicked", G_CALLBACK(on_copy_link), NULL);
   g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
   g_signal_connect_after(box, "size-allocate", G_CALLBACK(on_allocated), NULL);
   g_signal_connect(window, "configure-event", G_CALLBACK(on_configure), NULL);
@@ -463,6 +691,13 @@ static GtkWidget *build(void) {
   gtk_widget_show_all(box);
   gtk_widget_set_no_show_all(secrets.file_box, TRUE);
   gtk_widget_hide(secrets.file_box);
+  gtk_widget_set_no_show_all(secrets.link_box, TRUE);
+  gtk_widget_hide(secrets.link_box);
+  gtk_widget_set_no_show_all(secrets.code_box, TRUE);
+  gtk_widget_set_no_show_all(secrets.cancel, TRUE);
+  gtk_widget_hide(secrets.code_box);
+  gtk_widget_hide(secrets.cancel);
+  gtk_widget_set_sensitive(secrets.signin, zb_login_configured() && !zb_login_running());
   gtk_widget_set_sensitive(secrets.remove, FALSE);
   gtk_window_set_default(GTK_WINDOW(window), secrets.save);
 

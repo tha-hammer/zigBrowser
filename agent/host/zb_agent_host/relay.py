@@ -20,7 +20,8 @@ command (no thread ever exists), then in the parent forwards those signals, lets
 fds 0 and 1 and of every other descriptor it inherited, and relays in one selectors
 loop until the command exits. It exits with the command's status, or 128+n for signal
 n. It reaps only its own child: anything left behind dies with the PID namespace when
-bwrap's reaper (PID 1) exits. It never reads, copies or logs fd 3, and logs no content.
+bwrap's reaper (PID 1) exits. It never reads, copies or logs fd 3 (the chat helper's
+token socket) or fd 4 (the login helper's token pipe, S6b1), and logs no content.
 """
 
 import errno
@@ -258,8 +259,10 @@ def main(argv):
     except OSError as exc:
         return fail(f"cannot bind: {exc.strerror}")
     listener_fds = [sock.fileno() for sock in relay.listeners] + [relay.selector.fileno()]
-    # A hook gets only fds 0-2; the helper gets 0-3 (fd 3 is the token's socket, §3c.2).
-    _close_inherited(listener_fds + ([3] if mode == "egress" else []))
+    # A hook gets only fds 0-2; the helper gets 0-4: fd 3 is the chat helper's token socket
+    # (§3c.2), fd 4 the login helper's token pipe (S6b1, rev 16.18.3). Each is open only
+    # for its own helper.
+    _close_inherited(listener_fds + ([3, 4] if mode == "egress" else []))
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, FORWARDED)
     child = os.fork()
     if child == 0:
@@ -282,7 +285,7 @@ def main(argv):
     os.dup2(null, 1)
     os.close(null)
     pidfd = os.pidfd_open(child)
-    _close_inherited(listener_fds + [pidfd])  # the outer relay's own copy of fd 3 goes here
+    _close_inherited(listener_fds + [pidfd])  # the outer relay's own copies of fds 3 and 4 go here
     return relay.run(child, pidfd)
 
 

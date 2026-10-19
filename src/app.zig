@@ -7,6 +7,7 @@ const agent_config = @import("agent_config.zig");
 const agent_net = @import("agent_net.zig");
 const agent_helper = @import("agent_helper.zig");
 const agent_frames = @import("agent_frames.zig");
+const agent_login = @import("agent_login.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
 const automation_server = @import("automation_server.zig");
@@ -21,6 +22,7 @@ const c = @cImport({
     @cInclude("webkit_shim.h");
     @cInclude("agent_host.h");
     @cInclude("agent_helper.h");
+    @cInclude("agent_login.h");
 });
 
 const OpenSpec = @TypeOf(@as(cli.Command, .{ .open = undefined }).open);
@@ -228,6 +230,48 @@ fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Ag
         if (unavailable) |s| s.ptr else null, if (bubble) |s| s.ptr else null, refusal_z, @intFromBool(e2e));
 }
 
+/// Chat drawer S6b1 (plan rev 16.18.3): the one-shot sign-in. Its own login netd
+/// (runtime/net-login.json in `<chat sockdir>-login`, egress only) and the login
+/// helper's launch (`launch --command login`); ZIGBROWSER_AGENT_CLAUDE_CLI reaches
+/// it only as `--e2e-claude-cli` and only with --e2e-protocol (S6.1).
+fn configureAgentLogin(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: AgentNet) !void {
+    if (comptime builtin.os.tag != .linux) return;
+    if (net.sockdir.len == 0) return; // no runtime dir: no network, so no sign-in either
+    var path_dirs: []const []const u8 = &.{};
+    if (readSmall(arena, io, try std.fs.path.join(arena, &.{ net.home, "runtime", "path.json" }))) |text| {
+        path_dirs = std.json.parseFromSliceLeaky([]const []const u8, arena, text, .{}) catch &.{};
+    }
+    const login_dir = try agent_login.loginNetDir(arena, net.sockdir);
+    const launch = agent_login.launch(arena, .{
+        .python = net.python,
+        .home = net.home,
+        .login_net_dir = login_dir,
+        .path_dirs = path_dirs,
+        .lang = getenvOwned(arena, "LANG"),
+        .lc_all = getenvOwned(arena, "LC_ALL"),
+        .e2e_protocol = e2e,
+        .claude_cli = getenvOwned(arena, agent_login.claude_cli_env),
+        .bwrap = getenvOwned(arena, agent_helper.bwrap_env),
+    }) catch |err| switch (err) {
+        error.RelativeCliPath => {
+            std.debug.print("zigBrowser: agent: {s} must be an absolute path\n", .{agent_login.claude_cli_env});
+            return;
+        },
+        else => return err,
+    };
+    if (launch.warning) |line| std.debug.print("{s}\n", .{line});
+    const manifest = try std.fs.path.join(arena, &.{ net.home, "runtime", "net-login.json" });
+    var netd_args: std.ArrayList([]const u8) = .empty;
+    try netd_args.appendSlice(arena, try agent_net.netdArgv(arena, net.python, net.package_dir, login_dir, "/usr/bin/bwrap", manifest, null));
+    // Rev 16.18.4: under --e2e-protocol only, the login netd's census of CONNECT
+    // targets (host:port allowed|refused), which the real-screen check records.
+    if (e2e) try netd_args.append(arena, "--census");
+    const netd_argv = try toCStrings(arena, netd_args.items);
+    const netd_env = try toCStrings(arena, try agent_net.netdEnv(arena, getenvOwned(arena, "LANG"), getenvOwned(arena, "LC_ALL")));
+    c.zb_login_configure(netd_argv.ptr, netd_env.ptr, (try arena.dupeZ(u8, login_dir)).ptr,
+        (try toCStrings(arena, launch.argv)).ptr, (try toCStrings(arena, launch.env)).ptr);
+}
+
 /// A small file's bytes, or null when it cannot be read.
 fn readSmall(arena: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch null;
@@ -237,6 +281,8 @@ fn readSmall(arena: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8
 // agent_helper.c, which calls them, is built.
 comptime {
     if (builtin.os.tag == .linux) _ = agent_frames;
+    // The sign-in's frame exports (src/agent_login.zig), for agent_login.c.
+    if (builtin.os.tag == .linux) _ = agent_login;
 }
 
 /// Chat drawer S4a (plan D11, S4.1): with a provisioned agent home, the
@@ -300,6 +346,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         const net = configureAgentNet(arena, io, spec.e2e_protocol) catch return error.WriteFailed;
         configureAgentSecrets(arena, spec.agent_secret_store, spec.e2e_protocol) catch return error.WriteFailed;
         if (net) |n| configureAgentHelper(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
+        if (net) |n| configureAgentLogin(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
     }
 
     if (spec.automation_api) {

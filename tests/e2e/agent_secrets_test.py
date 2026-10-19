@@ -56,7 +56,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 SECRETS_STATES = ("empty", "connected-secret-service", "connected-file", "no-keyring", "rejected")
-SECRETS_CONTROLS = ("entry", "save", "remove", "file")
+SECRETS_CONTROLS = ("entry", "save", "remove", "file", "signin", "code", "send-code", "cancel", "copy-link")
+# `SECRETS login <state>` (S6b1, rev 16.18.3): the sign-in's state; agent_login_test.py drives it.
+LOGIN_STATES = ("starting", "need-code", "done", "cancelled") + tuple(
+    f"error-{w}" for w in ("cli", "timeout", "cancelled", "shape", "protocol", "network", "store"))
 # `SECRETS fetch <word>` (a token fetch began, or answered) and `SECRETS remove click`: e2e-only
 # rows that make the order of a Remove and a fetch observable (RoseCat 5821).
 FETCH_WORDS = ("begin", "ok", "absent", "unavailable", "refused")
@@ -64,7 +67,12 @@ FETCH_WORDS = ("begin", "ok", "absent", "unavailable", "refused")
 SECRETS_TEXTS = ("No token is stored.", "Connected. The token is stored in the system keyring.",
                  "Connected. The token is stored in a private file.", "That doesn't look like a token.",
                  "No system keyring is available. Nothing was stored.", "Saving...",
-                 "The token could not be saved.", "The token could not be removed.")
+                 "The token could not be saved.", "The token could not be removed.",
+                 # Sign in with Claude.ai (S6b1)
+                 "Signing in...", "Paste the code from the sign-in page.",
+                 "Signed in. The token is stored in the system keyring.",
+                 "Signed in. The token is stored in a private file.", "That doesn't look like a sign-in code.",
+                 "Sign-in failed.", "Sign-in cancelled.")
 
 
 # The canary's random part: uppercase letters that are not hex, not in any row tag (DRAWER,
@@ -95,8 +103,9 @@ class SecretsRowError(AssertionError):
 
 
 def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
-    """`SECRETS status <state>`, `SECRETS text <sentence>`, `SECRETS tree <types>` or
-    `SECRETS rect <control> <x,y,w,h>`; anything else raises SecretsRowError."""
+    """`SECRETS status <state>`, `SECRETS text <sentence>`, `SECRETS tree <types>`,
+    `SECRETS rect <control> <x,y,w,h>`, the e2e-only `fetch` and `remove` rows, or
+    `SECRETS login <state>`; anything else raises SecretsRowError."""
     parts = line.split("\t")
     if parts[0] != "SECRETS" or len(parts) < 3:
         raise SecretsRowError(f"not a SECRETS row: {line!r}")
@@ -106,6 +115,7 @@ def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
          (kind == "tree" and len(fields) == 1 and re.fullmatch(r"[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*", fields[0])) or \
          (kind == "fetch" and fields in tuple((w,) for w in FETCH_WORDS)) or \
          (kind == "remove" and fields == ("click",)) or \
+         (kind == "login" and len(fields) == 1 and fields[0] in LOGIN_STATES) or \
          (kind == "rect" and len(fields) == 2 and fields[0] in SECRETS_CONTROLS
           and re.fullmatch(r"-?\d+,-?\d+,\d+,\d+", fields[1]))
     if not ok:

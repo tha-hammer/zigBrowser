@@ -5,6 +5,7 @@ The browser starts it before the helper, outside the agent sandbox:
     python -I -m zb_agent_host.netd --sockdir DIR --bwrap BWRAP [--net-manifest PATH]
         [--test-allow NAME=PORT] [--test-bridge 51091=PORT] [--test-bridge 31337=PORT]
         [--test-resolve NAME=ADDR[,ADDR...]] [--test-record-connects] [--test-ready-delay MS]
+        [--census]
 
 PATH is the backend's network manifest, the agent home's runtime/net.json (MS0;
 BlueBeaver 5755, JadeBeacon 5762): its `egress.allow` replaces the built-in
@@ -33,7 +34,11 @@ with bwrap's status. A signal to the spawned PID is death without cleanup, as a 
 The --test-* options are honoured as given: the app passes them only under
 --e2e-protocol (§3c.4, §3c.5). --test-ready-delay MS (1-4000) holds the ready line
 that long after the sockets exist, so a test can act while the browser still waits
-for the network (RoseCat 5830). Standard library only."""
+for the network (RoseCat 5830). --census (rev 16.18.4: the app passes it only to the
+sign-in's netd, under --e2e-protocol) writes `netd census <host>:<port> allowed|refused`
+once per distinct CONNECT target, as the allowlist decided it: the host and port only,
+never a byte of the tunnel; this is how the real-screen check records the sign-in's
+network. Standard library only."""
 
 import ipaddress
 import json
@@ -314,13 +319,15 @@ def _shut(sock):
 # ---------------------------------------------------------------- the service
 
 class Netd:
-    def __init__(self, sockdir, allow, bridges, resolve, record_connects, hosts=(API_HOST,)):
+    def __init__(self, sockdir, allow, bridges, resolve, record_connects, hosts=(API_HOST,), census=False):
         self.sockdir = sockdir
         self.allowed = {*hosts, *allow}
         self.test_allow = allow  # name -> 127.0.0.1 port; skips vetting (the e2e seam)
         self.bridges = bridges  # sandbox port -> host port, one socket each
         self.resolve_seam = resolve
         self.record_connects = record_connects
+        self.census_on = census
+        self.censused = set()
         self.tunnels = threading.BoundedSemaphore(TUNNELS_MAX)
         self.bridge_slots = threading.BoundedSemaphore(BRIDGE_CONNECTIONS_MAX)
         self.logged = set()
@@ -335,6 +342,17 @@ class Netd:
                 return
             self.logged.add(key)
         log(f"network refused {key[0]}:{key[1]}")
+
+    def census(self, host, port, verdict):
+        """One line per distinct target (rev 16.18.4), only with --census."""
+        if not self.census_on:
+            return
+        key = (sanitize(host), sanitize(port))
+        with self.log_lock:
+            if key in self.censused:
+                return
+            self.censused.add(key)
+        log(f"netd census {key[0]}:{key[1]} {verdict}")
 
     def addresses(self, host):
         if host in self.test_allow:
@@ -380,9 +398,13 @@ class Netd:
             try:
                 host = parse_head(head, self.allowed)
             except Refused as refusal:
+                # Only a well-formed CONNECT names a target; anything else is `?:?`.
+                connect = head.startswith(b"CONNECT ") and refusal.response is not MALFORMED
+                self.census(refusal.host if connect else "?", refusal.port if connect else "?", "refused")
                 self.refused(refusal.host, refusal.port)
                 client.sendall(refusal.response)
                 return
+            self.census(host, 443, "allowed")
             targets = self.addresses(host)
             if not targets:
                 self.refused(host, 443)
@@ -519,7 +541,7 @@ def _port(text):
 
 def parse_args(argv):
     opts = {"sockdir": None, "bwrap": None, "manifest": None, "ready_delay": None, "allow": [], "bridge": [], "resolve": [],
-            "host": [], "port": [], "record": False, "serve": False, "no_bridges": False}
+            "host": [], "port": [], "record": False, "serve": False, "no_bridges": False, "census": False}
     single = {"--sockdir": "sockdir", "--bwrap": "bwrap", "--net-manifest": "manifest",
               "--test-ready-delay": "ready_delay"}
     # --allow-host and --bridge-port carry the checked manifest to the sandboxed side.
@@ -538,6 +560,9 @@ def parse_args(argv):
             i += 2
         elif arg == "--test-record-connects":
             opts["record"] = True
+            i += 1
+        elif arg == "--census":
+            opts["census"] = True
             i += 1
         elif arg == "--serve":
             opts["serve"] = True
@@ -707,8 +732,8 @@ def sandbox_argv(bwrap, sockdir, serve_argv):
     return argv
 
 
-def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None):
-    netd = Netd(sockdir, allow, bridges, resolve, record, hosts)
+def serve(sockdir, allow, bridges, resolve, record, hosts, ready_delay=None, census=False):
+    netd = Netd(sockdir, allow, bridges, resolve, record, hosts, census=census)
     netd.start()
     if ready_delay:
         time.sleep(ready_delay / 1000)  # the e2e hold: the sockets exist, the line waits
@@ -743,7 +768,7 @@ def main(argv):
     sockdir = opts["sockdir"]
     os.closerange(3, os.sysconf("SC_OPEN_MAX"))  # nothing the browser leaked goes further
     if opts["serve"]:
-        return serve(sockdir, allow, bridges, resolve, opts["record"], hosts, opts["ready_delay"])
+        return serve(sockdir, allow, bridges, resolve, opts["record"], hosts, opts["ready_delay"], opts["census"])
     bwrap = opts["bwrap"] or "/usr/bin/bwrap"
     if not os.access(bwrap, os.X_OK):
         log("network unavailable (bwrap)")
