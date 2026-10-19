@@ -1035,6 +1035,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_netd_login",
     });
+    // Chat drawer S6 (rev 16.18.1/16.18.2): the sign-in's network is its own
+    // backend capability, launch spec and published runtime/net-login.json.
+    const agent_host_login_network = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_network",
+    });
     const agent_host_relay_ports = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -1316,6 +1323,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
     test_step.dependOn(&agent_host_netd_login.step);
+    test_step.dependOn(&agent_host_login_network.step);
     test_step.dependOn(&agent_host_relay_ports.step);
     test_step.dependOn(&agent_host_hook_net.step);
     test_step.dependOn(&agent_setup_e2e.step);

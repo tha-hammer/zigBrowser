@@ -49,6 +49,11 @@ NET_DIR = "/run/zb-net"
 # outer stage reads it, instead of netd owning the literal. Linux's default is
 # byte-identical to netd's historical API_HOST.
 EGRESS_ALLOW = ("api.anthropic.com",)
+# The one-shot sign-in's upstream hosts (plan rev 16.18.1, RoseCat 5911): the API
+# and `claude setup-token`'s token exchange (2.1.301's TOKEN_URL,
+# https://platform.claude.com/v1/oauth/token). Only the login launch gets them,
+# through its own manifest (runtime/net-login.json) and its own netd.
+LOGIN_EGRESS_ALLOW = ("api.anthropic.com", "platform.claude.com")
 
 
 class Mount(NamedTuple):
@@ -207,6 +212,10 @@ class SandboxBackend(Protocol):
 
     def network(self) -> "Network": ...
 
+    def login_network(self) -> "Network": ...
+
+    def login_launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None) -> "LaunchSpec": ...
+
     def lifetime(self) -> "Lifetime": ...
 
     def channel(self) -> "Channel": ...
@@ -230,7 +239,7 @@ class LinuxBwrapBackend:
     """
 
     def launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), state_dirs=STATE_DIRS,
-                    claude_writable=False, net_dir=None):
+                    claude_writable=False, net_dir=None, network=None):
         """The bwrap prefix for a helper rooted at `home` (an options.AgentHome).
 
         `seccomp_fd`: a descriptor holding seccomp.program() (seccomp.seccomp_fd()), inherited by bwrap.
@@ -239,10 +248,15 @@ class LinuxBwrapBackend:
         only the P0.5 write census uses it. `net_dir` (§3c.2): netd's socket
         directory; the sandbox then gets a network namespace of its own and sees
         only netd's egress/ and bridges/, read-only, under /run/zb-net.
+        `network`: the capability this launch carries (default: :meth:`network`;
+        the sign-in passes :meth:`login_network`, whose netd has no bridges/, so
+        only egress/ is bound).
         """
+        network = network if network is not None else self.network()
         # netd's egress/bridges binds, validated here (before the .claude state
         # checks below), so a missing net dir refuses in exactly the old order.
-        net_mounts = _net_mounts(net_dir) if net_dir is not None else ()
+        names = ("egress", "bridges") if network.bridges.ports else ("egress",)
+        net_mounts = _net_mounts(net_dir, names) if net_dir is not None else ()
         unshare = ("pid", "ipc", "uts") + (("net",) if net_mounts else ())
 
         # The ordered filesystem contract. /usr is first (the --symlink shims sit
@@ -288,7 +302,7 @@ class LinuxBwrapBackend:
             argv += ["--seccomp", str(seccomp_fd)]
         argv.append("--")
         return LaunchSpec(tuple(argv), unshare=unshare, mounts=mounts, workdir=workdir, seccomp_fd=seccomp_fd,
-                          network=self.network(), lifetime=self.lifetime(), channel=self.channel())
+                          network=network, lifetime=self.lifetime(), channel=self.channel())
 
     def network(self, session=None):
         """The whole Linux network capability as one immutable :class:`Network` —
@@ -302,6 +316,20 @@ class LinuxBwrapBackend:
             egress=Egress(Endpoint("127.0.0.1", port), EGRESS_ALLOW, f"{NET_DIR}/egress"),
             bridges=BridgePolicy(ports=tuple(relay.BRIDGES), hooks_get_egress=False),
         )
+
+    def login_network(self):
+        """The one-shot sign-in's network (rev 16.18.1): the same egress endpoint
+        and dir, the allowlist :data:`LOGIN_EGRESS_ALLOW`, and no bridges
+        (setup-token runs no hooks). :meth:`network` is unchanged by it."""
+        chat = self.network()
+        return Network(egress=chat.egress._replace(allow=LOGIN_EGRESS_ALLOW),
+                       bridges=BridgePolicy(ports=(), hooks_get_egress=False))
+
+    def login_launch_spec(self, home, *, seccomp_fd=None, ro_paths=(), net_dir=None):
+        """The login helper's launch: :meth:`launch_spec` carrying
+        :meth:`login_network`, so only the login netd's egress/ is bound."""
+        return self.launch_spec(home, seccomp_fd=seccomp_fd, ro_paths=ro_paths, net_dir=net_dir,
+                                network=self.login_network())
 
     def egress_endpoint(self, session=None):
         """The loopback the CLI reaches via HTTPS_PROXY: 127.0.0.1:3128 (the outer
@@ -381,6 +409,12 @@ def egress_dir():
     return _LINUX_BACKEND.egress_dir()
 
 
+def login_network():
+    """The one-shot sign-in's network capability (rev 16.18.1), from the backend:
+    setup serializes it to runtime/net-login.json for the login netd."""
+    return _LINUX_BACKEND.login_network()
+
+
 def hook_network():
     """A hook's network capability (bridges dir + ports, no egress), from the backend."""
     return _LINUX_BACKEND.hook_launch_spec()
@@ -404,13 +438,13 @@ def _bind_flags(mount):
     return ["--bind" if mount.writable else "--ro-bind", mount.source, mount.target]
 
 
-def _net_mounts(net_dir):
-    """Read-only :class:`Mount`\\ s of netd's egress/ and bridges/ (each a real
-    directory, not a link), bound under /run/zb-net after the /run tmpfs.
-    connect() works through a read-only bind; create, rename and unlink get
-    EROFS (BlueBeaver 5472)."""
+def _net_mounts(net_dir, names=("egress", "bridges")):
+    """Read-only :class:`Mount`\\ s of netd's `names` (egress/ and bridges/; the
+    sign-in's netd has egress/ only), each a real directory, not a link, bound
+    under /run/zb-net after the /run tmpfs. connect() works through a read-only
+    bind; create, rename and unlink get EROFS (BlueBeaver 5472)."""
     mounts = []
-    for name in ("egress", "bridges"):
+    for name in names:
         source = os.path.join(str(net_dir), name)
         if os.path.islink(source) or not os.path.isdir(source):
             raise SandboxError(f"{source} is missing or not a directory: netd is not running")
