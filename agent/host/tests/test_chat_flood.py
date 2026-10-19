@@ -89,7 +89,9 @@ class FloodTest(unittest.TestCase):
         text = "word " * 70_000  # 350,000 bytes
         frames, raw = self.reply(text)
         streamed, messages = self.assert_within_caps(frames, raw)
-        self.assertEqual(streamed, text, "the deltas still carry every character")
+        # Rev 16.20.9: a reply's deltas stop at 256 KiB (the app shows no more).
+        self.assertTrue(text.startswith(streamed) and MESSAGE_MAX - DELTA_MAX < len(streamed.encode()) <= MESSAGE_MAX + DELTA_MAX,
+                        len(streamed))
         self.assertEqual(len(messages), 1)
         self.assertTrue(messages[0].endswith(MARKER), messages[0][-60:])
         kept = messages[0][:-len(MARKER)].rstrip("\n")
@@ -102,6 +104,96 @@ class FloodTest(unittest.TestCase):
         self.assertEqual(streamed, text)
         self.assertEqual(len(messages), 1)
         self.assertTrue(messages[0].endswith(MARKER), messages[0][-60:])
+
+
+def cli_pids(root):
+    """The bundled CLI processes among `root`'s descendants."""
+    import os
+    parents = {}
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/stat") as f:
+                    ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                continue
+            parents.setdefault(ppid, []).append(int(entry))
+    found, todo = [], [root]
+    while todo:
+        pid = todo.pop()
+        for child in parents.get(pid, []):
+            try:
+                with open(f"/proc/{child}/cmdline", "rb") as f:
+                    argv = f.read().split(b"\0")
+            except OSError:
+                continue
+            if argv and argv[0].endswith(b"_bundled/claude"):
+                found.append(child)
+            todo.append(child)
+    return found
+
+
+class EndlessTest(unittest.TestCase):
+    """S5c-1 (rev 16.20.9): an endless reply. The helper forwards at most 256 KiB of a
+    reply's deltas (the app shows no more), and a session whose SDK reader failed (the
+    CLI's message over the SDK's 1 MiB buffer) gets a fresh CLI, the old one killed, so
+    the next prompt in it is answered."""
+
+    def start(self, endless):
+        box = provisioned(self)
+        api = FakeAnthropicApi(turns=[endless, {"text": "after the endless one"}]).start()
+        self.addCleanup(api.stop)
+        h = RawHelper(self, box.home)
+        self.assertEqual(h.frame()["type"], "ready")
+        h.send("hello", agent_home=str(box.home.root), workspace=str(box.home.workspace),
+               scratchpad=str(box.home.scratchpad), route="R1", e2e={"test_base_url": api.base_url})
+        h.send("open_session", session="s-1-1", window_id="window-1")
+        h.until("session_opened")
+        h.send("prompt", session="s-1-1", text="go")
+        return h
+
+    def frames_for(self, h, seconds):
+        import time
+        frames, deadline = [], time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            frames += h.rest(quiet=0.5)
+        return frames
+
+    def ending(self, h, frames):
+        while not any(f["type"] in ("result", "error") for f in frames):
+            frames.append(h.frame(60))
+        return frames
+
+    def answered_again(self, h):
+        h.send("prompt", session="s-1-1", text="again")
+        _, after = h.until("result", timeout=90)
+        self.assertIn("after the endless one", [f.get("text") for f in after if f["type"] == "assistant_message"], after[-3:])
+
+    def test_an_endless_reply_forwards_at_most_256_kib_and_the_session_goes_on(self):
+        h = self.start({"endless": "x" * 1023 + " "})  # the fake's default pace, 1 KiB every 25 ms
+        frames = self.frames_for(h, 9)
+        forwarded = sum(len(f["text"].encode()) for f in frames if f["type"] == "assistant_delta")
+        self.assertLessEqual(forwarded, MESSAGE_MAX + DELTA_MAX, "at most 256 KiB of a reply's deltas are sent")
+        self.assertGreater(forwarded, MESSAGE_MAX - DELTA_MAX, "the deltas reach the cap")
+        h.send("interrupt", session="s-1-1")
+        self.ending(h, frames)
+        self.answered_again(h)
+        h.send("shutdown")
+        h.proc.wait(timeout=30)
+
+    def test_a_failed_sdk_reader_gets_a_fresh_cli_and_the_old_one_is_gone(self):
+        h = self.start({"endless": "x" * 1023 + " ", "every_ms": 0})  # unpaced, up to the fake's 8 MiB cap
+        frames = self.ending(h, self.frames_for(h, 3))
+        ends = [f for f in frames if f["type"] in ("result", "error")]
+        self.assertEqual([(f["type"], f.get("code")) for f in ends], [("error", "sdk")], ends)
+        import time
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and len(cli_pids(h.proc.pid)) != 1:
+            time.sleep(0.2)
+        self.assertEqual(len(cli_pids(h.proc.pid)), 1, "exactly the fresh CLI remains")
+        self.answered_again(h)
+        h.send("shutdown")
+        h.proc.wait(timeout=30)
 
 
 if __name__ == "__main__":

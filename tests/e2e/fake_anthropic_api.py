@@ -13,9 +13,11 @@ item (its text is their join), with an optional {"stall": threading.Event}: the
 stream holds after the first delta (flushed) until the event is set, at most 30 s;
 or {"status": int, "body": {...}}: that HTTP status with a JSON error body (the
 default body names the status), streamed request or not (chat-drawer plan S5a);
-or {"endless": str}: one text block streamed as that piece over and over until the
-client goes away, at most ENDLESS_MAX_S (S5c-1, plan S5.6); `endless_ended` counts
-the streams the client left.
+or {"endless": str}: one text block streamed as that piece over and over, "every_ms"
+apart (default ENDLESS_EVERY_MS), until the client goes away, the fake is stopped,
+ENDLESS_MAX_S passes or ENDLESS_MAX_BYTES are sent (S5c-1, plan S5.6; paced and
+capped so a client that keeps reading cannot be fed without bound); `endless_ended`
+counts the streams the client left.
 `responder(request, index)` may pick the turn for each messages request; the
 default takes the scripted turns in order and answers "ok" once they run out.
 """
@@ -37,13 +39,18 @@ def _usage():
 
 STALL_MAX_S = 30.0
 ENDLESS_MAX_S = 120.0
+ENDLESS_EVERY_MS = 25
+ENDLESS_MAX_BYTES = 8 * 1024 * 1024
 
 
-def _endless(piece):
+def _endless(piece, every_ms, stopped):
     import time
     end = time.monotonic() + ENDLESS_MAX_S
-    while time.monotonic() < end:
+    sent = 0
+    while time.monotonic() < end and sent < ENDLESS_MAX_BYTES and not stopped.is_set():
         yield piece
+        sent += len(piece.encode())
+        stopped.wait(every_ms / 1000)
 
 
 def _content(turn, index):
@@ -74,7 +81,7 @@ def _message(turn, index, content=None):
     }
 
 
-def _sse_events(turn, index):
+def _sse_events(turn, index, stopped=None):
     start = _message(turn, index, content=[])
     start["stop_reason"] = None
     yield "message_start", {"type": "message_start", "message": start}
@@ -82,7 +89,7 @@ def _sse_events(turn, index):
         if block["type"] == "text":
             yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}
             if turn.get("endless") is not None:
-                pieces = _endless(turn["endless"])
+                pieces = _endless(turn["endless"], turn.get("every_ms", ENDLESS_EVERY_MS), stopped or threading.Event())
             else:
                 pieces = turn["deltas"] if turn.get("deltas") is not None else [block["text"]]
             for n, piece in enumerate(pieces):
@@ -142,6 +149,7 @@ class FakeAnthropicApi:
         self.tunnels = []
         self.messages_count = 0
         self.endless_ended = 0
+        self.stopped = threading.Event()  # ends every endless stream at stop()
         self._lock = threading.Lock()
         self._server = None
         self._thread = None
@@ -260,7 +268,7 @@ class FakeAnthropicApi:
                 self.send_header("connection", "close")
                 self.end_headers()
                 try:
-                    for name, data in _sse_events(turn, index):
+                    for name, data in _sse_events(turn, index, api.stopped):
                         self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
                         self.wfile.flush()
                 except OSError:
@@ -293,6 +301,7 @@ class FakeAnthropicApi:
         return {"text": "ok"}
 
     def stop(self):
+        self.stopped.set()
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()

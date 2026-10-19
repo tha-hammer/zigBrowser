@@ -15,6 +15,8 @@ user's decision 1, 2026-10-19):
 - endless: a helper that never stops streaming. While it streams '-' folds within 1 s.
   Once the reply passes 256 KiB, 10 s later the app interrupts it with "Agent output
   overflow"; the browser grows by less than 200 MiB, and the next prompt is answered.
+- close-during-flood: a popup closed while its reply streams: its session ends, the
+  browser keeps running with no GTK warning, and the other window still answers.
 - real-chain: the same through the real CLI and helper, against the fake API's
   `endless` turn: the overflow bubble, the CLI's request abandoned, then the next prompt
   answered by the API.
@@ -47,16 +49,19 @@ MIB = 1024
 
 
 class Rss:
-    """Samples the browser's VmRSS every 0.2 s; `growth()` is in MiB over the first
-    sample. Over `limit_mib` the sampler kills the browser, so a red run cannot take
-    the machine with it."""
+    """Samples the browser's VmRSS every 0.2 s. It fails closed (RoseCat 6015): without
+    the browser's exact pid and a first VmRSS, `ok` is False and every bound fails;
+    `growth()` stops the sampler, joins it and takes a final sample first. Over
+    `limit_mib` the sampler kills the browser, so a red run cannot take the machine."""
 
     def __init__(self, b, limit_mib: int = 1024):
         from agent_common import rss_kb
+        self._rss_kb = rss_kb
         self.pid = b.browser_pid()
         self.base = rss_kb(self.pid)
         self.peak = self.base or 0
         self.killed = False
+        self.ok = self.pid is not None and self.base is not None
         self.done = threading.Event()
 
         def run():
@@ -65,15 +70,31 @@ class Rss:
                 if now is None:
                     return
                 self.peak = max(self.peak, now)
-                if self.base is not None and now - self.base > limit_mib * MIB:
+                if now - self.base > limit_mib * MIB:
                     self.killed = True
                     b.proc.kill()
                     return
-        threading.Thread(target=run, daemon=True).start()
+        self.thread = threading.Thread(target=run, daemon=True)
+        if self.ok:
+            self.thread.start()
 
-    def growth(self) -> float:
+    def growth(self) -> float | None:
+        """MiB over the first sample, or None when nothing was measured."""
         self.done.set()
-        return (self.peak - (self.base or 0)) / MIB
+        if not self.ok:
+            return None
+        self.thread.join(5)
+        last = self._rss_kb(self.pid)
+        if last is not None:
+            self.peak = max(self.peak, last)
+        return (self.peak - self.base) / MIB
+
+
+def bounded(check, rss: Rss, limit: int) -> None:
+    measured = rss.growth()
+    check(rss.ok and measured is not None and not rss.killed and measured < limit,
+          f"the browser grew by less than {limit} MiB (pid {rss.pid}, base {rss.base} kB, growth "
+          f"{'none measured' if measured is None else f'{measured:.1f} MiB'})")
 
 
 def scripted(binary: Path, tmp: Path, name: str, script: dict):
@@ -143,8 +164,7 @@ def case_app_flood(binary: Path, tmp: Path, check) -> None:
         check(isinstance(health, list) and took <= 2.0, f"during the flood page.health answers within 2 s ({took:.2f} s)", b)
         check(b.wait(lambda: ("assistant", "zb-flood-done") in life.bubbles(b), 180), "the reply ends as usual", b)
         check(b.wait(lambda: life.statuses(b)[-1:] == [("ready", "-")], 30), f"and the drawer is ready ({life.statuses(b)[-3:]})", b)
-        growth = rss.growth()
-        check(not rss.killed and growth < 64, f"the browser grew by less than 64 MiB ({growth:.1f} MiB)")
+        bounded(check, rss, 64)
     finally:
         life.release_x(b)
         b.stop()
@@ -167,37 +187,123 @@ def case_unbroken(binary: Path, tmp: Path, check) -> None:
             time.sleep(0.5)
             if not fold(b, check, f"{n} characters with no break opportunity"):
                 return
-        growth = rss.growth()
-        check(not rss.killed and growth < 200, f"the browser grew by less than 200 MiB ({growth:.1f} MiB)")
+        bounded(check, rss, 200)
     finally:
         life.release_x(b)
         b.stop()
 
 
-ZWSP = "\u200b"
-COPY_REPLIES = ["y" * 200_000, "\u754c" * 200, "x" * 130 + ZWSP + "z" * 130]
+ZWSP = "\u200b"  # a character of a source text (case d)
+BREAK = "\n"  # the break point the drawer adds (rev 16.20.9: a line feed)
+PATTERN = "abcdefghij"
+COPY_REPLIES = ["y" * 200_000, PATTERN * 20, "\u754c" * 200, "x" * 130 + ZWSP + "z" * 130, PATTERN * 4100]
 
 
-def keyboard_copy(b, check, label: str, expect: str, steps: int) -> None:
-    """A click in the newest assistant bubble, Ctrl+Home, Shift+Right `steps` times and
-    Ctrl+C, from a decoy CLIPBOARD: exactly `expect` must be copied."""
+PRIMARY_READ = (
+    "import gi\n"
+    "gi.require_version('Gtk', '3.0')\n"
+    "from gi.repository import Gtk, Gdk\n"
+    "text = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).wait_for_text()\n"
+    "print(repr(text))\n")
+
+
+def primary(b) -> str | None:
+    """X11 PRIMARY: GTK fills it from the shown text, so it is the shown selection,
+    the added break points included (the accepted limit, S5.6)."""
+    done = subprocess.run(["/usr/bin/python3", "-c", PRIMARY_READ], env=copy.display_env(b),
+                          capture_output=True, text=True, timeout=20)
+    try:
+        return eval(done.stdout.strip(), {})  # noqa: S307 - our own repr() of a str or None
+    except SyntaxError:
+        return None
+
+
+def summary(text: str | None) -> str:
+    """A bounded description of a copied text (RoseCat 6015: never the whole 200 KB)."""
+    if text is None:
+        return "None"
+    import hashlib
+    return (f"{len(text)} chars, {text.count(ZWSP)} U+200B, {text.count(BREAK)} LF, sha256 {hashlib.sha256(text.encode()).hexdigest()[:16]}, "
+            f"{text[:8]!r}...{text[-8:]!r}")
+
+
+def visible_point(b, rect) -> tuple[int, int] | None:
+    """A point inside the bubble's part that the drawer shows: a long bubble's rect runs
+    far past the list's visible area, so its centre or corner may be off screen."""
+    opened = b.rows("open", 1)
+    if not opened:
+        return None
+    dx, dy, dw, dh = opened[-1].rect()
+    top, bottom = max(rect[1], dy + 48), min(rect[1] + rect[3], dy + dh - 64)  # below the header, above the input
+    if bottom - top < 8:
+        return None
+    return rect[0] + min(rect[2] // 2, 200), (top + bottom) // 2
+
+
+def triple_copy(b, check, label: str, expect: str, select_all: bool = False) -> None:
+    """A triple-click (or, `select_all`, a click and Ctrl+A) on the newest assistant
+    bubble and Ctrl+C, from a decoy CLIPBOARD: exactly `expect` must be copied."""
+    b.wait(lambda: copy.text_rect(b, "assistant") is not None, 10)  # a large bubble's first draw
     rect = copy.text_rect(b, "assistant")
     if not check(rect is not None, f"{label}: the bubble's text is on screen (textrect row)", b):
         return
     owner = copy.seed_decoy(b)
     try:
         check(copy.clipboard(b) == copy.DECOY, f"{label}: the decoy owns the clipboard first")
-        b.x.click(rect[0] + 4, rect[1] + 4)
+        point = visible_point(b, rect)
+        if not check(point is not None, f"{label}: part of the bubble is visible in the drawer ({rect})", b):
+            return
+        x, y = point
+        b.x.click(x, y)  # the first click focuses the bubble (a text view needs it)
+        time.sleep(0.6)
+        if select_all:
+            b.x.key("a", modifiers=("Control_L",))
+        else:
+            for _ in range(3):
+                b.x.click(x, y, settle=0.02)
+        time.sleep(0.3)
+        b.x.key("c", modifiers=("Control_L",))
+        time.sleep(0.5)
+        got = copy.clipboard(b)
+        check(got == expect, f"{label}: the selection + Ctrl+C copy exactly the original (want {summary(expect)}; "
+                             f"got {summary(got)})")
+    finally:
+        owner.kill()
+        owner.wait()
+
+
+def keyboard_copy(b, check, label: str, text: str, steps: int) -> None:
+    """A click in the newest assistant bubble, Ctrl+Home, Shift+Right `steps` times and
+    Ctrl+C, from a decoy CLIPBOARD. Whether an added break point is a cursor stop depends
+    on the script, so the oracle is the selection itself: PRIMARY holds the shown
+    selection, and Copy must give exactly it without the added break points, which is
+    the original's first characters (the selection crosses the first break)."""
+    b.wait(lambda: copy.text_rect(b, "assistant") is not None, 10)  # a large bubble's first draw
+    rect = copy.text_rect(b, "assistant")
+    if not check(rect is not None, f"{label}: the bubble's text is on screen (textrect row)", b):
+        return
+    owner = copy.seed_decoy(b)
+    try:
+        check(copy.clipboard(b) == copy.DECOY, f"{label}: the decoy owns the clipboard first")
+        point = visible_point(b, rect)
+        if not check(point is not None, f"{label}: part of the bubble is visible in the drawer ({rect})", b):
+            return
+        b.x.click(*point)
         time.sleep(0.3)
         b.x.key("Home", modifiers=("Control_L",))
         for _ in range(steps):
             b.x.key("Right", modifiers=("Shift_L",), settle=0.005)
         time.sleep(0.3)
+        shown = primary(b)
+        expect = None if shown is None else shown.replace(BREAK, "")
+        check(expect is not None and steps - 1 <= len(expect) <= steps and text.startswith(expect)
+              and shown is not None and BREAK in shown,
+              f"{label}: the selection is the first {steps} shown characters, across a break (PRIMARY {summary(shown)})")
         b.x.key("c", modifiers=("Control_L",))
         time.sleep(0.5)
         got = copy.clipboard(b)
-        check(got == expect, f"{label}: Shift+Right x{steps} and Ctrl+C copy exactly {len(expect)} characters "
-                             f"({expect[:3]!r}...; got {None if got is None else (len(got), got[:3], got[-3:])})")
+        check(got is not None and got == expect, f"{label}: Shift+Right x{steps} and Ctrl+C copy exactly the selected "
+                                                 f"original (want {summary(expect)}; got {summary(got)})")
     finally:
         owner.kill()
         owner.wait()
@@ -210,18 +316,20 @@ def case_copy_exact(binary: Path, tmp: Path, check) -> None:
         if not check(b.wait_page(), "the page loaded", b):
             return
         for n, text in enumerate(COPY_REPLIES):
+            if n > 0:  # a click left the focus in a bubble: fold and reopen, which focuses the input
+                fold(b, check, f"before reply {n}")
             life.send(b, f"copy{n}")
             if not check(b.wait(lambda: len([1 for role, _ in life.bubbles(b) if role == "assistant"]) > n, 60),
                          f"reply {n} is shown", b):
                 return
             time.sleep(1.0)
             if n == 0:
-                copy.copy_and_check(b, check, "assistant", text, clicks=3)  # (a) the whole 200 KB run
-                keyboard_copy(b, check, "(b) across the first break", "y" * 69, 70)
-            elif n == 1:
-                keyboard_copy(b, check, "(c) multibyte", "\u754c" * 69, 70)
+                triple_copy(b, check, "(a) the whole 200 KB run, Ctrl+A", text, select_all=True)
+            elif n in (1, 2, 4):
+                keyboard_copy(b, check, f"({'b' if n == 1 else 'c' if n == 2 else 'e'}) {len(text)} characters from the start",
+                              text, 70)
             else:
-                copy.copy_and_check(b, check, "assistant", text, clicks=3)  # (d) its own U+200B kept
+                triple_copy(b, check, "(d) its own U+200B kept, Ctrl+A", text, select_all=True)
     finally:
         life.release_x(b)
         b.stop()
@@ -246,12 +354,44 @@ def case_endless(binary: Path, tmp: Path, check) -> None:
         took = time.monotonic() - started
         check(overflowed and took <= 40, f"the reply is interrupted with {OVERFLOW!r} ({took:.1f} s; {life.bubbles(b)[-2:]})", b)
         check([f for f in app_frames(w) if f.get("type") == "interrupt"] != [], "the app sent the helper an interrupt")
-        growth = rss.growth()
-        check(not rss.killed and growth < 200, f"the browser grew by less than 200 MiB ({growth:.1f} MiB)")
+        bounded(check, rss, 200)
         if overflowed:
             life.send(b, "again")
             check(b.wait(lambda: ("assistant", "zb-after-overflow") in life.bubbles(b), 30),
                   f"the next prompt is answered ({life.bubbles(b)[-2:]})", b)
+    finally:
+        life.release_x(b)
+        b.stop()
+
+
+def case_close_during_flood(binary: Path, tmp: Path, check) -> None:
+    """RoseCat 6015: a window closed while its reply streams. Its drawer, its pending
+    refresh and its session go; the browser keeps running without a GTK warning, the
+    app ends the closed window's session, and the other window still answers."""
+    piece = "q" * (16 * 1024 - 64) + " "
+    script = {"on_prompts": [[{"forever": {"type": "assistant_delta", "session": "$SESSION", "text": piece}}],
+                             [frame("assistant_message", text="zb-after-close"), RESULT]],
+              "on_interrupt": [STOPPED],
+              "on_end": [{"frame": {"type": "session_ended", "session": "$SESSION", "reason": "end"}}]}
+    w, b = scripted(binary, tmp, "close-flood", script)
+    try:
+        if not check(b.wait_page(), "the page loaded", b):
+            return
+        if not check(b.open_popup() and b.wait(lambda: b.rows("icon", 2) != [], 20), "the popup has its drawer", b):
+            return
+        life.send(b, "forever", win=2)
+        if not check(b.wait(lambda: len(b.rows("delta", 2)) >= 4, 60), "the popup's reply streams", b):
+            return
+        b.zb.call("page.close", {"window_id": "window-2"})
+        check(b.wait(lambda: len(b.zb.page.list()["pages"]) == 1, 15), "the popup closed while its reply streamed", b)
+        check(b.wait(lambda: [f for f in app_frames(w) if f.get("type") == "end_session"] != [], 15),
+              "the app ended the closed window's session", b)
+        time.sleep(2.0)
+        check(b.proc.poll() is None, "the browser still runs", b)
+        check(b.gtk_complaints() == [], f"no GTK warning or critical ({b.gtk_complaints()[:3]})")
+        life.send(b, "again", win=1)
+        check(b.wait(lambda: ("assistant", "zb-after-close") in life.bubbles(b, 1), 30),
+              f"the other window still answers ({life.bubbles(b, 1)[-2:]})", b)
     finally:
         life.release_x(b)
         b.stop()
@@ -267,10 +407,10 @@ def case_real_chain(binary: Path, tmp: Path, check) -> None:
         rss = Rss(b)
         life.send(b, "forever")
         overflowed = b.wait(lambda: ("error", OVERFLOW) in life.bubbles(b), 90)
-        check(overflowed, f"the real chain's endless reply is interrupted with {OVERFLOW!r} ({life.bubbles(b)[-2:]})", b)
+        check(overflowed, f"the real chain's endless reply is interrupted with {OVERFLOW!r} ({life.bubbles(b)[-2:]}; "
+                          f"{len(b.rows('delta', 1))} delta rows, {len(fake.api.messages_requests())} API requests)", b)
         check(b.wait(lambda: fake.api.endless_ended >= 1, 30), "the CLI abandoned the endless request", b)
-        growth = rss.growth()
-        check(not rss.killed and growth < 200, f"the browser grew by less than 200 MiB ({growth:.1f} MiB)")
+        bounded(check, rss, 200)
         if overflowed:
             life.send(b, "again")
             check(b.wait(lambda: ("assistant", "zb-after-overflow-real") in life.bubbles(b), 90),
@@ -282,7 +422,7 @@ def case_real_chain(binary: Path, tmp: Path, check) -> None:
 
 
 CASES = {"app-flood": case_app_flood, "unbroken": case_unbroken, "copy-exact": case_copy_exact,
-         "endless": case_endless, "real-chain": case_real_chain}
+         "endless": case_endless, "close-during-flood": case_close_during_flood, "real-chain": case_real_chain}
 
 
 def main() -> int:

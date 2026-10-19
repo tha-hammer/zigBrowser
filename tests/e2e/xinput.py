@@ -37,7 +37,7 @@ FIRST_PRIVATE, LAST_PRIVATE = 200, 399  # xsession.Display's range
 # X keysyms used by the tests (X11/keysymdef.h).
 KEYSYMS = {
     "Tab": 0xFF09, "Return": 0xFF0D, "Escape": 0xFF1B, "space": 0x0020,
-    "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53, "Down": 0xFF54,
+    "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53, "Down": 0xFF54, "Home": 0xFF50, "End": 0xFF57,
     "Shift_L": 0xFFE1, "Control_L": 0xFFE3, "Alt_L": 0xFFE9,
 }
 

@@ -4,10 +4,12 @@ sandbox argv (own network, netd's egress, the outer relay as its command) and
 execs bwrap in place. The token arrives on fd 3; the Messages API is P0's fake."""
 
 import asyncio
+import contextlib
 import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -44,7 +46,7 @@ class Helper:
                                       sys.executable, "-m", "zb_agent_host", "chat", "--home", str(home.root),
                                       "--fifo-dir", str(home.scratchpad / "tmp" / "zb-token")],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     env=env, pass_fds=(read,), text=True)
+                                     env=env, pass_fds=(read,), text=True, start_new_session=True)
         os.close(read)
         self.seq = 0
         self.lines = queue.Queue()  # stdout lines, then None at EOF
@@ -94,8 +96,10 @@ class Helper:
                 return f, seen
 
     def kill(self):
-        if self.proc.poll() is None:
-            self.proc.kill()
+        """The helper and everything it started (its CLI children): its own process
+        group, so no CLI outlives a test (S5c-1: an orphaned CLI kept reading)."""
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self.proc.pid, signal.SIGKILL)
         self.proc.wait()
         self.reader.join(10)
         for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
