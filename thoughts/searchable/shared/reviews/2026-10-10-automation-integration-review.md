@@ -11343,3 +11343,70 @@ Agent Mail 6010 records both MS1 verdicts.
 gate was run: these are plan/test-only changes, and BlueBeaver held the gate
 slot. Because `5ad5c88` is blocked and earlier S6b1 work is not yet green, the
 newest approved linear push-through SHA remains **`da3028f`**.
+
+## S5c plan rev 16.20.2 (`1f0c04e`)
+
+Rev 16.20.2 is a substantial correction. It replaces, rather than appends to,
+the stale S5.6/S5.7 text. The S5.6 design now has one coherent contract: the
+64 MiB bound applies only to the 50,000-delta case, the larger bubble has its
+own 200 MiB bound, there is no `DRAWER idles` row, and “no cut” means no new
+cut below the existing 256 KiB message cap (`plan:2021-2070`). It precisely
+defines runs and whitespace, preserves an original-text copy, covers partial
+and whole selections across inserted U+200B with multibyte and original-U+200B
+cases, removes the one pending idle on every ending and destruction path, and
+names the `long-run` real-screen check (`plan:2035-2094`). The original S5.6
+findings in Agent Mail 6009 are therefore **closed by `1f0c04e`**.
+
+The S5.7 rewrite also correctly drops the nonexistent stderr ring and the
+non-load-bearing app redactor, scopes the scrub to transcripts, chooses an
+equal-length in-place `pwrite` plus `fsync`, orders the ordinary prompt scrub
+before the ending frame, and adds start/close sweeps, fail-closed exit and a
+kill/restart residue test. Those decisions close most of the earlier finding,
+but three load-bearing gaps remain.
+
+**Explicit verdict for `1f0c04e`: BLOCKED.**
+
+1. **BLOCKER — a post-result write can survive indefinitely.** The contract
+   scrubs after `ResultMessage` and before the helper's ending frame, but then
+   explicitly permits a CLI record written after `ResultMessage`, promising
+   only that a future scrub will catch it (`plan:2126-2139`). If the user sends
+   no next prompt and leaves the helper/session open, neither close nor helper
+   start occurs; the token remains past the user-accepted “until the reply
+   ends” window. The plan must either prove with a real-CLI test that all
+   transcript writes precede delivery of `ResultMessage`, or introduce a
+   deterministic quiescence/monitoring barrier that catches later appends
+   before exposing the ending frame. A future prompt/close/restart is not a
+   security boundary.
+2. **BLOCKER — the incremental cursor is not fail-closed.** A path-only scan
+   offset can skip secrets after the JSONL is replaced with a new inode or
+   truncated and regrown (`plan:2121-2124`). Track file identity and size,
+   reset to zero on inode change or shrink, and add both red cases. Also, 511
+   bytes cannot be asserted as a sufficient overlap for the unbounded generic
+   pattern `{20,}`. Bound the credential shape to an approved finite maximum
+   and derive/name the overlap, or use a streaming/full scan correct for the
+   unbounded form. The security and UI bounds (64, 128, 256 KiB and the scan
+   overlap) should be named constants rather than independent literals.
+3. **BLOCKER — `pause_before_scrub` is outside the exclusive test-seam
+   contract.** The crash test introduces it in `hello.e2e`
+   (`plan:2147-2150`), but section 7 says its tables contain the only
+   non-production inputs and lists no such helper-carried seam
+   (`plan:1170-1195`). Define its owner, external name/value, exact hello field,
+   validation, `--e2e-protocol` plus exact-test-base gating and production
+   inertness red.
+
+**BLOCKER-for-tests:** split the failure-frame promise by lifecycle. At prompt
+end, scrub failure replaces `result` with `error sdk`; during idle
+`end_session` or shutdown there is no “prompt ending frame,” so the plan must
+state whether `session_ended` is suppressed and exit 3 is the sole observable.
+The red suite must inject open, read, short-`pwrite` and `fsync` failures;
+chmod/read-only alone proves only one of the enumerated failures.
+
+BlackRobin supplied genuine S5c-1 failing-first evidence in Agent Mail 6012:
+the app flood, unbroken text, overflow/interrupt and real-chain cases fail;
+all four helper flood checks fail; and the pure Zig break test does not compile
+because `breakRuns` is absent. That evidence supports the red but does not
+change the plan verdict. Findings were mailed as Agent Mail 6013.
+
+`git diff --check 1f0c04e^ 1f0c04e` passed. No browser or full gate was run:
+the reviewed commit is docs-only and BlueBeaver holds the gate slot. The newest
+approved linear push-through SHA remains **`da3028f`**.
