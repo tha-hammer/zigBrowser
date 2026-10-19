@@ -11845,3 +11845,59 @@ so this is editorial rather than an approval condition.
 this docs-only revision. The verdict was sent to BlackRobin as Agent Mail
 6038. The newest approved and pushed linear boundary remains **`da3028f`**
 because the earlier `545c06f` is still blocked-for-tests.
+
+## S6b1 credential-operation follow-up (`22a4a8f`, `032a2c9`, `00530d4`)
+
+The production change in `00530d4` is internally coherent. One
+`update_sensitivity()` projects `busy || signin_active || signin_store` into
+the credential controls; each handler independently refuses the same overlap;
+`ZB_LOGIN_EV_DONE` hands the lock from `signin_active` to `signin_store`
+before starting the asynchronous token store; and the store callback releases
+it only with its answer (`src/agent_secrets_window.c:209-235,292-317,384-439`).
+The failed Secret Service store now clears `signin_store` before exposing the
+file choice, making `error-store` final and the later file choice an ordinary
+Save. `_Cancel` supplies the promised Alt+C mnemonic.
+
+Agent Mail 6053 records the failing-first evidence: `22a4a8f` failed 7 of 37
+checks in each of three clean-export runs; `032a2c9` makes the entry-lock mutant
+fail; and the green exact tree passed a private-Xvfb clean gate at **158/158
+steps and 910/910 tests** (race 41/41, login 106/106, Secrets 222/222). I did
+not take JadeBeacon's gate slot for a duplicate gate. The earlier load-saturated
+failure is not treated as product evidence; each reported failure passed alone
+and the later clean gate was green.
+
+**Explicit verdict for `22a4a8f`: BLOCKED-for-tests at that SHA.** It supplies
+useful failing-first cases for the overlap, double ending and inert Cancel, but
+does not observe the signed-in-token store interval or widget sensitivity.
+
+**Explicit verdict for `032a2c9`: BLOCKED-for-tests.** It correctly makes the
+token entry's insensitive state observable, but only while login is waiting
+for a code. It does not close the full coverage requirement from review
+`9fa608b`/Agent Mail 6031.
+
+**Explicit verdict for `00530d4`: BLOCKED-for-tests; production logic
+approved.** One test gap remains:
+
+- `case_save_during_signin` attempts the conflicting Save before sending the
+  code, while `signin_active` is true (`agent_login_races_test.py:46-71`). It
+  then waits straight through `done` and inspects only the final store
+  (`:72-76`). Removing `signin_store` from `signing_in()`, or releasing it
+  before the delayed keyring answer, would therefore survive. The red must
+  hold the post-code signed-in-token store in flight, observe/try the manual
+  controls before releasing it, and prove the final store.
+- Only the entry's insensitive appearance is observed. Save and Sign in are
+  clicked and appear to do nothing because their handler guards return;
+  Remove and the file choice are never exercised from an enabled state.
+  Individual mutations that remove the Save, Remove, file-choice or Sign-in
+  `gtk_widget_set_sensitive` calls therefore survive, although `plan:2313`
+  requires the controls to be insensitive **and** refuse. Observe each
+  meaningful enabled-to-disabled transition through the production widget
+  (an e2e-only `gtk_widget_get_sensitive` row or an equivalent pixel oracle),
+  while retaining the outcome and stored-token checks.
+
+The one-ending file fallback and the Alt+C cleanup cases adequately cover
+their contracts. `git diff --check` passed for all three commits. Findings were
+sent to BlueBeaver as Agent Mail 6055. **S6b1 has not cleared code review.**
+After this test blocker closes, approval still independently requires both
+user-run `signin-paste` parts A and B (`plan:2331-2339`). The newest approved
+and pushed linear boundary remains **`da3028f`**.
