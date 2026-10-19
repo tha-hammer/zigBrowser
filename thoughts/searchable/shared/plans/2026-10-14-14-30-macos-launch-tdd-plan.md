@@ -117,6 +117,30 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   MS5** (where the runtime's non-exec files exist in two per-arch trees) — not a silent drop:
   MS1.1 states it, and the oracle's fail-closed-on-empty stays an MS5 guard. Re-pinned to `99f11b1`.
 
+- **Rev 9** (this): answers RoseCat's rev-8 blocker (mail `5995`, review `6a3980c`) — the MS5 role
+  typing was accepted, but MS1's `resources: []` was still **prose that resolved the oracle conflict
+  by not calling `resource_compat` at all**, which "is indistinguishable from accidentally deleting
+  the check." Rev 9 makes it an **executable, mutation-resistant phase policy**: `resource_phase(
+  milestone, required, …)` (`tests/e2e/mac_universal_test.py`) accepts an empty resource inventory
+  **only** for a milestone in `EMPTY_ALLOWED_MILESTONES = {MS1}` (browser-only), **fails closed for
+  any other empty** (MS5, unknown, ""), and otherwise runs the two-tree oracle; `mac_resource_compat.py`
+  gains a **required `--milestone`** and routes through it, so the green **calls** the gate at every
+  milestone (MS1 included) rather than skipping it. Tests (c53b580): MS1-empty passes *and asserts*,
+  MS5-empty fails, unqualified empty fails, MS5-nonempty mismatch fails. A dropped milestone check is
+  caught. Docs + the executable gate landed in `c53b580`; re-pinned to HEAD `774ce31`.
+
+## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
+
+RoseCat accepted the rev-8 MS5 role/resource typing but BLOCKED on MS1's empty-resource exception
+being prose-only (it "resolved the oracle conflict by not calling `resource_compat`"). A skip
+conditional is indistinguishable from deleting the check, so rev 9 replaces it with a typed gate.
+
+| # | Blocker (5995) | Resolution in rev 9 | Where |
+|---|---|---|---|
+| 1 | MS1's `resources: []` is enforced only by *not invoking* `resource_compat`; there is no typed MS1-only policy and no red proving empty is accepted only for MS1 while staying fail-closed at MS5. | `resource_phase(milestone, required, tree_a, tree_b)` is the typed gate the green **calls at every milestone**: an empty set passes **only** for a milestone in `EMPTY_ALLOWED_MILESTONES = {MS1}`; any other empty (MS5, unknown, "") **fails closed**; a nonempty set runs the two-tree `resource_compat` oracle. `mac_resource_compat.py` takes a **required `--milestone`**, so MS1 runs `--milestone MS1` (empty → pass, *asserted*, not skipped) and MS5 runs `--milestone MS5` (empty → fail). Tests pin MS1-empty-passes, MS5-empty-fails, unqualified-empty-fails, MS5-nonempty-mismatch-fails; a mutant dropping the milestone check is caught. | MS1.1, MS5.1c, `tests/e2e/mac_universal_test.py` (`resource_phase`, `EMPTY_ALLOWED_MILESTONES`), `mac_resource_compat.py` |
+
+Re-pinned to HEAD `774ce31` (the executable gate + tests are `c53b580`).
+
 ## Rev 8 — MS5 role classification + MS1 resource rule corrected (docs only; RoseCat 5989)
 
 RoseCat approved the `{browser}` MS1 scope (`build.zig:163-173`) but BLOCKED rev 7 on two
@@ -455,12 +479,15 @@ Mach-O with both slices. **At MS1 the bundle ships only the browser** (`build.zi
 Mach-O with no non-executable resource**. The **per-host census mechanism is general and
 unchanged** (it scans the whole bundle for every Mach-O and requires each fat, fails closed on an
 unprobeable file, and checks that any declared resource is present); only the MS1 inventory is
-narrow. The **two-tree `resource_compat` oracle is a SEPARATE pre-`lipo` step and is NOT invoked
-at MS1** (there is nothing to compare, and the oracle correctly fails closed on an empty list, so
-MS1 must not call it with one — rev 8, not a silent skip). The oracle is **first exercised at
-MS5** (behavior MS5.1c), where macOS provisioning installs the Python runtime, the Claude CLI and
-the generated launcher, so the non-exec runtime files exist in two per-arch trees and the
-Intel-3.9-vs-arm-3.14 Python mismatch is exactly what it must catch.
+narrow. The empty state is **not a skip**: the green **calls the typed phase gate**
+`mac_resource_compat.py --milestone MS1` (rev 9), and `resource_phase` (`mac_universal_test.py`)
+**accepts an empty inventory only for a milestone in `EMPTY_ALLOWED_MILESTONES = {MS1}`** and
+**fails closed for any other empty**, so MS1's exception is asserted, executable and
+mutation-resistant — a dropped milestone check is caught (RoseCat 5995). The two-tree
+`resource_compat` oracle (the nonempty branch of the gate) is **first exercised at MS5** (behavior
+MS5.1c), where macOS provisioning installs the Python runtime, the Claude CLI and the generated
+launcher, so the non-exec runtime files exist in two per-arch trees and the Intel-3.9-vs-arm-3.14
+Python mismatch is exactly what it must catch.
 
 ### Behavior MS1.2: real two-host identity + executing-arch proof (no Rosetta false-green)
 **Given** two distinct hosts,
@@ -962,11 +989,12 @@ real form** (rev 8, RoseCat 5989):
   **universal2 runtime at one path**; if the arches differ, the oracle **fails closed** — exactly
   its purpose. (If a native launcher is ever introduced, re-classify it as a `component` then.)
 
-MS5's gate MUST run the `resource_compat` oracle on the x86_64 and arm64 provisioning trees before
-`lipo`, over the runtime's non-exec files (`runtime.json`, the generated `zb-claude`/`zb-hook-run`/
-`zb-net-relay` scripts, the `*.json` manifests). This is the **first production run of the oracle**
-(MS1 declares no resources and never calls it); its fail-closed-on-empty therefore guards that MS5,
-which does ship resources, actually declares them. The Intel Xcode-python-3.9 vs arm
+MS5's gate MUST run the phase gate `mac_resource_compat.py --milestone MS5` on the x86_64 and arm64
+provisioning trees before `lipo`, over the runtime's non-exec files (`runtime.json`, the generated
+`zb-claude`/`zb-hook-run`/`zb-net-relay` scripts, the `*.json` manifests). This is the **first
+production run of the two-tree oracle** (MS1 runs `--milestone MS1`, which the gate accepts empty;
+MS5 is **not** an empty-allowed milestone, so `resource_phase` fails closed unless MS5 declares a
+nonempty resource set) — so the empty-allowed exception can never leak past MS1. The Intel Xcode-python-3.9 vs arm
 Homebrew-python-3.14 difference is precisely the mismatch it catches. Red-first: with the roles
 added but the runtime still single-arch/mismatched, the Mach-O census (python/CLI) and the resource
 oracle (the scripts/manifests) both go red; green only when every shipped Mach-O is fat and every
