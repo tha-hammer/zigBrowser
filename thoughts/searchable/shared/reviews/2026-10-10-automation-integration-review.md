@@ -10841,3 +10841,94 @@ fully approved through **`e33661d`**. `edd2c6c` is the next commit and remains
 blocked, so later individual approval of `f73305e` cannot advance the linear
 prefix; `0e41ae1` is independently blocked-for-tests. The newest approved
 push-through SHA from `37518ea` is therefore **`e33661d`**.
+
+## S6a backend green/login-contract red and MS1 census follow-up (`68948db`, `71abc6f`, `fd4178b`)
+
+### S6a part-3 backend green
+
+**Explicit verdict for `68948db`: APPROVED.** The new login network is a
+separate immutable backend capability: it retains the chat endpoint and socket
+directory, expands only the login allowlist to the API and platform hosts, and
+has no bridge ports (`sandbox.py:320-332`). Supplying no capability to the
+ordinary `launch_spec` still selects `network()`, so the chat launch stays
+API-only with both bridges. The login launch selects `login_network()` and
+derives an egress-only read-only mount; missing egress still refuses before
+launch. JadeBeacon independently approved these `SandboxBackend` seam changes
+in Agent Mail 5962.
+
+`setup.login_net_manifest()` is a direct projection of that capability, and
+the real staging path atomically writes `runtime/net-login.json` mode 0600
+beside the unchanged chat manifest (`setup.py:453-463,498-500`). The registered
+eight-case suite observes the immutable capability, default chat path,
+egress-only launch, missing-directory refusal, injected capability propagation,
+real setup publication and real netd consumption. It therefore closes the
+previous pure-producer/commit-point gap without bypassing production.
+
+BlueBeaver's clean-export private-Xvfb gate on the exact green content reported
+**Build Summary: 152/152 steps succeeded; 900/900 tests passed**, with the login
+network module passing 8/8. The reported mutants remove or collapse each main
+edge, including the setup write. No additional local gate was started because
+BlueBeaver retained the exclusive slot for the next green.
+
+### Login-helper contract red
+
+**Explicit verdict for `71abc6f`: APPROVED as failing-first.** Its fixed-value
+table accepts both captured authorize origins and refuses altered `code`,
+response type, scope, challenge method, client id, challenge and state, including
+duplicate names; the end-to-end altered-scope case exercises the helper rather
+than only the parser. The held-prompt fixture sends callback and pasted codes
+before the next prompt and proves that only the first reaches the CLI. The
+terminal tests include deterministic cancel-first and done-first orderings plus
+300 barrier-raced cancel/done/timeout rounds; they require one terminal frame
+and fd-4 token bytes only when `done` wins (`test_login_contract.py:147-188`).
+
+Against the clean parent, BlueBeaver reports 15 failures and one error on each
+of three runs; the two positive URL guards and done-first control already pass.
+That is adequate red-first evidence for all three blockers in Agent Mail 5967.
+The module is correctly unregistered until its forward green.
+
+### MS1 component-census follow-up
+
+**Explicit verdict for `fd4178b`: BLOCKED-for-tests.** The commit materially
+improves `0e41ae1`: a checked-in manifest names the four required native roles
+and an agent-runtime resource; the Mac gate now supplies the bundle root and
+manifest; the whole tree is scanned for Mach-O files; every discovered Mach-O
+must be fat; required roles/resources must be present; and empty inventory or
+empty scan fails. Its pure 6-case unit suite kills omission of the Claude CLI,
+a single-arch component, an empty scan, a missing resource and an empty
+component inventory. The stale Intel comments and malformed XML comment are
+also fixed forward. The Intel gate remains red for the intended missing fat
+bundle/signature/readback conditions.
+
+Two promised MS1.1 edges can still false-green:
+
+1. **BLOCKER-for-tests — a failed file-type probe disappears from the census.**
+   `tests/e2e/mac_universal_test.py:103-106` invokes `file -b` directly but
+   ignores its exit status and stderr. Error/empty output is treated as “not
+   Mach-O,” so an unreadable or otherwise unprobeable bundled file is silently
+   omitted. Use the fail-closed command wrapper (or check the result explicitly)
+   and add a mocked/fixture case proving probe failure rejects the bundle.
+2. **BLOCKER-for-tests — resource compatibility is still only prose.**
+   `component_census` checks that the declared resource exists in one combined
+   tree (`mac_universal_test.py:115-127`). The inventory comment promises that
+   a future `build-dmg.sh` will compare the per-arch trees before lipo, but no red
+   test requires that comparison and the script does not implement it. MS1.1
+   explicitly requires compatible non-executable resources before
+   `lipo -create` (`macOS plan:396-401`). Add a pure two-tree digest/map oracle
+   whose mismatched-resource fixture fails, then route the green packaging step
+   through it.
+
+**SHOULD — bind roles to their expected paths.** Required components are
+satisfied by a set of basenames (`mac_universal_test.py:119-123`). A stray
+Mach-O named `python3`, `claude` or `zb-claude` elsewhere can satisfy a missing
+runtime role. Exact relative paths or unique allowed path patterns in the fixed
+inventory, plus a wrong-location decoy, would make the census genuinely
+role-complete. These findings were mailed to JadeBeacon as Agent Mail 5974.
+
+### Linear push-through boundary
+
+The orchestrator has pushed through `e33661d`. Although `68948db` and
+`71abc6f` are individually approved, the earlier production commit `edd2c6c`
+still awaits the green for its three blockers, and `fd4178b` remains
+blocked-for-tests. The newest approved linear push-through SHA remains
+**`e33661d`**.
