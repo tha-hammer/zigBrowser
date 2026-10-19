@@ -989,6 +989,15 @@ pub fn build(b: *std.Build) void {
         "agent-login-e2e",
     });
     agent_login_e2e.addArtifactArg(exe);
+    // RoseCat 6024 (rev 16.18.6): one credential change at a time, one ending through
+    // the file fallback, and the inert route's Cancel.
+    const agent_login_races_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_login_races_test.py --binary \"$1\"",
+        "agent-login-races-e2e",
+    });
+    agent_login_races_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -1290,6 +1299,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_auth_tests.step);
     test_step.dependOn(&run_agent_login_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);

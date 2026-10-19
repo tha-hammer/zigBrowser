@@ -92,6 +92,11 @@ typedef struct {
   char *link_url;
   /* The token being stored came from a sign-in: its row and sentences. */
   int signin_store;
+  /* Remove applies to the current state (a token is stored). */
+  int can_remove;
+  /* A sign-in this window started has not ended yet (its own flag: agent_login.c
+   * still counts as running while it tears down after the ending). */
+  int signin_active;
   /* A token the Secret Service did not take, kept only until the user
    * chooses the private file or closes the window (then wiped). It belongs
    * to the current epoch: no older answer may touch it. */
@@ -188,21 +193,39 @@ static void set_status_text(const char *text) {
   secrets_row("text", text, NULL);
 }
 
+static void update_sensitivity(void);
+
 static void set_state(State state, const char *text) {
   set_status_text(text);
   gtk_widget_set_visible(secrets.file_box, state == STATE_NO_KEYRING && secrets.pending != NULL);
-  gtk_widget_set_sensitive(secrets.remove, state == STATE_SERVICE || state == STATE_FILE);
+  secrets.can_remove = state == STATE_SERVICE || state == STATE_FILE;
+  update_sensitivity();
   secrets_row("status", state_rows[state], NULL);
 }
 
 /* `SECRETS login <state>` (D7b, rev 16.18.3). */
 static void login_row(const char *state) { secrets_row("login", state, NULL); }
 
+/* One credential change at a time (rev 16.18.6, RoseCat 6024): a sign-in, from
+ * Sign in until its token's store answered, locks the entry, Save, Remove and the
+ * file choice; a manual operation in flight locks Sign in. */
+static int signing_in(void) { return secrets.signin_active || secrets.signin_store; }
+
+static void update_sensitivity(void) {
+  if (secrets.window == NULL) {
+    return;
+  }
+  int locked = secrets.busy || signing_in();
+  gtk_widget_set_sensitive(secrets.save, !locked);
+  gtk_widget_set_sensitive(secrets.entry, !locked);
+  gtk_widget_set_sensitive(secrets.file_button, !locked);
+  gtk_widget_set_sensitive(secrets.remove, secrets.can_remove && !locked);
+  gtk_widget_set_sensitive(secrets.signin, !locked && zb_login_configured());
+}
+
 static void set_busy(int busy) {
   secrets.busy = busy;
-  gtk_widget_set_sensitive(secrets.save, !busy);
-  gtk_widget_set_sensitive(secrets.entry, !busy);
-  gtk_widget_set_sensitive(secrets.file_button, !busy);
+  update_sensitivity();
 }
 
 /* Starts an asynchronous operation: a new epoch, and the controls wait. */
@@ -283,6 +306,9 @@ static void on_service_stored(ZbSecretsResult result, gpointer epoch) {
   } else {
     /* No silent fallback: keep the token only for the explicit file choice
      * (a signed-in token too: its store failed, so the sign-in did). */
+    /* error-store is the sign-in's one, final ending (rev 16.18.6): the file
+     * choice that stays offered is an ordinary Save of the kept token. */
+    secrets.signin_store = 0;
     set_state(STATE_NO_KEYRING, TEXT_NO_KEYRING);
     if (signin) {
       login_row("error-store");
@@ -293,7 +319,7 @@ static void on_service_stored(ZbSecretsResult result, gpointer epoch) {
 static void on_save(GtkWidget *button, gpointer unused) {
   (void)button;
   (void)unused;
-  if (secrets.busy) {
+  if (secrets.busy || signing_in()) {
     return;
   }
   /* Read once, then clear the entry at once, whatever happens next. */
@@ -325,7 +351,7 @@ static void on_save(GtkWidget *button, gpointer unused) {
 static void on_save_to_file(GtkWidget *button, gpointer unused) {
   (void)button;
   (void)unused;
-  if (secrets.busy || secrets.pending == NULL) {
+  if (secrets.busy || signing_in() || secrets.pending == NULL) {
     return;
   }
   secrets.file_choice = 1; /* the explicit choice: the file is now the active store */
@@ -347,7 +373,7 @@ static void signin_controls(int running, int need_code) {
     return;
   }
   gtk_widget_set_visible(secrets.link_box, running && secrets.link_url != NULL);
-  gtk_widget_set_sensitive(secrets.signin, !running && zb_login_configured());
+  update_sensitivity();
   gtk_widget_set_visible(secrets.cancel, running);
   gtk_widget_set_visible(secrets.code_box, running && need_code);
   if (running && need_code) {
@@ -382,6 +408,7 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
   (void)unused;
   switch (event) {
   case ZB_LOGIN_EV_STARTING:
+    secrets.signin_active = 1;
     login_row("starting");
     signin_controls(1, 0);
     if (secrets.window != NULL) {
@@ -405,12 +432,15 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
     }
     break;
   case ZB_LOGIN_EV_DONE:
+    secrets.signin_active = 0;
+    secrets.signin_store = 1; /* locked until the store answers */
     signin_controls(0, 0);
     store_signed_in(detail);
     break;
   case ZB_LOGIN_EV_ERROR: {
     char row[32];
     g_snprintf(row, sizeof row, "error-%s", detail != NULL ? detail : "cli");
+    secrets.signin_active = 0;
     login_row(row);
     signin_controls(0, 0);
     if (secrets.window != NULL) {
@@ -419,6 +449,7 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
     break;
   }
   case ZB_LOGIN_EV_CANCELLED:
+    secrets.signin_active = 0;
     login_row("cancelled");
     signin_controls(0, 0);
     if (secrets.window != NULL) {
@@ -431,8 +462,8 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
 static void on_signin(GtkWidget *button, gpointer unused) {
   (void)button;
   (void)unused;
-  if (secrets.busy || zb_login_running()) {
-    return;
+  if (secrets.busy || signing_in() || zb_login_running()) {
+    return; /* one credential change at a time; a sign-in still tearing down is waited out */
   }
   if (zb_login_start(on_login_event, NULL) != 0) {
     set_status_text(TEXT_SIGNIN_FAILED);
@@ -498,7 +529,7 @@ static void on_cleared(ZbSecretsResult result, gpointer epoch) {
 static void on_remove(GtkWidget *button, gpointer unused) {
   (void)button;
   (void)unused;
-  if (secrets.busy) {
+  if (secrets.busy || signing_in()) {
     return;
   }
   wipe_pending();
@@ -631,7 +662,7 @@ static GtkWidget *build(void) {
   /* Sign in with Claude.ai: Alt+I is its mnemonic (S6.1's no-rows case uses it). */
   GtkWidget *signin_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   secrets.signin = gtk_button_new_with_mnemonic(TEXT_SIGNIN_BUTTON);
-  secrets.cancel = gtk_button_new_with_label("Cancel");
+  secrets.cancel = gtk_button_new_with_mnemonic("_Cancel"); /* Alt+C, as Sign in has Alt+I */
   gtk_box_pack_start(GTK_BOX(signin_row), secrets.signin, FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(signin_row), secrets.cancel, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), signin_row, FALSE, FALSE, 0);
@@ -697,7 +728,7 @@ static GtkWidget *build(void) {
   gtk_widget_set_no_show_all(secrets.cancel, TRUE);
   gtk_widget_hide(secrets.code_box);
   gtk_widget_hide(secrets.cancel);
-  gtk_widget_set_sensitive(secrets.signin, zb_login_configured() && !zb_login_running());
+  update_sensitivity();
   gtk_widget_set_sensitive(secrets.remove, FALSE);
   gtk_window_set_default(GTK_WINDOW(window), secrets.save);
 
