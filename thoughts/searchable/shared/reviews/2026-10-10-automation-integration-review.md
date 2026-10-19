@@ -10976,3 +10976,48 @@ cannot hang MS1.4 indefinitely.
 No full Linux gate was run for this unregistered, Mac-only red slice. The
 newest approved linear push-through SHA remains **`e33661d`**: `edd2c6c` is
 still the earlier blocked production commit, and MS1 remains red by design.
+
+## S6a login-helper closure (`da3028f` on red `71abc6f`)
+
+**Explicit verdict for `da3028f`: APPROVED.** It closes all three production
+blockers on `edd2c6c`:
+
+1. `authorize_url` now requires exactly the eight parameter names, the captured
+   fixed values (`code=true`, `response_type=code`, the callback URI,
+   `scope=user:inference`, `S256`), a UUID-shaped client id, a 43-character
+   base64url PKCE challenge and nonempty state (`login.py:53-91`). The table
+   covers changed/empty fixed fields, malformed client/challenge/state and
+   duplicate names, and the real helper path refuses an altered scope
+   (`test_login_contract.py:40-82`).
+2. Code-frame handling assigns `self.code` only while no code is pending, under
+   the existing screen lock; `answer` consumes that pending value only for the
+   next prompt (`login.py:195-199,249-255`). The slow-CLI case delivers two
+   values before any prompt and observes only the first at the CLI
+   (`test_login_contract.py:85-110`).
+3. `claim`, serialized by a lock separate from the screen lock, is the sole
+   terminal owner. `hand_off` claims before touching fd 4, so a winning cancel
+   prevents token delivery; a winning completion writes/closes fd 4 before its
+   one `done`, and a failed write still owns exactly one `error`
+   (`login.py:201-233`). Deterministic cancel-first and done-first tests plus
+   300 three-way cancel/done/timeout races require one terminal frame and token
+   bytes only with `done` (`test_login_contract.py:123-188`).
+
+The red `71abc6f` was already approved as failing-first: it failed on the old
+helper and directly exercises these three contracts. The green registers that
+module in both `test` and `test-agent-auth`. BlueBeaver's clean-export,
+private-Xvfb gate on the resulting exact content reported **Build Summary:
+153/153 steps succeeded; 900/900 tests passed**; `test_login_contract` passed
+8/8 and `test_login` 16/16. Five targeted mutants each failed in three runs.
+My independent narrow run passed all **24/24** cases across the two modules.
+
+Consequently **`edd2c6c` is cumulatively APPROVED** by its original coverage,
+the failing-first `71abc6f` and this green. S6a is complete through this helper
+and the previously approved callback, protocol and isolated login-network
+slices.
+
+For the linear range, `ec434bc` also cumulatively closes the MS1.1 false-green
+findings that blocked `0e41ae1`/`fd4178b`; those commits are **APPROVED as
+failing-first** while the separately invoked Mac gate remains intentionally
+red until its later universal-build green. `f73305e`, `68948db`, `71abc6f` and
+the intervening review commits are already approved. The newest approved
+linear push-through SHA after `e33661d` is therefore **`da3028f`**.
