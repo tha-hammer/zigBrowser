@@ -56,6 +56,11 @@ AUTHORIZE = {("claude.com", "/cai/oauth/authorize"), ("platform.claude.com", "/o
 PARAMS = ["code", "client_id", "response_type", "redirect_uri", "scope", "code_challenge",
           "code_challenge_method", "state"]
 REDIRECT = "https://platform.claude.com/oauth/code/callback"
+# The captured fixed values (RoseCat 5967): anything else is not the CLI's URL.
+FIXED = {"code": "true", "response_type": "code", "redirect_uri": REDIRECT, "scope": "user:inference",
+         "code_challenge_method": "S256"}
+CLIENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+S256_CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")  # base64url of a SHA-256, unpadded
 
 ESCAPE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-~]|\x1b")
 CONTROL = re.compile(rb"[\x00-\x09\x0b-\x1f\x7f]")
@@ -74,10 +79,14 @@ def authorize_url(text):
     if url.scheme != "https" or (url.netloc, url.path) not in AUTHORIZE or url.fragment:
         return None
     params = parse_qsl(url.query, keep_blank_values=True)
-    if sorted(name for name, _ in params) != sorted(PARAMS):
+    if sorted(name for name, _ in params) != sorted(PARAMS):  # each name exactly once
         return None
     values = dict(params)
-    if values["redirect_uri"] != REDIRECT or not values["state"] or values["response_type"] != "code":
+    if any(values[name] != value for name, value in FIXED.items()):
+        return None
+    if not CLIENT_ID.fullmatch(values["client_id"]) or not S256_CHALLENGE.fullmatch(values["code_challenge"]):
+        return None
+    if not values["state"]:
         return None
     return text
 
@@ -104,10 +113,13 @@ class Login:
         self.screen = bytearray()  # the pty output, escapes removed; zeroed at the end
         self.prompts = 0  # prompts seen
         self.answered = 0  # prompts a code was written to
-        self.code = None  # a code waiting for the next prompt
+        self.code = None  # the first code waiting for the next prompt; later ones are dropped
         self.sent_url = False
         self.lock = threading.Lock()
         self.ended = threading.Event()
+        # One ending: `done`, `error` and `cancel` race for this claim (RoseCat 5967). It is
+        # separate from `lock`, which scan() holds while it may end the sign-in.
+        self.end_lock = threading.Lock()
         self.outcome = None
         self.proc = None
         self.master = -1
@@ -186,23 +198,38 @@ class Login:
             self.answered = self.prompts
             os.write(self.master, code.encode("ascii") + b"\r")
 
+    def claim(self):
+        """True for exactly one caller: the one whose ending is the sign-in's."""
+        with self.end_lock:
+            if self.ended.is_set():
+                return False
+            self.ended.set()
+            return True
+
     def hand_off(self, start, end):
+        """The token to fd 4, only if `done` wins the ending: a cancel or an error that
+        won it first means fd 4 gets nothing."""
+        if not self.claim():
+            return
         token = memoryview(self.screen)[start:end]
         try:
             written = os.write(self.token_fd, token)
+        except OSError:  # the app closed its end: still exactly one ending
+            written = -1
         finally:
             token.release()
         os.close(self.token_fd)
         self.token_fd = -1
         if written != end - start:
-            return self.end("error", code="cli", message="the token could not be handed over")
-        self.end("done")
+            return self.emit_end("error", code="cli", message="the token could not be handed over")
+        self.emit_end("done")
 
     def end(self, type_, **fields):
-        if self.ended.is_set():
-            return
+        if self.claim():
+            self.emit_end(type_, **fields)
+
+    def emit_end(self, type_, **fields):
         self.outcome = type_
-        self.ended.set()
         self.out.emit(type_, **fields)
 
     # ---- app frames -------------------------------------------------------
@@ -223,7 +250,8 @@ class Login:
                 if not valid_code(frame.get("code")):
                     return self.end("error", code="protocol", message="code refused")
                 with self.lock:
-                    self.code = frame["code"]
+                    if self.code is None:  # the first code to arrive is used (D7b)
+                        self.code = frame["code"]
                     self.answer()
                 continue
             return self.end("error", code="protocol", message="unexpected frame")

@@ -29,7 +29,8 @@ sys.path.insert(0, str(HOST_DIR))
 CANARY = "sk-ant-oat01-ZBCANARY-login-unit-0123456789"
 REDIRECT = "https://platform.claude.com/oauth/code/callback"
 URL = ("https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e"
-       "&response_type=code&redirect_uri=" + REDIRECT + "&scope=user:inference&code_challenge=chal"
+       "&response_type=code&redirect_uri=" + REDIRECT + "&scope=user:inference"
+       "&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs"  # an S256 challenge's shape (RoseCat 5967)
        "&code_challenge_method=S256&state={state}")
 INVALID = "Invalid code. Please make sure the full code was copied."
 

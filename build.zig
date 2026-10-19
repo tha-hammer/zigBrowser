@@ -919,6 +919,12 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login",
     });
+    // RoseCat 5967: the authorize URL's fixed values, the first code wins, one ending.
+    const agent_host_login_contract = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_contract",
+    });
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
     const agent_setup_e2e = b.addSystemCommand(&.{
@@ -1261,11 +1267,13 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
     const agent_auth_step = b.step("test-agent-auth", "Run the Claude Agent sign-in's callback check, login frames, login helper and setup-token fake tests");
     agent_auth_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
     agent_auth_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
