@@ -31,7 +31,9 @@ ssh_opts() { printf '%s\0' ssh -i "$1" -o IdentitiesOnly=yes -o StrictHostKeyChe
 scp_opts() { printf '%s\0' scp -i "$1" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=15; }
 
-STAGING="$(mktemp -d)"; trap 'rm -rf "$STAGING"' EXIT
+# Local driver staging. Cleaned on exit with `find -delete` (RoseCat 6072) so the tmpfs-backed
+# /tmp is reclaimed depth-first including the dir itself, even if a subpath is odd.
+STAGING="$(mktemp -d)"; trap 'find "$STAGING" -depth -delete 2>/dev/null || true' EXIT
 
 if [ -z "$ARM_HOST" ]; then
   echo "NOT RUN: arm64 host not configured (set ZB_MAC_ARM_HOST=user@host)" >&2
@@ -91,6 +93,10 @@ cd "$HOME/zigBrowser"
 test -f tests/fixtures/app/index.html && test -f tests/fixtures/app/zbhost.js
 export ZB_ENABLE_M9_E2E=1
 unset ZB_M9_GUI_RUNNER
+# --no-uniform-check (RoseCat 6072): Pillow is not installed on the Macs, so the local pixel
+# uniformity oracle cannot run here. This red only needs the render to HAPPEN (title/nav observed)
+# vs. the signed binary crashing; the full gate.sh routes the PNG to the Intel host's PIL for the
+# non-uniform pixel check, and the MS1b green will do the same. The flag skips only that pixel step.
 python3 tests/e2e/m9_render_test.py --browser zig-out/bin/zigBrowser --capture-path zig-out/m9-render.png --no-uniform-check
 python3 tests/e2e/m9_reply_channel_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/m9_load_fail_test.py --browser zig-out/bin/zigBrowser
@@ -108,7 +114,10 @@ uname_m="$(uname -m)"
 reported="$(tr -d '[:space:]' < zig-out/exec-arch.txt)"
 [ "$(norm "$reported")" = "$EXPECT" ] || { echo "app reported exec_arch $reported (norm $(norm "$reported")) != expected $EXPECT" >&2; exit 1; }
 if [ "$EXPECT" = arm64 ]; then
-  translated="$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)"
+  # Fail-closed (RoseCat 6072): the probe itself must SUCCEED and report exactly 0, the same as
+  # mac_universal_test.py's _run(...). A failed sysctl must NOT be read as "native" (0); on arm64
+  # sysctl.proc_translated always exists, so a nonzero exit is a real problem, not Rosetta-absence.
+  translated="$(sysctl -n sysctl.proc_translated)" || { echo "sysctl.proc_translated probe FAILED (not read as native)" >&2; exit 1; }
   [ "$translated" = 0 ] || { echo "process is translated (Rosetta): proc_translated=$translated" >&2; exit 1; }
 fi
 REMOTE
