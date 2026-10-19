@@ -11494,3 +11494,56 @@ is an unregistered red plus a docs-only plan, and the shared worktree already
 contains BlackRobin's in-progress green. Findings were mailed as Agent Mail
 6015. Neither verdict advances the approved linear push-through SHA, which
 remains **`da3028f`**.
+
+## Transcript scrub plan rev 16.20.4 (`def9c2a`)
+
+Rev 16.20.4 materially improves the scrub contract. It replaces the unsafe
+cursor with a whole-file rescan keyed by fd-derived metadata, scans the partial
+tail, names the quiet and polling bounds, rejects a symlink/non-regular final
+component, and adds helper-level monitor, `end_session`, `shutdown`, prompt-end
+and startup failure reds (`plan:2128-2198`). Those changes close the original
+partial-tail, leaf-fd TOCTOU and lifecycle-supervision findings in the ordinary
+case. Three boundary problems remain.
+
+**Explicit verdict for `def9c2a`: BLOCKED.**
+
+1. **BLOCKER — leaf-only `O_NOFOLLOW` does not confine the scan beneath the
+   transcript root.** `plan:2128-2131` still opens a full pathname found below
+   `state/projects/*`. `O_NOFOLLOW` rejects only a symlink in the final
+   component; a symlinked `projects` or workspace directory is followed, and
+   the final JSONL then passes `fstat` as an ordinary file outside the agent
+   transcript tree. A local probe reproduced exactly that success. Pin the
+   projects directory fd and walk every component with no-follow directory
+   opens, or use an equivalent beneath/no-symlink resolution primitive. Add
+   an intermediate-directory symlink red and require the outside canary to
+   remain byte-identical.
+2. **BLOCKER — the whole-file polling work is unbounded.** The cost statement
+   says a transcript is “a few MB at most” (`plan:2139-2142`), but no contract
+   caps the persistent JSONL files; S5b deliberately retains them and one
+   assistant reply alone may be 256 KiB. A changing 100 MiB file at the named
+   0.25 s poll interval implies roughly 400 MiB/s of rereads. Define and
+   enforce a transcript/scan-work bound and its user-visible failure, or use a
+   bounded incremental design with a fail-closed prefix-integrity check. The
+   reds need a large, continuously appended transcript and a liveness/CPU/RSS
+   bound.
+3. **BLOCKER — an unqualified star-run extension corrupts ordinary content.**
+   The plan masks token characters following any run of `*` (`plan:2137`). A
+   legitimate transcript containing `********documentation` is therefore
+   changed, contradicting the same-length/every-other-byte invariant in the
+   red suite (`plan:2180`). Track only scrubber-created pending ranges, with
+   restart behavior defined, or use another provenance rule that cannot
+   collide with user/model text. Add complete-line and EOF negatives for
+   ordinary star runs followed by `[A-Za-z0-9_-]`.
+
+**BLOCKER-for-tests:** the truncate/regrow red grows past the prior size
+(`plan:2185`), so `st_size` alone catches it and the new `st_mtime_ns` member is
+not pinned. Regrow to exactly the old size with a token before the old offset.
+Also state explicitly that a pending unterminated match is revisited when its
+quiet deadline expires even though the ordinary monitor scans only when the
+change key moves (`plan:2145-2152`).
+
+The deferred SX-standin notes are not treated as an approved implementation
+contract; the plan correctly keeps that slice subject to a later user
+decision. `git diff --check def9c2a^ def9c2a` passed. No browser or full gate
+was run for this docs-only review. Findings were mailed as Agent Mail 6019.
+The approved linear push-through SHA remains **`da3028f`**.
