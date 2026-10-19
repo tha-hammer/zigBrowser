@@ -12185,3 +12185,34 @@ Two security semantics still admit false greens:
 and their throwaway tree was deleted. No full gate was run for this
 unregistered red. The findings were sent to AzureRidge as Agent Mail 6084.
 The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## WS0 selftest red rev 4 (`3a696f3`)
+
+### `3a696f3` — BLOCKED-for-tests
+
+The OpenSSH finding is closed. The red now feeds the recorded argv through
+`ssh -G`, and its independent raw scan case-folds keys and understands both
+accepted `Keyword=value` and `Keyword value` forms. Direct probes confirmed
+that both unsafe-first variants produce effective `batchmode no`, a raw
+`{yes,no}` conflict and a rejected oracle result. The 270-path lexical
+property remains intact, and override-command failure, empty output,
+multiline output, outside-root output and a nonexistent override are denied.
+
+One production-chain false green remains:
+
+**BLOCKER-for-tests — the mandatory default resolver is never exercised.**
+Every `_allowed(...)` call at `tests/windows/gate_selftest.py:287-307` passes a
+`resolver=` override. Consequently, an implementation that resolves only
+when `ZB_RESOLVE_CMD` is set and has no production default still passes the
+entire red. The nonexistent override proves that a selected command failing
+is denied; it does not prove the hook replaces a real default. The current
+uncommitted green contains that default at `tests/windows/gate.sh:68-83`, but
+deleting it is a surviving mutation. Add a hermetic no-override case that
+observes the production resolver through the existing fake-SSH seam, plus the
+corresponding default-resolver missing/failure case.
+
+A clean archive reproduced all eight intended missing-`gate.sh` failures;
+the corpus remained 270 paths / 36 ALLOW. `git diff --check` passed. The run
+was bounded and its throwaway tree was deleted. No full gate was run for this
+unregistered red. The finding was sent to AzureRidge as Agent Mail 6087.
+The newest approved and pushed linear boundary remains **`da3028f`**.
