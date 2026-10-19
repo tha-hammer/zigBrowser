@@ -348,9 +348,14 @@ class PathFenceTests(_GateCase):
 
 
 class TransportHygieneTests(_GateCase):
-    # OpenSSH lowercases keywords in -G output; these are the effective values we require.
-    _APPROVED = {"batchmode": "yes", "stricthostkeychecking": "yes",
-                 "connecttimeout": "15", "identitiesonly": "yes"}
+    # OpenSSH lowercases keywords in -G output and canonicalizes booleans (e.g. 10.0p2 emits
+    # `stricthostkeychecking true` for the input `=yes`). The effective check accepts any ON
+    # boolean; the raw scan below still requires the exact supplied value and rejects conflicts.
+    _BOOL_ON = {"yes", "true", "on", "1"}
+    _BOOL_KEYS = ("batchmode", "stricthostkeychecking", "identitiesonly")
+    _EXACT_EFFECTIVE = {"connecttimeout": "15"}
+    _RAW_SUPPLIED = {"batchmode": "yes", "stricthostkeychecking": "yes",
+                     "connecttimeout": "15", "identitiesonly": "yes"}
 
     @staticmethod
     def _ssh_G_effective(argv_lines):
@@ -401,16 +406,22 @@ class TransportHygieneTests(_GateCase):
             argv = self._read(logs["ssh"]).splitlines()
             tar_argv = self._read(logs["tar"])
             self.assertTrue(argv and tar_argv, "ssh and tar must both have run" + detail)
-            # (a) effective config via ssh -G (OpenSSH grammar is authoritative)
+            # (a) effective config via ssh -G (OpenSSH grammar is authoritative). Booleans accept
+            #     OpenSSH's canonical equivalents (yes==true==on), so a newer ssh that prints
+            #     `stricthostkeychecking true` for `=yes` still passes.
             eff, gproc = self._ssh_G_effective(argv)
             self.assertEqual(gproc.returncode, 0, f"ssh -G failed: {gproc.stderr}" + detail)
-            for k, v in self._APPROVED.items():
+            for k in self._BOOL_KEYS:
+                self.assertIn((eff.get(k) or "").lower(), self._BOOL_ON,
+                              f"effective ssh {k} must be an ON boolean, got {eff.get(k)!r}" + detail)
+            for k, v in self._EXACT_EFFECTIVE.items():
                 self.assertEqual(eff.get(k), v, f"effective ssh {k} must be {v!r}, got {eff.get(k)!r}" + detail)
             self.assertEqual(eff.get("userknownhostsfile"), str(kh),
                              "effective userknownhostsfile must be the configured pinned path" + detail)
-            # (b) reject conflicting occurrences in the raw argv (both forms, case-folded keys/enums)
+            # (b) reject conflicting occurrences in the raw argv (both forms, case-folded), and
+            #     require the exact SUPPLIED value the gate passes (`yes`), not a canonical alias.
             raw = self._raw_o_values(argv)
-            for k, v in self._APPROVED.items():
+            for k, v in self._RAW_SUPPLIED.items():
                 got = {x.lower() for x in raw.get(k, set())}
                 self.assertTrue(got and got <= {v}, f"-o {k} conflicting/absent: {raw.get(k)}" + detail)
             ukh = raw.get("userknownhostsfile", set())
