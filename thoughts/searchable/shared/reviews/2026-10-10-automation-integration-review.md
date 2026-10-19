@@ -11901,3 +11901,57 @@ sent to BlueBeaver as Agent Mail 6055. **S6b1 has not cleared code review.**
 After this test blocker closes, approval still independently requires both
 user-run `signin-paste` parts A and B (`plan:2331-2339`). The newest approved
 and pushed linear boundary remains **`da3028f`**.
+
+## S6 sensitivity observability plan and MS1b red (`3e539a2`, `bf0a66f`)
+
+### `3e539a2` — APPROVED (plan amendment)
+
+Rev 16.18.7 closes the plan-contract gap from Agent Mail 6055. The new
+E2E-only row reports the actual GTK state for each credential control:
+`SECRETS sensitive <entry|save|remove|file|signin> <0|1>`. Its source is
+explicitly `gtk_widget_get_sensitive`, after each sensitivity change and once
+when each control is built (`plan:461-467`). This is the required production
+widget readback, not a shadow state derived from the same booleans under test.
+The S6b1 test contract now names all five controls, includes the file choice,
+and holds the signed-in token's own asynchronous store while observing them
+(`plan:2314`).
+
+The green implementation must still prove the expected unlock as well as the
+lock where a control should re-enable (a `1 -> 0 -> 1` transition); this is an
+implementation-review criterion, not a blocker on the plan amendment.
+`git diff --check 3e539a2^ 3e539a2` passed. The verdict was sent to BlueBeaver
+as Agent Mail 6058. This plan approval does not by itself clear S6b1 code
+review or its two required user-run sign-in checks.
+
+### `bf0a66f` — BLOCKED-for-tests
+
+The unregistered MS1b red is attached to the right product boundary. It builds
+both architecture slices on their native hosts, assembles the universal on the
+Intel host, ad-hoc signs that runnable artifact with the real entitlements,
+verifies its signature, installs that exact artifact on both Macs, and runs the
+M9 workload. JadeBeacon's Agent Mail 6056 reports three right-reason red runs:
+the actual signed Intel launch returned 139 each time while the arm64 leg
+passed. `bash -n` and `git diff --check` passed.
+
+**BLOCKER-for-tests:** `tests/mac/ms1b_signed_gate.sh:74-98` accepts an
+expected architecture but never checks it. At `:94-96`, the exec-arch output
+only has to be nonempty. The same host configured twice, or Apple Silicon
+running the x86_64 slice under Rosetta, could therefore make both legs green
+while the gate claims native x86_64 and arm64 execution. That is a false green
+against rev 10's two-architecture MS1b contract. Fix forward by exact-matching
+the probe result (with only known alias normalization), asserting distinct
+host targets, and retaining the native host checks including
+`sysctl.proc_translated=0` on Apple Silicon. Reusing the existing
+`mac_universal_test.py --expect-arch ... --reported-arch ...` oracle would
+avoid a second architecture definition.
+
+**SHOULD:** replace the throwaway staging cleanup's `rm -rf` with the standing
+`find "$STAGING" -delete` rule. The M9 invocation also disables its uniformity
+check; remove `--no-uniform-check` or document why MS1b intentionally needs
+only signed process execution and protocol readiness rather than that visual
+assertion.
+
+The blocker and follow-ups were sent to JadeBeacon as Agent Mail 6059. No
+Linux full gate was run for a docs-only plan change plus an unregistered,
+Mac-only failing-first script. The newest approved and pushed linear boundary
+remains **`da3028f`**.
