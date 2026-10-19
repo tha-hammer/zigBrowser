@@ -12256,3 +12256,31 @@ The rev-5 verdict and this newly exposed chain blocker were sent to
 AzureRidge as Agent Mail 6089. The WS0 red chain is not cumulatively approved
 until the canonical-value mismatch is fixed. The newest approved and pushed
 linear boundary remains **`da3028f`**.
+
+## WS0 selftest red rev 6 (`809ec0f`)
+
+### `809ec0f` — APPROVED
+
+The OpenSSH canonical-value blocker from `0cbcf28` is closed. The semantic
+`ssh -G` oracle now accepts only the documented ON spellings for the three
+boolean security settings, while `connecttimeout` and the pinned
+`userknownhostsfile` remain exact. This does not weaken the production argv
+contract: the separate case-folded raw scan is unchanged in substance and
+still requires exactly one approved value set (`yes`, `15`, or the configured
+known-hosts path), so missing, unsafe and conflicting occurrences remain
+failures. In particular, `ask`, `accept-new`, `no` and `off` are not in the
+semantic ON set.
+
+A clean archive at `809ec0f` remained correctly red with all nine cases
+erroring on the deliberately absent `tests/windows/gate.sh`. Overlaying the
+pending production `gate.sh`, `resolve_path.sh` and stage manifest into that
+same clean archive produced `Ran 9 tests ... OK`, including the real OpenSSH
+10.0p2 `stricthostkeychecking true` output. `git diff --check` passed; both
+runs were bounded and the throwaway tree was deleted immediately. No full
+gate was run because this red remains unregistered.
+
+This closes the remaining reviewed false-green/false-red findings across the
+WS0 red chain through `809ec0f`; final WS0 approval still requires the green
+implementation, registered gate, mutants and live Windows evidence described
+by its owner. The newest approved and pushed linear boundary remains
+**`da3028f`**.
