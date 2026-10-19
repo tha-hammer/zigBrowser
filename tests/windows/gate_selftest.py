@@ -16,8 +16,11 @@ Hardened per review of e36f5fa (RoseCat, d8d79d8) so the future green cannot fal
   * The partial-tar case requires tar to have run AND the exit code to propagate (plus a named
     diagnostic), so "tar never invoked" cannot satisfy it.
   * WS0.8 parses the FULL, non-conflicting ssh option set, not one substring.
-  * WS0.5 is a property: a deterministic adversarial generator checked against an INDEPENDENT
-    normalization oracle (implemented differently from the gate's ntpath approach).
+  * WS0.5 is a property over the full separator×case×head×dot×tail CROSS PRODUCT, checked against
+    an INDEPENDENT normalization oracle (hand-rolled, not ntpath), plus a fakeable reparse/junction
+    seam so a path that string-normalizes inside the root but resolves outside is denied.
+  * The ssh option set is parsed from argv boundaries (one arg per line), and each security key's
+    effective value must be exactly the approved one with no conflicting duplicate.
   * Each case runs with a private HOME, never the host's real HOME.
 
 Run alone:  python3 -I tests/windows/gate_selftest.py -v
@@ -48,7 +51,9 @@ done
 """
 
 _SSH_STUB = _FAKE_COMMON.format(tool="ssh") + r"""
-[ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf '%s\n' "$*" >> "$ZB_SELFTEST_SSH_LOG"
+# Record argv with boundaries (one arg per line), so the test parses real -o settings rather
+# than substring-matching a flattened $* (BatchMode=yes followed by BatchMode=no must be caught).
+if [ -n "${ZB_SELFTEST_SSH_LOG:-}" ]; then printf '%s\n' "$@" >> "$ZB_SELFTEST_SSH_LOG"; fi
 exit 0
 """
 
@@ -107,46 +112,48 @@ def oracle_allowed(path: str, user: str) -> bool:
     return len(comps) > len(root) and comps[: len(root)] == root
 
 
+def _apply_case(s: str, c: str) -> str:
+    return s.upper() if c == "upper" else s.lower() if c == "lower" else s
+
+
+def _apply_sep(s: str, sp: str) -> str:
+    if sp == "/":
+        return s.replace("\\", "/")
+    if sp == "mix":  # alternate \ and / to exercise mixed separators
+        out, flip = [], False
+        for ch in s:
+            if ch == "\\":
+                out.append("/" if flip else "\\")
+                flip = not flip
+            else:
+                out.append(ch)
+        return "".join(out)
+    return s
+
+
 def generate_paths(user: str):
-    """Deterministic adversarial corpus: separators, case, drive/UNC, dot segments, prefix collisions."""
-    out = []
-    # legitimate sub-paths (various separators / case) — must ALLOW
-    out += [
-        rf"C:\Users\{user}\zb\a\b",
-        f"C:/Users/{user}/zb/x/y",
-        rf"C:\Users\{user}\zb\.\runs\1",
-        rf"c:\USERS\{user.upper()}\ZB\deep\path",
-        rf"C:\Users\{user}\zb\a\..\b",            # stays inside
+    """WS0.5 property corpus: the CROSS PRODUCT of separator × case × head × dot-segment × tail,
+    so interaction mutants (one dimension right, another wrong) cannot survive."""
+    heads = [
+        rf"C:\Users\{user}\zb",            # correct root
+        r"D:\Users\%s\zb" % user,          # wrong drive
+        r"\\srv\share\Users\%s\zb" % user, # UNC
+        rf"C:\Users\{user}\zbEVIL",        # prefix collision
+        rf"C:\Users\{user}",               # parent (too short)
     ]
-    # escapes / wrong drive / UNC / relative — must DENY
-    out += [
-        r"..\x",
-        rf"C:\Users\{user}\zb\..\..\Windows\System32",
-        rf"C:/Users/{user}/zb/../secret",
-        r"\\server\share\x",
-        r"\\127.0.0.1\c$\x",
-        r"C:\Windows\System32",
-        r"D:\x",
-        r"Z:\Users\%s\zb\x" % user,
-        r"relative\segment",
-        r"C:zb\x",                                # drive-relative
-    ]
-    # prefix collisions — must DENY (component-aware, not startswith)
-    out += [
-        rf"C:\Users\{user}\zbEVIL\x",
-        rf"C:\Users\{user}\zb2\x",
-        rf"C:\Users\{user}\zbbackup",
-        rf"C:\Users\{user}EVIL\zb\x",
-        rf"C:\Users\{user}\zb",                   # the root itself (not a strict sub-path) -> DENY
-    ]
-    # dedupe, keep order
-    seen = set()
-    uniq = []
-    for p in out:
-        if p not in seen:
-            seen.add(p)
-            uniq.append(p)
-    return uniq
+    dots = ["", r"\..\..\Windows", r"\.\sub"]   # none, escaping, dot-noop
+    tails = [r"\x", r"\runs\1\out.png"]
+    cases = ["asis", "upper", "lower"]
+    seps = ["\\", "/", "mix"]
+    paths = set()
+    for head in heads:
+        for dot in dots:
+            for tail in tails:
+                base = head + dot + tail
+                for c in cases:
+                    for sp in seps:
+                        paths.add(_apply_sep(_apply_case(base, c), sp))
+    return sorted(paths)
 
 
 class _GateCase(unittest.TestCase):
@@ -225,20 +232,24 @@ class NoDisplayTests(_GateCase):
 
 
 class PathFenceTests(_GateCase):
-    def _allowed(self, path, bindir, home):
-        proc = self._run_gate({"ZB_GUEST_USER": _TEST_USER}, bindir, args=["--allowed-path", path], home=home)
+    def _allowed(self, path, bindir, home, extra_env=None):
+        env = {"ZB_GUEST_USER": _TEST_USER}
+        if extra_env:
+            env.update(extra_env)
+        proc = self._run_gate(env, bindir, args=["--allowed-path", path], home=home)
         out = (proc.stdout or "").strip()
         self.assertIn(out, ("ALLOW", "DENY"), f"--allowed-path must print ALLOW/DENY, got {out!r}")
         return out == "ALLOW"
 
-    def test_fence_matches_independent_oracle_over_generated_corpus(self):
-        """WS0.5 property: gate agrees with an independent oracle across the adversarial corpus."""
+    def test_fence_matches_independent_oracle_over_cross_product(self):
+        """WS0.5 property: over the full separator×case×head×dot×tail cross product, the gate's
+        verdict equals an INDEPENDENT oracle's — so an interaction mutant cannot survive."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
             bindir = _fakes(td)
             corpus = generate_paths(_TEST_USER)
-            # sanity: the corpus is non-trivial (has both expected outcomes)
             exp = {p: oracle_allowed(p, _TEST_USER) for p in corpus}
+            self.assertGreaterEqual(len(corpus), 100, "property corpus should be combinatorial, not a handful")
             self.assertTrue(any(exp.values()) and not all(exp.values()), "corpus must contain ALLOW and DENY")
             for p in corpus:
                 self.assertEqual(self._allowed(p, bindir, str(home)), exp[p],
@@ -252,13 +263,57 @@ class PathFenceTests(_GateCase):
             self.assertFalse(self._allowed(rf"C:\Users\{_TEST_USER}\zbEVIL\x", bindir, str(home)))
             self.assertTrue(self._allowed(rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png", bindir, str(home)))
 
+    def test_junction_reparse_escape_is_denied(self):
+        """WS0.5 reparse seam: a path that STRING-normalizes inside the root but whose resolver
+        (a fakeable junction resolver) reports a target OUTSIDE the root must be DENIED."""
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t); home = td / "home"; home.mkdir()
+            bindir = _fakes(td)
+            resolver = td / "resolve.sh"
+            # The 'linkout' junction resolves outside the root; everything else is identity.
+            resolver.write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$1" in\n'
+                '  *linkout*) printf "%s\\n" "C:\\\\Windows\\\\System32" ;;\n'
+                '  *) printf "%s\\n" "$1" ;;\n'
+                "esac\n"
+            )
+            resolver.chmod(0o755)
+            env = {"ZB_RESOLVE_CMD": str(resolver)}
+            escaping = rf"C:\Users\{_TEST_USER}\zb\linkout\x"   # string-OK, junction escapes
+            safe = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"  # string-OK, resolver identity
+            self.assertFalse(self._allowed(escaping, bindir, str(home), env),
+                             "a junction resolving outside the root must be DENIED")
+            self.assertTrue(self._allowed(safe, bindir, str(home), env),
+                            "a real sub-path must still be ALLOWED when the resolver is identity")
+
 
 class TransportHygieneTests(_GateCase):
-    _REQUIRED = ("StrictHostKeyChecking=yes", "BatchMode=yes", "ConnectTimeout=15", "IdentitiesOnly=yes")
-    _FORBIDDEN = ("StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null", "StrictHostKeyChecking=accept-new")
+    @staticmethod
+    def _parse_ssh_opts(ssh_log_text):
+        """Parse -o settings from argv recorded one-per-line. Returns {key: [values...]} so a
+        conflicting duplicate (BatchMode=yes then BatchMode=no) is visible, not hidden by $*."""
+        opts = {}
+        lines = ssh_log_text.splitlines()
+        i = 0
+        while i < len(lines):
+            a = lines[i]
+            kv = None
+            if a == "-o" and i + 1 < len(lines):
+                kv = lines[i + 1]; i += 2
+            elif a.startswith("-o") and len(a) > 2:
+                kv = a[2:]; i += 1
+            else:
+                i += 1
+                continue
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                opts.setdefault(k, []).append(v)
+        return opts
 
     def test_full_ssh_option_set_and_tar_stderr_not_swallowed(self):
-        """WS0.8 (findings 1,3,5): healthy stage; full non-conflicting ssh opts; tar stderr reaches the gate."""
+        """WS0.8 (findings 1,3,5): healthy stage; each security option's EFFECTIVE value is exactly
+        the approved one with no conflicting duplicate; tar stderr reaches the gate."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             env, home, kh, logs = self._stage_env(td)
@@ -268,11 +323,20 @@ class TransportHygieneTests(_GateCase):
             ssh_argv = self._read(logs["ssh"])
             tar_argv = self._read(logs["tar"])
             self.assertTrue(ssh_argv and tar_argv, "ssh and tar must both have run" + detail)
-            for opt in self._REQUIRED:
-                self.assertIn(opt, ssh_argv, f"ssh must pass {opt}" + detail)
-            self.assertIn(f"UserKnownHostsFile={kh}", ssh_argv, "ssh must pin the configured known_hosts" + detail)
-            for bad in self._FORBIDDEN:
-                self.assertNotIn(bad, ssh_argv, f"ssh must not pass {bad}" + detail)
+            opts = self._parse_ssh_opts(ssh_argv)
+            approved = {
+                "StrictHostKeyChecking": "yes",
+                "BatchMode": "yes",
+                "ConnectTimeout": "15",
+                "IdentitiesOnly": "yes",
+                "UserKnownHostsFile": str(kh),
+            }
+            for key, val in approved.items():
+                vals = opts.get(key)
+                self.assertIsNotNone(vals, f"ssh must pass -o {key}" + detail)
+                # every occurrence must equal the approved value: no conflicting duplicate survives
+                self.assertEqual(set(vals), {val},
+                                 f"-o {key} effective value must be exactly {val!r} with no conflict, got {vals}" + detail)
             self.assertNotIn("2>/dev/null", tar_argv, "tar argv must not contain a redirection token" + detail)
             # the real check for a swallowed redirection: tar's stderr sentinel must reach the gate's stderr
             self.assertIn(TAR_SENTINEL, proc.stderr, "tar stderr was swallowed (a parent 2>/dev/null)" + detail)
