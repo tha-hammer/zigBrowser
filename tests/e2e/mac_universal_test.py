@@ -7,8 +7,15 @@ prerequisite, any unsatisfiable check, or zero executed assertions exits NONZERO
 A "SKIP" is never allowed to turn the gate green (MS1.4).
 
 Behaviors:
-  MS1.1  the installed binary and every bundled native component are fat Mach-O
-         with BOTH slices (x86_64 + arm64).
+  MS1.1  a COMPLETE component census (no false-green): the bundle is scanned for
+         EVERY Mach-O and each must be fat (x86_64 + arm64), so an unlisted
+         single-arch binary cannot sneak through; and every required role in the
+         inventory (packaging/macos/universal_components.json) must be present, so
+         a green cannot ship only zigBrowser fat and drop the Python runtime, the
+         Claude CLI or the helper launcher. The inventory must be nonempty, and a
+         bundle with zero Mach-O is itself fail-closed. Declared non-executable
+         resources must be present (their cross-arch byte-compatibility is checked
+         by build-dmg.sh before lipo — a single arch tree here cannot).
   MS1.2  executing-arch proof (no Rosetta false-green): uname -m matches the
          expected arch; on arm64 `sysctl.proc_translated` is 0; and the running
          app reported its EXECUTING arch over the socket (passed in via
@@ -18,12 +25,13 @@ Behaviors:
          `codesign -d --entitlements -` reports on the ad-hoc-signed binary.
   MS1.4  fail-closed on missing GUI/arch/SDK/zero-assertions.
 
-RED today: no universal artifact, no entitlements in the signature, and no
-runtime arch readback exist yet, so every positive assertion fails until MS1 is
-implemented. GREEN is only observable on the Mac; this file is prepared, not yet
-committed, until the Intel Mac is reachable.
+The census logic (`component_census`) is a pure function so it can be exercised
+off-Mac with fixtures (tests/e2e/mac_universal_census_test.py), including the
+mutant that omits a required component or ships one single-arch — both must fail.
 """
 import argparse
+import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -78,6 +86,56 @@ def lipo_archs(path: Path) -> set[str]:
     return set(_run(["lipo", "-archs", str(path)]).split())
 
 
+def load_inventory(path: Path) -> dict:
+    if not path.is_file():
+        raise FailClosed(f"component inventory missing: {path}")
+    with path.open("rb") as fh:
+        data = json.load(fh)
+    comps = data.get("components") or []
+    resources = data.get("resources") or []
+    # MS1.1: the inventory itself must be nonempty — an empty required set would let a
+    # green pass with nothing checked (the exact false-green RoseCat 5968 blocked).
+    if not comps:
+        raise FailClosed(f"component inventory lists no required components: {path}")
+    for comp in comps:
+        if not comp.get("match"):
+            raise FailClosed(f"inventory component without a 'match': {comp}")
+    return {"components": comps, "resources": resources}
+
+
+def scan_macho(root: Path) -> dict[str, set[str]]:
+    """Every real (non-symlink) Mach-O under `root`, mapped to its arch slices.
+    Scanning the WHOLE bundle — not a caller-supplied list — is what makes the
+    census complete: an unlisted single-arch binary is still found and must be fat."""
+    found: dict[str, set[str]] = {}
+    for p in root.rglob("*"):
+        if not p.is_file() or p.is_symlink():
+            continue
+        kind = subprocess.run(["file", "-b", str(p)], capture_output=True, text=True).stdout
+        if "Mach-O" in kind:
+            found[str(p.relative_to(root))] = lipo_archs(p)
+    return found
+
+
+def component_census(macho_archs: dict[str, set[str]], inventory: dict,
+                     resource_present, c: Checks) -> None:
+    """Pure census (MS1.1). `macho_archs`: every bundled Mach-O -> its arch slices.
+    `resource_present`: role-path -> bool. Fails closed on an empty bundle, any
+    non-fat Mach-O, any missing required role, or any missing declared resource."""
+    # An empty bundle scan means the build/scan is wrong — never a pass.
+    c.ok(bool(macho_archs), "no Mach-O found in the bundle (nothing to verify — fail closed)")
+    for rel, archs in sorted(macho_archs.items()):
+        c.ok(archs == BOTH, f"not fat (both slices): {rel} has {sorted(archs) or 'none'}")
+    names = {os.path.basename(rel) for rel in macho_archs}
+    for comp in inventory["components"]:
+        c.ok(comp["match"] in names,
+             f"required component {comp.get('role', comp['match'])!r} "
+             f"(a Mach-O named {comp['match']!r}) not present in the bundle")
+    for res in inventory["resources"]:
+        c.ok(resource_present(res["path"]),
+             f"required resource {res.get('role', res['path'])!r} missing: {res['path']}")
+
+
 def codesign_entitlement_keys(path: Path) -> set[str]:
     xml = _run(["codesign", "-d", "--entitlements", ":-", "--xml", str(path)])
     if not xml.strip():
@@ -100,8 +158,10 @@ def manifest_keys(entitlements: Path) -> set[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True, help="installed universal browser binary")
-    ap.add_argument("--component", action="append", default=[],
-                    help="a bundled native component that must also be fat (repeatable)")
+    ap.add_argument("--bundle-root", required=True,
+                    help="the install/bundle root scanned for the component census (MS1.1)")
+    ap.add_argument("--components-manifest", required=True,
+                    help="packaging/macos/universal_components.json (the required inventory)")
     ap.add_argument("--expect-arch", required=True, choices=sorted(BOTH),
                     help="the arch THIS host must natively execute")
     ap.add_argument("--entitlements", required=True, help="packaging/macos/entitlements.plist")
@@ -116,13 +176,13 @@ def main() -> int:
         if not binary.is_file():
             raise FailClosed(f"browser binary not found: {binary} (no build / wrong host)")
 
-        # MS1.1 — universal binary + every bundled component is fat with both slices.
-        c.ok(lipo_archs(binary) == BOTH, f"binary not fat with both slices: {binary}")
-        for comp in args.component:
-            p = Path(comp)
-            if not p.is_file():
-                raise FailClosed(f"declared component missing: {p}")
-            c.ok(lipo_archs(p) == BOTH, f"component not fat with both slices: {p}")
+        # MS1.1 — complete component census over the whole bundle.
+        root = Path(args.bundle_root)
+        if not root.is_dir():
+            raise FailClosed(f"bundle root not a directory: {root}")
+        inventory = load_inventory(Path(args.components_manifest))
+        macho = scan_macho(root)
+        component_census(macho, inventory, lambda rel: (root / rel).is_file(), c)
 
         # MS1.2 — executing-arch proof; lipo alone is not enough.
         uname_m = _run(["uname", "-m"]).strip()

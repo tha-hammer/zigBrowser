@@ -85,6 +85,8 @@ set -euo pipefail
 cd "\$HOME/zigBrowser"
 python3 tests/e2e/mac_universal_test.py \
   --binary zig-out/bin/zigBrowser \
+  --bundle-root zig-out \
+  --components-manifest packaging/macos/universal_components.json \
   --expect-arch "$expect" \
   --entitlements packaging/macos/entitlements.plist \
   ${reported_arg[*]+${reported_arg[*]}}

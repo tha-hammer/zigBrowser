@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "MS1.1 required-component inventory (plan rev 6, macOS plan:396-401). The universal",
+    "macOS app bundles native Mach-O code beyond the browser; EVERY bundled Mach-O must be",
+    "fat (x86_64 + arm64), and these required roles must all be present. The census",
+    "(tests/e2e/mac_universal_test.py) scans the bundle for every Mach-O and requires each",
+    "fat, so an UNLISTED single-arch binary cannot sneak through, AND requires each role",
+    "below to be present, so a green cannot ship only zigBrowser fat and drop the runtime.",
+    "'match' is the file basename a bundled Mach-O for that role must have. Non-executable",
+    "resources are listed under 'resources' and must be present; their byte-compatibility",
+    "across the two per-arch trees is verified by packaging/macos/build-dmg.sh before lipo",
+    "(the MS1 green), which this per-host census cannot do with a single arch tree."
+  ],
+  "components": [
+    {"role": "browser", "match": "zigBrowser"},
+    {"role": "python-runtime", "match": "python3"},
+    {"role": "claude-cli", "match": "claude"},
+    {"role": "helper-launcher", "match": "zb-claude"}
+  ],
+  "resources": [
+    {"role": "agent-runtime-manifest", "path": "lib/zigbrowser/agent-host/runtime.json"}
+  ]
+}
