@@ -7,12 +7,13 @@
 #     prints a loud "NOT RUN: arm64 host not configured" and exits nonzero (fail closed,
 #     MS1.4) — a universal gate needs BOTH arches, and there is no silent-pass knob.
 #
-# Flow: build each arch NATIVELY on its host (no -Dtarget); `lipo -create` the two browser
-# slices into a fat Mach-O and ad-hoc codesign it with packaging/macos/entitlements.plist on
-# the Intel host; push that ONE universal signed binary to BOTH hosts; then on each host verify
-# MS1.1 (the component census sees a fat Mach-O), MS1.2 (the running app reports its EXECUTING
-# slice's arch over the socket — the loader picks the host's slice, so this rules out Rosetta),
-# MS1.3 (the signed entitlements equal the manifest), plus the M9 visible render/reply/load-fail.
+# Flow: build each arch NATIVELY on its host (no -Dtarget); `lipo -create` the two browser slices
+# into one fat Mach-O on the Intel host. MS1 RUNS the UNSIGNED universal: push it to BOTH hosts and
+# on each verify MS1.1 (the component census sees a fat Mach-O), MS1.2 (the running app reports its
+# EXECUTING slice's arch over the socket — the loader picks the host's slice, so this rules out
+# Rosetta), plus the M9 visible render/reply/load-fail. Separately, ad-hoc codesign a COPY with
+# packaging/macos/entitlements.plist and inspect it STATICALLY for MS1.3 (the signed entitlements
+# equal the manifest, via `codesign -d` — never run; running a signed binary is MS1b).
 # The MS1 resource phase gate (mac_resource_compat.py --milestone MS1) runs on the driver.
 #
 # WKWebView needs the logged-in WindowServer session. The Mac channel logs in as the active
@@ -39,7 +40,8 @@ scp_opts() { # $1=key -> NUL-delimited scp argv
 }
 
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING"' EXIT
+# Reclaim the throwaway staging tree depth-first on exit (standing cleanup rule, RoseCat 6101).
+trap 'find "$STAGING" -depth -delete 2>/dev/null || true' EXIT
 
 # --- MS1.4: the arm64 host is mandatory for a universal gate. Fail closed before building. ---
 if [ -z "$ARM_HOST" ]; then

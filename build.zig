@@ -1035,6 +1035,19 @@ pub fn build(b: *std.Build) void {
         "-c",
         "cd tests/e2e && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v fake_claude_setup_token_test",
     });
+    // MS1 (RoseCat 6101): the off-Mac census + resource-phase mutation suite — pure Python, no Mac,
+    // no display. It carries the omission / single-arch / fail-closed-probe / wrong-location /
+    // resource-mismatch / exact-MS1-browser-only mutants that made the MS1 red acceptable; register
+    // it in the default Linux gate so breaking tests/e2e/mac_universal_test.py's census/resource
+    // contracts fails `zig build test`. cwd is tests/e2e so `import mac_universal_test` resolves
+    // (no -I: isolated mode drops the script dir from sys.path on this host).
+    const mac_census_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v mac_universal_census_test",
+    });
+    const mac_census_step = b.step("test-mac-census", "Run the MS1 off-Mac census/resource-phase mutation suite (pure Python)");
+    mac_census_step.dependOn(&mac_census_unit.step);
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -1309,6 +1322,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
