@@ -10,6 +10,7 @@ COMMANDS = {
     "chat": "chat",  # the drawer's helper, inside the sandbox
     "setup": "setup",  # --agent-setup: the agent home from a SAI source, and the token route
     "probe-r1": "route_probe",  # setup's R1 probe, inside setup's own sandbox (§3c.7)
+    "login": "login",  # S6: the one-shot sign-in helper (claude setup-token on a pty; the token on fd 4)
 }
 
 

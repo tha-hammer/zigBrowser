@@ -1,0 +1,279 @@
+"""`login` (chat-drawer plan S6, D7b; rev 16.18): the one-shot sign-in helper.
+
+    python -m zb_agent_host login --home H [--e2e-claude-cli CLI]   (fd 4: the token)
+
+It runs `claude setup-token` on a pty, with HOME and CLAUDE_CONFIG_DIR set to
+the agent home, as the real CLI (2.1.301, captured in
+tests/fixtures/agent/setup_token_transcript.json) needs: it reads the sign-in
+code at "Paste code here if prompted >" only from a terminal, as
+`<code>#<state>`.
+
+stdin carries app frames: `start`, `code` (`<code>#<state>`, from the auth
+window's captured callback or the Secrets window's paste entry) and `cancel`.
+stdout carries `auth_url` (once), `need_code` (each time the CLI prompts),
+`done` and `error`. The token goes only to fd 4, in one write, then fd 4 is
+closed; it is never on stdout, stderr or in a frame. The helper exits after
+`done`, `error` or `cancel`, or after 10 minutes.
+
+The pty is 4096 columns wide, so the CLI's renderer does not wrap the URL;
+CSI and OSC sequences (an OSC 8 link around the URL included) are dropped
+before anything is parsed. BROWSER is /bin/true: the CLI never opens a browser
+itself (the app's auth window does). The pty output is kept in one bytearray
+and zeroed before the helper exits; the token is written to fd 4 from a view
+of it, not a copy. Python's own intermediate copies (escape removal) cannot be
+zeroed, so the token lives in this process's memory until it exits: the helper
+is one-shot, and exits right after `done`."""
+
+import argparse
+import fcntl
+import json
+import os
+import pty
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import termios
+import threading
+import time
+from urllib.parse import parse_qsl, urlsplit
+
+from .frames import Emitter
+
+TOKEN_FD = 4
+TIMEOUT_S = 600
+COLUMNS = 4096
+MAX_CODE = 512
+MAX_URL = 4096
+MAX_FRAME = 4096
+MAX_SCREEN = 256 * 1024
+
+# The authorize URLs the CLI may print (2.1.301's CLAUDE_AI_AUTHORIZE_URL and
+# CONSOLE_AUTHORIZE_URL), and its exact parameter names (the capture).
+AUTHORIZE = {("claude.com", "/cai/oauth/authorize"), ("platform.claude.com", "/oauth/authorize")}
+PARAMS = ["code", "client_id", "response_type", "redirect_uri", "scope", "code_challenge",
+          "code_challenge_method", "state"]
+REDIRECT = "https://platform.claude.com/oauth/code/callback"
+
+ESCAPE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-~]|\x1b")
+CONTROL = re.compile(rb"[\x00-\x09\x0b-\x1f\x7f]")
+URL = re.compile(rb"https://[\x21-\x7e]+")
+PROMPT = b"Pastecodehereifprompted>"
+SUCCESS = b"Long-livedauthenticationtokencreatedsuccessfully"
+TOKEN = re.compile(rb"(?<![A-Za-z0-9_-])sk-ant-oat01-[A-Za-z0-9_-]{22,499}(?=\n)")
+CODE = re.compile(r"[\x21-\x22\x24-\x7e]+#[\x21-\x22\x24-\x7e]+")
+
+
+def authorize_url(text):
+    """The authorize URL if `text` is exactly one the CLI prints, else None."""
+    if len(text) > MAX_URL:
+        return None
+    url = urlsplit(text)
+    if url.scheme != "https" or (url.netloc, url.path) not in AUTHORIZE or url.fragment:
+        return None
+    params = parse_qsl(url.query, keep_blank_values=True)
+    if sorted(name for name, _ in params) != sorted(PARAMS):
+        return None
+    values = dict(params)
+    if values["redirect_uri"] != REDIRECT or not values["state"] or values["response_type"] != "code":
+        return None
+    return text
+
+
+def valid_code(code):
+    return isinstance(code, str) and 3 <= len(code) <= MAX_CODE and CODE.fullmatch(code) is not None
+
+
+def cli_env(home):
+    return {
+        "HOME": home,
+        "CLAUDE_CONFIG_DIR": os.path.join(home, ".claude"),
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "TERM": "xterm-256color",
+        "BROWSER": "/bin/true",
+    }
+
+
+class Login:
+    def __init__(self, home, cli, out, token_fd, timeout_s=TIMEOUT_S):
+        self.home, self.cli, self.out, self.token_fd = home, cli, out, token_fd
+        self.deadline = time.monotonic() + timeout_s
+        self.screen = bytearray()  # the pty output, escapes removed; zeroed at the end
+        self.prompts = 0  # prompts seen
+        self.answered = 0  # prompts a code was written to
+        self.code = None  # a code waiting for the next prompt
+        self.sent_url = False
+        self.lock = threading.Lock()
+        self.ended = threading.Event()
+        self.outcome = None
+        self.proc = None
+        self.master = -1
+
+    # ---- the CLI on a pty -------------------------------------------------
+    def spawn(self):
+        self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, COLUMNS, 0, 0))
+        self.proc = subprocess.Popen([self.cli, "setup-token"], stdin=slave, stdout=slave, stderr=slave,
+                                     env=cli_env(self.home), cwd=self.home, start_new_session=True,
+                                     close_fds=True)
+        os.close(slave)
+
+    def kill(self):
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if self.proc:
+            self.proc.wait()
+
+    def read_pty(self):
+        chunk = bytearray(16384)
+        try:
+            while not self.ended.is_set():
+                left = self.deadline - time.monotonic()
+                if left <= 0:
+                    return self.end("error", code="timeout", message="sign-in timed out")
+                if not select.select([self.master], [], [], min(left, 0.5))[0]:
+                    continue
+                try:
+                    n = os.readv(self.master, [chunk])
+                except OSError:
+                    n = 0
+                if n == 0:
+                    with self.lock:
+                        printed = SUCCESS in bytes(self.screen).replace(b" ", b"")
+                    if printed:
+                        return self.end("error", code="shape", message="the Claude CLI printed no setup token")
+                    return self.end("error", code="cli", message="the Claude CLI ended before the token")
+                with self.lock:
+                    self.screen += CONTROL.sub(b"", ESCAPE.sub(b"", bytes(memoryview(chunk)[:n])).replace(b"\r", b""))
+                    if len(self.screen) > MAX_SCREEN:
+                        return self.end("error", code="cli", message="the Claude CLI printed too much")
+                    self.scan()
+        finally:
+            chunk[:] = bytes(len(chunk))
+
+    def scan(self):
+        """Act on what the screen now shows (called with the lock held)."""
+        if not self.sent_url:
+            for m in URL.finditer(self.screen):
+                url = authorize_url(m.group().decode("ascii"))
+                if url:
+                    self.sent_url = True
+                    self.out.emit("auth_url", url=url)
+                    break
+        squeezed = bytes(self.screen).replace(b" ", b"")
+        prompts = squeezed.count(PROMPT)
+        while self.prompts < prompts:
+            self.prompts += 1
+            if not self.sent_url:
+                return self.end("error", code="cli", message="the Claude CLI printed no sign-in address")
+            self.out.emit("need_code")
+        self.answer()
+        at = self.screen.find(b"successfully!")
+        if SUCCESS in squeezed and at >= 0:
+            m = TOKEN.search(self.screen, at)
+            if m:
+                self.hand_off(*m.span())
+
+    def answer(self):
+        if self.code is not None and self.answered < self.prompts:
+            code, self.code = self.code, None
+            self.answered = self.prompts
+            os.write(self.master, code.encode("ascii") + b"\r")
+
+    def hand_off(self, start, end):
+        token = memoryview(self.screen)[start:end]
+        try:
+            written = os.write(self.token_fd, token)
+        finally:
+            token.release()
+        os.close(self.token_fd)
+        self.token_fd = -1
+        if written != end - start:
+            return self.end("error", code="cli", message="the token could not be handed over")
+        self.end("done")
+
+    def end(self, type_, **fields):
+        if self.ended.is_set():
+            return
+        self.outcome = type_
+        self.ended.set()
+        self.out.emit(type_, **fields)
+
+    # ---- app frames -------------------------------------------------------
+    def read_frames(self, stream):
+        for line in stream:
+            if self.ended.is_set():
+                return
+            if len(line) > MAX_FRAME:
+                return self.end("error", code="protocol", message="frame too long")
+            try:
+                frame = json.loads(line)
+            except ValueError:
+                return self.end("error", code="protocol", message="frame is not JSON")
+            kind = frame.get("type") if isinstance(frame, dict) else None
+            if kind == "cancel":
+                return self.end("error", code="cancelled", message="sign-in cancelled")
+            if kind == "code":
+                if not valid_code(frame.get("code")):
+                    return self.end("error", code="protocol", message="code refused")
+                with self.lock:
+                    self.code = frame["code"]
+                    self.answer()
+                continue
+            return self.end("error", code="protocol", message="unexpected frame")
+        self.end("error", code="cancelled", message="sign-in cancelled")
+
+    def run(self, stream):
+        first = stream.readline()
+        try:
+            frame = json.loads(first) if len(first) <= MAX_FRAME else None
+        except ValueError:
+            frame = None
+        if not isinstance(frame, dict) or frame.get("type") != "start":
+            self.end("error", code="protocol", message="expected start")
+            return 2
+        try:
+            self.spawn()
+        except OSError:
+            self.end("error", code="cli", message="the Claude CLI could not start")
+            return 1
+        threading.Thread(target=self.read_frames, args=(stream,), daemon=True).start()
+        try:
+            self.read_pty()
+            self.ended.wait()
+        finally:
+            self.kill()
+            with self.lock:
+                self.screen[:] = bytes(len(self.screen))
+            os.close(self.master)
+            if self.token_fd >= 0:
+                os.close(self.token_fd)
+        return 0 if self.outcome == "done" else 1
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="zb_agent_host login")
+    parser.add_argument("--home", required=True)
+    parser.add_argument("--e2e-claude-cli")
+    args = parser.parse_args(argv)
+    if args.e2e_claude_cli:
+        cli = args.e2e_claude_cli
+    else:
+        from .token import bundled_cli
+        cli = bundled_cli()
+    try:
+        os.fstat(TOKEN_FD)
+    except OSError:
+        print("zb_agent_host login: no fd 4", file=sys.stderr)
+        return 2
+    return Login(args.home, cli, Emitter(), TOKEN_FD).run(sys.stdin)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

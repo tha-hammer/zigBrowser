@@ -281,3 +281,120 @@ fn field(w: *std.json.Stringify, name: []const u8, value: anytype) !void {
     try w.objectField(name);
     try w.write(value);
 }
+
+// ---- The one-shot login helper (D7b login frames; S6, rev 16.18) ----------
+//
+// login → app on stdout: `auth_url` {url} once and first, `need_code` {} per
+// CLI prompt, `done` {} (the token is already on fd 4), `error` {code,
+// message}. Nothing is accepted after `done` or `error`. app → login on stdin:
+// `start`, `code` {code}, `cancel`, built by `encodeLogin` only.
+
+pub const login_max_frame: usize = 8 * 1024;
+pub const max_auth_url: usize = 4 * 1024;
+pub const max_login_code: usize = 512;
+
+pub const LoginReason = enum { oversize, json, envelope, seq, type, schema, order };
+pub const AuthUrl = struct { url: []const u8 };
+pub const LoginFailure = struct { code: []const u8, message: []const u8 };
+pub const LoginFrame = union(enum) {
+    auth_url: AuthUrl,
+    need_code: struct {},
+    done: struct {},
+    @"error": LoginFailure,
+};
+pub const LoginOutcome = union(enum) { ok: LoginFrame, rejected: LoginReason };
+
+const login_error_codes = [_][]const u8{ "cli", "timeout", "cancelled", "shape", "protocol" };
+
+pub const LoginValidator = struct {
+    last_seq: i64 = 0,
+    url_seen: bool = false,
+    ended: bool = false,
+
+    /// One line from the login helper's stdout. `arena` owns the frame's
+    /// strings. Nothing is committed unless every check passes.
+    pub fn validate(self: *LoginValidator, arena: std.mem.Allocator, line: []const u8) LoginOutcome {
+        if (line.len > login_max_frame) return .{ .rejected = .oversize };
+        const root = std.json.parseFromSliceLeaky(Value, arena, line, .{}) catch return .{ .rejected = .json };
+        if (root != .object) return .{ .rejected = .envelope };
+        const obj = root.object;
+        const v = obj.get("v") orelse return .{ .rejected = .envelope };
+        const seq = obj.get("seq") orelse return .{ .rejected = .envelope };
+        const type_name = obj.get("type") orelse return .{ .rejected = .envelope };
+        if (v != .integer or v.integer != 1 or seq != .integer or seq.integer < 1 or type_name != .string)
+            return .{ .rejected = .envelope };
+        const tag = std.meta.stringToEnum(std.meta.Tag(LoginFrame), type_name.string) orelse return .{ .rejected = .type };
+        const frame = parseLogin(tag, obj) catch return .{ .rejected = .schema };
+        if (seq.integer <= self.last_seq) return .{ .rejected = .seq };
+        const in_order = !self.ended and switch (frame) {
+            .auth_url => !self.url_seen,
+            .need_code, .done => self.url_seen,
+            .@"error" => true,
+        };
+        if (!in_order) return .{ .rejected = .order };
+        self.last_seq = seq.integer;
+        switch (frame) {
+            .auth_url => self.url_seen = true,
+            .done, .@"error" => self.ended = true,
+            .need_code => {},
+        }
+        return .{ .ok = frame };
+    }
+};
+
+fn parseLogin(tag: std.meta.Tag(LoginFrame), obj: Object) Bad!LoginFrame {
+    return switch (tag) {
+        .auth_url => blk: {
+            try exact(obj, &.{"url"});
+            const url = try string(obj, "url", max_auth_url);
+            if (!std.mem.startsWith(u8, url, "https://")) return error.Schema;
+            break :blk .{ .auth_url = .{ .url = url } };
+        },
+        .need_code => blk: {
+            try exact(obj, &.{});
+            break :blk .{ .need_code = .{} };
+        },
+        .done => blk: {
+            try exact(obj, &.{});
+            break :blk .{ .done = .{} };
+        },
+        .@"error" => blk: {
+            try exact(obj, &.{ "code", "message" });
+            break :blk .{ .@"error" = .{ .code = try oneOf(obj, "code", &login_error_codes), .message = try string(obj, "message", 1024) } };
+        },
+    };
+}
+
+/// A sign-in code as the CLI reads it: `<code>#<state>`, 3 to 512 characters
+/// of visible ASCII (0x21-0x7e), exactly one '#', both parts non-empty. It is
+/// typed at the CLI's terminal, so no space, control byte or DEL can pass.
+pub fn validLoginCode(code: []const u8) bool {
+    if (code.len < 3 or code.len > max_login_code) return false;
+    const hash = std.mem.indexOfScalar(u8, code, '#') orelse return false;
+    if (hash == 0 or hash == code.len - 1) return false;
+    if (std.mem.indexOfScalarPos(u8, code, hash + 1, '#') != null) return false;
+    for (code) |c| if (c < 0x21 or c > 0x7e) return false;
+    return true;
+}
+
+pub const AppLoginFrame = union(enum) {
+    start,
+    code: []const u8,
+    cancel,
+};
+
+/// `{"v":1,"seq":<seq>,"type":...}` for an app → login frame; a code outside
+/// `validLoginCode` is error.BadCode.
+pub fn encodeLogin(gpa: std.mem.Allocator, seq: i64, frame: AppLoginFrame) ![]u8 {
+    if (frame == .code and !validLoginCode(frame.code)) return error.BadCode;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    var w: std.json.Stringify = .{ .writer = &out.writer };
+    try w.beginObject();
+    try field(&w, "v", 1);
+    try field(&w, "seq", seq);
+    try field(&w, "type", @tagName(frame));
+    if (frame == .code) try field(&w, "code", frame.code);
+    try w.endObject();
+    return out.toOwnedSlice();
+}

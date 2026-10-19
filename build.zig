@@ -313,6 +313,15 @@ pub fn build(b: *std.Build) void {
     agent_protocol_tests_module.addImport("agent_protocol", agent_protocol_module);
     const run_agent_protocol_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_tests_module }));
     run_agent_protocol_tests.skip_foreign_checks = true;
+    // Chat drawer S6 (rev 16.18): the one-shot login helper's frames.
+    const agent_login_protocol_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_login_protocol_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_login_protocol_tests_module.addImport("agent_protocol", agent_protocol_module);
+    const run_agent_login_protocol_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_login_protocol_tests_module }));
+    run_agent_login_protocol_tests.skip_foreign_checks = true;
 
     // Chat drawer S1: the floating icon's pure logic (src/agent_drawer.zig).
     const agent_drawer_module = b.createModule(.{
@@ -903,6 +912,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_errors",
     });
+    // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
+    // setup-token fake on a pty; the token reaches fd 4 only.
+    const agent_host_login = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login",
+    });
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
     const agent_setup_e2e = b.addSystemCommand(&.{
@@ -1236,9 +1252,13 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_secrets_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     test_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
-    const agent_auth_step = b.step("test-agent-auth", "Run the Claude Agent sign-in's callback check and setup-token fake tests");
+    test_step.dependOn(&run_agent_login_protocol_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
+    const agent_auth_step = b.step("test-agent-auth", "Run the Claude Agent sign-in's callback check, login frames, login helper and setup-token fake tests");
     agent_auth_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
+    agent_auth_step.dependOn(&run_agent_login_protocol_tests.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
