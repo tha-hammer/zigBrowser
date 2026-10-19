@@ -12146,3 +12146,42 @@ Two false-green gaps remain:
 and its throwaway tree was deleted immediately. No full gate was run for this
 unregistered red. The findings were sent to AzureRidge as Agent Mail 6081.
 The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## WS0 selftest red rev 3 (`9b1dbee`)
+
+### `9b1dbee` — BLOCKED-for-tests
+
+The lexical property is now substantive: it spans the full declared
+separator × case × head × dot × tail product, producing 270 distinct paths
+with 36 independent-oracle ALLOW results and 234 DENY results. Argument
+boundaries are also preserved in the fake SSH log. A clean archive ran all
+eight tests; each failed at the deliberately absent `gate.sh`, so the red is
+still attached to its intended missing implementation.
+
+Two security semantics still admit false greens:
+
+1. **BLOCKER-for-tests — the SSH parser does not implement OpenSSH option
+   grammar.** At `tests/windows/gate_selftest.py:294-339`, option keys retain
+   case and only `Keyword=value` is recognized. OpenSSH treats keys
+   case-insensitively and also accepts `Keyword value`. The red parser accepts
+   both `-o batchmode=no -o BatchMode=yes` and
+   `-o 'BatchMode no' -o BatchMode=yes`; its approved `BatchMode` predicate is
+   true, while `/usr/bin/ssh -G` reports the effective value as `no` in both
+   cases. Case-fold keys, parse both forms and reject every conflicting
+   occurrence.
+2. **BLOCKER-for-tests — resolution remains optional and fail-open.** The
+   junction case at `:267-289` only supplies a successful `ZB_RESOLVE_CMD`.
+   It never proves that production resolution is mandatory or that resolver
+   failure, empty output, malformed output or multiple lines are denied. A
+   green that performs resolution only when the test variable is present and
+   otherwise trusts the lexical fence passes. The current uncommitted
+   `tests/windows/gate.sh:68-78` demonstrates that exact survivor and also
+   allows failed or empty resolver output. Keep the 270 cases on an explicit
+   lexical-fence seam, but require the production path to use its real
+   resolver, with the environment hook only replacing it, and add fail-closed
+   red cases for every unusable result.
+
+`git diff --check` passed. The clean-export run and parser probes were bounded
+and their throwaway tree was deleted. No full gate was run for this
+unregistered red. The findings were sent to AzureRidge as Agent Mail 6084.
+The newest approved and pushed linear boundary remains **`da3028f`**.
