@@ -5,8 +5,10 @@ runtime/net-login.json, which allows exactly api.anthropic.com and
 platform.claude.com (the CLI's token exchange) and has `"ports": []`: setup-token
 runs no hooks, so that netd makes no bridges/ directory and no bridge socket.
 Chat's runtime/net.json is unchanged, so chat's netd still refuses
-platform.claude.com. A manifest's ports stay 1 to 8 unless the list is empty;
-a missing `ports` still means the built-in two (test_netd_manifest.py).
+platform.claude.com. A manifest's ports stay 1 to 8 unless the list is empty.
+A manifest with one of `egress` and `ports` but not the other is refused; only a
+missing manifest, or one with neither key, means the built-in values
+(test_netd_manifest.py; rev 16.18.2, RoseCat 5925).
 
 Every netd that tests reachability runs sealed (loopback only); nothing
 reaches the network."""

@@ -5,8 +5,9 @@ its own backend capability, so chat's network never widens.
   allowlist ("api.anthropic.com", "platform.claude.com") (the CLI's token
   exchange), and no bridge ports (setup-token runs no hooks).
 - `login_launch_spec()` carries it, and binds only the login netd's egress/.
-- `setup.login_net_manifest()` serializes it (net.json's schema, `"ports": []`),
-  and the real netd serves that file: platform.claude.com is dialed, other names
+- `setup.login_net_manifest()` serializes it (net.json's schema, `"ports": []`);
+  a real `setup.provision()` publishes it as runtime/net-login.json (0600) beside
+  an unchanged runtime/net.json (RoseCat 5925); and the real netd serves that file: platform.claude.com is dialed, other names
   are refused, no bridges/ exists.
 - `network()`, `launch_spec()`, `EGRESS_ALLOW` and `setup.net_manifest()` are
   exactly what they were (test_backend_contract.py pins them too)."""
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zb_agent_host import options, sandbox, setup  # noqa: E402
 from test_netd import Netd  # noqa: E402
 from test_netd_manifest import ManifestFile, dial, layout  # noqa: E402
+from test_provision import Sandbox  # noqa: E402 - the fixture SAI source and a target agent home
 
 LOGIN_ALLOW = ("api.anthropic.com", "platform.claude.com")
 
@@ -104,6 +106,17 @@ class LoginNetworkCapability(unittest.TestCase):
             self.assertEqual(sandbox.network().egress.allow, ("api.anthropic.com",))
         finally:
             sandbox._LINUX_BACKEND.login_network = orig
+
+    def test_setup_publishes_net_login_json_beside_net_json(self):
+        box = Sandbox(self)
+        box.provision(select_token_route=False)
+        runtime = box.home.runtime
+        login = runtime / "net-login.json"
+        self.assertTrue(login.is_file() and not login.is_symlink(), "setup published no runtime/net-login.json")
+        self.assertEqual(login.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(login.read_text()), setup.login_net_manifest())
+        self.assertEqual(json.loads((runtime / "net.json").read_text()), setup.net_manifest())
+        self.assertEqual(json.loads((runtime / "net.json").read_text())["egress"]["allow"], ["api.anthropic.com"])
 
     def test_netd_serves_the_produced_manifest(self):
         m = ManifestFile(self)
