@@ -34,6 +34,9 @@ def digest_tree(root: str, required: list) -> dict[str, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True, help="packaging/macos/universal_components.json")
+    ap.add_argument("--milestone", required=True,
+                    help="the milestone this bundle is for (e.g. MS1, MS5); the empty-resource "
+                         "phase policy accepts an empty inventory only for browser-only MS1")
     ap.add_argument("tree_a", help="the first per-arch build tree root")
     ap.add_argument("tree_b", help="the second per-arch build tree root")
     args = ap.parse_args()
@@ -42,13 +45,12 @@ def main() -> int:
     try:
         inv = mu.load_inventory(Path(args.manifest))
         required = inv["resources"]
-        if not required:
-            # Nothing declared to compare is not a pass: the contract requires the
-            # resource set to be exercised (fail closed, mirrors the inventory rule).
-            raise mu.FailClosed("no non-executable resources declared to compare")
-        a = digest_tree(args.tree_a, required)
-        b = digest_tree(args.tree_b, required)
-        mu.resource_compat(a, b, required, c)
+        # resource_phase is the typed gate: it is CALLED at every milestone (MS1 included),
+        # accepts empty only for MS1, fails closed for any other empty, and otherwise runs
+        # the two-tree oracle (RoseCat 5995). We digest only when there is something to compare.
+        a = digest_tree(args.tree_a, required) if required else {}
+        b = digest_tree(args.tree_b, required) if required else {}
+        mu.resource_phase(args.milestone, required, a, b, c)
     except mu.FailClosed as e:
         print(f"NOT RUN / FAIL CLOSED: {e}", file=sys.stderr)
         return 2

@@ -183,6 +183,31 @@ def component_census(macho_archs: dict[str, set[str]], inventory: dict,
              f"required resource {res.get('role', res['path'])!r} missing: {res['path']}")
 
 
+# MS1.1 resource-phase policy (RoseCat 5995): an empty resource inventory is a typed,
+# fail-closed state, not a skip. It is accepted ONLY for the browser-only MS1 milestone
+# (the universal browser is a single fat Mach-O with no non-exec resource); EVERY other
+# milestone that ships resources — MS5 onward — MUST declare a nonempty set, else fail
+# closed. A mutant that drops this check (so empty always passes) is caught by the
+# "unqualified/MS5 empty fails" tests, so the exception cannot be confused with deleting
+# the resource check.
+EMPTY_ALLOWED_MILESTONES = frozenset({"MS1"})
+
+
+def resource_phase(milestone: str, required: list, tree_a: dict[str, str],
+                   tree_b: dict[str, str], c: Checks) -> None:
+    """The typed phase gate around `resource_compat`. With no declared resources, pass
+    ONLY for a browser-only milestone in EMPTY_ALLOWED_MILESTONES; otherwise fail closed.
+    With resources, run the two-tree oracle. This is what the green invokes at every
+    milestone (MS1 included — it is CALLED, not skipped), so the empty-allowed state is
+    explicit and mutation-resistant."""
+    if not required:
+        c.ok(milestone in EMPTY_ALLOWED_MILESTONES,
+             f"empty resource inventory is allowed only for the browser-only MS1 milestone, "
+             f"not {milestone!r} — a milestone that ships resources must declare them")
+        return
+    resource_compat(tree_a, tree_b, required, c)
+
+
 def resource_compat(tree_a: dict[str, str], tree_b: dict[str, str],
                     required: list, c: Checks) -> None:
     """Pure two-tree oracle (MS1.1, plan:396-401; RoseCat 5974). `tree_a`/`tree_b` map

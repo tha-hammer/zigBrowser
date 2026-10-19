@@ -171,5 +171,43 @@ class ResourceCompatTest(unittest.TestCase):
                         f"a resource present in only one arch tree must fail; got {c.failures}")
 
 
+class ResourcePhaseTest(unittest.TestCase):
+    """5995: the empty-resource exception is a typed, fail-closed phase policy — empty is
+    accepted ONLY for browser-only MS1, and a dropped check is caught by the non-MS1 cases."""
+
+    REQ = INVENTORY["resources"]
+    PATH = "lib/zigbrowser/agent-host/runtime.json"
+
+    def phase(self, milestone, required, a=None, b=None):
+        c = mu.Checks()
+        mu.resource_phase(milestone, required, a or {}, b or {}, c)
+        return c
+
+    def test_ms1_empty_resources_passes(self):
+        c = self.phase("MS1", [])
+        self.assertEqual(c.failures, [], "browser-only MS1 with no resource must pass the phase gate")
+        self.assertGreater(c.ran, 0, "the gate must actually assert for MS1 (called, not skipped)")
+
+    def test_ms5_empty_resources_fails(self):
+        c = self.phase("MS5", [])
+        self.assertTrue(c.failures, "MS5 must declare resources — an empty set must fail closed")
+
+    def test_unqualified_empty_fails(self):
+        # A missing/unknown milestone with an empty set must NOT be accepted (mutation guard:
+        # a dropped milestone check would wrongly pass this).
+        for milestone in ("", "unknown", "ms1"):
+            c = self.phase(milestone, [])
+            self.assertTrue(c.failures, f"unqualified empty ({milestone!r}) must fail closed")
+
+    def test_ms5_nonempty_mismatch_still_fails(self):
+        c = self.phase("MS5", self.REQ, {self.PATH: "aa"}, {self.PATH: "bb"})
+        self.assertTrue(any("differs across arches" in f for f in c.failures),
+                        f"a nonempty MS5 mismatch must still fail via the phase gate; got {c.failures}")
+
+    def test_ms5_nonempty_identical_passes(self):
+        c = self.phase("MS5", self.REQ, {self.PATH: "aa"}, {self.PATH: "aa"})
+        self.assertEqual(c.failures, [], "a nonempty MS5 match must pass the phase gate")
+
+
 if __name__ == "__main__":
     unittest.main()
