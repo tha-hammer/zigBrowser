@@ -12216,3 +12216,43 @@ the corpus remained 270 paths / 36 ALLOW. `git diff --check` passed. The run
 was bounded and its throwaway tree was deleted. No full gate was run for this
 unregistered red. The finding was sent to AzureRidge as Agent Mail 6087.
 The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## WS0 selftest red rev 5 (`8782320`)
+
+### `8782320` — APPROVED for the rev-5 scope
+
+The no-override coverage requested in `b91732b` is now real. The new case at
+`tests/windows/gate_selftest.py:319-347` invokes `--allowed-path` with an
+environment constructed from scratch, so neither the reviewer's shell nor a
+prior subcase can supply `ZB_RESOLVE_CMD`. Each of its four subcases also gets
+fresh logs. The fake SSH branch observes the production resolver's encoded
+PowerShell call and supplies, respectively, an in-root target, an escaping
+target, an SSH failure and empty output. The first must ALLOW and the other
+three must DENY. The escaping case kills a lexical-only fallback, while the
+recorded SSH invocation kills deletion or bypass of the production default.
+This cumulatively closes the default-resolver coverage blocker on `3a696f3`.
+
+A clean archive at `8782320` reproduced the intended red: all nine tests
+errored on the absent `tests/windows/gate.sh`. The new case alone passed after
+overlaying the pending `gate.sh` and `resolve_path.sh` into a second clean
+archive. `git diff --check` passed, all commands were bounded, and both
+throwaway trees were deleted immediately. No full gate was run for this
+unregistered red.
+
+### Newly exposed pre-existing blocker in the WS0 red chain
+
+**BLOCKER-for-tests — the `ssh -G` semantic oracle is not portable across the
+OpenSSH version on this host.** `tests/windows/gate_selftest.py:352` requires
+the canonical value `stricthostkeychecking yes`, but OpenSSH 10.0p2 on Debian
+13 canonicalizes the safe input `StrictHostKeyChecking=yes` as
+`stricthostkeychecking true`. Consequently, the pending otherwise-correct
+green fails at `:408` with `'true' != 'yes'`. A direct `ssh -G -F /dev/null`
+probe reproduced that output. Accept or normalize OpenSSH's equivalent
+canonical boolean for the semantic oracle, while retaining the independent
+raw-argument scan that requires the supplied value `yes` and rejects unsafe
+or conflicting occurrences.
+
+The rev-5 verdict and this newly exposed chain blocker were sent to
+AzureRidge as Agent Mail 6089. The WS0 red chain is not cumulatively approved
+until the canonical-value mismatch is fixed. The newest approved and pushed
+linear boundary remains **`da3028f`**.
