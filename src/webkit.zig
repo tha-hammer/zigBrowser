@@ -785,7 +785,9 @@ const LiveDriver = struct {
         const port_page = port.evalJson(gpa, .page, "return typeof window.__zbAutomation;", "null", 5000) catch null;
         self.check(eq(port_page, "undefined"), "PagePort .page world is the page world");
         self.check(if (port.evalJson(gpa, .page, "throw new Error('x');", "null", 5000)) |_| false else |e| e == error.EvalFailed, "PagePort maps JS failure to EvalFailed");
-        self.check(if (port.evalJson(gpa, .page, "await new Promise(function () {});", "null", 100)) |_| false else |e| e == error.Timeout, "PagePort maps timeout to Timeout");
+        // The resolver is kept reachable, as for __zbHold1: an unreferenced pending
+        // promise can be garbage-collected, and WebKit then fails the call early.
+        self.check(if (port.evalJson(gpa, .page, "await new Promise(function (resolve) { globalThis.__zbHoldPort = resolve; });", "null", 100)) |_| false else |e| e == error.Timeout, "PagePort maps timeout to Timeout");
         self.check(if (port.navigate(self.uri_missing, 15000)) |_| false else |e| e == error.NavigationFailed, "PagePort maps load failure to NavigationFailed");
         const port_url = port.url(gpa, 5000) catch null;
         self.check(port_url != null, "PagePort.url answers");
