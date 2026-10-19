@@ -82,8 +82,11 @@ verify_host() {
 
   # M9 visible e2es + the exec-arch readback, against the SIGNED binary. On x86_64 today the
   # first launch SIGSEGVs in [ZBAppHost init] [super init], so m9_render_test fails -> red.
-  "${SSH[@]}" "$host" /bin/bash -s <<'REMOTE' || return 1
+  # The expected arch "$expect" is passed as $1 so the (quoted) remote block can VERIFY the
+  # signed binary runs AS this host's arch, not merely that it produced some output (RoseCat 6059).
+  "${SSH[@]}" "$host" /bin/bash -s "$expect" <<'REMOTE' || return 1
 set -euo pipefail
+EXPECT="$1"
 cd "$HOME/zigBrowser"
 test -f tests/fixtures/app/index.html && test -f tests/fixtures/app/zbhost.js
 export ZB_ENABLE_M9_E2E=1
@@ -94,6 +97,20 @@ python3 tests/e2e/m9_load_fail_test.py --browser zig-out/bin/zigBrowser
 rm -f zig-out/exec-arch.txt
 python3 tests/mac/exec_arch_probe.py --browser zig-out/bin/zigBrowser --out zig-out/exec-arch.txt
 test -s zig-out/exec-arch.txt
+# Anti-false-pass (RoseCat 6059): "ran" means "ran AS $EXPECT natively", the same proof gate.sh
+# makes. Normalize aarch64->arm64 (uname -m and zig's cpu tag), require BOTH the host's uname and
+# the socket-read-back build.exec_arch to equal $EXPECT, and on arm require proc_translated=0.
+# This rejects the same host configured twice (uname != the other leg's EXPECT) and an arm host
+# running the x86_64 slice under Rosetta (proc_translated=1).
+norm() { case "$1" in aarch64|arm64) echo arm64;; *) echo "$1";; esac; }
+uname_m="$(uname -m)"
+[ "$(norm "$uname_m")" = "$EXPECT" ] || { echo "uname -m $uname_m (norm $(norm "$uname_m")) != expected $EXPECT" >&2; exit 1; }
+reported="$(tr -d '[:space:]' < zig-out/exec-arch.txt)"
+[ "$(norm "$reported")" = "$EXPECT" ] || { echo "app reported exec_arch $reported (norm $(norm "$reported")) != expected $EXPECT" >&2; exit 1; }
+if [ "$EXPECT" = arm64 ]; then
+  translated="$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)"
+  [ "$translated" = 0 ] || { echo "process is translated (Rosetta): proc_translated=$translated" >&2; exit 1; }
+fi
 REMOTE
   printf 'PASS\tms1b-signed-leg\t%s\t%s\n' "$host" "$expect"
 }
