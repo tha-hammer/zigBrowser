@@ -16,17 +16,20 @@ Hardened per review of e36f5fa (RoseCat, d8d79d8) so the future green cannot fal
   * The partial-tar case requires tar to have run AND the exit code to propagate (plus a named
     diagnostic), so "tar never invoked" cannot satisfy it.
   * WS0.8 parses the FULL, non-conflicting ssh option set, not one substring.
-  * WS0.5 is a property over the full separator×case×head×dot×tail CROSS PRODUCT, checked against
-    an INDEPENDENT normalization oracle (hand-rolled, not ntpath), plus a fakeable reparse/junction
-    seam so a path that string-normalizes inside the root but resolves outside is denied.
-  * The ssh option set is parsed from argv boundaries (one arg per line), and each security key's
-    effective value must be exactly the approved one with no conflicting duplicate.
+  * WS0.5 lexical property runs on a NAMED string-fence seam (`gate.sh --fence-string`) over the full
+    separator×case×head×dot×tail CROSS PRODUCT, checked against an INDEPENDENT hand-rolled oracle.
+  * Reparse resolution is MANDATORY: `gate.sh --allowed-path` always runs the resolver (the env hook
+    only replaces it) and fails CLOSED on resolver failure, empty, multiline/malformed output, a
+    missing resolver, or a resolved path that escapes the root.
+  * ssh options are checked against OpenSSH's own grammar via `ssh -G` (case-insensitive keywords,
+    both `Key=val` and `Key val`), with a separate scan that rejects any conflicting occurrence.
   * Each case runs with a private HOME, never the host's real HOME.
 
 Run alone:  python3 -I tests/windows/gate_selftest.py -v
 """
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -232,18 +235,33 @@ class NoDisplayTests(_GateCase):
 
 
 class PathFenceTests(_GateCase):
-    def _allowed(self, path, bindir, home, extra_env=None):
+    def _fence(self, path, bindir, home):
+        """The LEXICAL seam (string normalization only)."""
+        proc = self._run_gate({"ZB_GUEST_USER": _TEST_USER}, bindir, args=["--fence-string", path], home=home)
+        out = (proc.stdout or "").strip()
+        self.assertIn(out, ("ALLOW", "DENY"), f"--fence-string must print ALLOW/DENY, got {out!r}")
+        return out == "ALLOW"
+
+    def _allowed(self, path, bindir, home, resolver=None):
+        """The full fence: lexical + MANDATORY reparse resolution."""
         env = {"ZB_GUEST_USER": _TEST_USER}
-        if extra_env:
-            env.update(extra_env)
+        if resolver is not None:
+            env["ZB_RESOLVE_CMD"] = resolver
         proc = self._run_gate(env, bindir, args=["--allowed-path", path], home=home)
         out = (proc.stdout or "").strip()
         self.assertIn(out, ("ALLOW", "DENY"), f"--allowed-path must print ALLOW/DENY, got {out!r}")
         return out == "ALLOW"
 
-    def test_fence_matches_independent_oracle_over_cross_product(self):
-        """WS0.5 property: over the full separator×case×head×dot×tail cross product, the gate's
-        verdict equals an INDEPENDENT oracle's — so an interaction mutant cannot survive."""
+    @staticmethod
+    def _resolver(td, body):
+        r = td / f"resolve_{abs(hash(body)) % 10000}.sh"
+        r.write_text("#!/usr/bin/env bash\n" + body)
+        r.chmod(0o755)
+        return str(r)
+
+    def test_lexical_fence_matches_oracle_over_cross_product(self):
+        """WS0.5 property on the named string-fence seam: gate --fence-string == independent oracle,
+        over the full separator×case×head×dot×tail cross product (interaction mutants cannot survive)."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
             bindir = _fakes(td)
@@ -252,93 +270,113 @@ class PathFenceTests(_GateCase):
             self.assertGreaterEqual(len(corpus), 100, "property corpus should be combinatorial, not a handful")
             self.assertTrue(any(exp.values()) and not all(exp.values()), "corpus must contain ALLOW and DENY")
             for p in corpus:
-                self.assertEqual(self._allowed(p, bindir, str(home)), exp[p],
-                                 f"gate disagrees with oracle on {p!r} (oracle={exp[p]})")
+                self.assertEqual(self._fence(p, bindir, str(home)), exp[p],
+                                 f"lexical fence disagrees with oracle on {p!r} (oracle={exp[p]})")
 
     def test_prefix_collision_is_denied(self):
         """Explicit anchor: the prefix-not-subdir case a naive startswith would wrongly allow."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
             bindir = _fakes(td)
-            self.assertFalse(self._allowed(rf"C:\Users\{_TEST_USER}\zbEVIL\x", bindir, str(home)))
-            self.assertTrue(self._allowed(rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png", bindir, str(home)))
+            self.assertFalse(self._fence(rf"C:\Users\{_TEST_USER}\zbEVIL\x", bindir, str(home)))
+            self.assertTrue(self._fence(rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png", bindir, str(home)))
 
-    def test_junction_reparse_escape_is_denied(self):
-        """WS0.5 reparse seam: a path that STRING-normalizes inside the root but whose resolver
-        (a fakeable junction resolver) reports a target OUTSIDE the root must be DENIED."""
+    def test_allowed_path_resolution_is_mandatory_and_fails_closed(self):
+        """WS0.5 reparse: --allowed-path ALWAYS resolves; the env hook only REPLACES the resolver.
+        Junction escape, resolver failure, empty, multiline/malformed, and a missing resolver all DENY."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
             bindir = _fakes(td)
-            resolver = td / "resolve.sh"
-            # The 'linkout' junction resolves outside the root; everything else is identity.
-            resolver.write_text(
-                "#!/usr/bin/env bash\n"
-                'case "$1" in\n'
-                '  *linkout*) printf "%s\\n" "C:\\\\Windows\\\\System32" ;;\n'
-                '  *) printf "%s\\n" "$1" ;;\n'
-                "esac\n"
-            )
-            resolver.chmod(0o755)
-            env = {"ZB_RESOLVE_CMD": str(resolver)}
-            escaping = rf"C:\Users\{_TEST_USER}\zb\linkout\x"   # string-OK, junction escapes
-            safe = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"  # string-OK, resolver identity
-            self.assertFalse(self._allowed(escaping, bindir, str(home), env),
+            good = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"   # string-OK sub-path
+            identity = self._resolver(td, 'printf "%s\\n" "$1"\n')
+            self.assertTrue(self._allowed(good, bindir, str(home), resolver=identity),
+                            "a real sub-path with an identity resolver must be ALLOWED")
+            escape = self._resolver(td, 'printf "%s\\n" "C:\\\\Windows\\\\System32"\n')
+            self.assertFalse(self._allowed(good, bindir, str(home), resolver=escape),
                              "a junction resolving outside the root must be DENIED")
-            self.assertTrue(self._allowed(safe, bindir, str(home), env),
-                            "a real sub-path must still be ALLOWED when the resolver is identity")
+            failing = self._resolver(td, 'exit 7\n')
+            self.assertFalse(self._allowed(good, bindir, str(home), resolver=failing),
+                             "a resolver that fails must DENY (fail closed)")
+            empty = self._resolver(td, 'exit 0\n')
+            self.assertFalse(self._allowed(good, bindir, str(home), resolver=empty),
+                             "a resolver with empty output must DENY")
+            multi = self._resolver(td, 'printf "%s\\n%s\\n" "$1" "$1"\n')
+            self.assertFalse(self._allowed(good, bindir, str(home), resolver=multi),
+                             "a resolver with multiline/malformed output must DENY")
+            self.assertFalse(self._allowed(good, bindir, str(home), resolver=str(td / "nope.sh")),
+                             "a missing resolver must DENY (resolution is mandatory)")
 
 
 class TransportHygieneTests(_GateCase):
-    @staticmethod
-    def _parse_ssh_opts(ssh_log_text):
-        """Parse -o settings from argv recorded one-per-line. Returns {key: [values...]} so a
-        conflicting duplicate (BatchMode=yes then BatchMode=no) is visible, not hidden by $*."""
-        opts = {}
-        lines = ssh_log_text.splitlines()
-        i = 0
-        while i < len(lines):
-            a = lines[i]
-            kv = None
-            if a == "-o" and i + 1 < len(lines):
-                kv = lines[i + 1]; i += 2
-            elif a.startswith("-o") and len(a) > 2:
-                kv = a[2:]; i += 1
-            else:
-                i += 1
-                continue
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                opts.setdefault(k, []).append(v)
-        return opts
+    # OpenSSH lowercases keywords in -G output; these are the effective values we require.
+    _APPROVED = {"batchmode": "yes", "stricthostkeychecking": "yes",
+                 "connecttimeout": "15", "identitiesonly": "yes"}
 
-    def test_full_ssh_option_set_and_tar_stderr_not_swallowed(self):
-        """WS0.8 (findings 1,3,5): healthy stage; each security option's EFFECTIVE value is exactly
-        the approved one with no conflicting duplicate; tar stderr reaches the gate."""
+    @staticmethod
+    def _ssh_G_effective(argv_lines):
+        """Resolve the EFFECTIVE ssh config the OpenSSH way (handles case-insensitive keys and both
+        `Keyword=value` and `Keyword value` forms, first-occurrence-wins) without connecting."""
+        ssh = shutil.which("ssh") or "/usr/bin/ssh"
+        proc = subprocess.run([ssh, "-G", "-F", "/dev/null", *argv_lines],
+                              capture_output=True, text=True, timeout=30)
+        eff = {}
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 1)
+            if parts:
+                eff[parts[0].lower()] = parts[1] if len(parts) > 1 else ""
+        return eff, proc
+
+    @staticmethod
+    def _raw_o_values(argv_lines):
+        """key_lower -> set(values) for every -o, parsing BOTH `Key=val` and `Key val`, case-folded,
+        so a conflicting occurrence is visible even when ssh -G would hide it (first wins)."""
+        vals = {}
+        i = 0
+        while i < len(argv_lines):
+            a = argv_lines[i]
+            tok = None
+            if a == "-o" and i + 1 < len(argv_lines):
+                tok = argv_lines[i + 1]; i += 2
+            elif a.startswith("-o") and len(a) > 2:
+                tok = a[2:]; i += 1
+            else:
+                i += 1; continue
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+            else:
+                parts = tok.split(None, 1)
+                k, v = parts[0], (parts[1] if len(parts) > 1 else "")
+            vals.setdefault(k.lower(), set()).add(v.strip())
+        return vals
+
+    def test_ssh_effective_options_no_conflicts_and_tar_stderr(self):
+        """WS0.8 (findings 1,3,5): healthy stage; each security option's EFFECTIVE value (via ssh -G)
+        is exactly approved; no conflicting occurrence in any grammar form; tar stderr reaches the gate."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             env, home, kh, logs = self._stage_env(td)
             proc = self._run_gate(env, _fakes(td), args=["--selftest-stage"], home=home)
             detail = f"\nrc={proc.returncode}\nstderr:\n{proc.stderr}\nssh_log:\n{self._read(logs['ssh'])}"
             self.assertEqual(proc.returncode, 0, "healthy stage must exit 0" + detail)
-            ssh_argv = self._read(logs["ssh"])
+            argv = self._read(logs["ssh"]).splitlines()
             tar_argv = self._read(logs["tar"])
-            self.assertTrue(ssh_argv and tar_argv, "ssh and tar must both have run" + detail)
-            opts = self._parse_ssh_opts(ssh_argv)
-            approved = {
-                "StrictHostKeyChecking": "yes",
-                "BatchMode": "yes",
-                "ConnectTimeout": "15",
-                "IdentitiesOnly": "yes",
-                "UserKnownHostsFile": str(kh),
-            }
-            for key, val in approved.items():
-                vals = opts.get(key)
-                self.assertIsNotNone(vals, f"ssh must pass -o {key}" + detail)
-                # every occurrence must equal the approved value: no conflicting duplicate survives
-                self.assertEqual(set(vals), {val},
-                                 f"-o {key} effective value must be exactly {val!r} with no conflict, got {vals}" + detail)
+            self.assertTrue(argv and tar_argv, "ssh and tar must both have run" + detail)
+            # (a) effective config via ssh -G (OpenSSH grammar is authoritative)
+            eff, gproc = self._ssh_G_effective(argv)
+            self.assertEqual(gproc.returncode, 0, f"ssh -G failed: {gproc.stderr}" + detail)
+            for k, v in self._APPROVED.items():
+                self.assertEqual(eff.get(k), v, f"effective ssh {k} must be {v!r}, got {eff.get(k)!r}" + detail)
+            self.assertEqual(eff.get("userknownhostsfile"), str(kh),
+                             "effective userknownhostsfile must be the configured pinned path" + detail)
+            # (b) reject conflicting occurrences in the raw argv (both forms, case-folded keys/enums)
+            raw = self._raw_o_values(argv)
+            for k, v in self._APPROVED.items():
+                got = {x.lower() for x in raw.get(k, set())}
+                self.assertTrue(got and got <= {v}, f"-o {k} conflicting/absent: {raw.get(k)}" + detail)
+            ukh = raw.get("userknownhostsfile", set())
+            self.assertTrue(ukh and ukh <= {str(kh)}, f"conflicting/absent UserKnownHostsFile: {ukh}" + detail)
+            # (c) tar stderr sentinel reaches the gate (a parent 2>/dev/null would drop it)
             self.assertNotIn("2>/dev/null", tar_argv, "tar argv must not contain a redirection token" + detail)
-            # the real check for a swallowed redirection: tar's stderr sentinel must reach the gate's stderr
             self.assertIn(TAR_SENTINEL, proc.stderr, "tar stderr was swallowed (a parent 2>/dev/null)" + detail)
 
     def test_partial_tar_fails_the_gate_with_diagnostic(self):
