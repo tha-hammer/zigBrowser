@@ -91,6 +91,33 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   rejects Unix-socket proxy URLs — BlueBeaver 5503), so a TCP `host:port` hop is mandatory. Linux
   realizes the same capability with private-netns fixed ports + relays. The capability is captured
   in the MS0 launch spec; MS6 realizes the macOS half. Re-pinned to HEAD `ed13e5e`.
+- **Rev 7** (this): a docs-only scope correction after MS1's red landed and both Macs built
+  (a universal fat binary was assembled with `lipo`, ad-hoc signed, and its entitlements
+  verified on both hosts; JadeBeacon). The MS1.1 census required four fat Mach-O components
+  (browser, Python runtime, Claude CLI, helper launcher), but the macOS MS1 build ships
+  **only the browser** (`build.zig:168` installs `zigBrowser`; the agent runtime is a separate
+  non-default step), and there is no universal2 Python (the Intel host has Xcode python 3.9,
+  the arm host Homebrew 3.14). Rev 7 sets MS1's **fixed inventory to `{browser}`** — "complete"
+  means every component the bundle **actually ships** — while keeping the census mechanism and
+  its fail-closed tests unchanged, and moves the three agent-runtime roles (plus the two-tree
+  resource-compat check) into **MS5's red**, where the macOS Python runtime/CLI/launcher are
+  first installed and the Intel 3.9 vs arm 3.14 Python mismatch is exactly the incompatibility
+  the `resource_compat` oracle exists to catch. Re-pinned to HEAD `f18a5f1`.
+  (Orchestrator-directed; sent to RoseCat for review before the MS1 green is written against it.)
+
+## Rev 7 — MS1.1 component scope corrected to what the bundle ships (docs only)
+
+MS1's red (`0e41ae1` → `ec434bc` → `d48b71c`, JadeBeacon) landed and both Macs built: a universal
+fat Mach-O (x86_64 + arm64) assembled by `lipo`, ad-hoc signed, with its entitlements verified on
+both hosts. Building it surfaced that the MS1.1 census over-specified for MS1 — it required four
+fat components, but the macOS MS1 bundle ships **only the browser**.
+
+| # | Finding | Resolution in rev 7 | Where |
+|---|---|---|---|
+| 1 | The MS1.1 census requires the Python runtime, Claude CLI and helper launcher as fat Mach-O, but `build.zig:168` installs only `zigBrowser`; the agent runtime is a separate non-default step, not in the macOS bundle at MS1. A green could never satisfy the four-component census, and there is no universal2 Python (Intel Xcode 3.9 vs arm Homebrew 3.14) to make one fat. | **MS1's fixed inventory is `{browser}`** — the only native component the MS1 bundle ships; "complete" = every component actually shipped, so the census stays honest and fail-closed. The census mechanism, the whole-bundle Mach-O scan, the fail-closed probe, the two-tree `resource_compat` oracle and all their tests are **unchanged** — only the MS1 inventory narrows. | MS1.1, `packaging/macos/universal_components.json` |
+| 2 | The three agent-runtime roles still must be verified fat **somewhere**, with their cross-arch resources checked before `lipo`. | **MS5's red MUST add** the `python-runtime`, `claude-cli` and `helper-launcher` roles to the universal-components inventory and assert the two-tree `resource_compat` check, because MS5 is where macOS provisioning first installs the Python runtime + helper (MS5.1). The Intel 3.9 vs arm 3.14 Python is exactly the mismatch the oracle catches, so MS5's provisioning must produce a universal2 (or per-arch-reconciled) runtime or fail that check. | MS5.1, MS5 gate |
+
+Re-pinned to HEAD `f18a5f1`.
 
 ## Rev 6 — RoseCat's one rev-5 blocker, answered (review ed13e5e)
 
@@ -396,9 +423,17 @@ cannot false-green, and a tested least-privilege entitlement manifest so MS9 is 
 ### Behavior MS1.1: universal fat Mach-O covering every bundled native component
 **Given** both Macs reachable,
 **When** each arch builds natively and the slices are combined,
-**Then** the browser executable **and every bundled native component** (the Python runtime, the
-Claude CLI, the helper launcher) are present per arch, their non-executable resources are
-verified compatible before `lipo -create`, and the result is a fat Mach-O with both slices.
+**Then** **every native Mach-O the MS1 bundle ships** is present per arch, its non-executable
+resources are verified compatible before `lipo -create`, and the result is a fat Mach-O with
+both slices. **At MS1 the bundle ships only the browser** (`build.zig:168` installs `zigBrowser`;
+the agent runtime is a separate non-default step), so MS1's fixed inventory
+(`packaging/macos/universal_components.json`) is **`{browser}`** — "complete" means every
+component actually shipped. The **census mechanism is general and unchanged** (it scans the whole
+bundle for every Mach-O and requires each fat, fails closed on an unprobeable file, and runs the
+two-tree `resource_compat` oracle on non-exec resources); only the MS1 inventory is narrow.
+The **Python runtime, Claude CLI and helper launcher roles — plus the resource-compat check —
+are added to the inventory in MS5's red** (rev 7), where macOS provisioning first installs them
+and the Intel-3.9-vs-arm-3.14 Python mismatch is exactly what the oracle must catch.
 
 ### Behavior MS1.2: real two-host identity + executing-arch proof (no Rosetta false-green)
 **Given** two distinct hosts,
@@ -882,6 +917,22 @@ internal dependency/build trees (`node_modules`, `.venv`, `venv`, `site-packages
 `_copy_tree` skip-link + verbatim-dependency behavior. Red-first: a fixture SAI with an
 out-of-root linked skill whose target holds a canary string; the test asserts the canary is
 **not present** anywhere in `dist-<n>/`.
+
+### Behavior MS5.1c: the agent runtime joins the universal-components census (rev 7)
+**Given** MS5 now installs the Python runtime, the Claude CLI and the helper launcher into the
+macOS bundle (so these native components ship for the first time),
+**When** the universal bundle is assembled,
+**Then** MS5's **red MUST add** the `python-runtime`, `claude-cli` and `helper-launcher` roles
+(each by its exact bundle-relative `path_glob`) to `packaging/macos/universal_components.json`,
+so the MS1 census — unchanged — now requires each of them to be a **fat Mach-O**, and MS5's gate
+MUST run the two-tree `resource_compat` oracle on the x86_64 and arm64 provisioning trees before
+`lipo`. The Intel Xcode-python-3.9 vs arm Homebrew-python-3.14 difference is precisely the
+cross-arch mismatch that oracle exists to catch, so MS5's provisioning must produce a **universal2
+(or per-arch-reconciled) runtime** whose non-exec resources are byte-compatible, or the check
+fails closed. Red-first: with the roles added but the runtime still single-arch/mismatched, the
+census and the resource oracle both go red; green only when every shipped component is fat and
+its resources compatible. (MS1's inventory stays `{browser}`; this behavior is where the other
+three roles enter — rev 7, closing the deferral the MS1 scope correction created.)
 
 ### Behavior MS5.2: Keychain onboarding (disposable canary in tests)
 **Given** the Secrets flow,
