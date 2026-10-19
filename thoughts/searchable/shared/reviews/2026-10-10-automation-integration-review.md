@@ -11684,3 +11684,97 @@ keeps Linux's exact default (`plan:551-563`).
 `git diff --check 1ccece3^ 1ccece3` passed. No code or test gate was run for
 this docs-only review. The finding was sent to JadeBeacon as Agent Mail 6025.
 The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## Plan follow-ups: credentials, MS1b dependencies and transcript scrub
+
+### S6 rev 16.18.6 (`545c06f`)
+
+The behavior amendment is correct. It makes sign-in and manual credential
+mutations mutually exclusive, makes `error-store` the sign-in operation's sole
+terminal row before an ordinary explicit file Save, and gives the production-
+inert case a real Alt+C Cancel plus process/directory cleanup
+(`plan:2297-2299,2337-2342`). This closes the contract portion of all three
+findings in Agent Mail 6024.
+
+**Explicit verdict for `545c06f`: BLOCKED-for-tests.**
+
+The S6b1 e2e list remains unchanged at `plan:2303-2314`; it does not drive the
+two new asynchronous contracts. Add failing-first cases that:
+
+1. hold a manual Save or Remove in flight and prove Sign in is insensitive and
+   a no-op, then hold the sign-in store in flight and prove entry, Save, Remove
+   and file fallback are insensitive/no-ops; after release, exactly the
+   intended token is stored; and
+2. force the sign-in keyring store to fail, observe exactly one
+   `SECRETS login error-store`, choose the explicit file fallback, observe the
+   ordinary `connected-file` result, and observe no later `SECRETS login`
+   terminal row.
+
+The Alt+C inertness test is now specified adequately. Approval of the S6b1
+implementation still independently requires both user-run `signin-paste`
+parts A and B. Findings were sent to BlueBeaver as Agent Mail 6031.
+
+### macOS MS1b dependency follow-ups (`7a2ff00`, `4075bbe`)
+
+**Explicit verdict for `7a2ff00`: BLOCKED at that SHA and superseded by
+`4075bbe`.** It added the immediate `MS1 → MS1b` assignment, made MS1b a hard
+MS9 prerequisite, and permitted unsigned MS2+ development in parallel. Its
+signed-run edge did not yet enumerate gate and documentation claims from the
+re-review criterion in Agent Mail 6026.
+
+**Explicit verdict for `4075bbe`: APPROVED.** The authoritative dependency
+section now says all three required things (`macOS plan:1342-1350`):
+
+- MS1b is JadeBeacon's immediate next Mac slice after MS1;
+- Gate(MS1b) hard-blocks MS9 and any slice, gate, documentation claim or
+  real-screen check that says a signed binary runs; and
+- MS2a and later development may proceed in parallel using the unsigned
+  universal build, without claiming signed-run coverage.
+
+This cumulatively closes `1ccece3`'s dependency blocker from review commit
+`7532df7`, with the orchestrator's correction that MS1b is not a universal
+MS2+ blocker. The verdicts were sent to JadeBeacon as Agent Mail 6032.
+
+### Transcript scrub plan rev 16.20.6 (`a69b459`)
+
+Rev 16.20.6 materially closes the five design failures in Agent Mail 6023:
+each census re-walks from the pinned root rather than retaining a stale
+`projects` fd; `pread` replaces SIGBUS-prone `mmap`; one thread owns scans and
+state; bounded chunks and internal logical-byte accounting replace the
+underspecified token bucket and invalid `/proc` oracle; and mask provenance is
+gone. Replacement, chunk-edge, truncation, memory and lifecycle tests are now
+named. Three contradictions/races remain before that design is executable.
+
+**Explicit verdict for `a69b459`: BLOCKED.**
+
+1. **BLOCKER — the matcher masks and defers the same bytes.** The carried
+   matcher says every token byte is masked as it is read through EOF
+   (`plan:2158-2161`), while the timing contract says a monitor leaves an
+   unterminated generic match at EOF untouched (`plan:2174-2180`). Define an
+   offset/length candidate that defers `pwrite` until a terminator, or until a
+   lifecycle scan accepts EOF. This remains memory-bounded because it retains
+   offsets and automaton state rather than the match bytes. The monitor-EOF
+   negative must assert byte identity before a lifecycle scan masks it.
+2. **BLOCKER — a re-walk is not a stable lifecycle census.** A `projects` or
+   workspace replacement, a new directory entry, or a short read can occur
+   after that component was listed/opened but before the lifecycle request
+   returns. The current text treats a short read as success and can therefore
+   release an ending frame while the new live tree contains a token
+   (`plan:2138-2157,2182-2203`). Before a lifecycle scan succeeds, revalidate
+   the directory generation/entry set and each file's post-scan key; if any
+   moved, changed or read short, rescan with a bounded fail-closed outcome.
+   Add a mid-lifecycle directory/file swap red that permits no ending frame
+   until the replacement is clean.
+3. **BLOCKER — the change key omits the non-restorable metadata clock.** The
+   current `(dev, ino, size, mtime_ns)` key (`plan:2150-2152`) can be restored
+   after a same-inode, same-size rewrite with `utime`; `state/projects` is a
+   writable sandbox state directory. Include `ctime_ns`, which an unprivileged
+   writer cannot restore, and add a red that restores the old mtime after the
+   rewrite but is still rescanned.
+
+The findings were sent to BlackRobin as Agent Mail 6033.
+
+`git diff --check` passed for all four reviewed commits. No browser or full
+gate was run for these docs-only revisions. Because the first commit in the
+new linear range remains blocked-for-tests, the newest approved and pushed
+linear boundary remains **`da3028f`**.
