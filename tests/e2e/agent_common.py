@@ -142,6 +142,7 @@ class Browser:
                  profile: Path | None = None, automation: bool = True, env: dict[str, str] | None = None,
                  url: str = CLICK_GRID, e2e: bool = True, prefix: list[str] = ()) -> None:
         self.label = label
+        self.binary = binary
         self.url = url
         self.dir = Path(tempfile.mkdtemp(prefix="run-", dir=tmp))
         self.display_file = self.dir / "display"
@@ -240,12 +241,48 @@ class Browser:
         time.sleep(0.2)
         return code
 
+    def browser_pid(self) -> int | None:
+        """The zigBrowser process itself: self.proc, or the descendant of it, whose
+        /proc/<pid>/exe is the binary (S5c-1)."""
+        binary = os.path.realpath(self.binary)
+        parents: dict[int, list[int]] = {}
+        for entry in os.listdir("/proc"):
+            if entry.isdigit():
+                try:
+                    ppid = int(Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()[1])
+                except (OSError, IndexError, ValueError):
+                    continue
+                parents.setdefault(ppid, []).append(int(entry))
+        todo = [self.proc.pid]
+        while todo:
+            pid = todo.pop()
+            try:
+                if os.readlink(f"/proc/{pid}/exe") == binary:
+                    return pid
+            except OSError:
+                pass
+            todo.extend(parents.get(pid, []))
+        return None
+
     def gtk_complaints(self) -> list[str]:
         """GTK/GLib warnings and criticals the browser printed (stderr)."""
         return [line for line in self.err if re.search(r"(Gtk|Gdk|GLib|GLib-GObject|Pango)-(WARNING|CRITICAL)", line)]
 
     def tail(self) -> str:
         return "stdout:\n" + "\n".join(self.out[-25:]) + "\nstderr:\n" + "\n".join(self.err[-25:])
+
+
+def rss_kb(pid: int | None) -> int | None:
+    """VmRSS of `pid` in kB, or None when it is gone (S5c-1)."""
+    if pid is None:
+        return None
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return None
 
 
 class Checks:

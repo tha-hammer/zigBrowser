@@ -15,7 +15,12 @@ answers every `prompt` with its ITEMs in order:
 - {"frame": {...}}: the frame with "v": 1 and the next seq added, and the value
   "$SESSION" replaced by the prompt's session;
 - {"repeat": ["TEXT", N]}: TEXT as N stdout lines in one write (left in the pipe);
-- {"stderr": "TEXT"}: TEXT as one stderr line.
+- {"stderr": "TEXT"}: TEXT as one stderr line;
+- {"flood": [FRAME, N]}: FRAME (as for "frame") N times, 1000 frames per write (S5c-1);
+- {"forever": FRAME}: FRAME (as for "frame") over and over from a thread, as fast as
+  the pipe takes it, until the next `interrupt`, `end_session` or `shutdown` (S5c-1).
+With "on_prompts": [[ITEM, ...], ...] in place of "on_prompt", the n-th prompt of the
+run gets the n-th list, or the last one (S5c-1).
 It answers every `end_session` with its "on_end" ITEMs, "$SESSION" being the ended
 session (without "on_end", nothing), and every `interrupt` with its "on_interrupt" ITEMs
 (S5a; without them, nothing).
@@ -25,6 +30,7 @@ Every app frame it reads is appended to <home>/scratchpad/fake-host-frames.jsonl
 import json
 import os
 import sys
+import threading
 
 home = os.environ["PYTHONPATH"].rsplit("/runtime/host", 1)[0]
 scratch = os.path.join(home, "scratchpad")
@@ -51,13 +57,43 @@ with open(os.path.join(scratch, f"fake-host-token-{run}"), "w") as f:
     f.write(str(len(token)))
 
 seq = 0
+out_lock = threading.Lock()
+
+
+def encode(frame):
+    global seq
+    seq += 1
+    return json.dumps({"v": 1, "seq": seq, **frame})
 
 
 def emit(frame):
-    global seq
-    seq += 1
-    sys.stdout.write(json.dumps({"v": 1, "seq": seq, **frame}) + "\n")
-    sys.stdout.flush()
+    with out_lock:
+        sys.stdout.write(encode(frame) + "\n")
+        sys.stdout.flush()
+
+
+class Forever:
+    """One {"forever": FRAME} stream; stop() ends it before the next answer."""
+
+    def __init__(self, frame):
+        self.frame, self.done = frame, threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while not self.done.is_set():
+            try:
+                emit(self.frame)
+            except (BrokenPipeError, ValueError):
+                return
+
+    def stop(self):
+        self.done.set()
+        self.thread.join(30)
+
+
+streams = []
+prompts = 0
 
 
 def fill(value, session):
@@ -75,11 +111,19 @@ for line in sys.stdin:
     log.write(line)
     log.flush()
     frame = json.loads(line)
+    if frame.get("type") in ("interrupt", "end_session", "shutdown"):
+        for stream in streams:
+            stream.stop()
+        streams = []
     if frame.get("type") == "shutdown":
         break
     kind = {"prompt": "on_prompt", "end_session": "on_end", "interrupt": "on_interrupt"}.get(frame.get("type"))
     if kind is not None:
-        for item in script.get(kind, []):
+        items = script.get(kind, [])
+        if kind == "on_prompt" and "on_prompts" in script:
+            items = script["on_prompts"][min(prompts, len(script["on_prompts"]) - 1)]
+            prompts += 1
+        for item in items:
             if "raw" in item:
                 seq += 1
                 sys.stdout.write(item["raw"] + "\n")
@@ -88,6 +132,16 @@ for line in sys.stdin:
                 text, count = item["repeat"]
                 sys.stdout.write((text + "\n") * count)
                 sys.stdout.flush()
+            elif "flood" in item:
+                body, count = item["flood"]
+                body = fill(body, frame["session"])
+                for start in range(0, count, 1000):
+                    with out_lock:
+                        sys.stdout.write("".join(encode(body) + "\n" for _ in range(min(1000, count - start))))
+                with out_lock:
+                    sys.stdout.flush()
+            elif "forever" in item:
+                streams.append(Forever(fill(item["forever"], frame["session"])))
             elif "stderr" in item:
                 sys.stderr.write(item["stderr"] + "\n")
                 sys.stderr.flush()
