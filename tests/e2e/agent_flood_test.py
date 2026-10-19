@@ -28,6 +28,7 @@ Exit 1 when Xvfb, xauth, bwrap, the venv or the binary is missing."""
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -61,6 +62,7 @@ class Rss:
         self.base = rss_kb(self.pid)
         self.peak = self.base or 0
         self.killed = False
+        self.lost = False  # a sample after the start failed: the oracle is poisoned (RoseCat 6071)
         self.ok = self.pid is not None and self.base is not None
         self.done = threading.Event()
 
@@ -68,6 +70,7 @@ class Rss:
             while not self.done.wait(0.2):
                 now = rss_kb(self.pid)
                 if now is None:
+                    self.lost = True
                     return
                 self.peak = max(self.peak, now)
                 if now - self.base > limit_mib * MIB:
@@ -84,16 +87,18 @@ class Rss:
         if not self.ok:
             return None
         self.thread.join(5)
-        last = self._rss_kb(self.pid)
-        if last is not None:
-            self.peak = max(self.peak, last)
+        last = self._rss_kb(self.pid)  # the final sample is required
+        if last is None or self.lost or self.thread.is_alive():
+            self.lost = True
+            return None
+        self.peak = max(self.peak, last)
         return (self.peak - self.base) / MIB
 
 
 def bounded(check, rss: Rss, limit: int) -> None:
     measured = rss.growth()
-    check(rss.ok and measured is not None and not rss.killed and measured < limit,
-          f"the browser grew by less than {limit} MiB (pid {rss.pid}, base {rss.base} kB, growth "
+    check(rss.ok and not rss.lost and measured is not None and not rss.killed and measured < limit,
+          f"the browser grew by less than {limit} MiB (pid {rss.pid}, base {rss.base} kB, lost {rss.lost}, growth "
           f"{'none measured' if measured is None else f'{measured:.1f} MiB'})")
 
 
@@ -213,8 +218,8 @@ def primary(b) -> str | None:
     done = subprocess.run(["/usr/bin/python3", "-c", PRIMARY_READ], env=copy.display_env(b),
                           capture_output=True, text=True, timeout=20)
     try:
-        return eval(done.stdout.strip(), {})  # noqa: S307 - our own repr() of a str or None
-    except SyntaxError:
+        return ast.literal_eval(done.stdout.strip())  # our own repr() of a str or None
+    except (SyntaxError, ValueError):
         return None
 
 

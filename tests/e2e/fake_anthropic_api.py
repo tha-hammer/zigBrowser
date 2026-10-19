@@ -47,9 +47,11 @@ def _endless(piece, every_ms, stopped):
     import time
     end = time.monotonic() + ENDLESS_MAX_S
     sent = 0
+    data = piece.encode()
     while time.monotonic() < end and sent < ENDLESS_MAX_BYTES and not stopped.is_set():
-        yield piece
-        sent += len(piece.encode())
+        part = data[:ENDLESS_MAX_BYTES - sent]  # never past the cap, whatever the piece's size
+        yield part.decode("utf-8", "ignore")
+        sent += len(part)
         stopped.wait(every_ms / 1000)
 
 

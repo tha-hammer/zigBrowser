@@ -24,6 +24,11 @@ MESSAGE_MAX = 256 * 1024
 MARKER = "[output truncated]"
 
 
+def utf8_prefix(text, limit):
+    """The longest prefix of `text` whose UTF-8 is at most `limit` bytes."""
+    return text.encode()[:limit].decode("utf-8", "ignore")
+
+
 class RawHelper(Helper):
     """Keeps every stdout line as it was written, so its size is the app's."""
 
@@ -86,12 +91,14 @@ class FloodTest(unittest.TestCase):
         self.assertEqual(messages, [text])
 
     def test_a_message_over_its_cap_is_cut_and_ends_with_the_marker(self):
-        text = "word " * 70_000  # 350,000 bytes
+        # 350,000 bytes. The 3-byte character keeps 16 KiB pieces from adding up to exactly
+        # 256 KiB, so a helper that forwards whole pieces past the cap is caught.
+        text = "ab\u754c " * 58_334
         frames, raw = self.reply(text)
         streamed, messages = self.assert_within_caps(frames, raw)
-        # Rev 16.20.9: a reply's deltas stop at 256 KiB (the app shows no more).
-        self.assertTrue(text.startswith(streamed) and MESSAGE_MAX - DELTA_MAX < len(streamed.encode()) <= MESSAGE_MAX + DELTA_MAX,
-                        len(streamed))
+        # Rev 16.20.10: a reply's deltas are exactly its longest UTF-8 prefix that fits 256 KiB.
+        want = utf8_prefix(text, MESSAGE_MAX)
+        self.assertEqual(streamed, want, (len(streamed.encode()), len(want.encode())))
         self.assertEqual(len(messages), 1)
         self.assertTrue(messages[0].endswith(MARKER), messages[0][-60:])
         kept = messages[0][:-len(MARKER)].rstrip("\n")
@@ -170,11 +177,13 @@ class EndlessTest(unittest.TestCase):
         self.assertIn("after the endless one", [f.get("text") for f in after if f["type"] == "assistant_message"], after[-3:])
 
     def test_an_endless_reply_forwards_at_most_256_kib_and_the_session_goes_on(self):
-        h = self.start({"endless": "x" * 1023 + " "})  # the fake's default pace, 1 KiB every 25 ms
+        # The fake's default pace: one 1023-byte piece every 25 ms. 256 KiB is no multiple of
+        # 1023, so forwarding whole pieces past the cap cannot land on it by chance.
+        h = self.start({"endless": "x" * 1022 + " "})
         frames = self.frames_for(h, 9)
         forwarded = sum(len(f["text"].encode()) for f in frames if f["type"] == "assistant_delta")
-        self.assertLessEqual(forwarded, MESSAGE_MAX + DELTA_MAX, "at most 256 KiB of a reply's deltas are sent")
-        self.assertGreater(forwarded, MESSAGE_MAX - DELTA_MAX, "the deltas reach the cap")
+        # Exactly the longest prefix that fits 256 KiB (RoseCat 6071): the piece is ASCII.
+        self.assertEqual(forwarded, MESSAGE_MAX, "a reply's deltas stop at exactly 256 KiB")
         h.send("interrupt", session="s-1-1")
         self.ending(h, frames)
         self.answered_again(h)
