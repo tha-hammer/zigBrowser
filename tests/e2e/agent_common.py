@@ -140,7 +140,7 @@ class Browser:
 
     def __init__(self, binary: Path, tmp: Path, label: str, args: list[str], env_extra: dict[str, str] | None = None,
                  profile: Path | None = None, automation: bool = True, env: dict[str, str] | None = None,
-                 url: str = CLICK_GRID, e2e: bool = True) -> None:
+                 url: str = CLICK_GRID, e2e: bool = True, prefix: list[str] = ()) -> None:
         self.label = label
         self.url = url
         self.dir = Path(tempfile.mkdtemp(prefix="run-", dir=tmp))
@@ -151,7 +151,9 @@ class Browser:
             self.env.pop(name, None)
         self.env.update(env_extra or {})
         self.env["ZIGBROWSER_SOCKET"] = str(self.socket)
-        cmd = [sys.executable, str(HERE / "xsession.py"), "--xvfb", "--display-file", str(self.display_file), "--",
+        # `prefix`: a wrapper for the whole session, e.g. `unshare --user --map-current-user
+        # --net` for a browser with no network at all (S6.1's inertness case).
+        cmd = [*prefix, sys.executable, str(HERE / "xsession.py"), "--xvfb", "--display-file", str(self.display_file), "--",
                str(binary.resolve()), url] + (["--e2e-protocol"] if e2e else [])
         if automation:
             cmd.append("--automation-api")

@@ -17,9 +17,13 @@ What it copies from the real CLI (2.1.301's own source, read, not run):
   both parts, or with another sign-in's state, gets the CLI's own sentence and
   the prompt again; input is not echoed, a '*' per character is.
 
-Every line it reads at the prompt is appended to $HOME/.zb-fake-setup-token/codes.log
-(the "received-code log" the S6 tests read). The token it prints is the content of
-$HOME/.zb-fake-setup-token/token when that file exists, else CANARY.
+Its files live in $HOME/scratchpad/.zb-fake-setup-token/ when $HOME/scratchpad is a
+directory (inside the helper's sandbox only the agent home's scratchpad is writable;
+plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
+- `codes.log`: every line it reads at the prompt (the "received-code log" the S6
+  tests read);
+- `state`: this run's state, written before the prompt (the S6b1 e2e pastes it);
+- `token`: when it exists, the token it prints, else CANARY.
 Standard library only: it runs inside the helper's sandbox, which has /usr only.
 """
 
@@ -52,7 +56,15 @@ def authorize_url(challenge, state):
 
 
 def fake_dir():
-    return os.path.join(os.environ.get("HOME", "/nonexistent"), ".zb-fake-setup-token")
+    home = os.environ.get("HOME", "/nonexistent")
+    scratch = os.path.join(home, "scratchpad")
+    return os.path.join(scratch if os.path.isdir(scratch) else home, ".zb-fake-setup-token")
+
+
+def write_state(state):
+    os.makedirs(fake_dir(), mode=0o700, exist_ok=True)
+    with open(os.path.join(fake_dir(), "state"), "w", encoding="ascii") as f:
+        f.write(state + "\n")
 
 
 def token():
@@ -110,6 +122,7 @@ def main(argv):
     out("\x1b·Openingbrowsertosignin…")
     out("Browser didn't open? Use the url below to sign in (c to copy)")
     out(authorize_url(b64url(32), state))
+    write_state(state)
     prompt()
     while True:
         line = read_masked()

@@ -178,6 +178,18 @@ class FakeSetupTokenTest(unittest.TestCase):
         got = [fake.line() for _ in range(4)]
         self.assertEqual(got[3], planted)
 
+    def test_its_files_go_under_the_scratchpad_when_there_is_one(self):
+        (self.home / "scratchpad").mkdir()
+        fake = self.start()
+        state = dict(parse_qsl(urlsplit(self.read_until_prompt(fake)[4]).query))["state"]
+        d = self.home / "scratchpad" / ".zb-fake-setup-token"
+        self.assertEqual((d / "state").read_text(encoding="ascii"), state + "\n")
+        fake.type(f"c#{state}")
+        self.assertEqual(fake.line(), "*" * len(f"c#{state}"))
+        self.assertEqual(fake.line(), self.lines[8])
+        self.assertEqual((d / "codes.log").read_text(encoding="utf-8").splitlines(), [f"c#{state}"])
+        self.assertFalse((self.home / ".zb-fake-setup-token").exists())
+
     def test_refuses_without_a_terminal(self):
         proc = subprocess.run(
             [str(FAKE), "setup-token"], stdin=subprocess.DEVNULL, capture_output=True,
