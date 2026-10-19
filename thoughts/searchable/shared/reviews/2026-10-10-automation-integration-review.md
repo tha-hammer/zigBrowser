@@ -11252,3 +11252,94 @@ The concurrent macOS-plan edit landed as `f207087` while this review was in
 progress; it was not part of the requested pair and was not reviewed here.
 `git diff --check c53b580^ c53b580` passed. With both requested commits
 blocked, the newest approved linear push-through SHA remains **`da3028f`**.
+
+## S5c design, S6b1 qualification, and MS1 exact-shape follow-ups (`5ad5c88`, `2e725c7`, `91b6f81`, `58551bb`, `50bc1bd`)
+
+### S5c plan rev 16.20 and 16.20.1
+
+The private-Xvfb probe results in rev 16.20 are useful and the two user
+decisions are accepted: long unbroken runs should gain display-only break
+opportunities, and the near-term credential fix is transcript cleanup while
+the token stand-in becomes the named deferred `SX-standin` slice. The plan is
+not yet implementation-ready, however.
+
+**Explicit verdict for `5ad5c88`: BLOCKED.** The appended S5.6 contract
+contradicts the still-active acceptance test immediately above it:
+
+1. `plan:2022-2027` combines 50,000 deltas and a 2 MiB final under a 64 MiB
+   RSS bound and requires a `DRAWER idles` row, while `plan:2037-2039` removes
+   that row, limits the 64 MiB claim to the small-text flood, and permits 200
+   MiB for a maximum reply. Replace the old case with separate authoritative
+   flood and maximum-reply cases instead of leaving both contracts active.
+2. `plan:2035` says every reply is whole with “no size cut”, while
+   `plan:2039-2041` retains the helper's 256 KiB cap. The intended decision is
+   no *new* 32 KiB cut below the existing cap; state that precisely.
+3. Exact-copy coverage must include whole and partial selections crossing an
+   inserted U+200B, multibyte UTF-8, and source text that already contains
+   U+200B. Define what counts as a character/whitespace/run, so cleanup cannot
+   strip a user's original zero-width space.
+4. The single pending idle needs an explicit destruction contract and red:
+   cancel/remove it when a drawer, window or session dies, and prove no late
+   UI update or use-after-free.
+5. S5c-1 visibly changes wrapping, copying and fold responsiveness but names
+   no section 7.1 real-screen check. Add a case for the user's real display;
+   private-Xvfb timing remains the automated gate.
+
+**Explicit verdict for `2e725c7`: BLOCKED.** “Cleanup now, stand-in later” is
+an accepted scope decision, but the transcript scrub has no safe persistence
+or failure protocol yet:
+
+1. The scrub must finish successfully before the helper emits the terminal
+   result/error and before any queued next prompt begins. Open/read/write/fsync
+   failure must fail closed with a fixed sentence and stop/refuse that session.
+2. The plan must choose a mutation compatible with a persistent CLI process.
+   A variable-length rewrite or atomic replacement can leave a CLI that still
+   owns the old file descriptor appending to an unlinked inode. Use a proven
+   close/reopen boundary, or a bounded equal-length in-place overwrite plus
+   fsync, and test that later turns preserve a valid transcript.
+3. A crash after the server echo reaches disk but before the reply ends leaves
+   the token indefinitely. Add startup/pre-session recovery that cleans this
+   residue before a new session, with a kill-at-that-cut test, or obtain an
+   explicit user acceptance of that residual risk.
+4. Replace stale `plan:2044-2048`: the helper stderr ring no longer exists and
+   an app-side redactor cannot independently expose the canary because raw API
+   text never reaches the app. Specify exactly which saved fields/patterns are
+   scrubbed. The automation-token transcript canary is not a known helper
+   value unless the helper actually receives it, so either define a general
+   server-error scrub or remove that assertion.
+
+These findings were mailed to BlackRobin as Agent Mail 6009.
+
+### S6b1 real-CLI qualification closure
+
+**Explicit verdict for `91b6f81`: APPROVED.** The revision makes both
+`signin-paste` parts prerequisites for S6b1 approval. Part B requires explicit
+user consent, the real built app and setup-token CLI, the host/port-only netd
+census, and a committed record with no target outside the two declared hosts;
+declining correctly means no run and leaves S6b1 and later S6 slices
+unapproved (`plan:639`). This cumulatively closes the approval-condition
+blocker on `4657083`. Agent Mail 6008 records the verdict.
+
+### MS1 exact browser-only empty-resource phase
+
+**Explicit verdict for `58551bb`: APPROVED.** `mac_resource_compat.py` now
+passes the whole manifest into `resource_phase`, and the empty-resource
+exception requires the exact fixed bundle shape: milestone `MS1`, one
+component at `bin/zigBrowser`, and no resources. MS5, unknown milestones,
+extra components, a non-browser path, and an MS5-shaped inventory relabeled
+MS1 all fail closed. The display-free suite passes **22/22**. An independent
+probe of the former bypass returned **1** for an MS1 manifest containing only
+`venv/bin/python3`, while the exact browser-only manifest returned **0**.
+This cumulatively closes the blocker on `c53b580`.
+
+**Explicit verdict for `50bc1bd`: APPROVED.** Mac plan rev 9 now describes
+the same whole-inventory, exact-path phase gate and binds the MS1 green to
+calling it rather than silently skipping the resource oracle. The optional
+component `role` remains descriptive; the executable bundle identity is the
+fixed bundle-relative path, which is the contract the plan and oracle enforce.
+Agent Mail 6010 records both MS1 verdicts.
+
+`git diff --check` passed for all five reviewed commits. No browser or full
+gate was run: these are plan/test-only changes, and BlueBeaver held the gate
+slot. Because `5ad5c88` is blocked and earlier S6b1 work is not yet green, the
+newest approved linear push-through SHA remains **`da3028f`**.
