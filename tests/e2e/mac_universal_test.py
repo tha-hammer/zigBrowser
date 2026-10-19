@@ -90,13 +90,30 @@ def lipo_archs(path: Path) -> set[str]:
     return set(_run(["lipo", "-archs", str(path)]).split())
 
 
+def path_matches(rel: str, pattern: str) -> bool:
+    """Segment-wise glob match: the path and the pattern must have the SAME number of
+    '/'-separated segments and each segment must fnmatch, so a `*` NEVER crosses a '/'
+    and a wrong-DEPTH decoy cannot satisfy a role (RoseCat 5977 SHOULD 1). `PurePath.
+    full_match` would do this but is 3.13+; this works on the Mac's python3.9."""
+    rel_parts = rel.split("/")
+    pat_parts = pattern.split("/")
+    return len(rel_parts) == len(pat_parts) and all(
+        fnmatch.fnmatch(rp, pp) for rp, pp in zip(rel_parts, pat_parts))
+
+
 def probe_archs(path: str, run=None):
     """FAIL-CLOSED Mach-O probe. Returns the arch set if `path` is Mach-O, None if it
     is definitively NOT Mach-O, and raises FailClosed if `file` cannot classify it
-    (nonzero rc, any stderr, or a 'cannot open' message) — an unprobeable file must
-    reject the census, never silently drop out of it (RoseCat 5974)."""
-    runner = run or (lambda cmd: subprocess.run(cmd, capture_output=True, text=True))
-    r = runner(["file", "-b", "--", str(path)])
+    (nonzero rc, any stderr, a 'cannot open' message, or a timeout — a wedged probe
+    must not hang, MS1.4/RoseCat 5977 SHOULD 2) — an unprobeable file must reject the
+    census, never silently drop out of it (RoseCat 5974)."""
+    def _default(cmd):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    runner = run or _default
+    try:
+        r = runner(["file", "-b", "--", str(path)])
+    except subprocess.TimeoutExpired:
+        raise FailClosed(f"timed out probing file type of {path} (a wedged probe must not hang)")
     out = (r.stdout or "")
     err = (r.stderr or "")
     if r.returncode != 0 or err.strip() or "cannot open" in out.lower() or "error" in err.lower():
@@ -158,7 +175,7 @@ def component_census(macho_archs: dict[str, set[str]], inventory: dict,
         glob = comp["path_glob"]
         # Match the full relative path pattern, not just a basename: a same-named
         # Mach-O in the wrong location does NOT satisfy the role (SHOULD, 5974).
-        present = any(fnmatch.fnmatch(rel, glob) for rel in rels)
+        present = any(path_matches(rel, glob) for rel in rels)
         c.ok(present, f"required component {comp.get('role', glob)!r} not a fat Mach-O "
                       f"at its expected location {glob!r}")
     for res in inventory["resources"]:

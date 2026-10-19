@@ -73,6 +73,17 @@ class CensusTest(unittest.TestCase):
         self.assertTrue(any("python-runtime" in f for f in c.failures),
                         f"a wrong-located python3 must not satisfy the role; got {c.failures}")
 
+    def test_wrong_depth_decoy_does_not_satisfy_role(self):
+        # SHOULD (5977.1): a claude binary at the WRONG DEPTH (an extra path segment)
+        # must not satisfy the role; segment-wise matching rejects it even though a
+        # `*`-crosses-`/` fnmatch would have accepted it.
+        mutant = {k: v for k, v in COMPLETE.items() if "claude_agent_sdk" not in k}
+        mutant["lib/zigbrowser/agent-host/venv/lib/python3.9/extra/site-packages/"
+               "claude_agent_sdk/_bundled/claude"] = set(BOTH)
+        c = census(mutant)
+        self.assertTrue(any("claude-cli" in f for f in c.failures),
+                        f"a wrong-depth claude must not satisfy the role; got {c.failures}")
+
     def test_empty_bundle_fails_closed(self):
         c = census({})
         self.assertTrue(any("no Mach-O" in f for f in c.failures),
@@ -122,6 +133,16 @@ class ProbeFailClosedTest(unittest.TestCase):
             mu.probe_archs("/nope", run=lambda cmd: R(0, "cannot open `/nope' (Permission denied)", ""))
         # A clean non-Mach-O classification is simply skipped (None), not an error.
         self.assertIsNone(mu.probe_archs("/x", run=lambda cmd: R(0, "ASCII text", "")))
+
+    def test_probe_timeout_fails_closed(self):
+        # SHOULD (5977.2): a wedged `file` must not hang MS1.4 — a timeout is fail-closed.
+        import subprocess
+
+        def hang(cmd):
+            raise subprocess.TimeoutExpired(cmd, 30)
+
+        with self.assertRaises(mu.FailClosed):
+            mu.probe_archs("/wedged", run=hang)
 
 
 class ResourceCompatTest(unittest.TestCase):
