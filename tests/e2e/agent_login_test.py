@@ -122,9 +122,11 @@ def in_order(seen: list[str], want: list[str]) -> bool:
 class SignIn:
     """A provisioned agent home whose scratchpad holds the fake's token, a private keyring
     (or, with `keyring=False`, a dead session bus), and the browser launched with the fake
-    setup-token CLI. `net_login`: replaces runtime/net-login.json before the launch."""
+    setup-token CLI. `net_login`: replaces runtime/net-login.json before the launch;
+    `bus_extra`: more environment for the browser (e.g. the store's test delay)."""
 
-    def __init__(self, binary: Path, tmp: Path, name: str, keyring: bool = True, net_login: dict | None = None) -> None:
+    def __init__(self, binary: Path, tmp: Path, name: str, keyring: bool = True, net_login: dict | None = None,
+                 bus_extra: dict | None = None) -> None:
         self.token = sec.canary()
         self.world = sec.provisioned(binary, tmp, name)
         self.fake_dir = self.world.agent / "scratchpad" / ".zb-fake-setup-token"
@@ -141,7 +143,7 @@ class SignIn:
         bus_env = self.kr.bus_env if keyring else {
             "DBUS_SESSION_BUS_ADDRESS": sec.DEAD_BUS, "XDG_RUNTIME_DIR": str(sec.short_runtime_dir())}
         self.api = sec.fake_api(tmp).__enter__()
-        self.b = sec.launch(binary, tmp, self.world, bus_env, self.api, name)
+        self.b = sec.launch(binary, tmp, self.world, dict(bus_env, **(bus_extra or {})), self.api, name)
         self.runtime = Path(bus_env["XDG_RUNTIME_DIR"])
 
     def close(self) -> None:
