@@ -11547,3 +11547,113 @@ contract; the plan correctly keeps that slice subject to a later user
 decision. `git diff --check def9c2a^ def9c2a` passed. No browser or full gate
 was run for this docs-only review. Findings were mailed as Agent Mail 6019.
 The approved linear push-through SHA remains **`da3028f`**.
+
+## Transcript scrub plan rev 16.20.5 (`5be4c4c`)
+
+Rev 16.20.5 closes the four narrow findings from the rev-16.20.4 review:
+the walk now uses one-component `openat` calls with `O_NOFOLLOW`, the plan
+replaces the unsupported “few MB” assumption with an explicit monitor rate,
+mask extension is limited to scrubber-created ranges, and the reds now pin an
+exact-size truncate/regrow plus the quiet-deadline revisit
+(`plan:2128-2235`). Those corrections are real, but the replacement design
+introduces five new boundary failures.
+
+**Explicit verdict for `5be4c4c`: BLOCKED.**
+
+1. **BLOCKER — the whole-life `projects` fd can become detached from the live
+   writable bind.** The plan pins `state/projects` once and keeps that fd for
+   the helper's lifetime (`plan:2129-2136`). D12 makes that directory writable.
+   A writer can rename it and put a replacement at the live path; the CLI then
+   writes into the replacement while the scrubber scans only the unlinked old
+   tree. Reopen and identity-check the current component from a pinned parent
+   on every census, or provide an equivalent fail-closed replacement check.
+   Add a post-`ready` directory-swap red that writes a token into the current
+   replacement and permits no ending/ready frame while it remains.
+2. **BLOCKER — directly mapping a mutable transcript cannot implement the
+   promised controlled failure.** A concurrent truncate below a mapped page
+   makes a later access raise SIGBUS, not an injectable `mmap` error that the
+   helper can convert to exit 3 (`plan:2140-2144,2182-2194`). A local child
+   probe mapped 8 MiB read-only, truncated its fd to zero, touched the former
+   last byte, and exited **135/SIGBUS**. Use a race-safe streaming matcher or a
+   stable snapshot, and add a real-helper truncate-during-scan red.
+3. **BLOCKER — the token bucket and worker ownership are not executable
+   contracts.** Capacity, initial fill and fairness are unspecified
+   (`plan:2166-2172`). A 64 MiB-capacity bucket can never admit the specified
+   100 MiB whole-file scan; an accumulating bucket merely delays and then
+   bursts one monolithic scan. A Python thread alone also does not establish
+   responsiveness while Python matching owns the GIL, and the plan does not
+   serialize monitor and lifecycle scans that mutate shared change keys,
+   pending ranges and provenance. Define bounded work quanta, cross-chunk
+   state, capacity/fill/fairness, and one owner for every scan/mutation.
+4. **BLOCKER — mask provenance becomes stale on same-inode rewrite.** A range
+   recorded by `(st_dev, st_ino)` survives the plan's own truncate/regrow case
+   (`plan:2150-2158`). If replacement content puts legitimate
+   `********documentation` at that old range, the stale record authorizes
+   corrupting `documentation`. Invalidate or revalidate provenance on every
+   non-append change and add that same-inode false-positive red.
+5. **BLOCKER-for-tests — the process counters do not measure mmap work.** On
+   this host, touching a fresh 32 MiB mapping moved `/proc/self/io:rchar` by
+   only 101 bytes, so the helper oracle at `plan:2232-2235` can pass while an
+   arbitrary mapping is scanned. Touching a 100 MiB mapping raised `VmRSS`
+   from about 12.8 MiB to 115.3 MiB, contradicting the promised <32 MiB growth
+   unless pages are actively discarded/chunked. Count logical scan bytes at
+   the scrubber seam and bound resident work by construction; retain the
+   process-level frame-liveness test separately.
+
+`git diff --check 5be4c4c^ 5be4c4c` passed. No browser/full gate was run for
+this docs-only review. The findings and local probes were sent to BlackRobin
+as Agent Mail 6023.
+
+## S6b1 paste-path green (`a9dcabe`, `4c659aa`)
+
+The corrected red is production-shaped: X input opens the real Secrets
+window, pastes through the private X clipboard, and drives the native login
+launcher, login netd, bwrap/relay, real login helper, fd 4 and the S4 token
+store. The fake CLI is argv-only and inert without `--e2e-protocol`; the login
+sandbox exposes egress but no bridges; chat's netd remains narrow; native
+frames are validated; and token bytes do not enter rows or logs. Agent Mail
+6022 records the failing-first runs, a patched-tree full gate of **156/156
+steps and 910/910 tests**, and four focused green reruns. The census test was
+registered after that full gate and passed its exact step 3/3, so it has not
+yet participated in a full exact-commit gate.
+
+**Explicit verdict for `a9dcabe`: APPROVED as a failing-first correction.** It
+adds the real clipboard paste, malformed input, fixed sentences, link/census,
+honest per-browser process counts and teardown checks that the original red
+lacked.
+
+**Explicit verdict for `4c659aa`: BLOCKED.**
+
+1. **BLOCKER — the ordinary Save path can race sign-in and leave a different
+   credential than the UI reports.** `signin_controls` changes only the
+   sign-in widgets; it does not disable entry/Save/Remove/file or mark the
+   Secrets operation busy (`src/agent_secrets_window.c:201-206,341-355`). A
+   manual async keyring store may therefore start while the login helper waits
+   for a code. When fd 4 later supplies the signed-in token, advancing the UI
+   epoch does not cancel the first GTask, so the two libsecret writes race;
+   the old manual token can win after “Signed in.” Make all credential
+   mutations mutually exclusive for the complete sign-in/store lifecycle and
+   add a delayed-store e2e that proves both disabled controls and one final
+   stored token.
+2. **BLOCKER — Secret Service failure followed by the offered file fallback
+   emits two login endings.** `on_service_stored` emits `error-store` but
+   retains `pending` and `signin_store`; a later “Save to a private file
+   instead” succeeds through `store_in_file` and emits `done`
+   (`src/agent_secrets_window.c:269-290,325-379`). The row grammar and plan
+   classify both as terminal. Add the no-keyring-to-file red and define one
+   terminal outcome for that path.
+3. **BLOCKER-for-tests — the production-inert case never performs the Cancel
+   its contract promises.** It leaves sign-in running and stops the browser
+   (`tests/e2e/agent_login_test.py:465-513`), whereas §S6.1 says the test then
+   cancels. Drive Cancel by the non-e2e UI and prove the helper, login netd and
+   `-login` directory all disappear.
+
+The independent approval condition also remains open: rev 16.18.5 requires
+both user-run `signin-paste` parts A and B, including the production CLI's
+mounts and committed CONNECT census, before S6b1 or a later S6 slice can be
+approved (`plan:2291-2299`). `git diff --check` passed for both reviewed
+commits. I did not take the gate slot; JadeBeacon is next. Findings were sent
+to BlueBeaver as Agent Mail 6024.
+
+Because the S6b1 green remains blocked, the newest approved linear
+push-through SHA remains the already-pushed **`e33661d`**.
