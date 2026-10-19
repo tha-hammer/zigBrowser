@@ -132,6 +132,17 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   Tests (`58551bb`): MS1-browser-only-empty passes *and asserts*; MS5-empty, unqualified-empty,
   MS1-extra-component, MS1-non-browser-component, MS5-shaped-relabeled-MS1, and MS5-nonempty-mismatch
   all fail. The executable gate landed in `c53b580` then `58551bb`; re-pinned to HEAD `774ce31`.
+- **Rev 10** (this): the MS1 green ran on both Macs and surfaced two macOS realities, split out per the
+  user's "split it out, fix now". (1) The **ad-hoc-signed x86_64 binary segfaults at startup** in
+  `-[ZBAppHost init]`'s `[super init]` (`0xf0000001`); the unsigned binary and the signed arm64 slice
+  run fine — a zig-linker/codesign/ObjC interaction. So **MS1 runs the UNSIGNED universal binary** for
+  MS1.1/MS1.2 and signs a **copy** only for the static MS1.3 `codesign -d` check; **MS1 does NOT prove
+  a signed binary RUNS**, and the new slice **`MS1b`** does (well before MS9's Developer-ID signing).
+  (2) zig 0.16's `fromPosixSignalContext` mis-aligns the x86_64 macOS signal `ucontext_t` and panics,
+  hiding the real fault; `src/main.zig` **disables the segfault handler on macOS only** (Linux keeps
+  the exact default). MS1 is GREEN on both Macs through `tests/mac/gate.sh` (universal fat binary,
+  executing-arch readback x86_64 + arm64, MS1.3 entitlements on the signed copy, m9 render/reply/
+  load-fail, the `--milestone MS1` resource gate). Cause write-up: `scratchpad/ms1/CRASH_CAUSE.md`.
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -510,6 +521,16 @@ production build info** read back over the socket; `lipo -archs` + `--version` a
 it needs"), `codesign -d --entitlements -` lists exactly those, and the ad-hoc build still
 verifies. The manifest is the single source MS9 signs with.
 
+**MS1 runs the UNSIGNED universal binary; the MS1.3 check is static (rev 10).** The ad-hoc-signed
+x86_64 binary **segfaults at startup in ObjC `-[ZBAppHost init]` (`0xf0000001`)** — a
+zig-linker/codesign interaction (see rev 10 and `MS1b`). So MS1.1 (fat) and MS1.2 (executing-arch
+readback, which RUNS the binary) run the **unsigned** universal binary (it is fat and runs
+natively on both arches), while MS1.3 signs a **copy** and reads it with `codesign -d` only
+(static; never run). **MS1 therefore does NOT prove that a signed binary RUNS** — that is the job
+of the new slice **`MS1b`**, and the real production signature (Developer ID + hardened runtime) is
+MS9. `mac_universal_test.py` takes `--signed-binary` for the static MS1.3 check; `gate.sh` pushes
+the unsigned universal to run and the signed copy (outside the bundle) for `codesign -d`.
+
 ### Behavior MS1.4: the runner fails closed
 **Given** the fail-closed conditions,
 **When** a host lacks a GUI session / the expected arch / a required runtime-SDK, or a test
@@ -529,6 +550,45 @@ records zero assertions,
 
 **Gate (MS1):** two-host `mac-gate`, fail-closed; Linux gate untouched. Not a UI slice.
 Coordinate with **BlueBeaver** (build/gate) and **BlackRobin** (version/build-info seam).
+
+**Zig 0.16 segfault handler disabled on macOS (rev 10).** `std.debug.cpu_context.fromPosixSignalContext`
+`@alignCast`es the x86_64 macOS signal `ucontext_t` and panics "incorrect alignment", so the first
+signal the browser takes aborts via a misleading panic with a corrupted unwind (it hid the real
+ObjC-init fault for a whole debugging cycle). `src/main.zig` sets `std_options.enable_segfault_handler
+= (os.tag != .macos AND std.debug.default_enable_segfault_handler)` — OFF on macOS only; every other
+target keeps the exact default, so **the Linux build is unchanged**. This is an upstream zig-0.16
+issue; disabling the handler on macOS gives honest crash reports and is kept regardless of the signing
+fix. (It does NOT by itself make a signed binary run — see `MS1b`.)
+
+---
+
+## MS1b: the signed x86_64 binary runs (zig-linker / codesign / ObjC-init crash)
+
+**Goal.** Close the gap MS1 leaves open: MS1 runs the UNSIGNED universal binary, because the
+ad-hoc-signed x86_64 binary **segfaults at startup** in `-[ZBAppHost initWithURI:...]`'s `[super init]`
+(`EXC_BAD_ACCESS` `KERN_INVALID_ADDRESS 0xf0000001`), while the unsigned binary and the signed arm64
+slice run fine. This slice proves a signed binary RUNS on x86_64, well before MS9's Developer-ID signing.
+
+### Behavior MS1b.1: a signed universal binary runs the m9 workload on x86_64
+**Given** the universal binary, ad-hoc signed (`codesign -s - --entitlements …`),
+**When** it runs the m9 workload on the Intel Mac,
+**Then** it loads the page and prints `WINCOUNT`/`TITLE`/`NAV` without a crash (today it aborts at
+`ZBAppHost init`). 🔴 Red: run the SIGNED universal binary through the m9 invocation on x86_64 — it
+crashes at `0xf0000001`. 🟢 Green: it runs. (The arm64 signed slice already runs.)
+
+### Investigation (write the cause up before the fix)
+In order: (1) a **minimal zig+ObjC repro**, ad-hoc signed vs unsigned, to confirm the trigger in
+isolation; (2) **zig's self-hosted linker vs Apple `ld`** (e.g. `-fno-lld` / the system linker, if it
+applies), since the leading hypothesis is non-conformant ObjC metadata / segment layout whose
+class-realization fixup is skipped once the signature is enforced; (3) **inspect the Mach-O** — ObjC
+metadata, rebase and chained fixups — signed vs unsigned (`otool -l`, `dyld_info -fixups`, `otool -ov`);
+(4) test a **hardened-runtime Developer-ID-style signing flag set** (`--options runtime`, the real MS9
+shape) to learn whether MS9's production signature hits the same crash or avoids it. Evidence +
+leading hypothesis are in `scratchpad/ms1/CRASH_CAUSE.md`.
+
+**Gate (MS1b):** the signed universal binary runs the m9 workload + the exec-arch probe on the Intel
+Mac (and re-confirm arm64), through `gate.sh`, with no swallowed failures. Coordinate with **BlueBeaver**
+(build/gate) and **BlackRobin** (the shim's ObjC entry).
 
 ---
 
