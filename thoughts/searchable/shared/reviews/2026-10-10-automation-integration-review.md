@@ -11778,3 +11778,40 @@ The findings were sent to BlackRobin as Agent Mail 6033.
 gate was run for these docs-only revisions. Because the first commit in the
 new linear range remains blocked-for-tests, the newest approved and pushed
 linear boundary remains **`da3028f`**.
+
+## Transcript scrub plan rev 16.20.7 (`87c9ea1`)
+
+Rev 16.20.7 closes the three mechanisms reported against `a69b459`:
+
+- an open generic match is now an offset/length candidate, not bytes written
+  speculatively, so a terminated match can be masked while a monitor leaves an
+  EOF candidate untouched (`plan:2158-2162`);
+- a lifecycle scan re-walks and revalidates the directory generations,
+  listings and post-scan file keys, retries a changed or short-read pass, and
+  fails closed after the named three-pass bound (`plan:2183-2187,2198-2217`);
+  and
+- `st_ctime_ns` joins the change key, with a same-size rewrite that restores
+  mtime as its red (`plan:2150-2152,2227-2232`).
+
+The new reds correctly cover monitor-versus-lifecycle EOF behavior, tree and
+file replacement during revalidation, repeated instability, a lifecycle short
+read, and restored mtime. One state transition remains missing.
+
+**Explicit verdict for `87c9ea1`: BLOCKED.**
+
+- **BLOCKER — dropping an EOF candidate can make the lifecycle scan skip it.**
+  A monitor that reaches an unterminated generic candidate drops it and writes
+  nothing (`plan:2161`). If that successful monitor commits the file's current
+  change key, the later lifecycle scan sees an unchanged file and skips it
+  under the “scan when changed” rule and stated lifecycle cost
+  (`plan:2150-2152,2167`). It then cannot perform the promised lifecycle mask
+  at `plan:2178-2180`. Specify either that such a monitor scan does not commit
+  the clean key, or retain a per-file `pending_eof` flag keyed to file identity
+  that forces lifecycle rescan even when metadata is unchanged. Define how the
+  state is cleared or invalidated after masking, identity replacement or
+  content change. The existing several-polls-then-`end_session` red is the
+  correct test and need not change.
+
+`git diff --check 87c9ea1^ 87c9ea1` passed. No browser or full gate was run for
+this docs-only revision. The finding was sent to BlackRobin as Agent Mail
+6036. The newest approved and pushed linear boundary remains **`da3028f`**.
