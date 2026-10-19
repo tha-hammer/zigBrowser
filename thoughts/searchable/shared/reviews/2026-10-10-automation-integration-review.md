@@ -11021,3 +11021,60 @@ failing-first** while the separately invoked Mac gate remains intentionally
 red until its later universal-build green. `f73305e`, `68948db`, `71abc6f` and
 the intervening review commits are already approved. The newest approved
 linear push-through SHA after `e33661d` is therefore **`da3028f`**.
+
+## MS1 census advisories and macOS plan rev 7 (`d48b71c`, `99f11b1`)
+
+### Census follow-up
+
+**Explicit verdict for `d48b71c`: APPROVED.** `path_matches` requires equal
+segment counts and applies `fnmatch` within each segment, so the version
+wildcard cannot consume `/`; the new extra-depth Claude decoy kills the old
+whole-string matcher (`mac_universal_test.py:93-101,175-181`;
+`mac_universal_census_test.py:76-85`). The default `file` invocation now has a
+30-second subprocess timeout and maps `TimeoutExpired` to `FailClosed`, while
+retaining the existing rc/stderr/body checks (`mac_universal_test.py:103-125`).
+The timeout fixture was red on the old exception path, and the complete narrow
+suite passed **14/14** locally with both display variables removed. This closes
+both nonblocking SHOULDs from review `378b37b`.
+
+### Mac plan rev 7
+
+Rev 7 **does bind the deferral to MS5's red**, rather than merely mentioning it
+in history: MS1.1 says the three roles and compatibility check enter in MS5's
+red (`macOS plan:423-437`), and Behavior MS5.1c requires exact paths for
+`python-runtime`, `claude-cli` and `helper-launcher`, the two-tree oracle before
+lipo, a red single-arch/mismatched fixture and a fail-closed green gate
+(`macOS plan:921-935`). That satisfies the orchestrator's requested ownership
+and red-first placement in principle.
+
+**Explicit verdict for `99f11b1`: BLOCKED (two implementation-contract
+contradictions must be resolved before the MS1 green).**
+
+1. **BLOCKER — the helper launcher is not a Mach-O.** MS5.1c says all three
+   added roles must be fat Mach-O entries. Production creates `zb-claude` from
+   a Python shebang template (`agent/host/zb_agent_host/token.py:100-140`) and
+   writes it to `runtime/bin/zb-claude` during setup
+   (`setup.py:470-503`); the current inventory instead names the nonexistent
+   `venv/bin/zb-claude`. Because `component_census` searches roles only inside
+   the Mach-O map, the proposed MS5 red can never become green. Rev 8 must give
+   the inventory role kinds: native Python/Claude CLI require fat slices, while
+   the exact regular executable launcher path requires presence plus compatible
+   bytes across the arch trees (or explicitly plan a new native launcher).
+2. **BLOCKER — browser-only MS1 has no defined compatible resource.** The
+   current inventory's sole resource is agent-runtime `runtime.json`, which rev
+   7 defers to MS5. Removing it leaves an empty resource list, but the routable
+   oracle deliberately fails closed on an empty list
+   (`mac_resource_compat.py:41-48`). Keeping it makes browser-only MS1
+   impossible. Yet rev 7 says MS1's two-tree resource oracle is unchanged and
+   still runs. Rev 8 must either name and stage the browser resource(s) compared
+   in both MS1 arch trees, or explicitly move the first production
+   resource-compat invocation to MS5 and align MS1.1 and the empty-resource
+   contract. The MS1 green must not silently delete `runtime.json` and skip the
+   oracle while claiming the mechanism is unchanged.
+
+The browser-only scope itself is evidence-backed: `build.zig:163-173` installs
+only the browser by default and exposes the agent runtime as a separate step.
+The block is therefore not against the scope decision; it is against an
+inventory/test contract that cannot represent the artifacts the revised
+milestones actually ship. Findings were mailed to JadeBeacon before the MS1
+green.
