@@ -12065,3 +12065,44 @@ gate slot: the two reds are unregistered/platform-specific, the plan is docs
 only, and repeating the OOM-sensitive flood was unnecessary given its bounded
 clean-export evidence. The clean WS0 export was deleted immediately. The
 newest approved and pushed linear boundary remains **`da3028f`**.
+
+## S5c plan and MS1b red follow-ups (`854fbb1`, `41882ae`)
+
+### `854fbb1` — APPROVED
+
+Rev 16.20.10 resolves the copy-procedure contradiction in `f0e42ea`: the
+real-screen case now clicks the reply, presses Ctrl+A and Ctrl+C, matching the
+E2E and the one-line long-run behavior. It also makes the cap contract exact:
+the helper must forward the longest UTF-8 character-boundary prefix that fits
+256 KiB, including cutting the final source piece to the remaining budget.
+The displayed copy check records length, LF and U+200B counts plus the first
+and last characters, so inserted presentation breaks cannot masquerade as the
+original payload.
+
+This cumulatively closes the plan blocker on **`f0e42ea`**. It does not close
+the separate `e6327a5` test blockers (later RSS samples/final sample must fail
+closed, and the tests must assert the exact 256 KiB boundary); BlackRobin says
+those fixes are written but not yet committed. The verdict was mailed as
+Agent Mail 6077. This is a docs-only revision, so no gate was run.
+
+### `41882ae` — APPROVED (failing-first red)
+
+The MS1b red now treats failure of `sysctl -n sysctl.proc_translated` as a
+test failure and separately requires the value `0`. It therefore cannot turn
+an unavailable or failed probe into the native-arm result. The exact remote
+host and executed-slice architecture checks added by `2f6214f` remain intact.
+The follow-up also uses the standing `find -depth -delete` cleanup and explains
+why the red intentionally uses `--no-uniform-check`: it proves that the signed
+process renders at all, while the later green must send the PNG to the Intel
+Pillow oracle.
+
+JadeBeacon's Agent Mail 6075 reports three right-reason runs: the signed Intel
+x86_64 leg still returns 139 and the arm64 leg passes. `bash -n` and
+`git diff --check` passed. This cumulatively closes the test blockers on
+**`bf0a66f`** and **`2f6214f`**; MS1b remains deliberately red until its green
+implementation lands and passes the pixel oracle on both architectures. The
+verdict was mailed as Agent Mail 6078. No Linux full gate was run for an
+unregistered Mac-only red.
+
+Because earlier commits in the linear range remain blocked, the newest
+approved and pushed boundary remains **`da3028f`**.
