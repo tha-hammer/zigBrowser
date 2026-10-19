@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  MS1.3 least-privilege hardened-runtime entitlement manifest (the single source MS9 signs with).
+
+  DERIVED, not "whatever it needs". Each key is justified by a concrete feature; a key is added
+  ONLY after the Mac build proves the feature cannot run without it. Nothing speculative.
+
+  Pinned at:       thoughts/.../plans/2026-10-14-14-30-macos-launch-tdd-plan.md (MS1.3, rev 6, ed13e5e)
+  Verified on Mac: NOT YET. The Intel Mac is offline; the "derived" set below is the minimum known
+                   from the architecture and MUST be reconciled against a real ad-hoc codesign
+                   entitlements dump on the Mac before MS1 goes green (the MS1.3 assertion).
+
+  Candidate keys held OUT until the Mac proves them (do NOT add on a guess):
+    * com.apple.security.cs.allow-jit and allow-unsigned-executable-memory.
+      WKWebView runs JS in Apple's own signed com.apple.WebKit.WebContent XPC service, so the
+      host app likely does NOT need JIT entitlements. Confirm on the Mac (load a JS-heavy page
+      under hardened runtime); add ONLY if WebContent fails to attach without it.
+    * com.apple.security.inherit.
+      We confine the helper, CLI and hooks with Seatbelt (sandbox-exec, MS6), not App Sandbox
+      inheritance, so this is expected to stay OUT.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Outbound network: the CLI/helper reach the egress proxy on the backend's loopback port,
+         and the browser itself fetches over the network (MS6 egress capability, rev 6). -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

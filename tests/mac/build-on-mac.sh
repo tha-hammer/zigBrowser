@@ -22,7 +22,10 @@ STEP="${1:-}"
 cd "$(git rev-parse --show-toplevel)"
 
 # Push the working tree (committed or not) as a tarball, extract on the Mac.
-tar -cf /tmp/zb_worktree_mac.tar src build.zig build.zig.zon tests 2>/dev/null
+# MS1: include packaging/ so the universal gate's entitlements.plist and build-dmg.sh
+# (lipo + ad-hoc sign + verify) are present on the Mac, and zigbrowser.json because
+# build.zig:136 reads it (the build-time site config, 32362d4) and panics if it is absent.
+tar -cf /tmp/zb_worktree_mac.tar src build.zig build.zig.zon zigbrowser.json tests packaging 2>/dev/null
 scp "${SSH[@]:1}" /tmp/zb_worktree_mac.tar "$HOST":zb_worktree_mac.tar >/dev/null
 "${SSH[@]}" "$HOST" 'd="$HOME/zigBrowser"; mkdir -p "$d"; tar -xf "$HOME/zb_worktree_mac.tar" -C "$d"'
 
