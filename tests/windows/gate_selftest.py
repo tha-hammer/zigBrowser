@@ -57,6 +57,16 @@ _SSH_STUB = _FAKE_COMMON.format(tool="ssh") + r"""
 # Record argv with boundaries (one arg per line), so the test parses real -o settings rather
 # than substring-matching a flattened $* (BatchMode=yes followed by BatchMode=no must be caught).
 if [ -n "${ZB_SELFTEST_SSH_LOG:-}" ]; then printf '%s\n' "$@" >> "$ZB_SELFTEST_SSH_LOG"; fi
+# When the PRODUCTION default resolver (resolve_path.sh) calls ssh to run a remote powershell
+# EncodedCommand, stand in for the host so the no-override path is exercised hermetically:
+# optionally fail, or print a canned resolved path on stdout.
+case " $* " in
+  *powershell*EncodedCommand*)
+    if [ -n "${ZB_SELFTEST_RESOLVE_FAIL:-}" ]; then exit 3; fi
+    if [ -n "${ZB_SELFTEST_RESOLVE_OUT:-}" ]; then printf '%s\n' "$ZB_SELFTEST_RESOLVE_OUT"; fi
+    exit 0
+    ;;
+esac
 exit 0
 """
 
@@ -305,6 +315,36 @@ class PathFenceTests(_GateCase):
                              "a resolver with multiline/malformed output must DENY")
             self.assertFalse(self._allowed(good, bindir, str(home), resolver=str(td / "nope.sh")),
                              "a missing resolver must DENY (resolution is mandatory)")
+
+    def test_default_resolver_runs_without_override_and_fails_closed(self):
+        """The PRODUCTION default resolver (gate.sh's resolve_path.sh) must actually run when no
+        ZB_RESOLVE_CMD override is set — observed hermetically through the fake-SSH seam. Deleting
+        the default-resolver code from gate.sh would make the escaping case fall back to a lexical
+        ALLOW and fail this test."""
+        good = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"
+
+        def verdict(extra):
+            with tempfile.TemporaryDirectory() as t:
+                td = pathlib.Path(t)
+                env, home, _kh, logs = self._stage_env(td)   # sets host/user/key/known_hosts, NO ZB_RESOLVE_CMD
+                env.update(extra)
+                bindir = _fakes(td)
+                proc = self._run_gate(env, bindir, args=["--allowed-path", good], home=home)
+                out = (proc.stdout or "").strip()
+                self.assertIn(out, ("ALLOW", "DENY"), f"got {out!r}\nstderr:\n{proc.stderr}")
+                ran = self._read(logs["ran"])
+                self.assertIn("ssh", ran, "the default resolver must reach the host via ssh (observed)")
+                return out
+
+        # default resolver returns an in-root path -> ALLOW (default path exercised end-to-end)
+        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": good}), "ALLOW")
+        # default resolver returns an ESCAPING path -> DENY (deleting the default resolver survives only
+        # if this fails: a lexical-only fallback would wrongly ALLOW the string-OK path)
+        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": r"C:\Windows\System32"}), "DENY")
+        # default resolver's ssh fails -> DENY (fail closed)
+        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_FAIL": "1"}), "DENY")
+        # default resolver returns empty -> DENY (fail closed)
+        self.assertEqual(verdict({}), "DENY")
 
 
 class TransportHygieneTests(_GateCase):
