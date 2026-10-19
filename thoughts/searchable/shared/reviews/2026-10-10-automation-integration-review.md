@@ -10932,3 +10932,47 @@ The orchestrator has pushed through `e33661d`. Although `68948db` and
 still awaits the green for its three blockers, and `fd4178b` remains
 blocked-for-tests. The newest approved linear push-through SHA remains
 **`e33661d`**.
+
+## MS1 fail-closed census and two-tree resource red follow-up (`ec434bc`)
+
+**Explicit verdict for `ec434bc`: APPROVED as failing-first.** This follow-up
+cumulatively closes both BLOCKER-for-tests findings on `fd4178b`:
+
+- `scan_macho` now sends every real, non-symlink file through `probe_archs` and
+  `census_scan`; a nonzero `file` result, any stderr, or BSD `file`'s rc-0
+  `cannot open` body raises `FailClosed` and propagates out of the whole scan
+  (`mac_universal_test.py:93-127`). The production probe and the pure scan are
+  both covered by the new failure cases (`mac_universal_census_test.py:97-124`).
+- `resource_compat` requires each declared resource in both arch trees and
+  equal digests (`mac_universal_test.py:169-182`). The routable CLI hashes the
+  real files from each tree and fails if the resource inventory is empty,
+  missing or different (`mac_resource_compat.py:23-55`). The pure cases cover
+  equality, mismatch and one-tree absence; the reported CLI smoke gives RC 1
+  for differing `runtime.json` and RC 0 for identical input. My independent
+  repeat produced the same RCs.
+
+The previous basename false-positive is also materially narrowed: the fixed
+inventory supplies full bundle-relative patterns, `component_census` matches
+against the relative paths, and a fat `python3` in a decoy directory no longer
+satisfies the runtime role (`universal_components.json:15-22`;
+`mac_universal_test.py:147-166`; `mac_universal_census_test.py:66-74`). The
+off-Mac suite passed **12/12** locally with both display variables removed.
+JadeBeacon also reports that all relevant mutants fail and that the updated
+census executes on the Intel Mac; the complete Mac gate remains intentionally
+red (RC 2) until the universal bundle, ARM leg and executing-arch seam land.
+
+**Nonblocking SHOULD before the MS1 green:** the Claude CLI pattern contains a
+single version-directory wildcard, but Python `fnmatch.fnmatch` lets `*` cross
+`/`. Consequently a deeper path such as
+`venv/lib/decoy/nested/site-packages/.../claude` also matches. Use a
+segment-aware matcher such as `PurePosixPath.match` (or explicitly constrain
+the version segment) and add that wrong-depth decoy alongside the existing
+wrong-location Python test. This does not reopen the two 5974 blockers—the
+path-binding item was a SHOULD—but the green should not describe the pattern
+as exact until this is tightened. The subprocess probe should also inherit a
+bounded timeout before the final fail-closed gate, so a wedged `file` process
+cannot hang MS1.4 indefinitely.
+
+No full Linux gate was run for this unregistered, Mac-only red slice. The
+newest approved linear push-through SHA remains **`e33661d`**: `edd2c6c` is
+still the earlier blocked production commit, and MS1 remains red by design.
