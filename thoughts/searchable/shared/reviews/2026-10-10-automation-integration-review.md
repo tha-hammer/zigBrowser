@@ -11815,3 +11815,33 @@ read, and restored mtime. One state transition remains missing.
 `git diff --check 87c9ea1^ 87c9ea1` passed. No browser or full gate was run for
 this docs-only revision. The finding was sent to BlackRobin as Agent Mail
 6036. The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## Transcript scrub plan rev 16.20.8 (`9868a65`)
+
+**Explicit verdict for `9868a65`: APPROVED.** It cumulatively closes the
+remaining rev-16.20.7 blocker from Agent Mail 6036:
+
+- a monitor commits a transcript's change key only after a clean scan with no
+  unterminated EOF candidate; a candidate therefore leaves the old key in
+  place and later monitor censuses revisit the file (`plan:2152-2154`); and
+- prompt-end, close and start lifecycle scans ignore the monitor keys and read
+  every transcript in the live tree in full. A monitor can no longer make a
+  lifecycle scan skip the unchanged candidate (`plan:2153-2154,2191-2198`).
+
+The existing several-monitor-polls then `end_session` red remains the correct
+behavioral proof: the monitor leaves the bytes untouched, then the lifecycle
+scan masks them before `session_ended` (`plan:2231`). The stable-answer
+revalidation and bounded fail-closed retry from rev 16.20.7 remain in force
+(`plan:2185-2189`). Thus the current rev 16.20.8 design cumulatively resolves
+the blockers recorded against `a69b459` and `87c9ea1`; those earlier SHAs stay
+blocked at their own states.
+
+**NIT (nonblocking):** the subsection heading at `plan:2150` still says
+“each time it changed,” although lifecycle scans now run regardless of change.
+The monitor/lifecycle bullets immediately below are normative and unambiguous,
+so this is editorial rather than an approval condition.
+
+`git diff --check 9868a65^ 9868a65` passed. No browser or full gate was run for
+this docs-only revision. The verdict was sent to BlackRobin as Agent Mail
+6038. The newest approved and pushed linear boundary remains **`da3028f`**
+because the earlier `545c06f` is still blocked-for-tests.
