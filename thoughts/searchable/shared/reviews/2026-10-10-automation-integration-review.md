@@ -10722,3 +10722,122 @@ both SHOULDs from the `86255dd` review: it describes the production/user-chosen
 docked panel and page resize, including the NVIDIA reason, and gives the real
 on-disk transcript path `agent-home/state/projects/` while explaining its
 `.claude/projects` sandbox view. No product or test behavior changes.
+
+## S6a follow-ups, login helper, PagePort flake and MS1 red (`8ccd8c4`, `e33661d`, `edd2c6c`, `f73305e`, `0e41ae1`)
+
+### Login-network cumulative closure
+
+**Explicit verdict for `8ccd8c4`: APPROVED.** It closes both test/prose gaps
+from the earlier S6a part-3 review without weakening the fail-closed behavior.
+The plan and netd test now say that a partial manifest containing only one of
+`egress` and `ports` is invalid; only an absent manifest or a legacy manifest
+with neither key receives the built-in defaults. The new publication case
+drives the real `setup.provision()` fixture and observes the stage result,
+requiring a regular mode-0600 `runtime/net-login.json` equal to the production
+producer beside an unchanged API-only `runtime/net.json`
+(`agent/host/tests/test_login_network.py:107-117`). It therefore kills a green
+that merely adds pure producers while forgetting the setup commit point.
+
+BlueBeaver's clean-export private-Xvfb gate used exact `8ccd8c4` plus the later
+`edd2c6c` files and reported **Build Summary: 151/151 steps succeeded; 900/900
+tests passed**. The red was also exercised three times: all 8 login-network
+cases failed before the backend drafts; removing the stage write from the
+draft made the new publication case fail.
+
+Consequently the earlier verdicts are cumulatively closed as follows:
+
+| Commit | Cumulative verdict | Closure |
+|---|---|---|
+| `dbde6c9` | **APPROVED as failing-first** | `8ccd8c4` corrects its stale missing-`ports` prose to the production fail-closed rule. |
+| `10248df` | **APPROVED as failing-first** | `8ccd8c4` adds the missing real-setup publication assertion. |
+| `69f2207` | **APPROVED** | `8ccd8c4` aligns the plan/red contract with its safer partial-manifest refusal; the prior 146/146, 892/892 gate remains valid. |
+
+**Explicit verdict for `e33661d`: APPROVED.** This docs-only rev 16.19.1 entry
+faithfully records the already reviewed user result: S5b was accepted on the
+real NVIDIA screen at `86255dd`, with the default icon, runtime-not-set-up
+state, per-window conversations, two agent-home transcripts and an unchanged
+decoy `~/.claude`. It changes no implementation or test behavior.
+
+### S6a part 2 (`edd2c6c`)
+
+**Explicit verdict for `edd2c6c`: BLOCKED.** The native frame validator is
+bounded, exact and noncommitting on rejection, and the helper correctly uses a
+wide pty, a fixed environment, process-group cleanup, fd-4-only token delivery
+and a one-shot lifetime. The 151/151, 900/900 clean gate and the reported eight
+protocol plus twelve helper killed mutants are good evidence for those covered
+paths. Three production contracts remain uncovered and broken:
+
+1. **BLOCKER — the authorize URL is not exact.**
+   `agent/host/zb_agent_host/login.py:69-82` accepts the right parameter names,
+   redirect URI, nonempty state and `response_type=code`, but it accepts changed
+   or empty `code`, `scope`, `code_challenge_method`, `client_id` and
+   `code_challenge`. The captured contract fixes `code=true`,
+   `scope=user:inference` and `code_challenge_method=S256`
+   (`plan:610-615`). A lookalike URL can therefore be forwarded as the CLI's
+   authorize URL. Add near-miss table cases, require those fixed values and
+   require nonempty client/challenge values (or explicitly pin the captured
+   client id if that is the intended contract).
+2. **BLOCKER — a later code overwrites the first pending code.**
+   `login.py:222-227` assigns `self.code` unconditionally. If callback capture
+   and a manual paste both arrive before the next CLI prompt, the second value
+   replaces the first, contrary to D7b's “the first one to arrive is used”
+   (`plan:430-432`). A slow-prompt regression must send two valid codes before
+   `need_code` and prove only the first reaches the CLI.
+3. **BLOCKER — terminal completion and token delivery race cancellation.**
+   `login.py:189-206` performs an unsynchronized check-then-set in `end()`, so
+   the PTY and frame threads can both emit terminal frames. `hand_off()` also
+   writes and closes fd 4 before trying to claim `done`; a concurrent cancel
+   can win `ended` while the PTY thread still delivers the token. Use a terminal
+   claim separate from the screen lock and add deterministic interleaving tests
+   proving one terminal frame and no fd-4 token when cancellation wins.
+
+These findings were mailed to BlueBeaver as Agent Mail 5967. The green gate did
+not exercise the missing interleavings, so it does not close them.
+
+### PagePort timeout regression (`f73305e`)
+
+**Explicit verdict for `f73305e`: APPROVED.** This is a test-only correction.
+The old script created a pending promise with no reachable promise or resolver;
+WebKit may collect it and end the call with “Completion handler for function
+call is no longer reachable,” which production correctly maps to `EvalFailed`
+rather than `Timeout`. The new script retains the resolver on the page global,
+matching the existing `__zbHold1` pattern, while preserving the 100 ms timeout
+and the same production PagePort chain (`src/webkit.zig:785-792`).
+
+The root cause is demonstrated, not merely made less likely: BlackRobin's
+standalone old form ended early in 31–42 ms in 3/3 runs while the held form
+remained pending for 8 s in 3/3; the loaded live test failed with the exact old
+message in 3/3 runs and passed 152/152 in 3/3 with the held resolver; the unit
+binary also passed 152/152 three times. No production code changed. A separate
+full gate was correctly deferred because BlueBeaver held the exclusive slot.
+
+### MS1 failing-first Mac gate (`0e41ae1`)
+
+**Explicit verdict for `0e41ae1`: BLOCKED-for-tests.** Its two-host runner
+fails closed when the ARM host is absent, retains the real visible WKWebView
+checks, requires runtime executing-arch readback rather than accepting `lipo`
+alone, and compares the entitlement-key set with the ad-hoc signature. It is
+unregistered, so it does not perturb the Linux gate.
+
+MS1.1 can nevertheless false-green. `mac_universal_test.py:103-125` checks
+only caller-supplied `--component` paths and accepts an empty list, while
+`tests/mac/gate.sh:83-90` passes no component at all. A future green can thus
+make only `zigBrowser` fat while omitting the plan's Python runtime, Claude CLI
+and helper launcher, and no assertion checks compatibility of their non-exec
+resources (`macOS plan:396-401`). The expected component/resource census must
+come from a fixed or build-produced inventory, be nonempty and complete, and a
+test must kill omission of any expected component. This was mailed to
+JadeBeacon as Agent Mail 5968.
+
+Two nonblocking stale comments should be corrected forward:
+`mac_universal_test.py:21-24` says the test is not committed and Intel is
+unreachable, and `packaging/macos/entitlements.plist:10-12` says the Intel Mac
+is offline, while the red commit and its evidence say the host is reachable.
+
+### Linear push-through boundary
+
+The corrected login-network chain, S5b chain and acceptance documentation are
+fully approved through **`e33661d`**. `edd2c6c` is the next commit and remains
+blocked, so later individual approval of `f73305e` cannot advance the linear
+prefix; `0e41ae1` is independently blocked-for-tests. The newest approved
+push-through SHA from `37518ea` is therefore **`e33661d`**.
