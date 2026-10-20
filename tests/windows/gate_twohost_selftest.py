@@ -38,7 +38,7 @@ FS_MARKER = "MARKER-FS-NONCE"
 # The fake ssh emits the canned probe JSON for the host named in its argv; for the file server it emits
 # the "post" JSON on its second probe call (so WS0.7 can diff pre/post). The fake virsh answers domstate.
 _SSH_STUB = r"""
-[ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf '%s\n' "$@" >> "$ZB_SELFTEST_SSH_LOG"
+[ -n "${ZB_SELFTEST_SSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_SSH_LOG"
 argv="$*"
 case "$argv" in
   *host_probe*|*powershell*|*EncodedCommand*)
@@ -237,17 +237,55 @@ class WS07FileServerFence(_TwoHostCase):
             self._assert_fail_closed(proc, "file-server")
 
 
+# --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------
+# Each 'ARGV: ...' line the fake stub writes is one invocation. OpenSSH applies -o options
+# last-value-wins, so a later BatchMode=no overrides an earlier yes; the oracle pins the
+# effective value and rejects any invocation whose effective BatchMode is not exactly 'yes'.
+def _ssh_invocations(log_text):
+    return [ln[len("ARGV:"):].split() for ln in log_text.splitlines() if ln.startswith("ARGV:")]
+
+
+def _effective_batchmode(tokens):
+    value = None  # None => never set
+    for i, tok in enumerate(tokens):
+        opt = None
+        if tok == "-o" and i + 1 < len(tokens):
+            opt = tokens[i + 1]
+        elif tok.startswith("-o") and len(tok) > 2:
+            opt = tok[2:]
+        if opt is not None and opt.startswith("BatchMode="):
+            value = opt.split("=", 1)[1]
+    return value
+
+
+def _batchmode_violations(log_text):
+    invs = _ssh_invocations(log_text)
+    return invs, [t for t in invs if _effective_batchmode(t) != "yes"]
+
+
 class SshHygiene(_TwoHostCase):
-    def test_gate_ssh_passes_batchmode(self):
-        # Team rule: a refused key must fail at once, never open a GUI password prompt on
-        # the user's DISPLAY :0. Every ssh gate.sh runs must carry -o BatchMode=yes.
-        # (The fake ssh stub appends its argv to ZB_SELFTEST_SSH_LOG.)
+    def test_every_gate_ssh_invocation_has_effective_batchmode_yes(self):
+        # Team rule: a refused key must fail at once, never open a GUI password prompt on DISPLAY :0.
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             log = td / "ssh.log"
             self._run_probe_only(td, {"ZB_SELFTEST_SSH_LOG": str(log)})
-            text = log.read_text() if log.exists() else ""
-            self.assertIn("BatchMode=yes", text, "gate.sh ssh must pass -o BatchMode=yes")
+            invs, bad = _batchmode_violations(log.read_text() if log.exists() else "")
+            self.assertTrue(invs, "gate.sh ran no ssh invocations to check")
+            self.assertEqual(bad, [], f"gate.sh ssh invocations without effective BatchMode=yes: {bad}")
+
+    def test_oracle_flags_a_call_that_omits_batchmode(self):
+        # Failing-first evidence (1): one call keeps BatchMode, another omits it.
+        invs, bad = _batchmode_violations(
+            "ARGV: ssh -o BatchMode=yes -p 2222 zbtext@127.0.0.1 probe\n"
+            "ARGV: ssh -o StrictHostKeyChecking=yes -p 22 zbtest@100.123.34.15 probe\n")
+        self.assertEqual(len(invs), 2)
+        self.assertEqual(len(bad), 1, "the invocation without BatchMode must be flagged")
+
+    def test_oracle_flags_a_later_batchmode_no_override(self):
+        # Failing-first evidence (2): BatchMode=yes then BatchMode=no -> effective no.
+        invs, bad = _batchmode_violations("ARGV: ssh -o BatchMode=yes -o BatchMode=no host probe\n")
+        self.assertEqual(len(bad), 1, "effective BatchMode=no must be flagged (last value wins)")
 
 
 if __name__ == "__main__":
