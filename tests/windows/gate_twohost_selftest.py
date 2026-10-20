@@ -760,16 +760,24 @@ class WS0ZeroWrite(unittest.TestCase):
 def load_tests(loader, tests, pattern):
     # Register the live VM suite (host_live_test.py) alongside the hostless cases so one run covers both.
     # The live cases SKIP when the VM env (ZB_WIN11_HOST...) is absent, so this is a no-op in CI without a VM.
+    # FAIL CLOSED: if the live suite is missing or cannot be imported, register a FAILING test so the gate
+    # goes RED — a deleted/broken host_live_test.py must never silently produce a green suite.
     import importlib.util
+    _p = pathlib.Path(__file__).with_name("host_live_test.py")
     try:
-        _p = pathlib.Path(__file__).with_name("host_live_test.py")
+        if not _p.exists():
+            raise FileNotFoundError(str(_p))
         _spec = importlib.util.spec_from_file_location("host_live_test", str(_p))
         _mod = importlib.util.module_from_spec(_spec)
         _spec.loader.exec_module(_mod)
         tests.addTests(loader.loadTestsFromModule(_mod))
-    except Exception as _e:  # never let registration break the hostless suite
-        import sys as _sys
-        _sys.stderr.write("note: could not load host_live_test.py: %r\n" % (_e,))
+    except Exception as _e:
+        _err = repr(_e)
+
+        class LiveSuiteRegistration(unittest.TestCase):
+            def test_host_live_test_must_be_loadable(self):
+                self.fail("host_live_test.py is missing or failed to import: " + _err)
+        tests.addTests(loader.loadTestsFromTestCase(LiveSuiteRegistration))
     return tests
 
 

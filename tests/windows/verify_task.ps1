@@ -20,26 +20,41 @@ if (-not (Test-Path -LiteralPath $staged)) {
     $ZB_VERIFY = 'TASK_MISSING'
   } else {
     $task = $xml.Task
-    $execs = @($task.Actions.Exec)
-    if ($execs.Count -ne 1) {
-      $ZB_VERIFY = 'TASK_ACTION_COUNT'                       # exactly one Exec action, nothing else
+    # EXACTLY one action, and it must be an Exec (no ComHandler/SendEmail/ShowMessage alongside or instead).
+    $actionNodes = @($task.Actions.ChildNodes | Where-Object { $_.NodeType -eq 'Element' })
+    if ($actionNodes.Count -ne 1 -or $actionNodes[0].LocalName -ne 'Exec') {
+      $ZB_VERIFY = 'TASK_ACTION_COUNT'
     } else {
-      $cmdLeaf = ((([string]$execs[0].Command).Trim().Trim('"')) -split '[\\/]')[-1].ToLower()
-      if ($cmdLeaf -ne 'powershell' -and $cmdLeaf -ne 'powershell.exe') {
-        $ZB_VERIFY = 'TASK_ACTION_MISMATCH'                  # action is not powershell
-      } elseif (([string]$execs[0].Arguments) -notmatch [regex]::Escape($staged)) {
-        $ZB_VERIFY = 'TASK_ACTION_MISMATCH'                  # action does not run the staged script
+      $exec = $actionNodes[0]
+      $cmd = ([string]$exec.Command).Trim().Trim('"')
+      # Pin the executable exactly: bare 'powershell'/'powershell.exe' with NO path separator, so a planted
+      # C:\attacker\powershell.exe (same leaf) is rejected.
+      if ($cmd -match '[\\/]' -or ($cmd.ToLower() -ne 'powershell' -and $cmd.ToLower() -ne 'powershell.exe')) {
+        $ZB_VERIFY = 'TASK_ACTION_MISMATCH'
       } else {
-        $prin = $task.Principals.Principal
-        $uid = [string]$prin.UserId
-        $mySid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $meLeaf = (([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -split '\\')[-1].ToLower()
-        if ($uid -ne $mySid -and (($uid -split '\\')[-1].ToLower()) -ne $meLeaf) {
-          $ZB_VERIFY = 'TASK_PRINCIPAL_MISMATCH'             # runs as someone other than the test user
-        } elseif (([string]$prin.LogonType) -ne 'InteractiveToken') {
-          $ZB_VERIFY = 'TASK_NOT_INTERACTIVE'                # must run in the interactive console session
-        } elseif (([string]$task.Settings.Enabled).ToLower() -eq 'false') {
-          $ZB_VERIFY = 'TASK_DISABLED'
+        # Arguments must be EXACTLY the expected tuple (whitespace-normalized) — not a substring, so extra
+        # or hostile arguments are rejected. $staged is the exact script path we hashed above.
+        $argsNorm = (([string]$exec.Arguments) -replace '\s+', ' ').Trim()
+        $expected = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $staged)
+        $expectedQ = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $staged + '"')
+        if ($argsNorm -ne $expected -and $argsNorm -ne $expectedQ) {
+          $ZB_VERIFY = 'TASK_ACTION_MISMATCH'
+        } else {
+          $prin = $task.Principals.Principal
+          $uid = ([string]$prin.UserId).Trim()
+          $mySid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          # Resolve the principal to an EXACT SID (no leaf/username fallback — a different domain or machine
+          # account with the same leaf must not pass). A name is translated; a bad/unknown principal fails closed.
+          $uidSid = $null
+          if ($uid -match '^S-\d') { $uidSid = $uid }
+          else { try { $uidSid = ([System.Security.Principal.NTAccount]$uid).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $uidSid = $null } }
+          if ($uidSid -ne $mySid) {
+            $ZB_VERIFY = 'TASK_PRINCIPAL_MISMATCH'
+          } elseif (([string]$prin.LogonType) -ne 'InteractiveToken') {
+            $ZB_VERIFY = 'TASK_NOT_INTERACTIVE'
+          } elseif (([string]$task.Settings.Enabled).ToLower() -eq 'false') {
+            $ZB_VERIFY = 'TASK_DISABLED'
+          }
         }
       }
     }

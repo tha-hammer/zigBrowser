@@ -78,6 +78,13 @@ Write-Output ("R denyfirst "   + (W ("O:SYG:SYD:(D;;0x2;;;"      + $S + ")(A;;0x
 Write-Output ("R owner "       + (W ("O:" + $S + "G:SYD:")))
 # No DACL present at all (null DACL) => everyone full access => fail closed (writable True).
 Write-Output ("R nulldacl "    + (W ("O:SYG:SY")))
+# One scenario per remaining dangerous right (deleting any right's AccessCheck call reds exactly one):
+Write-Output ("R appenddata "  + (W ("O:SYG:SYD:(A;;0x4;;;"      + $S + ")")))   # AppendData
+Write-Output ("R deletechild " + (W ("O:SYG:SYD:(A;;0x40;;;"     + $S + ")")))   # DeleteSubdirectoriesAndFiles
+Write-Output ("R writedac "    + (W ("O:SYG:SYD:(A;;0x40000;;;"  + $S + ")")))   # WRITE_DAC (ChangePermissions)
+Write-Output ("R writeowner "  + (W ("O:SYG:SYD:(A;;0x80000;;;" + $S + ")")))    # WRITE_OWNER (TakeOwnership)
+# Fail-closed: no AccessCheck context => writable True (never a silent read-only on a broken probe).
+Write-Output ("R nullctx " + (Get-ZbWritable (New-Object System.Security.AccessControl.DirectorySecurity) $null))
 '''
 
 
@@ -94,13 +101,34 @@ class AclLive(unittest.TestCase):
                 got[m.group(1)] = (m.group(2) == "True")
         expect = {"allow": True, "deny": False, "delete": True, "writeattr": False,
                   "inheritonly": True, "order": True, "denyfirst": False, "owner": True,
-                  "nulldacl": True}
+                  "nulldacl": True, "appenddata": True, "deletechild": True,
+                  "writedac": True, "writeowner": True, "nullctx": True}
         for k, v in expect.items():
             self.assertIn(k, got, "scenario %r missing from output:\n%s" % (k, proc.stdout))
             self.assertEqual(got[k], v, "scenario %r: expected %s got %s\n%s" % (k, v, got[k], proc.stdout))
 
 
 # The ts is computed on the VM (now + ZB_SJ_OFFSET minutes) so the test is immune to host/VM clock skew.
+_ONDISK_SCENARIOS = r'''
+$ctx = Initialize-ZbAccessCheck
+if ($null -eq $ctx) { throw "Initialize-ZbAccessCheck returned null" }
+# Production path: Get-Acl on a REAL filesystem object, then Get-ZbWritable. An owned temp dir is writable
+# (owner implicit WRITE_DAC); C:\Windows is NOT (standard user, not owner) — a genuine on-disk deny without
+# needing to change ownership. Also prove the unreadable-descriptor direction fails closed.
+$base = Join-Path $env:TEMP ("zbod_" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $base | Out-Null
+try {
+  Write-Output ("R ondisk_owned " + (Get-ZbWritable (Get-Acl -LiteralPath $base) $ctx))
+  Write-Output ("R ondisk_windows " + (Get-ZbWritable (Get-Acl -LiteralPath $env:SystemRoot) $ctx))
+  $unreadable = $false
+  try { $null = Get-Acl -LiteralPath (Join-Path $env:SystemDrive 'System Volume Information') -ErrorAction Stop }
+  catch { $unreadable = $true }   # a standard user cannot read this ACL => host_probe's loop treats it writable
+  Write-Output ("R ondisk_unreadable " + $unreadable)
+}
+finally { Remove-Item -LiteralPath $base -Recurse -Force -EA SilentlyContinue }
+'''
+
+
 _NONCE_PREP = r'''
 $dir = Join-Path $env:USERPROFILE 'zb\runs\session'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -110,6 +138,22 @@ $o = [ordered]@{ interactive_session=($env:ZB_SJ_INTER -eq 'True'); locked=($env
 ($o | ConvertTo-Json -Compress) | Set-Content -LiteralPath (Join-Path $dir 'session.json') -Encoding ascii
 Write-Output 'PREPPED'
 '''
+
+
+@unittest.skipUnless(_vm_env(), "VM env (ZB_WIN11_HOST...) not set; live host test skipped")
+class OnDiskAclLive(unittest.TestCase):
+    def test_production_get_acl_on_disk(self):
+        env = _vm_env()
+        proc = _ssh_run(env, _extract_acl_fn() + "\n" + _ONDISK_SCENARIOS)
+        self.assertEqual(proc.returncode, 0, "ssh/powershell failed:\n" + proc.stderr + "\n" + proc.stdout)
+        got = {}
+        for line in proc.stdout.splitlines():
+            m = re.match(r"R (\S+) (True|False)", line.strip())
+            if m:
+                got[m.group(1)] = (m.group(2) == "True")
+        self.assertEqual(got.get("ondisk_owned"), True, "an owned on-disk dir must be writable (owner):\n" + proc.stdout)
+        self.assertEqual(got.get("ondisk_windows"), False, "C:\\Windows must NOT be writable by a standard user:\n" + proc.stdout)
+        self.assertEqual(got.get("ondisk_unreadable"), True, "an unreadable ACL must be detected (host_probe treats it writable):\n" + proc.stdout)
 
 
 @unittest.skipUnless(_vm_env(), "VM env (ZB_WIN11_HOST...) not set; live host test skipped")
