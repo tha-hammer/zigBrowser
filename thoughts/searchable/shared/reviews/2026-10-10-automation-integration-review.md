@@ -14580,3 +14580,126 @@ this review started no competing GUI run.
 The linear push-through boundary remains the already-pushed **`70317c0`**:
 S6b1 still awaits the user's required Part-B rerun, and this batch adds blocked
 commits rather than closing that earlier acceptance condition.
+
+## macOS MS2 fix-forwards, S5d reds and Windows WS7.5 red
+
+### macOS native click and test-process cleanup (`369e63a`, `f8a816a`)
+
+**Explicit verdict for `369e63a`: BLOCKED-for-tests.** The implementation is
+structurally improved: native click now uses the common job phase model, reads
+the document token in the isolated automation world before claiming dispatch,
+and maps an acknowledgement-evaluation error to failure. Only native click is
+wired; the unfinished key/text/scroll methods correctly remain unsupported.
+The commit changes no test, however. The existing
+`mac_ms2b_native_input_test.py` proves only that an unchanged document receives
+one trusted click. It does not make the document change between locate and the
+pre-dispatch guard, force the FIFO acknowledgement evaluation to fail, or
+exercise the exact claim-to-submit timeout wedge. The author's Agent Mail 6311
+also names the production-chain document-change red as outstanding. Those
+failing-first regressions must land before the vtable wiring is approved.
+
+**Explicit verdict for `f8a816a`: BLOCKED-for-tests.** Removing the early
+return when the leader has exited is the right process-group cleanup, and the
+reported both-Mac zero-leftover observation is useful. There is no committed
+regression which starts a session leader and a surviving group child, lets the
+leader exit, calls `stop_browser_macos`, and proves that exact child is gone.
+The old early-return mutant must leave the child alive. Because every Mac gate
+imports this teardown, a manual `pgrep` result does not replace that red.
+
+### macOS navigation follow-up (`38d121a`)
+
+**BLOCKED.** The refused-start ordering now preserves the settled old
+document, non-`.fail` beforeunload policies are honestly rejected until the
+dialog slice, and the navigation-failure e2e is registered. The central
+failure-suppression boundary is still incorrect:
+
+- `src/wkwebview_shim.m:260-266,527-534,1127` uses permanent per-window
+  `hadRoutedNav`. After any routed navigation, including one whose start
+  returns nil, every later unrelated user-navigation failure in that same
+  window is silently swallowed forever. The contract is identity-scoped:
+  retain the routed and superseded `WKNavigation` identities and suppress
+  only their late failures. Add routed-then-user-failure and
+  refused-start-then-user-failure reds in the same window.
+- The exact claim-to-submit wedge remains uncommitted, and the registered
+  two-Mac driver still has no outer timeout. The untracked
+  `mac_ms2a_dispatch_race_test.py` in the shared worktree is not evidence for
+  this SHA.
+
+The three verdicts and concrete locations were sent to JadeBeacon in Agent
+Mail 6313.
+
+### S5d fix-forward reds (`d92f630`)
+
+**BLOCKED-for-tests; the cap-precedence and direct validator reds are
+approved.** `agent_protocol_cap_reason_test.zig` correctly pins the order
+schema -> session -> active prompt id -> cap order.
+`agent_prompt_id_limit_test.zig` directly requires `promptSent` to reject ids
+outside 1 through 2^53-1 and requires no next id after the maximum. Two other
+reds do not yet pin the production contract:
+
+1. `agent/host/tests/test_chat_fit.py:28-31` sizes the asserted frame with
+   `seq = 2**53`, but only `prompt_id` is bounded there. The native validator
+   accepts sequence integers through signed-i64 maximum, whose decimal form is
+   three bytes longer. Either use the Emitter's actual next sequence in the
+   sizing decision or give sequence its own enforced bound and exact edge
+   tests; the current test can still approve an oversized production frame.
+2. `tests/agent_frames_prompt_test.zig:22-35` drives a proposed public
+   `buildPrompt` seam rather than exported `zb_agent_out_prompt` and
+   `agent_helper.c`. It observes neither `out_seq`, the fixed Agent-error UI
+   branch, nor the distinction it claims: line 35 accepts either `.too_long`
+   or `.exhausted`. A production-chain red must exhaust an actual session,
+   emit no prompt frame, show the fixed Agent error rather than “Message too
+   long,” and prove the next output sequence did not skip.
+
+The open-session ordering red is also not in this commit, so `d92f630` alone
+cannot close the blockers on `d62e36d`. Findings were sent to BlackRobin in
+Agent Mail 6314.
+
+### Chat plan revs 16.20.19 and 16.20.20 (`e790ce0`, `44a81b4`)
+
+**Explicit verdict for `e790ce0`: BLOCKED at its own SHA only because of the
+status claim; the substantive contracts are APPROVED.** Dropping
+`telemetry.query` is correct because an agent prompt has no automation trace
+id. The missing-state/no-follow walk, typed directory keys, snapshot-sized
+reads, unchanged-key commit rule, exact sliding-window pacing, failure/enqueue
+atomicity and catch-all fail-closed path answer the cited scrubber findings.
+The coarse-clock residual is stated rather than disguised.
+
+**Explicit verdict for `44a81b4`: APPROVED.** It changes both rev-16.20.18 and
+rev-16.20.19 sections from “As built” to planned fix-forwards until their
+greens land, and the plan's top status records the same fact. This
+cumulatively closes `e790ce0`'s and `e24378f`'s documentation-status blocker;
+it does not approve either future production green.
+
+### Windows WS7.5 import red (`56e0bcd`)
+
+**BLOCKED-for-tests.** In a clean export the test is genuinely red on the
+current direct imports (`hook_run.py`, `login.py`, and `seccomp.py`), but its
+AST oracle is mutation-survivable:
+
+1. It checks only `tree.body`. A top-level `if True: import fcntl`, loop,
+   `with`, or `match` executes during import on Windows but is silently treated
+   as safe. The promised `sys.platform != "win32"` exemption is not actually
+   recognized; every `if` is exempted. Recursively inspect import-time bodies
+   and exempt only a proved non-Windows guard or an ImportError-catching try.
+2. It skips `__init__.py` and `__main__.py` and uses `glob("*.py")`, although
+   the contract says every package module. Include the complete recursive
+   inventory, or explicitly pin and verify a flat inventory.
+3. The authoritative WS7.5 plan requires a Windows-shaped import and says the
+   POSIX `fork`/`execv` paths are unreachable. The static test proves neither;
+   catching ImportError and later using the missing name can pass it. Retain
+   this useful static check, but add a controlled import/entry-point oracle or
+   split and bind that runtime red explicitly in the plan.
+4. Its broad “POSIX-only module” wording does not match its set (`tty`,
+   `posix`, `spwd`, and `syslog` are examples omitted). Narrow the documented
+   inventory or cover the complete intended set, with nested-import mutants.
+
+The test's intended current red was independently reproduced in a throwaway
+clean export, which was deleted immediately. Findings were sent to AzureRidge
+in Agent Mail 6315.
+
+`git diff --check` passed for all seven commits. Zig formatting, Python
+bytecode compilation and shell syntax checks passed in a clean export of
+`38d121a`. No GUI or full gate was started. The linear push-through boundary
+remains the already-pushed **`70317c0`**: S6b1 still needs the user's Part-B
+rerun, and the macOS and S5d commits reviewed here remain blocked.
