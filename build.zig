@@ -689,6 +689,9 @@ pub fn build(b: *std.Build) void {
     const backend_flag_step = b.step("test-backend-flag", "Run the shared backend-flag decision's tests (WS3 coordination)");
     backend_flag_step.dependOn(&run_backend_flag_tests.step);
     backend_flag_step.dependOn(&run_backend_flag_startup_tests.step);
+    // RoseCat 6564: the production entrypoints reach the native settings only through backend_flag.startup.
+    const startup_entrypoint_test = b.addSystemCommand(&.{ "python3", "-I", "tests/startup_entrypoint_test.py" });
+    backend_flag_step.dependOn(&startup_entrypoint_test.step);
     // Rev 16.18.16-16.18.17: S6b2's navigation decision (agent_auth.decideNavigation), the A2
     // cases among its unit cases, before any auth window exists.
     const agent_auth_navigation_tests_module = b.createModule(.{
@@ -1890,6 +1893,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_backend_flag_startup_tests.step);
+    test_step.dependOn(&startup_entrypoint_test.step);
     test_step.dependOn(&run_agent_auth_navigation_tests.step);
     test_step.dependOn(&run_agent_auth_response_tests.step);
     test_step.dependOn(&run_agent_auth_thirdparty_tests.step);

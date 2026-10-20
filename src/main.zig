@@ -4,7 +4,6 @@ const builtin = @import("builtin");
 const app = @import("app.zig");
 const cli = @import("cli.zig");
 const errors = @import("errors.zig");
-const render_config = @import("render_config.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
 
@@ -73,18 +72,17 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(code);
         },
         .screenshot => |spec| {
-            const valid_uri = uri.validate(arena, spec.url) catch |err| {
+            // The URI's own message first (a check, no native call), as before.
+            _ = uri.validate(arena, spec.url) catch |err| {
                 try reportUriError(init, err, spec.url);
                 std.process.exit(errors.exitCode(mapUriErr(err)));
             };
-
-            const out_z = arena.dupeZ(u8, spec.out) catch {
-                try writeStderr(init, "failed to allocate output path\n");
-                std.process.exit(errors.exitCode(error.WriteFailed));
+            // j76 (RoseCat 6564): through app.runWithIo, as `.open`, so the startup's flag step
+            // (backend_flag.startup) decides every present flag before the one native apply.
+            const code = app.runWithIo(arena, init.io, command) catch |err| {
+                if (err == error.WriteFailed) try writeStderr(init, "failed to allocate output path\n");
+                std.process.exit(errors.exitCode(err));
             };
-
-            // The same rendering and media settings as an open window (applied before WebKit starts).
-            const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer), spec.media_source);
             std.process.exit(@intCast(code));
         },
     }
