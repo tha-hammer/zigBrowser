@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""MS2c RED (unregistered) — page.health dialog_open reflects a dialog open/respond AT ONCE (RoseCat 6556 SHOULD).
+"""MS2c RED — page.health dialog_open reflects a dialog open/respond AT ONCE (RoseCat 6556 SHOULD; 6625 determinism).
 
 The snapshot must publish when dialog state changes, not wait for the next 500 ms health tick. When a page
 alert is captured (confirmed via dialog.get), page.health must ALREADY report the window dialog_open=true; and
 after dialog.respond answers it, page.health must report dialog_open=false immediately. On a build that only
 refreshes dialog_open on the health tick, the just-opened/just-answered state is stale at the instant we
 check — the red.
+
+Determinism (RoseCat ec36aee SHOULD): the browser is launched with the e2e-gated ZB_DEBUG_HEALTH_TICK_SUSPEND
+seam, which freezes the periodic 500 ms health tick. With the tick frozen, the ONLY thing that can republish
+the snapshot is the dialog open/respond handler itself — so a mutant that drops the handler's publish reds
+deterministically, instead of a tick racing in between dialog.get and the page.health read and false-greening.
 """
 import argparse
 import http.server
@@ -74,8 +79,9 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
+        env["ZB_DEBUG_HEALTH_TICK_SUSPEND"] = "1"  # freeze the 500 ms tick: the dialog handler is the sole publisher
         proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/", "--automation-api"],
+            [str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, start_new_session=True,
         )
         proc_holder.append(proc)

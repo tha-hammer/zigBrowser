@@ -436,6 +436,7 @@ static void handle_signal(int signo) {
 
 static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
 static long zb_auto_test_health_reply_hold_ms(void);  // e2e hook (defined below); used by healthTick
+static BOOL zb_auto_test_health_tick_suspended(void);  // e2e hook (defined below); used by healthTick
 
 // MS2c #6: KVO context for a webView's observable fields; a change republishes the window snapshot so
 // page.list/page.health reflect title/url/loading promptly without polling the main queue.
@@ -555,6 +556,8 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 }
 
 - (void)healthTick {
+  if (zb_auto_test_health_tick_suspended()) return;  // e2e-only: freeze the periodic republish so a dialog
+                                                      // open/respond snapshot can only come from its handler
   if (self.pingOutstanding) {
     // The ping issued last tick has not replied within a full interval: the web process is unresponsive.
     if (self.unresponsiveSinceUs == 0) { self.unresponsiveSinceUs = self.pingSentUs; self.incident += 1; }
@@ -1302,6 +1305,17 @@ static long zb_auto_test_health_reply_hold_ms(void) {
   if (consumed) return 0;   // replace the view before it lands; later pings (incl. the fresh view's) apply normally
   consumed = 1;
   return ms;
+}
+
+// Test-only (ZB_DEBUG_HEALTH_TICK_SUSPEND): freeze the periodic 500 ms health tick so it never republishes
+// the window snapshot. With the tick suspended, a dialog open/respond snapshot can ONLY come from the
+// dialog handler's own zb_publish_window_snapshot(), making the "reflect at once" regression deterministic
+// (RoseCat ec36aee SHOULD — otherwise a tick can republish between dialog.get and the page.health read and
+// mask a missing-handler-publish mutant). Inert without --e2e-protocol.
+static BOOL zb_auto_test_health_tick_suspended(void) {
+  if (!zb_auto_test_hooks_enabled()) return NO;
+  const char *v = getenv("ZB_DEBUG_HEALTH_TICK_SUSPEND");
+  return v != NULL && v[0] == '1';
 }
 
 // Test-only (ZB_DEBUG_ACK_HANG): the per-pair FIFO ack (issued AFTER the keyUp, while INFLIGHT) never
