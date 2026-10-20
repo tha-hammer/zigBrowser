@@ -35,8 +35,10 @@ verify_host() { # $1=host $2=key $3=label
   timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s <<'REMOTE' || { echo "FAIL: MS2b leg on $host timed out/failed" >&2; return 1; }
 set -euo pipefail
 cd "$HOME/zigBrowser"
+python3 tests/e2e/mac_ms2b_key_table_parity_test.py --root "$HOME/zigBrowser"
 python3 tests/e2e/mac_ms2b_native_input_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_key_text_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2b_key_coverage_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_ack_error_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_doc_changed_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_text_doc_changed_test.py --browser zig-out/bin/zigBrowser

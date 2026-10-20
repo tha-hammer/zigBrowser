@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""MS2b RED (unregistered) — native key coverage: modifier-only, function, and non-BMP keys (RoseCat 6361.4).
+"""MS2b — native key coverage with EXACT ordered trusted events (RoseCat 6426, 6361.4).
 
-Wiring nativeKey/nativeText exposes the WHOLE router.native_key_names set plus any single Unicode code
-point. This exercises the paths beyond the printable/arrow basics covered by mac_ms2b_key_text_test.py:
-  - a MODIFIER-ONLY key (Shift), synthesized as a flagsChanged press/release -> a trusted keydown/keyup
-    with key "Shift";
-  - a FUNCTION key (F1) -> a trusted keydown/keyup with key "F1";
-  - a NON-BMP code point (an emoji) typed via dom.type -> inserted as ONE code point, trusted.
+Wiring nativeKey/nativeText exposes the whole `router.native_key_names` set plus any single Unicode code
+point. This exercises a representative key from each event class and the non-BMP path, and — unlike the
+earlier any()-match version (RoseCat 6426) — asserts the COMPLETE ORDERED event list per action, so a
+keyup-before-keydown, a duplicate, a missing release, a synthetic/untrusted event, or any extra event
+fails:
 
-Mutation-resistant: asserts the trusted keydown/keyup with the right key names and the non-BMP insertion,
-so an unsupported/synthetic/wrong-key stub fails. Unregistered (MS2b not final-gated yet).
+  - MODIFIER-only keys (Shift/Control/Alt/Meta), synthesized as flagsChanged -> exactly one trusted
+    keydown then one trusted keyup, nothing else;
+  - FUNCTION keys (F1, F12) and NAVIGATION/EDITING keys (ArrowLeft, Home, End, PageUp, Delete, Backspace,
+    Insert) -> the same exact trusted down/up pair, no input event;
+  - a NON-BMP code point (emoji) typed via dom.type -> a trusted keydown/keyup pair bracketing a trusted
+    input event, and the field holds exactly the one code point.
+
+The exhaustive router<->shim name parity is proven separately and purely by
+mac_ms2b_key_table_parity_test.py; this file proves the real trusted delivery per class. Registered in
+the two-host MS2b gate.
 """
 import argparse
 import http.server
+import json
 import os
 import subprocess
 import sys
@@ -25,14 +33,16 @@ from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # 
 
 SKIP_EXIT = 77
 EMOJI = "\U0001F600"  # 😀 — a single non-BMP code point (surrogate pair in UTF-16)
+MODIFIERS = ["Shift", "Control", "Alt", "Meta"]
+FUNCTION = ["F1", "F12"]
+NAV_EDIT = ["ArrowLeft", "Home", "End", "PageUp", "Delete", "Backspace", "Insert"]
 FIXTURE = b"""<!doctype html><html><head><meta charset="utf-8"><title>MS2b Key Coverage</title></head><body>
 <input id="inp" type="text">
 <script>
   window.__ev = [];
   var inp = document.getElementById('inp'); inp.focus();
-  function rec(t) { return function (e) { window.__ev.push({t: t, k: e.key, tr: e.isTrusted}); }; }
-  document.addEventListener('keydown', rec('keydown'), true);
-  document.addEventListener('keyup', rec('keyup'), true);
+  function rec(t) { return function (e) { window.__ev.push({t: t, k: e.key || "", tr: e.isTrusted}); }; }
+  for (var t of ["keydown", "keyup", "input"]) document.addEventListener(t, rec(t), true);
 </script></body></html>"""
 
 
@@ -96,13 +106,28 @@ def main() -> int:
         for stream, buf in ((proc.stdout, out), (proc.stderr, err)):
             threading.Thread(target=_read_lines, args=(stream, buf), daemon=True).start()
 
-        import json
+        rpc = None
 
-        def trusted_pair(key):
-            ev = json.loads(rpc.evaluate("JSON.stringify(window.__ev)") or "[]")
-            down = any(e["t"] == "keydown" and e["k"] == key and e["tr"] is True for e in ev)
-            up = any(e["t"] == "keyup" and e["k"] == key and e["tr"] is True for e in ev)
-            return down, up
+        def events():
+            return json.loads(rpc.evaluate("JSON.stringify(window.__ev)") or "[]")
+
+        def assert_all_trusted(ev, label):
+            bad = [e for e in ev if not e["tr"]]
+            if bad:
+                failures.append(f"{label}: untrusted/synthetic event(s) recorded: {bad}")
+
+        def press_pair(key):
+            """A named/modifier press must record EXACTLY one trusted keydown then one trusted keyup for
+            `key`, in that order, with no input event and nothing else."""
+            rpc.evaluate("window.__ev = []")
+            if rpc.call("dom.press", {"selector": "css=#inp", "key": key, "options": {"input": "native", "timeout_ms": 10000}}) != {"ok": True}:
+                failures.append(f"dom.press {key} did not return ok")
+                return
+            ev = events()
+            assert_all_trusted(ev, f"press {key}")
+            seq = [(e["t"], e["k"]) for e in ev]
+            if seq != [("keydown", key), ("keyup", key)]:
+                failures.append(f"press {key}: event sequence was {seq}, want exactly [keydown {key}, keyup {key}]")
 
         rpc = None
         try:
@@ -114,24 +139,33 @@ def main() -> int:
                 eprint(f"stderr={err[-20:]}")
                 return 1
 
-            try:
-                for key in ("Shift", "F1"):
-                    rpc.evaluate("window.__ev = []")
-                    if rpc.call("dom.press", {"selector": "css=#inp", "key": key, "options": {"input": "native", "timeout_ms": 10000}}) != {"ok": True}:
-                        failures.append(f"dom.press {key} did not return ok")
-                    down, up = trusted_pair(key)
-                    if not (down and up):
-                        failures.append(f"dom.press {key}: incomplete trusted down/up (down={down}, up={up})")
+            rpc.call("page.url", {"timeout_ms": 10000})
+            for key in MODIFIERS + FUNCTION + NAV_EDIT:
+                press_pair(key)
 
-                # Non-BMP: one code point typed and inserted.
-                rpc.evaluate("document.getElementById('inp').value = ''")
-                if rpc.call("dom.type", {"selector": "css=#inp", "text": EMOJI, "options": {"input": "native", "timeout_ms": 10000}}) != {"ok": True}:
-                    failures.append("dom.type of a non-BMP emoji did not return ok")
-                value = rpc.evaluate("document.getElementById('inp').value")
-                if value != EMOJI:
-                    failures.append(f"non-BMP value wrong: {value!r} (want the emoji)")
-            except AssertionError as exc:
-                failures.append(f"native key coverage rejected: {exc}")
+            # Non-BMP: one trusted keydown/keyup pair bracketing one trusted input, one code point inserted.
+            rpc.evaluate("window.__ev = []")
+            rpc.evaluate("document.getElementById('inp').value = ''")
+            if rpc.call("dom.type", {"selector": "css=#inp", "text": EMOJI, "options": {"input": "native", "timeout_ms": 10000}}) != {"ok": True}:
+                failures.append("dom.type of a non-BMP emoji did not return ok")
+            ev = events()
+            assert_all_trusted(ev, "type emoji")
+            kd = [e for e in ev if e["t"] == "keydown"]
+            ku = [e for e in ev if e["t"] == "keyup"]
+            inp = [e for e in ev if e["t"] == "input"]
+            if not (len(kd) == 1 and kd[0]["k"] == EMOJI):
+                failures.append(f"emoji: want exactly one trusted keydown for the emoji, got {kd}")
+            if not (len(ku) == 1 and ku[0]["k"] == EMOJI):
+                failures.append(f"emoji: want exactly one trusted keyup for the emoji, got {ku}")
+            if len(inp) != 1:
+                failures.append(f"emoji: want exactly one trusted input event, got {inp}")
+            # Order: keydown precedes input precedes keyup.
+            order = [e["t"] for e in ev if e["t"] in ("keydown", "input", "keyup")]
+            if order != ["keydown", "input", "keyup"]:
+                failures.append(f"emoji: event order was {order}, want [keydown, input, keyup]")
+            value = rpc.evaluate("document.getElementById('inp').value")
+            if value != EMOJI:
+                failures.append(f"non-BMP value wrong: {value!r} (want the emoji)")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:
