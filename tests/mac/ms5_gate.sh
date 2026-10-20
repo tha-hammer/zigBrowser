@@ -34,12 +34,15 @@ verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, a
   # Per-run nonce dir (RoseCat SHOULD): never a fixed shared tree, so concurrent runs can't collide, and
   # cleanup deletes only this exact validated path.
   local rdir="zb-ms5-$(date +%s)-$$-$RANDOM"
+  # Best-effort exact-path cleanup for failures BEFORE the remote EXIT trap exists (mkdir/scp). The nonce
+  # dir is validated (${rdir:?}) so this never expands to a bare $HOME.
+  local rm_rdir="rm -rf \"\$HOME/${rdir:?}\""
   "${SSH[@]}" "$host" "mkdir -p \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
   "${SCP[@]}" src/agent_secrets_mac.h src/agent_secrets_mac.m tests/mac/keychain_seam_test.m "$host":"${rdir}"/ >/dev/null \
-    || { echo "FAIL: scp MS5 sources to $host" >&2; return 1; }
+    || { echo "FAIL: scp MS5 sources to $host" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
   # Pass the expected arch + the nonce dir into the (quoted) remote; the remote asserts the EXECUTING arch
   # against the label (RoseCat #3: two legs must be two architectures, not the same machine twice).
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS5 leg on $host timed out/failed" >&2; return 1; }
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS5 leg on $host timed out/failed" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
 set -euo pipefail
 d="$HOME/${ZB_RDIR:?}"
 trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT  # delete only this exact nonce dir; the test self-cleans its keychains

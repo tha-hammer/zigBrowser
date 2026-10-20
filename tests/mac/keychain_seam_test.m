@@ -131,12 +131,20 @@ int main(void) {
     } else {
       NSMutableArray *withO = [NSMutableArray arrayWithArray:(__bridge NSArray *)origList];
       [withO addObject:(__bridge id)O];
-      SecKeychainSetSearchList((__bridge CFArrayRef)withO);
-      int r = zb_keychain_lookup(NULL, NULL, SVC, ACCT, &tok, &err);
-      SecKeychainSetSearchList(origList);  // restore the user's search list at once
-      if (r == ZB_KC_OK && tok != NULL && strcmp(tok, "other-keychain") == 0)
-        fail("NULL (login-keychain) lookup returned an item from a non-default search-list keychain — NULL is not pinned to the default keychain");
-      if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+      // Assert the bait was actually made searchable BEFORE running the discriminator: if the install
+      // silently failed, the old buggy impl would pass (the bait was never searchable) — a false green.
+      OSStatus si = SecKeychainSetSearchList((__bridge CFArrayRef)withO);
+      if (si != errSecSuccess) {
+        fail("setup: could not install the bait keychain into the search list — the NULL-pinning discriminator would be invalid");
+      } else {
+        int r = zb_keychain_lookup(NULL, NULL, SVC, ACCT, &tok, &err);
+        OSStatus sr = SecKeychainSetSearchList(origList);  // restore the user's search list at once
+        if (r == ZB_KC_OK && tok != NULL && strcmp(tok, "other-keychain") == 0)
+          fail("NULL (login-keychain) lookup returned an item from a non-default search-list keychain — NULL is not pinned to the default keychain");
+        if (sr != errSecSuccess)
+          fail("could not restore the keychain search list after the NULL-pinning check — global Keychain state left changed");
+        if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+      }
       CFRelease(origList);
     }
 
