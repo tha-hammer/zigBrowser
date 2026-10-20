@@ -16062,3 +16062,143 @@ Agent Mail 6585.
 Its committed long-run artifact has code review, but final acceptance still
 waits for the user's real-screen long-run. Every later approval is therefore
 non-contiguous and cannot advance the linear boundary.
+
+## Review at `6a5d5bc`: S7b follow-ups, WS2.0 reds, real-screen harness and macOS MS3/MS4
+
+All twelve requested diffs are whitespace-clean. BlueBeaver held the shared
+Linux gate slot, so I did not start a competing full gate. I independently ran
+the non-GUI manual-check suite with both display variables removed:
+`tests/manual/test_real_screen_check.py` passed 27/27. The unrelated untracked
+`tests/agent_broker_detach_test.zig` was left untouched.
+
+### S7b helper reds (`621d89c`, `b681d6b`) and frame red (`c96a062`)
+
+- **`621d89c` is cumulatively APPROVED-for-tests by `b681d6b`.**
+- **`b681d6b` APPROVED.** The fix-forward now invokes the MCP server's actual
+  `tools/list` handler, requires exactly the six schemas and descriptions, and
+  pins `css=` and `text=` in every selector-bearing tool. This closes both
+  test gaps from the earlier review.
+- **`c96a062` remains APPROVED as the failing-first frame red.** Its exact
+  envelope/key set, UTF-8-safe error cut, line boundary and malformed-content
+  cases remain intact.
+
+Owner evidence records 2 failures/5 errors before the helper green, 7/7
+against it, and a zero-tool server mutant killed. Agent Mail 6606.
+
+### S7b `window_info` red and green (`a0ac4ed`, `220b692`)
+
+- **`a0ac4ed` APPROVED as a failing-first red.** It proves the normal
+  two-window filter and the no-entry/gone result.
+- **`220b692` BLOCKED.** It fixes the original `a7ff5db` invalid-params bug by
+  calling `page.health {}`, selecting the bound entry and asking `page.title`
+  for that window. Two reply-boundary failures remain:
+
+1. At `src/agent_broker.zig:262-270`, any health reply without
+   `result.pages` is sent to generic `answer` as though it were an engine
+   error. A malformed **successful** result can therefore expose arbitrary
+   result data, including a foreign-window canary, without passing the
+   own-window filter. Only a real JSON-RPC error may take the redacted-error
+   path; malformed success must get the fixed bad-answer failure.
+2. At `src/agent_broker.zig:281-287`, a title JSON-RPC error, missing
+   result/title or wrong title type becomes a successful `title:""`. A close
+   or engine failure between the health and title reads is hidden. A genuine
+   engine error must use the redacted error mapping; malformed success must
+   fail as a bad answer.
+
+Add both deterministic reds with a foreign canary, and parse the successful
+content to assert its exact required keys/types rather than only substrings.
+The specific `a7ff5db` `page.health` -32602 defect is closed, but S7a/S7b is
+not approved through this green. Agent Mail 6606.
+
+### WS2.0 owner-only plan and reds (`f2f3a6f`, `da854a2`, `fdf2137`, `fc6274f`)
+
+- **`f2f3a6f` BLOCKED.** Rev 2.6 specifies a check/refusal of a Windows
+  reparse point followed by path-based `SetNamedSecurityInfoW`. Those are two
+  separate path resolutions, leaving a junction/reparse replacement race.
+  Open the exact object once using `CreateFileW` with
+  `FILE_FLAG_OPEN_REPARSE_POINT` (and `FILE_FLAG_BACKUP_SEMANTICS` for a
+  directory), validate type/non-reparse on that handle, and apply with
+  `SetSecurityInfo`, or prove an invariant preventing replacement at every
+  caller. Add a deterministic junction/reparse-swap red; this seam also
+  protects `<profile>\WebView2`.
+- **`da854a2` BLOCKED-for-tests.** The exact SDDL, SID grammar, POSIX modes,
+  symlink and socket-path properties are useful reds, but there is no Windows
+  handle/reparse race test.
+- **`fdf2137` BLOCKED-for-tests.** Its committed exact readback expects
+  `D:P...`, while the real Windows evidence canonicalizes the directory to
+  `D:PAI...`. Fix forward so the test requires `P`, permits only the observed
+  canonical control flags (`AI`/`AR`) and still proves exactly one owner ACE.
+  This seam-only test is not the promised production transport closure; the
+  later `win_transport_test.py` must drive the browser-created directory,
+  listener/socket and token plus the `zbother` negatives.
+- **`fc6274f` APPROVED.** The exemption is only for a Windows-target test
+  artifact that cannot open a GUI and runs on a VM without Python/X. Normal
+  browser and cross-platform steps remain display-guarded.
+
+Owner evidence shows the live red failing before the seam, a trial green on
+Win11, a no-apply mutant killed, and also confirms the canonical `AI` spelling
+that the committed red must absorb. Agent Mail 6607.
+
+### Real-screen harness fixes (`d3c998d`, `4b50ff6`)
+
+- **`d3c998d` APPROVED.** Before each input the script asks the WM to activate
+  only its own window, then asks the human once and waits when GNOME refuses;
+  it synthesizes no input during that wait. `safe_click`/`safe_key` retain the
+  server-grab revalidation.
+- **`4b50ff6` APPROVED.** The long-run resolves the drawer and minus geometry
+  from the latest `windows` census and refuses absent, hidden, output-only or
+  ambiguous matches, instead of clicking a stale first-allocation row.
+
+The focused suite passed 27/27 locally without a display. These verdicts
+approve the guarded test tooling; S5c-1/f9cb26a still needs the user's current
+long-run PASS before its acceptance and the linear push boundary can move.
+Agent Mail 6606.
+
+### macOS MS3.1 profile store (`867b44d`)
+
+**BLOCKED.** The public macOS-14 identifier store, lazy pre-first-view
+resolution, persistence/isolation e2e, and user-decided macOS-13 shared-store
+warning are coherent. But `src/wkwebview_shim.m:2715-2720` assigns
+`[NSString stringWithUTF8String:dir]` and always returns success. A valid
+filesystem path with non-UTF-8 bytes converts to nil, which silently selects
+the shared/default store instead of refusing the explicit profile. Validate
+the conversion, fill `out_err`, return non-OK, and add a direct ABI/app red.
+
+**SHOULD:** define path normalization and use a collision-resistant digest for
+the durable identifier. Two ad-hoc FNV hashes over the raw path spelling are
+not a robust per-profile identity contract. Agent Mail 6608.
+
+### macOS MS4 plan rev 6 (`55d8f60`)
+
+**BLOCKED.** The grant tuple, single-use/expiry, pre-dispatch revalidation,
+in-ticket expectation check, per-write confirmation and MS7/MS8 separation
+match the shared drawer contract. Two topology statements do not match HEAD:
+
+1. `plan:1144-1147` calls `agent_broker.zig` greenfield, but it already exists
+   from `a7ff5db` and this review's S7 follow-ups. MS4.1b must extend/consume
+   that one shared broker under explicit coordinated ownership.
+2. `plan:1175-1177` says helper `tool_use` arrives “off the in-process
+   socket.” Helper-to-app transport is the supervised NDJSON pipe; the broker
+   then invokes the socket-free in-process automation core. The external
+   automation socket must remain unable to reach the broker.
+
+Correct the production chain and owner before MS4.1b begins. Agent Mail 6608.
+
+### macOS load-serial groundwork (`6a5d5bc`)
+
+**BLOCKED.** The stable per-window counter, current-navigation commit guard,
+snapshot publication and `page.list` field are sound. Rev 6 explicitly says
+the field flows to both `page.list` and `page.health` (`plan:1150-1153`), but
+production adds it only in `listJson` (`src/automation_server.zig:791-807`);
+`healthJson` at `:810-830` omits it. The e2e polls only `page.list`, so this
+missing production edge survives. Emit it from health as well and assert both
+APIs report the same per-window value before and after each commit. Agent Mail
+6608.
+
+### Linear push status
+
+The push boundary remains **`4b04ff2`** while the user's real-screen long-run
+is in progress. `f9cb26a` is still the first unpushed commit and therefore the
+earliest linear hold. Once that run is reported PASS, a fresh linear audit is
+still required: several later commits are approved non-contiguously, while
+`220b692`, `f2f3a6f`, `867b44d`, `55d8f60` and `6a5d5bc` are blocked above.
