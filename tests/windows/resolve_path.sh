@@ -27,8 +27,12 @@ kh="${ZB_WIN_KNOWN_HOSTS:-tests/windows/known_hosts}"
 # PowerShell single-quoted literal is injection-safe; PowerShell decodes it back to the real path.
 pb64=$(printf '%s' "$p" | base64 -w0)
 
-# Quoted heredoc: NOTHING below is processed by bash (so backslashes and $ stay literal). The path
-# base64 is substituted into the __PB64__ placeholder afterwards — never the raw path.
+# PowerShell reports the raw result only: line 1 = the GetFinalPathNameByHandle return (the length,
+# or 0 on failure, or the required size when the buffer is too small), line 2 = the resolved name.
+# The reject/accept DECISIONS live in bash below, so they are exercised by the selftest's fake-SSH
+# seam. Quoted heredoc: NOTHING below is processed by bash; the path base64 is substituted into the
+# __PB64__ placeholder afterwards — never the raw path.
+RESOLVE_CAP=1024
 read -r -d '' PS <<'PSEOF' || true
 $ErrorActionPreference = 'Stop'
 $p = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PB64__'))
@@ -41,20 +45,26 @@ public static extern uint GetFinalPathNameByHandle(System.IntPtr h, System.Text.
 '@
 $h = [Zb.P]::CreateFile($p, 0x80000000, 1, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
 if ($h -eq [IntPtr](-1)) { exit 3 }
-$cap = 1024
-$sb = New-Object System.Text.StringBuilder $cap
-$n = [Zb.P]::GetFinalPathNameByHandle($h, $sb, $cap, 0)
+$sb = New-Object System.Text.StringBuilder 1024
+$n = [Zb.P]::GetFinalPathNameByHandle($h, $sb, 1024, 0)
 [void][Zb.P]::CloseHandle($h)
-if ($n -eq 0) { exit 4 }
-if ($n -ge $cap) { exit 5 }
-$r = $sb.ToString()
-if ($r.StartsWith('\\?\')) { $r = $r.Substring(4) }
-$r
+[Console]::Out.WriteLine($n)
+[Console]::Out.WriteLine($sb.ToString())
 PSEOF
 PS="${PS//__PB64__/$pb64}"
 
 b64=$(printf '%s' "$PS" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)
-exec env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh \
+out=$(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh \
   -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$kh" -o BatchMode=yes -o ConnectTimeout=15 \
-  -p "$port" "$user@$host" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $b64"
+  -p "$port" "$user@$host" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $b64" 2>/dev/null)
+rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"               # ssh / CreateFile failure (e.g. PS exit 3) — propagate
+n=$(printf '%s\n' "$out" | sed -n '1p' | tr -d '\r')
+path=$(printf '%s\n' "$out" | sed -n '2p' | tr -d '\r')
+case "$n" in ''|*[!0-9]*) echo "resolve_path: non-numeric length '$n'" >&2; exit 6 ;; esac
+[ "$n" -eq 0 ] && { echo "resolve_path: GetFinalPathNameByHandle returned 0 (failure)" >&2; exit 4; }
+[ "$n" -ge "$RESOLVE_CAP" ] && { echo "resolve_path: resolved name truncated (n=$n >= $RESOLVE_CAP)" >&2; exit 5; }
+pfx='\\?\'
+path="${path#"$pfx"}"                        # strip the \\?\ long-path prefix if present
+printf '%s\n' "$path"

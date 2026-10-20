@@ -15,12 +15,10 @@
 # tests/mac/gate.sh): functions return nonzero and callers check with `|| return 1`.
 set -uo pipefail
 
-# Whole-gate display scrub: re-exec once with the X/Wayland vars removed, so EVERY child the gate
-# starts (python, virsh, ssh, tar, resolve_path.sh) inherits a display-free environment (WS0.3).
-if [ -z "${ZB_GATE_SCRUBBED:-}" ]; then
-  export ZB_GATE_SCRUBBED=1
-  exec env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY "$0" "$@"
-fi
+# Whole-gate display scrub: remove the X/Wayland vars from the environment UNCONDITIONALLY at entry
+# (no sentinel a caller could pre-set to skip it), so EVERY child the gate starts (python, ssh, tar,
+# virsh, resolve_path.sh) inherits a display-free environment (WS0.3).
+unset DISPLAY WAYLAND_DISPLAY XAUTHORITY
 
 cd "$(git rev-parse --show-toplevel)" || { echo "gate: not in a git repo" >&2; exit 1; }
 REPO="$PWD"

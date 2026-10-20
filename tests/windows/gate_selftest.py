@@ -64,7 +64,10 @@ if [ -n "${ZB_SELFTEST_SSH_LOG:-}" ]; then printf '%s\n' "$@" >> "$ZB_SELFTEST_S
 case " $* " in
   *powershell*EncodedCommand*)
     if [ -n "${ZB_SELFTEST_RESOLVE_FAIL:-}" ]; then exit 3; fi
-    if [ -n "${ZB_SELFTEST_RESOLVE_OUT:-}" ]; then printf '%s\n' "$ZB_SELFTEST_RESOLVE_OUT"; fi
+    # Stand in for the host: resolve_path.sh reads line 1 = length, line 2 = resolved path.
+    if [ -n "${ZB_SELFTEST_RESOLVE_OUT:-}" ] || [ -n "${ZB_SELFTEST_RESOLVE_N:-}" ]; then
+      printf '%s\n%s\n' "${ZB_SELFTEST_RESOLVE_N:-50}" "${ZB_SELFTEST_RESOLVE_OUT:-}"
+    fi
     exit 0
     ;;
 esac
@@ -273,6 +276,20 @@ class NoDisplayTests(_GateCase):
             for v in ("DISPLAY=", "WAYLAND_DISPLAY=", "XAUTHORITY="):
                 self.assertNotIn(v, env_log, f"a child inherited {v}" + detail)
 
+    def test_hostile_sentinel_cannot_defeat_the_scrub(self):
+        """The scrub must be UNCONDITIONAL: a caller pre-setting the old ZB_GATE_SCRUBBED marker
+        (or any sentinel) must not skip it and leak DISPLAY to a child."""
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            env, home, _kh, logs = self._stage_env(td)
+            env.update(self._DISPLAY)
+            env["ZB_GATE_SCRUBBED"] = "1"   # hostile: pretend the scrub already happened
+            proc = self._run_gate(env, _fakes(td), args=["--fence-string", rf"C:\Users\{_TEST_USER}\zb\x"], home=home)
+            self.assertEqual((proc.stdout or "").strip(), "ALLOW", f"fence must run\n{proc.stderr}")
+            self.assertIn("python", self._read(logs["ran"]), "the python child must run")
+            env_log = self._read(logs["env"])
+            self.assertNotIn("DISPLAY=", env_log, "a hostile ZB_GATE_SCRUBBED must NOT defeat the scrub\n" + env_log)
+
 
 class PathFenceTests(_GateCase):
     def _fence(self, path, bindir, home):
@@ -345,6 +362,24 @@ class PathFenceTests(_GateCase):
                              "a resolver with multiline/malformed output must DENY")
             self.assertFalse(self._allowed(good, bindir, str(home), resolver=str(td / "nope.sh")),
                              "a missing resolver must DENY (resolution is mandatory)")
+
+    def test_default_resolver_rejects_zero_and_truncated_length(self):
+        """The default resolver's zero (GetFinalPathNameByHandle==0) and n>=buffer (truncated)
+        branches must fail closed -> the gate DENYs."""
+        good = rf"C:\Users\{_TEST_USER}\zb\runs\1\out.png"
+
+        def verdict(extra):
+            with tempfile.TemporaryDirectory() as t:
+                td = pathlib.Path(t)
+                env, home, _kh, _logs = self._stage_env(td)   # no ZB_RESOLVE_CMD: default resolver runs
+                env.update(extra)
+                proc = self._run_gate(env, _fakes(td), args=["--allowed-path", good], home=home)
+                return (proc.stdout or "").strip()
+
+        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "0"}), "DENY",
+                         "GetFinalPathNameByHandle returning 0 must DENY")
+        self.assertEqual(verdict({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "2000"}), "DENY",
+                         "a resolved length >= the buffer (truncated) must DENY")
 
     def test_default_resolver_runs_without_override_and_fails_closed(self):
         """The PRODUCTION default resolver (gate.sh's resolve_path.sh) must actually run when no
@@ -513,6 +548,32 @@ class ResolvePathSafetyTests(unittest.TestCase):
                 self.assertIsNotNone(m, "PS must carry the path as a base64 literal")
                 self.assertEqual(base64.b64decode(m.group(1)).decode("utf-8"), path,
                                  "the path must round-trip through the base64 data channel unchanged")
+
+    def _run_resolver(self, extra):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            bindir = _fakes(td)
+            env = {
+                "PATH": bindir + os.pathsep + _BASE_PATH, "HOME": str(td),
+                "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_GUEST_USER": _TEST_USER,
+                "ZB_WIN_KEY": str(td / "k"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+            }
+            env.update(extra)
+            (td / "k").write_text("x"); (td / "kh").write_text("#")
+            return subprocess.run([str(RESOLVE), rf"C:\Users\{_TEST_USER}\zb\x"],
+                                  env=env, capture_output=True, text=True, timeout=30)
+
+    def test_resolver_rejects_zero_and_truncated_length(self):
+        """resolve_path.sh's own bash branches: GetFinalPathNameByHandle==0 -> exit 4; length >=
+        buffer -> exit 5; a normal length -> exit 0 and the resolved path on stdout."""
+        good = rf"C:\Users\{_TEST_USER}\zb\x"
+        p0 = self._run_resolver({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "0"})
+        self.assertEqual(p0.returncode, 4, f"zero length must exit 4\n{p0.stderr}")
+        pc = self._run_resolver({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "2000"})
+        self.assertEqual(pc.returncode, 5, f"truncated length must exit 5\n{pc.stderr}")
+        pn = self._run_resolver({"ZB_SELFTEST_RESOLVE_OUT": good, "ZB_SELFTEST_RESOLVE_N": "50"})
+        self.assertEqual(pn.returncode, 0, f"normal length must exit 0\n{pn.stderr}")
+        self.assertEqual(pn.stdout.strip(), good, "a normal resolve must print the resolved path")
 
 
 if __name__ == "__main__":
