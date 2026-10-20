@@ -6,8 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.1)
-rev: 2.1
+status: plan for review (rev 2.2)
+rev: 2.2
+rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses the SMBIOS UUID (a standard user cannot read Win32_ComputerSystemProduct.UUID — WMI Access-denied 0x80041003, wmic absent; verified on win11-m8). Identity = pinned SSH host key + a provisioning marker nonce (ZB_WIN11_MARKER / C:\\Users\\<user>\\zb\\.gate-identity, probe field identity_marker); virsh stays read-only (domstate, snapshot-list). Updated the reach-VM identity section, the WS0.1 probe fields, the fail-closed list and WS0.6."
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
 last_updated: 2026-10-19
 last_updated_by: Claude (Sonnet 5.5) review subagent
@@ -532,12 +533,16 @@ from a small WTS-API helper (`WTSGetActiveConsoleSessionId` + `WTSQuerySessionIn
 forward), or the tailnet address if the user restored Tailscale in the guest. Host keys are pinned in
 `tests/windows/known_hosts` (captured once by the user at provisioning, `StrictHostKeyChecking=yes`,
 `UserKnownHostsFile` set to that file) because a loopback port can be answered by anything that binds it.
-**Identity check:** the probe also prints the guest's SMBIOS UUID (`Win32_ComputerSystemProduct.UUID`); when
-`virsh` is available the gate compares it with `virsh -c qemu:///session domuuid <domain>` (domain name from
-`ZB_WIN11_DOMAIN`, default `win11-m8`, whose UUID is `f6e88ab5-3481-463e-b19b-e793b695f02c`). A different UUID
-is `wrong host`, a fail. `virsh` is read-only in the gate (`domstate`, `domuuid`, `snapshot-list`); **the gate
-never starts, stops, reverts or snapshots the VM** unless run with an explicit `--vm-revert <name>` that only
-the orchestrator or the user passes.
+**Identity check (rev 2.2, bead zigBrowser-126):** the SMBIOS UUID cannot be used — a standard user cannot read
+`Win32_ComputerSystemProduct.UUID` (WMI is Access-denied 0x80041003 for `zbtext`, `wmic` is absent, and the
+registry exposes `ComputerHardwareId` but not the SMBIOS UUID; verified on win11-m8 2026-10-20). Identity is
+instead proven by (a) the **pinned SSH host key** (`tests/windows/known_hosts`, unique to that VM's sshd — a
+loopback port answered by something else presents a different key and fails `StrictHostKeyChecking=yes`), and
+(b) a **provisioning marker nonce**: at provisioning the user writes a random nonce to
+`C:\Users\<user>\zb\.gate-identity` and records the same value in `tests/windows/hosts.env` (`ZB_WIN11_MARKER`);
+the probe prints `identity_marker` and the gate fails `wrong host` if it differs. `virsh` is read-only in the
+gate (`domstate`, `snapshot-list`); **the gate never starts, stops, reverts or snapshots the VM** unless run
+with an explicit `--vm-revert <name>` that only the orchestrator or the user passes.
 
 **Down VM fails closed.** In order: (1) `virsh domstate` not `running` → `NOT RUN: Win11 VM <domain> is
 <state>`; (2) the TCP connect to the SSH port fails or times out in 15 s → `NOT RUN: Win11 VM unreachable at
@@ -574,8 +579,9 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
   wrong OS build or arch; no active unlocked interactive test session; missing WebView2
   runtime; test exit 77 (skip) → **fail**; a test that does not print `ASSERTS <n>` with
   `n > 0` → **fail**; a GUI test whose launched PID is not in the active console session →
-  **fail**. Rev 2 adds: SSH host key not the pinned one; the Win11 VM's SMBIOS UUID not the configured
-  domain's; the Win11 VM not `running` per `virsh`; the console session owned by someone other than the
+  **fail**. Rev 2 adds: SSH host key not the pinned one; the Win11 VM's `identity_marker` not the configured
+  `ZB_WIN11_MARKER` nonce (rev 2.2 — the SMBIOS UUID is unreadable by a standard user, bead zigBrowser-126);
+  the Win11 VM not `running` per `virsh`; the console session owned by someone other than the
   test user; `zbtest` in a forbidden group, or able to write a served path on the file server (WS0.7); a
   probe whose `schema` field is not the gate's expected version; remote output files left after the run;
   and `NOT RUN` messages that always include the sentence `no Windows host configured` when either host
@@ -647,7 +653,8 @@ object: `os_build`, `edition`, `native_arch` (from `IsWow64Process2`'s native ma
 `PROCESSOR_ARCHITECTURE`), `test_user`, `interactive_session` (id, state `Active`, connected to
 the console or an RDP session that was moved to the console), `locked` (LogonUI running in that
 session), `webview2_pv` (read from the three registry places in provisioning item 4), `python`, `zig` (VM only),
-`free_gb`, `root` (the allowed remote root), plus (rev 2) `schema` (an integer the gate pins), `smbios_uuid`,
+`free_gb`, `root` (the allowed remote root), plus (rev 2) `schema` (an integer the gate pins), `identity_marker`
+(rev 2.2: the provisioning nonce from `C:\Users\<user>\zb\.gate-identity`, replacing the unreadable SMBIOS UUID),
 `console_user`, `groups`, `shares`, `zbtest_write_paths`, `listeners`, `fw_rules_hash`, `snapshot_marker`
 (the VM), `sshd_listen` and `sshd_allowusers` (the physical host).
 
@@ -678,7 +685,8 @@ running anything.
 ### Behavior WS0.6: the Win11 VM is the VM it claims to be, and a down VM fails the gate
 **Given** `ZB_WIN11_HOST`/`ZB_WIN11_PORT`/`ZB_WIN11_DOMAIN`, **when** the gate starts, **then** it checks, in
 this order, `virsh` state `running`, TCP reachability within 15 s, the pinned host key, the probe JSON, and
-that the probe's SMBIOS UUID equals `virsh domuuid`; each failure exits nonzero with the exact messages
+that the probe's `identity_marker` equals the pinned `ZB_WIN11_MARKER` nonce (rev 2.2: the SMBIOS-UUID check is
+dropped — a standard user cannot read it, bead zigBrowser-126); each failure exits nonzero with the exact messages
 under "How the gate reaches the Win11 VM". The gate has no flag that starts, reverts or skips the VM.
 
 ### Behavior WS0.7: the file-server host is not disturbed
