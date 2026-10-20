@@ -15122,3 +15122,238 @@ Verdict sent to BlueBeaver in Agent Mail 6343.
 The linear push-through boundary remains the already-pushed **`70317c0`**.
 Neither review changes the pending S6b1 Part-B user acceptance or the earlier
 linear blockers.
+
+## Reviews at `87ffcc0` — S5d fix-forward, macOS routing, and voice plan revisions
+
+### S5d fix-forward green (`1605e7d`) and plan rev 16.20.21 (`0ebadd4`)
+
+**`1605e7d`: BLOCKED-for-tests.** The production changes are internally
+consistent: a first prompt is held until `session_opened`; an open failure
+drops exactly the queued prompt that waited and reopens for the next one;
+`reply_capped` applies prompt identity before cap ordering; prompt identifiers
+are bounded without wrap; a refused prompt does not consume an output sequence;
+and `fit_message` sizes the emitted frame with `prompt_id` at the largest
+accepted sequence number. The supplied clean-export evidence was 202/202 steps
+and 957/957 tests under a private Xvfb.
+
+Two earlier coverage blockers remain:
+
+1. `tests/e2e/agent_open_order_test.py:112-114` sends the popup prompt, sleeps
+   0.5 seconds, and closes the popup without first observing that the scripted
+   helper received that popup's `open_session`. A slow run may close before the
+   app emits anything and still satisfy every subsequent assertion. The test
+   must observe `s-2-*` open ownership before close, then prove that the late
+   `session_opened` produces no prompt.
+2. `tests/agent_frames_out_test.zig:34-40` directly moves the Zig validator to
+   the exhausted state and checks the Zig exports. It never calls the native
+   `src/agent_helper.c:263-272` branch that maps a null prompt frame to a drawer
+   error. A mutant that ignores `zb_agent_out_prompt_refusal()` or always shows
+   the too-long sentence survives. An e2e-only near-exhaustion seam must drive
+   the C helper/drawer chain and observe one exact `Agent error`, no prompt
+   frame, and no skipped output sequence.
+
+**`0ebadd4`: BLOCKED for accuracy until that coverage is represented.** Plan
+line 2517 calls the Zig export test “through the exports `agent_helper.c`
+calls,” but it does not pass through `agent_helper.c`; line 2521's “six red
+files above” is also not an exact inventory. The as-built implementation may
+remain described, but the plan must state the true test boundary and name the
+missing C/drawer exhaustion e2e. Findings were sent to BlackRobin in Agent
+Mail 6351.
+
+### macOS hook isolation (`87ffcc0`)
+
+**APPROVED.** The registered non-e2e regression now sets and drives all three
+ambient hooks at their production call sites: a DOM read remains prompt despite
+the dispatch hold, routed navigation succeeds despite the refusal variable,
+and native click succeeds despite the acknowledgement-failure variable. The
+three positive e2e-mode tests/mutants from the two-host evidence prove those
+same hooks still operate when deliberately enabled. This closes the
+`9571482` test blocker. The parser also replaces the overflowing `atoi`/
+multiply path with `strtol` and clamps before conversion to microseconds.
+
+### macOS stale-navigation callback fix (`b5ebd39`)
+
+**BLOCKED.** The callback guard is ordered before callback-state mutation, but
+the production ownership transition still has a race. `currentNav` changes only
+in `didStartProvisionalNavigation` (`src/wkwebview_shim.m:493-496`), while
+`zb_auto_routed_nav` obtains a new `WKNavigation` and resets `finishedOrFailed`,
+`routedOutcome`, and `routedNav` at `:1192-1200`. Between submission and the new
+delegate callback, a late callback for the old navigation still equals the old
+`currentNav`, passes the guard, and can complete/fail the new operation or
+invalidate its timer. Advance `currentNav` synchronously when the app obtains
+the returned navigation, and do the analogous ownership update for app-owned
+load/reload resets; retain `didStart` for page/user navigation. Deterministic
+late-success and late-failure reds must cover this interval. The eight-test
+two-host gate and Linux build evidence are accepted but do not exercise it.
+Verdict was sent to JadeBeacon in Agent Mail 6353.
+
+### Voice output / TTS rev 2.4 (`9a32419`)
+
+**BLOCKED.** The explicit VF marker regions are now byte-identical, the
+FileSink artifact is correctly allowlisted by the privacy-write oracle, the
+native child is consistently `ZbChild`, and the prior package/resource-bound
+placeholders are materially improved. Four blockers remain:
+
+1. The shared rule says every automated run is Null/WAV/FileSink only
+   (`:363-371`, `:967-969`), but Closure E opens private PulseAudio
+   (`:1116-1119`), V2 unloads a Pulse sink (`:1372-1374`), the Mac cross-target
+   test uses a muted output (`:1380-1381`), W1's gated test opens muted WASAPI
+   (`:1707-1711`), and automated CW opens/live-tests WASAPI and fails the gate
+   for a missing microphone (`:1743-1753`). The integration table retains the
+   same physical-device claims (`:1869-1870`). Automated device-loss must be an
+   injected backend result; physical devices belong only in user-approved
+   manual checks.
+2. D9.2 (`:618-640`) does not define an interoperable wire format: the outer
+   header and symbolic frame names omit byte order, exact payload layouts,
+   text encoding/lengths, identifier widths, sample metadata, and malformed or
+   trailing-byte handling. One shared codec plus golden vectors must bind the
+   browser and child.
+3. D11 first adds network and microphone to a single app manifest
+   (`:735-745`), then says the dylib and no-network/no-device speech child are
+   each signed with that same manifest (`:754-760`, versus `:769-774`). Specify
+   per-code-object signing: app entitlements for the app, minimal/none for the
+   child, and no app entitlement set on the dylib, with exact census tests.
+4. The component/resource inventory, entitlement, child Seatbelt profile and
+   inside-out signing changes remain only a proposal to the macOS-plan owner
+   (`:707-712`, `:778-784`). Acceptance of a committed authoritative macOS-plan
+   revision must be a hard prerequisite of the Mac voice slices.
+
+SHOULD: the C feed API has no `prompt_id` (`:409-420`) while the cap behavior is
+defined per prompt (`:446-451`). Either carry the id or explicitly bind the
+proof that S5d validation rejects stale frames before `on_frame` and one active
+prompt per window makes window-local speech state sufficient.
+
+### Voice input / STT rev 2.2 (`da6cf8c`)
+
+**BLOCKED.** The VF synchronization and previously summary-only async/privacy/
+lifecycle requirements are now substantially integrated into owning slices,
+but four executable contradictions remain:
+
+1. VS4.8 requires an inherited unforgeable descriptor/handle in addition to
+   `--e2e-protocol` (`:912-916`), yet VS4.6 and every later Mac, Windows and
+   installed-package command invoke `zigBrowser --voice-selftest ...
+   --e2e-protocol` directly (`:901-905`, `:1013`, `:1039`, `:1089`, `:1138`).
+   Pin the Unix fd and Windows HANDLE transport, inheritance and close rules,
+   launcher, and update every gate invocation; as written, the security rule
+   makes the planned gates exit 2.
+2. VS10 says the automated Windows gate is recorded-file-only and live capture
+   is manual (`:1082-1085`), then the gate includes live capture (`:1107`). The
+   real `--voice-capture-probe --list` is also mislabeled a recorded-file
+   assertion at `:1097`. Automated mapping needs an injected device/error seam;
+   real enumeration/capture stays manual.
+3. The `(size,mtime,inode)` model cache is called a performance hint
+   (`:489-496`) without explicitly forbidding it from authorizing bytes or
+   skipping SHA-256. Every consumed model must be hash-verified and loaded from
+   those verified bytes/handle; the tuple may schedule work only.
+4. The voice-owned MS1.3/MS5.1c changes are still merely proposed to the
+   authoritative macOS plan. VS7/VS8/VSP.3 must depend on the committed
+   coordinating plan revision.
+
+Both docs commits pass `git diff-tree --check`; no audio device, remote host,
+live browser, real display, credential or external service was touched. These
+findings were sent to AzureRidge in Agent Mail 6354.
+
+The linear push-through boundary remains the already-pushed **`70317c0`**.
+`1605e7d` and `b5ebd39` are blocked, and the user-gated S6b1 Part-B acceptance
+also remains pending.
+
+## Reviews at `f358299` — Windows entry green and macOS/S5d fix-forwards
+
+### Windows WS7.5 entry-point green (`3fc74da`)
+
+**APPROVED**, cumulatively with the approved failing-first commits `1b25a2d`
+and `1f03e76`. The dispatcher consults an empty-by-default capability table
+before dynamically importing a command module, and the test adds a future
+unknown command to prove that the policy fails closed rather than enumerating
+today's commands. Each present fork/exec seam has a second-line named
+`NotOnWindows` guard: launch, netd, relay, hook execution, both probe paths and
+the token-wrapper writer. `agent-host-win-import` now registers both the deep
+import oracle and the entry-point oracle; those cases also passed in my
+independent clean-export gate while it was running.
+
+NIT: `agent/host/tests/test_windows_entry.py:49` creates `zb-win-seam-*` with a
+bare `tempfile.mkdtemp()` and never removes it, and the build-step description
+still describes only the old import check. Neither affects the WS7.5 contract.
+This closes my earlier `bb0b4b3`/6324 blocker. Verdict sent to BlueBeaver in
+Agent Mail 6357.
+
+### macOS synchronous navigation ownership (`b21a71c`)
+
+**Production fix correct; BLOCKED-for-tests.** The returned `WKNavigation` is
+now assigned to `currentNav` synchronously at every app-owned submit site:
+initial/app load, app reload and the common routed navigate/reload path. That
+closes the submit-to-`didStartProvisionalNavigation` interval during which an
+old completion still looked current. Correcting the reload calls to their
+actual `WKNavigation`-returning selectors is also sound.
+
+The requested stale-success and stale-failure regressions are still absent,
+as the commit and JadeBeacon's mail explicitly acknowledge. The corruption is
+observable even if the routed RPC waits only on `routedOutcome`: without the
+guard, stale finish sets `finishedOrFailed`, invalidates the new timer and
+emits a premature `NAV` protocol row; stale failure mutates/cancels the same
+state. A gated synthesized callback can require no early row or state change
+and exactly the real new navigation's terminal event. A delegate unit is also
+acceptable if it invokes the real delegate methods with distinct navigation
+identities rather than copying their predicate. NIT: the property comment at
+`src/wkwebview_shim.m:271` still says `currentNav` is set only in `didStart`.
+Verdict sent to JadeBeacon in Agent Mail 6358.
+
+### macOS document-change production-chain red (`f358299`)
+
+**APPROVED.** The test-only stale-token hook is behind the already-reviewed
+`--e2e-protocol` gate and changes only the value consumed by the production
+native-click document-token comparison. It persists across relocation retries,
+so the test requires the final exact `-32001` / `document_changed` mapping and
+independently proves `window.__clicks == 0`. Removing the guard delivers the
+click and fails the oracle. This closes the document-change red but does not
+substitute for `b21a71c`'s stale callback regressions.
+
+### S5d prompt-base failing-first red (`6862919`)
+
+**APPROVED as a failing-first red.** The pure decision test is intentionally
+unregistered until its green. It fails by named missing declarations, proves
+the seam is inert outside e2e mode, accepts only plain decimal values from zero
+through `2^53-1`, rejects malformed and overflowing representations, and pins
+both last-id allocation/exhaustion and the ordinary non-e2e first id. The
+separate real C-helper/drawer chain remains required.
+
+### Drawer plan rev 16.20.22 (`e9129a2`)
+
+**BLOCKED for one accuracy contradiction.** The new rev-16.20.22 status clause
+and section 10 now correctly say `agent_frames_out_test.zig` ends at the Zig
+exports, name the planned C/drawer exhaustion e2e and its gated prompt-base
+seam, enumerate the reds exactly, and require close-before-open to observe the
+popup's `open_session` before closing it. Immediately after the new status
+clause, however, rev 16.20.21 still claims that the prior green proved
+"prompt-id exhaustion through the production path." Mark that old phrase
+superseded or narrow it to the Zig export path; it directly contradicts the
+new true-boundary text. Verdict sent to BlackRobin in Agent Mail 6359.
+
+The linear push-through boundary remains the already-pushed **`70317c0`**.
+`b21a71c` is the earliest newly reviewed unresolved commit in this portion of
+the chain; earlier blockers and the user-gated S6b1 Part-B acceptance remain as
+recorded above.
+
+### macOS native key/text red (`3b88170`)
+
+**BLOCKED-for-tests.** The test genuinely fails against the unsupported macOS
+port and proves that one `keydown` plus the last `input` event are trusted, but
+it does not pin the full PagePort contract in
+`src/automation/page_port.zig:223-232`. It never observes `keyup`, so
+`nativeKey` could return before (or
+without) the acknowledged trusted release. For native text it records only one
+boolean, so a partial synthetic sequence followed by one trusted event passes.
+Record the ordered keydown/input/keyup events and require a complete trusted
+down/up pair for `a`, then complete trusted sequences for both `h` and `i`, with
+no extras, after the respective RPC returns. Verdict sent to JadeBeacon in
+Agent Mail 6360.
+
+### Clean-export gate at `3fc74da`
+
+The bounded clean-export gate completed under a private Xvfb with seed
+`0x3e148ea4`: **Build Summary: 202/202 steps succeeded; 957/957 tests passed**.
+The export was deleted immediately by its `find -delete` trap. This run
+overlapped JadeBeacon's independently started slot gate after both were already
+in flight; the orchestrator directed both to finish. It showed no load failure,
+but it is recorded as corroborating rather than quiet-host evidence. Future
+full gates require an Agent Mail slot claim first.
