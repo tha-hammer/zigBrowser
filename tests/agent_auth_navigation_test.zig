@@ -6,8 +6,9 @@
 //!    them): after a capture, block `replay`; else callbackCode decides: capture `<code>#<state>`,
 //!    or block state, origin, path, scheme or code.
 //! 3. Anything else: `https` (else block `scheme`) to an allowlisted origin (else block
-//!    `origin`): claude.ai, platform.claude.com, claude.com, or one or more labels under
-//!    anthropic.com (not anthropic.com itself); port 443 only; no user info; hosts in ASCII
+//!    `origin`): claude.ai, platform.claude.com, claude.com, accounts.google.com and
+//!    appleid.apple.com (rev 16.20.26; tests/agent_auth_thirdparty_test.zig), or one or more labels
+//!    under anthropic.com (not anthropic.com itself); port 443 only; no user info; hosts in ASCII
 //!    lowercase. Allowed: `https://<host>:443` for the `AUTH allowed` row.
 //! Section 9's A2 cases are cases here: wrong state, missing state, another port, http versus
 //! https, a host lookalike, a replayed callback after success.
@@ -89,7 +90,6 @@ test "the callback's other refusals come from callbackCode" {
 
 test "everything else is refused: scheme or origin" {
     for ([_][]const u8{
-        "https://accounts.google.com/o/oauth2/auth",
         "https://anthropic.com/",
         "https://evilanthropic.com/",
         "https://anthropic.com.evil.example/",

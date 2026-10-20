@@ -169,11 +169,12 @@ fn isCallback(authorize_url: []const u8, nav_url: []const u8) bool {
     return std.mem.eql(u8, text(nav.path), text(redirect.path));
 }
 
-/// claude.ai, platform.claude.com, claude.com (the authorize URL's own host), or one or more
+/// claude.ai, platform.claude.com, claude.com (the authorize URL's own host), the two third-party
+/// sign-in hosts accounts.google.com and appleid.apple.com (exactly; rev 16.20.26), or one or more
 /// labels under anthropic.com (not anthropic.com itself); `host` already ASCII lowercase.
 fn allowedHost(host: []const u8) bool {
     for (host) |c| if (!(std.ascii.isLower(c) or std.ascii.isDigit(c) or c == '-' or c == '.')) return false;
-    for ([_][]const u8{ "claude.ai", "platform.claude.com", "claude.com" }) |h| {
+    for ([_][]const u8{ "claude.ai", "platform.claude.com", "claude.com", "accounts.google.com", "appleid.apple.com" }) |h| {
         if (std.mem.eql(u8, host, h)) return true;
     }
     const suffix = ".anthropic.com";
