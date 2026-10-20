@@ -823,6 +823,7 @@ fn handleWindows(
                     window.loading,
                     window.dialog_open,
                 }) catch return error.OutOfMemory;
+                w.print(",\"load_serial\":{d}", .{window.load_serial}) catch return error.OutOfMemory;  // MS4.1a: same per-window serial as page.list
                 if (window.terminated) |reason| w.print(",\"crashed\":\"{s}\"", .{@tagName(reason)}) catch return error.OutOfMemory;
                 w.writeAll("}") catch return error.OutOfMemory;
             }

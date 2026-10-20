@@ -86,9 +86,17 @@ def main() -> int:
 
         rpc = None
 
-        def serial():
-            pages = (rpc.raw("page.list", {}).get("result") or {}).get("pages") or []
+        def serial_of(method):
+            pages = (rpc.raw(method, {}).get("result") or {}).get("pages") or []
             return (pages[0] or {}).get("load_serial") if pages else None
+
+        def serial():
+            # Both page.list and page.health must report the SAME per-window serial (same lock-backed snapshot).
+            ls = serial_of("page.list")
+            hs = serial_of("page.health")
+            if ls != hs:
+                failures.append(f"load_serial differs between page.list ({ls!r}) and page.health ({hs!r})")
+            return ls
 
         def navigate_and_wait(url, prev):
             rpc.raw("page.navigate", {"url": url, "timeout_ms": 8000})
