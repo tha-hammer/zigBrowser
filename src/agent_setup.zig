@@ -30,12 +30,52 @@ pub const runtime_subpath = "lib/zigbrowser/agent-host";
 
 pub const Runtime = struct { python: []u8, package_dir: []u8 };
 
-/// The runtime for the binary at `exe_path` (its real path).
+/// The runtime for the binary at `exe_path` (its real path), Linux's rule.
 pub fn defaultRuntime(gpa: std.mem.Allocator, exe_path: []const u8) !Runtime {
+    return runtimeFor(gpa, .linux, exe_path);
+}
+
+/// macOS plan rev 14 item 3: inside an app bundle the runtime is nested code, signed where code is
+/// signed (JadeBeacon 6756), so `<X>.app/Contents/MacOS/zigBrowser` keeps it in
+/// `<X>.app/Contents/Frameworks/agent-host`, never under Resources. Anything else, a macOS dev tree
+/// included, keeps `<prefix>/lib/zigbrowser/agent-host`. The interpreter's path inside it on macOS
+/// waits on the universal2-Python decision (rev 14 item 8); until then it is the installer's venv.
+pub fn runtimeFor(gpa: std.mem.Allocator, os: std.Target.Os.Tag, exe_path: []const u8) !Runtime {
     const bin = std.fs.path.dirname(exe_path) orelse "/";
     const prefix = std.fs.path.dirname(bin) orelse "/";
-    const package_dir = try std.fs.path.join(gpa, &.{ prefix, runtime_subpath });
+    const package_dir = if (os == .macos and isAppContents(bin, prefix))
+        try std.fs.path.join(gpa, &.{ prefix, mac_runtime_subpath })
+    else
+        try std.fs.path.join(gpa, &.{ prefix, runtime_subpath });
     return .{ .python = try std.fs.path.join(gpa, &.{ package_dir, "venv/bin/python" }), .package_dir = package_dir };
+}
+
+/// Inside `<X>.app/Contents`, relative to Contents.
+pub const mac_runtime_subpath = "Frameworks/agent-host";
+
+/// `bin` is `<X>.app/Contents/MacOS` and `prefix` its `Contents`.
+fn isAppContents(bin: []const u8, prefix: []const u8) bool {
+    if (!std.mem.eql(u8, std.fs.path.basename(bin), "MacOS")) return false;
+    if (!std.mem.eql(u8, std.fs.path.basename(prefix), "Contents")) return false;
+    const app = std.fs.path.dirname(prefix) orelse return false;
+    return std.mem.endsWith(u8, std.fs.path.basename(app), ".app");
+}
+
+/// Whether `--agent-setup` may run on this OS (macOS plan rev 14 item 6): Linux runs; macOS refuses
+/// until MS6's Seatbelt backend is accepted, so setup never runs unsandboxed; anything else keeps
+/// the Linux-only refusal.
+pub const Gate = union(enum) { run, refuse: []const u8 };
+pub const macos_unsandboxed_refusal = "zigBrowser: agent-setup: the macOS sandbox is not ready; setup will not run unsandboxed";
+pub const linux_only_refusal = "zigBrowser: agent-setup: the Claude Agent is Linux-only";
+/// MS6's green (the accepted Seatbelt backend) flips this.
+pub const seatbelt_ready = false;
+
+pub fn platformGate(os: std.Target.Os.Tag, sandbox_ready: bool) Gate {
+    return switch (os) {
+        .linux => .run,
+        .macos => if (sandbox_ready) .run else .{ .refuse = macos_unsandboxed_refusal },
+        else => .{ .refuse = linux_only_refusal },
+    };
 }
 
 test "the runtime sits at <prefix>/lib/zigbrowser/agent-host beside <prefix>/bin/zigBrowser" {
