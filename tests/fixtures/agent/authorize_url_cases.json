@@ -1,0 +1,246 @@
+{
+ "about": "chat-drawer plan rev 16.18.11: every authorize URL the app (agent_auth.authorizeUrl) and the login helper (login.authorize_url) must accept or refuse; `helper` is set only where the helper's answer is intentionally different",
+ "cases": [
+  {
+   "name": "captured-shape",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": true,
+   "why": "the real CLI's authorize URL (2.1.301), as captured"
+  },
+  {
+   "name": "console-host",
+   "url": "https://platform.claude.com/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": true,
+   "why": "the CLI's other authorize URL (CONSOLE_AUTHORIZE_URL)"
+  },
+  {
+   "name": "encoded-values",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": true,
+   "why": "percent-encoded values decode to the fixed ones"
+  },
+  {
+   "name": "reordered",
+   "url": "https://claude.com/cai/oauth/authorize?state=zbState-0123&code_challenge_method=S256&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&scope=user:inference&redirect_uri=https://platform.claude.com/oauth/code/callback&response_type=code&client_id=00000000-0000-4000-8000-00000000fa6e&code=true",
+   "app": true,
+   "why": "parameter order does not matter"
+  },
+  {
+   "name": "http",
+   "url": "http://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "not https"
+  },
+  {
+   "name": "other-host",
+   "url": "https://claude.com.evil.example/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "another host"
+  },
+  {
+   "name": "subdomain",
+   "url": "https://www.claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "another host"
+  },
+  {
+   "name": "userinfo",
+   "url": "https://x@claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "user info"
+  },
+  {
+   "name": "explicit-port",
+   "url": "https://claude.com:443/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "a port, even the default"
+  },
+  {
+   "name": "upper-host",
+   "url": "https://CLAUDE.COM/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "the host byte for byte"
+  },
+  {
+   "name": "other-path",
+   "url": "https://claude.com/cai/oauth/authorize/?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "another path"
+  },
+  {
+   "name": "console-path-on-claude",
+   "url": "https://claude.com/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "the console path on the claude.com host"
+  },
+  {
+   "name": "fragment",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123#x",
+   "app": false,
+   "why": "a fragment"
+  },
+  {
+   "name": "no-query",
+   "url": "https://claude.com/cai/oauth/authorize",
+   "app": false,
+   "why": "no parameters"
+  },
+  {
+   "name": "missing-code",
+   "url": "https://claude.com/cai/oauth/authorize?client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "no code"
+  },
+  {
+   "name": "missing-client_id",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "no client_id"
+  },
+  {
+   "name": "missing-response_type",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "no response_type"
+  },
+  {
+   "name": "missing-redirect_uri",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "no redirect_uri"
+  },
+  {
+   "name": "missing-scope",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "no scope"
+  },
+  {
+   "name": "missing-code_challenge",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "no code_challenge"
+  },
+  {
+   "name": "missing-code_challenge_method",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&state=zbState-0123",
+   "app": false,
+   "why": "no code_challenge_method"
+  },
+  {
+   "name": "missing-state",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256",
+   "app": false,
+   "why": "no state"
+  },
+  {
+   "name": "extra-param",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123&prompt=login",
+   "app": false,
+   "why": "a ninth parameter"
+  },
+  {
+   "name": "repeated-state",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123&state=zbState-0123",
+   "app": false,
+   "why": "a parameter twice"
+  },
+  {
+   "name": "empty-state",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=",
+   "app": false,
+   "why": "an empty state"
+  },
+  {
+   "name": "code-false",
+   "url": "https://claude.com/cai/oauth/authorize?code=false&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "code is not true"
+  },
+  {
+   "name": "response-token",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=token&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "response_type is not code"
+  },
+  {
+   "name": "redirect-other",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://evil.example/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "another redirect_uri"
+  },
+  {
+   "name": "redirect-localhost",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=http://localhost:54545/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "a loopback redirect_uri"
+  },
+  {
+   "name": "scope-wider",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference%20org:create_api_key&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "a wider scope"
+  },
+  {
+   "name": "method-plain",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=plain&state=zbState-0123",
+   "app": false,
+   "why": "not S256"
+  },
+  {
+   "name": "client-not-uuid",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=zigbrowser&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "client_id is not a UUID"
+  },
+  {
+   "name": "client-upper",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000FA6E&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "client_id is not a lowercase UUID"
+  },
+  {
+   "name": "challenge-short",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqr&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "a 42-character challenge"
+  },
+  {
+   "name": "challenge-long",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrsA&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "a 44-character challenge"
+  },
+  {
+   "name": "challenge-padded",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqr%3D&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "base64 padding"
+  },
+  {
+   "name": "challenge-plus",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqr%2B&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "a non-base64url character"
+  },
+  {
+   "name": "too-long",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+   "app": false,
+   "why": "over 4 KiB"
+  },
+  {
+   "name": "semicolon",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback;scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zbState-0123",
+   "app": false,
+   "why": "';' does not separate parameters"
+  },
+  {
+   "name": "malformed-escape",
+   "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-00000000fa6e&response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference&code_challenge=Zb3_challenge-0123456789abcdefghijklmnopqrs&code_challenge_method=S256&state=zb%zzState",
+   "app": false,
+   "why": "a malformed escape: the app refuses it, parse_qsl keeps it literally",
+   "helper": true
+  }
+ ]
+}
