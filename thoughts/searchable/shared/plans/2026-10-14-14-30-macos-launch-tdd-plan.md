@@ -6,11 +6,11 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 6)
-rev: 6
-last_updated: 2026-10-14
+status: plan for review (rev 11)
+rev: 11
+last_updated: 2026-10-20
 last_updated_by: cc_3 / JadeBeacon
-last_updated_note: "Rev 6 answers RoseCat's one rev-5 blocker (review ed13e5e): the MS6 egress transport is no longer an open item — pinned exactly as a shared SandboxBackend egress capability (backend supplies endpoint + policy). macOS = ephemeral host-loopback 127.0.0.1:<port> + per-process Seatbelt port rules (CLI/helper permit only that endpoint; each hook permits only 51091/31337, no proxy/API); HTTPS_PROXY names that port; netd keeps the exact CONNECT/SNI allowlist; MS6.4 proves endpoint + both bridges + every denial + hook-cannot-reach-proxy. Unix-socket proxy ruled out (CLI rejects it, BlueBeaver 5503). Re-pinned to HEAD ed13e5e"
+last_updated_note: "Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
 primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-launch-support-surface.md
 ---
 
@@ -505,6 +505,12 @@ MS5.1c), where macOS provisioning installs the Python runtime, the Claude CLI an
 launcher, so the non-exec runtime files exist in two per-arch trees and the Intel-3.9-vs-arm-3.14
 Python mismatch is exactly what it must catch.
 
+**Updated by MS1b (`3421428`):** since the ObjC shim ships as a dylib the exe links, the MS1 bundle
+is now **`{browser, webview-shim}`** — `bin/zigBrowser` + `Frameworks/libwkwebview_shim.dylib`, both
+fat. `resource_phase` accepts the empty-resources set only for that **exact two-component** shape;
+the 6002 bypass protection is kept (browser-alone, wrong-shim-path, MS5-shaped, non-browser all fail
+closed). The census now requires both Mach-Os fat.
+
 ### Behavior MS1.2: real two-host identity + executing-arch proof (no Rosetta false-green)
 **Given** two distinct hosts,
 **When** the gate runs,
@@ -520,6 +526,12 @@ production build info** read back over the socket; `lipo -archs` + `--version` a
 (network client; the specific keys the Seatbelt launcher and helper need — derived, not "whatever
 it needs"), `codesign -d --entitlements -` lists exactly those, and the ad-hoc build still
 verifies. The manifest is the single source MS9 signs with.
+
+**Updated by MS1b (`3421428`): a release least-privilege rule.** `release_least_privilege`
+(`mac_universal_test.py`) FAILS a release entitlements manifest OR signed binary that carries
+`com.apple.security.cs.disable-library-validation`. That key is allowed ONLY in ad-hoc dev/test
+builds (a hardened dev exe loading the ad-hoc shim dylib); MS9's real Developer ID signs exe+dylib
+under one team, so library validation passes without it. Unit-tested in `mac_universal_census_test`.
 
 **MS1 runs the UNSIGNED universal binary; the MS1.3 check is static (rev 10).** The ad-hoc-signed
 x86_64 binary **segfaults at startup in ObjC `-[ZBAppHost init]` (`0xf0000001`)** — a
@@ -562,33 +574,53 @@ fix. (It does NOT by itself make a signed binary run — see `MS1b`.)
 
 ---
 
-## MS1b: the signed x86_64 binary runs (zig-linker / codesign / ObjC-init crash)
+## MS1b: the signed x86_64 binary runs (zig-linker / codesign / ObjC-init crash) — LANDED `3421428`
 
-**Goal.** Close the gap MS1 leaves open: MS1 runs the UNSIGNED universal binary, because the
-ad-hoc-signed x86_64 binary **segfaults at startup** in `-[ZBAppHost initWithURI:...]`'s `[super init]`
-(`EXC_BAD_ACCESS` `KERN_INVALID_ADDRESS 0xf0000001`), while the unsigned binary and the signed arm64
-slice run fine. This slice proves a signed binary RUNS on x86_64, well before MS9's Developer-ID signing.
+**STATUS: LANDED (green `3421428`, option d).** The ad-hoc-signed x86_64 binary ran the m9 workload
+rc 0 on both Macs (ad-hoc AND hardened-runtime+`disable-library-validation`).
 
-### Behavior MS1b.1: a signed universal binary runs the m9 workload on x86_64
-**Given** the universal binary, ad-hoc signed (`codesign -s - --entitlements …`),
-**When** it runs the m9 workload on the Intel Mac,
-**Then** it loads the page and prints `WINCOUNT`/`TITLE`/`NAV` without a crash (today it aborts at
-`ZBAppHost init`). 🔴 Red: run the SIGNED universal binary through the m9 invocation on x86_64 — it
-crashes at `0xf0000001`. 🟢 Green: it runs. (The arm64 signed slice already runs.)
+**Cause (confirmed).** zig 0.16's self-hosted Mach-O linker emits only the classic
+`LC_DYLD_INFO_ONLY` rebase scheme, never `LC_DYLD_CHAINED_FIXUPS`. On a **code-signed x86_64** binary
+the classic rebases into the signed `__DATA_CONST` (which holds the ObjC metadata) are left at their
+raw on-disk values, so `-[ZBAppHost init]`'s `[super init]` dereferences a garbage class/superclass
+pointer (`EXC_BAD_ACCESS 0xf0000001`). arm64 dyld handles the same scheme; unsigned works. Hardened
+runtime (MS9 shape) hits it too — so MS1b is a HARD prerequisite of MS9 (dependency order).
 
-### Investigation (write the cause up before the fix)
-In order: (1) a **minimal zig+ObjC repro**, ad-hoc signed vs unsigned, to confirm the trigger in
-isolation; (2) **zig's self-hosted linker vs Apple `ld`** (e.g. `-fno-lld` / the system linker, if it
-applies), since the leading hypothesis is non-conformant ObjC metadata / segment layout whose
-class-realization fixup is skipped once the signature is enforced; (3) **inspect the Mach-O** — ObjC
-metadata, rebase and chained fixups — signed vs unsigned (`otool -l`, `dyld_info -fixups`, `otool -ov`);
-(4) test a **hardened-runtime Developer-ID-style signing flag set** (`--options runtime`, the real MS9
-shape) to learn whether MS9's production signature hits the same crash or avoids it. Evidence +
-leading hypothesis are in `scratchpad/ms1/CRASH_CAUSE.md`.
+**Fix (option d).** Build the WKWebView ObjC shim (`src/wkwebview_shim.m`) with the **Apple toolchain**
+(`xcrun clang -dynamiclib` → ld64 → `LC_DYLD_CHAINED_FIXUPS`) as a separate dylib, NOT compiled into
+the zig exe (`build.zig` `configureMacosBackend`). Key flags: `-Wl,-fixup_chains` (REQUIRED — the
+shim's two exe back-references need `-undefined dynamic_lookup`, which otherwise forces classic
+fixups) and `-install_name @executable_path/../Frameworks/libwkwebview_shim.dylib` (anchored, so a
+hardened process loads it with no relative-rpath rejection). The exe links the dylib and sets
+`rdynamic` **macOS-only** to export the two back-ref symbols — `zb_ipc_dispatch` (`src/ipc.zig`) and
+`zb_policy_decide` (`src/nav_policy.zig`) — for the dylib's dynamic_lookup. Linux/Windows build and exe
+exports are unchanged. Shim surface confirmed by BlackRobin (agent-mail 6125).
 
-**Gate (MS1b):** the signed universal binary runs the m9 workload + the exec-arch probe on the Intel
-Mac (and re-confirm arm64), through `gate.sh`, with no swallowed failures. Coordinate with **BlueBeaver**
-(build/gate) and **BlackRobin** (the shim's ObjC entry).
+**MS1 bundle reshaped to {browser + shim dylib}.** Because the exe now links the dylib, even the
+UNSIGNED MS1 run ships it: `gate.sh` lipos+ships the unsigned fat dylib into `Frameworks/`;
+`universal_components.json` + `resource_phase` accept the empty-resources set **only for the exact
+`{bin/zigBrowser, Frameworks/libwkwebview_shim.dylib}`** two-component shape (the 6002 bypass
+protection is kept — browser-alone, wrong-shim-path, MS5-shaped, non-browser all still fail closed).
+The census auto-requires the dylib fat (both slices).
+
+### Behavior MS1b.1: a signed universal binary runs the m9 workload on x86_64 — GREEN
+**Given** the universal exe + shim dylib, both ad-hoc signed (`codesign -s - --entitlements …`),
+**When** they run the m9 workload on the Intel Mac,
+**Then** the page loads and `WINCOUNT`/`TITLE`/`NAV` print with no crash. 🔴 Red (`bf0a66f` →
+`2f6214f` → `41882ae`, unregistered): the signed x86_64 launch SIGSEGV'd at `0xf0000001`, 3×, right
+reason. 🟢 Green (`3421428`): it runs — on x86_64 AND arm64, ad-hoc and hardened. m9 render drives
+`zb_policy_decide` and m9 reply-channel drives `zb_ipc_dispatch`, so both dylib→exe back-refs are
+exercised through the signed build.
+
+### Cause write-up (historical)
+Full evidence (minimal zig+ObjC repro, fixup-scheme inspection, option-(d)/(e)/(c) evaluation,
+hardened-runtime result) is in `scratchpad/ms1/CRASH_CAUSE.md` and `scratchpad/ms1/MS1b_INVESTIGATION.md`.
+
+**Gate (MS1b):** `tests/mac/ms1b_signed_gate.sh` (registered as `zig build ms1b-gate`) SIGNS both the
+universal exe and the universal shim dylib, installs the signed pair, and runs the m9 workload +
+exec-arch probe on BOTH Macs, fail-closed. Validated rc 0 both Macs. The MS1.3 least-privilege rule
+(`release_least_privilege`) fails a release manifest/binary carrying `disable-library-validation`
+(ad-hoc dev/test only). Coordinated with **BlueBeaver** (build/gate) and **BlackRobin** (shim).
 
 ---
 
