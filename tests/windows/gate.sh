@@ -168,8 +168,10 @@ if wp:
 cu = str(a.get("console_user", "")).split("\\")[-1].lower()
 if cu != win10_user.lower():
     sys.stderr.write("file-server: console user is %r, not %s\n" % (a.get("console_user"), win10_user)); sys.exit(1)
-if a.get("listeners") != b.get("listeners"):
-    sys.stderr.write("file-server: listeners changed %s -> %s\n" % (a.get("listeners"), b.get("listeners"))); sys.exit(1)
+def stable(lst):  # ignore the ephemeral/dynamic range (>=49152), which churns between runs
+    return sorted(p for p in (lst or []) if isinstance(p, int) and p < 49152)
+if stable(a.get("listeners")) != stable(b.get("listeners")):
+    sys.stderr.write("file-server: listening ports changed %s -> %s\n" % (stable(a.get("listeners")), stable(b.get("listeners")))); sys.exit(1)
 if a.get("fw_rules_hash") != b.get("fw_rules_hash"):
     sys.stderr.write("file-server: firewall rules changed between pre and post\n"); sys.exit(1)
 print("ALLOW")

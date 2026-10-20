@@ -56,6 +56,18 @@ foreach ($g in $id.Groups) {
 $freeGb = $null
 try { $freeGb = [math]::Round([System.IO.DriveInfo]::new('C').AvailableFreeSpace / 1GB, 1) } catch {}
 
+# WS0.7: the listening TCP ports, so the gate can diff pre-run vs post-run (a run must not open a new
+# listener on the file server). Parsed from `netstat` (standard-user-safe; Get-NetTCPConnection goes
+# through CIM/WMI, which is Access-denied for a standard user). All ports, sorted + unique; the gate
+# ignores the ephemeral range (>=49152, which churns) when comparing.
+$listeners = @()
+try {
+  $listeners = @(& netstat -ano -p TCP 2>$null | ForEach-Object {
+      $f = $_ -split '\s+' | Where-Object { $_ -ne '' }
+      if ($f.Count -ge 4 -and $f[0] -eq 'TCP' -and $f[3] -eq 'LISTENING') { [int]($f[1].Split(':')[-1]) }
+    } | Sort-Object -Unique)
+} catch {}
+
 $mySess = 0;  try { [void][Zb.Native]::ProcessIdToSessionId([Zb.Native]::GetCurrentProcessId(), [ref]$mySess) } catch {}
 $console = $null; try { $console = [int][Zb.Native]::WTSGetActiveConsoleSessionId() } catch {}
 
@@ -78,6 +90,7 @@ $o = [ordered]@{
   zig                 = $zig
   free_gb             = $freeGb
   groups              = $groups
+  listeners           = $listeners
   console_session_id  = $console
   my_session_id       = $mySess
   interactive_session = $null   # filled by the in-console session helper (snapshot-gated)

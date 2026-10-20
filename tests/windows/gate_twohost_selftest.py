@@ -179,9 +179,17 @@ class WS07FileServerFence(_TwoHostCase):
 
     def test_listeners_changed_pre_post_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
-            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 8080])  # an extra listener appeared
+            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 8080])  # a new SERVICE listener appeared
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": post})
             self._assert_fail_closed(proc, "file-server")
+
+    def test_ephemeral_listener_churn_is_allowed(self):
+        """A new listener only in the ephemeral/dynamic range (>=49152) is normal churn, not a change."""
+        with tempfile.TemporaryDirectory() as t:
+            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 50000])  # only an ephemeral port appeared
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": post})
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertEqual(proc.returncode, 0, "an ephemeral-only listener change must not fail WS0.7" + detail)
 
 
 if __name__ == "__main__":
