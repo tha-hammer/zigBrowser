@@ -383,6 +383,17 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
 /// created, the browser runs on WebKit's default context. Returns the
 /// profile directory in use, or null when there is none.
 fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError!?[]const u8 {
+    if (comptime builtin.os.tag == .macos) {
+        // MS3.1: only an explicit --profile-dir binds a profile store on macOS (the path is the identity
+        // seed; the shim maps it to an isolated persistent store on macOS 14+, else the shared default).
+        const dir = spec.profile_dir orelse return null;
+        const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
+        var err: [*c]u8 = null;
+        if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return dir;
+        defer c.zb_automation_free(err);
+        std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
+        return error.WriteFailed;
+    }
     if (comptime builtin.os.tag != .linux) return null;
     const explicit = spec.profile_dir != null;
     const dir = spec.profile_dir orelse
