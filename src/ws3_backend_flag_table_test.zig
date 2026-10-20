@@ -27,7 +27,10 @@ const windows_table = [_]Case{
     .{ .flag = "media-source", .value = "bogus", .apply = false },
     .{ .flag = "hardware-acceleration", .value = "never", .apply = true },
     .{ .flag = "hardware-acceleration", .value = "always", .apply = true },
-    .{ .flag = "hardware-acceleration", .value = "auto", .apply = true },
+    // The production-literal table (BlueBeaver 6413; RoseCat 6405, 6416): `webkit` is the
+    // default and there is no `auto`, which is refused.
+    .{ .flag = "hardware-acceleration", .value = "webkit", .apply = true },
+    .{ .flag = "hardware-acceleration", .value = "auto", .apply = false },
     .{ .flag = "hardware-acceleration", .value = "bogus", .apply = false },
     // --renderer has no supported value on Windows (WS3.2: "--renderer=<v> is not supported on Windows").
     .{ .flag = "renderer", .value = "webview2", .apply = false },

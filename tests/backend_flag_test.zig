@@ -10,7 +10,11 @@
 //! - `--renderer`: exactly `default`, `shm` (the Linux default) or `mesa-egl`, never `mesa_egl`
 //!   (src/render_config.zig:22-26,53-59; src/cli.zig:20); Linux only: macOS and Windows have no
 //!   renderer choice and refuse every value;
-//! - any other flag, or any other OS: refuse.
+//! - any other flag, or any other OS (every std.Target.Os.Tag but linux, macos and windows,
+//!   enumerated; RoseCat 6416): refuse.
+//! The function decides a PRESENT flag only. The empty-value rows below are explicit, invalid
+//! values, not absence: an absent flag makes no call, and the config defaults resolve it
+//! (RoseCat 6415, 6416).
 const std = @import("std");
 const bf = @import("backend_flag");
 
@@ -75,11 +79,17 @@ test "every row of the table, on Linux, macOS and Windows" {
     }
 }
 
-test "any other OS refuses every flag" {
+test "every other OS refuses every flag (every Os.Tag, enumerated)" {
     if (!has) return error.TestNoBackendFlagDecision;
-    for ([_]Os{ .freebsd, .ios, .wasi }) |os| {
-        for (table) |row| try check(os, row, false);
+    var others: usize = 0;
+    inline for (std.meta.fields(Os)) |field| {
+        const os: Os = @enumFromInt(field.value);
+        if (os != .linux and os != .macos and os != .windows) {
+            others += 1;
+            for (table) |row| try check(os, row, false);
+        }
     }
+    try std.testing.expect(others > 20);
 }
 
 test "the Linux column is the CLI's own parsing, so the two cannot drift" {
