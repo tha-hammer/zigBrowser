@@ -16756,3 +16756,65 @@ of `0722ee0`: removing the open-dialog publisher fails while health ticks are
 frozen, and removing only the respond publisher leaves `dialog_open` stale.
 The SHOULD-for-tests recorded in the preceding review is therefore **CLOSED by
 evidence in Agent Mail 6663**.
+
+## Review at `f29e490`: the real Windows automation transport
+
+The two-commit diff is whitespace-clean and the new Python module compiles.
+The registered hostless step passes 3/3, with both live tests explicitly
+skipped because no VM host/executable was supplied. I did not access either
+Windows host. The owner-side VM evidence and mutants are recorded in Agent
+Mail 6667; the cross-user half remains unavailable because `zbother` cannot
+currently authenticate.
+
+### Production transport red (`970969f`)
+
+**APPROVED as the failing-first production red.** This does not substitute a
+synthetic owner-only seam for the application chain. It starts the real
+`zigBrowser.exe --automation-api` as `zbtext` with `%LOCALAPPDATA%` beneath a
+hostile directory granting inheritable full access to Everyone, then observes
+the actual product-created directory, socket and token.
+
+The owner test requires exactly one nonce-shaped AF_UNIX socket and its token,
+no main-process TCP listener, a protected owner-only DACL on all three objects,
+an owning-user connection, and a 64-byte token read without printing the
+secret. The `zbother` test first reads a control file in the hostile parent and
+proves it has a distinct SID; only then can `WSAEACCES` from the socket and
+`ERROR_ACCESS_DENIED` from the token count. SSH/SCP are bounded,
+`BatchMode=yes`, stdin-disabled and stripped of all display variables. The
+pre-fix real executable exits 7 before producing a token or socket because its
+compiled target disables `std.Io.net` AF_UNIX, so this is a valid production
+red rather than a fixture failure.
+
+### Windows AF_UNIX production green (`f29e490`)
+
+**Production code APPROVED; WS2.0 final acceptance
+BLOCKED-on-evidence/plan/gate.** For the normal Windows build, `build.zig`
+raises an otherwise unspecified target minimum to Windows 10 1803
+(`win10_rs4`), which makes Zig's Windows AF_UNIX support reachable; the Windows
+cross-check uses the same floor. The newly compiled start path now gets a
+Windows wall clock and creates the token without a nonexistent POSIX mode.
+The containing directory's protected inheritable DACL already protects the
+empty file, and `writeTokenFile` restricts that file explicitly before writing
+the token. The bound socket is still restricted through the production
+owner-only seam. Windows cookie-file import fails closed as unreadable until
+its WS3 implementation instead of entering POSIX `open`/`fstat` code.
+
+The Win11 owner-side run passed: the real browser remained alive with one
+socket/token pair, no TCP listener, exact owner-only protected DACLs, and the
+positive connection/read controls. Leaving either the directory or socket
+unrestricted makes the live test fail on inherited/unprotected DACLs.
+
+Three conditions remain:
+
+1. After the user recreates `zbother`'s profile/key access, the committed
+   second test must show its control-file read succeeds, socket connect returns
+   `WSAEACCES`, and token open returns `ERROR_ACCESS_DENIED`. Today's SSH
+   public-key refusal is environmental and proves none of those properties.
+2. The owed quiet clean-export full Linux gate must pass.
+3. The authoritative Windows plan still says the obsolete ADR-1 spike runs
+   first and that `.fromMode` compiled on this Windows start path. Revise it to
+   record the `win10_rs4` floor and the production e2e as the AF_UNIX proof.
+
+Until those close, `91dfb0b`'s synthetic owner-only implementation is now
+production-wired and code-reviewed but WS2.0 as a complete slice is not yet
+accepted. Verdict sent to BlueBeaver and AzureRidge in Agent Mail 6668.
