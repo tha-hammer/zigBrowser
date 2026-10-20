@@ -354,6 +354,27 @@ pub fn build(b: *std.Build) void {
     cross_drawer_win_step.dependOn(&cross_drawer_win.step);
     cross_check_step.dependOn(&cross_drawer_win.step);
 
+    // WS3 .windows arm + WebView2 cookie port (red-first; UNREGISTERED — not in `cross-check`/`test`
+    // until green). The x86_64-windows-gnu object compiles, and every zb_* it needs
+    // (zb_cookies_*/zb_app_set_*/zb_automation_free) must be defined by webview2_shim.cpp. RED until
+    // BlackRobin's Windows config/cookie shim pre-slice lands those; then wire this into `cross-check`.
+    const ws3_win_module = b.createModule(.{
+        .root_source_file = b.path("src/ws3_win_cross_root.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }),
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ws3_win_module.addIncludePath(b.path("src"));
+    const ws3_win_obj = b.addObject(.{ .name = "zigBrowser-ws3-win", .root_module = ws3_win_module });
+    const cross_check_ws3_win = b.addSystemCommand(&.{
+        "python3", "tools/check_cross_symbols.py", "--require", "zb_cookies_get_all", "--require", "zb_app_set_media_source",
+    });
+    cross_check_ws3_win.addFileInput(b.path("tools/check_cross_symbols.py"));
+    cross_check_ws3_win.addFileArg(ws3_win_obj.getEmittedBin());
+    cross_check_ws3_win.addFileArg(b.path("src/webview2_shim.cpp"));
+    const cross_check_ws3_win_step = b.step("cross-check-ws3-win", "WS3: the Windows config arm + cookie port need only zb_* that webview2_shim.cpp defines (red until the shim lands)");
+    cross_check_ws3_win_step.dependOn(&cross_check_ws3_win.step);
+
     const afunix_spike_module = b.createModule(.{
         .root_source_file = b.path("tests/spikes/af_unix_roundtrip.zig"),
         .target = target,
