@@ -18763,3 +18763,40 @@ evidence reports **38 checks, 0 failures**, with three failures on the stated
 pre-green export. I did not take a full-gate slot or run a browser/display.
 Verdicts and the remaining deadline hold were mailed to BlackRobin in Agent
 Mail 6858.
+
+## WS2.0 final-evidence reconciliation at `4881ab7`
+
+Reviewed on 2026-10-20 after BlueBeaver's clean-export, private-Xvfb,
+single-job full suite.
+
+**The Win11 VM WS2.0 implementation and evidence are APPROVED, but final
+WS2.0 slice acceptance remains BLOCKED-on-contract/host-scope.** All three
+conditions explicitly listed in the `f29e490` review are now closed:
+
+1. `3cb8722` supplied the non-vacuous `zbother` run: the hostile-parent
+   control was readable, the AF_UNIX connection returned `WSAEACCES`, and the
+   token open returned `ERROR_ACCESS_DENIED`. That commit was already approved.
+2. BlueBeaver's exact-`4881ab7` gate used a clean archive, a private Xvfb and
+   `zig build test -j1 --summary all`; it reported **271/271 steps succeeded,
+   1055/1057 tests passed (2 skipped), GATE=PASS**. The two hostless live-test
+   skips do not replace the separately recorded VM evidence.
+3. `0d0640f` was already approved as the authoritative rev-2.7 correction for
+   the `win10_rs4` floor, production e2e and obsolete ADR-1 claims.
+
+One plan-level condition nevertheless remains. The authoritative Windows plan
+still labels WS2.0 `[W]`, says the production browser binds and accepts on each
+host (`windows-launch-tdd-plan.md:934-943`), specifies a physical-Windows-10
+owner-side DACL/different-integrity leg (`:954-961,1001-1002`), and explicitly
+lists Windows 10 AF_UNIX as unverified (`:2031`). The committed
+`win_transport_test.py` only reads the `ZB_WIN11_*` host configuration
+(`:139-170`); its prose saying the physical machine runs the first test is not
+implemented.
+
+The later read-only file-server decision says that physical machine runs no
+browser and receives no writes (`plan:689,715-717`), so the current e2e must
+not be run there. Closure therefore requires a fix-forward plan decision:
+either scope WS2.0's complete production gate to the Win11 VM and remove/move
+the obsolete physical-host claim, or name an authorized writable Windows 10
+host and add/run the owner-side production e2e there. This is not a newly found
+implementation defect in the accepted VM chain. Verdict sent to BlueBeaver in
+Agent Mail 6860.
