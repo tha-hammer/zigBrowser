@@ -14418,3 +14418,53 @@ file and size checks, accepted boundary values, relative-path refusal even
 when the path reaches the fixture, and the exact stderr vocabulary. Certificate
 parsing remains deliberately a later C/window boundary. No gate was run while
 BlackRobin owned the private-Xvfb slot. Verdict sent in Agent Mail 6294.
+
+### macOS eval ownership bridge (`93d925c`)
+
+**BLOCKED.** The heap job removes caller-stack result writes and discards a
+completion which arrives after abandonment, but it does not yet provide the
+claimed no-dispatch-after-timeout guarantee.
+
+1. BLOCKER: `wkwebview_shim.m:1094-1116` checks `zb_job_running(jref)` and
+   later submits `callAsyncJavaScript` as two separate operations. The waiter
+   can set `ABANDONED` at `:936` after the check at `:1097` but before the
+   submission at `:1112`; the ABI then returns timeout before page code with
+   possible side effects is dispatched. Claiming the job on the poll's first
+   main-thread run protects only work that never began. Submission needs an
+   explicit locked phase/handshake: a timeout may cancel preflight, but cannot
+   return while the main thread is between its final ownership decision and
+   the synchronous async-call submission.
+2. BLOCKER-for-tests: the commit contains no deterministic regression which
+   pauses at that exact check-to-submit boundary, expires the waiter, resumes
+   the main thread and proves that the evaluated function never ran. The
+   reported routed and timeout Mac gates exercise eval, but cannot kill this
+   race.
+3. SHOULD: `:853-860` increments the live count and dereferences an unchecked
+   `calloc` result. The implementation should also make the malloc-backed
+   `dispatch_semaphore_t` lifetime under `-fobjc-arc` explicit (or prove it in
+   a compiler/runtime test); the job counter alone does not establish that
+   the semaphore allocation was released.
+
+The late-completion result/error ownership is otherwise an improvement, and
+the main-thread `worldWithName:` correction remains. As the commit states,
+navigation, reload and `zb_auto_await` remain outside this slice and their
+earlier blockers stay open. No full gate was run while BlackRobin held the
+private-Xvfb slot. Findings were sent to JadeBeacon in Agent Mail 6298.
+
+### Windows resolved-name scope correction (`2a9f2bf`)
+
+**APPROVED as a scoped corrective commit, not as production launch safety.**
+The device namespace `\\.\` is now refused, the fake test which purported to
+prove pinned-handle use has been removed, and the documentation now accurately
+describes `resolved_within` as a resolved-name containment decision plus a
+non-null opaque-handle requirement. The independent display-free unit run
+passed **38/38**.
+
+This does not approve a Windows backend or close the earlier safe-use finding:
+there is no production consumer, handle ownership/close contract, enforceable
+operation through the capability, or safe `CreateProcessW` strategy. The live
+resolver, replacement-between-resolve-and-use oracle and immutable or otherwise
+enforceable launch design remain binding for the later backend slice. Verdict
+sent to AzureRidge in Agent Mail 6299.
+
+The linear push-through boundary remains the already-pushed **`70317c0`**.
