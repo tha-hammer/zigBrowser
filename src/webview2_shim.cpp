@@ -14,8 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <deque>
 #include <functional>
+#include <vector>
 #include <string>
 
 #include "webkit_shim.h"
@@ -378,28 +380,50 @@ int fail_with(char **out_err, const char *text) {
 }
 
 // ---- WS3: a call from another thread, run on the UI thread that owns the WebView ----
-// The waiter and the queue each hold a reference. The job is answered at most once
-// (state 0 waiting -> 1 answered); a waiter whose deadline passes abandons it (0 -> 2), so a
-// late answer is dropped and an abandoned job that has not started never runs. Jobs wait in
-// the queue until the WebView exists; when the loop ends, every queued job, and every later
-// call, is ZB_AUTO_ERR_NO_LOOP. Before zb_app_run a call waits for the loop up to its deadline.
+// States (RoseCat 6504): QUEUED -> RUNNING (the UI side's atomic claim, the moment the job
+// starts) -> COMPLETING -> DONE (the one completion: whoever moves RUNNING -> COMPLETING writes
+// the answer, then DONE and the event). The waiter whose deadline passes moves QUEUED or RUNNING
+// to ABANDONED: an abandoned job that had not started never runs, and a late answer is
+// dropped. A started job sits in the in-flight list until its completion, so loop end answers
+// it ZB_AUTO_ERR_NO_LOOP even while WebView2 still holds its callback. References: the
+// waiter's, the UI side's (the queue's, then the in-flight list's), and one per pending
+// WebView2 callback, so a callback after loop end finds the job alive and changes nothing.
+// Jobs wait in the queue until the WebView exists; when the loop ends, every queued and
+// in-flight job, and every later call, is ZB_AUTO_ERR_NO_LOOP. Before zb_app_run a call waits
+// for the loop up to its deadline.
+
+constexpr LONG kQueued = 0;
+constexpr LONG kRunning = 1;
+constexpr LONG kCompleting = 2;
+constexpr LONG kDone = 3;
+constexpr LONG kAbandoned = 4;
 
 struct Job {
   volatile LONG refs = 2;
-  volatile LONG state = 0;
+  volatile LONG state = kQueued;
   HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  std::function<void(Job *, AppState *)> run; // ends with exactly one job_answer
-  int code = ZB_AUTO_ERR_INTERNAL;
+  std::function<void(Job *, AppState *)> run; // ends with exactly one job_finish
+  int code = ZB_AUTO_ERR_INTERNAL;            // the answer, written only by the completion
   std::string json;
   std::string err;
 };
 
 SRWLOCK g_jobs_lock = SRWLOCK_INIT;
-std::deque<Job *> g_jobs;  // under g_jobs_lock
-HWND g_job_hwnd = nullptr; // under g_jobs_lock: the loop's window while it runs
-bool g_loop_ended = false; // under g_jobs_lock
+std::deque<Job *> g_jobs;     // under g_jobs_lock: not started yet
+std::vector<Job *> g_running; // under g_jobs_lock: started, not completed
+HWND g_job_hwnd = nullptr;    // under g_jobs_lock: the loop's window while it runs
+bool g_loop_ended = false;    // under g_jobs_lock
 DWORD g_loop_thread = 0;
 HANDLE g_loop_started = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+// Test seams (ws3_shim_test.c; inert at 0): the UI side waits this long before it commits to
+// running a job; and WebView2's cookie-read completion is parked until the test runs it.
+volatile LONG g_debug_hold_ms = 0;
+volatile LONG g_debug_park = 0;
+SRWLOCK g_parked_lock = SRWLOCK_INIT;
+std::vector<std::function<void()>> g_parked; // under g_parked_lock
+
+void job_hold(Job *job) { InterlockedIncrement(&job->refs); }
 
 void job_release(Job *job) {
   if (InterlockedDecrement(&job->refs) == 0) {
@@ -410,15 +434,49 @@ void job_release(Job *job) {
   }
 }
 
-// UI side, once per job: the answer reaches a waiter that has not given up.
-void job_answer(Job *job, int code, std::string json = {}, std::string err = {}) {
-  job->code = code; // read by the waiter only after the event, i.e. after a 0 -> 1 win
+// The one completion of a started job; false when it was abandoned or completed already.
+bool job_complete(Job *job, int code, std::string json = {}, std::string err = {}) {
+  if (InterlockedCompareExchange(&job->state, kCompleting, kRunning) != kRunning) {
+    return false;
+  }
+  job->code = code;
   job->json = std::move(json);
   job->err = std::move(err);
-  if (InterlockedCompareExchange(&job->state, 1, 0) == 0) {
-    SetEvent(job->done);
+  InterlockedExchange(&job->state, kDone);
+  SetEvent(job->done);
+  return true;
+}
+
+// The UI side's end of a started job: its completion (if still wanted), and the in-flight
+// list's reference, unless loop end took the list already.
+void job_finish(Job *job, int code, std::string json = {}, std::string err = {}) {
+  job_complete(job, code, std::move(json), std::move(err));
+  AcquireSRWLockExclusive(&g_jobs_lock);
+  auto it = std::find(g_running.begin(), g_running.end(), job);
+  const bool listed = it != g_running.end();
+  if (listed) {
+    g_running.erase(it);
   }
-  job_release(job);
+  ReleaseSRWLockExclusive(&g_jobs_lock);
+  if (listed) {
+    job_release(job);
+  }
+}
+
+// A WebView2 completion: job_finish, then the callback's own reference. Parked instead while
+// the test seam asks.
+void callback_done(Job *job, int code, std::string json = {}, std::string err = {}) {
+  auto finish = [job, code, json = std::move(json), err = std::move(err)]() mutable {
+    job_finish(job, code, std::move(json), std::move(err));
+    job_release(job);
+  };
+  if (InterlockedCompareExchange(&g_debug_park, 0, 0) != 0) {
+    AcquireSRWLockExclusive(&g_parked_lock);
+    g_parked.push_back(std::move(finish));
+    ReleaseSRWLockExclusive(&g_parked_lock);
+    return;
+  }
+  finish();
 }
 
 Job *job_take() {
@@ -438,10 +496,17 @@ void drain_jobs(AppState *app) {
     return;
   }
   while (Job *job = job_take()) {
-    if (InterlockedCompareExchange(&job->state, 0, 0) == 2) {
+    const LONG hold = InterlockedCompareExchange(&g_debug_hold_ms, 0, 0);
+    if (hold > 0) {
+      Sleep(static_cast<DWORD>(hold));
+    }
+    if (InterlockedCompareExchange(&job->state, kRunning, kQueued) != kQueued) {
       job_release(job); // abandoned before it started: never run
       continue;
     }
+    AcquireSRWLockExclusive(&g_jobs_lock);
+    g_running.push_back(job); // the queue's reference moves to the in-flight list
+    ReleaseSRWLockExclusive(&g_jobs_lock);
     job->run(job, app);
   }
 }
@@ -459,11 +524,20 @@ void loop_end() {
   AcquireSRWLockExclusive(&g_jobs_lock);
   g_loop_ended = true;
   g_job_hwnd = nullptr;
-  std::deque<Job *> left;
-  left.swap(g_jobs);
+  std::deque<Job *> queued;
+  std::vector<Job *> running;
+  queued.swap(g_jobs);
+  running.swap(g_running);
   ReleaseSRWLockExclusive(&g_jobs_lock);
-  for (Job *job : left) {
-    job_answer(job, ZB_AUTO_ERR_NO_LOOP);
+  for (Job *job : queued) {
+    if (InterlockedCompareExchange(&job->state, kRunning, kQueued) == kQueued) {
+      job_complete(job, ZB_AUTO_ERR_NO_LOOP);
+    }
+    job_release(job);
+  }
+  for (Job *job : running) { // its WebView2 callback, if it ever comes, changes nothing
+    job_complete(job, ZB_AUTO_ERR_NO_LOOP);
+    job_release(job);
   }
 }
 
@@ -502,12 +576,15 @@ int job_submit(uint32_t win, unsigned int timeout_ms, std::function<void(Job *, 
   }
   const ULONGLONG now = GetTickCount64();
   const DWORD left = now >= deadline ? 0 : static_cast<DWORD>(deadline - now);
-  if (WaitForSingleObject(job->done, left) != WAIT_OBJECT_0 &&
-      InterlockedCompareExchange(&job->state, 2, 0) == 0) {
-    job_release(job); // abandoned: a late answer is dropped
-    return ZB_AUTO_ERR_TIMEOUT;
+  if (WaitForSingleObject(job->done, left) != WAIT_OBJECT_0) {
+    // The deadline passed: abandon the job before it starts, or its result while it runs.
+    if (InterlockedCompareExchange(&job->state, kAbandoned, kQueued) == kQueued ||
+        InterlockedCompareExchange(&job->state, kAbandoned, kRunning) == kRunning) {
+      job_release(job);
+      return ZB_AUTO_ERR_TIMEOUT;
+    }
+    WaitForSingleObject(job->done, INFINITE); // completing now: its answer is being written
   }
-  WaitForSingleObject(job->done, INFINITE); // answered, the race with the deadline included
   const int code = job->code;
   if (code == ZB_AUTO_OK && out_json != nullptr && !job->json.empty()) {
     *out_json = dup_c(job->json);
@@ -1125,21 +1202,23 @@ extern "C" int zb_cookies_get_all(uint32_t win, const char *url, unsigned int ti
       [uri](Job *job, AppState *app) {
         ComPtr<ICoreWebView2CookieManager> manager = cookie_manager(app);
         if (!manager) {
-          return job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "no cookie manager");
+          return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "no cookie manager");
         }
+        job_hold(job); // the callback's reference
         const HRESULT hr = manager->GetCookies(
             uri.c_str(), Callback<ICoreWebView2GetCookiesCompletedHandler>(
                              [job](HRESULT result, ICoreWebView2CookieList *list) -> HRESULT {
                                if (FAILED(result)) {
-                                 job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store read failed");
+                                 callback_done(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store read failed");
                                } else {
-                                 job_answer(job, ZB_AUTO_OK, cookies_json(list));
+                                 callback_done(job, ZB_AUTO_OK, cookies_json(list));
                                }
                                return S_OK;
                              })
                              .Get());
-        if (FAILED(hr)) {
-          job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store read failed");
+        if (FAILED(hr)) { // no callback will come
+          job_release(job);
+          job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store read failed");
         }
       },
       out_json, out_err);
@@ -1182,7 +1261,7 @@ extern "C" int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int
             FAILED(manager->CreateCookie(c.name.c_str(), c.value.c_str(), c.domain.c_str(),
                                          c.path.c_str(), &made)) ||
             !made) {
-          return job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store write failed");
+          return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store write failed");
         }
         if (c.expires >= 0) {
           made->put_Expires(static_cast<double>(c.expires)); // else a session cookie
@@ -1195,9 +1274,9 @@ extern "C" int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int
                                                                        : COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE);
         }
         if (FAILED(manager->AddOrUpdateCookie(made.Get()))) {
-          return job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store write failed");
+          return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store write failed");
         }
-        job_answer(job, ZB_AUTO_OK);
+        job_finish(job, ZB_AUTO_OK);
       },
       nullptr, out_err);
 }
@@ -1218,14 +1297,15 @@ extern "C" int zb_cookies_delete(uint32_t win, const char *name, const char *dom
       [want_name, any_domain, want_domain](Job *job, AppState *app) {
         ComPtr<ICoreWebView2CookieManager> manager = cookie_manager(app);
         if (!manager) {
-          return job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "no cookie manager");
+          return job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "no cookie manager");
         }
+        job_hold(job); // the callback's reference
         const HRESULT hr = manager->GetCookies(
             L"", Callback<ICoreWebView2GetCookiesCompletedHandler>(
                      [job, manager, want_name, any_domain, want_domain](
                          HRESULT result, ICoreWebView2CookieList *list) -> HRESULT {
                        if (FAILED(result)) {
-                         job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store delete failed");
+                         callback_done(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store delete failed");
                          return S_OK;
                        }
                        UINT count = 0;
@@ -1245,17 +1325,45 @@ extern "C" int zb_cookies_delete(uint32_t win, const char *name, const char *dom
                            continue;
                          }
                          if (FAILED(manager->DeleteCookie(cookie.Get()))) {
-                           job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store delete failed");
+                           callback_done(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store delete failed");
                            return S_OK;
                          }
                        }
-                       job_answer(job, ZB_AUTO_OK); // deleting nothing is not an error
+                       callback_done(job, ZB_AUTO_OK); // deleting nothing is not an error
                        return S_OK;
                      })
                      .Get());
-        if (FAILED(hr)) {
-          job_answer(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store delete failed");
+        if (FAILED(hr)) { // no callback will come
+          job_release(job);
+          job_finish(job, ZB_AUTO_ERR_INTERNAL, {}, "cookie store delete failed");
         }
       },
       nullptr, out_err);
+}
+
+// ---- WS3 test seams (tests/windows/ws3_shim_test.c only; inert until called) ----
+
+extern "C" void zb_automation_debug_hold_dispatch_ms(unsigned int ms) {
+  InterlockedExchange(&g_debug_hold_ms, static_cast<LONG>(ms));
+}
+
+extern "C" void zb_automation_debug_park_callbacks(int on) { InterlockedExchange(&g_debug_park, on != 0 ? 1 : 0); }
+
+extern "C" int zb_automation_debug_parked_callbacks(void) {
+  AcquireSRWLockShared(&g_parked_lock);
+  const int count = static_cast<int>(g_parked.size());
+  ReleaseSRWLockShared(&g_parked_lock);
+  return count;
+}
+
+// Runs the parked completions on the calling thread (they touch only their jobs); returns how many.
+extern "C" int zb_automation_debug_run_parked_callbacks(void) {
+  std::vector<std::function<void()>> parked;
+  AcquireSRWLockExclusive(&g_parked_lock);
+  parked.swap(g_parked);
+  ReleaseSRWLockExclusive(&g_parked_lock);
+  for (auto &finish : parked) {
+    finish();
+  }
+  return static_cast<int>(parked.size());
 }
