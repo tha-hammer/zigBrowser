@@ -24,6 +24,7 @@ Run alone:  python3 -I tests/windows/gate_twohost_selftest.py -v
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -238,29 +239,43 @@ class WS07FileServerFence(_TwoHostCase):
 
 
 # --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------
-# Each 'ARGV: ...' line the fake stub writes is one invocation. OpenSSH applies -o options
-# last-value-wins, so a later BatchMode=no overrides an earlier yes; the oracle pins the
-# effective value and rejects any invocation whose effective BatchMode is not exactly 'yes'.
+# Each 'ARGV: ...' line the fake stub writes is one invocation. OpenSSH resolves -o options
+# FIRST-occurrence-wins (case-insensitive), so we never hand-parse precedence: we hand each
+# invocation's -o options to `ssh -G` itself and read the effective BatchMode it computes.
 def _ssh_invocations(log_text):
     return [ln[len("ARGV:"):].split() for ln in log_text.splitlines() if ln.startswith("ARGV:")]
 
 
-def _effective_batchmode(tokens):
-    value = None  # None => never set
-    for i, tok in enumerate(tokens):
-        opt = None
-        if tok == "-o" and i + 1 < len(tokens):
-            opt = tokens[i + 1]
-        elif tok.startswith("-o") and len(tok) > 2:
-            opt = tok[2:]
-        if opt is not None and opt.startswith("BatchMode="):
-            value = opt.split("=", 1)[1]
-    return value
+def _o_options(tokens):
+    """The -o options from one invocation, in order (both `-o Name=Val` and `-oName=Val`)."""
+    opts = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "-o" and i + 1 < len(tokens):
+            opts += ["-o", tokens[i + 1]]; i += 2
+        elif tokens[i].startswith("-o") and len(tokens[i]) > 2:
+            opts.append(tokens[i]); i += 1
+        else:
+            i += 1
+    return opts
+
+
+def _batchmode_is_on(o_options):
+    """OpenSSH's EFFECTIVE BatchMode for these -o options, resolved by `ssh -G` itself
+    (first-occurrence-wins, case-insensitive) — authoritative, never a hand parser."""
+    ssh = shutil.which("ssh") or "/usr/bin/ssh"
+    proc = subprocess.run([ssh, "-G", "-F", "/dev/null", *o_options, "zb-batchmode-probe.invalid"],
+                          capture_output=True, text=True, timeout=30)
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if parts and parts[0].lower() == "batchmode":
+            return (parts[1].strip().lower() if len(parts) > 1 else "") in ("yes", "true", "on")
+    return False
 
 
 def _batchmode_violations(log_text):
     invs = _ssh_invocations(log_text)
-    return invs, [t for t in invs if _effective_batchmode(t) != "yes"]
+    return invs, [t for t in invs if not _batchmode_is_on(_o_options(t))]
 
 
 class SshHygiene(_TwoHostCase):
@@ -275,17 +290,22 @@ class SshHygiene(_TwoHostCase):
             self.assertEqual(bad, [], f"gate.sh ssh invocations without effective BatchMode=yes: {bad}")
 
     def test_oracle_flags_a_call_that_omits_batchmode(self):
-        # Failing-first evidence (1): one call keeps BatchMode, another omits it.
+        # Failing-first (1): one call keeps BatchMode, another omits it (OpenSSH default is no).
         invs, bad = _batchmode_violations(
-            "ARGV: ssh -o BatchMode=yes -p 2222 zbtext@127.0.0.1 probe\n"
-            "ARGV: ssh -o StrictHostKeyChecking=yes -p 22 zbtest@100.123.34.15 probe\n")
+            "ARGV: -o BatchMode=yes -p 2222 zbtext@127.0.0.1 probe\n"
+            "ARGV: -o StrictHostKeyChecking=yes -p 22 zbtest@100.123.34.15 probe\n")
         self.assertEqual(len(invs), 2)
         self.assertEqual(len(bad), 1, "the invocation without BatchMode must be flagged")
 
-    def test_oracle_flags_a_later_batchmode_no_override(self):
-        # Failing-first evidence (2): BatchMode=yes then BatchMode=no -> effective no.
-        invs, bad = _batchmode_violations("ARGV: ssh -o BatchMode=yes -o BatchMode=no host probe\n")
-        self.assertEqual(len(bad), 1, "effective BatchMode=no must be flagged (last value wins)")
+    def test_oracle_flags_batchmode_no_then_yes(self):
+        # Failing-first (2): OpenSSH is FIRST-value-wins, so `no` then `yes` is effectively NO.
+        invs, bad = _batchmode_violations("ARGV: -o BatchMode=no -o BatchMode=yes host probe\n")
+        self.assertEqual(len(bad), 1, "effective BatchMode=no (first wins) must be flagged")
+
+    def test_oracle_accepts_batchmode_yes_then_no(self):
+        # Mirror: `yes` then `no` is effectively YES (first wins) — OpenSSH treats it safe.
+        invs, bad = _batchmode_violations("ARGV: -o BatchMode=yes -o BatchMode=no host probe\n")
+        self.assertEqual(bad, [], "effective BatchMode=yes (first wins) must be accepted")
 
 
 if __name__ == "__main__":
