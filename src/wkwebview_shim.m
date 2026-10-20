@@ -971,7 +971,13 @@ static int zb_auto_test_synth_stale(void) {
 static int zb_auto_test_stale_token(void) {
   if (!zb_auto_test_hooks_enabled()) return 0;
   const char *v = getenv("ZB_DEBUG_STALE_TOKEN");
-  return v != NULL && v[0] != '0' && v[0] != '\0';
+  if (v == NULL || v[0] == '0' || v[0] == '\0') return 0;
+  static atomic_int reads = 0;
+  int n = atomic_fetch_add(&reads, 1) + 1;  // 1-based index of this documentToken read
+  // "after:N" -> stale only after N reads, so the PREFLIGHT guard passes and a later per-character
+  // RECHECK fails (isolates the per-char recheck, 6361.1). Any other truthy value -> always stale.
+  if (strncmp(v, "after:", 6) == 0) return n > atoi(v + 6);
+  return 1;
 }
 
 static ZBAutoJob *zb_job_new(void) {
@@ -1593,29 +1599,45 @@ static void zb_build_key_events(NSWindow *window, ZBKeyKind kind, unsigned short
                                  timestamp:ts + 0.01 windowNumber:wn context:nil characters:chars charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc]];
 }
 
-// Deliver `events` one at a time, each FIFO-acked by a round-trip evaluateJavaScript, so a synthetic
-// event is processed (and its keydown/keyup/input dispatched) before the next is sent — rapid
-// back-to-back synthetic keys otherwise drop/coalesce through the input method. Called in DISPATCHING;
-// goes INFLIGHT after the first send; a waiter that abandons mid-sequence stops further delivery
-// (onProgress reports events dispatched). Owns the chain ref: completes + unrefs exactly once.
-static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob *job,
+// Deliver `events` one at a time, each FIFO-acked by a round-trip, so a synthetic event is processed
+// (and its keydown/keyup/input dispatched) before the next is sent — rapid back-to-back synthetic keys
+// otherwise drop/coalesce through the input method. When `expected` is non-nil, the ack doubles as a
+// per-event documentToken RECHECK (RoseCat 6361.1): if an event navigated the page, the next event is
+// NOT sent into the replacement document — the sequence stops with DOC_CHANGED. Called in DISPATCHING;
+// goes INFLIGHT after the first send; a waiter that abandons mid-sequence stops delivery (onProgress
+// reports events dispatched). Owns the chain ref: completes + unrefs exactly once.
+static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob *job, NSString *expected,
                                     NSArray<NSEvent *> *events, void (^onProgress)(NSUInteger delivered)) {
   if (events.count == 0) {
     [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); }];
     zb_job_inflight(job);
     return;
   }
+  WKContentWorld *autoWorld = (expected != nil) ? [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD] : nil;
   __block void (^step)(NSUInteger) = nil;
   step = ^(NSUInteger idx) {
     [window sendEvent:events[idx]];
     if (onProgress != nil) onProgress(idx + 1);
-    [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
-      (void)v;
+    void (^onAck)(NSString *, NSError *) = ^(NSString *tok, NSError *e) {
       if (e != nil) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+      if (expected != nil) {  // per-event documentToken recheck
+        NSString *t = tok;
+        if (zb_auto_test_stale_token()) t = @"zb-debug-stale-token";
+        if (t == nil || ![t isEqualToString:expected]) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL); zb_job_unref(job); return; }
+      }
       if (idx + 1 >= events.count) { step = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
       if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // waiter abandoned: stop
       step(idx + 1);
-    }];
+    };
+    if (expected != nil) {
+      [view callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
+                      arguments:@{}
+                        inFrame:nil
+                 inContentWorld:autoWorld
+              completionHandler:^(id v, NSError *e) { onAck([v isKindOfClass:[NSString class]] ? (NSString *)v : nil, e); }];
+    } else {
+      [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; onAck(nil, e); }];
+    }
   };
   step(0);
   zb_job_inflight(job);
@@ -1695,7 +1717,7 @@ int zb_native_key(uint32_t win, const char *key, int modifiers, const char *expe
       if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
       NSMutableArray<NSEvent *> *events = [NSMutableArray array];
       zb_build_key_events(window, kind, kc, chars, modFlag, flags, events);
-      zb_deliver_events_paced(window, view, job, events, ^(NSUInteger d) { releases = (int)(d / 2); });
+      zb_deliver_events_paced(window, view, job, nil, events, ^(NSUInteger d) { releases = (int)(d / 2); });  // no per-key recheck (a single key may intentionally navigate, e.g. Enter)
     });
     if (out_releases != NULL) *out_releases = releases;
     return rc;
@@ -1734,7 +1756,7 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
       for (NSString *cp in cps) zb_build_key_events(window, ZB_KEY_CHAR, 0, cp, 0, 0, events);
       // Each code point is one keyDown/keyUp pair -> every completed pair (an even delivered count) is a
       // typed code point; a mid-text abandon leaves `sent` at the code points fully dispatched.
-      zb_deliver_events_paced(window, view, job, events, ^(NSUInteger d) { sent = (int)(d / 2); });
+      zb_deliver_events_paced(window, view, job, expected, events, ^(NSUInteger d) { sent = (int)(d / 2); });  // per-char documentToken recheck (6361.1)
     });
     if (out_chars != NULL) *out_chars = sent;
     if (out_releases != NULL) *out_releases = sent;
