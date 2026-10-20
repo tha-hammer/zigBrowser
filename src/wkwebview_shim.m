@@ -950,6 +950,15 @@ static int zb_auto_test_ack_fail(void) {
   return v != NULL && v[0] != '0' && v[0] != '\0';
 }
 
+// Test-only (ZB_DEBUG_STALE_TOKEN): the native-click documentToken guard reads a fabricated stale token
+// (a real mismatch) WITHOUT reloading the page, so locate still succeeds and only the guard sees a
+// changed document — the production DOC_CHANGED path with no engine-reload masking (RoseCat option b).
+static int zb_auto_test_stale_token(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
+  const char *v = getenv("ZB_DEBUG_STALE_TOKEN");
+  return v != NULL && v[0] != '0' && v[0] != '\0';
+}
+
 static ZBAutoJob *zb_job_new(void) {
   ZBAutoJob *job = calloc(1, sizeof(ZBAutoJob));
   if (job == NULL) return NULL;  // callers map NULL -> ZB_AUTO_ERR_INTERNAL
@@ -1440,6 +1449,7 @@ int zb_native_click(uint32_t win, double x, double y, int button,
         if (!zb_job_in_preflight(job)) { deliver = nil; zb_job_unref(job); return; }  // waiter cancelled
         if (error != nil) { deliver = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
         NSString *token = [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
+        if (zb_auto_test_stale_token()) token = @"zb-debug-stale-token";  // force a mismatch (no reload)
         if (token == nil || ![token isEqualToString:expected]) {
           deliver = nil;
           if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL);
