@@ -1,0 +1,5 @@
+# tests/windows/known_hosts — pinned SSH host keys for the gate (WS0.8: StrictHostKeyChecking=yes).
+# The USER fills this (never an agent, and never by auto-accept). Options:
+#   * Point ZB_WIN_KNOWN_HOSTS at the VM's existing pinned file (/home/maceo/vms/win11-m8/known_hosts), or
+#   * `ssh-keyscan -p 2222 127.0.0.1`, verify the fingerprint out-of-band, then paste the line here.
+# An all-comment file plus StrictHostKeyChecking=yes means an unknown host is rejected — fail closed.
