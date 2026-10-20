@@ -849,6 +849,18 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
   input** for a bounded hold — rev 4 renamed from the Linux idiom "real-X", since macOS has no
   window-close "X") and a **clicked-Reload** case (recovery only on the user's click). A 3-second
   automatic-reload mutant must be **killed** by the no-input control.
+  - **Rev 5 accepted substitute for the crash TRIGGER (RoseCat 6508 #5).** WebKit exposes **no
+    public, safe way to terminate a specific WebContent process** (killing by PID would hit shared /
+    other apps' processes; `_killWebContentProcess` is private SPI, ruled out by the 2026-10-20 user
+    decision; see the MS2c.3 note at :840 that no public kill exists). The **accepted substitute** is
+    the e2e-gated one-shot `ZB_DEBUG_SYNTH_CRASH` seam, which synthesizes the **public, unchanged**
+    `webViewWebContentProcessDidTerminate:` callback — the identical production crash path a real kill
+    would run. The two controls are then driven **for real** off that trigger: the no-input hold is a
+    genuine >3 s wait with no socket input (kills the 3 s auto-reload mutant), and clicked-Reload is
+    driven by `page.reload` — the **same WebKit `reloadBypassingCache`** a user's Reload click
+    invokes, **not** a fresh `page.navigate`. The handler also emits a **per-window stderr diagnostic**
+    (`web content process terminated: window-<id>`). Covered by `mac_ms2c_crash_recovery_controls_test.py`
+    (alongside the existing `mac_ms2c_crash_test.py` synthetic seam, which is kept).
 - **MS2c.5 (drawer ownership on window destruction — blocker 5):** **every popup receives its own
   drawer bound to its `window_id`** (when the drawer is on), built on WebKit's **supplied**
   `WKWebViewConfiguration`. There is **one shared destroy path** for `webViewDidClose:`, the

@@ -617,6 +617,8 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 // flag clears only on a later real commit (didFinishNavigation above). Public WKNavigationDelegate method.
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
   self.terminatedReason = @"crashed";  // WKWebView's public callback gives no reason; report the generic one
+  fprintf(stderr, "web content process terminated: window-%u\n", (unsigned)self.windowId);  // MS2c: per-window native diagnostic
+  fflush(stderr);
   NSString *committed = webView.URL.absoluteString;
   NSURL *base = (committed.length > 0) ? [NSURL URLWithString:committed] : nil;
   self.showingCrashDoc = YES;  // the next didFinish is the crash doc's own load, not a recovery
