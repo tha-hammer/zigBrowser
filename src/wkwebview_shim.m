@@ -237,7 +237,7 @@ static void stop_nsapp_run_loop(void) {
 @property(nonatomic, assign) ZBWindowHost *mainWindow;
 @property(nonatomic, assign) uint32_t nextWindowId;  // MS2c: monotonic STABLE window ids, never reused
 - (instancetype)initWithURI:(NSString *)uri printTitle:(BOOL)printTitle e2eProtocol:(BOOL)e2eProtocol;
-- (ZBWindowHost *)createWindowWithWebView:(WKWebView *)webView child:(BOOL)child uri:(NSString *)uri;
+- (ZBWindowHost *)createWindowWithWebView:(WKWebView *)webView child:(BOOL)child uri:(NSString *)uri opener:(ZBWindowHost *)opener;
 - (void)removeWindow:(ZBWindowHost *)window;
 - (void)emitWindowCount;
 - (void)emitLoadFailForURI:(NSString *)uri code:(NSInteger)code;
@@ -337,7 +337,7 @@ static void handle_signal(int signo) {
   return NO;
 }
 
-- (ZBWindowHost *)createWindowWithWebView:(WKWebView *)webView child:(BOOL)child uri:(NSString *)uri {
+- (ZBWindowHost *)createWindowWithWebView:(WKWebView *)webView child:(BOOL)child uri:(NSString *)uri opener:(ZBWindowHost *)opener {
   if (self.windows.count >= ZB_MAX_WINDOWS) {
     fprintf(stderr, "window cap reached (%d); refusing new sub-window\n", ZB_MAX_WINDOWS);
     return nil;
@@ -348,7 +348,11 @@ static void handle_signal(int signo) {
     return nil;
   }
   host.windowId = ++self.nextWindowId;  // STABLE id, assigned once; the first window (primary) is 1
-  host.processGroup = host.windowId;  // default: its own family root; a popup inherits its opener's group below
+  host.processGroup = host.windowId;  // default: its own family root
+  if (opener != nil) {  // set the opener's id + inherited family group BEFORE the snapshot publish below,
+    host.openerId = opener.windowId;        // so a popup never appears in page.list without its opener
+    host.processGroup = opener.processGroup;
+  }
 
   ZbWindow *c_window = calloc(1, sizeof(ZbWindow));
   if (c_window == NULL) {
@@ -780,7 +784,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 
   if (action == ZB_DECISION_OPEN_SUBWINDOW && dtype == ZB_DTYPE_NEW_WINDOW) {
     decisionHandler(WKNavigationActionPolicyCancel);
-    [self.app createWindowWithWebView:nil child:YES uri:candidate];
+    [self.app createWindowWithWebView:nil child:YES uri:candidate opener:nil];  // policy-opened subwindow: no tracked opener (unchanged)
     return;
   }
 
@@ -817,11 +821,9 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 
   WKWebView *childView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768)
                                            configuration:configuration];
-  ZBWindowHost *child = [self.app createWindowWithWebView:childView child:YES uri:nil];
-  if (child != nil) {
-    child.openerId = self.windowId;  // this window opened the popup (stable id)
-    child.processGroup = self.processGroup;  // shares the opener's WebContent process family (frozen at creation)
-  }
+  // opener:self — the shim sets the popup's stable opener id + inherited process group inside
+  // createWindowWithWebView, BEFORE it publishes the snapshot, so page.list never shows the popup openerless.
+  ZBWindowHost *child = [self.app createWindowWithWebView:childView child:YES uri:nil opener:self];
   return child.webView;
 }
 
@@ -2743,6 +2745,6 @@ ZbWindow *zb_window_new(ZbApp *app, void *native_view) {
   }
   ZBAppHost *host = (__bridge ZBAppHost *)app->host;
   WKWebView *webView = native_view != NULL ? (__bridge WKWebView *)native_view : nil;
-  ZBWindowHost *window = [host createWindowWithWebView:webView child:host.windows.count > 0 uri:nil];
+  ZBWindowHost *window = [host createWindowWithWebView:webView child:host.windows.count > 0 uri:nil opener:nil];
   return window != nil ? window.cWindow : NULL;
 }
