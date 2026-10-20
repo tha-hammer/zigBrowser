@@ -8,9 +8,10 @@
 //! error text may carry page data and is dropped here, never forwarded.
 //!
 //! MS2a.1 implements the mandatory routed-command methods (evalJson, navigate[WithPolicy], reload,
-//! url, title). MS2b 2b-i adds nativeClick (a trusted in-process NSEvent, delivered by the shim).
-//! The rest of native input, windows, dialogs, screenshot etc. keep the PagePort `unsupported`
-//! defaults until their own slices (MS2b matrix / MS2c) land.
+//! url, title). A nativeClick implementation exists (the trusted in-process NSEvent proven in MS2b
+//! 2b-i) but is NOT wired into the vtable yet — it awaits the bridge-safety invariants RoseCat
+//! requires (ownership/no-late-dispatch guard, documentToken guard, ack-error mapping). Native input,
+//! windows, dialogs, screenshot etc. keep the PagePort `unsupported` defaults until their slices land.
 const std = @import("std");
 const builtin = @import("builtin");
 const page_port = @import("automation/page_port.zig");
@@ -57,7 +58,10 @@ const vtable: PagePort.VTable = .{
     .reload = reload,
     .url = url,
     .title = title,
-    .nativeClick = nativeClick,
+    // nativeClick is implemented (below) but DELIBERATELY NOT WIRED: RoseCat 6253/6244 — a partial
+    // native-input capability must stay unreachable in production until its mandatory invariants
+    // (per-call ownership/no-late-dispatch guard, documentToken DOC_CHANGED guard, ack-error mapping)
+    // are red/green. Re-wire in the slice that lands those. supportsNativeInput() stays false meanwhile.
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
