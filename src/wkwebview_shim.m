@@ -1546,10 +1546,12 @@ int zb_automation_respond_dialog(uint32_t win, int accept, const char *text, uns
   return rc;
 }
 
-// MS2c: every open window as JSON [{id,url,title,primary,opener,dialog_open}], the primary first — the
-// shape automation_macos_port.parseWindows expects (health fields default when omitted). Window id = the
-// 1-based index into the window registry (mirrors zb_auto_window_for_id). Heap-job claim/cancel model, so
-// a timed-out caller builds/leaks nothing (RoseCat 6469 shape). No page script: works with a dialog open.
+// MS2c: every open window as JSON [{id,url,title,primary,opener,dialog_open,responsive,unresponsive_ms,
+// incident,crashed?}], the primary first — the shape automation_macos_port.parseWindows expects. Window id
+// is the STABLE monotonic windowId (never a registry index, never reused; mirrors zb_auto_window_for_id);
+// opener is the stable id of the window that opened this one, and it keeps that value even after the opener
+// closes (never retargeted to a surviving window). Heap-job claim/cancel model, so a timed-out caller
+// builds/leaks nothing (RoseCat 6469 shape). No page script: works with a dialog open.
 int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
   if (out_json != NULL) *out_json = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;

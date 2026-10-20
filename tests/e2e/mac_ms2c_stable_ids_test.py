@@ -100,6 +100,17 @@ def main() -> int:
         def by_q(ps, q):
             return next((w for w in ps if (w.get("url") or "").endswith("?" + q)), None)
 
+        def wait_urls(suffixes, deadline_s=8.0):
+            # A new window appears in page.list before its navigation commits (url == ""), so wait for the
+            # expected ?suffix urls to settle, not merely for the window count (a cold/slow build races).
+            end = time.monotonic() + deadline_s
+            while time.monotonic() < end:
+                p = pages()
+                if all(by_q(p, q) is not None for q in suffixes):
+                    return p
+                time.sleep(0.05)
+            return pages()
+
         try:
             try:
                 rpc = RpcClient(socket_path, args.timeout_sec)
@@ -111,17 +122,14 @@ def main() -> int:
 
             rpc.call("page.url", {"timeout_ms": 10000})
             rpc.raw("page.evaluate", {"expression": "openOne('a')"})
-            wait_pages(2)
+            wait_urls(["a"])
             rpc.raw("page.evaluate", {"expression": "openOne('b')"})
-            ps = wait_pages(3)
-            if len(ps) != 3:
-                failures.append(f"expected two popups: {[(w.get('window_id'), w.get('url')) for w in ps]}")
+            ps = wait_urls(["a", "b"])
+            a = by_q(ps, "a")
+            b = by_q(ps, "b")
+            if len(ps) != 3 or a is None or b is None:
+                failures.append(f"expected two identifiable popups (?a, ?b): {[(w.get('window_id'), w.get('url')) for w in ps]}")
                 a = b = None
-            else:
-                a = by_q(ps, "a")
-                b = by_q(ps, "b")
-                if a is None or b is None:
-                    failures.append(f"could not identify both popups: {ps!r}")
 
             if a and b:
                 b_id = b["window_id"]
