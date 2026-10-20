@@ -364,7 +364,10 @@ class CancelThenAwaitTest(unittest.IsolatedAsyncioTestCase):
                 raise
 
         session = chat.Session.__new__(chat.Session)
-        session.chat, session.id = types.SimpleNamespace(out=Out()), "s-1-1"
+        async def scrubbed(kind, *_ids):  # S5.7 (c): the close's scan, before session_ended
+            events.append(f"scrubbed {kind}")
+
+        session.chat, session.id = types.SimpleNamespace(out=Out(), scrubbed=scrubbed), "s-1-1"
         session.client, session.route = Client(), Route()
         session.task = asyncio.create_task(stubborn())
         self.addCleanup(cleanup.set)  # a failing run must still let the prompt finish
@@ -375,7 +378,8 @@ class CancelThenAwaitTest(unittest.IsolatedAsyncioTestCase):
         cleanup.set()
         self.assertEqual(early, ["cancelled"], "nothing closes while the prompt is still cleaning up")
         await asyncio.wait_for(closing, 5)
-        self.assertEqual(events, ["cancelled", "cleanup done", "disconnect", "route closed", "session_ended"])
+        self.assertEqual(events, ["cancelled", "cleanup done", "disconnect", "route closed", "scrubbed close",
+                                  "session_ended"])
 
 
 class SessionOptionsTest(unittest.TestCase):

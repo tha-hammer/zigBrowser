@@ -11,19 +11,26 @@ stdin carries app frames (hello, open_session, prompt, interrupt,
 end_session, shutdown); stdout carries helper frames, each validated by the
 app. One ClaudeSDKClient per drawer session, built by the single options
 builder. Text deltas are coalesced (at most one frame per 50 ms). The token
-is never written anywhere; errors say what failed, never with the token."""
+is never written anywhere; errors say what failed, never with the token.
+
+S5c-2 (plan S5.7): the CLI saves an API error's echoed credential in its transcript, so
+every transcript is scrubbed (redact.py) at the start, before `ready`; by a monitor for
+the helper's life; at each prompt's end, before its ending frame; and at each session's
+close, before `session_ended`. A scrub that fails ends the helper with exit 3: at a
+prompt's end after an `error sdk`, and otherwise with no later frame."""
 
 import argparse
 import asyncio
 import contextlib
 import json
 import os
+import signal
 import sys
 import threading
 
 from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent, TextBlock
 
-from . import __version__, options, sandbox, token
+from . import __version__, options, redact, sandbox, token
 from .contract import Route
 from .files import atomic_write
 from .frames import Emitter, encode
@@ -103,7 +110,7 @@ class Session:
         self.route = Route(self.chat.home, self.chat.token, self.chat.fifo_dir)
         self.opts = session_options(self.chat.home, route_env=self.route.env, cli_path=self.route.cli_path,
                                     e2e=self.chat.e2e, test_ca=self.chat.test_ca,
-                                    stderr=lambda line: print(line, file=sys.stderr))
+                                    stderr=lambda _line: None)  # drained, never reprinted (T6, RoseCat 6442)
         self.client = ClaudeSDKClient(options=self.opts)
 
     async def renew(self):
@@ -173,10 +180,12 @@ class Session:
                     self.chat.out.emit("assistant_message", session=self.id, prompt_id=prompt_id, text=fitted)
                 streamed = False
             elif isinstance(message, ResultMessage) and api_error is not None:
+                await self.chat.scrubbed("prompt_end", self.id, prompt_id)
                 self.chat.error(API_ERROR_CODES.get(api_error, "sdk"), f"the API refused the request ({api_error})", self.id,
                                 prompt_id)
             elif isinstance(message, ResultMessage):
                 flush()
+                await self.chat.scrubbed("prompt_end", self.id, prompt_id)
                 self.chat.out.emit("result", session=self.id, prompt_id=prompt_id, sdk_session_id=message.session_id,
                                    subtype=message.subtype, is_error=message.is_error,
                                    num_turns=message.num_turns, cost_usd=message.total_cost_usd)
@@ -192,6 +201,7 @@ class Session:
             await self.client.disconnect()
         finally:
             self.route.close()
+            await self.chat.scrubbed("close")  # its CLI is gone: no writer can follow
             self.chat.out.emit("session_ended", session=self.id, reason=reason)
 
 
@@ -211,6 +221,7 @@ class Chat:
         self.e2e = None
         self.out = Emitter()
         self.sessions = {}
+        self.scrubber = None  # S5.7: set by run(), before `ready`
 
     def error(self, code, message, session=None, prompt_id=None):
         """A session's error names its prompt (S5d): `prompt_id` is the prompt it ends, or
@@ -270,9 +281,38 @@ class Chat:
         except Exception as exc:  # noqa: BLE001 - reported as a frame, never with the token
             with contextlib.suppress(Exception):  # before the error frame: the next prompt finds it ready
                 await session.renew()
+            await self.scrubbed("prompt_end", session.id, prompt_id)
             self.error("sdk", type(exc).__name__, session.id, prompt_id)
 
+    async def scrubbed(self, kind, session=None, prompt_id=None):
+        """A lifecycle scan, run by the scrubber's owner thread off this loop. A failure is
+        the owner's to end (on_scrub_failed, RoseCat 6379): this side sends nothing more."""
+        if self.scrubber is None:
+            fail_closed("no scrubber", self.out)  # never skip the scrub
+        tag = (session, prompt_id) if kind == "prompt_end" else None
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, lambda: self.scrubber.request(kind, tag=tag))
+        except redact.ScrubFailed:
+            await asyncio.Event().wait()  # the owner's terminal path is ending the helper
+
+    def on_scrub_failed(self, exc, failed):
+        """The owner thread's one terminal path: each failed prompt-end scan's `error sdk`
+        (never `result`), then no frame of any kind, then exit 3."""
+        last = [("error", {"session": q.tag[0], "prompt_id": q.tag[1], "code": "sdk",
+                           "message": "transcript scrub failed"}) for q in failed if q.kind == "prompt_end"]
+        fail_closed(exc, self.out, last)
+
     async def run(self):
+        # S5.7 (d): what a killed helper left is clean before `ready`. The start sweep is the
+        # owner thread's request like every scan, and its failure the owner's (RoseCat 6440).
+        try:
+            # The CLI's config directory as this process sees it: in the sandbox, `.claude`
+            # with state/projects bound at its `projects` (the host's `state` is not mounted).
+            self.scrubber = redact.Scrubber(os.path.realpath(self.home.claude_dir), self.token)
+        except (redact.ScrubFailed, OSError) as exc:
+            fail_closed(exc, self.out)  # no owner yet, and no request
+        threading.Thread(target=self.scrubber.run, args=(self.on_scrub_failed,), name="zb-scrub", daemon=True).start()
+        await self.scrubbed("start")
         self.out.emit("ready", version=__version__, route="R1", selfcheck={"ok": True, "failures": []},
                       tool_deadline_s=TOOL_DEADLINE_S)
         loop = asyncio.get_running_loop()
@@ -291,6 +331,41 @@ class Chat:
                 break
         for sid in list(self.sessions):
             await self.sessions.pop(sid).close("end")
+
+
+_TERMINAL = threading.Lock()  # held by the one thread that ends the helper
+FAIL_LINE = b"zigBrowser: agent: transcript scrub failed\n"
+
+
+def fail_closed(why, out=None, last=()):
+    """S5.7: a transcript could not be cleaned. The output is sealed after `last`'s
+    frames (best effort, bounded: Emitter.seal), every process this helper started (its
+    CLIs and their sandboxes) is killed, a fixed line goes to stderr, and the helper exits
+    3; the app reports it as a crash and its restart's start sweep tries again. Only one
+    thread ever gets past the first line (RoseCat 6379). Nothing here blocks on the app
+    (RoseCat 6423). `why` is never printed: its text can carry names from the agent's
+    writable transcript tree (RoseCat 6410)."""
+    _TERMINAL.acquire()
+    if out is not None:
+        out.seal(last)
+    me, parents = os.getpid(), {}
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                with open(f"/proc/{entry}/stat") as f:
+                    parents.setdefault(int(f.read().rsplit(")", 1)[1].split()[1]), []).append(int(entry))
+            except (OSError, IndexError, ValueError):
+                continue
+    todo = list(parents.get(me, []))
+    while todo:
+        pid = todo.pop()
+        todo += parents.get(pid, [])
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        os.set_blocking(2, False)
+        os.write(2, FAIL_LINE)
+    os._exit(3)
 
 
 def _pump(stream, loop, queue):

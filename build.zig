@@ -1128,6 +1128,15 @@ pub fn build(b: *std.Build) void {
         "agent-prompt-exhaust-e2e",
     });
     agent_prompt_exhaust_e2e.addArtifactArg(exe);
+    // Chat drawer S5c-2 (S5.7): a credential echoed into an API error never stays in a
+    // saved transcript, through the real chain.
+    const agent_redact_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_redact_test.py --binary \"$1\"",
+        "agent-redact-e2e",
+    });
+    agent_redact_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.5, user answer 1): the drawer is on by default; with no agent
     // home Send says the runtime is not set up; stop_browser fails a test a helper ran in.
     const agent_default_on_e2e = b.addSystemCommand(&.{
@@ -1248,6 +1257,17 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_fit",
+    });
+    // Chat drawer S5c-2 (S5.7): the transcript scrubber, driven directly, then in the helper.
+    const agent_host_redact = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_redact",
+    });
+    const agent_host_chat_redact = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_redact",
     });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
@@ -1808,6 +1828,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_prompt_scope_e2e.step);
     test_step.dependOn(&agent_open_order_e2e.step);
     test_step.dependOn(&agent_prompt_exhaust_e2e.step);
+    test_step.dependOn(&agent_redact_e2e.step);
     test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
@@ -1825,6 +1846,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat_cap.step);
     test_step.dependOn(&agent_host_chat_prompt_id.step);
     test_step.dependOn(&agent_host_chat_fit.step);
+    test_step.dependOn(&agent_host_redact.step);
+    test_step.dependOn(&agent_host_chat_redact.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
