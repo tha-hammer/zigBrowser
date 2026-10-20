@@ -2159,9 +2159,9 @@ pub fn build(b: *std.Build) void {
 fn guardDisplay(b: *std.Build) void {
     const guard = b.addSystemCommand(&.{ "python3", "tools/display_guard.py" });
     guard.has_side_effects = true; // the environment is read on every run, never cached
-    // ws3-shim-test-win exists only in Windows-target builds and runs on Windows, which has no X
-    // display to guard (and no python3 to run the guard).
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win" };
+    // ws3-shim-test-win and owner-only-test-win exist only in Windows-target builds and run on
+    // Windows, which has no X display to guard (and no python3 to run the guard).
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win", "owner-only-test-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
