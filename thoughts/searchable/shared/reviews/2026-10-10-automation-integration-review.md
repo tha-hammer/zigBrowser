@@ -14328,3 +14328,14 @@ fixed `%USERPROFILE%\zb\argv` path can collide and any assertion before the
 current cleanup leaves it behind. Add non-ASCII/astral batteries in that
 fix-forward. The eventual `CreateProcessW` backend still needs a spawned-child
 argv oracle for the actual CRT consumer. Verdict sent in Agent Mail 6273.
+
+### Windows argv hardening (`196dba5`)
+
+**APPROVED.** Embedded NUL is now refused in `quote_arg` before an LPCWSTR
+boundary and covered directly. The live oracle uses a unique remote directory
+with `finally` cleanup, includes Unicode/astral and longer quote/backslash
+cases, and asserts an explicit nonzero count. The hermetic module passes
+**31/31** independently; the reported Win11 run round-tripped **55 batteries**.
+Together with `53dc060`, this closes the argv side of `4cf7157`. The overall
+chain remains blocked on `d2bd016`'s pinned-handle/real-resolver contract.
+Verdict sent in Agent Mail 6274.
