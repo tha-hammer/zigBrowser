@@ -506,6 +506,29 @@ def window_ready(x11, wid: int) -> str | None:
     return None
 
 
+def current_rect(windows: str, named: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    """Where a control the drawer named in a row (`minus`, `open`, ...) is drawn now, from the
+    latest `windows` row (Type:input|output:viewable|hidden:depth:x:y:w:h, comma-separated):
+    the one viewable input widget with the same x, width and height. The drawer writes its
+    open-time rows once, at the panel's first allocation; on the user's GNOME screen
+    (2026-10-20) the window was then placed again and the panel moved up 69 px, so the rows
+    were stale and the '-' click landed in the reply list. None when not exactly one matches:
+    then nothing is clicked."""
+    x, _y, w, h = named
+    hits = []
+    for item in windows.split(","):
+        parts = item.split(":")
+        if len(parts) != 8 or parts[1] != "input" or parts[2] != "viewable":
+            continue
+        try:
+            at = tuple(int(v) for v in parts[4:8])
+        except ValueError:
+            continue
+        if (at[0], at[2], at[3]) == (x, w, h):
+            hits.append(at)
+    return hits[0] if len(hits) == 1 else None
+
+
 ASK_FOCUS = "click once on the zigBrowser window title bar to focus it"
 ACTIVE_WAIT_S = 20.0
 
@@ -899,6 +922,15 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                 if refused:
                     raise Refused(f"{what} refused: {refused}")
 
+            def control(kind: str) -> tuple[int, int, int, int]:
+                """The drawer's `kind` where it is drawn now (current_rect); never a stale row."""
+                named = b.of(kind)[-1].rect()
+                windows = b.of("windows")
+                now = current_rect(windows[-1].fields[0] if windows else "", named)
+                if now is None:
+                    raise Refused(f"the drawer's {kind} {named} is not drawn where its row says: no input sent")
+                return now
+
             def icon_rect() -> tuple[int, int, int, int]:
                 return tuple(int(v) for v in b.of("icon")[-1].fields[0].split(","))
 
@@ -914,7 +946,7 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
             for n, (case, prompt, reply) in enumerate(LONG_RUN):
                 if n > 0:  # the copy's click left the focus in a bubble: fold and reopen focus the input
                     minimized = len(b.of("minimized"))
-                    click(b.of("minus")[-1].rect(), "'-'")
+                    click(control("minus"), "'-'")
                     if not (b.wait(lambda: len(b.of("minimized")) > minimized, 10) and reopen()):
                         results.append((FAIL, case, "the drawer did not fold and reopen before the prompt"))
                         continue
@@ -932,7 +964,7 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                 # '-' at once: the drawer folds within FOLD_MAX_S of the click.
                 minimized = len(b.of("minimized"))
                 started = time.monotonic()
-                click(b.of("minus")[-1].rect(), "'-'")
+                click(control("minus"), "'-'")
                 folded = b.wait(lambda: len(b.of("minimized")) > minimized, 30)
                 took = time.monotonic() - started
                 window, screen = capture_both(wid, out, f"{case}.folded")
@@ -945,7 +977,7 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                     continue
                 time.sleep(1.0)
                 text_rows = [r for r in b.of("textrect") if r.fields[0] == "assistant"]
-                opened = b.of("open")[-1].rect()
+                opened = control("open")
                 rect = tuple(int(v) for v in text_rows[-1].fields[1].split(",")) if text_rows else None
                 top, bottom = (max(rect[1], opened[1] + 48), min(rect[1] + rect[3], opened[1] + opened[3] - 64)) if rect else (0, 0)
                 if rect is None or bottom - top < 8:

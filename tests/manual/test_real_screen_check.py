@@ -294,6 +294,36 @@ class ActivationTest(unittest.TestCase):
         self.assertEqual(self.run_ensure(x), (True, []))
 
 
+# The user's real-screen long-run on d3c998d (2026-10-20, /tmp/zb-long-run-2): the drawer's
+# open-time rows said open 0,530,1024,307 and minus 982,537,34,34; the next `windows` row, the
+# panel as drawn, has it 69 px higher (GNOME placed the window again after the first
+# allocation). The script clicked the stale '-', inside the reply list, and nothing folded.
+USERS_WINDOWS = ("GtkButton:input:viewable:1:953:728:63:34,GtkButton:input:viewable:1:881:728:66:34,"
+                 "GtkScrolledWindow:output:viewable:1:8:716:867:46,GtkListBox:output:viewable:5:0:509:1024:200,"
+                 "GtkButton:input:viewable:1:982:468:34:34,GtkButton:input:viewable:1:888:468:86:34,"
+                 "GtkLabel:input:viewable:1:107:468:773:34,GtkEventBox:input:viewable:1:0:461:1024:307,"
+                 "GtkButton:input:hidden:1:944:688:56:56,WebKitWebView:output:viewable:1:0:0:1024:461")
+
+
+class CurrentRectTest(unittest.TestCase):
+    def test_the_minus_and_the_panel_are_where_the_drawer_is_drawn_now(self):
+        self.assertEqual(rsc.current_rect(USERS_WINDOWS, (982, 537, 34, 34)), (982, 468, 34, 34))
+        self.assertEqual(rsc.current_rect(USERS_WINDOWS, (0, 530, 1024, 307)), (0, 461, 1024, 307))
+        self.assertEqual(rsc.current_rect(USERS_WINDOWS, (953, 797, 63, 34)), (953, 728, 63, 34))
+
+    def test_a_widget_not_drawn_now_is_none(self):
+        self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (944, 688, 56, 56)), "hidden: never a click target")
+        self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (500, 100, 34, 34)))
+        self.assertIsNone(rsc.current_rect("", (982, 537, 34, 34)))
+
+    def test_two_candidates_are_none(self):
+        twice = USERS_WINDOWS + ",GtkButton:input:viewable:1:982:300:34:34"
+        self.assertIsNone(rsc.current_rect(twice, (982, 537, 34, 34)))
+
+    def test_output_only_widgets_are_never_click_targets(self):
+        self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (0, 600, 1024, 200)), "the reply list itself")
+
+
 class AnyPageTest(unittest.TestCase):
     def test_a_flat_window_is_blank_and_a_varied_one_is_drawn(self):
         flat = capture(W + 30, H + 40, lambda x, y: (0xE0, 0xE0, 0xE0))
