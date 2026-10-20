@@ -15047,3 +15047,35 @@ register this deeper oracle in place of the shallow one and add that command
 test. The controlled import is a Linux approximation (`sys.platform` changes
 but the preloaded standard library remains POSIX); the real Windows gate stays
 authoritative.
+
+### macOS refused-start and ack-error reds (`5641024`)
+
+**BLOCKED.** Both scenarios reach the intended missing paths, but the new
+production hooks are unsafe and the response oracles are too broad:
+
+- `ZB_DEBUG_REFUSE_NEXT_NAV` and `ZB_DEBUG_ACK_FAIL` are honored from any
+  ambient environment. Both tests launch without `--e2e-protocol`. Gate the
+  hooks on the app's e2e flag and add an inertness case, as required for every
+  test seam.
+- Both tests catch any `AssertionError` as success. Auth, schema, timeout or
+  unrelated engine errors can therefore false-green them. Use `RpcClient.raw`
+  and assert refused start is exactly `-32008 navigation_failed`, while ack
+  failure is exactly `-32603 Evaluation failed`.
+
+The old-document URL and prompt-answering checks after refused start are
+otherwise sound. Findings were sent to JadeBeacon in Agent Mail 6338.
+
+### same-window untagged navigation-failure red (`1e8bfb5`)
+
+**APPROVED as the registered regression red.** The test first completes a
+routed navigation, then initiates an untagged page navigation in the same
+window and requires the existing user/page failure policy to exit the app.
+The prior per-window suppression mutant instead leaves the process alive and
+is caught by the bounded wait. NIT: its header still says
+“unregistered->gate.”
+
+This test does not close `33b0827`: tagged stale finish/failure callbacks
+still mutate `finishedOrFailed` and invalidate the current timer before the
+identity check in `wkwebview_shim.m:488-537`. The same-window stale-success
+and stale-failure reds, production ordering fix, and remote gate outer timeout
+remain open. Verdict sent in Agent Mail 6338.
