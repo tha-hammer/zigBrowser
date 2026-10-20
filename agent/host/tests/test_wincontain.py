@@ -4,8 +4,8 @@ Path containment (lexical, fail-closed), argv quoting (round-tripped through a r
 CommandLineToArgvW parser), and the fail-closed containment choice. All pure — runs on Linux under
 python3 -I with no Windows host.
 
-Run the module alone, as the gate does:
-  cd agent/host/tests && python3 -I -m unittest -v test_wincontain
+Run the module alone, as the gate does (NOT with -I: isolated mode drops the test cwd from sys.path):
+  cd agent/host/tests && python3 -m unittest -v test_wincontain
 """
 import unittest
 
@@ -159,26 +159,35 @@ class PathContainment(unittest.TestCase):
 
 
 class _Resolver:
-    """A fake PathResolver: identity unless a path is remapped; can also fail (resolution error)."""
-    def __init__(self, mapping=None, fail=False):
+    """A fake PathResolver: identity unless a path is remapped; can also fail or drop the handle.
+
+    `canon_only` models a BROKEN resolver that hands back only a name (handle=None) — the TOCTOU hole the
+    contract forbids. `store`, if given, is a MUTABLE path->canonical map so a test can retarget a name
+    AFTER resolution; the handle pins the canonical read at resolve time.
+    """
+    def __init__(self, mapping=None, fail=False, handle=True, store=None):
         self.mapping = mapping or {}
         self.fail = fail
+        self.handle = handle
+        self.store = store
 
     def resolve(self, path):
         if self.fail:
             raise OSError("cannot resolve (reparse)")
-        return self.mapping.get(path, path)
+        canon = self.store[path] if self.store is not None else self.mapping.get(path, path)
+        return wc.ResolvedPath(canonical=canon, handle=(object() if self.handle else None))
 
 
 class ResolvedContainment(unittest.TestCase):
     ROOT = r"C:\Users\zbtext\zb"
 
-    def test_identity_resolver_passes(self):
+    def test_identity_resolver_returns_pinned_capability(self):
         got = wc.resolved_within(self.ROOT, r"C:\Users\zbtext\zb\build\x", _Resolver())
-        self.assertEqual(got, r"C:\Users\zbtext\zb\build\x")
+        self.assertIsInstance(got, wc.ResolvedPath)
+        self.assertEqual(got.canonical, r"C:\Users\zbtext\zb\build\x")
+        self.assertIsNotNone(got.handle, "must return the pinned handle the caller acts through")
 
     def test_junction_escape_fails_closed(self):
-        # lexically in-root, but the junction resolves OUT of root
         cand = r"C:\Users\zbtext\zb\j\x"
         resolver = _Resolver({cand: r"C:\Windows\System32\x", self.ROOT: self.ROOT})
         with self.assertRaises(wc.ContainError):
@@ -193,10 +202,46 @@ class ResolvedContainment(unittest.TestCase):
         with self.assertRaises(wc.ContainError):
             wc.resolved_within(self.ROOT, cand, _Resolver({cand: ""}))
 
+    def test_resolver_without_handle_fails_closed(self):
+        # a resolver that returns only a name (no pinned handle) is a TOCTOU hole and must be rejected
+        cand = r"C:\Users\zbtext\zb\x"
+        with self.assertRaises(wc.ContainError):
+            wc.resolved_within(self.ROOT, cand, _Resolver({cand: cand, self.ROOT: self.ROOT}, handle=False))
+
+    def test_handle_pins_target_against_post_resolve_retarget(self):
+        # TOCTOU: validate in-root, then an attacker retargets the NAME; the pinned handle still refers to the
+        # validated target, and resolved_within handed back a capability (not a reopenable string).
+        cand = r"C:\Users\zbtext\zb\j\x"
+        in_root = r"C:\Users\zbtext\zb\real\x"
+        store = {self.ROOT: self.ROOT, cand: in_root}
+        resolved = wc.resolved_within(self.ROOT, cand, _Resolver(store=store))
+        store[cand] = r"C:\Windows\System32\x"     # retarget AFTER validation+use-handle
+        self.assertIsInstance(resolved, wc.ResolvedPath)
+        self.assertEqual(resolved.canonical, in_root, "the capability pins the validated target, not the name")
+
     def test_lexical_prefilter_runs_before_resolver(self):
-        # a lexically-bad candidate must be rejected without ever consulting the resolver
         with self.assertRaises(wc.ContainError):
             wc.resolved_within(self.ROOT, r"\\server\share\x", _Resolver(fail=True))
+
+
+class FinalPathNormalization(unittest.TestCase):
+    def test_strips_win32_namespace_prefix(self):
+        self.assertEqual(wc.normalize_final_path(r"\\?\C:\Users\zbtext\zb\a"), r"C:\Users\zbtext\zb\a")
+
+    def test_plain_drive_path_passes(self):
+        self.assertEqual(wc.normalize_final_path(r"C:\x\y"), r"C:\x\y")
+
+    def test_unc_final_rejected(self):
+        with self.assertRaises(wc.ContainError):
+            wc.normalize_final_path(r"\\?\UNC\server\share\x")
+
+    def test_volume_guid_final_rejected(self):
+        with self.assertRaises(wc.ContainError):
+            wc.normalize_final_path(r"\\?\Volume{b75e2c83-0000-0000-0000-602f00000000}\x")
+
+    def test_empty_rejected(self):
+        with self.assertRaises(wc.ContainError):
+            wc.normalize_final_path("")
 
 
 class _Probe:
