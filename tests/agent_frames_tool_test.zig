@@ -143,3 +143,16 @@ test "a content that is not a JSON array is ok:false \"the browser sent a bad an
         try testing.expectEqualStrings("the browser sent a bad answer", parsed.value.object.get("error").?.string);
     }
 }
+
+test "a content with whitespace and newlines between its blocks is sent compact, on one line" {
+    frames.zb_agent_frames_reset();
+    const content = "[\n  {\"type\": \"text\", \"text\": \"a\\nb\"},\n  {\"type\":\"text\",\"text\":\"c\"}\n]\n";
+    const line = try toolResult(true, content);
+    defer free(line);
+    var parsed = try parse(line); // exactly one newline, at the end
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("ok").?.bool);
+    const again = try std.json.Stringify.valueAlloc(testing.allocator, parsed.value.object.get("content").?, .{});
+    defer testing.allocator.free(again);
+    try testing.expectEqualStrings("[{\"type\":\"text\",\"text\":\"a\\nb\"},{\"type\":\"text\",\"text\":\"c\"}]", again);
+}
