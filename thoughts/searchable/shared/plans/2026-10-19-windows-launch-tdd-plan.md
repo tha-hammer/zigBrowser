@@ -6,8 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.2)
-rev: 2.2
+status: plan for review (rev 2.3)
+rev: 2.3
+rev_2_3_note: "Rev 2.3 (2026-10-20): added the WS3 cross-plan coordination proposal (section 'WS3 cross-plan coordination') — the shared config-flag seam applyBackendFlag(os,flag,value), the CookiePort interface with three backend impls, and the --profile-dir contract: which plan owns what, the pinned shared contracts, and the binding order (BlueBeaver lands the backend-flag seam pre-slice first; WS3 and MS3 add their os-arms in parallel; JadeBeacon adopts the shared name; BlackRobin owns the native setters). Mailed to BlackRobin, BlueBeaver, JadeBeacon and RoseCat. WS3's first Linux-only reds (the flag-decision-table property + the windows cookie-port cross-check) are written unregistered."
 rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses the SMBIOS UUID (a standard user cannot read Win32_ComputerSystemProduct.UUID — WMI Access-denied 0x80041003, wmic absent; verified on win11-m8). Identity = pinned SSH host key + a provisioning marker nonce (ZB_WIN11_MARKER / C:\\Users\\<user>\\zb\\.gate-identity, probe field identity_marker); virsh stays read-only (domstate, snapshot-list). Updated the reach-VM identity section, the WS0.1 probe fields, the fail-closed list and WS0.6."
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
 last_updated: 2026-10-20
@@ -1151,6 +1152,70 @@ New `src/automation_wv2_cookie_port.zig` (gated `.windows`) with the GTK cookie-
   manager boundary; OBSERVE = `document.cookie` through the socket).
 
 **Gate (WS3):** [W] both hosts. Not a UI slice.
+
+---
+
+## WS3 cross-plan coordination (`applyBackendFlag` seam, `CookiePort`, profile store)   [coordination]
+
+WS3 (Windows config/persistence/cookies) shares three artifacts with **macOS MS3** (JadeBeacon) and
+the existing **GTK** backend. This section pins who owns what, the shared contracts, and the order, so
+the three backends cannot diverge. It was mailed to BlackRobin, BlueBeaver, JadeBeacon and RoseCat.
+
+### Shared artifacts
+1. **The fallible config-flag seam** — one `applyBackendFlag(os, flag, value) !void` in `src/webkit.zig`
+   (today only the Linux apply path exists, `webkit.zig:47-72`; macOS MS3.2 proposed a parallel
+   `applyMacBackendFlag(flag,value)` — the two must become one).
+2. **The `CookiePort` interface** — the GTK contract (`automation_gtk_cookie_port.zig` already satisfies
+   it) with one impl per backend.
+3. **The `--profile-dir` behavioral contract** — an isolated, persistent, per-profile store.
+
+### Which plan owns what
+
+| Artifact | Owner | Where |
+|---|---|---|
+| Pure `backendFlagDecision(os, flag, value) -> Decision{apply, refuse}` (no C ABI) + the fallible wrapper `applyBackendFlag(os, flag, value) !void`; the GTK arm refactored from `webkit.zig:47-72`; the one documented flag×value table; the exit-nonzero-with-exact-message contract | **BlueBeaver** (engine/config owner, per both plans) | a small **"backend-flag seam" pre-slice** in `src/webkit.zig`, Linux-gated, [L] |
+| The `.windows` arm of the table + the Windows apply (`--media-source off` document-start user script; `--hardware-acceleration never` → `AdditionalBrowserArguments "--disable-gpu"`) | **AzureRidge (WS3.2)** | `src/webkit.zig` (.windows arm), `src/webview2_shim.cpp` |
+| The `.macos` arm + the macOS apply (WKPreferences / user script) | **JadeBeacon (MS3.2)** | `src/webkit.zig` (.macos arm), `src/wkwebview_shim.m` |
+| Native C setters/shims (`zb_app_set_profile_dir`, `zb_app_set_hw_policy`/`_media_source` + getters — kept `void`; the CookieManager/CookieStore) | **BlackRobin** (native shims) | `webview2_shim.cpp` (Win), `wkwebview_shim.m` (mac), `webkit_shim.c` (GTK, exists) |
+| The `CookiePort` **interface** (stable; GTK impl exists) | **BlueBeaver** | unchanged |
+| `automation_wv2_cookie_port.zig` (Windows `CookiePort`) | **AzureRidge (WS3.3)** | new file |
+| `automation_wk_cookie_port.zig` (macOS `CookiePort`) | **JadeBeacon (MS3.3)** | new file |
+| The profile store | per-backend | GTK persistent context (exists); WKWebsiteDataStore (JadeBeacon MS3.1); WebView2 user-data folder (AzureRidge WS3.1) |
+
+### Shared contracts (pinned)
+- **`applyBackendFlag(os: BackendOs, flag: Flag, value: []const u8) !void`:** validates via the pure
+  `backendFlagDecision(os, flag, value)` table **before** any `void` C setter runs; a supported value is
+  applied; an unsupported flag/value returns `error.UnsupportedFlag`; `src/app.zig` prints
+  `zigBrowser: --<flag>=<value> is not supported on <os>` (os = `Windows`/`macOS`/`Linux`) and the real
+  binary **exits nonzero without touching the C ABI**. `--renderer` is handled entirely by the seam (no C
+  setter). **One** documented table in `src/webkit.zig`; the [L] property test (generated flag×value
+  cross-product, no C ABI) is the single oracle for all three arms, selected by the `os` parameter.
+- **`CookiePort`:** the GTK contract (`get_all`/`add`/`delete`; async store boundary; OBSERVE via
+  `document.cookie` over the socket). One interface, three impl files, each bound to its profile's store.
+- **`--profile-dir`:** isolated, persistent, per-profile; **no** store folder appears next to the exe;
+  `login → restart → still-logged-in`; a second `--profile-dir` sees none of the first's data.
+
+### Order (binding)
+1. **BlueBeaver** lands the **backend-flag seam pre-slice** (`backendFlagDecision` + `applyBackendFlag(os,…)`
+   + the documented table + the GTK arm, behaviour byte-identical) — [L], red-first (the property oracle).
+   This unblocks WS3.2 and MS3.2.
+2. In parallel after (1): **WS3** adds the `.windows` arm, `automation_wv2_cookie_port.zig`, the Windows
+   shim setters (with BlackRobin) and the WS3 e2es; **MS3** adds the `.macos` arm,
+   `automation_wk_cookie_port.zig`, the macOS shim (with BlackRobin) and the MS3 e2es. Neither rewrites the
+   other's arm.
+3. **JadeBeacon** adopts the shared name — amend MS3.2's `applyMacBackendFlag(flag,value)` to
+   `applyBackendFlag(.macos, flag, value)` (recommended, so there is one function) or keep a thin alias.
+4. **BlackRobin** keeps the native C setters `void` (the fallibility lives in the Zig seam, MS3.2 rev 5);
+   WS3/MS3 each add their platform's setters.
+
+### WS3's Linux-only reds (writable now, before the seam lands)
+- **Flag-decision-table property** (`tests/ws3_backend_flag_table_test.zig`, unregistered): the generated
+  `(flag, value)` cross-product for the `.windows` arm must match the documented oracle; **red today**
+  because `backendFlagDecision`/`applyBackendFlag(os,…)` do not exist (only the Linux path). Green when
+  BlueBeaver's seam + the WS3 `.windows` arm land; mutant: accept an unknown value ⇒ red.
+- **Windows cookie-port cross-check** (reuses the `cross-check` object + `--require-defined`): the
+  `x86_64-windows-gnu` object must compile and reference `automation_wv2_cookie_port.zig`'s `zb_cookies_*`
+  path once it exists; **red today** (file/decl absent).
 
 ---
 
