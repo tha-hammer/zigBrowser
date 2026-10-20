@@ -17798,3 +17798,107 @@ and `zbother` negative transport cases pass; the all-off DACL mutant lets the
 other user connect; and refusal stderr passes 3/3. Both changed scripts and
 the WS0 hostless suite compile, `git diff --check` is clean, and no local live
 host was touched.
+
+## MS2a ownership, WS0 readiness and MS5 seams (`a363d06` through `4ad3e78`)
+
+### `a363d06` — BLOCKED
+
+The tracked allocation/free pair, atomic counter and e2e-only diagnostics are
+reasonable, and the seven converted asynchronous result/error allocation
+sites use the pair consistently. Two contract gaps keep MS2a part B open:
+
+1. `mac_ms2a_string_ownership_test.py:123-142` runs success, JavaScript error
+   and abandoned-late cases and reads the balance only once after all three.
+   A leak in one case and an unmatched decrement in another can cancel to the
+   baseline. The plan requires every `zb_automation_free` to pair exactly once;
+   assert the exact baseline after each case drains and mutation-test each
+   outcome, including abandoned-late.
+2. The allocation census missed `wkwebview_shim.m:2767-2776`: invalid UTF-8
+   passed to `zb_app_set_profile_dir` returns a plain-`strdup` error, and its
+   caller releases that error through the newly accounting
+   `zb_automation_free`. That makes the counter negative even though ownership
+   is correct. Track this caller-returned allocation too, test it directly, or
+   explicitly split/narrow the allocator contract.
+
+The Mac-only e2e was not run locally. Its Python compiles, the gate registration
+is present, and JadeBeacon's reported both-architecture aggregate-path gate and
+leak mutant are accepted evidence for what the current test actually observes.
+
+### `f8cd87e` — BLOCKED-for-tests
+
+The `Contents/Frameworks/agent-host` package-directory projection and the pure
+macOS-until-Seatbelt refusal decision are accepted increments, and the focused
+step passes 6/6. The returned runtime is not fully specified or tested:
+`agent_setup.zig:43-50` returns
+`Contents/Frameworks/agent-host/venv/bin/python`, while the accepted bundle is
+the unpacked python.org `Python.framework` and no such venv is part of the
+bundle contract. `agent_setup_ms5_test.zig:15-50` deliberately inspects only
+`package_dir`, so the invalid `Runtime.python` survives. Pin the canonical
+framework interpreter in the plan and assert both returned fields before the
+app wiring consumes this seam.
+
+### MS5 parent-watch chain (`15f56de`, `31ac9d2`, `db2acd0`, `a351086`, `4ad3e78`)
+
+- **`15f56de` APPROVED.** Supplying the browser's PID from the browser removes
+  the vacuous captured-`getppid` comparison when launchd has already adopted
+  setup.
+- **`31ac9d2` BLOCKED-for-tests independently, cumulatively superseded by
+  `db2acd0`.** Without importing `support`, it could not import the helper
+  package, so it remained red even if the production module existed.
+- **`db2acd0` APPROVED as the valid failing-first red.** It restores the real
+  import path and correctly requires a non-group-leader to kill only itself,
+  never a group it does not own.
+- **`a351086` APPROVED only as the pure, registered parent-watch seam.** The
+  explicit browser-PID checks, group-leader guard, registration failure,
+  post-registration parent recheck and wait/error kill path match the plan;
+  `DarwinOps` keeps the kqueue alive for the daemon watcher. The direct unit
+  run is 6/6 and the four reported mutants are relevant. This does **not**
+  close MS5 item 5: production `setup.py`/browser spawn wiring and the
+  both-architecture SIGKILL/barrier/zero-group-census e2e remain required, as
+  the commit itself acknowledges.
+- **`4ad3e78` APPROVED.** The plan's non-group-leader self-kill exception is
+  the safe rule and matches the implemented seam.
+
+### `5402594` — BLOCKED
+
+The orchestrator's decision that the no-write physical file server is
+identified by its pinned SSH host key is accepted. The commit also correctly
+adds typed share objects, exact VM console ownership, several missing field
+checks, nonempty snapshot creation-time evidence, and consistent VM-only
+session wording. The display-free hostless suite passes 48/48. It still has
+several false-green paths:
+
+1. `host_probe.ps1:109-121` calls a timestamp newer than 15 minutes
+   “correlation,” but `gate.sh` neither launches/awaits `session_probe.ps1` nor
+   passes a nonce. A result written 14 minutes ago while unlocked, or a future
+   timestamp, is accepted for the current run. This directly contradicts the
+   session probe's own header. Generate a gate nonce, trigger the console
+   helper and require the matching result; test stale, future and wrong-nonce
+   cases.
+2. The new root checks require only a nonempty string. Focused calls through
+   the production validator accept VM `root=C:\\` and file-server
+   `root=D:\\elsewhere`, although the plan pins the allowed roots. Require the
+   exact normalized roots.
+3. Empty `sshd_listen` and `sshd_allowusers` lists pass. The provisioning
+   contract pins tailnet-only `ListenAddress 100.123.34.15` and exactly
+   `AllowUsers zbtest`; validate element types and those values. The required
+   file-server baseline listeners in WS0.7 likewise need an oracle.
+4. `_is_share_list` accepts `{name:"", path:""}` and arbitrary extra shape;
+   that focused probe exits 0. Require nonempty names and absolute normalized
+   roots, with duplicate/alias rules made explicit.
+5. The ACL calculation collapses all mutating rights to two booleans. A Deny
+   of one bit in the composite mask suppresses an Allow of a different bit
+   (for example deny `WriteAttributes` plus allow `WriteData`), falsely
+   reporting the path read-only. Compute effective rights per bit/order and
+   pin allow/deny plus individual-right cases in a PowerShell oracle.
+6. Snapshot Creation Time is only nonempty, not parseable. The user-decided
+   baseline name `pre-4dr-toolchain-2026-10-20` is also absent from the plan,
+   example configuration and tests, which still use generic/old names.
+7. VM `python`/`zig` and physical-host WebView2 remain declared in WS0.1/WS0.2
+   but unchecked. Validate them or explicitly defer/narrow those normative
+   fields in the plan.
+
+Local evidence for this section: `test-agent-setup-ms5` 6/6,
+`test_parent_watch` 6/6, WS0 hostless 48/48, changed Python compilation and
+`git diff --check` all pass. No full gate, Mac, Windows host, live browser or
+real display was used. Findings were sent in Agent Mail 6797-6799.
