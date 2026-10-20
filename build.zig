@@ -214,6 +214,12 @@ pub fn build(b: *std.Build) void {
     const windows_twohost_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/gate_twohost_selftest.py" });
     b.step("windows-twohost-selftest", "Run the Windows two-host gate selftest (WS0.6/WS0.7, fake ssh/virsh)").dependOn(&windows_twohost_selftest.step);
 
+    // WS1 build-driver selftest: drives build-on-windows.sh against fake git/ssh/scp/timeout — clean
+    // git-archive source, injection-safe EncodedCommand, fail-closed stage/build/fetch, outer deadlines,
+    // atomic validated fetch, display scrub. Hermetic — no Windows host, network or display.
+    const windows_build_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/build_on_windows_selftest.py" });
+    b.step("windows-build-selftest", "Run the Windows build-driver selftest (fake git/ssh/scp/timeout)").dependOn(&windows_build_selftest.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1426,6 +1432,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_resolve_live.step);
     test_step.dependOn(&windows_twohost_selftest.step);
+    test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
