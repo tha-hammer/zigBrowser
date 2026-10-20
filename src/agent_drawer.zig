@@ -339,10 +339,11 @@ pub fn configure(io: std.Io, gpa: std.mem.Allocator, profile_dir: ?[]const u8, s
 
 // --- C glue (src/agent_drawer.c) --------------------------------------------
 
-// Exported only where src/agent_drawer.c is built (the GTK backend); the
-// other backends have no drawer.
+// The portable drawer logic is exported for the backends that mount it: the
+// GTK backend (src/agent_drawer.c) and the Win32 backend (WS5,
+// src/agent_drawer_win.cpp). The logic is identical; only the glue differs.
 comptime {
-    if (builtin.os.tag == .linux) {
+    if (builtin.os.tag == .linux or builtin.os.tag == .windows) {
         @export(&zb_drawer_classify, .{ .name = "zb_drawer_classify" });
         @export(&zb_drawer_place, .{ .name = "zb_drawer_place" });
         @export(&zb_drawer_ratios_of, .{ .name = "zb_drawer_ratios_of" });

@@ -324,6 +324,36 @@ pub fn build(b: *std.Build) void {
     cross_check_step.dependOn(&cross_check.step);
     cross_check_step.dependOn(&cross_self_test.step);
 
+    // WS5 export-widening proof (plan line 639; sequencing override: this [L] cross-check is WS1-independent).
+    // The x86_64-windows-gnu object must COMPILE and DEFINE the portable drawer logic (zb_drawer_*) once the
+    // export gate in agent_drawer.zig widens from .linux to .linux/.windows. Pure compile — no SDK, no link.
+    const cross_drawer_win_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .imports = &.{.{ .name = "build_options", .module = site_options_module }},
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }),
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    cross_drawer_win_module.addIncludePath(b.path("src"));
+    const cross_drawer_win_obj = b.addObject(.{ .name = "zigBrowser-cross-drawer-win", .root_module = cross_drawer_win_module });
+    const cross_drawer_win = b.addSystemCommand(&.{
+        "python3",            "tools/check_cross_symbols.py",
+        "--require-defined",  "zb_drawer_classify",
+        "--require-defined",  "zb_drawer_place",
+        "--require-defined",  "zb_drawer_clamp",
+        "--require-defined",  "zb_drawer_panel_rect",
+        "--require-defined",  "zb_drawer_ratios_of",
+        "--require-defined",  "zb_drawer_key_move",
+        "--require-defined",  "zb_drawer_remember",
+        "--require-defined",  "zb_drawer_anim_ms",
+    });
+    cross_drawer_win.addFileInput(b.path("tools/check_cross_symbols.py"));
+    cross_drawer_win.addFileArg(cross_drawer_win_obj.getEmittedBin());
+    cross_drawer_win.addFileArg(b.path("src/webview2_shim.cpp"));
+    const cross_drawer_win_step = b.step("cross-check-drawer-win", "WS5: the Windows build compiles and exports the portable drawer logic (zb_drawer_*)");
+    cross_drawer_win_step.dependOn(&cross_drawer_win.step);
+    cross_check_step.dependOn(&cross_drawer_win.step);
+
     const afunix_spike_module = b.createModule(.{
         .root_source_file = b.path("tests/spikes/af_unix_roundtrip.zig"),
         .target = target,
@@ -1584,6 +1614,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);
     test_step.dependOn(&cross_check.step);
+    test_step.dependOn(&cross_drawer_win.step);
     test_step.dependOn(&cross_self_test.step);
     test_step.dependOn(&run_gaussian_tests.step);
     test_step.dependOn(&run_bezier_tests.step);

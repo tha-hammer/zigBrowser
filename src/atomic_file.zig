@@ -4,6 +4,7 @@
 //! Readers only ever see the old or the new file; once a save returned, it
 //! survives a crash; the temp file never outlives a failed save.
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn replaceJson(io: std.Io, path: []const u8, value: anytype) !void {
     var nonce: [8]u8 = undefined;
@@ -11,7 +12,12 @@ pub fn replaceJson(io: std.Io, path: []const u8, value: anytype) !void {
     var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp-{x}", .{ path, std.mem.readInt(u64, &nonce, .little) });
     const dir = std.Io.Dir.cwd();
-    var file = try dir.createFile(io, tmp, .{ .exclusive = true, .permissions = .fromMode(0o600) });
+    // `permissions = .fromMode` is a POSIX mode; on Windows file protection is ACL-based (the temp file
+    // inherits the profile directory's ACL), and the Permissions enum has no `fromMode`, so omit it there.
+    var file = try dir.createFile(io, tmp, if (builtin.os.tag == .windows)
+        .{ .exclusive = true }
+    else
+        .{ .exclusive = true, .permissions = .fromMode(0o600) });
     var renamed = false;
     defer if (!renamed) dir.deleteFile(io, tmp) catch {};
     {
@@ -29,6 +35,9 @@ pub fn replaceJson(io: std.Io, path: []const u8, value: anytype) !void {
 
 /// fsync of the directory holding `path`, so the rename itself is durable.
 fn syncParent(io: std.Io, path: []const u8) !void {
+    // Windows has no directory fsync (and `std.c.fsync` is POSIX-only); NTFS journals the rename's metadata,
+    // so the rename is durable once the file's own buffers are flushed (done above via `file.sync`).
+    if (builtin.os.tag == .windows) return;
     // `iterate` opens it O_RDONLY (a plain open is O_PATH, which fsync refuses).
     var parent = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(path) orelse ".", .{ .iterate = true });
     defer parent.close(io);
