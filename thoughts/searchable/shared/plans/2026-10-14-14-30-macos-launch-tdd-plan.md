@@ -1251,18 +1251,39 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    - The browser starts setup with `posix_spawn` (`POSIX_SPAWN_SETPGROUP`, pgid 0): the setup child **leads
      its own process group**, and every descendant setup starts stays in that group: on macOS setup starts
      no child with `setsid` or `setpgid`, and the e2e census below catches one that leaves.
-   - **The group cleans itself up.** On Darwin, `setup.py`'s first act is a watcher thread on
-     `select.kqueue` `EVFILT_PROC`/`NOTE_EXIT` for the browser's pid, checked once against `getppid()`
-     first, so a browser already gone is caught. When the browser dies, the watcher sends `SIGKILL` to the
-     **whole process group** (`os.killpg(os.getpgid(0), SIGKILL)`), which takes setup itself and every
-     descendant. It does not merely exit.
+   - **The group cleans itself up** (RoseCat 6771, 6773). On Darwin, `setup.py`'s first act, before any
+     other work or child, is this sequence. It fails closed at every step, so no gap between a check and the
+     watch can hide the browser's death:
+     1. `expected = os.getppid()`, then `os.getpgid(0) == os.getpid()` (setup leads its group), else kill
+        the group.
+     2. Open a kqueue and register `EVFILT_PROC`/`NOTE_EXIT` for `expected`. **Any error** (the open, the
+        `EV_ADD`, an `EV_ERROR` in the result, `ESRCH` because the pid is already gone) counts as the
+        browser's death: kill the group.
+     3. **Re-check after registering:** if `os.getppid() != expected`, kill the group. A browser that died
+        before the registration has had setup re-parented to launchd (ppid 1), so this also covers a reused
+        pid: the watch may have landed on a stranger, but the parent check cannot.
+     4. Only then start the watcher thread, which blocks in `kevent`. A `NOTE_EXIT`, or any `kevent` error,
+        kills the group.
+
+     "Kill the group" is always `os.killpg(os.getpgid(0), signal.SIGKILL)`, taking setup itself and every
+     descendant; never a bare exit.
    - The browser's own exit paths (a normal quit, a signal it handles) still `killpg` the group and
      `waitpid` the child; that is the ordinary path, not the guarantee.
    - **Mac e2e, both arches:**
-     - SIGKILL the browser during setup (the e2e pause seam);
+     - SIGKILL the browser during setup (the e2e pause seam), and separately in the check-to-register
+       window of step 2 (an e2e-only barrier in `setup.py`, honoured only with `--e2e-protocol`, that holds
+       between step 1 and step 2 until the test has killed the browser);
      - then census every member of setup's process group and every descendant by `ps -o pid,pgid,ppid`;
      - none may survive past a bound of 2 s;
-     - a mutant whose watcher only exits setup (no `killpg`) leaves a descendant and fails.
+     - a mutant whose watcher only exits setup (no `killpg`) leaves a descendant and fails. At the barrier
+       the browser's pid is gone, so step 2's `ESRCH` path is what kills the group there.
+   - **Linux unit test of the sequence** (it runs on Linux, with the OS calls injected). Step 3 guards a reused
+     pid, which no e2e can force, so the sequence is a pure function of injected calls:
+     - `getppid`, `getpgid`, `register`, `start_watcher`, `killpg`;
+     - the cases: the parent already changed; not the group leader; `register` raising; `register` succeeding
+       but `getppid` changed afterwards (the reused-pid case); all good, so the watcher starts and `killpg`
+       is never called.
+     - Mutants that drop step 3, or treat a registration error as success, fail it.
    - Linux keeps PDEATHSIG, unchanged.
 6. **No sandbox, no setup.** `setup.py` sandboxes its probe and `--version` with bwrap on Linux. On macOS that
    must be the MS6 Seatbelt backend. **Until MS6 is accepted, macOS `--agent-setup` exits 1 with one fixed line
