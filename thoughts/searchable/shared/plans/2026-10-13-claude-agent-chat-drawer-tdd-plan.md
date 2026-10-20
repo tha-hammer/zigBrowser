@@ -2893,6 +2893,13 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
 - `tests/e2e/agent_socket_separation_test.py`: S7.1's two flag cases.
 - A detach red: close a window while its broker's call runs. The app must stay responsive (a row within 2 s), write no `tool_result` for that call, and leave no thread behind.
 
+**S7b accepted on the user's screen (2026-10-20, build e458b91, `real_screen_check.py --case tools`, `/tmp/zb-tools-1`).** All three checks passed, with 0 failed and 0 invalid:
+- `tools-get-text`: the model got the fixture's header text through `get_text`.
+- `tools-screenshot`: the screenshot the model got was the page as drawn on the NVIDIA screen, 1024×461 PNG, 93% the fixture's blue and 3.5% its white text and lines (not blank, black or a fill).
+- `tools-shown`: the drawer showed the final answer on the screen.
+
+The real-binary closure ran in clean full gates: `agent_tools_test.py`, `agent_socket_separation_test.py` and both acceptance files are green at afadaac, 276/276 steps. With this user check, S7's acceptance condition (rev 16.20.32) is met.
+
 **A `tool_result` is tied to its call by `id` alone (rev 16.20.30).**
 - The `tool_result` schema (app → helper) is unchanged: it has no `prompt_id`.
 - The `id` is a fresh UUID the helper made for that call. It is pending in exactly one session's Bridge, so it already names the prompt.
