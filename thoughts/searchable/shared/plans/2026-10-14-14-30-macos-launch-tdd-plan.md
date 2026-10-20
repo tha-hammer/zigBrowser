@@ -303,9 +303,12 @@ UNCLOSED).
 
 ### Key discoveries (research 1df5dce + review 21625eb, verified file:line)
 
-- One C ABI, three backends: `resolveBackend` build.zig:1107-1114;
-  `configureMacosBackend` build.zig:1174-1184 (compiles `wkwebview_shim.m` `-fobjc-arc`, links
-  WebKit/Cocoa/Foundation); `CheckMacosBackendStep` build.zig:79-105.
+- One C ABI, three backends: `resolveBackend` build.zig:1107-1114; `configureMacosBackend`
+  build.zig:1702+ (**since MS1b `3421428`**: builds `wkwebview_shim.m` as a separate
+  Apple-toolchain dylib — `xcrun clang -dynamiclib -Wl,-fixup_chains` → `LC_DYLD_CHAINED_FIXUPS`,
+  `-install_name @executable_path/../Frameworks/libwkwebview_shim.dylib` — which the exe links and
+  installs to `Frameworks/`; the exe sets `rdynamic` macOS-only to export the two shim back-refs. It
+  is **no longer compiled into the exe**); `CheckMacosBackendStep` build.zig:79-105.
 - macOS shim = 6 core fns (wkwebview_shim.m:788/834/838/853/872/880) + `zb_policy_decide`
   (nav_policy.zig:40) + `zb_ipc_dispatch` (ipc.zig:41). None of the ~70 `zb_automation_*`/
   `zb_native_*`.
@@ -612,9 +615,25 @@ reason. 🟢 Green (`3421428`): it runs — on x86_64 AND arm64, ad-hoc and hard
 `zb_policy_decide` and m9 reply-channel drives `zb_ipc_dispatch`, so both dylib→exe back-refs are
 exercised through the signed build.
 
-### Cause write-up (historical)
-Full evidence (minimal zig+ObjC repro, fixup-scheme inspection, option-(d)/(e)/(c) evaluation,
-hardened-runtime result) is in `scratchpad/ms1/CRASH_CAUSE.md` and `scratchpad/ms1/MS1b_INVESTIGATION.md`.
+### Durable root-cause evidence
+Concrete evidence behind the cause + fix (so the record does not depend on ephemeral scratch):
+1. **Minimal zig+ObjC repro** (a tiny zig main calling an ObjC class's `[super init]`): classic
+   `LC_DYLD_INFO_ONLY`; **unsigned → rc 0; ad-hoc signed → SIGSEGV in `[super init]`** — reproduces
+   the browser crash in isolation, independent of our code.
+2. **Fixup-scheme inspection** (`otool -l`, `dyld_info -fixups`): the zig-linked binary has
+   `LC_DYLD_INFO_ONLY` only (no `LC_DYLD_CHAINED_FIXUPS`); signing appends only `LC_CODE_SIGNATURE`
+   and leaves the rebase entries into `__DATA_CONST` (where the ObjC `__objc_classlist`/`classrefs`/
+   `data` sections live) at raw on-disk values → garbage class/superclass pointers.
+3. **arch split:** the arm64 slice uses the same classic scheme yet signed arm64 **runs** — the fault
+   is x86_64 dyld's handling of classic rebases into a signed `__DATA_CONST`.
+4. **signature kind:** ad-hoc AND hardened-runtime (`--options runtime`, the MS9 shape) both crash on
+   x86_64 → MS9 would hit it; MS1b is a hard MS9 prerequisite.
+5. **Fix validated:** the ObjC shim built by Apple ld64 with `-Wl,-fixup_chains` has
+   `LC_DYLD_CHAINED_FIXUPS`; the signed universal exe+dylib then run the m9 workload **rc 0 on both
+   Macs, ad-hoc AND hardened** (hardened needs same-team signing — MS9's Developer ID — or, for
+   ad-hoc dev only, `disable-library-validation`). Options (e)/(c) were not needed.
+Working notes retained in `scratchpad/ms1/CRASH_CAUSE.md` + `MS1b_INVESTIGATION.md` while they exist;
+the summary above is the durable record.
 
 **Gate (MS1b):** `tests/mac/ms1b_signed_gate.sh` (registered as `zig build ms1b-gate`) SIGNS both the
 universal exe and the universal shim dylib, installs the signed pair, and runs the m9 workload +
@@ -1407,15 +1426,18 @@ failing assertion, named green production files, and a refactor gate**.
 - Drawer plan (conventions, real-screen §7.1): `…/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md`
 - Prior WKWebView backend plan: `…/plans/2026-05-31-18-00-ENG-0005-tdd-ipc-surface-and-cross-os-backends-slice3-4.md`
 - Bead `zigBrowser-8g7` (M9 render + ping/pong DONE on Intel Mac)
-- Code anchors: build.zig:1107-1184/79-105/241-272; src/wkwebview_shim.m:788-888;
+- Code anchors: build.zig:1107-1118/79-105/241-272 + `configureMacosBackend` ~1702+ (MS1b dylib);
+  src/wkwebview_shim.m:788-888;
   src/automation_server.zig:412-530/480-487/686-691/942-1106; src/automation_gtk_port.zig:22;
   src/automation_platform.zig:90-95; src/app.zig:41-47/160-166; src/webkit.zig:47-72;
   agent/host/zb_agent_host/sandbox.py; src/agent_host.c:1-73; packaging/macos/build-dmg.sh:90;
   packaging/macos/Info.plist:21-22
 
-## Blocker status (not a code blocker, a process note)
+## Blocker status (process note — RESOLVED 2026-10-20)
 
-Tracking bead for this work **cannot be filed**: the shared bd DB has pending schema migrations
-(v49→v53) and refuses auto-apply on a remote-backed clone; `bd migrate`/`bd bootstrap` are
-destructive/coordination actions not taken unilaterally. Status is tracked via Agent Mail / this
-plan until the designated migrator resolves it.
+**HISTORICAL:** earlier the shared bd DB had pending schema migrations (v49→v53) and refused
+auto-apply on the remote-backed clone, so tracking beads could not be filed (`bd migrate`/`bd
+bootstrap` are destructive/coordination actions not taken unilaterally). **This is resolved:** the
+orchestrator migrated the local bd DB (with the user's approval) on 2026-10-20, and `bd create`
+works again (no `dolt push`). Beads are now filed normally (e.g. the gate parallelism/load finding
+is `zigBrowser-tka`). Status is still cross-referenced via Agent Mail + this plan.
