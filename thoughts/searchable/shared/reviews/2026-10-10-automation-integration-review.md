@@ -12658,3 +12658,70 @@ still open exactly as the orchestrator directed, after the slot returns to
 AzureRidge. Findings were sent as Agent Mail 6126. Because earlier linear
 commits are also blocked, the approved push-through boundary remains the
 already-pushed **`da3028f`**.
+
+## Plan rev 16.18.8: complete Secrets sensitivity censuses (`06d3fe9`)
+
+### `06d3fe9` — APPROVED
+
+This revision closes both gaps recorded for `abd54a4`. The protocol now requires
+every sensitivity recomputation to emit a fresh, fixed-order census of all five
+credential controls — `entry`, `save`, `remove`, `file`, and `signin` — including
+the initial state and every lock, unlock, operation start, and operation end
+(`plan:467`). The e2e contract snapshots the row count before each transition,
+then requires a new complete census and asserts all five values (`plan:2409`).
+Historical rows therefore cannot satisfy a later
+transition, and a reporter cannot silently omit one control.
+
+This verdict approves the plan revision, not the deliberately red test commit:
+`abd54a4` remains BLOCKED-for-tests until its green implements the fresh,
+generation-aware five-control census. `git diff --check 06d3fe9^ 06d3fe9`
+passes. No runtime gate was needed for a docs-only change. The verdict was sent
+to BlueBeaver as Agent Mail 6129.
+
+## Plan rev 16.20.12: capped-reply byte and order contracts (`c005961`)
+
+### `c005961` — BLOCKED (plan/tests)
+
+The revision correctly resolves most of `e2cb1b0`:
+
+- the 19-byte `\n[output truncated]` marker is included in the 256 KiB total,
+  and `CONTENT_MAX = 262,144 - 19 = 262,125` is correct (`plan:2149-2163`);
+- helper, streaming-copy, and final-message tests now require exact/maximal
+  bytes rather than an `endswith` oracle;
+- duplicate, pre-delta, post-ending, and post-cap-delta frames have explicit
+  reject-and-no-state-commit reds, while a second arm cannot extend the first
+  timeout (`plan:2164-2179`).
+
+One user-visible completion path is still unspecified and untested:
+
+- **BLOCKER — a finite capped reply can shrink when it completes.** The plan
+  promises that the capped streaming bubble and clipboard contain exactly
+  `utf8_prefix(source, CONTENT_MAX) + marker`, but permits the later
+  `assistant_message` to contain a shorter prefix because JSON envelope and
+  escaping bytes share its line cap (`plan:2151-2158`). Production currently
+  replaces an active streaming bubble with that message
+  (`src/agent_drawer.c:790-796,856-865`), and the helper emits it for every
+  finite assistant response (`agent/host/zb_agent_host/chat.py:156-160`). The
+  proposed tests examine the capped stream and final message separately, so
+  both can pass while the user's completed bubble visibly loses text.
+
+Required fix-forward: after `reply_capped`, specify that a later
+`assistant_message` cannot replace or shorten the committed capped bubble, and
+add a finite-over-cap native red that receives `assistant_message` and `result`
+before verifying Ctrl+A/C still returns exactly the `CONTENT_MAX` prefix plus
+one marker.
+
+- **BLOCKER — a stale cap can still cap the next prompt after its first
+  delta.** `reply_capped` carries only a session id, while the proposed
+  `delta-seen` flag is reset per reply but stored per session. The
+  `capped-late` red sends its stale frame before the next reply's delta. If it
+  instead arrives after that delta, the flag is true again and the stale frame
+  is accepted as the new reply's cap, contrary to `plan:2166` and the prior
+  requirement that a late frame not cap the next prompt. Correlate these
+  frames to a prompt generation (or define an equally unambiguous rule) and
+  add the missing `result(old), delta(new), stale-cap(old)` red.
+
+`git diff --check c005961^ c005961` passes. No runtime gate was needed for a
+docs-only change. The blockers were sent to BlackRobin as Agent Mail 6128 and
+6130. The
+approved linear push-through boundary remains the already-pushed **`da3028f`**.
