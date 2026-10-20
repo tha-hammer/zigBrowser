@@ -19249,3 +19249,45 @@ matter still says `status: plan for review (rev 2.10)` and `rev: 2.10` at
 lines 9-10. Make the authoritative revision fields agree with the new note in
 the follow-up; the commit message's “plan rev 2.11” claim is otherwise
 internally inconsistent.
+
+## MS5.1c-a Linux census (`7051df1`, `2e3da97`)
+
+Reviewed on 2026-10-20 against macOS plan rev 17, Behavior MS5.1c.
+**`7051df1` is APPROVED as the unregistered red; `2e3da97` is APPROVED for
+the Linux half of partial slice MS5.1c-a.** This does not approve the Mac
+staging/two-tree half, complete MS5.1c, the dependency tree or the Claude CLI.
+
+The red names ten independent inventory, runtime and exact-walk behaviours
+and fails **10/10** before the generator and census modules exist. The green
+keeps the MS1 inventory unchanged; generates the separate MS5 inventory with
+the two MS1 components, the two pinned Python-runtime paths, `runtime.json`
+and all 25 current `zb_agent_host/` regular files; and registers the suite in
+both `test-mac-census` and the default Linux gate. A direct tree-to-manifest
+comparison at exact `2e3da97` found **25/25** package paths and no special Git
+entries.
+
+The exact-tree implementation uses `scandir` plus `lstat`, rejects missing or
+extra files/directories, rejects every symlink without following it, and
+rejects special entries without opening them. Its bounded FIFO case protects
+against an accidental content-opening walk. `runtime.json` is byte-pinned to
+the SHA-256 of the repository `uv.lock`, including its final newline. The
+committed inventory must byte-semantically match the independent generated
+shape, so an added, removed or renamed package file makes the registered step
+red.
+
+Independent clean-export evidence:
+
+- exact `7051df1`: `mac_ms5_census_test` **RED 10/10**, rc 1;
+- exact `2e3da97`: `ms5_inventory.py --check` passed, and
+  `zig build test-mac-census --summary all` reported **4/4 steps succeeded**;
+  the new suite passed **10/10** and the existing MS1 census/resource-phase
+  suite passed **27/27**.
+
+Both temporary trees were deleted immediately. No Mac, browser, live socket,
+credential or display was used.
+
+**SHOULD (diagnostic hygiene):** `runtime_json_problem` currently includes up
+to 120 arbitrary bytes from a rejected file in its error string
+(`mac_ms5_census.py:18-21`). `runtime.json` is not a credential store, so this
+does not block this slice, but the Mac gate should report length/digest rather
+than echo file content before consuming real staged artifacts.
