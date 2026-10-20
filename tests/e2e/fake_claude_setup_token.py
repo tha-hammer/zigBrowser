@@ -31,6 +31,8 @@ plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
   tests read);
 - `reads.log`: one line per terminal read at the prompt, `<text bytes> <line ends>`
   (lengths only, never the text), so a test sees how the code and its Enter arrived;
+- `read-max` (RoseCat 6493): when it exists, the most bytes one read takes, so a test can
+  model a reader that takes a code in several reads (a pty write is no read boundary);
 - `state`: this run's state, written before the prompt (the S6b1 e2e pastes it);
 - `token`: when it exists, the token it prints, else CANARY;
 - `mode` (rev 16.18.9, S6b1 part B's finding): when it exists, what follows a right
@@ -105,6 +107,14 @@ def token():
             return f.read().strip()
     except OSError:
         return CANARY
+
+
+def read_max():
+    try:
+        with open(os.path.join(fake_dir(), "read-max"), encoding="ascii") as f:
+            return max(1, int(f.read().strip()))
+    except (OSError, ValueError):
+        return 4096
 
 
 def log_read(text_bytes, line_ends):
@@ -198,7 +208,7 @@ class Terminal:
                 data, self.pending = self.pending, b""
             else:
                 try:
-                    data = os.read(sys.stdin.fileno(), 4096)
+                    data = os.read(sys.stdin.fileno(), read_max())
                 except OSError:
                     data = b""
                 if not data:
