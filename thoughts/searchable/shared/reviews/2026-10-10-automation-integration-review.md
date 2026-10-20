@@ -13807,3 +13807,142 @@ open:
   file-server path cannot satisfy the claimed contract.
 
 Verdict sent in Agent Mail 6216.
+
+### WS0.1 root and sshd-fence producer (`9a6973b`)
+
+**`9a6973b` is BLOCKED.** The live read-only probe is useful evidence, but
+the committed representation fails open: `tests/windows/host_probe.ps1:73-79`
+initializes both sshd fields to `[]`, catches every read/parse failure, and
+leaves the same value. An inaccessible or malformed `sshd_config` is therefore
+indistinguishable from a valid configuration with no explicit directives.
+The commit says the gate treats absent fence evidence as unknown, but the
+fields are present and empty, and `gate.sh` does not validate them. Emit an
+explicit unavailable/error state (or null) and have the physical-host gate
+reject it unless a separately reviewed authoritative source supplies the
+fence.
+
+The three new fields are also untested: the canned probes at
+`tests/windows/gate_twohost_selftest.py:85-99` omit `root`, `sshd_listen`, and
+`sshd_allowusers`, so deleting them or returning a wrong root/unreadable
+configuration survives. Add probe-level parsing cases and gate refusal cases.
+Also define whether `sshd_allowusers` contains directive lines or individual
+tokens; the current parser returns one unsplit string per directive. Verdict
+sent to AzureRidge in Agent Mail 6221.
+
+## Voice-plan review at `9a6973b`
+
+The plan-review and cleanup-contract audits were documentation-only. No live
+audio, display, browser, network, credential, or API action was used.
+
+### Voice output / TTS rev 2.2 (`9663333`)
+
+**NOT APPROVED — needs major revision.** The plan records the user's Pocket
+TTS, bundled-first, default-on read-aloud, personal-cloning-with-consent, and
+Mac/Windows-primary decisions, but is not implementation-ready.
+
+BLOCKERS:
+
+1. The feed/backend ABI at plan `:289-375` omits ownership and lifetime of
+   borrowed frame strings, `ZbSpeechParams`, list results and callback data;
+   it also lacks ordered/exactly-once terminal semantics and does not account
+   for production's prompt-specific `reply_capped` path. V1's three feed calls
+   at `:1027-1037` cannot safely cover current `agent_frames.zig` and
+   `agent_protocol.zig` without those contracts.
+2. The two voice plans disagree on the supposedly shared foundation. TTS later
+   creates `src/audio.*`, `src/models.zig`, and `src/voice_window.c`
+   (`:1075`, `:1107`, `:1242`), while STT owns `src/voice/audio*`,
+   `src/voice/models.zig`, and `src/voice_settings_window.c`. Reconcile the
+   names, owner, order, and tests before either plan builds them.
+3. `voice.json` has no single authoritative outer schema, migration, lock, or
+   writer. Byte-preserving a sibling JSON object (`:273`, `:967`) conflicts
+   with whole-value atomic serialization unless one shared settings owner and
+   semantic preservation contract is defined.
+4. The plan assumes a generic native `SandboxBackend` at `:485-496`, but the
+   production backend is a Python, agent-home-specific launch contract. Define
+   a real arbitrary-child platform interface with descriptor inheritance,
+   parent death, reaping, shutdown, and main-loop ownership before V3/M1/W1.
+5. Personal-voice enrolment cannot traverse the proposed IPC. D9 names only
+   hello/voice/speak/cancel/PCM (`:465-483`), while C1 needs the child to derive
+   speaker state from samples (`:1294-1296`). Define bounded enrolment frames,
+   sample transfer, cleanup, and the Windows ACL grant/revoke/refcount path.
+6. The engine protocol and resource bounds are incomplete: no versioned binary
+   framing, sample format, maximum payload, ordering, backpressure, global
+   queued-text bound, late-event rejection, manager deinit, or child-reap
+   contract. Add failing-first malformed/oversized/stalled-child and shutdown
+   cases.
+7. Automated muted Core Audio/WASAPI use (`:1260`, `:1369`) contradicts the
+   no-real-device test rule (`:132-141`, `:686-705`). Automated runs need
+   render-to-file/null devices; only the orchestrator's user-approved checks
+   may use physical output.
+8. The dependency graph is cyclic/incomplete. V3.5 packages all three systems
+   but depends only on OD7 (`:1142-1166`, `:1541`); W1 waits for WS13
+   (`:1546`) while WS13's final voice census requires the W1-era engine/model.
+   Split package-slot/census scaffolding from final packaged-runtime proof and
+   express both directions explicitly.
+9. Pocket's runtime is still an open prerequisite (`OD2`, `:614-618`) even
+   though V3 presumes an ONNX implementation; upstream has no official C/ONNX
+   runtime. Add a proof/decision slice before V3, and put model-gate terms and
+   redistribution approval before any shipping dependency.
+
+SHOULD items: prove intelligible fixed-input output rather than mere RMS/WAV;
+resolve the 200 ms versus 250 ms cancellation budget; bound and harden cloned
+voice storage (duration, count, bytes, canonical IDs, no-follow, atomic publish,
+cancel/crash cleanup); replace the `1.1.1.1` sandbox probe with a local canary;
+and name seam-killing tests for terminal delivery, stale callbacks, child
+reaping, and platform launch restrictions. The beads note at `:1554` is stale.
+
+### Voice input / STT rev 2 (`9663333`)
+
+**NOT APPROVED — needs major revision.** The bundled Whisper-medium and
+Mac/Windows-primary decisions are accurately recorded, but these contracts
+remain open:
+
+1. Async lifetime/cancellation is incomplete (`:158-166`, `:195-202`, `:752`).
+   A late permission, transcription, or idle callback can target a destroyed
+   drawer. Specify an epoch/session token, idempotent cancel, callback and
+   source ownership, join/drain ordering, and stale-result rejection across
+   permission, preparing, transcription, queued result, close, and restart.
+2. The first-use privacy notice (`:293-304`) has no VS5 acknowledgement,
+   decline, persistence, corrupt-state, reset, or **no capture before accept**
+   behavior (`:718-769`). Windows may have no OS prompt. VS8 also requires
+   drawer denial UI before VS9 creates the Mac drawer. Put each UI assertion in
+   its UI slice and add a headless native permission contract.
+3. macOS microphone integration does not bind source compilation to the
+   shipping dylib/signing/census route. Current Objective-C uses Apple clang in
+   the chained-fixups dylib, and the DMG signer does not yet apply hardened
+   runtime plus the new entitlement/usage string. Specify and test that exact
+   route without reintroducing the Intel signed-binary crash.
+4. Windows' proposed `zb_drawer_set_draft` replaces the whole draft, while the
+   STT invariant requires cursor insertion and selection replacement. Add a
+   range-aware insert ABI plus Unicode, selection, focus-change, and late-result
+   tests.
+5. The exact medium artifact remains undecided (`:40-57`, `:352-364`) although
+   the catalog and installers require one default. Runtime hashes a pathname
+   and then Whisper reopens it, permitting a verify/load race in a writable
+   install; the size/mtime/inode cache would weaken it further. Choose the
+   artifact, load verified bytes or a pinned/locked handle, and test installer
+   upgrade, repair, downgrade, tamper, and orphan cleanup—not only fresh install.
+6. AVX2/x86-64-v3 (`:195-202`, `:275-289`) is not implied by “Windows x64.”
+   Obtain a minimum-CPU decision or provide runtime dispatch/baseline builds,
+   with a real non-AVX2 target.
+7. The failing-first rule is not consistently executable. VS0.2 explicitly
+   permits first-pass green; VS9-VS11 and VSP2-VSP4 lack concrete red,
+   registration, and mutant steps; a census seam cannot substitute for native
+   UI input in a UI closure.
+8. Negative route tests only enumerate agent frames/tools/socket methods, but
+   the shipping executable gains `--voice-selftest` and capture-probe entry
+   points. Prove from every real sandbox that agent/hook code cannot invoke a
+   live capture path, preferably by keeping live capture behind an unforgeable
+   inherited capability or a test-only binary.
+9. Remote packaging has no model-transfer protocol. Define the orchestrator-
+   only cache transfer, remote location, pre/post SHA checks, permissions,
+   cleanup, and package-input manifest for both Mac and Windows builders.
+
+SHOULD items: add typed preparing/model/device errors and ring-buffer bounds;
+replace global `/tmp` scanning with an isolated filesystem/write oracle and
+zero every PCM/transcript owner; report ambiguous `no-signal` rather than
+claiming Windows denied permission without a specific HRESULT; add AppKit and
+Win32 settings slices; package third-party notices; repin dependency status;
+and make the cleanup rules require guard clauses, no side-effectful conditions,
+and named timing/sample constants. The current WiX directory is
+`INSTALLFOLDER`, not the plan's `<INSTALLDIR>`.
