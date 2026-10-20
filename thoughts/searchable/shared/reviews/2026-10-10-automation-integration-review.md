@@ -17158,3 +17158,23 @@ argument. In a clean export at `086e7a3`, the expanded suite passes **7/7**.
 This verdict does not accept all of S7b. The app-side frame/broker wiring and
 the real-binary `agent_tools_test.py` plus socket-separation closure remain
 later work under the plan. Verdict sent to BlackRobin in Agent Mail 6723.
+
+## S7b `tool_result` frame (`b42c7b0`, `cab06a3`)
+
+**`b42c7b0` APPROVED as the failing-first fix-forward. `cab06a3`
+APPROVED as the frame green.** In exact clean, display-free exports, the red
+fails 0/5 with `TestNoToolResultFrame`, while the green passes all 5 tests.
+Both exports were deleted immediately.
+
+The exported builder takes the one shared outbound sequence, JSON-escapes the
+session, call id and error, and reparses plus compact-reserializes successful
+content. Therefore formatting whitespace and newlines in an input JSON array
+cannot split the NDJSON frame. It applies the 1 MiB limit to the line excluding
+only its framing newline; an oversize or non-array success becomes the fixed
+bounded error frame. A caller-supplied error is nonempty, no more than 4 KiB,
+and cut to a valid UTF-8 prefix. The registered module is a dependency of the
+aggregate test step.
+
+This approves frame construction only. S7b remains incomplete until the
+C/app/broker production wiring and both real-binary closure tests run. Verdict
+sent to BlackRobin in Agent Mail 6724.
