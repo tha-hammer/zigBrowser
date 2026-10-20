@@ -160,11 +160,23 @@ probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts -> prints the hos
 # when session.json's nonce matches nonce.txt. This is VM-only: the read-only file server runs no helper,
 # so run_session_probe is never called against it and nothing is written there.
 SESSION_TIMEOUT="${ZB_SESSION_TIMEOUT:-60}"
-run_session_probe() { # $1=user $2=host $3=port $4=key $5=known_hosts $6=nonce -> prints a RESULT= line
+run_session_probe() { # $1=user $2=host $3=port $4=key $5=known_hosts $6=nonce $7=expected session_probe.ps1 sha256
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
   local ps
   ps=$(cat <<'PS'
 $ErrorActionPreference='Stop'
+# Pin-verify the pre-registered console task BEFORE triggering: the task is provisioned externally (as the
+# test user, post-snapshot), so the gate refuses to trust it unless its name, script action, principal and
+# the staged script's SHA-256 all match what we expect. A tampered or absent task fails closed.
+$staged = Join-Path $env:USERPROFILE 'zb\session_probe.ps1'
+if (-not (Test-Path -LiteralPath $staged)) { Write-Output 'RESULT=TASK_SCRIPT_MISSING'; exit 0 }
+$h = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLower()
+if ($h -ne '__SHA__') { Write-Output ('RESULT=TASK_SCRIPT_HASH_MISMATCH ' + $h); exit 0 }
+$q = $null; try { $q = (schtasks /Query /TN 'zb-session-probe' /FO LIST /V 2>&1 | Out-String) } catch {}
+if (-not $q) { Write-Output 'RESULT=TASK_MISSING'; exit 0 }
+if ($q -notmatch 'session_probe\.ps1') { Write-Output 'RESULT=TASK_ACTION_MISMATCH'; exit 0 }
+$meLeaf = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -split '\\')[-1]
+if ($q -notmatch [regex]::Escape($meLeaf)) { Write-Output 'RESULT=TASK_PRINCIPAL_MISMATCH'; exit 0 }
 $dir = Join-Path $env:USERPROFILE 'zb\runs\session'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Set-Content -LiteralPath (Join-Path $dir 'nonce.txt') -Value '__NONCE__' -NoNewline -Encoding ascii
@@ -186,6 +198,7 @@ PS
 )
   ps=${ps//__NONCE__/$6}
   ps=${ps//__TIMEOUT__/$SESSION_TIMEOUT}
+  ps=${ps//__SHA__/$7}
   run_remote timeout "$((SESSION_TIMEOUT + 25))" "${SSH[@]}" -p "$3" "$1@$2" \
     'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' <<<"$ps"
 }
@@ -205,9 +218,6 @@ def _is_abs_win_path(p):
     n = ntpath.normpath(p)
     drive, _ = ntpath.splitdrive(n)
     return bool(drive) and not drive.startswith("\\\\") and n[len(drive):].startswith("\\")
-# The file server's required baseline listeners (plan WS0.7); overridable for other layouts.
-import os
-_BASELINE = set(int(x) for x in (os.environ.get("ZB_WIN10_BASELINE_PORTS", "22,135,139,445,3389")).split(",") if x.strip())
 def load(s, who):
     try:
         return json.loads(s)
@@ -291,9 +301,10 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): zbtest_write_paths missing or not a list\n" % who); sys.exit(1)
     if not _is_port_list(probe.get("listeners")):
         sys.stderr.write("file-server (%s): listeners missing or not a list of ports\n" % who); sys.exit(1)
-    missing_base = sorted(_BASELINE - set(probe.get("listeners")))
-    if missing_base:
-        sys.stderr.write("file-server (%s): baseline listeners %s are not all present (missing %s)\n" % (who, sorted(_BASELINE), missing_base)); sys.exit(1)
+    # No FIXED baseline listener set: the real file server's listeners (135/445/5040/5357, dynamic RPC
+    # 49664+, 139, 22, high service ports) vary by host and have no 3389, and the WS0.7 rule is only that
+    # the listener set is UNCHANGED pre vs post (checked below). A pinned/overridable baseline here was
+    # both wrong for this host and ambiently weakenable (RoseCat 50a4c5b #1; orchestrator real-FS check).
     fw = probe.get("fw_rules_hash")
     if not isinstance(fw, str) or not fw.strip():
         sys.stderr.write("file-server (%s): fw_rules_hash missing or empty\n" % who); sys.exit(1)
@@ -309,11 +320,10 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): native_arch %r, expected x64\n" % (who, probe.get("native_arch"))); sys.exit(1)
     if _build_int(probe.get("os_build")) < 19045:
         sys.stderr.write("file-server (%s): os_build %r is below the Windows 10 22H2 floor (19045)\n" % (who, probe.get("os_build"))); sys.exit(1)
-    fs_root_expected = "C:\\Users\\%s\\zb" % win10_user
-    if not isinstance(probe.get("root"), str) or probe.get("root").strip().rstrip("\\").lower() != fs_root_expected.lower():
-        sys.stderr.write("file-server (%s): root %r is not the pinned %r\n" % (who, probe.get("root"), fs_root_expected)); sys.exit(1)
-    if not _is_finite_num(probe.get("free_gb")) or probe.get("free_gb") < 20:
-        sys.stderr.write("file-server (%s): free_gb %r is not a finite number >= 20\n" % (who, probe.get("free_gb"))); sys.exit(1)
+    # root and free_gb are NOT applicable on the physical file server (orchestrator real-FS check): the
+    # read-only rule means C:\Users\<user>\zb is never created there, and the box gets no writes so its
+    # free space is irrelevant (C: was ~0 GB). Both are VM-only requirements. The probe may still report
+    # them for visibility, but the gate does not judge the file server on them.
     # sshd network fence: ListenAddress must be EXACTLY the pinned tailnet address (not just a non-wildcard),
     # and AllowUsers must be EXACTLY the test user — enforce the values, not just the list type.
     sl = probe.get("sshd_listen")
@@ -418,9 +428,10 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   # WS0.1: trigger the in-console session helper on the VM with a fresh per-run nonce and AWAIT a
   # nonce-matching session.json (bounded). No manual console step. If it does not return OK, fail closed
   # before any probe — a VM with no fresh, nonce-correlated session result is not ready.
-  local nonce sres
+  local nonce sres sess_sha
   nonce="ws0-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}${RANDOM}"
-  sres=$(run_session_probe "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh" "$nonce")
+  sess_sha=$(sha256sum "$HERE/session_probe.ps1" | awk '{print $1}')
+  sres=$(run_session_probe "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh" "$nonce" "$sess_sha")
   echo "WS0.1: VM session-probe -> $sres" >&2
   case "$sres" in
     *RESULT=OK*) : ;;

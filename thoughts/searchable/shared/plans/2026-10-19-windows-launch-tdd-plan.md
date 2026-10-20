@@ -508,6 +508,26 @@ from a small WTS-API helper (`WTSGetActiveConsoleSessionId` + `WTSQuerySessionIn
 `WTSConnectState`, plus LogonUI detection in that session), which also serves WS0.4's console check.
 `whoami /groups` does work as a standard user and is the source for WS0.7's `groups`/SID checks.
 
+**Session helper = externally-provisioned console task, gate pin-verifies + triggers (VM only).**
+`session_probe.ps1` runs in the console session as a scheduled task provisioned EXTERNALLY on the VM (as
+the test user, post-snapshot) — the gate does NOT create it. Pinned task spec: name `zb-session-probe`,
+action runs `%USERPROFILE%\zb\session_probe.ps1` (a byte copy of the committed script), principal = the
+test user, "only when logged on" (interactive). Before triggering, `gate.sh` verifies the staged script's
+SHA-256 against the committed `session_probe.ps1`, the task's action path, and its principal, and fails
+closed on any mismatch (`RESULT=TASK_*`). It then writes a per-run nonce to
+`%USERPROFILE%\zb\runs\session\nonce.txt`, runs the task, and awaits a `session.json` whose `nonce`
+matches and whose `ts` is within the last 15 min and NOT in the future; `host_probe.ps1` trusts
+`interactive_session`/`locked` only under that same nonce+freshness correlation. The physical file server
+runs no helper (not_applicable).
+
+**File server not_applicable fields (orchestrator real-FS check, 2026-10-20).** On the read-only Win10
+file server, verified as `zbtest`: `root` (`C:\Users\zbtest\zb` is never created — no writes) and
+`free_gb` (the box gets no writes; C: ~0 GB) are **not_applicable** and the gate does not judge the FS on
+them (VM-only). There is **no fixed listener baseline**: the real listeners are 135/445/5040/5357, dynamic
+RPC 49664+, 139, 22 and high service ports with no 3389, so WS0.7 enforces only that the listener set is
+UNCHANGED pre vs post. sshd `ListenAddress` is pinned to exactly the tailnet IP (100.123.34.15) and
+`AllowUsers` to exactly `zbtest` (`LogLevel DEBUG3` is a known user to-do and is not gated).
+
 1. Boot the VM (the user or orchestrator starts it; agents do not). If it is the existing
    `win11-m8` domain: `virsh -c qemu:///session start win11-m8`. (Read-only check on 2026-10-19: that
    domain was already `running`, so the gate must treat "state at gate time" as the only truth.)

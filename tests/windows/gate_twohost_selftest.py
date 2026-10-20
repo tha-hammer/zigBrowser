@@ -402,19 +402,9 @@ class WS0CompletionReadiness(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(root="")})
             self._assert_fail_closed(proc, "root")
 
-    def test_fs_root_missing_fails_closed(self):
-        with tempfile.TemporaryDirectory() as t:
-            bad = _fs_probe(root="")
-            proc = self._run_probe_only(pathlib.Path(t),
-                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
-            self._assert_fail_closed(proc, "root")
-
-    def test_fs_low_free_gb_fails_closed(self):
-        with tempfile.TemporaryDirectory() as t:
-            bad = _fs_probe(free_gb=3.0)
-            proc = self._run_probe_only(pathlib.Path(t),
-                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
-            self._assert_fail_closed(proc, "free_gb")
+    # NOTE: FS root and free_gb are not_applicable on the read-only file server (no writes; C:\Users\<u>\zb
+    # is never created; C: ~0 GB) — the gate does not judge the FS on them, so there are no FS root/free_gb
+    # fail-closed cases here. The VM root/free_gb cases remain below.
 
     def test_fs_sshd_listen_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -513,12 +503,6 @@ class WS0FieldHardening(_TwoHostCase):
                 {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(root="C:\\Users\\zbtext\\elsewhere")})
             self._assert_fail_closed(proc, "root")
 
-    def test_fs_wrong_root_fails_closed(self):
-        with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t),
-                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(root="D:\\elsewhere")})
-            self._assert_fail_closed(proc, "root")
-
     def test_empty_identity_share_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
             bad = _fs_probe(shares=[{"name": "", "path": ""}])
@@ -560,18 +544,9 @@ class WS0FieldHardening(_TwoHostCase):
                 {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(free_gb=float("nan"))})
             self._assert_fail_closed(proc, "free_gb")
 
-    def test_fs_nan_free_gb_fails_closed(self):
-        with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t),
-                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(free_gb=float("nan"))})
-            self._assert_fail_closed(proc, "free_gb")
-
-    def test_missing_nonssh_baseline_listener_fails_closed(self):
-        # Only port 22 present is not enough: the full baseline {22,135,139,445,3389} must be there.
-        with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t),
-                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=[22, 135, 139, 445])})  # 3389 gone
-            self._assert_fail_closed(proc, "baseline listeners")
+    # FS free_gb is not_applicable (no writes; ~0 GB) and there is NO fixed listener baseline (the real FS
+    # has no 3389 and churny dynamic RPC ports) — WS0.7 enforces only pre==post listeners (tested below),
+    # so there are no FS-free_gb or baseline-set fail-closed cases here.
 
     def test_sshd_empty_listen_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -590,12 +565,6 @@ class WS0FieldHardening(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t),
                 {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_allowusers=["someoneelse"])})
             self._assert_fail_closed(proc, "AllowUsers")
-
-    def test_fs_missing_baseline_ssh_port_fails_closed(self):
-        with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t),
-                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=[135, 139, 445, 3389])})
-            self._assert_fail_closed(proc, "22")
 
     def test_snapshot_unparseable_creation_time_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -674,13 +643,6 @@ class ProbeTransport(_TwoHostCase):
                                         {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(free_gb=9.5)})
             self._assert_fail_closed(proc, "free_gb")
 
-    def test_fs_free_gb_still_needs_20(self):
-        # The file server keeps the 20 GB bar: 13.4 GB must FAIL there (only the VM bar was lowered).
-        with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t),
-                                        {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(free_gb=13.4)})
-            self._assert_fail_closed(proc, "free_gb")
-
 
 class WS0SessionTrigger(_TwoHostCase):
     def test_gate_triggers_console_task_with_nonce(self):
@@ -694,6 +656,21 @@ class WS0SessionTrigger(_TwoHostCase):
             self.assertIn("schtasks /Run /TN 'zb-session-probe'", streamed,
                           "gate must trigger the in-console session task")
             self.assertIn("nonce.txt", streamed, "gate must write a per-run nonce before triggering")
+            # The gate must PIN-VERIFY the task (name, action, principal, script hash) before triggering.
+            self.assertIn("schtasks /Query /TN 'zb-session-probe'", streamed, "gate must verify the task exists")
+            self.assertIn("Get-FileHash", streamed, "gate must verify the staged session_probe.ps1 hash")
+            self.assertIn("session_probe.ps1", streamed, "gate must verify the task action script")
+
+    def test_session_task_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SESSION_RESULT": "RESULT=TASK_MISSING"})
+            self._assert_fail_closed(proc, "session helper")
+
+    def test_session_task_hash_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_SESSION_RESULT": "RESULT=TASK_SCRIPT_HASH_MISMATCH deadbeef"})
+            self._assert_fail_closed(proc, "session helper")
 
     def test_session_timeout_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -762,6 +739,16 @@ class WS0ZeroWrite(unittest.TestCase):
                       "identity_marker", "shares", "zbtest_write_paths", "fw_rules_hash",
                       "sshd_listen", "sshd_allowusers", "root", "free_gb"):
             self.assertRegex(src, rf"\b{field}\b", f"host_probe.ps1 no longer declares {field}")
+
+    def test_acl_function_is_extractable_and_used(self):
+        # The live DACL test (host_live_test.py) extracts Get-ZbWritable VERBATIM between these markers,
+        # so the markers must exist, wrap the function, and host_probe must actually call it.
+        import re
+        src = (REPO / "tests" / "windows" / "host_probe.ps1").read_text()
+        m = re.search(r"# >>> ZB_ACL_FN.*?\n(.*?)\n# <<< ZB_ACL_FN", src, re.S)
+        self.assertIsNotNone(m, "host_probe.ps1 is missing the ZB_ACL_FN extraction markers")
+        self.assertIn("function Get-ZbWritable", m.group(1), "the marked block must define Get-ZbWritable")
+        self.assertRegex(src, r"Get-ZbWritable \$acl \$mySids", "host_probe.ps1 must call Get-ZbWritable")
 
 
 if __name__ == "__main__":

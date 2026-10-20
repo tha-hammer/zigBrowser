@@ -2,16 +2,21 @@
 #
 # A network (SSH) logon is a different session from the console and cannot read the console's lock
 # state (verified on win11-m8: SSH session=0, console=2). So this helper must run IN the console
-# session. The gate installs it as a scheduled task that runs as the test user "only when logged
-# on" (interactive), triggers it over SSH, waits, then reads the session.json it writes. Creating
-# the task and writing session.json are VM writes — they happen only AFTER the shut-off snapshot.
+# session, as a scheduled task that runs as the test user "only when logged on" (interactive). The
+# task is provisioned EXTERNALLY on the VM (as the test user, AFTER the shut-off snapshot) — see the
+# plan's WS0 session-helper provisioning. The gate does NOT create it; before triggering, the gate
+# pin-verifies the task (name `zb-session-probe`, action = this script, principal = the test user, and
+# this script's SHA-256) and fails closed on any mismatch, then triggers it over SSH with a per-run
+# nonce and reads the session.json it writes (nonce + ts correlated). session.json/nonce.txt are VM
+# writes, post-snapshot. Nothing of this runs against the read-only file server.
 #
 # Lock detection uses the input desktop: in an unlocked interactive session the input desktop is
 # "Default"; when locked, the secure desktop is active and OpenInputDesktop is denied (or returns a
 # non-Default name). This is a standard-user-safe signal — no WMI, no privileged session queries.
 #
-# LIVE-VERIFY PENDING: the OpenInputDesktop access flag and the locked/unlocked desktop names must
-# be confirmed on the real VM in both states before this is accepted as green.
+# LIVE-VERIFIED (unlocked): on win11-m8 the triggered task writes session.json with
+# interactive_session=True, locked=False, in the console session (session 2). The LOCKED case
+# (secure desktop => locked=True) still needs a live confirmation before the lock signal is trusted.
 param([string]$OutDir = "$env:USERPROFILE\zb\runs\session")
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'

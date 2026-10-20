@@ -35,6 +35,40 @@ function New-ZbNative {
 }
 $ZbN = New-ZbNative
 
+# >>> ZB_ACL_FN : effective-writability evaluator, extracted VERBATIM by tests/windows/host_live_test.py
+# so the live DACL test exercises this exact code (and a hostless guard asserts the two copies match).
+# Keep it SELF-CONTAINED (no outside variables) between these markers. Mirrors Windows AccessCheck:
+# skips inherit-only ACEs, honors the object owner's implicit WRITE_DAC, fails CLOSED on null/unsupported
+# or unreadable DACLs, and resolves each dangerous right by the FIRST matching ACE in DACL order.
+function Get-ZbWritable {
+  param($acl, [string[]]$mySids)
+  $sddl = $null
+  try { $sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access) } catch { return $true }
+  if ($sddl -notmatch 'D:') { return $true }                       # no DACL present
+  if ($sddl -match 'D:[A-Z]*NO_ACCESS_CONTROL') { return $true }   # explicit NULL DACL => everyone full access
+  try { $own = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; if ($own -and ($mySids -contains $own)) { return $true } } catch { return $true }
+  $DANGER_BITS = @(
+    [int][System.Security.AccessControl.FileSystemRights]::WriteData,
+    [int][System.Security.AccessControl.FileSystemRights]::AppendData,
+    [int][System.Security.AccessControl.FileSystemRights]::Delete,
+    [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+    [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions,
+    [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+  $rules = $null
+  try { $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) } catch { return $true }
+  $myAces = @()
+  foreach ($ace in $rules) {
+    if (($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }  # applies to children only
+    if (-not ($mySids -contains $ace.IdentityReference.Value)) { continue }
+    $myAces += [pscustomobject]@{ allow = ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow); mask = [int]$ace.FileSystemRights }
+  }
+  foreach ($bit in $DANGER_BITS) {
+    foreach ($a in $myAces) { if (($a.mask -band $bit) -ne 0) { if ($a.allow) { return $true }; break } }  # first match per right decides
+  }
+  return $false
+}
+# <<< ZB_ACL_FN
+
 function Get-NativeArch {
   # Managed, no P/Invoke: OSArchitecture is X64 / Arm64 / X86 (.NET 4.7.1+, present on Win10 22H2 / .NET 4.8).
   try {
@@ -138,8 +172,13 @@ try {
   $sj = Join-Path $env:USERPROFILE 'zb\runs\session\session.json'
   if ($expectedNonce -and (Test-Path -LiteralPath $sj)) {
     $sess = Get-Content -LiteralPath $sj -Raw -ErrorAction Stop | ConvertFrom-Json
+    # Fresh = within the last 15 min AND not in the future (a future ts is a clock lie / replay and is
+    # rejected; a small +2 min skew tolerance only). Combined with the nonce match below.
     $fresh = $false
-    try { $fresh = ([datetime]::Parse($sess.ts).ToUniversalTime() -gt (Get-Date).ToUniversalTime().AddMinutes(-15)) } catch {}
+    try {
+      $tsu = [datetime]::Parse($sess.ts).ToUniversalTime(); $now = (Get-Date).ToUniversalTime()
+      $fresh = (($tsu -gt $now.AddMinutes(-15)) -and ($tsu -le $now.AddMinutes(2)))
+    } catch {}
     if ($fresh -and ("$($sess.nonce)" -eq $expectedNonce)) {
       $interactive = $sess.interactive_session
       $locked      = $sess.locked
@@ -165,43 +204,15 @@ try {
   $shares = @($shareList)
   $me = [Security.Principal.WindowsIdentity]::GetCurrent()
   $mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
-  # Effective-access oracle using Windows AccessCheck ACE-ORDER semantics, PER dangerous right: walk the
-  # DACL's ACEs in stored order and, for each content-mutating right, the FIRST ACE (for one of my SIDs)
-  # whose mask includes that right decides it — Allow => granted, Deny => denied — exactly as the kernel
-  # resolves access. A path is writable iff ANY dangerous right ends up granted. This is correct in the
-  # unsafe direction RoseCat flagged: an explicit Allow that precedes a later (e.g. inherited) Deny of the
-  # same right is GRANTED, not masked. WriteAttributes/WriteExtendedAttributes are not dangerous rights, so
-  # they never flip the verdict. (SMB share-level permissions are a separate layer, out of this NTFS calc.)
-  $DANGER_BITS = @(
-    [int][System.Security.AccessControl.FileSystemRights]::WriteData,
-    [int][System.Security.AccessControl.FileSystemRights]::AppendData,
-    [int][System.Security.AccessControl.FileSystemRights]::Delete,
-    [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
-    [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions,
-    [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+  # Which served paths the test user can WRITE, via Get-ZbWritable (Windows AccessCheck semantics; see its
+  # definition above). Unreadable ACL => fail-safe (treated writable, never hidden).
   $w = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
     try {
       $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-      # Ordered ACEs that apply to my token (preserve DACL order).
-      $myAces = @()
-      foreach ($ace in $acl.Access) {
-        $sid = $null; try { $sid = $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch {}
-        if (-not ($sid -and ($mySids -contains $sid))) { continue }
-        $myAces += [pscustomobject]@{
-          allow = ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow)
-          mask  = [int]$ace.FileSystemRights }
-      }
-      $writable = $false
-      foreach ($bit in $DANGER_BITS) {
-        foreach ($a in $myAces) {
-          if (($a.mask -band $bit) -ne 0) { if ($a.allow) { $writable = $true }; break }  # first match wins for this right
-        }
-        if ($writable) { break }
-      }
-      if ($writable) { $w += $p }
-    } catch { $w += $p }   # cannot read the ACL => treat as possibly writable (fail-safe, never hide)
+      if (Get-ZbWritable $acl $mySids) { $w += $p }
+    } catch { $w += $p }
   }
   $writePaths = @($w | Sort-Object -Unique)
 } catch {}
