@@ -703,6 +703,16 @@ void request_quit(AppState *app, int exit_code) {
   PostQuitMessage(exit_code);
 }
 
+// In screenshot mode a failure must never be silent. Open mode keeps its existing e2e-gated
+// reporting (emit_load_fail only prints under --e2e-protocol), but --screenshot prints one
+// diagnostic line on every failure path before it quits, so a nonzero exit is always explained.
+void screenshot_diag(AppState *app, const char *reason) {
+  if (app != nullptr && app->screenshot) {
+    fprintf(stderr, "zigBrowser: screenshot: %s\n", reason);
+    fflush(stderr);
+  }
+}
+
 void close_webview(AppState *app) {
   if (app == nullptr) {
     return;
@@ -844,6 +854,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
         app->webview->Stop();
       }
       emit_load_fail(app, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT);
+      screenshot_diag(app, "navigation timed out before the page loaded");
       request_quit(app, ZB_EXIT_TIMEOUT);
       return 0;
     }
@@ -895,6 +906,7 @@ bool create_host_window(AppState *app) {
 
 void navigate(AppState *app) {
   if (app == nullptr || !app->webview) {
+    screenshot_diag(app, "no WebView available to navigate");
     request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
     return;
   }
@@ -903,6 +915,7 @@ void navigate(AppState *app) {
   const HRESULT hr = app->webview->Navigate(app->uri.c_str());
   if (FAILED(hr)) {
     KillTimer(app->hwnd, kNavigationTimerId);
+    screenshot_diag(app, "ICoreWebView2::Navigate failed to start");
     request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
   }
 }
@@ -924,6 +937,7 @@ HRESULT install_document_script_and_navigate(AppState *app) {
           [app](HRESULT error_code, LPCWSTR script_id) -> HRESULT {
             (void)script_id;
             if (FAILED(error_code)) {
+              screenshot_diag(app, "AddScriptToExecuteOnDocumentCreated failed");
               request_quit(app, ZB_EXIT_WEBVIEW_INIT_FAILED);
               return S_OK;
             }
@@ -945,23 +959,35 @@ bool write_stream_to_file(IStream *stream, const std::wstring &path) {
     fflush(stderr);
     return false;
   }
+  // The stream's LOGICAL length (what CapturePreview actually wrote), not GlobalSize, which reports
+  // the HGLOBAL's allocation and can include slack past the PNG's IEND.
+  STATSTG stat = {};
+  HRESULT hr = stream->Stat(&stat, STATFLAG_NONAME);
+  if (FAILED(hr)) {
+    fprintf(stderr, "zigBrowser: screenshot: IStream::Stat failed (HRESULT=0x%08lx)\n",
+            static_cast<unsigned long>(hr));
+    fflush(stderr);
+    return false;
+  }
+  const ULONGLONG logical = stat.cbSize.QuadPart;
+  if (logical == 0 || logical > 0xFFFFFFFFULL) {
+    fprintf(stderr, "zigBrowser: screenshot: unexpected capture size (%llu bytes)\n",
+            static_cast<unsigned long long>(logical));
+    fflush(stderr);
+    return false;
+  }
   HGLOBAL hg = nullptr;
-  const HRESULT hr = GetHGlobalFromStream(stream, &hg);
+  hr = GetHGlobalFromStream(stream, &hg);
   if (FAILED(hr) || hg == nullptr) {
     fprintf(stderr, "zigBrowser: screenshot: GetHGlobalFromStream failed (HRESULT=0x%08lx)\n",
             static_cast<unsigned long>(hr));
     fflush(stderr);
     return false;
   }
-  const SIZE_T size = GlobalSize(hg);
   void *data = GlobalLock(hg);
-  if (data == nullptr || size == 0) {
-    fprintf(stderr, "zigBrowser: screenshot: empty capture buffer (%zu bytes)\n",
-            static_cast<size_t>(size));
+  if (data == nullptr) {
+    fprintf(stderr, "zigBrowser: screenshot: GlobalLock failed\n");
     fflush(stderr);
-    if (data != nullptr) {
-      GlobalUnlock(hg);
-    }
     return false;
   }
   HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
@@ -972,18 +998,19 @@ bool write_stream_to_file(IStream *stream, const std::wstring &path) {
     return false;
   }
   DWORD written = 0;
-  const BOOL ok = WriteFile(file, data, static_cast<DWORD>(size), &written, nullptr);
+  const BOOL ok = WriteFile(file, data, static_cast<DWORD>(logical), &written, nullptr);
   if (!ok) {
     log_last_error("WriteFile(screenshot output)");
   }
   CloseHandle(file);
   GlobalUnlock(hg);
-  if (!ok || written != size) {
+  if (!ok || written != logical) {
     if (ok) {
-      fprintf(stderr, "zigBrowser: screenshot: short write (%lu of %zu bytes)\n", written,
-              static_cast<size_t>(size));
+      fprintf(stderr, "zigBrowser: screenshot: short write (%lu of %llu bytes)\n", written,
+              static_cast<unsigned long long>(logical));
       fflush(stderr);
     }
+    DeleteFileW(path.c_str()); // never leave a partial/corrupt PNG behind
     return false;
   }
   return true;
@@ -1093,6 +1120,7 @@ HRESULT create_controller(AppState *app) {
                           args->get_WebErrorStatus(&status);
                         }
                         emit_load_fail(app, status);
+                        screenshot_diag(app, "navigation failed; the page did not load");
                         request_quit(app, ZB_EXIT_LOAD_FAILED);
                         return S_OK;
                       }
@@ -1179,15 +1207,15 @@ int run_message_loop(AppState *app) {
 } // namespace
 
 // The shared core behind both entry points. `screenshot` adds the CapturePreview-on-load path
-// (writes `out_path` then quits); otherwise it is the interactive open. Every early return names
-// its reason on stderr so no exit code is silent.
+// (writes `out_path` then quits); otherwise it is the interactive open. In screenshot mode every
+// navigation, timeout, start and capture failure names its reason on stderr (screenshot_diag /
+// capture_screenshot). The runtime-missing path below is left to WS1.4 (its pinned message and
+// red/mutants are a separate, still-outstanding slice), so it is intentionally not claimed here.
 static int run_core(const char *uri, int print_title, int e2e_protocol, bool screenshot,
                     const char *out_path) {
   char version[128] = {0};
   if (!webview2_runtime_version(version, sizeof(version))) {
-    fprintf(stderr, "zigBrowser: WebView2 runtime not found or unreadable\n");
-    fflush(stderr);
-    return ZB_EXIT_RUNTIME_MISSING;
+    return ZB_EXIT_RUNTIME_MISSING; // WS1.4: pinned runtime-missing message + reds are a separate slice
   }
 
   const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
