@@ -4,8 +4,8 @@ The Linux backend (``sandbox.py``) contains the helper with bwrap; macOS will us
 no process-namespace sandbox, so a Windows backend will contain the child in a **Job Object** (kill-on-close
 so no helper or CLI child outlives the drawer) and must get its path checks and command line exactly right.
 This module holds the three decisions that are pure logic — path containment, argv quoting, and the
-containment choice — behind an injected capability probe, so every branch is exercised by `python3 -I`
-unit tests with no Windows host. The actual Win32 calls (CreateJobObject/AssignProcessToJobObject,
+containment choice — behind an injected capability probe, so every branch is exercised by plain `python3`
+unit tests (not `-I`, which drops the test cwd from sys.path) with no Windows host. The actual Win32 calls (CreateJobObject/AssignProcessToJobObject,
 CreateProcessW) live in the eventual backend; this module decides *what* they do.
 
 Nothing here imports a Win32 module or touches the filesystem; `ntpath` is the stdlib pure-Python Windows
@@ -101,7 +101,11 @@ def normalize_final_path(final: str) -> str:
     if not final:
         raise ContainError("final path: empty")
     s = final
-    if s[:4] in ("\\\\?\\", "\\\\.\\"):
+    if s[:4] == "\\\\.\\":
+        # \\.\ is the DEVICE namespace, not a filesystem path — never normalize it into an ordinary drive
+        # path; refuse. GetFinalPathNameByHandleW with VOLUME_NAME_DOS yields \\?\, not \\.\.
+        raise ContainError("final path: device namespace (\\\\.\\) is refused")
+    if s[:4] == "\\\\?\\":
         rest = s[4:]
         if rest[:4].upper() == "UNC\\":
             raise ContainError("final path: UNC form has no drive root")
@@ -113,12 +117,19 @@ def normalize_final_path(final: str) -> str:
 
 
 class ResolvedPath(NamedTuple):
-    """What a PathResolver returns: the canonical drive-form name AND the pinned handle it was read through.
+    """What a PathResolver returns: the canonical drive-form name AND the handle it was read through.
 
-    The caller MUST perform the protected operation through ``handle`` (an open OS handle / capability), never
-    by reopening ``canonical`` by name: between validation and use a junction or any ancestor could be
-    retargeted (TOCTOU), and a name reopened later may resolve elsewhere. ``canonical`` exists only for the
-    containment decision; it is not a re-openable authority.
+    ``canonical`` is for the containment DECISION only — it is a name, not a re-openable authority (a junction
+    or ancestor could be retargeted after this name was produced). ``handle`` is the open OS handle the
+    resolver pinned; the backend performs handle-supporting operations (open/read/write) through it rather
+    than reopening the name.
+
+    HANDLE LIFETIME is the resolver's/backend's responsibility, not this module's: `resolved_within` never
+    closes or retains a handle. SCOPE LIMIT: a pinned handle does NOT make every operation TOCTOU-safe — in
+    particular ``CreateProcessW`` launches an image by PATH and cannot run through an open handle, so this seam
+    does NOT authorize spawning a contained executable. That TOCTOU (and the enforceable launch strategy —
+    e.g. an immutable, installer-only directory, or opening and verifying the parent directory handle) is the
+    backend's job and is tracked in bead zigBrowser-d1d, proven by a live Windows test.
     """
     canonical: str
     handle: object
@@ -129,18 +140,24 @@ class PathResolver(Protocol):
         """Open the path and return its canonical drive-form name (GetFinalPathNameByHandleW +
         normalize_final_path) together with the PINNED handle it was opened on. Raise on failure — a junction
         that cannot be followed is a denial, never an OPEN_REPARSE_POINT that hands back the unresolved link.
-        The handle must remain the authority the caller acts through; returning only a name is a TOCTOU hole."""
+        The resolver owns the handle's lifetime."""
         ...
 
 
 def resolved_within(root: str, candidate: str, resolver: "PathResolver") -> "ResolvedPath":
-    """Full containment check: the lexical prefilter, THEN the injected handle-based resolver, fail-closed.
+    """Resolved-NAME containment check: the lexical prefilter, THEN the injected resolver, fail-closed.
 
     `normalize_within` cannot see reparse points, so a lexically-in-root path can still resolve outside root
-    (a junction `C:\\root\\j` targeting `C:\\Windows`). This resolves BOTH root and candidate through pinned
-    handles and requires the resolved candidate within the resolved root. Returns the candidate's
-    ResolvedPath — the caller acts through its `handle`, NOT by reopening its name (which would reintroduce
-    the TOCTOU the handle closes). Any resolver failure, or a resolver that fails to pin a handle, is a denial.
+    (a junction `C:\\root\\j` targeting `C:\\Windows`). This resolves root and candidate and requires the
+    resolved candidate name within the resolved root name, then returns the candidate's ResolvedPath so the
+    backend can act through its handle. It fails closed on any resolver error, a malformed ResolvedPath, or a
+    resolver that cannot pin a handle (a resolver that only produces names is unusable for a TOCTOU-safe
+    backend).
+
+    IMPORTANT — what this does NOT do: it does not itself prove TOCTOU-safe USE (acting through the handle vs.
+    reopening the name is the backend's contract, proven live), it does not manage handle lifetime (the
+    resolver owns it; this function closes nothing), and it does not authorize executable launch (see
+    ResolvedPath). Treat the result as a name-level grant plus a handle to be used under the backend's rules.
     """
     normalize_within(root, candidate)        # lexical prefilter (raises on bad shape / lexical escape)
     try:
@@ -152,9 +169,9 @@ def resolved_within(root: str, candidate: str, resolver: "PathResolver") -> "Res
         if not isinstance(rp, ResolvedPath) or not isinstance(rp.canonical, str) or not rp.canonical:
             raise ContainError(f"resolver returned an invalid ResolvedPath for {who} (fail closed)")
         if rp.handle is None:
-            raise ContainError(f"resolver did not pin a handle for {who} — reopen-by-name is a TOCTOU hole")
-    normalize_within(real_root.canonical, real_cand.canonical)   # containment on the PINNED canonical names
-    return real_cand   # the caller MUST act through real_cand.handle, never reopen real_cand.canonical
+            raise ContainError(f"resolver did not pin a handle for {who} — a name-only resolver is unusable")
+    normalize_within(real_root.canonical, real_cand.canonical)   # containment on the resolved canonical names
+    return real_cand
 
 
 # --- Windows argv quoting (CommandLineToArgvW / MSVCRT convention) ---------------------------------------

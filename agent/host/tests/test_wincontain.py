@@ -159,22 +159,17 @@ class PathContainment(unittest.TestCase):
 
 
 class _Resolver:
-    """A fake PathResolver: identity unless a path is remapped; can also fail or drop the handle.
-
-    `canon_only` models a BROKEN resolver that hands back only a name (handle=None) — the TOCTOU hole the
-    contract forbids. `store`, if given, is a MUTABLE path->canonical map so a test can retarget a name
-    AFTER resolution; the handle pins the canonical read at resolve time.
-    """
-    def __init__(self, mapping=None, fail=False, handle=True, store=None):
+    """A fake PathResolver: identity unless a path is remapped; can also fail, or (handle=False) model the
+    name-only resolver the contract rejects."""
+    def __init__(self, mapping=None, fail=False, handle=True):
         self.mapping = mapping or {}
         self.fail = fail
         self.handle = handle
-        self.store = store
 
     def resolve(self, path):
         if self.fail:
             raise OSError("cannot resolve (reparse)")
-        canon = self.store[path] if self.store is not None else self.mapping.get(path, path)
+        canon = self.mapping.get(path, path)
         return wc.ResolvedPath(canonical=canon, handle=(object() if self.handle else None))
 
 
@@ -208,16 +203,12 @@ class ResolvedContainment(unittest.TestCase):
         with self.assertRaises(wc.ContainError):
             wc.resolved_within(self.ROOT, cand, _Resolver({cand: cand, self.ROOT: self.ROOT}, handle=False))
 
-    def test_handle_pins_target_against_post_resolve_retarget(self):
-        # TOCTOU: validate in-root, then an attacker retargets the NAME; the pinned handle still refers to the
-        # validated target, and resolved_within handed back a capability (not a reopenable string).
-        cand = r"C:\Users\zbtext\zb\j\x"
-        in_root = r"C:\Users\zbtext\zb\real\x"
-        store = {self.ROOT: self.ROOT, cand: in_root}
-        resolved = wc.resolved_within(self.ROOT, cand, _Resolver(store=store))
-        store[cand] = r"C:\Windows\System32\x"     # retarget AFTER validation+use-handle
-        self.assertIsInstance(resolved, wc.ResolvedPath)
-        self.assertEqual(resolved.canonical, in_root, "the capability pins the validated target, not the name")
+    # NOTE: a pure-Python test cannot prove TOCTOU-SAFE USE (acting through a real handle vs. reopening the
+    # name). That is deliberately out of scope here — resolved_within is a resolved-NAME check that also
+    # requires the resolver to pin a handle; the real "replace-between-resolve-and-use" proof, and the fact
+    # that CreateProcessW cannot launch via a handle, belong to the live Windows backend (bead zigBrowser-d1d).
+    # We assert only the honest invariants: a ResolvedPath carrying a handle is returned, and a name-only
+    # (handle-less) resolver is rejected.
 
     def test_lexical_prefilter_runs_before_resolver(self):
         with self.assertRaises(wc.ContainError):
@@ -238,6 +229,11 @@ class FinalPathNormalization(unittest.TestCase):
     def test_volume_guid_final_rejected(self):
         with self.assertRaises(wc.ContainError):
             wc.normalize_final_path(r"\\?\Volume{b75e2c83-0000-0000-0000-602f00000000}\x")
+
+    def test_device_namespace_final_refused_not_normalized(self):
+        # \\.\ is the device namespace; it must be refused, never stripped into an ordinary drive path
+        with self.assertRaises(wc.ContainError):
+            wc.normalize_final_path(r"\\.\C:\Users\zbtext\zb\x")
 
     def test_empty_rejected(self):
         with self.assertRaises(wc.ContainError):
