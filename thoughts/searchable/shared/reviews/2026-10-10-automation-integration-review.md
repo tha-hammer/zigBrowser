@@ -17088,3 +17088,73 @@ and metacharacters while accepting the observed `zbother.linuxWin` suffix.
 This closes both SHOULDs recorded for `e1e9264` and `1e174a3`. The live WS2.0
 cross-user acceptance remains a separate pending run. Verdict sent to
 BlueBeaver in Agent Mail 6711.
+
+## Route-B closure and reviews at `f8c1631`
+
+No full gate was taken in this review: BlueBeaver held the shared Linux gate
+slot. The two S7b helper checks below used clean, display-free exports under
+`/run/user/1000` and deleted each export immediately afterward.
+
+### WS0 Linux-foundation reclassification (`f8c1631`)
+
+**APPROVED.** The authoritative fix-forward implements Route B exactly:
+
+- it explicitly supersedes `1b58f85`'s false “WS0 green” subject and
+  classifies `1b58f85`, `b8dcd21` and `3097d78` as the WS0 `[L]` Linux
+  foundation only;
+- it says WS0 `[W]` is incomplete and forbids later work from citing WS0 as
+  complete;
+- it names the later `WS0-completion` slice and retains the full probe/schema,
+  live resolver and orchestrator-observed two-host proof there;
+- it states that the no-argument two-host product gate is unimplemented and
+  that refusal or skip is never success; and
+- it records the required clean-export evidence at exact `3097d78`:
+  `gate_selftest.py` ran 15 tests and was `OK`, and the private-Xvfb full gate
+  exited zero with **`Build Summary: 163/163 steps succeeded; 920/920 tests
+  passed`**.
+
+This cumulatively closes the old `1b58f85` blocker without relaxing its
+Windows-host standard: only the deliberately narrow Linux foundation is
+accepted. The provisional audit above is now active. The newest contiguous
+approved push-through is **`f69e2e9`**. The next commit,
+**`9663333`**, is the earliest blocked ancestor: its TTS-plan lineage still
+describes discarding audio that the sink already played after a later sequence
+gap. The fix must stop the utterance, discard only queued samples, acknowledge
+irreversible output, and pin that behavior with the sink regression. Verdict
+and boundary sent in Agent Mail 6719.
+
+### macOS Keychain Zig port (`f6b005b`)
+
+**BLOCKED.** The port is otherwise appropriately narrow groundwork: it keeps
+the production default-keychain pinning and disposable-keychain test seam,
+frees the C error string on every wrapper return, leaves the actual consumer
+unwired as stated, and joins the two-architecture MS5 gate without touching
+the Linux gate.
+
+One memory-lifetime defect must be fixed before a consumer uses this API.
+`src/agent_secrets_mac.zig:21-28` exposes a non-null owner pointer and defines
+`deinit(self: Token)` by value. Deinit therefore cannot disarm the owner;
+calling it twice on the same value, or copying the value and deinitializing
+both copies, calls the wipe/free seam twice on one C allocation. Make the
+pointer private and optional, take `*Token`, take-and-null it before freeing,
+make a second deinit harmless, and add the failing-first real-seam regression.
+Finding sent to JadeBeacon in Agent Mail 6722.
+
+### S7b helper MCP tools (`086e7a3`)
+
+**APPROVED as the S7b helper-tools increment.** The production session passes
+its own Bridge to `session_options`; the installed SDK server advertises
+exactly S7.5's six read tools, the selector schemas explain `css=`/`text=`,
+each generated closure forwards its own name and unchanged args, allowed tools
+are exact, built-ins remain empty, and the fallback permission callback is
+`deny_all`. The P0 contract command correctly keeps its separate echo-only
+server and allowlist.
+
+The failing-first evidence is independently reproducible. In a clean export
+at `621d89c`, `test_tools` fails one assertion and errors four cases because
+the production Bridge exposes only echo and `session_options` has no Bridge
+argument. In a clean export at `086e7a3`, the expanded suite passes **7/7**.
+
+This verdict does not accept all of S7b. The app-side frame/broker wiring and
+the real-binary `agent_tools_test.py` plus socket-separation closure remain
+later work under the plan. Verdict sent to BlackRobin in Agent Mail 6723.
