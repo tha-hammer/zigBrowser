@@ -13,8 +13,11 @@ reads the token from fd 3 to EOF (it records only its length), prints `ready`, t
 answers every `prompt` with its ITEMs in order:
 - {"raw": "TEXT"}: TEXT as one stdout line, as it is (a bad frame);
 - {"frame": {...}}: the frame with "v": 1 and the next seq added, the value
-  "$SESSION" replaced by the prompt's session and "$PROMPT_ID" by the `prompt_id` of the
-  last prompt read (S5c-1, rev 16.20.13);
+  "$SESSION" replaced by the prompt's session and "$PROMPT_ID" by that session's active
+  prompt id (S5c-1, rev 16.20.13). S5d: a prompt-scoped frame (delta, message, tool call,
+  result, reply_capped, or an error naming a session) with no "prompt_id" gets the same
+  id, as the real helper's does: the session's last prompt until its `result` or `error`
+  goes out, then null. A script sets one itself for a stale or future id;
 - {"repeat": ["TEXT", N]}: TEXT as N stdout lines in one write (left in the pipe);
 - {"stderr": "TEXT"}: TEXT as one stderr line;
 - {"sleep": S}: wait S seconds before the next ITEM; app frames wait meanwhile (S5c-1);
@@ -63,9 +66,18 @@ seq = 0
 out_lock = threading.Lock()
 
 
+PROMPT_SCOPED = ("assistant_delta", "assistant_message", "tool_call", "result", "reply_capped", "error")
+
+
 def encode(frame):
     global seq
     seq += 1
+    session = frame.get("session")
+    if frame.get("type") in PROMPT_SCOPED and session is not None:
+        if "prompt_id" not in frame:
+            frame = {**frame, "prompt_id": active.get(session)}
+        if frame.get("type") in ("result", "error") and frame["prompt_id"] == active.get(session):
+            active.pop(session, None)  # the prompt's own ending frame: none is active now
     return json.dumps({"v": 1, "seq": seq, **frame})
 
 
@@ -99,14 +111,14 @@ streams = []
 prompts = 0
 
 
-prompt_id = None  # the last prompt's
+active = {}  # session -> the prompt_id of its prompt still running (S5d)
 
 
 def fill(value, session):
     if value == "$SESSION":
         return session
     if value == "$PROMPT_ID":
-        return prompt_id
+        return active.get(session)
     if isinstance(value, dict):
         return {k: fill(v, session) for k, v in value.items()}
     return value
@@ -126,7 +138,7 @@ for line in sys.stdin:
     if frame.get("type") == "shutdown":
         break
     if frame.get("type") == "prompt":
-        prompt_id = frame.get("prompt_id")
+        active[frame.get("session")] = frame.get("prompt_id")
     kind = {"prompt": "on_prompt", "end_session": "on_end", "interrupt": "on_interrupt"}.get(frame.get("type"))
     if kind is not None:
         items = script.get(kind, [])

@@ -132,7 +132,8 @@ def case_stale_error(binary: Path, tmp: Path, check) -> None:
 
 
 def case_duplicate_ending(binary: Path, tmp: Path, check) -> None:
-    run(binary, tmp, check, "duplicate-ending", [delta(TWO[0]), delta(TWO[1])], 1, hold=2.0, after_end=[result()])
+    # The duplicate names prompt 2 itself: after its first result, no prompt is active.
+    run(binary, tmp, check, "duplicate-ending", [delta(TWO[0]), delta(TWO[1])], 1, hold=2.0, after_end=[result(2)])
 
 
 def case_future_id(binary: Path, tmp: Path, check) -> None:

@@ -139,7 +139,7 @@ class Session:
                 for piece in [] if capped else utf8_pieces("".join(pending), DELTA_TEXT_MAX):
                     fit = utf8_prefix(piece, CONTENT_MAX - forwarded)
                     if fit:
-                        self.chat.out.emit("assistant_delta", session=self.id, text=fit)
+                        self.chat.out.emit("assistant_delta", session=self.id, prompt_id=prompt_id, text=fit)
                         forwarded += len(fit.encode("utf-8"))
                         streamed = True
                     if fit != piece:
@@ -167,13 +167,14 @@ class Session:
                 # the reply is sent, and a streamed message that its frame would cut is left
                 # to its deltas.
                 if fitted is not None and (fitted == text or not streamed):
-                    self.chat.out.emit("assistant_message", session=self.id, text=fitted)
+                    self.chat.out.emit("assistant_message", session=self.id, prompt_id=prompt_id, text=fitted)
                 streamed = False
             elif isinstance(message, ResultMessage) and api_error is not None:
-                self.chat.error(API_ERROR_CODES.get(api_error, "sdk"), f"the API refused the request ({api_error})", self.id)
+                self.chat.error(API_ERROR_CODES.get(api_error, "sdk"), f"the API refused the request ({api_error})", self.id,
+                                prompt_id)
             elif isinstance(message, ResultMessage):
                 flush()
-                self.chat.out.emit("result", session=self.id, sdk_session_id=message.session_id,
+                self.chat.out.emit("result", session=self.id, prompt_id=prompt_id, sdk_session_id=message.session_id,
                                    subtype=message.subtype, is_error=message.is_error,
                                    num_turns=message.num_turns, cost_usd=message.total_cost_usd)
 
@@ -208,8 +209,13 @@ class Chat:
         self.out = Emitter()
         self.sessions = {}
 
-    def error(self, code, message, session=None):
-        self.out.emit("error", session=session, code=code, message=message[:1024])
+    def error(self, code, message, session=None, prompt_id=None):
+        """A session's error names its prompt (S5d): `prompt_id` is the prompt it ends, or
+        None (null) while the session has none running. A helper-wide error has neither."""
+        if session is None:
+            self.out.emit("error", session=None, code=code, message=message[:1024])
+        else:
+            self.out.emit("error", session=session, prompt_id=prompt_id, code=code, message=message[:1024])
 
     async def handle(self, frame):
         kind, sid = frame.get("type"), frame.get("session")
@@ -221,7 +227,7 @@ class Chat:
         elif kind == "prompt" and sid in self.sessions:
             session = self.sessions[sid]
             if session.busy:
-                self.error("busy", "a prompt is already running in this session", sid)
+                self.error("busy", "a prompt is already running in this session", sid, frame.get("prompt_id"))
             else:
                 session.task = asyncio.create_task(self._prompt(session, frame.get("text", ""), frame.get("prompt_id")))
         elif kind == "interrupt" and sid in self.sessions:
@@ -261,7 +267,7 @@ class Chat:
         except Exception as exc:  # noqa: BLE001 - reported as a frame, never with the token
             with contextlib.suppress(Exception):  # before the error frame: the next prompt finds it ready
                 await session.renew()
-            self.error("sdk", type(exc).__name__, session.id)
+            self.error("sdk", type(exc).__name__, session.id, prompt_id)
 
     async def run(self):
         self.out.emit("ready", version=__version__, route="R1", selfcheck={"ok": True, "failures": []},

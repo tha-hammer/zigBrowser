@@ -49,9 +49,16 @@ fn at(comptime seq: []const u8, comptime body: []const u8) []const u8 {
     return "{\"v\":1,\"seq\":" ++ seq ++ "," ++ body ++ "}";
 }
 
-const delta = "\"type\":\"assistant_delta\",\"session\":\"s-1-1\",\"text\":\"a\"";
-const message = "\"type\":\"assistant_message\",\"session\":\"s-1-1\",\"text\":\"a\"";
-const result = "\"type\":\"result\",\"session\":\"s-1-1\",\"sdk_session_id\":\"x\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"cost_usd\":null";
+// S5d: every prompt-scoped frame names its prompt.
+fn delta(comptime id: []const u8) []const u8 {
+    return "\"type\":\"assistant_delta\",\"session\":\"s-1-1\",\"prompt_id\":" ++ id ++ ",\"text\":\"a\"";
+}
+fn message(comptime id: []const u8) []const u8 {
+    return "\"type\":\"assistant_message\",\"session\":\"s-1-1\",\"prompt_id\":" ++ id ++ ",\"text\":\"a\"";
+}
+fn result(comptime id: []const u8) []const u8 {
+    return "\"type\":\"result\",\"session\":\"s-1-1\",\"prompt_id\":" ++ id ++ ",\"sdk_session_id\":\"x\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"cost_usd\":null";
+}
 fn cap(comptime id: []const u8) []const u8 {
     return "\"type\":\"reply_capped\",\"session\":\"s-1-1\",\"prompt_id\":" ++ id;
 }
@@ -60,7 +67,7 @@ test "reply_capped for the current prompt is accepted as that frame" {
     var v = try fresh();
     defer v.deinit();
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectAccepted(&v, at("2", cap("1")), "reply_capped");
 }
 
@@ -80,7 +87,7 @@ test "a cap before any prompt, and an id never sent, are rejected" {
     defer v.deinit();
     try expectRejectedAs(&v, at("1", cap("1")), "capped");
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectRejectedAs(&v, at("2", cap("2")), "capped");
     // Rev 16.20.16: an id is 1 to 2^53 - 1, so 0 and 2^53 are schema errors.
     try expectRejectedAs(&v, at("2", cap("0")), "schema");
@@ -92,12 +99,12 @@ test "a cap with the current id before any delta of its reply is rejected (RoseC
     defer v.deinit();
     try sent(&v, "s-1-1", 1);
     try expectRejectedAs(&v, at("1", cap("1")), "capped");
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
-    try expectAccepted(&v, at("2", result), "result");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
+    try expectAccepted(&v, at("2", result("1")), "result");
     // The next prompt starts unstreamed again, though the last one streamed.
     try sent(&v, "s-1-1", 2);
     try expectRejectedAs(&v, at("3", cap("2")), "capped");
-    try expectAccepted(&v, at("3", delta), "assistant_delta");
+    try expectAccepted(&v, at("3", delta("2")), "assistant_delta");
     try expectAccepted(&v, at("4", cap("2")), "reply_capped");
 }
 
@@ -105,37 +112,37 @@ test "a duplicate cap and a delta after the cap are rejected; a message after it
     var v = try fresh();
     defer v.deinit();
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectAccepted(&v, at("2", cap("1")), "reply_capped");
     try expectRejectedAs(&v, at("3", cap("1")), "capped");
-    try expectRejectedAs(&v, at("3", delta), "capped");
+    try expectRejectedAs(&v, at("3", delta("1")), "capped");
     // A rejected frame commits nothing: seq 3 is still free.
-    try expectAccepted(&v, at("3", message), "assistant_message");
-    try expectAccepted(&v, at("4", result), "result");
+    try expectAccepted(&v, at("3", message("1")), "assistant_message");
+    try expectAccepted(&v, at("4", result("1")), "result");
 }
 
 test "a stale cap is rejected whenever it arrives, even after the next reply's first delta" {
     var v = try fresh();
     defer v.deinit();
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
-    try expectAccepted(&v, at("2", result), "result");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
+    try expectAccepted(&v, at("2", result("1")), "result");
     try sent(&v, "s-1-1", 2);
     try expectRejectedAs(&v, at("3", cap("1")), "capped");
-    try expectAccepted(&v, at("3", delta), "assistant_delta");
+    try expectAccepted(&v, at("3", delta("2")), "assistant_delta");
     try expectRejectedAs(&v, at("4", cap("1")), "capped");
-    try expectAccepted(&v, at("4", delta), "assistant_delta");
+    try expectAccepted(&v, at("4", delta("2")), "assistant_delta");
 }
 
 test "after a capped prompt, the next prompt streams and may be capped once" {
     var v = try fresh();
     defer v.deinit();
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectAccepted(&v, at("2", cap("1")), "reply_capped");
-    try expectAccepted(&v, at("3", result), "result");
+    try expectAccepted(&v, at("3", result("1")), "result");
     try sent(&v, "s-1-1", 2);
-    try expectAccepted(&v, at("4", delta), "assistant_delta");
+    try expectAccepted(&v, at("4", delta("2")), "assistant_delta");
     try expectAccepted(&v, at("5", cap("2")), "reply_capped");
     try expectRejectedAs(&v, at("6", cap("2")), "capped");
 }
@@ -145,26 +152,27 @@ test "prompts and caps are kept per session" {
     defer v.deinit();
     try v.openSession("s-2-1", 2);
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
     try expectRejectedAs(&v, at("2", "\"type\":\"reply_capped\",\"session\":\"s-2-1\",\"prompt_id\":1"), "capped");
     try expectAccepted(&v, at("2", cap("1")), "reply_capped");
-    try expectAccepted(&v, at("3", "\"type\":\"assistant_delta\",\"session\":\"s-2-1\",\"text\":\"b\""), "assistant_delta");
+    try sent(&v, "s-2-1", 1);
+    try expectAccepted(&v, at("3", "\"type\":\"assistant_delta\",\"session\":\"s-2-1\",\"prompt_id\":1,\"text\":\"b\""), "assistant_delta");
 }
 
 test "the active prompt ends at its result, its session error or session_ended: a same-id cap after it is rejected (RoseCat 6135)" {
     var v = try fresh();
     defer v.deinit();
     try sent(&v, "s-1-1", 1);
-    try expectAccepted(&v, at("1", delta), "assistant_delta");
-    try expectAccepted(&v, at("2", result), "result");
+    try expectAccepted(&v, at("1", delta("1")), "assistant_delta");
+    try expectAccepted(&v, at("2", result("1")), "result");
     try expectRejectedAs(&v, at("3", cap("1")), "capped");
     try sent(&v, "s-1-1", 2);
-    try expectAccepted(&v, at("3", delta), "assistant_delta");
-    try expectAccepted(&v, at("4", "\"type\":\"error\",\"session\":\"s-1-1\",\"code\":\"sdk\",\"message\":\"x\""), "error");
+    try expectAccepted(&v, at("3", delta("2")), "assistant_delta");
+    try expectAccepted(&v, at("4", "\"type\":\"error\",\"session\":\"s-1-1\",\"prompt_id\":2,\"code\":\"sdk\",\"message\":\"x\""), "error");
     try expectRejectedAs(&v, at("5", cap("2")), "capped");
     // A helper-wide error (no session) ends no prompt.
     try sent(&v, "s-1-1", 3);
-    try expectAccepted(&v, at("5", delta), "assistant_delta");
+    try expectAccepted(&v, at("5", delta("3")), "assistant_delta");
     try expectAccepted(&v, at("6", "\"type\":\"error\",\"session\":null,\"code\":\"sdk\",\"message\":\"x\""), "error");
     try expectAccepted(&v, at("7", cap("3")), "reply_capped");
     try expectAccepted(&v, at("8", "\"type\":\"session_ended\",\"session\":\"s-1-1\",\"reason\":\"end\""), "session_ended");

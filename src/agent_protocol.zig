@@ -13,17 +13,20 @@ pub const tool_deadline_s: i64 = 120;
 /// A prompt id is 1 to 2^53 - 1, so it is exact as a JSON number anywhere (rev 16.20.16).
 pub const max_prompt_id: i64 = (1 << 53) - 1;
 
-pub const Reason = enum { oversize, json, envelope, seq, type, schema, session, tool_id, capped };
+pub const Reason = enum { oversize, json, envelope, seq, type, schema, session, tool_id, capped, prompt };
 
 pub const SelfCheck = struct { ok: bool, failures: []const []const u8 };
 pub const Ready = struct { version: []const u8, route: []const u8, selfcheck: SelfCheck, tool_deadline_s: i64 };
 /// No SDK session id exists yet when a session opens (RoseCat 5632): the
 /// CLI's own id comes with each `result`.
 pub const SessionOpened = struct { session: []const u8 };
-pub const Text = struct { session: []const u8, text: []const u8 };
-pub const ToolCall = struct { session: []const u8, id: []const u8, tool: []const u8, args_json: []const u8 };
-pub const Result = struct { session: []const u8, sdk_session_id: []const u8, subtype: []const u8, is_error: bool, num_turns: i64, cost_usd: ?f64 };
-pub const Failure = struct { session: ?[]const u8, code: []const u8, message: []const u8 };
+/// S5d (rev 16.20.16): every prompt-scoped frame names its prompt (`prompt_id`).
+pub const Text = struct { session: []const u8, prompt_id: i64, text: []const u8 };
+pub const ToolCall = struct { session: []const u8, prompt_id: i64, id: []const u8, tool: []const u8, args_json: []const u8 };
+pub const Result = struct { session: []const u8, prompt_id: i64, sdk_session_id: []const u8, subtype: []const u8, is_error: bool, num_turns: i64, cost_usd: ?f64 };
+/// A helper-wide error has no session and no prompt; a session's error names the prompt it
+/// ends, or null while the session has none running (rev 16.20.17).
+pub const Failure = struct { session: ?[]const u8, prompt_id: ?i64 = null, code: []const u8, message: []const u8 };
 pub const SessionEnded = struct { session: []const u8, reason: []const u8 };
 /// S5c-1 (rev 16.20.11 to 16.20.13): the reply to prompt `prompt_id` has text past its
 /// longest prefix that fits the content bound; no more of its text follows.
@@ -148,6 +151,7 @@ pub const Validator = struct {
         const frame = parse(arena, tag, obj) catch return .{ .rejected = .schema };
         if (!self.knownSessions(frame)) return .{ .rejected = .session };
         if (seq.integer <= self.last_seq) return .{ .rejected = .seq };
+        if (!self.ofActivePrompt(frame)) return .{ .rejected = .prompt };
         // Nothing of a capped reply's text streams after its cap (rev 16.20.13).
         const capping: ?*Prompt = if (frame == .reply_capped) self.capped(frame.reply_capped) orelse return .{ .rejected = .capped } else null;
         if (frame == .assistant_delta) {
@@ -167,13 +171,28 @@ pub const Validator = struct {
             .assistant_delta => |f| if (self.prompts.getPtr(f.session)) |prompt| {
                 prompt.streamed = true;
             },
-            // The prompt's ending frame ends it (rev 16.20.16, RoseCat 6135).
+            // The prompt's ending frame ends it, once (rev 16.20.16, RoseCat 6135).
             .result => |f| self.endPrompt(f.session),
-            .@"error" => |f| if (f.session) |session| self.endPrompt(session),
+            .@"error" => |f| if (f.session != null and f.prompt_id != null) self.endPrompt(f.session.?),
             else => {},
         }
         if (frame == .session_ended) self.closeSession(frame.session_ended.session);
         return .{ .ok = frame };
+    }
+
+    /// S5d: a prompt-scoped frame names the session's active prompt. A session's error
+    /// with a null prompt_id is one only while no prompt runs; reply_capped keeps its own
+    /// order (reason `capped`).
+    fn ofActivePrompt(self: *Validator, frame: Frame) bool {
+        const session: []const u8, const id: ?i64 = switch (frame) {
+            .assistant_delta, .assistant_message => |f| .{ f.session, f.prompt_id },
+            .tool_call => |f| .{ f.session, f.prompt_id },
+            .result => |f| .{ f.session, f.prompt_id },
+            .@"error" => |f| .{ f.session orelse return true, f.prompt_id },
+            else => return true,
+        };
+        const active = self.currentPrompt(session);
+        return if (id) |given| active != null and active.? == given else active == null;
     }
 
     fn knownSessions(self: *Validator, frame: Frame) bool {
@@ -218,7 +237,7 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
         .assistant_delta => .{ .assistant_delta = try text(obj, 16 * 1024) },
         .assistant_message => .{ .assistant_message = try text(obj, 256 * 1024) },
         .tool_call => blk: {
-            try exact(obj, &.{ "session", "id", "tool", "args" });
+            try exact(obj, &.{ "session", "prompt_id", "id", "tool", "args" });
             const id = try string(obj, "id", 36);
             if (!isUuid(id)) return error.Schema;
             const tool = try string(obj, "tool", 128);
@@ -227,10 +246,10 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
             if (args != .object) return error.Schema;
             const args_json = try std.json.Stringify.valueAlloc(arena, args, .{});
             if (args_json.len > 64 * 1024) return error.Schema;
-            break :blk .{ .tool_call = .{ .session = try string(obj, "session", 64), .id = id, .tool = tool, .args_json = args_json } };
+            break :blk .{ .tool_call = .{ .session = try string(obj, "session", 64), .prompt_id = try promptId(obj), .id = id, .tool = tool, .args_json = args_json } };
         },
         .result => blk: {
-            try exact(obj, &.{ "session", "sdk_session_id", "subtype", "is_error", "num_turns", "cost_usd" });
+            try exact(obj, &.{ "session", "prompt_id", "sdk_session_id", "subtype", "is_error", "num_turns", "cost_usd" });
             const turns = try integer(obj, "num_turns");
             if (turns < 0) return error.Schema;
             const cost: ?f64 = switch (obj.get("cost_usd").?) {
@@ -239,16 +258,23 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
                 .integer => |n| @floatFromInt(n),
                 else => return error.Schema,
             };
-            break :blk .{ .result = .{ .session = try string(obj, "session", 64), .sdk_session_id = try string(obj, "sdk_session_id", 64), .subtype = try string(obj, "subtype", 64), .is_error = try boolean(obj, "is_error"), .num_turns = turns, .cost_usd = cost } };
+            break :blk .{ .result = .{ .session = try string(obj, "session", 64), .prompt_id = try promptId(obj), .sdk_session_id = try string(obj, "sdk_session_id", 64), .subtype = try string(obj, "subtype", 64), .is_error = try boolean(obj, "is_error"), .num_turns = turns, .cost_usd = cost } };
         },
         .@"error" => blk: {
-            try exact(obj, &.{ "session", "code", "message" });
-            const session: ?[]const u8 = switch (obj.get("session").?) {
+            const session: ?[]const u8 = switch (obj.get("session") orelse return error.Schema) {
                 .null => null,
                 .string => |id| if (id.len <= 64) id else return error.Schema,
                 else => return error.Schema,
             };
-            break :blk .{ .@"error" = .{ .session = session, .code = try oneOf(obj, "code", &error_codes), .message = try string(obj, "message", 1024) } };
+            // A helper-wide error has no prompt_id; a session's error has one, maybe null.
+            const prompt_id: ?i64 = if (session == null) blk2: {
+                try exact(obj, &.{ "session", "code", "message" });
+                break :blk2 null;
+            } else blk2: {
+                try exact(obj, &.{ "session", "prompt_id", "code", "message" });
+                break :blk2 if (obj.get("prompt_id").? == .null) null else try promptId(obj);
+            };
+            break :blk .{ .@"error" = .{ .session = session, .prompt_id = prompt_id, .code = try oneOf(obj, "code", &error_codes), .message = try string(obj, "message", 1024) } };
         },
         .session_ended => blk: {
             try exact(obj, &.{ "session", "reason" });
@@ -256,9 +282,7 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
         },
         .reply_capped => blk: {
             try exact(obj, &.{ "session", "prompt_id" });
-            const id = try integer(obj, "prompt_id");
-            if (id < 1 or id > max_prompt_id) return error.Schema;
-            break :blk .{ .reply_capped = .{ .session = try string(obj, "session", 64), .prompt_id = id } };
+            break :blk .{ .reply_capped = .{ .session = try string(obj, "session", 64), .prompt_id = try promptId(obj) } };
         },
     };
 }
@@ -294,8 +318,14 @@ fn oneOf(obj: Object, name: []const u8, allowed: []const []const u8) Bad![]const
 }
 
 fn text(obj: Object, max: usize) Bad!Text {
-    try exact(obj, &.{ "session", "text" });
-    return .{ .session = try string(obj, "session", 64), .text = try string(obj, "text", max) };
+    try exact(obj, &.{ "session", "prompt_id", "text" });
+    return .{ .session = try string(obj, "session", 64), .prompt_id = try promptId(obj), .text = try string(obj, "text", max) };
+}
+
+/// A prompt id: an integer from 1 to max_prompt_id (rev 16.20.16).
+fn promptId(obj: Object) Bad!i64 {
+    const id = try integer(obj, "prompt_id");
+    return if (id < 1 or id > max_prompt_id) error.Schema else id;
 }
 
 fn isUuid(id: []const u8) bool {
@@ -330,6 +360,7 @@ pub fn encode(gpa: std.mem.Allocator, seq: i64, frame: Frame) ![]u8 {
     switch (frame) {
         .tool_call => |f| {
             try field(&w, "session", f.session);
+            try field(&w, "prompt_id", f.prompt_id);
             try field(&w, "id", f.id);
             try field(&w, "tool", f.tool);
             try w.objectField("args");
@@ -342,6 +373,12 @@ pub fn encode(gpa: std.mem.Allocator, seq: i64, frame: Frame) ![]u8 {
             try field(&w, "route", f.route);
             try field(&w, "selfcheck", f.selfcheck);
             try field(&w, "tool_deadline_s", f.tool_deadline_s);
+        },
+        .@"error" => |f| { // a helper-wide error has no prompt_id (S5d)
+            try field(&w, "session", f.session);
+            if (f.session != null) try field(&w, "prompt_id", f.prompt_id);
+            try field(&w, "code", f.code);
+            try field(&w, "message", f.message);
         },
         inline else => |f| inline for (std.meta.fields(@TypeOf(f))) |fd| try field(&w, fd.name, @field(f, fd.name)),
     }
