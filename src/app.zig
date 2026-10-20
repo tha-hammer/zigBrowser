@@ -229,6 +229,7 @@ fn configureAgentHelper(arena: std.mem.Allocator, io: std.Io, e2e: bool, net: Ag
         .bwrap = getenvOwned(arena, agent_helper.bwrap_env),
         .host_cmd = getenvOwned(arena, agent_helper.host_cmd_env),
         .test_base_url = getenvOwned(arena, agent_helper.test_base_url_env),
+        .tool_deadline = getenvOwned(arena, agent_helper.tool_deadline_env),
         .test_ca = net.test_ca,
     });
     for (launch.warnings) |line| std.debug.print("{s}\n", .{line});

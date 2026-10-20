@@ -16,16 +16,22 @@
 //! - ZIGBROWSER_AGENT_TEST_BASE_URL (helper-carried, in hello's e2e object):
 //!   rev 16 reaches the fake API only through relay → netd, so the one
 //!   accepted value is https://fake.zb.invalid (§3c.4);
+//! - ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S (helper-carried, in hello's e2e object, S7b):
+//!   exactly an integer from 1 to agent_protocol.tool_deadline_s (120); the helper answers a
+//!   browser tool call that long without a tool_result, and the app's brokers use it as H;
 //! - ZIGBROWSER_AGENT_NET_TEST_CA (agent_net.zig checks it): `--test-ca`.
 //! Without --e2e-protocol each app-owned seam gets one stderr line and is
 //! ignored; the helper-carried ones are dropped.
 
 const std = @import("std");
+const protocol = @import("agent_protocol.zig");
 
 pub const bwrap_env = "ZIGBROWSER_AGENT_BWRAP";
 pub const host_cmd_env = "ZIGBROWSER_AGENT_HOST_CMD";
 pub const test_base_url_env = "ZIGBROWSER_AGENT_TEST_BASE_URL";
 pub const test_base_url = "https://fake.zb.invalid";
+pub const tool_deadline_env = "ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S";
+const tool_deadline_refusal = std.fmt.comptimePrint("zigBrowser: agent: test tool deadline must be an integer from 1 to {d}", .{protocol.tool_deadline_s});
 pub const max_prompt: usize = 64 * 1024;
 
 pub const Inputs = struct {
@@ -42,11 +48,39 @@ pub const Inputs = struct {
     bwrap: ?[]const u8 = null,
     host_cmd: ?[]const u8 = null,
     test_base_url: ?[]const u8 = null,
+    /// ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S as given (checked by launch).
+    tool_deadline: ?[]const u8 = null,
     /// Already checked by agent_net.checkTestCa (and read only under e2e).
     test_ca: ?[]const u8 = null,
 };
 
-pub const HelloE2e = struct { test_base_url: ?[]const u8 = null };
+/// hello's `e2e` object: only the seams that are set (the helper refuses a null
+/// tool_deadline_s).
+pub const HelloE2e = struct {
+    test_base_url: ?[]const u8 = null,
+    tool_deadline_s: ?i64 = null,
+
+    pub fn jsonStringify(self: HelloE2e, jw: anytype) !void {
+        try jw.beginObject();
+        if (self.test_base_url) |url| {
+            try jw.objectField("test_base_url");
+            try jw.write(url);
+        }
+        if (self.tool_deadline_s) |seconds| {
+            try jw.objectField("tool_deadline_s");
+            try jw.write(seconds);
+        }
+        try jw.endObject();
+    }
+};
+
+/// The seam's value: digits only, 1 to agent_protocol.tool_deadline_s; null otherwise.
+fn toolDeadline(raw: []const u8) ?i64 {
+    if (raw.len == 0 or raw.len > 3) return null;
+    for (raw) |ch| if (!std.ascii.isDigit(ch)) return null;
+    const value = std.fmt.parseInt(i64, raw, 10) catch return null;
+    return if (value >= 1 and value <= protocol.tool_deadline_s) value else null;
+}
 
 pub const Launch = struct {
     argv: []const []const u8,
@@ -66,12 +100,20 @@ pub fn launch(a: std.mem.Allocator, in: Inputs) !Launch {
     if (!in.e2e_protocol) {
         if (in.bwrap != null) try warnings.append(a, "zigBrowser: " ++ bwrap_env ++ " ignored without --e2e-protocol");
         if (in.host_cmd != null) try warnings.append(a, "zigBrowser: " ++ host_cmd_env ++ " ignored without --e2e-protocol");
-    } else if (in.test_base_url) |url| {
-        if (std.mem.eql(u8, url, test_base_url)) {
-            hello_e2e = .{ .test_base_url = url };
-        } else {
-            refusal = "zigBrowser: agent: test base URL must be " ++ test_base_url;
+    } else {
+        var e2e: HelloE2e = .{};
+        if (in.test_base_url) |url| {
+            if (std.mem.eql(u8, url, test_base_url)) {
+                e2e.test_base_url = url;
+            } else {
+                refusal = "zigBrowser: agent: test base URL must be " ++ test_base_url;
+            }
         }
+        if (in.tool_deadline) |raw| {
+            e2e.tool_deadline_s = toolDeadline(raw);
+            if (e2e.tool_deadline_s == null) refusal = tool_deadline_refusal;
+        }
+        if (e2e.test_base_url != null or e2e.tool_deadline_s != null) hello_e2e = e2e;
     }
 
     var argv: std.ArrayList([]const u8) = .empty;
@@ -79,8 +121,8 @@ pub fn launch(a: std.mem.Allocator, in: Inputs) !Launch {
         try argv.append(a, in.host_cmd.?);
     } else {
         try argv.appendSlice(a, &.{
-            in.python, "-m",          "zb_agent_host", "launch", "--home", in.home,
-            "--python", in.python,    "--net-dir",     in.net_dir,
+            in.python,  "-m",      "zb_agent_host", "launch",   "--home", in.home,
+            "--python", in.python, "--net-dir",     in.net_dir,
         });
         if (in.e2e_protocol) {
             if (in.bwrap) |path| try argv.appendSlice(a, &.{ "--bwrap", path });
@@ -124,8 +166,14 @@ pub fn helloFrame(a: std.mem.Allocator, seq: u64, home: []const u8, e2e: ?HelloE
     const workspace = try std.fmt.allocPrint(a, "{s}/workspace", .{home});
     const scratchpad = try std.fmt.allocPrint(a, "{s}/scratchpad", .{home});
     return frame(a, .{
-        .v = 1, .seq = seq, .type = "hello", .agent_home = home, .workspace = workspace,
-        .scratchpad = scratchpad, .route = "R1", .e2e = e2e,
+        .v = 1,
+        .seq = seq,
+        .type = "hello",
+        .agent_home = home,
+        .workspace = workspace,
+        .scratchpad = scratchpad,
+        .route = "R1",
+        .e2e = e2e,
     });
 }
 

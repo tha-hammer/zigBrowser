@@ -5,7 +5,8 @@
 //! - `start` (app.zig) gives the in-process automation core; with none, every call is
 //!   answered "tool not available".
 //! - One broker per window and session, made on that session's first `tool_call`, bound to
-//!   the window, with the deadline for the helper's tool_deadline_s (agent_protocol).
+//!   the window, with the deadline for the helper's H (agent_frames.toolDeadlineS: 120 s, or
+//!   the e2e seam's hello.e2e.tool_deadline_s).
 //! - Its sink runs on a broker thread under the broker's mutex: it copies the answer and
 //!   posts it (`zb_agent_helper_post_tool_result`, agent_helper.c), never blocking. The GTK
 //!   side writes it only if that window still has that session open.
@@ -16,7 +17,7 @@
 const std = @import("std");
 const automation_server = @import("automation_server.zig");
 const broker_mod = @import("agent_broker.zig");
-const protocol = @import("agent_protocol.zig");
+const agent_frames = @import("agent_frames.zig");
 
 const Server = automation_server.AutomationApiServer;
 const gpa = std.heap.smp_allocator;
@@ -77,7 +78,7 @@ fn brokerFor(win: c_uint, session: []const u8) ?*Bound {
     const b = gpa.create(Bound) catch return null;
     b.* = .{ .broker = undefined, .win = win, .session = @splat(0) };
     @memcpy(b.session[0..session.len], session);
-    b.broker = broker_mod.Broker.create(gpa, core, win, broker_mod.deadlineMs(@intCast(protocol.tool_deadline_s))) catch {
+    b.broker = broker_mod.Broker.create(gpa, core, win, broker_mod.deadlineMs(@intCast(agent_frames.toolDeadlineS()))) catch {
         gpa.destroy(b);
         return null;
     };

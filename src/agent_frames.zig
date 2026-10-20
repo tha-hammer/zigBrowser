@@ -19,7 +19,16 @@ var hello_e2e: ?helper.HelloE2e = null;
 /// app.zig, once: what the helper's `hello` frame says.
 pub fn setHello(home: []const u8, e2e: ?helper.HelloE2e) !void {
     hello_home = try gpa.dupe(u8, home);
-    if (e2e) |value| hello_e2e = .{ .test_base_url = if (value.test_base_url) |url| try gpa.dupe(u8, url) else null };
+    hello_e2e = if (e2e) |value| .{
+        .test_base_url = if (value.test_base_url) |url| try gpa.dupe(u8, url) else null,
+        .tool_deadline_s = value.tool_deadline_s,
+    } else null;
+}
+
+/// The helper's tool deadline H for the app's brokers (S7b): hello.e2e.tool_deadline_s when
+/// the e2e seam set it, else agent_protocol.tool_deadline_s.
+pub fn toolDeadlineS() i64 {
+    return (if (hello_e2e) |e2e| e2e.tool_deadline_s else null) orelse protocol.tool_deadline_s;
 }
 
 pub const Kind = enum(c_int) { ready, session_opened, assistant_delta, assistant_message, tool_call, result, @"error", session_ended, reply_capped };

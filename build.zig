@@ -567,6 +567,10 @@ pub fn build(b: *std.Build) void {
     agent_frames_tool_call_module.addImport("agent_frames", agent_frames_test_module);
     const run_agent_frames_tool_call_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_frames_tool_call_module }));
     run_agent_frames_tool_call_tests.skip_foreign_checks = true;
+    const agent_frames_deadline_module = b.createModule(.{ .root_source_file = b.path("tests/agent_frames_deadline_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    agent_frames_deadline_module.addImport("agent_frames", agent_frames_test_module);
+    const run_agent_frames_deadline_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_frames_deadline_module }));
+    run_agent_frames_deadline_tests.skip_foreign_checks = true;
     for ([_][]const u8{ "tests/agent_protocol_cap_reason_test.zig", "tests/agent_prompt_id_limit_test.zig", "tests/agent_frames_prompt_test.zig", "tests/agent_frames_out_test.zig", "tests/agent_prompt_base_test.zig" }, 0..) |path, i| {
         const m = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize, .link_libc = true });
         if (i < 2) m.addImport("agent_protocol", agent_protocol_module) else m.addImport("agent_frames", agent_frames_test_module);
@@ -656,6 +660,11 @@ pub fn build(b: *std.Build) void {
     });
     agent_helper_tests_module.addImport("agent_helper", agent_helper_module);
     const run_agent_helper_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_helper_tests_module }));
+    // S7b: the tool deadline seam's app side (ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S).
+    const agent_helper_deadline_module = b.createModule(.{ .root_source_file = b.path("tests/agent_helper_deadline_test.zig"), .target = target, .optimize = optimize });
+    agent_helper_deadline_module.addImport("agent_helper", agent_helper_module);
+    const run_agent_helper_deadline_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_helper_deadline_module }));
+    run_agent_helper_deadline_tests.skip_foreign_checks = true;
     run_agent_helper_tests.skip_foreign_checks = true;
 
     // Chat drawer S3c: the per-session configuration check, `.claude` against
@@ -2121,6 +2130,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_frames_tool_tests.step);
     test_step.dependOn(&run_agent_frames_tool_call_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
+    test_step.dependOn(&run_agent_helper_deadline_tests.step);
+    test_step.dependOn(&run_agent_frames_deadline_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
     test_step.dependOn(&run_automation_smoke_tests.step);
