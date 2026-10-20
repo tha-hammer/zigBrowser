@@ -6,8 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2)
-rev: 2
+status: plan for review (rev 2.1)
+rev: 2.1
+rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
 last_updated: 2026-10-19
 last_updated_by: Claude (Sonnet 5.5) review subagent
 last_updated_note: "Rev 2 (review pass): verified every file:line anchor at HEAD 032a2c9 and corrected the ones that drifted or were wrong (see 'Review log (rev 2)' at the end); added the missing red assertions, green files, refactor gates, closures and real-screen cases for WS0-WS13; added the Win11 VM reachability/snapshot design, the file-server isolation requirements and WS0.6-WS0.8; reconciled the voice and macOS plans (WS12 table, milestone role map, netd listener port, backend-flag seam name); sharpened OD-W1..OD-W9 trade-offs without choosing."
@@ -1463,7 +1464,8 @@ the user picks) passes every gate.
 helper's stdio as the broker stream, `interop` disabled, `networkingMode=none` where supported
 (Windows 11) or the distro's own netns (Windows 10, NAT); gates WS8.1-WS8.6 re-run against it.
 
-**Gate (WS8):** [L] contract; [W] WS8.1-WS8.6 on both hosts. **WS11 is blocked** until all pass.
+**Gate (WS8):** [L] contract; [W] WS8.1-**WS8.7** on both hosts — WS8.7 (the no-network child the TTS and
+STT plans depend on) is part of WS8's own gate, not deferred to the voice plans. **WS11 is blocked** until all pass.
 Not a UI slice, except the one UAC prompt, which the user clicks in person (`win-sandbox-uac`); on the
 physical Windows 10 machine the prompt asks for an administrator credential (the account is a standard
 user) and only the owner types it. **On the file server, the isolation checks in "File-server isolation
@@ -1633,8 +1635,8 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 | TTS **W1** (the **bundled `zb-speech` engine + WASAPI audio** at run time, sandboxed with no network; *rev 1 of this plan wrongly described W1 as the WinRT/SAPI voices: those are TTS S3*; "NOT RUN: no Windows host configured") | the two hosts and `tests/windows/gate.sh`; `tests/windows/speech_win_test.py` runs as a gate phase on both hosts (x64; arm64 per OD-W5); the **no-network child (WS8.7)**; the MSI slot for engine, ONNX Runtime and model (WS13) | WS0, WS1, WS8.7, WS13 |
 | TTS **W2** (spoken replies) | the Windows drawer + helper (speaker toggle in the drawer header, reply text from WS11) | WS5, WS11 |
 | TTS **S3** (WinRT `SpeechSynthesizer` with SAPI 5 fallback; secondary system voices) | the hosts and the gate; the `winrt` SDK headers (`-Dwinrt_include` already exists) | WS0, WS1 |
-| TTS **C1-C3** (cloning) | The TTS plan has Linux and then Mac legs only (:1261-1310); **no Windows leg exists there**, though the user's goal includes personal cloning on Windows. Flagged for the TTS plan owner; nothing is reserved here beyond the capture path in provisioning item 12 | — |
-| STT **VS10** (whisper.cpp engine + WASAPI capture + permission mapping, no UI) | the VM build (`-Dtarget=x86_64-windows-msvc`), both hosts in the gate; a capture device on the VM (provisioning item 12; the domain already defines an `ich9` SPICE-audio device, capture unverified) and a microphone on the Windows 10 machine (item 10); the microphone-permission switch change is **per user (`zbtest`)**, never machine-wide | WS0, WS1 |
+| TTS **CW** (Windows voice cloning — the committed TTS plan rev 2 adds C1-C3 on Linux/macOS and **CW on Windows**) | the consent UI in the Win32 drawer (WS5/WS12.1), the WAV/mic capture path (provisioning item 12 on the VM, item 10 on the physical host), the **no-network sandbox child (WS8.7)** for the local clone, and the MSI slot for the cloning engine and the cloned-voice storage under the per-user data dir (WS13) | WS5, WS8.7, WS13 |
+| STT **VS10** (whisper.cpp engine + WASAPI capture + permission mapping, no UI) | the VM build (`-Dtarget=x86_64-windows-msvc`), both hosts in the gate; the **WAV seam** on the VM (recorded-file tests only — no proven capture device, provisioning item 12) and **live microphone capture on the physical Windows 10 machine only** (item 10); the microphone-permission switch change is **per user (`zbtest`)**, never machine-wide | WS0, WS1 |
 | STT **VS11** (drawer dictation) | a mic button and a draft-text API in the Win32 drawer; the physical host with a microphone; real-screen case `win-voice-live` | WS5, WS11 |
 | STT **VSP** (model bundled in every installer) | the MSI slot `<INSTALLDIR>\models\stt\<file>` and the size check (WS13.3 now budgets the **sum** of all bundled payloads, not only the STT model) | WS13.3 |
 
@@ -1657,9 +1659,10 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 - **Real-screen checks:** none of the hook-point test's own (it is plumbing). The voice plans' UI cases run
   through this plan's real-screen runner on the hosts named here: `win-drawer-speech-default`,
   `win-drawer-speech-minimized`, `win-voice-window` (TTS W2, both hosts), `win-voice-permission` (STT VS10,
-  Windows 10 with the microphone) and `win-voice-live` (STT VS11: **STT says "both Windows hosts", but the VM
-  has no proven capture device**, so this plan runs it on Windows 10 and on the VM only once provisioning
-  item 12 is proven).
+  Windows 10 with the microphone) and `win-voice-live` (STT VS11): the committed STT plan runs
+  **live-microphone checks on the physical Windows 10 machine only**; the VM runs the WAV-seam
+  (recorded-file) tests only — it has no proven capture device (STT D8 / provisioning item 12), so
+  `win-voice-live` runs on Windows 10 only.
 
 **Gate (WS12):** [W] the hook-point test; the voice tests run under the voice plans' own gates.
 
@@ -1689,7 +1692,10 @@ once this plan is accepted (they own the edit; this plan does not edit them).
   middle of Add/Remove Programs, may be declined), or an in-app "Remove agent sandbox" step before
   uninstall. Either way the MSI uninstall can finish while the users and filters remain, so the probe is
   also run in that state and the product shows a "finish removing the sandbox" action on the next launch of
-  any surviving component. OD-W1 may change this.
+  any surviving component. **The uninstall must never report success while any sandbox user, WFP
+  filter/provider/sublayer, profile folder or scheduled task survives:** WS13.4 fails if the uninstaller
+  returns success (exit 0 / "Removed") while the post-uninstall probe still finds a survivor, and a clean
+  result is asserted only once that probe is empty. OD-W1 may change this.
 - **WS13.5 update (OD-W2):** the chosen updater verifies the update's signature before running it; a
   tampered update is refused.
 - **WS13.6 signing (gated on OD-W3):** every PE then the MSI is Authenticode-signed inside-out with
@@ -1702,8 +1708,8 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 - 🔴 More reds (each with a mutant): WS13.1 `assert census.unlisted == [] and census.missing == []`
   (mutant: add an unlisted DLL ⇒ red); WS13.2 `assert install_log.bootstrapper_result is not None and (rc == 0 or app_shows_runtime_message)`
   (mutant: keep `Return="ignore"` and drop the log ⇒ red); WS13.3 `assert all(c.size < 2**31 for c in cabinets)`
-  (mutant: one 2.1 GB payload ⇒ red); WS13.4 `assert users_after == [] and wfp_filters_after == [] and tasks_after == []`
-  (mutant: skip the filter removal ⇒ red); WS13.5 `assert tampered_update_refused` (mutant: skip the signature
+  (mutant: one 2.1 GB payload ⇒ red); WS13.4 `assert users_after == [] and wfp_filters_after == [] and tasks_after == [] and not (uninstall_reported_success and (users_after or wfp_filters_after or tasks_after))`
+  (mutants: skip the filter removal ⇒ red; report uninstall success while a user/filter/task survives ⇒ red); WS13.5 `assert tampered_update_refused` (mutant: skip the signature
   check ⇒ red); WS13.6 `assert all(sig.Status == "Valid" for sig in signatures)` on both hosts, red until
   OD-W3, and a **negative** test that a modified file after signing is `HashMismatch`.
 - 🟢 Green: the `.wxs` components for every release PE, `build-msi.ps1` cabinet split and census,
@@ -1722,7 +1728,12 @@ once this plan is accepted (they own the edit; this plan does not edit them).
 - **Real-screen check `win-install-smartscreen`:** the user downloads the installer in Edge on each
   host and records what SmartScreen shows.
 
-**Gate (WS13):** [W] install/uninstall/census both hosts; signing part blocked on OD-W3. The
+**Gate (WS13):** [W] install/uninstall/census both hosts; signing part blocked on OD-W3. The **final
+packaging gate depends on every release component, not merely on WS7 having started**: WS13.1's census must
+find each component owner's artifact — browser (WS1), drawer (WS5), setup (WS7), sandbox setup (WS8), egress
+helper (WS9), sign-in (WS10), agent host/helper (WS11) — **and the voice packaging the voice plans own** (the
+TTS engine + model and the STT engine + model via their VSP/W1 slices); a missing component fails the census,
+so WS13's gate cannot pass until every component owner and the voice-packaging owners have landed. The
 `win-install-smartscreen` case is a UI/real-screen case for both hosts; on the physical machine the install
 is by `zbtest` into `C:\Users\zbtest\AppData\Local\Programs\zigBrowser`, and the post-uninstall probe
 (users, filters, tasks, folders) also runs there.
@@ -1736,7 +1747,10 @@ is by `zbtest` into `C:\Users\zbtest\AppData\Local\Programs\zigBrowser`, and the
 (sign-in) → WS11 (helper, chat, approved commit; needs WS4 + WS5 + WS8 + WS9)`. (WS8 and WS9 are mutually
 dependent at the test level: the WFP filters of WS9.2 are installed by WS8's setup, so WS8.1-WS8.6 land
 first with filters stubbed to "deny all", and WS9 replaces the stub with the real range.) `WS12` follows WS5
-(hook points) and WS11 (W2/VS11); **TTS W1 additionally waits on WS8.7**. `WS13` packaging can start after WS7 (components exist); its
+(hook points) and WS11 (W2/VS11); **TTS W1 additionally waits on WS8.7**. `WS13` packaging can START after WS7,
+but its **final gate depends on every release component** (WS1, WS5, WS7, WS8, WS9, WS10, WS11) and the
+**voice packaging** the voice plans own (TTS engine+model, STT engine+model via VSP/W1): WS13.1's census fails
+on any missing component, so the final packaging gate cannot pass until every component owner has landed. Its
 signing half waits on OD-W3. Decision gates: WS5 waits on OD-W6 only for its green files; WS8 waits
 on OD-W4; WS13 on OD-W1/W2/W3/W8.
 
