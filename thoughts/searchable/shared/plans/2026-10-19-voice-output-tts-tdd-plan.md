@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "The browser's voice: agent replies spoken aloud, with user-customizable voices — TDD implementation plan"
 tags: [plan, tdd, tts, text-to-speech, voice, agent-drawer, pocket-tts, onnxruntime, macos, windows, linux-dev, voice-cloning, miniaudio]
-status: plan for review (rev 2.8)
-rev: 2.8
+status: plan for review (rev 2.9)
+rev: 2.9
 last_updated: 2026-10-20
 last_updated_note: "Rev 2 records the user's decisions of 2026-10-19: bundled engine first (system voices become a later, secondary option), read-aloud on by default, the STT side bundles whisper medium (installer about 0.8 GB larger), and a separate Windows launch plan as the Windows dependency. Slices re-sequenced: core, test backend, audio layer, bundled engine, then the drawer and Voice window, then Macs, cloning, Windows, and system voices last."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md
@@ -25,6 +25,15 @@ windows_dependency: thoughts/searchable/shared/plans/2026-10-19-windows-launch-t
 
 ## Revision history
 
+- **Rev 2.9 (2026-10-20):** clears RoseCat's TTS sequence-gap blocker (6719; commit `9663333`). The old
+  text said a gap "discards the audio assembled so far", which is physically impossible for playback —
+  samples the sink has already emitted to the speaker cannot be taken back. Corrected: a **speech `pcm`
+  gap stops the utterance and `error <utt>`**, dropping only the `AudioSink`'s **queued (not-yet-played)**
+  samples; **already-played audio is irreversible and is not recalled** — the only guarantee is that no
+  *post-gap* audio plays, and the corrupt tail is never reassembled. **Enrolment `enroll_pcm`** is
+  captured to a file and never played, so its whole assembled buffer is still discarded. Pinned by the
+  V2.2 sink regression (`FileSink`: pre-gap audio stays rendered, no post-gap samples appended; a
+  truncate-what-was-played mutant is red).
 - **Rev 2.8 (2026-10-20):** clears RoseCat's two exposed wire-execution blockers (6438). (1) **Duplex
   transport** — VF `ZbChild` now inherits **one full-duplex channel** (POSIX `socketpair` / Windows
   duplex named pipe) carrying both directions, not an impossible one-way "PCM pipe"; "no second pipe"
@@ -720,9 +729,15 @@ rows.
   previous + 1**; for each `(voice_id)` enrolment the first `enroll_pcm` is `seq = 0` and strictly +1
   thereafter. The receiver tracks the expected next `seq` per id:
   - **duplicate** (`seq` == last accepted) or **reorder/gap** (`seq` != expected): the stream is
-    **failed** — a speech `pcm` gap ⇒ `error <utt>`; an enrolment `enroll_pcm` gap ⇒ `enroll_error
-    <voice_id>` — and the audio assembled so far is discarded (never silently reassembled). There is no
-    reordering buffer: the channel is in-order (a stream socket), so a gap means corruption.
+    **failed**. There is no reordering buffer: the channel is in-order (a stream socket), so a gap means
+    corruption. What "fail" means depends on whether the audio was being played:
+    - A **speech `pcm` gap ⇒ stop the utterance and `error <utt>`.** The `AudioSink` is stopped and its
+      **queued (not-yet-played) samples are dropped**. Samples the sink has **already played are NOT
+      recalled** — played output is irreversible and cannot be taken back; the only guarantee is that no
+      *post-gap* audio plays. The corrupt tail is never silently reassembled, and nothing already played
+      is "undone".
+    - An **enrolment `enroll_pcm` gap ⇒ `enroll_error <voice_id>`.** Enrolment audio is captured to a
+      file and never played, so the whole assembled buffer is discarded (nothing was emitted to a sink).
   - A `pcm`/`enroll_pcm` after that id's terminal (`done`/`cancel`/`enroll_end`/`enroll_abort`) or past a
     bumped epoch is dropped.
   - **Red (state machine, golden):** feed `seq = 0,1,2` (accepted); `0,1,1` (duplicate ⇒ fail); `0,2`
@@ -1485,6 +1500,14 @@ V2 shrinks to the selftest proof.
 
 #### Behavior V2.2: stop drops queued audio within 50 ms; a lost device is reported
 - Stop empties the ring buffer.
+- **Sequence-gap sink regression (rev 2.9; clears 6719).** When a speech `pcm` gap fails the stream
+  mid-utterance, the `AudioSink` **stops and drops only its queued samples**; the samples it had
+  **already rendered stay rendered** — played output is irreversible. Pinned on the `FileSink`: render N
+  pre-gap frames, then force a `seq` gap; the file holds **exactly the pre-gap audio** — no post-gap
+  samples are appended, and the already-written pre-gap audio is **not** truncated or rewritten. A mutant
+  that "discards the audio assembled so far" by truncating/clearing the rendered file ⇒ red. (The
+  `speech_seq` state-machine test above proves the gap is detected and `error <utt>` is emitted; this
+  proves the sink's physically-correct queued-only drop.)
 - An **injected device-loss event** on VF's Null/`FileSink` (the `AudioSink` raises `device-lost`,
   §2.4) gives a `failed` end and a status, not a hang. (No `pactl`/real sink — automated runs open no
   real device.)
