@@ -985,6 +985,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_unit",
     });
+    // WS item b: the pure Windows helper branches — path containment, argv quoting
+    // (CommandLineToArgvW), and the fail-closed job-object containment choice. Stdlib-only, platform-neutral.
+    const agent_host_wincontain = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_wincontain",
+    });
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
     const agent_host_provision_unit = b.addSystemCommand(&.{
@@ -1518,6 +1525,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&page_health_e2e.step);
     test_step.dependOn(&page_recover_e2e.step);
     test_step.dependOn(&agent_host_unit.step);
+    test_step.dependOn(&agent_host_wincontain.step);
     test_step.dependOn(&agent_host_contract.step);
     test_step.dependOn(&agent_host_backend_contract.step);
     test_step.dependOn(&agent_host_provision_unit.step);
