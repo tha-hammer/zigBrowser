@@ -16202,3 +16202,109 @@ is in progress. `f9cb26a` is still the first unpushed commit and therefore the
 earliest linear hold. Once that run is reported PASS, a fresh linear audit is
 still required: several later commits are approved non-contiguously, while
 `220b692`, `f2f3a6f`, `867b44d`, `55d8f60` and `6a5d5bc` are blocked above.
+
+## Review at `d207651`: WS2.0 handle reds, Windows screenshot, macOS fixes and real-screen coordinates
+
+All nine requested commits are whitespace-clean. BlueBeaver held the shared
+Linux full-gate slot, and the user's real-screen long-run was starting, so I
+did not start a competing GUI/full gate. I independently parsed every changed
+Python file and ran the non-GUI manual-check suite with both display variables
+removed:
+`env -u DISPLAY -u WAYLAND_DISPLAY timeout 120 python3 -I tests/manual/test_real_screen_check.py`
+passed **32/32**. The unrelated untracked
+`tests/agent_broker_detach_test.zig` was left untouched.
+
+### WS2.0 one-object reds and plan (`c790be6`, `4d26a9f`)
+
+- **`c790be6` APPROVED as a failing-first fix-forward.** The POSIX file and
+  directory cases move the checked inode and replace its public name with a
+  symlink, then require the moved inode, not the victim, to receive the mode.
+  The Windows live seam test independently covers a passed junction, the
+  leaf-to-junction after-check swap, semantic protected-DACL readback and the
+  narrowly allowed AF_UNIX reparse tag.
+- **`4d26a9f` APPROVED.** Rev 2.6 now requires the check and apply to name one
+  opened object on Linux, macOS/BSD and Windows. It keeps the macOS just-bound
+  socket exception behind the explicit owner-only-directory invariant and
+  still distinguishes the synthetic seam oracle from the later production
+  transport closure.
+
+Owner evidence is direct: Windows red 0/4, trial handle-based green 4/4, and
+the by-path mutant fails the swap case; the corresponding Linux swap reds fail
+the path seam and pass the fd seam. These verdicts approve the tests and
+contract, not the green that had not yet landed. Agent Mail 6623.
+
+### Windows `--screenshot` (`f2212e1`, `8f36ee7`)
+
+- **`f2212e1` APPROVED as the failing-first success-path red.** It runs the
+  real VM binary, requires exit zero and a nonempty, decodable, nonuniform PNG,
+  and fails against the unconditional exit-6 stub.
+- **`8f36ee7` BLOCKED.** The real `CapturePreview` success path works—owner
+  evidence captured a nonuniform 1008x729 PNG over session-0 SSH—but the
+  promised failure reporting is incomplete:
+
+1. `src/webview2_shim.cpp:1089-1097` maps navigation failure through
+   `emit_load_fail`, which only writes the e2e protocol. Screenshot mode forces
+   `e2e_protocol=false` at `:1241-1248`, so a failed screenshot navigation
+   exits 5 with empty stderr.
+2. The watchdog at `:838-848`, synchronous `Navigate` failure at `:896-907`
+   and document-script completion failure at `:922-929` likewise quit without
+   a diagnostic.
+3. `tests/windows/screenshot_live_test.py:96-127` exercises success only, so
+   every silent branch survives. Add deterministic error-path reds requiring
+   nonzero plus a specific nonempty stderr line.
+4. The new runtime message at `:1187-1190` does not match WS1.4's pinned
+   `zigBrowser: the Microsoft Edge WebView2 Runtime is not installed`. Either
+   implement and test that contract here or leave WS1.4 explicitly open.
+
+**SHOULD:** use `IStream::Stat().cbSize`, not `GlobalSize(hglobal)`, as the PNG
+length, and remove a partial output after a failed or short write. Agent Mail
+6624.
+
+### macOS snapshot/load/profile/plan fixes (`ec36aee`, `fea55fb`, `2a26dd5`, `d207651`)
+
+- **`ec36aee` APPROVED.** Dialog open/respond and both app-clear exits publish
+  through the existing snapshot lock; out-of-band reads remain independent of
+  the window FIFO and main queue. **SHOULD-for-tests:** the e2e can cross the
+  ordinary 500 ms health tick and false-green without these publishes. The
+  recorded mutant failed, but a tick-hold seam would make the regression
+  deterministic.
+- **`fea55fb` APPROVED.** `healthJson` now emits the same
+  `WindowInfo.load_serial` as `listJson`, and the real-binary test compares the
+  two before and after committed navigation. This closes the `6a5d5bc` hold.
+- **`2a26dd5` BLOCKED on relative-profile identity.** Invalid UTF-8 now fails
+  closed and SHA-256 closes the weak-digest concern. However,
+  `src/wkwebview_shim.m:2729` hashes `stringByStandardizingPath` without first
+  making a relative path absolute, while `src/cli.zig:364-371` deliberately
+  accepts `rel/profile`. Apple's NSString contract says parent references in
+  relative paths remain relative; the method does not bind them to the startup
+  CWD. Two launches in different CWDs with the same relative spelling
+  therefore share one managed WebKit store even though they denote different
+  Linux profile directories, while equivalent absolute and relative spellings
+  produce different stores. Resolve lexically against startup CWD before the
+  digest, and test both relations. The earlier invalid-UTF-8 blocker itself is
+  closed. The stale FNV comment at `wkwebview_shim.m:2689-2690` is a NIT.
+- **`d207651` APPROVED.** The plan now consumes the one existing shared broker,
+  scopes MS4.1b to macOS revalidation/commit wiring, and accurately describes
+  helper NDJSON pipe → broker → socket-free in-process core while keeping the
+  external socket unable to use broker grants. This closes the `55d8f60`
+  topology hold.
+
+Both-architecture owner gates and killed mutants support the macOS production
+fixes, subject to the profile-identity blocker above. Agent Mail 6625.
+
+### Real-screen coordinate fix (`fd43538`)
+
+**APPROVED in code review.** `drawn_now` resolves the unique current visible
+input control from the window-relative census; `screen_point` adds the current
+window origin exactly once; and `reply_point` removes that origin before
+clipping screen-coordinate text to the current panel. Every actual XTest input
+still passes through the active-window check and server-grab safety guard, and
+an absent, stale or ambiguous control refuses without input. The focused suite
+passed 32/32 above. Final S5c long-run acceptance still waits for the user's
+current real-screen run. Agent Mail 6626.
+
+### Linear push status
+
+No new push-through is claimed in this review. The user's S5c long-run result
+is still pending, and a fresh linear audit is required after it arrives.
+Independently, `8f36ee7` and `2a26dd5` are newly recorded later-chain holds.
