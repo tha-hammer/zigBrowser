@@ -1068,6 +1068,18 @@ pub fn build(b: *std.Build) void {
     agent_image_fit_module.linkSystemLibrary("gdk-pixbuf-2.0", .{ .use_pkg_config = .force });
     const run_agent_image_fit_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_image_fit_module }));
     run_agent_image_fit_tests.skip_foreign_checks = true;
+    // RoseCat fb75e11: a PNG small enough to go as is still decodes first.
+    const agent_image_small_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_image_fit_small_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_image_small_module.addIncludePath(b.path("src"));
+    agent_image_small_module.addCSourceFile(.{ .file = b.path("src/agent_image.c"), .flags = &.{"-std=gnu11"} });
+    agent_image_small_module.linkSystemLibrary("gdk-pixbuf-2.0", .{ .use_pkg_config = .force });
+    const run_agent_image_small_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_image_small_module }));
+    run_agent_image_small_tests.skip_foreign_checks = true;
 
     const automation_api_e2e = b.addSystemCommand(&.{
         "sh",
@@ -1968,6 +1980,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_image_fit_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_image_small_tests.step);
     const agent_secrets_step = b.step("test-agent-secrets", "Run the Claude Agent token store's unit tests");
     agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
     agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);

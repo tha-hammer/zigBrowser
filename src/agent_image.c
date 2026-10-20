@@ -51,14 +51,17 @@ int zb_agent_image_fit(const unsigned char *png, size_t len, size_t max_b64, cha
       memcmp(png + len - sizeof png_iend, png_iend, sizeof png_iend) != 0) {
     return ZB_IMAGE_FIT_UNREADABLE;
   }
-  if (b64_len(len) <= max_b64) {
-    *out_b64 = g_base64_encode(png, len);
-    *out_mime = "image/png";
-    return ZB_IMAGE_FIT_OK;
-  }
+  /* Decoded first, even when it fits as is: bytes that only look like a PNG are refused,
+   * never sent (RoseCat fb75e11). */
   GdkPixbuf *full = decode_opaque(png, len);
   if (full == NULL) {
     return ZB_IMAGE_FIT_UNREADABLE;
+  }
+  if (b64_len(len) <= max_b64) {
+    g_object_unref(full);
+    *out_b64 = g_base64_encode(png, len);
+    *out_mime = "image/png";
+    return ZB_IMAGE_FIT_OK;
   }
   static const double scales[] = {1.0, 0.75, 0.5, 0.35, 0.25};
   static const char *const qualities[] = {"85", "70", "50"};

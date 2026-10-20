@@ -14,7 +14,7 @@ enum {
 };
 
 /* Fits a page.screenshot PNG into one image block whose base64 is at most `max_b64`:
- * - the PNG as is (`image/png`) when its base64 fits;
+ * - the PNG as is (`image/png`) when its base64 fits, once it has decoded;
  * - else a JPEG (`image/jpeg`) at scale 1, 0.75, 0.5, 0.35, 0.25, each at quality 85, 70,
  *   50, the first that fits;
  * - else ZB_IMAGE_FIT_TOO_LARGE. Bytes without the PNG signature or its closing IEND chunk
