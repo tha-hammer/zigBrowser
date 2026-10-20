@@ -6,9 +6,10 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Voice input (speech-to-text) with whisper.cpp — TDD implementation plan"
 tags: [plan, tdd, voice, stt, whisper.cpp, microphone, agent-drawer, macos, windows, linux, model-management, miniaudio]
-status: plan for review (rev 2)
-rev: 2
-last_updated_note: "Rev 2 (2026-10-19): records the user's decisions. O2 is DECIDED: bundle the model in the installer, so there is no first-run download and it works offline. Windows now depends on a separate Windows launch plan (drawer port, helper, test hosts: a Win11 VM and a physical Windows 10 machine), and Windows 10 must be supported. VS2 becomes an optional later slice; new slice VSP bundles the model in every installer; VS6, VS7, VS10 and VS11 are adjusted."
+status: plan for review (rev 2.1)
+rev: 2.1
+last_updated: 2026-10-20
+last_updated_note: "Rev 2.1 (2026-10-20): major revision clearing RoseCat's 9a6973b / 9663333 voice-plan review (NOT APPROVED). The shared subsystems are now specified once in §4 Shared Voice Foundation (VF), byte-identical in the TTS plan: one path set (src/voice/*, src/voice_settings_window.c), one audio API, one owner, one voice.json schema with migration + lock + single writer, verify-through-consumption model loading (whisper_init_from_buffer), the render-to-file/null test-device rule, and a native ZbChild interface (not the Python agent SandboxBackend). The dictation state machine (D4) gains an epoch/session token and stale-result rejection; a headless native permission contract and the VS5/VS8 privacy-notice UI assertions are added; the macOS mic source is bound to the signing/census route; a range-aware insert ABI replaces zb_drawer_set_draft; the medium verify/load race is closed and installer upgrade/repair/downgrade/tamper/orphan tests added; failing-first is made executable for VS0.2/VS9-VS11/VSP; live capture is put behind an unforgeable capability; and remote packaging gets a model-transfer protocol. No user decision is changed; open decisions are sharpened only. Rev 2 (2026-10-19): recorded the user's decisions — bundle the model (O2), Windows launch plan dependency, Windows 10 support; VS2 optional; VSP added."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-input-stt.md
 prior_research: /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-19-voice-recognition-options.md
 sibling_plan: "browser voice (text-to-speech), written in parallel by another agent; shared pieces named in section 4"
@@ -61,7 +62,7 @@ This plan is the second one: the user speaks, and the speech becomes text.
      - **WS1**: the native build on the VM (`-Dtarget=x86_64-windows-msvc`) that runs on both hosts (WLP `:724`).
      - **WS5**: the native Win32 drawer, the "drawer-port milestone" (WLP `:1148`).
      - **WS11**: the agent helper and chat on Windows (WLP `:1540`).
-     - **WS12**: voice hooks. WS12.1 adds the drawer hook `zb_drawer_set_draft`; WS12.2 adds `tests/windows/gate.sh --phase voice` (WLP `:1587-1640`).
+     - **WS12**: voice hooks. WS12.1 adds the drawer draft hook (must be the range-aware `zb_drawer_insert_text` of §4a #4 — cursor insert + selection replace, not a whole-draft `set_draft`); WS12.2 adds `tests/windows/gate.sh --phase voice` (WLP `:1587-1640`).
      - **WS13**: packaging. WS13.1 is the MSI census and WS13.3 the size budget with split cabinets (WLP `:1644`).
    - **Hosts** (WLP "Host provisioning", `:359-502`):
      - **Win11 VM `win11-m8`**: the libvirt domain, reached by default through the passt forward `127.0.0.1:2222`. It is the build host and a run host, and it is marked [W11] there.
@@ -116,7 +117,7 @@ Slices VS0-VS11 and VSP, plus a deferred web-page track VW (section 10). VS2 (do
 - **The drawer is Linux/GTK only.**
   - Its C files are compiled only in `configureGtkBackend` (`build.zig:1503-1533`), and the Zig side is Linux-gated (`src/app.zig:52-55`, `:341`).
   - The **macOS drawer is MS7** (AppKit, `src/agent_drawer_mac.m`, after MS4 and MS5; macOS plan `:1183-1258`, `:1336-1340`).
-  - The **Windows drawer port is WLP's WS5** (native Win32 drawer, `thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md:1148`), with the voice hook `zb_drawer_set_draft` in WS12.1. (At `a69b459` the macOS plan `:373` and the drawer plan `:1095` both exclude a Windows drawer; WLP now covers it.)
+  - The **Windows drawer port is WLP's WS5** (native Win32 drawer, `thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md:1148`), with the voice hook `zb_drawer_set_draft` (must be the range-aware `zb_drawer_insert_text` of §4a #4 — cursor insert + selection replace, not a whole-draft set) in WS12.1. (At `a69b459` the macOS plan `:373` and the drawer plan `:1095` both exclude a Windows drawer; WLP now covers it.)
 - **No backend handles microphone permission:**
   - GTK has no `permission-request` handler and does not set `enable-media-stream` (`src/webkit_shim.c:1290-1296`).
   - WKWebView's only UIDelegate method is `createWebViewWithConfiguration` (`src/wkwebview_shim.m:564`).
@@ -240,13 +241,13 @@ The user decided to bundle the model (0.2.4). There is no first-run download.
   3. The install step copies the file into the install tree at `share/zigbrowser/models/stt/<file>`.
 - **Where it lives in each installer** (the bundled resource directory):
   - macOS: `zigBrowser.app/Contents/Resources/models/stt/<file>`, a non-code resource inside the signed bundle.
-  - Windows (MSI): `<INSTALLDIR>\models\stt\<file>`, next to `zigBrowser.exe`.
+  - Windows (MSI): `INSTALLFOLDER\models\stt\<file>` (the WiX directory id is `INSTALLFOLDER`), next to `zigBrowser.exe`.
   - Linux (.deb): `/usr/share/zigbrowser/models/stt/<file>`.
   - Development runs from `zig-out/` use `zig-out/share/zigbrowser/models/stt/`.
   - `ZIGBROWSER_MODEL_DIR` overrides all of these, for tests.
   - The locator takes the executable path, the OS tag and the environment as inputs, so all three layouts are unit-tested on Linux.
 - **First-load check (run time):**
-  - Before `whisper_init_from_file`, the engine checks the size and the SHA-256 against the compiled catalog, once per process.
+  - The engine verifies size + SHA-256 against the compiled catalog once per process and then loads **the verified bytes** via `whisper_init_from_buffer` (VF's verify-through-consumption, §4) — it never re-opens the path for the load, so a swap at the verify/use seam cannot reach whisper.
   - Hashing 0.8 to 1.5 GB takes seconds, not milliseconds; VS1 measures it. It runs on the engine thread while the status shows "Preparing voice…", so the UI never blocks.
   - A cached verify record keyed by `(size, mtime, inode)` is the refactor option if the hash cost hurts.
   - A missing or damaged file disables voice input with "The voice model is missing or damaged. Reinstall zigBrowser." It never loads an unverified file.
@@ -333,17 +334,191 @@ These are three different features, and none of them is drawer dictation:
 
 The plan recommends drawer-only for v1 and lists VW as a later track.
 
-## 4. Shared pieces with the text-to-speech plan
+## 4. Shared Voice Foundation (VF) — one slice, one owner (byte-identical in the TTS plan)
 
-| Piece | Owner proposal | What STT needs | What TTS needs | Contract |
-|---|---|---|---|---|
-| **Audio device layer** (`src/voice/audio.zig`, miniaudio) | whichever plan lands first builds it; this plan's VS3 is written to land first | capture 16 kHz mono f32 | playback at the voice's rate | `AudioSource`/`AudioSink` vtables (D2); one miniaudio context per process; device-change events |
-| **Model store** (`models.zig`, `build/voice_model.zig`; optional `download.zig`) | VS1 + VSP (bundled); VS2 only if a later update path is wanted | the bundled whisper medium file | TTS voice models (bundled or downloaded, per that plan) | catalog entry `{id, file, source_url, revision, bytes, sha256, license}`; one bundled resource root `…/models/` with `stt/` and `tts/` subfolders; build-time SHA-256 check + first-load check; the same packaging rules (macOS resource census, byte-identical per arch) |
-| **Permission and consent layer** (`consent.zig`, `voice_mac.m`, `voice_win.cpp`) | VS5 (first-use notice record), VS8/VS10 (OS glue) | microphone (OS) + first-use notice | download consent only if TTS downloads voices (playback needs no OS permission) | `consent.zig` keys are namespaced (`stt.*`, `tts.*`) |
-| **Voice settings window** (`voice_settings_window.c`; AppKit later) | VS6 | "Voice input" section | "Browser voice" section (voice choice, rate, preview) | one window, one `voice.json`, versioned schema; sections register themselves |
-| **Rows and seams** | VS4 | `DRAWER voice …`, `VOICE model …` | `VOICE tts …` | same `--e2e-protocol` gating rule (D6) |
+> **This section is the single source of truth for everything the TTS and STT plans share. It is
+> byte-identical in both plans; any change lands in both, in the same commit.** It replaces the
+> conflicting shared definitions the review flagged (TTS review 2/3; STT review 1; `9663333`
+> TTS/STT BLOCKER 1-2). The earlier "named the same, whichever lands first owns it" arrangement is
+> withdrawn — it let the first implementation choose an incompatible ABI. Every slice below that
+> uses a shared piece declares a `depends on VF` edge (§11).
 
-If the TTS plan lands its audio layer first, VS3 shrinks to adding `AudioSource` to it. Both plans must not add a second audio library.
+**Owner and order.** VF is **one slice**, landed **once**, before any consumer slice in either
+plan. It is owned by a single implementing agent (the orchestrator assigns them; it is **not**
+split across the two plans). The STT track carries VF (its VS-VF cluster: the old VS3 audio, VS1
+model locator, VS6 window shell, plus the schema/child modules), because those slices were already
+written to land first; the TTS track **consumes** VF and adds only its playback `AudioSink` impl
+and its "Browser voice" settings section. Every consumer slice in either plan carries a
+`depends on VF` edge.
+
+**One path set (canonical — both plans use exactly these).**
+
+| File | Role |
+|---|---|
+| `src/voice/audio.zig` | `AudioSource` (capture) + `AudioSink` (playback) vtables; ring buffer; resample to the consumer's format; `WavFileSource`, `SilenceSource`, `NullSink`, `FileSink` |
+| `src/voice/audio_miniaudio.c` + `third_party/miniaudio/miniaudio.h` | one `ma_context` per process; Core Audio / WASAPI / PulseAudio (PipeWire via pipewire-pulse) / ALSA; the **Null** backend for tests |
+| `src/voice/models.zig` + `build/voice_model.zig` | one catalog `{id,file,source_url,revision,bytes,sha256,license,kind}`; one bundled resource root `…/models/` with `stt/` and `tts/`; build-time SHA-256 check; the verify-through-consumption loader (below) |
+| `src/voice/voice_config.zig` | the **only** writer of `voice.json`: the outer schema, `migrate`, the lock and compare-and-retry (below) |
+| `src/voice_settings_window.c` (GTK; `*_mac.m` / `*_win.cpp` later) | one Voice window; sections register themselves into it |
+| `src/voice/consent.zig` | app-level consent records; keys namespaced `stt.*` / `tts.*` |
+| `src/voice_mac.m`, `src/voice_win.cpp` | OS permission / usage-string glue (microphone; Personal Voice) |
+
+The TTS plan's former `src/audio.zig`, `src/audio.c`, `src/models.zig`, `src/voice_settings.zig`,
+`src/voice_window.c` are **withdrawn** — TTS uses the paths above (the STT layout is canonical). The
+engine/core files that are **not** shared stay plan-private: TTS `src/speech_text.zig`,
+`speech_chunker.zig`, `speech_queue.zig`, `speech_params.zig`, `speech.h`, `speech_backend.h`,
+`zb-speech`; STT `src/voice/stt_engine.zig`, `whisper_engine.zig`, `dictation.zig`.
+
+**One audio API.** `AudioSource`/`AudioSink` are vtable interfaces over blocks of f32 samples.
+Capture always delivers **16 kHz mono f32 in [-1,1]**; playback runs at the producer's rate. One
+`ma_context` per process. A capture callback writes a lock-free ring buffer drained on the consumer
+thread; no GTK/AppKit/Win32 call ever runs on an audio thread. Device loss (unplug, route change)
+ends the session with `error device-lost` and never hangs.
+
+**One `voice.json` schema, migration, lock and single writer.**
+- Outer object: `{ "schema": <int>, "read_aloud": { … }, "dictation": { … } }`. `voice/voice_config.zig`
+  is the **only** module that writes the file; both sections call it.
+- A mutation: acquire the OS advisory lock on `voice.json.lock`; read the file + its `schema`; run
+  `migrate(old)->current` if needed; merge **only the caller's own section**; **preserve unknown
+  top-level keys and the sibling section byte-for-byte**; write via `atomic_file.replaceJson`;
+  release the lock. A generation counter + compare-and-retry covers a writer that slipped in before
+  the lock (belt and suspenders).
+- `migrate` is pure and tested vN→vN+1: lossless for known keys, untouched for unknown ones.
+- **Red suite (VF):** two windows (or two processes) open; interleave a `read_aloud` write and a
+  `dictation` write; assert both changes persist, an unknown top-level key survives, and no write
+  is lost (mutant: drop the lock / last-writer-wins ⇒ a lost update ⇒ red). A `schema`-bump fixture
+  proves `migrate` runs and preserves the sibling byte-for-byte.
+
+**Model integrity pinned through consumption.** The loader verifies size + SHA-256 and then loads
+**the verified bytes**, never a re-opened path:
+- STT: `whisper_init_from_buffer(verified_bytes)` (not `whisper_init_from_file`).
+- TTS/ONNX: `OrtCreateSessionFromArray(verified_bytes)` (not a path), or a single OS handle opened
+  once, verified, and memory-mapped for the load.
+- A `(size, mtime, inode)` record is a **performance hint only**, never the identity proof.
+- **Red (VF):** at the verify/use seam, replace or truncate the file after verify and before load;
+  the load must consume the verified bytes/handle, and the swapped file must never reach the engine
+  (mutant: reopen-by-path ⇒ the swapped bytes load ⇒ red). "The bundle is read-only" is an install
+  policy, not an identity proof on the per-user Windows layout or under a test override.
+
+**The test-device rule (automated runs never touch a real device).** Every automated run uses the
+miniaudio **Null** backend, a `WavFileSource`/`SilenceSource`, and a render-to-file **`FileSink`** —
+never Core Audio/WASAPI/PulseAudio/ALSA, and never a "muted real device". A hermetic **write
+oracle** runs the process in a test-owned temp/mount namespace with a file-open census and asserts
+**no audio-derived bytes are written anywhere** on complete/cancel/error, and every PCM/transcript
+buffer is zeroed (`std.crypto.secureZero`) at session end. Only the orchestrator's user-approved
+`real_audio_check` / `real_screen_check` open a physical device.
+
+**The native arbitrary-child interface `ZbChild` (NOT the agent `SandboxBackend`).** The production
+`SandboxBackend` is a **Python, agent-home-specific** launch contract
+(`agent/host/zb_agent_host/sandbox.py`); the speech engine and the cloning-enrolment helper are
+**native** children the browser spawns, so VF defines its own `ZbChild` platform interface,
+implemented per OS:
+- inherits **exactly** the PCM pipe (and, for enrolment, the sample pipe) and nothing else; **no
+  network**; read-only model dir; write only its own scratch; **no audio device** (the browser
+  plays/records);
+- parent-death kill (Linux `PR_SET_PDEATHSIG`; macOS kqueue `NOTE_EXIT` or a watchdog; Windows a
+  **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, create-suspended → assign → resume, per
+  the Windows plan's bead `zigBrowser-d1d`), child reaping, graceful shutdown, and explicit
+  **main-loop ownership** (which thread pumps the pipe);
+- Linux reuses bwrap-style confinement where it fits; macOS uses the macOS plan's MS6 Seatbelt
+  profile; Windows uses the Windows plan's **WS8.7** no-network `zb-speech` sandbox user + WFP.
+- VF names the interface and ships the Linux impl + reds; each platform slice (M1, W1) implements
+  and live-verifies its own. (STT itself needs no child today — whisper runs in-process — but shares
+  the interface for the TTS engine and for any future out-of-process STT.)
+
+**VF red suite + dependency edges.** VF ships, each red-first on Linux: `voice/audio.zig` +
+`audio_miniaudio.c` (Null + WavFile + FileSink), `voice/models.zig` + `build/voice_model.zig`
+(catalog + verify-through-consumption), `voice/voice_config.zig` (schema + migrate + lock),
+`voice_settings_window.c` (shell + section registry), `voice/consent.zig`, and `ZbChild` (Linux).
+Consumers declaring `depends on VF`: STT VS3, VS1, VS4, VS5, VS6, VS7-VS11, VSP; TTS V2, V3, V3.0,
+V5, C1-C3, M1/M2, W1/W2, CW.
+
+The STT rows that this VF section supersedes — the old "Rows and seams" shared row — keep their
+`--e2e-protocol` gating rule (D6): STT emits `DRAWER voice …` / `VOICE model …`, TTS emits
+`VOICE tts …`.
+
+## 4a. Review-clearing contracts (rev 2.1)
+
+These contracts clear the nine blockers in RoseCat's `9a6973b` STT review. Each is a failing-first
+test in the slice named.
+
+1. **Async lifetime and cancellation (clears review #1).** Every dictation has a **session epoch**
+   `(win, u64)`. The mic control, the `AudioSource`, the engine worker and every queued callback
+   carry the epoch they were started under. `cancel` is **idempotent** (a second cancel is a no-op)
+   and bumps the epoch; a permission, preparing, transcription, queued-result or idle callback whose
+   epoch ≠ the window's current epoch is **dropped** before it touches the drawer. Close/restart
+   **joins/drains** the worker and the audio thread in a fixed order (stop capture → signal abort →
+   join worker → `secureZero` buffers → free), so no callback targets a destroyed drawer. VS4 reds:
+   a late transcription after cancel, a result after close, and a restart during transcription each
+   insert nothing and leave the live-session count at 0 (mutant: ignore the epoch ⇒ a stale insert).
+
+2. **First-use privacy notice as real UI (clears review #2).** The first-use notice is a **VS5 UI
+   assertion**, not only a `consent.zig` record: the notice shows before the first capture; **no
+   audio is captured before Accept**; Decline leaves the mic insensitive; the choice persists; a
+   corrupt/missing consent record re-prompts (never silently allows); a reset re-prompts. Windows has
+   **no OS prompt**, so the app notice is the only gate there. VS8 adds the **drawer denial UI**
+   before VS9 creates the Mac drawer. A **headless native permission contract** test
+   (`tests/e2e/voice_permission_contract_test.py`) drives the permission layer with fake OS statuses
+   (granted/denied/restricted/undetermined) and asserts the state machine, with no real device.
+
+3. **macOS mic source bound to the signing/census route (clears review #3).** `src/voice_mac.m`
+   compiles on the **same chained-fixups dylib / Apple-clang route** as the existing Objective-C, and
+   the DMG signer applies the **hardened runtime plus `NSMicrophoneUsageDescription` and
+   `com.apple.security.device.audio-input`**. VS8 proves capture works under the signed, hardened
+   build and that the component census and the macOS plan's two-tree `resource_compat` accept it —
+   **without** reintroducing the Intel signed-binary crash (the macOS plan's known failure). Named
+   files/tests: `packaging/macos/*` signer step, `tests/mac/voice_entitlement_test.py`.
+
+4. **Range-aware insert ABI (clears review #4).** `zb_drawer_set_draft` (whole-draft replace) is
+   replaced by `zb_drawer_insert_text(win, const char *utf8, size_t len, int replace_selection)`:
+   it inserts at the cursor and replaces the current selection, as D4 invariant 2 requires. Tests
+   (GTK and Windows WS5 drawer): Unicode/grapheme boundaries, an active selection is replaced,
+   focus-change between start and result targets the right field (or drops on the epoch rule), and a
+   late result after the user kept typing inserts at the **current** cursor, not the old offset.
+
+5. **Medium artifact + verify/load race (clears review #5).** The catalog/installers need **one**
+   default artifact; O1 stays the user's decision but is **sharpened** (§5): `q5_0` (539 MB, lowest
+   accuracy), `q8_0` (823 MB, near-f16 accuracy, recommended default pending O1), `f16` (1.53 GB,
+   reference accuracy, 2× install). The verify/load race is closed by **VF's
+   verify-through-consumption** (`whisper_init_from_buffer` over the verified bytes; no reopen; the
+   `(size,mtime,inode)` cache is a perf hint only). VSP tests cover not just fresh install but
+   **upgrade, repair, downgrade, tamper (swapped/truncated file at the verify/use seam), and orphan
+   cleanup** of an old model on upgrade.
+
+6. **CPU baseline (clears review #6).** "Windows x64" does not imply AVX2/x86-64-v3. O1 is sharpened
+   to a **minimum-CPU-vs-runtime-dispatch** trade-off (§5): (a) a single x86-64-v3 baseline build
+   (simplest; refuses on older CPUs with "Voice input needs a newer processor"); (b) runtime
+   dispatch or a baseline SSE build (wider reach, more build/test cost). The test matrix adds a
+   **real non-AVX2 target** (or an emulated one) that must either run or refuse cleanly — never an
+   illegal-instruction crash. The decision stays the user's; both paths are specified.
+
+7. **Failing-first made executable (clears review #7).** VS0.2's "or record that it compiled first
+   time" is removed: VS0.2 ships a **registration/object oracle or a build mutant** (as WS0 does for
+   `cross-check`) so a red precedes the green. VS9, VS10, VS11 and VSP2-VSP4 each gain concrete
+   **red, registration and mutant** steps; a census seam does **not** substitute for native UI input
+   in a UI closure — the AppKit/Win32 dictation UI slices name a native-input red (synthetic key/clic
+   through the OS, asserted at the drawer).
+
+8. **Live capture behind an unforgeable capability (clears review #8).** The shipping executable's
+   `--voice-selftest` and `--voice-capture-probe` entry points are gated by an **unforgeable
+   inherited capability** (an inherited descriptor/handle the browser passes only to itself), or
+   built only into a **test-only binary**. A negative test from **every real sandbox** (agent helper,
+   each hook) proves agent/hook code cannot reach a live capture path — not merely that no frame/tool/
+   socket method names it.
+
+9. **Remote packaging model-transfer protocol (clears review #9).** The model reaches the Mac and
+   Windows builders by an **orchestrator-only** cache transfer: a named remote cache location, a
+   **pre-transfer and post-transfer SHA-256** check against the catalog, owner-only permissions, a
+   cleanup step, and a **package-input manifest** listing the exact file + hash that entered each
+   build. No builder fetches from the network during a gated build.
+
+**SHOULD items folded (rev 2.1):** typed `preparing`/`model`/`device` errors and explicit
+**ring-buffer bounds**; the VF **write oracle** replaces the global `/tmp` scan (D-invariant 4 /
+VS4.3) and every PCM/transcript buffer is `secureZero`-ed; an ambiguous capture reports **`no-signal`
+with the specific HRESULT** rather than claiming Windows denied permission; **AppKit (VS9) and Win32
+(VS11) settings-window** sections are named; third-party notices are packaged; dependency status is
+repinned; cleanup rules use guard clauses, no side-effectful conditions, and named timing/sample
+constants. The WiX directory id is **`INSTALLFOLDER`** (not the plan's `<INSTALLDIR>`).
 
 ## 5. Decisions for the user
 
@@ -487,11 +662,11 @@ The real-screen script gains these cases. The input guard (drawer plan §7.1) ap
 
 ### 9.2 ClosureMap V-B: the bundled model reaches the engine (rev 2; replaces the download chain)
 
-`cached model file → voice-model-check (build: size + SHA-256 vs catalog) → install step copies to share/zigbrowser/models/stt/ → packaging puts it in the .app / MSI / .deb → installed app starts → first dictation → models.locate (bundled resource dir) → first-load verify (engine thread) → whisper_init_from_file → VOICE model <id> ready row + Voice settings shows "Ready"`
+`cached model file → voice-model-check (build: size + SHA-256 vs catalog) → install step copies to share/zigbrowser/models/stt/ → packaging puts it in the .app / MSI / .deb → installed app starts → first dictation → models.locate (bundled resource dir) → first-load verify (engine thread) → whisper_init_from_buffer over the verified bytes → VOICE model <id> ready row + Voice settings shows "Ready"`
 
 - BLOCKING: build-to-package-to-run crosses three registration boundaries (build step, packaging script, app start) and one async edge (the engine thread verifying, then an idle back to GTK).
 - SOURCE: the cached model file (the medium file in packaging gates; a small fake model with an injected catalog entry, `ZB_E2E_MODEL_CATALOG`, inert without `--e2e-protocol`, in the per-commit gate).
-- RED-AT-SEAM: flip one byte in the cached file → `voice-model-check` fails the build. Flip one byte in the installed copy → `VOICE model <id> damaged`, and no `whisper_init_from_file` is logged.
+- RED-AT-SEAM: flip one byte in the cached file → `voice-model-check` fails the build. Flip one byte in the installed copy → `VOICE model <id> damaged`, and no load over the verified bytes happens.
 
 The rev-1 download chain survives only as VS2's optional closure.
 
@@ -544,7 +719,11 @@ Platform marks:
 - **Given / When / Then:** when `zig build cross-check` runs, then ggml-cpu and whisper objects are emitted for `aarch64-macos`, `x86_64-macos` and `x86_64-windows-gnu`, and the existing symbol check still passes.
 - LEAF.
 - **Files touched:** `build.zig` (cross-check list).
-- 🔴 Add the objects to an unregistered `cross-check-voice` step; record it red if any target fails, or record that it compiled first time.
+- 🔴 Add the objects to an unregistered `cross-check-voice` step with a **failing-first oracle** (as
+  WS0 does for `cross-check`): a `--require`/registration or object check that is **red** before the
+  step is wired, or a small build mutant (drop a required object) that must flip it. "It compiled
+  first time" is not an acceptable record — the slice must demonstrate a red before it joins
+  `cross-check` (§4a #7).
 - 🟢 Fold it into `cross-check`.
 - 🔵 One per-target flag table.
 
@@ -692,7 +871,11 @@ If none is chosen, VS2 is dropped. When it is built, O5 (download host) comes ba
 
 #### Behavior VS4.3: no audio on disk, buffers zeroed
 - **Given / When / Then:**
-  - given a session run with `HOME`, `TMPDIR` and the XDG directories pointed at fresh empty directories, when it completes, cancels or errors, then no file was created in any of them, and none under `/tmp` newer than the test start that contains a RIFF header or more than 64 KiB of f32-looking data (scan in the test);
+  - the VF **write oracle** (§4) runs the session in a test-owned temp/mount namespace with a
+    file-open census and asserts that, on complete/cancel/error, **no audio-derived bytes are
+    written anywhere** (not the fragile global-`/tmp` RIFF/64 KiB heuristic, which can fail on
+    another process or miss a different encoding/dir), and that every PCM/transcript buffer is
+    `secureZero`-ed;
   - the session's buffer owner reports `zeroed=true` through a test-only accessor.
 - LEAF.
 
@@ -877,7 +1060,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 #### Behavior VS10.1: the engine builds and transcribes on Windows 10 and 11
 - **Given / When / Then:** the WS1 build on the VM produces `zigBrowser.exe`. On both the Win11 VM `win11-m8` and the physical Windows 10 machine, `zigBrowser.exe --voice-selftest wav:jfk.wav --e2e-protocol` prints the known sentence with tiny.en.
 - A CPU without the baseline ISA prints the D3 message and exits cleanly. The test records `cpuid` on both hosts (the VM's virtual CPU flags are unverified).
-- **Files touched:** `build/whisper.zig` (msvc flags), `src/voice/whisper_engine.zig` (Windows file paths: wide-char open, if `whisper_init_from_file` needs it — unverified), `tests/e2e/win_voice_selftest_test.py` (new).
+- **Files touched:** `build/whisper.zig` (msvc flags), `src/voice/whisper_engine.zig` (loads via `whisper_init_from_buffer` over the verified bytes — VF §4 — so no Windows wide-char path-open is needed for the load), `tests/e2e/win_voice_selftest_test.py` (new).
 
 #### Behavior VS10.2: WASAPI capture and access failures on Windows 10 and 11
 - **Given / When / Then:**
@@ -899,7 +1082,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 
 ### VS11 — Windows drawer dictation [W][U]
 
-**Depends on:** WLP's **WS5** (native Win32 drawer, the drawer-port milestone), its **WS12.1** hook `zb_drawer_set_draft` (dictated text goes into the draft through it), and VS10. The post-Enter send leg also needs **WS11** (helper and chat).
+**Depends on:** WLP's **WS5** (native Win32 drawer, the drawer-port milestone), its **WS12.1** hook `zb_drawer_set_draft` (must be the range-aware `zb_drawer_insert_text` of §4a #4 — cursor insert + selection replace, not a whole-draft set) (dictated text goes into the draft through it), and VS10. The post-Enter send leg also needs **WS11** (helper and chat).
 - VS11 repeats VS5's behaviors (VS5.2-VS5.7) on the WS5 drawer, observed through that drawer's `--e2e-protocol` census (`DRAWER draft` rows per WS12.1).
 - **Automated, recorded-file (WAV seam):** on both hosts through `gate.sh --phase voice`.
 - **Live microphone:** on the **physical Windows 10 machine only**. The Win11 VM `win11-m8` is added only after D8's VM capture proof passes.
@@ -940,7 +1123,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 - **Files touched:** `packaging/macos/build-dmg.sh` (copy the model into `Contents/Resources`), `packaging/macos/universal_components.json` (resource entry), `tests/mac/gate.sh`, `tests/e2e/mac_universal_test.py` / `mac_resource_compat.py` (expect the resource; coordinated with the macOS plan, not edited by this plan unilaterally).
 
 #### Behavior VSP.4: the MSI carries the model [W][P]
-- **Given / When / Then:** `packaging/windows/zigBrowser.wxs` installs `<INSTALLDIR>\models\stt\<file>`. `packaging/windows/gate.ps1` checks its SHA-256 after a per-user install, runs the recorded-file voice selftest on the Win11 VM `win11-m8` and on the physical Windows 10 machine, and checks that uninstall removes it. WS13.1's census lists the file, and WS13.3's size budget counts it.
+- **Given / When / Then:** `packaging/windows/zigBrowser.wxs` installs to `INSTALLFOLDER\models\stt\<file>` (WiX id `INSTALLFOLDER`). `packaging/windows/gate.ps1` checks its SHA-256 after a per-user install, runs the recorded-file voice selftest on the Win11 VM `win11-m8` and on the physical Windows 10 machine, and checks that uninstall removes it. WS13.1's census lists the file, and WS13.3's size budget counts it.
 - Also measured and recorded: MSI size and install time. MSI/cabinet size limits at this size are unverified, and this behavior settles them.
 - **Depends on:** VS10 and WLP's **WS13** (WS13.1 census, WS13.3 size budget; the installer format is WLP's OD-W1).
 - **Files touched:** `packaging/windows/zigBrowser.wxs`, `packaging/windows/build-msi.ps1`, `packaging/windows/gate.ps1`.
@@ -964,10 +1147,11 @@ These go through a native prompt with per-origin memory. Tests use WebKitGTK's `
 
 | Slice | Linux | macOS (2 Macs) | Windows (WLP WS0: Win11 VM `win11-m8` builds; recorded-file tests on both hosts; live mic on the physical Windows 10 machine only) | Depends on |
 |---|---|---|---|---|
+| **VF Shared Voice Foundation** (§4) | **build + test** | cross-check compile only | cross-check compile only | — (lands first; every shared-consuming slice below depends on it) |
 | VS0 engine build | **build + test** | cross-check compile only | cross-check compile only | — |
-| VS1 bundled-model locator + check | **build + test** (all 3 OS layouts) | — | — | — |
-| VS2 download (**optional, not v1**) | build + test, if ever scheduled | — | — | VS1 + a user decision (O4/O5) |
-| VS3 audio layer | **build + test** (WAV, Null) | — | — | — |
+| VS1 bundled-model locator + check | **build + test** (all 3 OS layouts) | — | — | **VF** |
+| VS2 download (**optional, not v1**) | build + test, if ever scheduled | — | — | **VF** + VS1 + a user decision (O4/O5) |
+| VS3 audio layer | **build + test** (WAV, Null) | — | — | **VF** (VS3 is VF's capture `AudioSource` + its reds) |
 | VS4 dictation core | **build + test** | — | — | VS0, VS3 |
 | VS5 GTK drawer | **build + test + real-screen** | — | — | VS1, VS4, drawer S2/S5 (done) |
 | VS6 settings window | **build + test + real-screen** | — | — | VS1, VS5 |
@@ -978,7 +1162,8 @@ These go through a native prompt with per-origin memory. Tests use WebKitGTK's `
 | VS10 Windows engine + capture | cross-check only | — | **build + recorded-file tests** on both hosts; **live capture + real-screen** on the physical Windows 10 machine | VS0-VS4, WLP WS0 + WS1 (+ WS12.2 voice phase) |
 | VS11 Windows drawer | — | — | **recorded-file e2e** on both hosts; **`win-voice-live`** on the physical Windows 10 machine | VS10, WLP WS5 + WS12.1 (+ WS11 for the send leg) |
 
-Order: `VS0 → VS1`, `VS3` in parallel, then `VS4 → VS5 → VS6`. `VSP.1` and `VSP.2` follow VS1.
+Order: **VF first**, then `VS0 → VS1`, `VS3` in parallel, then `VS4 → VS5 → VS6` (each depends on
+VF). `VSP.1` and `VSP.2` follow VS1.
 - `VS7` may start after VS0 and MS1. `VSP.3` follows VS7 and MS5.1c.
 - `VS8` after VS7, VS3 and MS1 (Intel parts after MS1b).
 - `VS9` after VS8 and MS7.
@@ -986,7 +1171,9 @@ Order: `VS0 → VS1`, `VS3` in parallel, then `VS4 → VS5 → VS6`. `VSP.1` and
 - `VS11` after VS10 and WLP's WS5 and WS12.1. Its send leg needs WS11.
 - `VS2` only if the user schedules it.
 
-The shared pieces VS1 and VS3 (and VS2, if ever built) should land before the TTS plan's first slice that needs them, or be taken from it if it lands first (section 4).
+The shared pieces are **VF** (§4), one slice landed once before any consumer in either plan — not
+"whichever plan lands first owns it" (that arrangement is withdrawn). The STT track carries VF; the
+TTS track consumes it.
 
 ## 12. Per-slice gate protocol
 
