@@ -47,13 +47,14 @@ $shot = Join-Path $dir 'shot.png'
 $err  = Join-Path $dir 'err.txt'
 $out  = Join-Path $dir 'out.txt'
 Remove-Item $shot,$err,$out -ErrorAction SilentlyContinue
-$url = 'file:///' + ((Join-Path $dir 'test.html') -replace '\\','/')
+if ($args.Count -ge 2 -and $args[1]) { $url = $args[1] }
+else { $url = 'file:///' + ((Join-Path $dir 'test.html') -replace '\\','/') }
 $p = Start-Process -FilePath $exe -ArgumentList '--screenshot', $shot, $url `
      -Wait -PassThru -NoNewWindow -RedirectStandardError $err -RedirectStandardOutput $out
 $size = (Get-Item $shot -ErrorAction SilentlyContinue).Length
 if ($null -eq $size) { $size = 0 }
-$e = (Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $e) { $e = '' }
-$o = (Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $o) { $o = '' }
+$e = [string](Get-Content $err -Raw -ErrorAction SilentlyContinue); if ($null -eq $e) { $e = '' }
+$o = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue); if ($null -eq $o) { $o = '' }
 $r = @{ exit = $p.ExitCode; shot = (Test-Path $shot); size = $size; stderr = $e; stdout = $o }
 [Console]::Out.Write(($r | ConvertTo-Json -Compress))
 """
@@ -132,6 +133,35 @@ class ScreenshotLive(unittest.TestCase):
                     p.unlink()
                 except OSError:
                     pass
+
+    def test_screenshot_failure_is_not_silent(self):
+        # A nonexistent local page makes NavigationCompleted fail. --screenshot runs with
+        # e2e_protocol off, so the pre-fix code exited 5 with NO stderr. The capture must now exit
+        # nonzero AND print a specific, non-empty diagnostic. (RoseCat 6624.)
+        rel = f"zb/shot-{os.getpid()}-{secrets.token_hex(4)}"
+        base_win = f"%USERPROFILE%\\{rel}".replace("/", "\\")
+        mk = self._ssh("cmd", "/c", f"mkdir {base_win}")
+        self.assertEqual(mk.returncode, 0, f"mkdir failed: {mk.stderr}")
+        runner_path = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"zbrun-{secrets.token_hex(4)}.ps1"
+        try:
+            runner_path.write_text(_RUNNER, encoding="utf-8")
+            for local, name in ((self.exe, "zigBrowser.exe"), (str(runner_path), "run.ps1")):
+                r = self._scp(local, f"{rel}/{name}")
+                self.assertEqual(r.returncode, 0, f"scp {name} failed: {r.stderr}")
+            missing = f"file:///C:/Users/{self.user}/zb/zb-nope-{secrets.token_hex(4)}.html"
+            run = self._ssh("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-File", f"{base_win}\\run.ps1", base_win, missing)
+            self.assertEqual(run.returncode, 0, f"runner failed: {run.stdout}\n{run.stderr}")
+            result = json.loads(run.stdout.strip().splitlines()[-1])
+            self.assertNotEqual(result["exit"], 0, f"a failed navigation must exit nonzero: {result!r}")
+            self.assertTrue(result["stderr"].strip(),
+                            f"a failed screenshot must print a stderr diagnostic (it was silent): {result!r}")
+        finally:
+            self._ssh("cmd", "/c", f"rmdir /s /q {base_win}")
+            try:
+                runner_path.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
