@@ -172,9 +172,9 @@ if v.get("locked") is not False:
 cu11 = v.get("console_user")
 if not isinstance(cu11, str) or not cu11.strip():
     sys.stderr.write("win11: console_user missing or empty\n"); sys.exit(1)
-sm = v.get("snapshot_marker")
-if not isinstance(sm, str) or not sm.strip():
-    sys.stderr.write("win11: snapshot_marker missing or empty\n"); sys.exit(1)
+# snapshot_marker is NOT an in-VM probe field — a file inside the VM proves only that someone wrote a
+# file, not that a rollback snapshot exists. The gate proves it host-side with read-only virsh (see
+# probe_only); the physical file server has no VM snapshot and is explicitly not_applicable.
 
 # WS0 is fail CLOSED: before ANY comparison, every file-server field we judge on must be present and
 # well-typed on BOTH probes. Malformed/missing data must be rejected, never silently coerced to a value
@@ -239,6 +239,20 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   local state; state=$(virsh domstate "$domain" 2>/dev/null)
   if [ "$state" != "running" ]; then
     echo "NOT RUN: Win11 VM $domain is ${state:-unknown}" >&2
+    return 1
+  fi
+  # WS0.6 snapshot readiness (host-side, read-only; the gate NEVER creates or reverts — the user takes
+  # snapshots, only while the VM is shut off). Require a named pre-run snapshot that exists AND was taken
+  # while shut off. The physical file server has no snapshot: that is not_applicable, handled by never
+  # running this check against it (only the Win11 VM domain is checked).
+  local snap; snap=$(virsh snapshot-list "$domain" --name 2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1)
+  if [ -z "$snap" ]; then
+    echo "NOT RUN: Win11 VM $domain has no named snapshot to roll back to (take one while shut off)" >&2
+    return 1
+  fi
+  local sstate; sstate=$(virsh snapshot-info "$domain" "$snap" 2>/dev/null | awk -F: '/^State:/{gsub(/[[:space:]]/,"",$2);print $2}')
+  if [ "$sstate" != "shutoff" ]; then
+    echo "NOT RUN: Win11 VM snapshot '$snap' was taken in state '${sstate:-unknown}', not shutoff" >&2
     return 1
   fi
   local vm_json fs_pre fs_post

@@ -64,7 +64,8 @@ exit 0
 _VIRSH_STUB = r"""
 case "$1" in
   domstate) echo "${ZB_SELFTEST_VIRSH_STATE:-running}" ;;
-  snapshot-list) echo "pre-ws0-green-2026-10-19" ;;
+  snapshot-list) printf '%s\n' "${ZB_SELFTEST_SNAPSHOTS-pre-ws0-green-2026-10-19}" ;;
+  snapshot-info) echo "State:          ${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}" ;;
   *) : ;;
 esac
 exit 0
@@ -85,7 +86,7 @@ def _fakes(bindir):
 def _vm_probe(**over):
     p = {"schema": 2, "test_user": "linuxwin\\zbtext", "identity_marker": VM_MARKER,
          "native_arch": "x64", "webview2_pv": "155.0.4283.62", "interactive_session": True,
-         "locked": False, "console_user": "zbtext", "snapshot_marker": "pre-ws0-green-2026-10-19"}
+         "locked": False, "console_user": "zbtext"}
     p.update(over)
     return json.dumps(p)
 
@@ -241,10 +242,17 @@ class WS07FileServerFence(_TwoHostCase):
 
 class WS0CompletionReadiness(_TwoHostCase):
     # WS0-completion (Route A): the gate validates the complete schema-2 readiness fail-closed.
-    def test_vm_missing_snapshot_marker_fails_closed(self):
+    def test_vm_no_snapshot_fails_closed(self):
+        # Host-side virsh: no named snapshot to roll back to => fail closed.
         with tempfile.TemporaryDirectory() as t:
-            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(snapshot_marker=None)})
-            self._assert_fail_closed(proc, "snapshot_marker")
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SNAPSHOTS": ""})
+            self._assert_fail_closed(proc, "no named snapshot")
+
+    def test_vm_snapshot_not_shutoff_fails_closed(self):
+        # The snapshot must have been taken while shut off (the user's rule).
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SNAPSHOT_STATE": "running"})
+            self._assert_fail_closed(proc, "not shutoff")
 
     def test_vm_inactive_session_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
