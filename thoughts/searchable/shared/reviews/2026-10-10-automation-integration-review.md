@@ -15574,3 +15574,38 @@ one-reader closure should be strengthened before final S7.0 acceptance.
 The exact result grammar/images and complete ending-order reds required by
 `3f923f2` are intentionally a later follow-up and are not credited to this
 commit.
+
+## Fresh linear push audit from `70317c0` after recovery
+
+The linear sequence was re-read from `70317c0..HEAD`, rather than inheriting
+the pre-incident boundary. For a formerly blocked commit to count as closed,
+this audit requires a later explicit review verdict that names the fix-forward;
+a commit message's self-claim is not enough.
+
+The prefix through `4b04ff2` is now approved:
+
+- S6b1's early plan/red/green chain (`2713c20`, `f18a5f1`, `a9dcabe`,
+  `4c659aa` and its credential-race follow-ups) is cumulatively closed by the
+  final accepted chain through `eb5dff4` and the user's Part A/Part B results.
+- The early macOS MS1 plan/census chain is cumulatively closed by the exact
+  browser-only phase gate and the later registered full-gate evidence.
+- The S5c plan revisions before production are superseded by the explicitly
+  reviewed corrections through rev 16.20.8. The failing-first S5c-1 chain
+  `ac47497` / `e6327a5` / `7b44044` is explicitly approved.
+- The WS0 failing-first chain through `809ec0f` is explicitly approved as a
+  red/foundation sequence; the later WS0 production green begins after this
+  boundary and is not needed to approve the red commits themselves.
+- `305bbc5`'s registration hold is closed by the descendant clean-export gate
+  that explicitly ran the registered macOS census/resource suite.
+
+Therefore the newest approved linear push-through SHA is **`4b04ff2`**.
+
+The immediate next commit, **`f9cb26a`**, is the earliest blocked commit. Its
+original UTF-8 terminal-prefix and cap-signal defects were addressed later by
+the reply-cap chain, and the committed guarded `long-run` case subsequently
+landed. What remains absent is the global UI-rule acceptance for S5c-1: no
+review or user verdict records the required real-screen `long-run` run (200
+KiB unbroken text and words, fold responsiveness, and click/Ctrl+A/C copy of
+the exact original). Until that user-visible acceptance is recorded, the
+production/UI green cannot join an approved linear prefix. Later approvals do
+not permit a push to leap over it.
