@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.8)
-rev: 2.8
+status: plan for review (rev 2.9)
+rev: 2.9
 rev_2_7_note: "Rev 2.7 (2026-10-20, WS2.0, BlueBeaver; RoseCat 6647, 6668): the Windows automation server never started — std.Io.net enables AF_UNIX on Windows only when the target minimum is win10_rs4 (Windows 10 1803) or later, and the default x86_64-windows-msvc range starts lower, so server.start returned AddressFamilyUnsupported (exit 7) and its whole start path was dead code. build.zig windowsAfUnixFloor now gives every Windows target without an explicit minimum the win10_rs4 floor (the cross-check object uses it too); the newly reachable start path got Windows fixes (wallClockMs via RtlGetSystemTimePrecise, the token file without .fromMode, cookies.import refused on Windows until WS3). The ADR-1 spike no longer compiles on Zig 0.16 and is superseded: the production e2e tests/e2e/win_transport_test.py (red 970969f, green f29e490) is the AF_UNIX proof. Rev 2.6's claim that .fromMode compiles for Windows is withdrawn: it compiled only because the path was unreachable."
 rev_2_6_note: "(fix, RoseCat 6607: the check and the apply name one object, a handle opened without following a link or reparse point; O_PATH + /proc/self/fd on Linux, O_NOFOLLOW + fchmod on macOS, FILE_FLAG_OPEN_REPARSE_POINT + SetSecurityInfo on Windows, the AF_UNIX reparse tag accepted; swap reds; the readback contract is P + only AI/AR + the one ACE) Rev 2.6 (2026-10-20): WS2.0 owned by BlueBeaver (orchestrator; AzureRidge 6591 keeps the VM, host tooling, wincontain and the Job Object). One owner-only seam src/owner_only.zig: restrictToOwner(path, file|dir) — POSIX 0600/0700 with symlinks refused; Windows a PROTECTED DACL with exactly one allow ACE for the current user SID (no SYSTEM/Administrators/Everyone/Users/Authenticated Users, nothing inherited; OICI on a directory), built as SDDL by the pure ownerOnlySddl and applied with SetNamedSecurityInfoW; C form zb_restrict_to_owner for WS3.1. socketBaseDir: Windows %LOCALAPPDATA% only (NoLocalAppData, never /tmp or XDG); planSocketPath returns SocketPathTooLong instead of a cut path. The compile check is not the red (MinGW chmod compiles and sets no DACL); the reds are Linux-provable (owner_only_test, automation_transport_ws20_test) plus the VM e2e win_transport_test.py (zbother negative control after the user creates zbother)."
 rev_2_5_note: "Rev 2.5 (2026-10-20): WS3 flag table made literal from production (RoseCat 6405, 6415). Exact present-flag rows from media_config.parse (on|off), render_config.parseHwPolicy (never|always|webkit — no auto), render_config.parseRenderer (default|shm|mesa-egl, Linux only; refused on macOS/Windows); empty value is an explicit invalid value and is refused. backendFlagDecision decides a PRESENT flag only; absence makes no call and no apply and is resolved by the config defaults (media-source=on, hardware-acceleration=webkit, Linux renderer=shm; no renderer decision on macOS/Windows) via a separate absent-default oracle at the config/app boundary, never value=''. WS3.2's flag-decision property is now the registered, all-OS, anti-drift tests/backend_flag_test.zig (step test-backend-flag, BlueBeaver); the standalone src/ws3_backend_flag_table_test.zig (88e16cd) is removed so one literal oracle cannot drift."
@@ -670,8 +670,14 @@ the console or an RDP session that was moved to the console), `locked` (LogonUI 
 session), `webview2_pv` (read from the three registry places in provisioning item 4), `python`, `zig` (VM only),
 `free_gb`, `root` (the allowed remote root), plus (rev 2) `schema` (an integer the gate pins), `identity_marker`
 (rev 2.2: the provisioning nonce from `C:\Users\<user>\zb\.gate-identity`, replacing the unreadable SMBIOS UUID),
-`console_user`, `groups`, `shares`, `zbtest_write_paths`, `listeners`, `fw_rules_hash`, `snapshot_marker`
-(the VM), `sshd_listen` and `sshd_allowusers` (the physical host).
+`console_user`, `groups`, `shares`, `zbtest_write_paths`, `listeners`, `fw_rules_hash`, `sshd_listen`
+and `sshd_allowusers` (the physical host). **Snapshot readiness is NOT an in-VM probe field (rev 2.9):**
+the gate proves it host-side with read-only `virsh` — the pinned expected clean baseline
+(`ZB_WIN11_SNAPSHOT`, e.g. `zb-clean-provisioned`) must exist and have State `shutoff`; the physical
+file server has no VM snapshot and is `not_applicable`. **`console_user`** is read network-safe
+(`WTSUserName`), so the read-only probe emits it directly on both hosts; **`interactive_session`/`locked`**
+need the console's input desktop, so they come from the in-console session helper and are required on the
+VM only (`not_applicable` on the read-only file server, which runs no helper under the no-install rule).
 
 ### Behavior WS0.2: the gate fails closed
 **Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset; a host unreachable; build below OD-W7;
@@ -916,6 +922,13 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   start path, token and socket included. It is a build guard, not the WS2.0 red: the red is the production e2e
   `tests/e2e/win_transport_test.py` (970969f) plus the Linux-provable reds.
 
+- **Rev 2.9 (2026-10-20; WS0-completion / Route A, RoseCat 6769).** Snapshot readiness moved from an
+  in-VM `snapshot_marker` probe field to a host-side read-only `virsh` check in the gate: the pinned
+  expected clean baseline (`ZB_WIN11_SNAPSHOT`) must exist and be `shutoff`; the gate never creates or
+  reverts. `console_user` is read network-safe (WTSUserName) directly by the probe; `interactive_session`
+  /`locked` come from the in-console session helper and are VM-only (`not_applicable` on the read-only
+  file server). The WS0.1 field list and WS0.6 updated to match; the gate validates the full schema-2
+  readiness fail-closed with a red per field (gate_twohost_selftest).
 - **Rev 2.8 (2026-10-20; WS13.4 uninstall census, RoseCat 6731 / commit `2cc125c`).** The WS13.4 red
   observed only sandbox users, WFP filters and scheduled tasks, while the uninstall normative (§3 item
   (d)) requires **no user, profile folder, filter, provider, sublayer or scheduled task** behind. The

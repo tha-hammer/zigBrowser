@@ -261,19 +261,28 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
     return 1
   fi
   # WS0.6 snapshot readiness (host-side, read-only; the gate NEVER creates or reverts — the user takes
-  # snapshots, only while the VM is shut off). Require a named pre-run snapshot that exists AND was taken
-  # while shut off. The physical file server has no snapshot: that is not_applicable, handled by never
-  # running this check against it (only the Win11 VM domain is checked).
-  local snap; snap=$(virsh snapshot-list "$domain" --name 2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1)
-  if [ -z "$snap" ]; then
-    echo "NOT RUN: Win11 VM $domain has no named snapshot to roll back to (take one while shut off)" >&2
+  # snapshots, only while the VM is shut off). The EXPECTED clean-baseline snapshot name must be pinned
+  # (ZB_WIN11_SNAPSHOT, e.g. zb-clean-provisioned); that exact name must exist AND have been taken while
+  # shut off. An arbitrary unrelated snapshot is not enough. The physical file server has no VM snapshot:
+  # that is not_applicable, handled by never running this check against it (only the Win11 VM domain).
+  local want="${ZB_WIN11_SNAPSHOT:-}"
+  if [ -z "$want" ]; then
+    echo "NOT RUN: ZB_WIN11_SNAPSHOT is not set — pin the expected clean-baseline snapshot name" >&2
     return 1
   fi
-  local sstate; sstate=$(virsh snapshot-info "$domain" "$snap" 2>/dev/null | awk -F: '/^State:/{gsub(/[[:space:]]/,"",$2);print $2}')
+  if ! virsh snapshot-list "$domain" --name 2>/dev/null | sed '/^[[:space:]]*$/d' | grep -qxF "$want"; then
+    echo "NOT RUN: Win11 VM $domain has no snapshot named '$want' (the expected clean baseline)" >&2
+    return 1
+  fi
+  local sinfo sstate screated
+  sinfo=$(virsh snapshot-info "$domain" "$want" 2>/dev/null)
+  sstate=$(printf '%s\n' "$sinfo" | sed -n 's/^State:[[:space:]]*//p' | tr -d '[:space:]')
+  screated=$(printf '%s\n' "$sinfo" | sed -n 's/^Creation Time:[[:space:]]*//p')
   if [ "$sstate" != "shutoff" ]; then
-    echo "NOT RUN: Win11 VM snapshot '$snap' was taken in state '${sstate:-unknown}', not shutoff" >&2
+    echo "NOT RUN: Win11 VM snapshot '$want' was taken in state '${sstate:-unknown}', not shutoff" >&2
     return 1
   fi
+  echo "WS0.6: Win11 snapshot '$want' state=$sstate created='${screated:-unknown}'" >&2
   local vm_json fs_pre fs_post
   vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}")
   fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}")
