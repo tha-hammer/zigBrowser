@@ -87,8 +87,16 @@ def authorize_url(text):
     """The authorize URL if `text` is exactly one the CLI prints, else None."""
     if len(text) > MAX_URL:
         return None
+    # Visible ASCII only, the whole URL (rev 16.18.14, RoseCat 6261), as the app checks it:
+    # so MAX_URL counts bytes, and no NUL, control byte, space, DEL or non-ASCII gets through.
+    if any(not "\x21" <= ch <= "\x7e" for ch in text):
+        return None
     url = urlsplit(text)
     if url.scheme != "https" or (url.netloc, url.path) not in AUTHORIZE or url.fragment:
+        return None
+    # Names written plainly, as the CLI writes them (rev 16.18.12): parse_qsl would decode
+    # `st%61te` into `state`; the app (agent_auth.authorizeUrl) refuses it, and so does this.
+    if any("%" in piece.split("=", 1)[0] or "+" in piece.split("=", 1)[0] for piece in url.query.split("&")):
         return None
     params = parse_qsl(url.query, keep_blank_values=True)
     if sorted(name for name, _ in params) != sorted(PARAMS):  # each name exactly once

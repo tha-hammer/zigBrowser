@@ -561,6 +561,35 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_auth_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_tests_module }));
     run_agent_auth_tests.skip_foreign_checks = true;
+    // Rev 16.18.11-16.18.14 (BlackRobin 5924; RoseCat 6252, 6261): the app's own authorize-URL
+    // check, over the case table shared with the login helper (agent_auth.authorizeUrl, then
+    // zb_login_validate).
+    const agent_auth_authorize_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_auth_authorize_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_auth_authorize_tests_module.addImport("agent_auth", b.createModule(.{
+        .root_source_file = b.path("src/agent_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_auth_authorize_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_authorize_tests_module }));
+    run_agent_auth_authorize_tests.skip_foreign_checks = true;
+    const agent_login_authorize_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_login_authorize_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_login_authorize_tests_module.addImport("agent_login", b.createModule(.{
+        .root_source_file = b.path("src/agent_login.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
+    const run_agent_login_authorize_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_login_authorize_tests_module }));
+    run_agent_login_authorize_tests.skip_foreign_checks = true;
     // S4.1 edge: the libsecret dlopen fails (built against a missing library;
     // in the browser WebKitGTK has it loaded already). GTK hosts only.
     const agent_secrets_dlopen_module = b.createModule(.{
@@ -1105,6 +1134,12 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_exchange",
     });
+    // Rev 16.18.11: login.authorize_url answers the same authorize-URL case table.
+    const agent_host_authorize_parity = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_authorize_parity",
+    });
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
     const agent_setup_e2e = b.addSystemCommand(&.{
@@ -1536,6 +1571,9 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_exchange.step);
+    test_step.dependOn(&run_agent_auth_authorize_tests.step);
+    test_step.dependOn(&run_agent_login_authorize_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_authorize_parity.step);
     const agent_auth_step = b.step("test-agent-auth", "Run the Claude Agent sign-in's callback check, login frames, login helper and setup-token fake tests");
     agent_auth_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
@@ -1543,6 +1581,9 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_exchange.step);
+    agent_auth_step.dependOn(&run_agent_auth_authorize_tests.step);
+    agent_auth_step.dependOn(&run_agent_login_authorize_tests.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_authorize_parity.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_protocol_capped_tests.step);
     test_step.dependOn(&run_agent_protocol_prompt_tests.step);

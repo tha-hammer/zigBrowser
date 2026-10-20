@@ -5,6 +5,7 @@
 //! fd 4, which agent_login.c reads.
 const std = @import("std");
 const agent_protocol = @import("agent_protocol.zig");
+const agent_auth = @import("agent_auth.zig");
 const agent_helper = @import("agent_helper.zig");
 const agent_setup = @import("agent_setup.zig");
 
@@ -101,6 +102,9 @@ export fn zb_login_validate(v: *agent_protocol.LoginValidator, line: [*]const u8
         .ok => |f| f,
         .rejected => return -1,
     };
+    // Rev 16.18.11 (BlackRobin 5924): the app checks the authorize URL itself, with the
+    // helper's exact rules, before the link is shown or loaded.
+    if (frame == .auth_url and !agent_auth.authorizeUrl(frame.auth_url.url)) return -1;
     const value: []const u8 = switch (frame) {
         .auth_url => |f| f.url,
         .@"error" => |f| f.code,

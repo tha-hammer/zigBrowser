@@ -19,6 +19,10 @@
 //! A value is decoded as the code page's URLSearchParams decodes it ('+' is a
 //! space, %XX a byte), except that a malformed escape refuses it.
 //! A refusal is one of `Reject`, named by D7b's `AUTH blocked <reason>` word.
+//!
+//! `authorizeUrl` (rev 16.18.11; BlackRobin 5924) is the app's own check of the
+//! login helper's `auth_url`, with the helper's exact rules: the app shows or loads
+//! nothing else under the sign-in's name.
 const std = @import("std");
 const Uri = std.Uri;
 
@@ -28,6 +32,84 @@ pub const Reject = error{ Scheme, Origin, Path, State, Code };
 pub const max_code_len = 512;
 /// The `auth_url` frame's limit (D7b): no decoded parameter is longer.
 const max_url_len = 4096;
+
+/// The CLI's two authorize URLs (2.1.301: CLAUDE_AI_AUTHORIZE_URL and
+/// CONSOLE_AUTHORIZE_URL), host and path byte for byte.
+const authorize_targets = [_][2][]const u8{
+    .{ "claude.com", "/cai/oauth/authorize" },
+    .{ "platform.claude.com", "/oauth/authorize" },
+};
+/// Its exact parameter names, each exactly once, and no other.
+const authorize_params = [_][]const u8{
+    "code", "client_id", "response_type", "redirect_uri", "scope", "code_challenge", "code_challenge_method", "state",
+};
+/// The values the capture fixes (RoseCat 5967), compared decoded.
+const authorize_fixed = [_][2][]const u8{
+    .{ "code", "true" },
+    .{ "response_type", "code" },
+    .{ "redirect_uri", "https://platform.claude.com/oauth/code/callback" },
+    .{ "scope", "user:inference" },
+    .{ "code_challenge_method", "S256" },
+};
+
+/// True only for one of the CLI's own authorize URLs (rev 16.18.11): the login
+/// helper's rules (login.authorize_url), checked again by the app before the
+/// link is shown or loaded. tests/fixtures/agent/authorize_url_cases.json holds
+/// every case, shared with the helper's tests.
+pub fn authorizeUrl(url: []const u8) bool {
+    if (url.len > max_url_len) return false;
+    // Visible ASCII only: no NUL, control byte, space, DEL or non-ASCII byte (rev 16.18.12).
+    for (url) |c| if (c < 0x21 or c > 0x7e) return false;
+    const uri = Uri.parse(url) catch return false;
+    if (!std.mem.eql(u8, uri.scheme, "https")) return false;
+    if (uri.user != null or uri.password != null or uri.port != null or uri.fragment != null) return false;
+    const host = text(uri.host orelse return false);
+    const path = text(uri.path);
+    const target = for (authorize_targets) |t| {
+        if (std.mem.eql(u8, host, t[0]) and std.mem.eql(u8, path, t[1])) break true;
+    } else false;
+    if (!target) return false;
+
+    // No name the CLI never sends, and each written plainly: names are compared as
+    // written, so `st%61te` is not `state` (rev 16.18.12). Each of the eight exactly
+    // once: every one is read below through `param`, which refuses a missing or
+    // repeated name.
+    var pieces = std.mem.splitScalar(u8, text(uri.query orelse return false), '&');
+    while (pieces.next()) |piece| {
+        const name = piece[0 .. std.mem.indexOfScalar(u8, piece, '=') orelse piece.len];
+        for (authorize_params) |p| {
+            if (std.mem.eql(u8, name, p)) break;
+        } else return false;
+    }
+
+    var buf: [max_url_len]u8 = undefined;
+    for (authorize_fixed) |f| {
+        const value = param(uri.query, f[0], &buf) orelse return false;
+        if (!std.mem.eql(u8, value, f[1])) return false;
+    }
+    if (!uuid(param(uri.query, "client_id", &buf) orelse return false)) return false;
+    if (!s256Challenge(param(uri.query, "code_challenge", &buf) orelse return false)) return false;
+    const state = param(uri.query, "state", &buf) orelse return false;
+    return state.len > 0;
+}
+
+/// A lowercase UUID, 8-4-4-4-12 hex digits.
+fn uuid(s: []const u8) bool {
+    if (s.len != 36) return false;
+    for (s, 0..) |c, i| {
+        const dash = i == 8 or i == 13 or i == 18 or i == 23;
+        if (dash != (c == '-')) return false;
+        if (!dash and !std.ascii.isDigit(c) and !(c >= 'a' and c <= 'f')) return false;
+    }
+    return true;
+}
+
+/// The base64url of a SHA-256, unpadded: 43 characters of [A-Za-z0-9_-].
+fn s256Challenge(s: []const u8) bool {
+    if (s.len != 43) return false;
+    for (s) |c| if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
+    return true;
+}
 
 pub fn rejectWord(err: Reject) []const u8 {
     return switch (err) {
