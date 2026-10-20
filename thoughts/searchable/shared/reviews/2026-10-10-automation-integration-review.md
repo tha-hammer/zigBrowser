@@ -18310,3 +18310,48 @@ part-B blockers on `a363d06` remain unchanged at this SHA:
 
 No Mac, live browser, live socket or real display was used locally. The
 findings and unchanged boundary were sent to JadeBeacon in Agent Mail 6828.
+
+## POSIX agent-home-lock extraction (`5c94dd7`)
+
+Reviewed at `5c94dd7` on 2026-10-20 18:20 EDT.
+
+**Verdict: APPROVED as the behavior-preserving Linux extraction and macOS
+prerequisite. It does not yet close macOS plan rev 14 item 4.**
+
+The production symbol moved from the GLib-only `agent_host.c` into
+`agent_home_lock.c:15-72`. Its observable lock contract is preserved: one
+process-global held fd, repeat acquisition as a no-op, recursive `0700` home
+creation, `O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW` with mode `0600`, nonblocking
+exclusive `flock`, `-2` only for `EWOULDBLOCK`, close on a failed lock, and
+hold-until-process-exit on success. The replacement for the two GLib helpers
+is self-contained POSIX C. `agent_home_lock.h:6-17` has the C++ linkage guard,
+and `agent_host.h:18-20` includes it, so the existing C and Zig callers keep
+the same declaration. The Windows cross-import sees only the plain function
+declaration; no POSIX header leaked into that translation unit.
+
+`build.zig:2394-2402` compiles exactly one definition into the GTK backend,
+after the definition was removed from `agent_host.c`, so the current Linux
+binary has neither a missing nor duplicate symbol. BlackRobin explicitly
+approved this shared-file move subject to unchanged behavior, declaration
+reachability, the existing lock e2e and `cross-check` (mail 6818). BlueBeaver
+reports those exact checks green on a clean private-Xvfb export: install plus
+cross-check **17/17**, lifecycle **89 checks, 0 failed**, and a side-by-side
+six-case old/new harness covering non-directory parents, first acquisition,
+parent modes, repeated acquisition, cross-process contention and null after a
+held lock.
+
+Independent exact-commit, display-free checks compiled the new C file with
+`-Wall -Wextra -Werror`, compiled a C++ consumer through `agent_host.h`, and
+confirmed that the object defines exactly the public `zb_agent_home_lock`
+symbol. The diff is whitespace-clean.
+
+**Scope still open:** the authoritative macOS plan at lines 1260-1262 says the
+file is built on **both** OSes. At this SHA the sole `build.zig` reference is
+inside `configureGtkBackend`; `configureMacosBackend` does not compile or link
+it, and macOS setup still has no caller. That is consistent with this commit's
+own statement that the Mac build will add it when MS5 wires setup, so it does
+not block this safe prerequisite. The later MS5 wiring commit must compile it
+for both Mac architectures and drive first/repeat/contended acquisition
+through the production Mac setup path before item 4 is marked complete.
+
+No full gate, Mac, live browser, live socket or display was used locally.
