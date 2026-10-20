@@ -1254,12 +1254,14 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    - **The group cleans itself up** (RoseCat 6771, 6773). On Darwin, `setup.py`'s first act, before any
      other work or child, is this sequence. It fails closed at every step, so no gap between a check and the
      watch can hide the browser's death:
-     1. `expected = os.getppid()`, then `os.getpgid(0) == os.getpid()` (setup leads its group), else kill
-        the group.
-     2. Open a kqueue and register `EVFILT_PROC`/`NOTE_EXIT` for `expected`. **Any error** (the open, the
+     1. The browser passes its own pid to setup (`browser_pid`, an argument). Capturing `getppid()` at
+        start would already read launchd's 1 if the browser died first, and comparing that with itself
+        proves nothing. Then check `os.getppid() == browser_pid` and `os.getpgid(0) == os.getpid()`
+        (setup leads its group), else kill the group.
+     2. Open a kqueue and register `EVFILT_PROC`/`NOTE_EXIT` for `browser_pid`. **Any error** (the open, the
         `EV_ADD`, an `EV_ERROR` in the result, `ESRCH` because the pid is already gone) counts as the
         browser's death: kill the group.
-     3. **Re-check after registering:** if `os.getppid() != expected`, kill the group. A browser that died
+     3. **Re-check after registering:** if `os.getppid() != browser_pid`, kill the group. A browser that died
         before the registration has had setup re-parented to launchd (ppid 1), so this also covers a reused
         pid: the watch may have landed on a stranger, but the parent check cannot.
      4. Only then start the watcher thread, which blocks in `kevent`. A `NOTE_EXIT`, or any `kevent` error,
@@ -1280,6 +1282,8 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    - **Linux unit test of the sequence** (it runs on Linux, with the OS calls injected). Step 3 guards a reused
      pid, which no e2e can force, so the sequence is a pure function of injected calls:
      - `getppid`, `getpgid`, `register`, `start_watcher`, `killpg`;
+     - it lives in `zb_agent_host/parent_watch.py` as `arm(browser_pid, ops)`, tested by
+       `agent/host/tests/test_parent_watch.py`;
      - the cases: the parent already changed; not the group leader; `register` raising; `register` succeeding
        but `getppid` changed afterwards (the reused-pid case); all good, so the watcher starts and `killpg`
        is never called.
