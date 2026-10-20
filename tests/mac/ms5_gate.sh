@@ -38,7 +38,7 @@ verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, a
   # dir is validated (${rdir:?}) so this never expands to a bare $HOME.
   local rm_rdir="rm -rf \"\$HOME/${rdir:?}\""
   "${SSH[@]}" "$host" "mkdir -p \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
-  "${SCP[@]}" src/agent_secrets_mac.h src/agent_secrets_mac.m tests/mac/keychain_seam_test.m "$host":"${rdir}"/ >/dev/null \
+  "${SCP[@]}" src/agent_secrets_mac.h src/agent_secrets_mac.m src/agent_secrets_mac.zig tests/mac/keychain_seam_test.m "$host":"${rdir}"/ >/dev/null \
     || { echo "FAIL: scp MS5 sources to $host" >&2; "${SSH[@]}" "$host" "$rm_rdir" >/dev/null 2>&1 || true; return 1; }
   # Pass the expected arch + the nonce dir into the (quoted) remote; the remote asserts the EXECUTING arch
   # against the label (RoseCat #3: two legs must be two architectures, not the same machine twice).
@@ -56,6 +56,11 @@ xcrun clang -fobjc-arc -Wno-deprecated-declarations -I "$d" \
   -framework Security -framework Foundation \
   keychain_seam_test.m agent_secrets_mac.m -o kc_seam_test
 ./kc_seam_test
+# MS5.2 Zig port over the C seam (groundwork; not yet wired into app.zig's switch): compile the seam to an
+# object and run the Zig port's round-trip test against a disposable keychain.
+xcrun clang -c -fobjc-arc -Wno-deprecated-declarations -I "$d" agent_secrets_mac.m -o "$d/asm.o"
+"$HOME/.local/bin/zig" test "$d/agent_secrets_mac.zig" "$d/asm.o" -lc -framework Security -framework Foundation
+printf 'PASS\tms5-keychain-zigport\n'
 REMOTE
   printf 'PASS\tms5-leg\t%s\t%s\n' "$host" "$label"
 }
