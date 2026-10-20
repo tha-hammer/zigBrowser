@@ -12767,6 +12767,304 @@ complete. Verdict and evidence were sent to AzureRidge as Agent Mail 6132.
 The approved linear push-through boundary remains the already-pushed
 **`da3028f`**.
 
+## S6b1 complete sensitivity census (`19876cb`, `5185e4d`)
+
+### `19876cb` — APPROVED (failing-first correction)
+
+The corrected red suite closes the false-green path from `abd54a4`. It records
+the row count before each credential transition and accepts only a subsequent
+fixed-order five-control census (`tests/e2e/agent_login_locks_test.py:47-75`).
+Every assertion supplies all five expected values. The cases cover the initial
+state, manual Save, Sign in, the signed-in token store while it is still in
+flight, Cancel, the private-file choice, and the eventual unlock
+(`tests/e2e/agent_login_locks_test.py:97-183`). In particular, the sign-in
+store check requires a new all-locked census while `Saving...` is visible and
+before `done`, so an outcome-only row cannot satisfy it.
+
+The supplied red evidence is adequate: the pre-row implementation failed at
+the initial census, while the change-only draft failed 10 checks including the
+signed-in store's fresh lock census. The test stayed unregistered until its
+green.
+
+### `5185e4d` — APPROVED
+
+The production change is narrow and matches rev 16.18.8. The one centralized
+credential-control recomputation writes the five GTK sensitivity properties,
+then reads those properties back and reports `entry`, `save`, `remove`,
+`file`, and `signin` in fixed order
+(`src/agent_secrets_window.c:214-235`). The rows go through the existing
+e2e-only `secrets_row` path and contain only control names and booleans—never a
+credential. The strict parser accepts only those five names and `0|1`, and the
+green registers the production-chain locks e2e in `zig build test`.
+
+I accept BlueBeaver's clean-export/private-Xvfb gate and mutation evidence:
+**164/164 steps succeeded; 920/920 tests passed**, the lock suite was **35/35**
+on three runs, and leaving each relevant control unlocked or omitting a census
+member made the intended check fail. `signin_store` is presently redundant
+with `busy` for the same-main-loop store handoff, but keeping that additional
+lock condition is harmless defense in depth and should not be removed merely
+to make a mutant non-equivalent.
+
+Therefore **S6b1 clears code review as a whole**, cumulatively approving
+`abd54a4`, `19876cb`, and `5185e4d`. Its final approval still requires the
+user's mandatory `signin-paste` parts A and B under rev 16.18.5. This green
+adds only test-protocol rows and draws no new UI. Python compilation and
+`git diff --check 19876cb^..5185e4d` pass. The verdict was sent to BlueBeaver
+as Agent Mail 6147.
+
+Because earlier linear commits remain blocked, the approved push-through
+boundary remains the already-pushed **`da3028f`**.
+
+## S5c long-run manual-check red (`4f41929`)
+
+### `4f41929` — BLOCKED-for-tests
+
+The committed file is a useful failing-first test, but it is not yet the
+manual case itself: `git show --stat 4f41929` contains only
+`tests/manual/test_real_screen_longrun.py`; the corresponding
+`tests/manual/real_screen_check.py --case long-run` implementation remains
+outside the commit. The red pins the right user-facing behavior—two 200 KiB
+replies (unbroken and words), one PASS row each, fold in under one second, and
+click/Ctrl+A/C copying exactly 204,800 original characters
+(`tests/manual/test_real_screen_longrun.py:47-56`). It also fails closed off
+the private-Xvfb display range and verifies both the explicit-user-permission
+and empty-output-directory guards (`:35-39,58-69`). That is good red coverage,
+and `7e16f13` remains independently APPROVED.
+
+Two test-hygiene defects must be fixed before this runner is registered:
+
+1. **BLOCKER-for-tests — a timeout can orphan the browser tree.** `run_case`
+   uses `subprocess.run(..., timeout=600)` (`:41-45`). Python kills only that
+   wrapper on timeout. The intended manual implementation starts zigBrowser
+   in a new session, so the browser, netd, helper, X clients, and fixture
+   processes can survive after the wrapper is killed—the same orphan class
+   this repository has already had to fix. The automatic test must own a
+   process group and terminate/reap the entire tree on timeout, or use the
+   existing lifecycle launcher with that guarantee.
+2. **BLOCKER-for-tests — every automatic run leaks its output directory.** The
+   default path and the nonempty-path case use `mkdtemp()` (`:42,65`) without a
+   cleanup. A successful run deliberately writes rows, stderr, and captures.
+   Use `TemporaryDirectory` or an unconditional `addCleanup`/`finally` removal
+   for test-owned paths; the human's explicit `--out` artifact must remain
+   preserved.
+
+Once those are fixed, the green must commit the actual guarded manual case,
+its `safe_key` input coverage, and the build registration, then demonstrate
+this red failing before and passing after on a private Xvfb. I did not run the
+browser test while another agent held the gate slot; Python compilation and
+`git diff --check 4f41929^..4f41929` pass. The findings were sent to
+BlackRobin as Agent Mail 6148. The S5c artifact blocker and the linear
+push-through boundary at **`da3028f`** remain open.
+
+## S5d nullable session-error follow-up (`7e16f13`)
+
+### `7e16f13` — APPROVED
+
+This docs-only revision closes the one narrow S5d test-contract gap from
+`4990de9`. The red matrix now requires a session-scoped `error` with
+`prompt_id:null` to be accepted before the first prompt and after a prompt's
+ending frame, where it ends no prompt and commits no other state
+(`plan:2480-2482`). The same frame is rejected with reason `prompt` while a
+prompt is active, and the next delta and proper ending frame for that active
+prompt must still be accepted. That pins both the legal nullable-ID branch and
+the fail-closed branch without allowing a rejection to release or damage the
+active prompt.
+
+`git diff --check 7e16f13^ 7e16f13` passes. This approves plan rev 16.20.17;
+it does not close `f69e2e9`'s separate missing `long-run` real-screen artifact.
+The approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
+
+## Voice and Windows plan review (`9663333`)
+
+Commit `9663333` adds three TDD plans and their three research documents. The
+research supports the principal platform choices, and the plans correctly
+record the user's decisions: Pocket TTS is the bundled primary voice,
+read-aloud defaults on, cloning requires explicit consent and stays local,
+whisper medium is bundled in every installer, and macOS and Windows are the
+primary targets. `git diff --check 9663333^ 9663333` passes. No runtime gate
+was appropriate for this docs-only review.
+
+The plans are not yet safe to implement concurrently. Their shared subsystem
+contracts disagree, and each plan has additional dependency or test gaps.
+
+### Voice-output / TTS plan rev 2.2 — BLOCKED
+
+1. **BLOCKER — the alleged shared audio/model/settings/window contract is not
+   shared.** The TTS plan says the pieces are “named the same” and first owner
+   wins (`TTS:258-275`), but it assigns them to `src/audio.zig`, `src/audio.c`,
+   `src/models.zig`, `src/voice_settings.zig`, and `src/voice_window.c`
+   (`TTS:313-319,1075-1081,1107-1109,1242-1243`). The STT plan instead names
+   `src/voice/audio.zig`, `src/voice/audio_miniaudio.c`,
+   `src/voice/models.zig`, `src/voice/voice_config.zig`, and
+   `src/voice_settings_window.c` (`STT:162-175,338-346`). It also specifies
+   `AudioSource`/`AudioSink` vtables and one miniaudio context, which the TTS
+   files do not adopt. None of these prospective files exists at HEAD, so
+   “whichever lands first” would let the first implementation silently choose
+   an incompatible ABI and force the other plan into shared-file rewrites.
+   Create one named shared foundation slice with one path set, API, owner,
+   red suite, and dependency edge from both plans.
+2. **BLOCKER — `voice.json` has no single-writer or lost-update contract.** TTS
+   promises to validate only `read_aloud` and preserve `dictation` bytes
+   unchanged (`TTS:267,273-275,318`), while STT promises one parsed/versioned
+   schema (`STT:319-325`). Atomic replacement alone does not prevent two open
+   native windows from reading the same generation and replacing each other's
+   changes. The shared foundation must own serialization and either serialize
+   mutations or use a generation/compare-and-retry protocol. Reds must hold
+   both windows open, interleave writes to the two sections, and prove both
+   changes and unknown raw fields survive.
+3. **BLOCKER — verified model bytes are not pinned through consumption.** V3.1
+   verifies names, sizes, and hashes and then the speech engine opens the model
+   by path (`TTS:1096-1127`). The plan has no handle/buffer identity rule or red
+   for replacing a verified file before ONNX Runtime consumes it. Load from
+   the verified bytes or a pinned file handle/platform identity, and mutate or
+   replace the path at the verify/use seam in a failing-first test.
+4. **BLOCKER — the macOS cloning UI is ordered before the UI it needs.** The
+   global order places C1-C3 before M2 (`TTS:858-865`); C1's only UI file is
+   GTK `src/voice_window.c` (`TTS:1272-1298`), C2 gives the Macs only a
+   self-test WAV path (`TTS:1308-1311`), and C3 names no AppKit implementation.
+   The AppKit Voice window does not exist until M2
+   (`TTS:1324-1339`). Split the platform legs or make the Mac enrollment,
+   delete, and real-screen checks depend on M2 with named AppKit files/tests.
+   The same dependency omission affects the S4 Personal Voice UI: it is
+   declared after S2 only (`TTS:1454-1463,1550`) although its control must live
+   in M2's AppKit Voice window.
+5. **BLOCKER — the shipping/package slice has no component dependencies.**
+   V3.5 asserts that Linux, macOS, and Windows packages contain `zb-speech`,
+   ONNX Runtime, models, licenses, and UI credits (`TTS:1142-1166`), yet its
+   dependency row names only legal decision OD7 (`TTS:1541`). It must depend
+   on V3 plus the relevant macOS/Windows runtime and packaging milestones
+   (including the component-producing M1/W1 and platform installer gates), or
+   be explicitly split into per-platform packaging legs.
+
+The license/download-gate terms and Pocket TTS runtime route remain explicit
+decision gates rather than hidden assumptions; those open decisions are not
+additional review defects.
+
+### Voice-input / STT plan rev 2 — BLOCKED
+
+1. **BLOCKER — the same shared-layer and `voice.json` ownership conflicts
+   above apply here.** STT explicitly proposes that whichever plan lands first
+   owns the audio layer and that the sections register into one Voice window
+   (`STT:336-346`), but its paths and ABI differ from TTS. A single shared
+   slice must replace both competing definitions before VS1, VS3, VS6, V2, V3,
+   or V5 begins.
+2. **BLOCKER — the model integrity claim has a verify/use race.** The plan
+   hashes the file “before `whisper_init_from_file`” and optionally caches that
+   result by `(size, mtime, inode)` (`STT:248-252`), then the closure passes the
+   path to `whisper_init_from_file` (`STT:490-494`). Reopening a mutable path
+   does not prove the bytes loaded are the bytes hashed; the proposed cache
+   makes that guarantee weaker. Use `whisper_init_from_buffer` over verified
+   bytes, or a pinned handle and an explicitly proven platform mapping, and
+   add replacement/mutation races at the seam. “The bundle is read-only” is
+   an install policy, not an identity proof on the per-user Windows layout or
+   a test override.
+3. **BLOCKER-for-tests — VS0.2 is allowed to have no red.** Its instruction is
+   to record a failing cross-target compile “or record that it compiled first
+   time” (`STT:543-548`). That violates the repository's red-first contract.
+   Add a missing registration/object oracle or a small build mutant so this
+   slice necessarily demonstrates a red before it joins `cross-check`.
+4. **BLOCKER-for-tests — the no-audio-on-disk oracle is neither hermetic nor
+   complete.** VS4.3 scans global `/tmp` for files newer than the test start
+   that happen to look like RIFF or 64 KiB of f32 data (`STT:693-697`). On a
+   shared host this can fail on another process and can pass audio written in
+   a different encoding or directory. Run the process inside a test-owned
+   mount/temp namespace with an auditable writable-file boundary, or add a
+   production file-open/write census, then assert no audio-derived write over
+   complete/cancel/error paths. Keep the buffer-zeroization accessor as the
+   independent memory oracle.
+
+The chosen medium variant remains an explicit O1 decision before packaging;
+the plan correctly does not disguise that as settled.
+
+### Windows launch plan rev 2 — BLOCKED
+
+1. **BLOCKER — WS8.7 is omitted from its own hard gate.** The no-network
+   `zb-speech` confinement class, its negative network probes, and its mutant
+   are specified at `Windows:1411-1436`, but the milestone gate runs only
+   WS8.1-WS8.6 (`Windows:1466`). W1 treats WS8.7 as a hard prerequisite, so a
+   nominally green WS8 can presently leave the release-critical speech child
+   unproved. Add WS8.7 to the WS8 gate and completion/dependency language.
+2. **BLOCKER — the voice map is stale inside the six-file commit.** The Windows
+   plan says TTS has no Windows cloning leg (`Windows:1636`), but the committed
+   TTS rev 2.2 defines CW with consent, WASAPI capture, private DACL storage,
+   deletion, tests, and real-screen checks (`TTS:1386-1421`). It also says STT
+   claims live microphone checks on both hosts (`Windows:1660-1662`), while
+   STT rev 2 confines the live mic to physical Windows 10 and uses recorded
+   files on the VM (`STT:965-986`). Reconcile WS12's role/dependency/test table
+   with the sibling plans before it becomes the shared Windows contract.
+3. **BLOCKER — uninstall is allowed to report completion while privileged
+   residue survives.** The file-server hard rule requires `--uninstall` to
+   leave no users, profiles, WFP provider/sublayer/filter, or task
+   (`Windows:448-459`), and the red asserts all three censuses empty
+   (`Windows:1702-1708`). WS13.4 nevertheless permits the per-user MSI to
+   finish after a declined or deferred UAC action while those objects remain,
+   hoping a later surviving component offers cleanup
+   (`Windows:1684-1692`). There may be no surviving component to launch, and
+   the release would have reported success while leaving machine-wide state.
+   Pick an installer/privileged-helper flow that either completes cleanup
+   before uninstall succeeds or fails/cancels uninstall with an explicit
+   recoverable state; then make the post-success census unconditional.
+4. **BLOCKER — the final packaging dependency starts before its components
+   exist.** The graph says WS13 can start after WS7 because “components exist”
+   (`Windows:1732-1741`), but its census must contain the WS8 sandbox tools,
+   WS9 networking, WS10 sign-in, WS11 helper/chat, WS12 hook points, and both
+   voice/model stacks (`Windows:1671-1683`). A manifest scaffold may start
+   after WS7; the WS13 green/release gate must depend on every component owner
+   and the VSP/V3.5 platform packaging legs so missing late binaries cannot
+   become an accepted expected set.
+
+**SHOULD:** the research/line audit is intentionally pinned to `032a2c9`, but
+WS0 implementation has since landed in stages. Before WS1 work uses this as
+the authoritative plan, update the status/build ledger to distinguish the
+approved WS0 Linux foundation from the still-required two-host Windows
+evidence, rather than presenting all of WS0 as future work.
+
+Because all three plan artifacts are blocked, `9663333` is not an approved
+implementation contract and does not advance the linear push-through
+boundary. The approved boundary remains the already-pushed **`da3028f`**.
+
+## Windows resolver live-host fix (`6e0a1b1`)
+
+### `6e0a1b1` — BLOCKED-for-tests (production fix is sound)
+
+The code change is correct. PowerShell binds the P/Invoke's access parameter as
+`uint`; the old literal `0x80000000` is parsed as a negative signed value before
+that call, so the cast can fail before `CreateFile` reaches Windows. Passing
+`dwDesiredAccess = 0` is the documented metadata-query form and is sufficient
+for `GetFinalPathNameByHandle`; changing the share mask to read+write avoids an
+unnecessary write-sharing denial. Keeping only
+`FILE_FLAG_BACKUP_SEMANTICS`, without `FILE_FLAG_OPEN_REPARSE_POINT`, is also
+the correct direction: the handle follows a junction instead of returning the
+junction object's in-root name. SSH/PowerShell/CreateFile failures propagate
+nonzero and `gate.sh:88-101` converts them to `DENY`, so the observed error 448
+is fail-closed.
+
+The reported live red/green is credible and directly explains why the prior
+fake-SSH suite missed the defect: before the change every real path failed at
+the P/Invoke conversion; after it an ordinary in-root path and `C:\Windows`
+resolve. The existing hermetic suite remains green (**15/15** in 3.424 s),
+`bash -n` and `git diff --check` pass.
+
+One TDD gap prevents approval of the commit as the durable WS0 fix:
+
+- **BLOCKER-for-tests — no committed test executes the real PowerShell/PInvoke
+  body.** `6e0a1b1` changes only `resolve_path.sh`. The Linux tests observe its
+  generated command and fake the SSH result; the commit message explicitly
+  confirms that this let the old all-path failure survive. A future reversion
+  to `0x80000000` therefore leaves all 15 registered tests green. Add a Windows
+  gate case that invokes the production resolver on an existing in-root path
+  and requires the exact resolved result, then invokes it on an escaping
+  junction (or the present build's documented unresolvable junction) and
+  requires `DENY`. Record the old revision red and this one green. A positive
+  in-root junction case may remain a tracked availability refinement, but the
+  ordinary real `CreateFile` path cannot remain live evidence only.
+
+This verdict does not reject the safer production change and does not ask for
+it to be reverted. It requires a fix-forward regression before cumulative WS0
+approval. The approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
+
 ## Plan rev 16.20.14: cap ordering and local-cap completion (`ec92508`)
 
 ### `ec92508` — BLOCKED pending the prompt-correlation decision
