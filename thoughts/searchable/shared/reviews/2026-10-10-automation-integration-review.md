@@ -18459,3 +18459,58 @@ reproduced from committed artifacts and the gate only times out.
 
 No full gate, Windows host, live browser, live socket or display was used
 locally.
+
+## S4a stale-store diagnostics (`4881ab7`)
+
+Reviewed at `4881ab7` on 2026-10-20.
+
+**Verdict: APPROVED.** This is a test-only diagnostic strengthening. The
+previous stale-store case waited up to 15 seconds for `connected-file` and
+discarded the boolean result; lines 1082-1085 now make that wait an assertion
+and report the click coordinates, recent file-button rectangles and status
+labels. Lines 1086-1089 still require the final file to contain token B, but
+classify the observed value only as `nothing`, `A`, `B` or `something else`.
+Neither canary value is interpolated into the message, protocol row or log.
+The production race oracle is unchanged and is now easier to diagnose under
+load rather than silently falling through to the less-specific file check.
+
+The exact-commit Python source compiles, and the diff is whitespace-clean. I
+did not start a second GTK run while BlueBeaver held the full-gate slot; this
+diagnostic-only hunk neither changes production nor weakens the registered
+case.
+
+## MS5 real-binary setup-refusal oracle (`8409a57`)
+
+Reviewed at `8409a57` on 2026-10-20.
+
+**Verdict: APPROVED. The `90686fa` production-call coverage blocker is
+CLOSED by `8409a57`.**
+
+`tests/mac/ms5_setup_refusal_gate.sh` resolves and archives the requested
+commit, builds it natively on the x86_64 and arm64 hosts, asserts each host's
+executing architecture, and runs that commit's real `zigBrowser
+--agent-setup` under an otherwise empty environment and fresh HOME. It
+requires exit 1, empty stdout, exactly the fixed one-line Seatbelt-not-ready
+stderr, an empty HOME and no marker from the canary interpreter. Thus it
+reaches `runAgentSetup`, not the pure `platformGate` tested previously, and
+the empty HOME/canary observations protect the no-setup-before-gate ordering
+available at this slice.
+
+BlueBeaver reports the exact driver **PASS** on both Macs for descendant
+`4881ab7`. The same committed driver against pre-call-site parent `41c683a`
+fails on both architectures because the real binary emits the former
+Linux-only line. That is the required failing-first discrimination: deleting
+the production call no longer survives. The future mutant which moves the
+gate after a macOS spawn cannot exist yet because that spawn path is not
+wired; the later MS5 wiring must retain/extend the mutation proof when it
+introduces that path.
+
+The exact script passes `bash -n` and the diff is whitespace-clean. It uses
+BatchMode, strict host-key checking, no display, no credential and a bounded
+per-leg timeout. Two nonblocking harness hardenings remain: assert that HOME
+still exists before testing that it is empty (`ls -A` can look empty when the
+directory itself is missing), and honor a separate `ZB_MAC_ARM_KEY` as the
+other two-host Mac gates do. These do not affect the reported call-site red or
+both-architecture green.
+
+No local Mac, full gate, browser, live socket or display was used.
