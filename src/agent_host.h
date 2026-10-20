@@ -6,10 +6,12 @@
 
 #include <sys/types.h>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__MINGW32__)
 /* This subsystem is Linux-only (fork/prctl/flock/netd) and is never called on Windows (app.zig guards
  * every use with builtin.os.tag == .linux), but the header must still TRANSLATE for the Windows build's
- * unconditional @cImport, where MSVC's <sys/types.h> has no pid_t. */
+ * unconditional @cImport, where MSVC's <sys/types.h> has no pid_t. MinGW (the x86_64-windows-gnu
+ * cross-check target) DOES define pid_t in <sys/types.h>, so excluding __MINGW32__ avoids a typedef
+ * redefinition clash there while still supplying pid_t for the real MSVC build. */
 typedef int pid_t;
 #endif
 
