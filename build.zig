@@ -561,6 +561,20 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_auth_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_tests_module }));
     run_agent_auth_tests.skip_foreign_checks = true;
+    // Rev 16.18.15 (RoseCat 5911): S6b2's ZIGBROWSER_AGENT_AUTH_TEST seam, decided before the
+    // auth window exists (src/agent_auth_seam.zig).
+    const agent_auth_seam_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_auth_seam_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_auth_seam_tests_module.addImport("agent_auth_seam", b.createModule(.{
+        .root_source_file = b.path("src/agent_auth_seam.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_auth_seam_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_seam_tests_module }));
+    run_agent_auth_seam_tests.skip_foreign_checks = true;
     // Rev 16.18.11-16.18.14 (BlackRobin 5924; RoseCat 6252, 6261): the app's own authorize-URL
     // check, over the case table shared with the login helper (agent_auth.authorizeUrl, then
     // zb_login_validate).
@@ -1568,6 +1582,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_auth_seam_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_exchange.step);
@@ -1578,6 +1593,7 @@ pub fn build(b: *std.Build) void {
     agent_auth_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
     agent_auth_step.dependOn(&run_agent_login_protocol_tests.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&run_agent_auth_seam_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_exchange.step);
