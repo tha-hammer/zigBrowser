@@ -2,6 +2,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <objc/runtime.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -37,6 +38,12 @@ struct ZbWindow {
 
 static ZBAppHost *g_active_app = nil;
 static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automation_set_script)
+// Associated-object tag marking a WKNavigation that a routed (automation) navigation started. A load
+// failure is suppressed (no app-exit) ONLY for a tagged navigation — scoped by navigation IDENTITY,
+// so a superseded routed nav's late failure is swallowed while an unrelated user/page-initiated
+// navigation failure in the same window still exits (RoseCat 6227.2 #4, identity not a per-window bit).
+// The tag lives on the WKNavigation and is freed with it (no set to prune, no leak).
+static const void *const kZBRoutedNavKey = &kZBRoutedNavKey;
 static void handle_signal(int signo);
 
 static void emit_safe_field(const char *text) {
@@ -261,10 +268,6 @@ static void handle_signal(int signo) {
 // must NOT exit the app (unlike a user-initiated load failure).
 @property(nonatomic, strong) WKNavigation *routedNav;
 @property(nonatomic, assign) int routedOutcome;
-// Set once THIS window has run a routed navigation. Scopes failure suppression per window: a load
-// failure for a superseded routed navigation in this window is ignored (no app-exit), but a
-// user-initiated load failure in a window that never ran automation still exits (RoseCat 6227.2 #4).
-@property(nonatomic, assign) BOOL hadRoutedNav;
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child;
 - (void)loadURI:(NSString *)uri;
 - (void)reloadBypassingCache:(BOOL)bypassCache;
@@ -524,13 +527,13 @@ static void handle_signal(int signo) {
   // A routed (automation) navigation that fails is reported to the caller as navigation_failed and
   // must NOT bring the whole browser down — the session stays usable on its previous document
   // (RoseCat 6227.2). Only a user-initiated load failure exits.
-  if (navigation != nil && navigation == self.routedNav) {
-    self.routedOutcome = 2;
-    return;
-  }
-  // A superseded routed navigation's late failure in a window that HAS run automation: do not exit,
-  // do not report. Scoped per window, so a user-load failure in a non-automated window still exits.
-  if (self.hadRoutedNav) {
+  // Scoped by navigation identity: a tagged (routed) navigation never exits the browser. The CURRENT
+  // routed navigation reports navigation_failed; a superseded routed navigation's late failure is
+  // swallowed. An untagged navigation (user/page-initiated/initial load) falls through to the exit path.
+  if (navigation != nil && objc_getAssociatedObject(navigation, kZBRoutedNavKey) != nil) {
+    if (navigation == self.routedNav) {
+      self.routedOutcome = 2;
+    }
     return;
   }
   NSString *uri = [self failingURIForWebView:webView error:error];
@@ -1137,12 +1140,13 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
     if (!started) {
       if (!zb_job_claim_dispatch(job)) { poll = nil; zb_job_unref(job); return; }  // waiter cancelled first
       if (host == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
-      host.hadRoutedNav = YES;  // this window is now under automation (scopes failure suppression)
       // Submit FIRST; only on a real (non-nil) navigation do we invalidate the watchdog and clear the
       // settled state. A refused start leaves the old document settled, so a later url/title/eval does
       // not wait to timeout (RoseCat 6227.2 #3).
       WKNavigation *nav = start(host);
       if (nav == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
+      objc_setAssociatedObject(nav, kZBRoutedNavKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);  // identity tag
+      // A refused start never reaches here, so it never suppresses a later user-navigation failure.
       [host.timeoutTimer invalidate];
       host.timeoutTimer = nil;  // no user-load watchdog on a routed nav -> never self-exits
       host.finishedOrFailed = NO;
