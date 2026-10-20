@@ -6,9 +6,10 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Voice input (speech-to-text) with whisper.cpp — TDD implementation plan"
 tags: [plan, tdd, voice, stt, whisper.cpp, microphone, agent-drawer, macos, windows, linux, model-management, miniaudio]
-status: plan for review (rev 2.4)
-rev: 2.4
+status: plan for review (rev 2.5)
+rev: 2.5
 last_updated: 2026-10-20
+last_updated_note_2_5: "Rev 2.5 (2026-10-20): VF §4 ZbChild synced byte-identical with the TTS plan's rev 2.7 change — the child inherits the PCM pipe only; enrolment reuses it via type-10 enroll_pcm frames (no second pipe; RoseCat 6404). STT-internal behaviors unchanged."
 last_updated_note_2_4: "Rev 2.4 (2026-10-20): clears RoseCat's voice re-review (mail 6375). The inherited fd/HANDLE capability was forgeable (sandbox code can make a right-kind handle), so VS4.8 is replaced by a boundary-by-construction: the SHIPPED binary has no CLI live-capture path (--voice-selftest reads a WAV only and cannot select a device; --voice-capture-probe/device selection are not compiled in), and live capture + enumeration live in a separate test-only binary zb-voice-probe (-Dvoice_probe) absent from the shipped bundle and every sandbox-visible tree; the only shipped live capture is the GUI drawer Mic. Sandbox negatives: shipped-no-probe + zb-voice-probe-absent census (mutant: build the probe into the shipped/visible tree ⇒ red). The forgeable-capability launcher is removed; VS4.6/VS7.1/VS8.1/VS10.1/VSP.2 use the shipped WAV-only selftest. Duplicated VS4.8 text removed. No user decision changed."
 last_updated_note_2_3: "Rev 2.3 (2026-10-20): clears RoseCat's effde38 re-review (still BLOCKED). (1) The unforgeable capture capability is pinned (VS4.8): a Linux/macOS inherited O_CLOEXEC fd (--voice-cap-fd) / Windows inherited HANDLE (--voice-cap-handle), created/owned/closed by a test launcher tools/zb-voice-launch, with a wrong-kind-handle red; VS4.6/VS8.1/VS10.1/VSP.2 now invoke through the launcher, not the bare exe. (2) No live capture in any Windows gate: VS10's capture mappings use an injected ZB_E2E_CAPTURE seam; real enumeration and live mic are manual (win-voice-live) only. (3) The (size,mtime,inode) tuple may only schedule work, never establish identity, skip hashing, or authorize bytes — every consumed model is hash-verified and loaded from verified bytes/handle. (4) macOS deps are a hard gate: VS7/VS8/VSP.3 block until JadeBeacon's committed Mac-plan revision lands the voice roles (he approved directionally, mail 6347). No user decision changed."
 last_updated_note_2_2: "Rev 2.2 (2026-10-20): macOS paths made as concrete as the Windows ones AND RoseCat's re-review drift cleared. VF §4 is now byte-identical to the TTS plan's §2.4 between explicit VF:BEGIN/VF:END markers (a proposed tools/check_vf_identical.sh asserts diff is empty); the VF privacy oracle allowlists exactly the test's declared FileSink artifact; automated gates are Null/WAV/FileSink only (VS10's live mic moved to the manual win-voice-live check). The §4a contracts are folded into the owning slices as concrete reds: VS4.7 async epoch/cancel/close/restart, VS4.6+VS4.8 the unforgeable capture capability + sandbox negatives, VS5.8 the first-use privacy notice (no capture before Accept / decline / persistence / corrupt re-prompt), VSP.5 upgrade/repair/downgrade/tamper/orphan, VSP.6 the orchestrator-only remote model-transfer, and concrete reds for VS9/VS11. SHOULD: whisper_init_from_buffer_with_params (nondeprecated 1.9.5). macOS entitlement/census deltas are proposed to JadeBeacon, not edited into his plan."
@@ -424,7 +425,7 @@ orchestrator's user-approved `real_audio_check` / `real_screen_check` open a phy
 (`agent/host/zb_agent_host/sandbox.py`); the speech engine and the cloning-enrolment helper are
 **native** children the browser spawns, so VF defines its own `ZbChild` platform interface,
 implemented per OS:
-- inherits **exactly** the PCM pipe (and, for enrolment, the sample pipe) and nothing else; **no
+- inherits **exactly** the PCM pipe (enrolment reuses the same pipe via type-10 `enroll_pcm` frames — no second pipe) and nothing else; **no
   network**; read-only model dir; write only its own scratch; **no audio device** (the browser
   plays/records);
 - parent-death kill (Linux `PR_SET_PDEATHSIG`; macOS kqueue `NOTE_EXIT` or a watchdog; Windows a
