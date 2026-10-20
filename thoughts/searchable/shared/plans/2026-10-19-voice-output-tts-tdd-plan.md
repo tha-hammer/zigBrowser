@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "The browser's voice: agent replies spoken aloud, with user-customizable voices — TDD implementation plan"
 tags: [plan, tdd, tts, text-to-speech, voice, agent-drawer, pocket-tts, onnxruntime, macos, windows, linux-dev, voice-cloning, miniaudio]
-status: plan for review (rev 2.5)
-rev: 2.5
+status: plan for review (rev 2.6)
+rev: 2.6
 last_updated: 2026-10-20
 last_updated_note: "Rev 2 records the user's decisions of 2026-10-19: bundled engine first (system voices become a later, secondary option), read-aloud on by default, the STT side bundles whisper medium (installer about 0.8 GB larger), and a separate Windows launch plan as the Windows dependency. Slices re-sequenced: core, test backend, audio layer, bundled engine, then the drawer and Voice window, then Macs, cloning, Windows, and system voices last."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md
@@ -25,6 +25,14 @@ windows_dependency: thoughts/searchable/shared/plans/2026-10-19-windows-launch-t
 
 ## Revision history
 
+- **Rev 2.6 (2026-10-20):** clears RoseCat's voice re-review (mail 6375) of the D9.2 wire format.
+  (1) **Stream framing** — the reader read-exacts + buffers across partial reads, preserves the next
+  frame (coalesced frames are normal), and rejects only EOF/deadline mid-frame or a payload that
+  doesn't match its type's layout; fragmented/coalesced/truncated reds on both endpoints. (2) **`pcm`
+  validity** — `len>=8` and `(len-8) % (bytes_per_sample*channels)==0`, with nonzero supported
+  rate/channels in `hello`; malformed-edge reds. (3) **String length widened to `u32`** (a `u16`
+  cannot hold 64 KiB; `text` ≤ 65,535 bytes). (4) **Enrolment frames added to the shared codec** as
+  wire types 9-13 with exact layouts and cross-endpoint golden vectors. No user decision changed.
 - **Rev 2.5 (2026-10-20):** clears RoseCat's `effde38` re-review (still BLOCKED). (1) **No automated
   run opens a real/muted/live device** — Closure E uses an injected `WavFileSource`, V2.2 an injected
   device-loss (no `pactl`), V2.4/W1.3/CW.4 render to `FileSink`/Null, and the integration table +
@@ -635,26 +643,39 @@ rows.
 **D9.2 Engine protocol and resource bounds (rev 2.3; wire format pinned rev 2.5).**
 - **Wire format (pinned; all integers little-endian).** Every frame is a fixed 10-byte header +
   payload: `magic` = ASCII `"ZBSP"` (4 bytes), `version` = `u8` (currently `1`), `type` = `u8`,
-  `len` = `u32` LE (payload byte count, ≤ 1 MiB). Strings are UTF-8 with a `u16` LE byte-length
-  prefix (no NUL terminator; invalid UTF-8 ⇒ `error`). `utt` and `seq` are `u32` LE. The receiver
-  **rejects** a bad magic, an unknown `version`/`type`, a `len` over the max, a payload shorter than
-  `len`, and **any trailing bytes** after a frame boundary — each ⇒ `error` + the utterance fails
-  (never a crash or a partial read).
-- **Payload layouts (`type` → bytes):**
-  - `hello` (browser→child, type 1): `u8 sample_format` (`0`=`s16le`, `1`=`f32`), `u32 rate`,
-    `u8 channels`, `u16 proto_version_min`. The child answers `ready` or `error` if it cannot meet them.
+  `len` = `u32` LE (payload byte count, ≤ 1 MiB). Strings are UTF-8 with a **`u32` LE byte-length
+  prefix** (so a 64 KiB `text` fits; a `u16` could not — no NUL terminator; invalid UTF-8 ⇒ `error`).
+  `utt` and `seq` are `u32` LE.
+- **Stream framing (a pipe fragments and coalesces).** The reader **read-exacts** the 10-byte header,
+  then exactly `len` payload bytes, **buffering** across partial reads; bytes belonging to the **next**
+  frame are preserved for the next decode (two frames in one read is normal, not an error). A frame is
+  rejected only for: a bad magic, an unknown `version`/`type`, a `len` over the max, **EOF or the read
+  deadline reached mid-frame**, or **trailing/garbage bytes _inside_ the declared `len`** (a payload
+  that does not match its type's fixed layout). Each ⇒ `error` + the utterance fails, never a crash.
+  Reds on **both** endpoints: a header split across two reads; a payload split across reads; **two
+  frames coalesced in one read** both decode; a truncated (EOF mid-frame) frame errors.
+- **Payload layouts (`type` → bytes; a payload whose length/shape doesn't match ⇒ `error`):**
+  - `hello` (browser→child, type 1): `u8 sample_format` (`0`=`s16le`, `1`=`f32`), `u32 rate` (nonzero,
+    8k-192k), `u8 channels` (1-2), `u16 proto_version_min`. The child answers `ready` or `error`.
   - `voice` (type 2): `str voice_id`.
-  - `speak` (type 3): `u32 utt`, `str text` (≤ 64 KiB UTF-8).
+  - `speak` (type 3): `u32 utt`, `str text` (≤ 65,535 UTF-8 bytes; the ≤64 KiB D9.2 bound).
   - `cancel` (type 4): `u32 utt`.
   - `ready` (child→browser, type 5): `u8 sample_format`, `u32 rate`, `u8 channels` (echoed, authoritative).
-  - `pcm` (type 6): `u32 utt`, `u32 seq`, then `len-8` bytes of interleaved samples in the `hello`
-    format (s16le = `i16` LE, f32 = IEEE-754 LE); sample count = `(len-8)/bytes_per_sample`.
+  - `pcm` (type 6): `u32 utt`, `u32 seq`, then `len-8` sample bytes in the `hello` format (s16le =
+    `i16` LE, f32 = IEEE-754 LE). **Validity: `len >= 8` and `(len-8) % (bytes_per_sample * channels) == 0`**
+    (whole frames; `bytes_per_sample` = 2 for s16le, 4 for f32); otherwise ⇒ `error`. Sample count =
+    `(len-8) / (bytes_per_sample * channels)`.
   - `done` (type 7): `u32 utt`.
   - `error` (type 8): `u32 utt` (`0` = session-level), `u16 code`, `str detail`.
-- **One shared codec + golden vectors.** A single `src/speech_wire.zig` encodes/decodes every frame;
-  a **golden-vector test** (byte arrays for one of each frame type, checked into `tests/fixtures/speech/`)
-  is run by **both** the browser side and `zb-speech`, plus malformed/trailing-byte/short-`len`
-  reds. Browser and child never hand-roll a second parser.
+  - **enrolment (D9.1), same codec:** `enroll_begin` (type 9): `str voice_id`; `enroll_pcm` (type 10):
+    `str voice_id`, `u32 seq`, then sample bytes (same `(len-k) % (bytes_per_sample*channels)==0` rule);
+    `enroll_end` (type 11): `str voice_id`; `enroll_abort` (type 12): `str voice_id`; `enroll_ready`
+    (child→browser, type 13): `str voice_id`.
+- **One shared codec + golden vectors.** A single `src/speech_wire.zig` encodes/decodes **every** frame
+  type above (1-13); a **golden-vector test** (byte arrays for one of each type, incl. enrolment and a
+  2-channel f32 `pcm`, in `tests/fixtures/speech/`) runs on **both** the browser side and `zb-speech`,
+  plus the framing reds (fragmented / coalesced / truncated), the non-whole-sample `pcm` red, the
+  oversize-`text` red, and a bad rate/channels `hello` red. Browser and child never hand-roll a parser.
 - **Bounds (each a failing-first red).** A single frame payload has a **maximum** (oversized ⇒
   `error`, not a crash); `pcm` carries a monotonic `seq` so drops/reorders are detected;
   **backpressure** — the child blocks writing `pcm` while the browser's `AudioSink` queue is full,
@@ -702,7 +723,8 @@ MS6 Seatbelt profile; on Windows the Windows plan's WS8.7 no-network `zb-speech`
 **D9.1 Cloning enrolment sub-protocol (rev 2.3; clears review #5).** Enrolment needs the child to
 derive speaker state from live samples, which the D9.2 frame set alone cannot carry. Add bounded
 enrolment frames over the same versioned pipe, plus a second inherited **sample pipe** (`ZbChild`):
-- browser→child `enroll_begin <id>`, `enroll_pcm <id> <seq> <n>` (16 kHz mono f32), `enroll_end <id>`,
+- the frames are **wire types 9-13 in the D9.2 shared codec** (exact layouts + golden vectors there):
+  browser→child `enroll_begin <id>`, `enroll_pcm <id> <seq> <n>` (16 kHz mono f32), `enroll_end <id>`,
   `enroll_abort <id>`; child→browser `enroll_ready <id>` (speaker state derived) / `error <id> <code>`.
 - **Bounds (defaults, named tunables; edge reds):** total enrolment audio **≤ 120 s** and **≤ 16
   MiB** and **≤ 1,920,000 samples** (120 s × 16 kHz) — the first frame that would exceed any ⇒
