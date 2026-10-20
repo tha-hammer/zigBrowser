@@ -17902,3 +17902,48 @@ Local evidence for this section: `test-agent-setup-ms5` 6/6,
 `test_parent_watch` 6/6, WS0 hostless 48/48, changed Python compilation and
 `git diff --check` all pass. No full gate, Mac, Windows host, live browser or
 real display was used. Findings were sent in Agent Mail 6797-6799.
+
+## MS5 interpreter pin and WS0 user decisions (`2812c97` through `890d52e`)
+
+Reviewed at `890d52e` on 2026-10-20 17:18 EDT.
+
+- **`2812c97` APPROVED.** Mac app bundles now have one exact interpreter
+  contract: `<X>.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12`,
+  the python.org CPython 3.12 universal2 framework launcher. The plan explicitly
+  forbids a bundle venv because its recorded absolute home would not survive an
+  app move, while retaining `venv/bin/python` for macOS development trees and
+  Linux. It also requires both `Runtime.package_dir` and `Runtime.python` to be
+  asserted, closing the ambiguity recorded against `f8cd87e`.
+- **`6d82baa` APPROVED as the failing-first red.** The isolated test covers an
+  ordinary bundle, a bundle whose path contains a space, a macOS development
+  tree and Linux, and checks both runtime fields in every case. Against the old
+  `f8cd87e` implementation, the two bundle expectations necessarily fail at
+  `venv/bin/python`, while the dev/Linux controls pass; the owner supplied that
+  execution evidence. Keeping the red unregistered until its green is correct.
+- **`890d52e` APPROVED.** `runtimeFor` selects the pinned framework launcher
+  only for a real `.app/Contents/MacOS` executable; the non-bundle rule remains
+  unchanged. The new test is registered in both `test-agent-setup-ms5` and the
+  root gate. The display-free focused run is green: **6/6 steps, 8/8 tests**;
+  `git diff --check 2812c97^..890d52e` is clean. This cumulatively closes the
+  interpreter finding on `f8cd87e`; that earlier pure runtime/platform seam is
+  now **APPROVED through `890d52e`**, without claiming the later app wiring or
+  full MS5 slice is complete.
+
+### Authoritative WS0 decisions (user, 2026-10-20)
+
+1. **The Win10 file-server gate is zero-write.** It must not stage a probe,
+   create a result/marker/temp file, create a task, or perform remote cleanup.
+   The probe program is streamed over the existing SSH connection's stdin and
+   writes its result only to stdout. The fix needs an argv/transport oracle that
+   fails any Win10 `scp`, remote redirection/staging or other write, plus a
+   positive stdin-stream execution case. This sharpens the prior host-key-only,
+   read-only identity exception; it does not authorize a session helper there.
+2. **The Win11 VM free-space readiness floor is 10 GB, not 20 GB.** This
+   supersedes the 20 GB expectation in the `5402594` review and current plan.
+   The VM cannot grow because its host disk is 97% full, and the build succeeds
+   with 13 GB free. Production and plan must use the same inclusive boundary,
+   with fail/pass boundary tests immediately below 10 GB and at 10 GB.
+
+AzureRidge is implementing both decisions; they are recorded here as contracts,
+not as approval of code that has not landed. No full gate, remote host, live
+browser or real display was used for this review.
