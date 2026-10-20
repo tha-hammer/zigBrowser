@@ -10,7 +10,9 @@ NO_PROXY=127.0.0.1) proves no other host was contacted.
 A turn is a dict: {"text": str} and/or {"tool_use": {"name": str, "input": {}}};
 or {"deltas": [str, ...]}: one text block whose streamed form is one text delta per
 item (its text is their join), with an optional {"stall": threading.Event}: the
-stream holds after the first delta (flushed) until the event is set, at most 30 s;
+stream holds after the first delta (flushed) until the event is set, at most 30 s,
+and an optional "gap_ms": the stream holds that long after each delta but the last
+(S5c-1 rev 16.20.11: each delta reaches the helper in a flush of its own);
 or {"status": int, "body": {...}}: that HTTP status with a JSON error body (the
 default body names the status), streamed request or not (chat-drawer plan S5a);
 or {"endless": str}: one text block streamed as that piece over and over, "every_ms"
@@ -98,6 +100,8 @@ def _sse_events(turn, index, stopped=None):
                 yield "content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": piece}}
                 if n == 0 and turn.get("stall") is not None:
                     turn["stall"].wait(STALL_MAX_S)  # the delta above is already flushed
+                if turn.get("gap_ms") and n < len(pieces) - 1:
+                    (stopped or threading.Event()).wait(turn["gap_ms"] / 1000)
         else:
             empty = dict(block, input={})
             yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": empty}

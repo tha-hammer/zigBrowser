@@ -12,10 +12,12 @@ Run n (counted in <home>/scratchpad/fake-host-runs) uses runs[n], or the last on
 reads the token from fd 3 to EOF (it records only its length), prints `ready`, then
 answers every `prompt` with its ITEMs in order:
 - {"raw": "TEXT"}: TEXT as one stdout line, as it is (a bad frame);
-- {"frame": {...}}: the frame with "v": 1 and the next seq added, and the value
-  "$SESSION" replaced by the prompt's session;
+- {"frame": {...}}: the frame with "v": 1 and the next seq added, the value
+  "$SESSION" replaced by the prompt's session and "$PROMPT_ID" by the `prompt_id` of the
+  last prompt read (S5c-1, rev 16.20.13);
 - {"repeat": ["TEXT", N]}: TEXT as N stdout lines in one write (left in the pipe);
 - {"stderr": "TEXT"}: TEXT as one stderr line;
+- {"sleep": S}: wait S seconds before the next ITEM; app frames wait meanwhile (S5c-1);
 - {"flood": [FRAME, N]}: FRAME (as for "frame") N times, 1000 frames per write (S5c-1);
 - {"forever": FRAME}: FRAME (as for "frame") over and over from a thread, as fast as
   the pipe takes it, until the next `interrupt`, `end_session` or `shutdown` (S5c-1).
@@ -31,6 +33,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 home = os.environ["PYTHONPATH"].rsplit("/runtime/host", 1)[0]
 scratch = os.path.join(home, "scratchpad")
@@ -96,9 +99,14 @@ streams = []
 prompts = 0
 
 
+prompt_id = None  # the last prompt's
+
+
 def fill(value, session):
     if value == "$SESSION":
         return session
+    if value == "$PROMPT_ID":
+        return prompt_id
     if isinstance(value, dict):
         return {k: fill(v, session) for k, v in value.items()}
     return value
@@ -117,6 +125,8 @@ for line in sys.stdin:
         streams = []
     if frame.get("type") == "shutdown":
         break
+    if frame.get("type") == "prompt":
+        prompt_id = frame.get("prompt_id")
     kind = {"prompt": "on_prompt", "end_session": "on_end", "interrupt": "on_interrupt"}.get(frame.get("type"))
     if kind is not None:
         items = script.get(kind, [])
@@ -145,6 +155,8 @@ for line in sys.stdin:
             elif "stderr" in item:
                 sys.stderr.write(item["stderr"] + "\n")
                 sys.stderr.flush()
+            elif "sleep" in item:
+                time.sleep(item["sleep"])
             else:
                 emit(fill(item["frame"], frame["session"]))
 sys.exit(0)
