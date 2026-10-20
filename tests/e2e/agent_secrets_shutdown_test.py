@@ -57,6 +57,19 @@ X.XPending.argtypes = [ctypes.c_void_p]
 X.XNextEvent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 X.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
 X.XCloseDisplay.argtypes = [ctypes.c_void_p]
+X.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+IS_VIEWABLE = 2  # XWindowAttributes.map_state
+
+
+class _Attributes(ctypes.Structure):  # XWindowAttributes (Xlib.h)
+    _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("border_width", ctypes.c_int), ("depth", ctypes.c_int), ("visual", ctypes.c_void_p),
+                ("root", ctypes.c_ulong), ("c_class", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+                ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int), ("backing_planes", ctypes.c_ulong),
+                ("backing_pixel", ctypes.c_ulong), ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+                ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int), ("all_event_masks", ctypes.c_long),
+                ("your_event_mask", ctypes.c_long), ("do_not_propagate_mask", ctypes.c_long),
+                ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p)]
 
 
 class _Any(ctypes.Structure):  # XUnmapEvent / XDestroyWindowEvent share this prefix
@@ -118,6 +131,25 @@ class Watch:
                 self.events.append(("unmap" if kind == UNMAP else "destroy", window))
                 if kind == DESTROY:
                     gone.add(window)
+
+    def drain(self, windows: set[int], seconds: float) -> None:
+        """Every event of `windows` for the whole of `seconds` (RoseCat 6188: a quiet window,
+        so a late unmap or destroy is seen)."""
+        deadline = time.monotonic() + seconds
+        ev = _Event()
+        while time.monotonic() < deadline:
+            if not X.XPending(self.dpy):
+                time.sleep(0.002)
+                continue
+            X.XNextEvent(self.dpy, ctypes.byref(ev))
+            if ev.any.window in windows and ev.any.type in (UNMAP, DESTROY):
+                self.events.append(("unmap" if ev.any.type == UNMAP else "destroy", ev.any.window))
+
+    def viewable(self, window: int) -> bool:
+        """The window exists and is mapped with all its ancestors (map_state IsViewable)."""
+        attrs = _Attributes()
+        X.XSync(self.dpy, 0)
+        return bool(X.XGetWindowAttributes(self.dpy, window, ctypes.byref(attrs))) and attrs.map_state == IS_VIEWABLE
 
     def close(self) -> None:
         if self.dpy:
@@ -190,10 +222,16 @@ def two_windows(si, check):
         return None
     after = {w for w, *_ in b.x.toplevels("zigBrowser")}
     secrets = b.x.toplevels(TITLE, 50)
-    if not check(len(before) == 1 and len(after - before) == 1 and len(secrets) == 1,
+    new = after - before
+    if not check(len(before) == 1 and len(new) == 1 and len(secrets) == 1,
                  "one first window, one second window, one Secrets window", b):
         return None
-    return Watch(b), before.pop(), (after - before).pop(), secrets[0][0]
+    first_w, second = next(iter(before)), next(iter(new))  # chosen before anything mutates (RoseCat 6188)
+    check(first_w != second, "the first and second windows differ")
+    watch = Watch(b)
+    check(watch.viewable(first_w) and watch.viewable(second) and watch.viewable(secrets[0][0]),
+          "all three toplevels are mapped before the close")
+    return watch, first_w, second, secrets[0][0]
 
 
 def case_other_closes(binary: Path, tmp: Path, check) -> None:
@@ -207,13 +245,14 @@ def case_other_closes(binary: Path, tmp: Path, check) -> None:
         watch, first_w, second, sw = got
         watch.delete(second)
         watch.collect({first_w, second, sw}, 20, until={second})
-        time.sleep(1.5)
-        watch.collect({first_w, second, sw}, 0.5, until=set())
+        watch.drain({first_w, second, sw}, 2.0)  # a quiet window: a late unmap is seen too
         seen = list(watch.events)
-        print(f"   other-closes: {seen}", flush=True)
+        print(f"   other-closes: {[(k, {sw: 'secrets', first_w: 'first'}.get(w, 'second')) for k, w in seen]}",
+              flush=True)
         check(("destroy", second) in seen, "the second window is destroyed")
-        check(not any(w in (sw, first_w) for _, w in seen), "the Secrets window and the first window stay mapped")
-        check(len(b.x.toplevels(TITLE, 50)) == 1, "the Secrets window is still there", b)
+        check(not any(w in (sw, first_w) for _, w in seen),
+              "no unmap or destroy of the Secrets window or the first window, through a 2 s quiet window")
+        check(watch.viewable(sw) and watch.viewable(first_w), "the Secrets window and the first window are still mapped")
         check(lt.endings(b) == [] and b.proc.poll() is None, f"the sign-in has no ending ({lt.login_states(b)})", b)
         sec.click_rect(b, lt.rect(b, "cancel"))
         b.wait(lambda: lt.endings(b) != [], 10)
@@ -247,9 +286,11 @@ def case_parent_closes_other_survives(binary: Path, tmp: Path, check) -> None:
               "the Secrets window is destroyed before the first window")
         b.wait(lambda: lt.endings(b) != [], 10)
         check(lt.endings(b) == ["cancelled"], f"the sign-in's one ending is cancelled ({lt.login_states(b)})", b)
-        time.sleep(1.5)
+        watch.drain({first_w, second, sw}, 1.5)
+        seen = list(watch.events)
         check(b.proc.poll() is None, "the browser keeps running", b)
-        check(not any(w == second for _, w in seen), "the second window stays mapped")
+        check(not any(w == second for _, w in seen), "no unmap or destroy of the second window, through a quiet window")
+        check(watch.viewable(second), "the second window is still mapped")
         check(len(b.x.toplevels("zigBrowser")) == 1 and b.x.toplevels(TITLE, 50) == [],
               "the second window remains and no Secrets window does", b)
     finally:
