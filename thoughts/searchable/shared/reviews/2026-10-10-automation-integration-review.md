@@ -17947,3 +17947,56 @@ Reviewed at `890d52e` on 2026-10-20 17:18 EDT.
 AzureRidge is implementing both decisions; they are recorded here as contracts,
 not as approval of code that has not landed. No full gate, remote host, live
 browser or real display was used for this review.
+
+## Windows drawer regression and MS5.3 token-fd seam (`d7c5207` through `d14a6cf`)
+
+Reviewed at `d14a6cf` on 2026-10-20 17:25 EDT.
+
+### `ab0631f` — APPROVED
+
+The fix restores the pre-`2209c4a` meaning of `drawer_on`, so the portable
+drawer branch and its `zb_drawer_*` exports remain reachable in the Windows
+object. A separate `drawer_core = drawer_on and os == linux` gates only the
+in-process automation core and `agent_tools`; Windows does not gain that
+privileged core. The observed regression is exact and non-vacuous:
+`cross-check-drawer-win` failed at `2209c4a` because all eight required exports
+were absent, while my display-free rerun after the fix passes together with the
+other cross checks: **14/14 steps**.
+
+The quit fix is also correct. `AutoHashMapUnmanaged.deinit` leaves the map
+undefined, but the later outer `zb_agent_helper_stop` calls `forget_process`
+and detaches tools again. Resetting `bound` to `.empty` makes that second detach
+a defined no-op after the Reaper has already joined. The owner's isolated
+pre-fix reproduction failed twice by exiting before `zb_agent_net_stop`; the
+fixed `agent-netd-spawn-e2e` reports **63 checks, 0 failed**, including removal
+of the socket directory. No new test was needed to manufacture the red: both
+failures were existing registered gate assertions broken specifically by
+`2209c4a`.
+
+### MS5.3 token-to-fd chain
+
+- **`d7c5207` BLOCKED-for-tests independently, cumulatively superseded by
+  `33c2ee5`.** The missing weak symbol is an honest behavioral red on both Macs,
+  and the disposable-Keychain cases cover exact bytes, absence, closed-reader
+  survival, fixed error text, and env/argv/stderr leakage. Its original 200 KiB
+  case did **not** prove a write loop: one blocking `write` could deliver the
+  whole value, and the single-write mutant passed.
+- **`33c2ee5` APPROVED as the valid fix-forward red.** A repeating `SIGALRM`
+  installed without `SA_RESTART`, combined with a deliberately slow 1 KiB
+  reader, forces the writer through short-count/EINTR behavior. The owner ran
+  the single-write mutant on both x86_64 and arm64 and it now fails. The remote
+  gate also carries the new seam header, and `bash -n` is clean.
+- **`d14a6cf` APPROVED as the standalone, not-yet-linked seam.** It looks the
+  credential up through the Keychain boundary, applies `F_SETNOSIGPIPE`, loops
+  over short writes and `EINTR`, wipes/frees its token copy on every return,
+  and emits only a fixed write-failure message. The reported both-Mac run is
+  **5/5 cases on each architecture**; env, single-write and no-`F_SETNOSIGPIPE`
+  mutants all fail. The commit message/header wording that it is “built only
+  into macOS binaries” is premature: `build.zig` does not link it yet. As the
+  owner corrected in mail 6808, full MS5.3 remains open until MS6/MS7 link the
+  seam, pass fd 3, and exercise the complete store-to-helper boundary. This
+  approval is only for the isolated seam promised by plan rev 14 item 7.
+
+`git diff --check d7c5207^..d14a6cf` is clean. No full gate, Mac host, live
+browser or real display was used locally; the architecture runs and mutation
+results above are the owners' supplied evidence.
