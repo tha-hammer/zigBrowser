@@ -1,0 +1,13 @@
+{
+  "source": "signin-paste part B (plan rev 16.18.5; rerun on b499cd7, rev 16.18.9): the login netd's --census, one entry per distinct CONNECT target the real `claude setup-token` made, host:port only",
+  "entries": [
+    {
+      "target": "api.anthropic.com:443",
+      "verdict": "allowed"
+    },
+    {
+      "target": "platform.claude.com:443",
+      "verdict": "allowed"
+    }
+  ]
+}
