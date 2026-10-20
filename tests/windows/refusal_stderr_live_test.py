@@ -86,7 +86,8 @@ class RefusalStderrLive(unittest.TestCase):
 
     def _profile(self):
         """The account's real profile directory, from %USERPROFILE% (it may carry a suffix)."""
-        r = self._ssh("cmd", "/c", "echo %USERPROFILE%")
+        # sshd's own cmd.exe runs this; a nested `cmd /c echo` returns the path with a stray trailing quote.
+        r = self._ssh("echo %USERPROFILE%")
         self.assertEqual(r.returncode, 0, f"USERPROFILE failed: {r.stderr}")
         profile = r.stdout.strip().splitlines()[-1].strip()
         # Interpolated into `cmd /c` paths: only a drive and plain path characters, no spaces or metacharacters.

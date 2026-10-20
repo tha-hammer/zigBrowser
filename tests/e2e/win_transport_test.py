@@ -194,7 +194,8 @@ class WinTransport(unittest.TestCase):
 
     def _profile(self, user):
         """The account's real profile directory (Windows may name it C:\\Users\\<user>.<suffix>)."""
-        r = self._ssh(user, "cmd", "/c", "echo %USERPROFILE%", timeout=60)
+        # sshd's own cmd.exe runs this; a nested `cmd /c echo` returns the path with a stray trailing quote.
+        r = self._ssh(user, "echo %USERPROFILE%", timeout=60)
         self.assertEqual(r.returncode, 0, f"USERPROFILE of {user} failed: {r.stderr}")
         profile = r.stdout.strip().splitlines()[-1].strip()
         # Interpolated into `cmd /c` paths below: only a drive and plain path characters, no spaces or metacharacters.
