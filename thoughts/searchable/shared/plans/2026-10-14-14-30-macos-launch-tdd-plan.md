@@ -724,7 +724,7 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_version_line` | void | MS1 | impl — records executing arch in build info | `mac_universal_test` (MS1.2) |
 | `zb_window_new` | ptr | core + MS7 | impl — window create; drawer mount point | mac render e2e + MS7 drawer e2e |
 | `zb_reload` | void | MS2a | impl | MS2a.1 |
-| `zb_main_invoke_sync` | int | **MS2a** | impl — the main-thread marshal primitive (macOS analog of `auto_queue_on_gtk`) | MS2a.3 async-completion ownership tests |
+| `zb_main_invoke_sync` | int | **MS2a** | **SUPERSEDED (rev 13)** — not exported; the heap-job phase model (`dispatch_async(main_queue)` + `ZBAutoJob` + `zb_job_wait`) is the marshal + ownership. See the rev-13 amendment above | MS2a.3 async-completion ownership tests |
 | `zb_policy_decide` | int | exists; MS2a consumer | impl (`nav_policy.zig`) | mac nav-policy e2e |
 | `zb_ipc_dispatch` | int | exists (core) | impl (`ipc.zig`) — ping/pong (bead 8g7) | existing `m9_*` e2e |
 | `zb_app_set_profile_dir` | int+err | MS3.1 | impl | `mac_profile_persist_test` |
@@ -736,10 +736,10 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_automation_navigate` / `_navigate_guarded` / `_reload` | int | MS2a | impl — navigation + per-WKNavigation success/failure (navigation_failed, no app-exit). **beforeunload is UNSUPPORTED on macOS** (MS2b.2 probe: WKWebView surfaces no beforeunload prompt to any public API): the port rejects accept/dismiss as `error.Unsupported`, and `.fail` **cannot** honor the shared DialogOpen-and-leave-prompt-open contract — a navigate away from a page with a `beforeunload` handler simply loads. A documented cross-platform divergence, pending the private-API decision | MS2a.1 |
 | `zb_automation_get_url` / `_get_title` | int+out | MS2a | impl | MS2a.1 |
 | `zb_automation_free` | void | MS2a | impl — allocator paired with every returned C string | allocator-pairing test (MS2a) |
-| `zb_automation_loop_mark` | void | MS2a | impl — ENDED + queued-job cancel + waiter wake on quit | immediate-quit-cancellation test (MS2a) |
-| `zb_automation_window_alive` | int | MS2a | impl | MS2a window test |
-| `zb_automation_window_id_at` | uint32 | **MS2a** | impl — window-registry enumeration (backs `list`/`alive`) | MS2a window-registry test |
-| `zb_automation_run_generation` | uint32 | **MS2a** | impl — the generation counter the no-dispatch-after-abandon guard reads (macOS analog of the GTK generation guard) | MS2a.3 late-completion test |
+| `zb_automation_loop_mark` | void | MS2a | **SUPERSEDED (rev 13)** — not exported; on quit `[NSApp run]` ends, the main queue stops (no dispatch after), waiters time out → CANCELLED/ABANDONED, `live_jobs`→0 | immediate-quit-cancellation test (MS2a) |
+| `zb_automation_window_alive` | int | MS2a | **SUPERSEDED (rev 13)** — subsumed by `zb_automation_list_windows` (id present in the list) | MS2a window test |
+| `zb_automation_window_id_at` | uint32 | **MS2a** | **SUPERSEDED (rev 13)** — subsumed by `zb_automation_list_windows` enumeration | MS2a window-registry test |
+| `zb_automation_run_generation` | uint32 | **MS2a** | **SUPERSEDED (rev 13)** — not exported; the per-job state machine (`zb_job_complete` records only while DISPATCHING/INFLIGHT; `zb_job_claim_dispatch` abandon guard) replaces the generation counter | MS2a.3 late-completion test |
 | `zb_automation_list_dialogs` / `_respond_dialog` | int | MS2b | impl — `WKUIDelegate` captures **alert/confirm/prompt**, held until answered; cancel-aware list/respond + dialog_open fast-fail + eval dialog-watch (36d3065, mutant-proven both arches). **beforeunload is NOT surfaced** — see below | MS2b.2 |
 | `zb_automation_list_windows` / `_close_window` | int | MS2c | impl — page.list + health watchdog (list_windows), page.close a popup (primary refused) + forWindow (d82da2e/03a6523/9870693) | MS2c.1 |
 | `zb_automation_recover_windows` | int | MS2c | **Implemented via VIEW-REPLACEMENT** (public API; no process kill, no SPI). Consent (phase 1) server-side; phase 2 swaps a fresh WKWebView into each window keeping its stable id and reloads the committed URL, emitting `[{id,url,ended,reloaded}]` (`ended`=was crashed, `reloaded`=URL restored). Pinned by `mac_ms2c_recover_test.py` | MS2c.3 |
@@ -753,6 +753,33 @@ No seam silently returns zero and no config export fakes an error channel it doe
 > the slice that owns the `WKWebsiteDataStore`/`WKHTTPCookieStore` (MS3), so the inventory no
 > longer gates a cookie export "via MS3's port" while sitting in a slice (MS2c) ordered *before*
 > MS3. MS2c no longer lists the cookie ABI; MS4.4 is the login-gate consumer.
+
+> **MS2a ABI amendment (rev 13, JadeBeacon 2026-10-20; RoseCat 4981d66 bucket 2):** five rows above named
+> GTK-era symbols the macOS shim intentionally does **NOT** export (`zb_main_invoke_sync`,
+> `zb_automation_loop_mark`, `zb_automation_window_alive`, `zb_automation_window_id_at`,
+> `zb_automation_run_generation` — all absent at link time). The heap-job **phase model** supersedes them;
+> the table rows are kept for provenance but marked **SUPERSEDED (rev 13)**. Replacement lifecycle:
+> - **`zb_main_invoke_sync`** → the main-thread marshal is `dispatch_async(main_queue)` + a heap
+>   `ZBAutoJob` (PENDING→PREFLIGHT→DISPATCHING→INFLIGHT→DONE/CANCELLED/ABANDONED) with the calling thread
+>   blocked in `zb_job_wait`. Marshal + ownership in one primitive; no standalone symbol.
+> - **`zb_automation_run_generation`** → the late-completion-drop / no-dispatch-after-abandon guard is the
+>   per-job state machine, not a generation counter: `zb_job_complete` records the outcome ONLY while
+>   DISPATCHING/INFLIGHT and otherwise frees `result`/`err`, so a completion arriving after the waiter
+>   abandoned (CANCELLED/ABANDONED) writes nothing and reports nothing; `zb_job_claim_dispatch` returning
+>   0 is the "waiter abandoned → never submit" guard. Driven deterministically by
+>   `zb_automation_debug_live_jobs` + `zb_automation_debug_waiter_grace`.
+> - **`zb_automation_loop_mark`** → no explicit loop-mark: on quit the `[NSApp run]` loop ends, the main
+>   queue stops (no queued job work dispatches after quit), each blocked waiter times out and its job goes
+>   CANCELLED/ABANDONED returning the timeout/no-loop code, and `live_jobs` drains to 0 as jobs unref.
+> - **`zb_automation_window_alive` / `zb_automation_window_id_at`** → subsumed by
+>   `zb_automation_list_windows`, the real primary/popup registry (MS2c): "alive" = the id is present in
+>   the list; enumeration = the list itself. No separate symbols.
+>
+> MS2a.3 tests for this bucket: late-completion drop + `live_jobs` baseline; result/error-string ownership
+> (every `zb_automation_free` paired exactly once, via an alloc/free-counter oracle under the e2e gate);
+> immediate-quit cancellation (waiter wakes with the no-loop/timeout code, no dispatch after, `live_jobs`→0);
+> and an ABI/window census that the phase-model symbols link, the five superseded symbols are intentionally
+> absent, and `list_windows` enumerates the real primary/popup registry (not constants).
 
 #### Debug seams — 31 (`zb_automation_debug_*` ×30 + `zb_drawer_debug_live_count`)
 
