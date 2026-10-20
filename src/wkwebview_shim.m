@@ -1427,7 +1427,8 @@ static ZBAutoJob *zb_job_new(void) {
   job->state = ZB_JOB_PENDING;
   job->refcount = 1;
   job->code = ZB_AUTO_ERR_TIMEOUT;
-  atomic_fetch_add(&zb_auto_live_jobs, 1);
+  int live_after_add = atomic_fetch_add(&zb_auto_live_jobs, 1) + 1;
+  if (zb_auto_test_hooks_enabled()) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_add); fflush(stderr); }  // e2e-only: observe the live-job count (MS2a.3 baseline)
   return job;
 }
 
@@ -1449,7 +1450,8 @@ static void zb_job_unref(ZBAutoJob *job) {
   free(job->result);
   free(job->err);
   free(job);
-  atomic_fetch_sub(&zb_auto_live_jobs, 1);
+  int live_after_sub = atomic_fetch_sub(&zb_auto_live_jobs, 1) - 1;
+  if (zb_auto_test_hooks_enabled()) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_sub); fflush(stderr); }  // e2e-only: observe the live-job count (MS2a.3 baseline)
 }
 
 // First main-thread run: PENDING -> PREFLIGHT. Returns 0 if the waiter already cancelled (do nothing).

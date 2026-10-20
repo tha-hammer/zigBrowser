@@ -241,6 +241,7 @@ pub fn parse(
         },
         .page_evaluate => {
             command.expression = try requiredCString(arena_allocator, obj, "expression");
+            command.timeout_ms = optionU64(obj, "timeout_ms") catch return error.BadArgs;
         },
         .page_screenshot => {
             command.full_page = optionalBool(obj, "fullPage", false) catch return error.BadArgs;
