@@ -2395,6 +2395,11 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
         .file = b.path("src/agent_host.c"),
         .flags = &.{"-std=gnu11"},
     });
+    // macOS plan rev 14 item 4: the owner lock, POSIX only (shared with the macOS build).
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_home_lock.c"),
+        .flags = &.{"-std=gnu11"},
+    });
     module.addCSourceFile(.{
         .file = b.path("src/agent_helper.c"),
         .flags = &.{"-std=gnu11"},

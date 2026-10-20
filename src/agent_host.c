@@ -14,29 +14,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static int zb_agent_lock_fd = -1;
-
-int zb_agent_home_lock(const char *home) {
-  if (zb_agent_lock_fd >= 0) {
-    return 0;
-  }
-  if (home == NULL || g_mkdir_with_parents(home, 0700) != 0) {
-    return -1;
-  }
-  char *path = g_build_filename(home, ".zb-owner.lock", NULL);
-  int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-  g_free(path);
-  if (fd < 0) {
-    return -1;
-  }
-  if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-    int busy = errno == EWOULDBLOCK;
-    close(fd);
-    return busy ? -2 : -1;
-  }
-  zb_agent_lock_fd = fd;
-  return 0;
-}
+/* zb_agent_home_lock lives in agent_home_lock.c (POSIX, shared with macOS; macOS plan rev 14 item 4). */
 
 /* The Linux spawn/lifetime policy (one source of the native facts, MS0 route a). */
 ZbSpawnPolicy zb_spawn_policy_linux(unsigned int delay_ms) {

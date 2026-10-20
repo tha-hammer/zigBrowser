@@ -15,11 +15,9 @@
 typedef int pid_t;
 #endif
 
-/* Takes the agent home's owner lock (plan D12, S3.12): creates `home`
- * (0700) if needed, then flock(home/.zb-owner.lock, LOCK_EX|LOCK_NB). The
- * lock is held until the process exits. Returns 0 when held, -2 when another
- * process holds it, -1 on any other error. Taking it again is a no-op. */
-int zb_agent_home_lock(const char *home);
+/* zb_agent_home_lock: the agent home's owner lock (plan D12, S3.12), declared in agent_home_lock.h (POSIX,
+ * shared with macOS) and reachable through this header as before. */
+#include "agent_home_lock.h"
 
 /* The spawn/lifetime policy a sandbox backend supplies (MS0, macOS launch plan
  * rev 6, route a): the Linux facts behind the child setup, named so a macOS
