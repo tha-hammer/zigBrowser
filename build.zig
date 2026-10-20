@@ -558,6 +558,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    // Chat drawer S7b (rev 16.20.34): the app's tool_result frame (zb_agent_out_tool_result).
+    const agent_frames_tool_module = b.createModule(.{ .root_source_file = b.path("tests/agent_frames_tool_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    agent_frames_tool_module.addImport("agent_frames", agent_frames_test_module);
+    const run_agent_frames_tool_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_frames_tool_module }));
+    run_agent_frames_tool_tests.skip_foreign_checks = true;
     for ([_][]const u8{ "tests/agent_protocol_cap_reason_test.zig", "tests/agent_prompt_id_limit_test.zig", "tests/agent_frames_prompt_test.zig", "tests/agent_frames_out_test.zig", "tests/agent_prompt_base_test.zig" }, 0..) |path, i| {
         const m = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize, .link_libc = true });
         if (i < 2) m.addImport("agent_protocol", agent_protocol_module) else m.addImport("agent_frames", agent_frames_test_module);
@@ -2048,6 +2053,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_protocol_prompt_tests.step);
     test_step.dependOn(&run_agent_bridge_frame_tests.step);
     for (s5d_fix_runs) |run| test_step.dependOn(run);
+    test_step.dependOn(&run_agent_frames_tool_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);

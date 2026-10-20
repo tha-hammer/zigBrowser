@@ -128,6 +128,41 @@ fn nextSeq() u64 {
     return out_seq;
 }
 
+/// S7b (rev 16.20.34): a tool call's answer, built on the GTK thread. With `ok`, `body` is
+/// the content (a JSON array of blocks); without, the error text. Section 3's grammar: the
+/// D7b envelope, then exactly `content` or exactly one non-empty `error` of at most 4 KiB (cut
+/// on a UTF-8 boundary). A line over 1 MiB (without its newline) is never sent: the call gets
+/// `ok:false` "result too large" instead; a content that is not a JSON array, "the browser sent
+/// a bad answer". The content is written compact, so the frame is one line.
+pub export fn zb_agent_out_tool_result(session: [*:0]const u8, id: [*:0]const u8, ok: c_int, body: [*]const u8, len: usize) ?[*:0]u8 {
+    return owned(toolResultFrame(gpa, nextSeq(), std.mem.span(session), std.mem.span(id), ok != 0, body[0..len]));
+}
+
+const tool_result_max = 1 << 20;
+const tool_error_max = 4096;
+
+fn toolResultFrame(a: std.mem.Allocator, seq: u64, session: []const u8, id: []const u8, ok: bool, body: []const u8) ![]u8 {
+    if (!ok) return toolFailure(a, seq, session, id, body);
+    const parsed = std.json.parseFromSlice(std.json.Value, a, body, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return toolFailure(a, seq, session, id, "the browser sent a bad answer"),
+    };
+    defer parsed.deinit();
+    if (parsed.value != .array) return toolFailure(a, seq, session, id, "the browser sent a bad answer");
+    // Written again, compact: a content's own whitespace may hold newlines, and a frame is one line.
+    const line = try std.fmt.allocPrint(a, "{{\"v\":1,\"seq\":{d},\"type\":\"tool_result\",\"session\":{f},\"id\":{f},\"ok\":true,\"content\":{f}}}\n", .{ seq, std.json.fmt(session, .{}), std.json.fmt(id, .{}), std.json.fmt(parsed.value, .{}) });
+    if (line.len - 1 <= tool_result_max) return line;
+    a.free(line);
+    return toolFailure(a, seq, session, id, "result too large");
+}
+
+fn toolFailure(a: std.mem.Allocator, seq: u64, session: []const u8, id: []const u8, text: []const u8) ![]u8 {
+    var cut = text[0..@min(text.len, tool_error_max)];
+    while (cut.len > 0 and !std.unicode.utf8ValidateSlice(cut)) cut = cut[0 .. cut.len - 1]; // a code point never split
+    const message = if (cut.len == 0) "failed" else cut;
+    return std.fmt.allocPrint(a, "{{\"v\":1,\"seq\":{d},\"type\":\"tool_result\",\"session\":{f},\"id\":{f},\"ok\":false,\"error\":{f}}}\n", .{ seq, std.json.fmt(session, .{}), std.json.fmt(id, .{}), std.json.fmt(message, .{}) });
+}
+
 export fn zb_agent_out_hello() ?[*:0]u8 {
     return owned(helper.helloFrame(gpa, nextSeq(), hello_home orelse return null, hello_e2e));
 }
