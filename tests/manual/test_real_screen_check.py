@@ -226,6 +226,74 @@ class SafetyTest(unittest.TestCase):
         self.assertEqual(rsc.covered_points(OURS, crop, lambda px, py: [FRAME, OURS]), [])
 
 
+class ActivatingX11(FakeX11):
+    """A window manager that may refuse our activation request (GNOME's focus-stealing
+    prevention), and a user who may click our title bar after some polls."""
+
+    def __init__(self, honours=False, user_after=None, **kw):
+        super().__init__(**kw)
+        self.honours, self.user_after, self.activations, self.polls = honours, user_after, [], 0
+
+    def activate(self, wid):
+        self.activations.append(wid)
+        if self.honours:
+            self._active = wid
+
+    def active(self):
+        self.polls += 1
+        if self.user_after is not None and self.polls > self.user_after:
+            self._active = OURS
+        return self._active
+
+
+class ActivationTest(unittest.TestCase):
+    """The user's real-screen long-run (2026-10-20) was INVALID: the window launched from a
+    terminal lost the focus (GNOME focus-stealing prevention). Before input the script asks
+    the window manager again, then asks the user once to click our title bar and waits; it
+    never sends input itself unless our window is active."""
+
+    def x11(self, **kw):
+        args = dict(path=lambda px, py: [FRAME, OURS], pointer_path=[FRAME, OURS], focus=OURS, parents={},
+                    wm=True, active=TERMINAL)
+        args.update(kw)
+        return ActivatingX11(**args)
+
+    def run_ensure(self, x, timeout=1.0):
+        said = []
+        ok = rsc.ensure_active(x, OURS, timeout=timeout, say=said.append, poll=0.01)
+        return ok, said
+
+    def test_an_active_window_needs_nothing(self):
+        x = self.x11(active=OURS)
+        self.assertEqual(self.run_ensure(x), (True, []))
+        self.assertEqual((x.activations, x.sent), ([], []))
+
+    def test_a_window_manager_that_honours_the_request_needs_no_prompt(self):
+        x = self.x11(honours=True)
+        self.assertEqual(self.run_ensure(x), (True, []))
+        self.assertEqual(x.activations, [OURS])
+        self.assertEqual(x.sent, [])
+
+    def test_a_refused_request_asks_the_user_once_and_goes_on_when_they_click(self):
+        x = self.x11(user_after=300)  # after the silent second that follows our own request
+        ok, said = self.run_ensure(x, timeout=5.0)
+        self.assertTrue(ok)
+        self.assertEqual(len(said), 1)
+        self.assertIn(rsc.ASK_FOCUS, said[0])
+        self.assertEqual(x.sent, [], "the script itself sends no input to get the focus")
+
+    def test_a_window_that_never_becomes_active_gives_up_and_sends_nothing(self):
+        x = self.x11()
+        ok, said = self.run_ensure(x, timeout=0.3)
+        self.assertFalse(ok)
+        self.assertEqual(len(said), 1)
+        self.assertEqual(x.sent, [])
+
+    def test_without_a_window_manager_there_is_nothing_to_wait_for(self):
+        x = self.x11(wm=False, active=None)
+        self.assertEqual(self.run_ensure(x), (True, []))
+
+
 class AnyPageTest(unittest.TestCase):
     def test_a_flat_window_is_blank_and_a_varied_one_is_drawn(self):
         flat = capture(W + 30, H + 40, lambda x, y: (0xE0, 0xE0, 0xE0))

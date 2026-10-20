@@ -506,6 +506,34 @@ def window_ready(x11, wid: int) -> str | None:
     return None
 
 
+ASK_FOCUS = "click once on the zigBrowser window title bar to focus it"
+ACTIVE_WAIT_S = 20.0
+
+
+def ensure_active(x11, wid: int, timeout: float = ACTIVE_WAIT_S, say=print, poll: float = 0.25) -> bool:
+    """True once our window may take input (window_ready). The user's real-screen run
+    (2026-10-20): GNOME's focus-stealing prevention gave the focus back to the terminal that
+    launched us. So, before any input: ask the window manager again (_NET_ACTIVE_WINDOW,
+    raise); if it still refuses, ask the user once to click our title bar, and wait up to
+    `timeout`. This sends no input of its own; False when the window never became ready."""
+    if window_ready(x11, wid) is None:
+        return True
+    x11.activate(wid)
+    until = time.monotonic() + min(1.0, timeout)
+    while time.monotonic() < until:
+        if window_ready(x11, wid) is None:
+            return True
+        time.sleep(poll)
+    say(f"{ASK_FOCUS} (waiting up to {timeout:.0f} s; no input is sent until it is focused)")
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        if window_ready(x11, wid) is None:
+            time.sleep(min(0.5, poll * 20))  # let the user's click finish before our pointer moves
+            return True
+        time.sleep(poll)
+    return False
+
+
 def raise_window(x11, wid: int, tries: int = 3) -> bool:
     """Asks for our window on top and active; True once it is viewable,
     active (with a window manager) and on top at every sample point."""
@@ -638,8 +666,8 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float, url: str | 
                 return FAIL, f"no window (browser exit {proc.poll()})"
             x11 = X11()
             try:
-                if not raise_window(x11, wid):
-                    return INVALID, "the window stayed covered: nothing judged, no input sent"
+                if not raise_window(x11, wid) and not (ensure_active(x11, wid) and raise_window(x11, wid, tries=1)):
+                    return INVALID, "the window stayed covered or inactive: nothing judged, no input sent"
                 time.sleep(settle)
                 x, y, w, h = geometry(wid)
                 crop = (x, y, w, h)
@@ -657,6 +685,8 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float, url: str | 
                 centre = icon_centre(screen, crop)
                 if centre is None:
                     return FAIL, detail + "; no icon on screen to click"
+                if not ensure_active(x11, wid):
+                    return INVALID, detail + "; our window did not become active: no input sent"
                 refused = safe_click(x11, wid, *centre)
                 if refused:
                     return INVALID, detail + f"; click refused: {refused}"
@@ -846,8 +876,8 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
             return [(FAIL, "long-run", f"no window (browser exit {b.proc.poll()})")]
         x11 = X11()
         try:
-            if not raise_window(x11, wid):
-                return [(INVALID, "long-run", "the window stayed covered: nothing judged, no input sent")]
+            if not raise_window(x11, wid) and not (ensure_active(x11, wid) and raise_window(x11, wid, tries=1)):
+                return [(INVALID, "long-run", "the window stayed covered or inactive: nothing judged, no input sent")]
             time.sleep(settle)
 
             def root(rect: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -856,11 +886,15 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                 return gx + cx, gy + cy
 
             def click(rect: tuple[int, int, int, int], what: str) -> None:
+                if not ensure_active(x11, wid):
+                    raise Refused(f"click on {what} refused: our window did not become active; no input sent")
                 refused = safe_click(x11, wid, *root(rect))
                 if refused:
                     raise Refused(f"click on {what} refused: {refused}")
 
             def key(keysym: int, modifiers: tuple[int, ...] = (), what: str = "a key") -> None:
+                if not ensure_active(x11, wid):
+                    raise Refused(f"{what} refused: our window did not become active; no input sent")
                 refused = safe_key(x11, wid, keysym, modifiers)
                 if refused:
                     raise Refused(f"{what} refused: {refused}")
