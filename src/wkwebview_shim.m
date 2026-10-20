@@ -268,6 +268,11 @@ static void handle_signal(int signo) {
 // must NOT exit the app (unlike a user-initiated load failure).
 @property(nonatomic, strong) WKNavigation *routedNav;
 @property(nonatomic, assign) int routedOutcome;
+// The latest navigation this window STARTED (set in didStartProvisionalNavigation). A finish/failure
+// callback for anything other than currentNav is STALE (a superseded navigation) and must not touch
+// finishedOrFailed, the timeout timer, or the outcome — otherwise a late stale callback corrupts the
+// navigation now in flight (RoseCat 33b0827: identity-check BEFORE mutating current state).
+@property(nonatomic, strong) WKNavigation *currentNav;
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child;
 - (void)loadURI:(NSString *)uri;
 - (void)reloadBypassingCache:(BOOL)bypassCache;
@@ -485,7 +490,15 @@ static void handle_signal(int signo) {
   [self.app requestExit:ZB_EXIT_TIMEOUT];
 }
 
+- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+  (void)webView;
+  self.currentNav = navigation;  // the latest-started navigation is the current one
+}
+
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+  if (navigation != nil && navigation != self.currentNav) {
+    return;  // stale: a superseded navigation's late finish must not touch the current state
+  }
   self.finishedOrFailed = YES;
   if (navigation != nil && navigation == self.routedNav) {
     self.routedOutcome = 1;  // success for THIS routed navigation
@@ -518,6 +531,9 @@ static void handle_signal(int signo) {
 }
 
 - (void)handleLoadFailureForWebView:(WKWebView *)webView navigation:(WKNavigation *)navigation error:(NSError *)error {
+  if (navigation != nil && navigation != self.currentNav) {
+    return;  // stale: a superseded navigation's late failure must not touch the current state/timer/exit
+  }
   if (self.finishedOrFailed && error.code == NSURLErrorCancelled) {
     return;
   }

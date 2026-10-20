@@ -25,12 +25,17 @@ fi
 
 # Build natively on the host, then run the MS2a e2e there (console user, no xvfb — WKWebView needs
 # the WindowServer, like tests/mac/gate.sh).
+# Outer bounds (seconds): a wedged build or a hung browser must not hang the gate forever (RoseCat).
+# GNU `timeout` runs on the Linux driver (it wraps the SSH/build calls, not the Mac side).
+BUILD_TIMEOUT="${ZB_MAC_BUILD_TIMEOUT:-420}"
+LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-420}"
+
 verify_host() { # $1=host $2=key $3=label
   local host="$1" key="$2" label="$3"
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key")
   echo "== build + MS2a e2e on $host ($label) ==" >&2
-  ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" bash tests/mac/build-on-mac.sh || return 1
-  "${SSH[@]}" "$host" /bin/bash -s <<'REMOTE' || return 1
+  ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" timeout "$BUILD_TIMEOUT" bash tests/mac/build-on-mac.sh || { echo "FAIL: build on $host timed out/failed" >&2; return 1; }
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s <<'REMOTE' || { echo "FAIL: MS2a leg on $host timed out/failed" >&2; return 1; }
 set -euo pipefail
 cd "$HOME/zigBrowser"
 python3 tests/e2e/mac_ms2a_routed_test.py --browser zig-out/bin/zigBrowser
