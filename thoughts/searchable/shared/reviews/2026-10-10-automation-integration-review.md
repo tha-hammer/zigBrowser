@@ -17004,3 +17004,63 @@ after SCP. An SCP failure leaves the nonce staging directory behind; add
 best-effort exact-path cleanup to that failure path. Findings sent to
 JadeBeacon in Agent Mail 6697. No full gate was run while AzureRidge held the
 slot.
+
+## Follow-up review at `9193dd3`: small corrupt PNG red
+
+**APPROVED (red, unregistered).** Moving the shared GdkPixbuf/ABI helpers into
+`agent_image_common.zig` does not import or duplicate tests. The new two-test
+module directly covers the missed fast path: a 20-byte signature/IEND shape,
+signature plus junk plus IEND, and a small PNG with a corrupt IHDR must all be
+unreadable, while the valid small PNG remains an as-is result.
+
+An independent exact-export run at `9193dd3` produced the required red: the
+new suite failed 0/2 with return code 0 from the old fast path in both tests.
+The refactored original suite remained 4/4. This is valid failing-first
+evidence for the `fb75e11`/Agent Mail 6696 blocker. Verdict sent to BlackRobin
+in Agent Mail 6705; the green remains to review when committed.
+
+## Review at `e1e9264`: Windows refusal stderr coverage
+
+**APPROVED.** The registered live test uses the actual two-token CLI syntax,
+requires exit 1 and exactly one refusal line for both open and screenshot
+paths, requires no screenshot artifact, and retains the one-token parse-error
+control. The reported 3/3 VM pass and no-print mutant establish that the test
+observes the intended error path. This supersedes the invalid equals-form
+renderer assertion in `0ec38f2`; that commit's media-source red remains valid.
+
+The test proves redirected stderr, not visibility from a real interactive
+console attached to a GUI-subsystem executable. That is the separately
+identified WS1 problem and is not silently treated as closed here.
+
+**SHOULD:** like the transport test fixed immediately afterward, this harness
+should resolve the SSH account's `%USERPROFILE%` instead of reconstructing
+`C:\Users\<name>`. A configured account can have a suffixed or custom profile.
+The independent hostless run skipped all 3 cases cleanly. Verdict sent to
+BlueBeaver in Agent Mail 6706.
+
+## Review at `1e174a3`: Windows account profile resolution
+
+**APPROVED.** Resolving `%USERPROFILE%` under each SSH identity fixes the real
+`zbother.linuxWin` profile and keeps relative SCP targets aligned with the
+same account's home. The returned value is required to be a drive path before
+use. The hostless suite skips both tests cleanly; full WS2.0 acceptance still
+requires the pending live cross-user run.
+
+**SHOULD:** quote the resolved profile in every `cmd /c` interpolation and
+reject command metacharacters, or pass it through a PowerShell literal path.
+The current drive-prefix regex accepts spaces and command metacharacters, so
+an unusual custom profile can break the harness. Verdict sent to BlueBeaver
+in Agent Mail 6706.
+
+## Follow-up review at `f13a5ca`: macOS Keychain seam
+
+**APPROVED.** The test now checks that the bait search list was installed
+before it runs the discriminator, checks restoration and reports failure
+without skipping cleanup, and uses the exact nonce-scoped remote path for
+best-effort cleanup after SCP or leg failure. JadeBeacon's two-architecture
+green and install-check mutant satisfy the remaining test evidence.
+
+This cumulatively closes every finding on `ad8b776` through `6762069` and
+`f13a5ca`; those commits are approved as the MS5.2 Keychain seam slice. The
+production caller and store-to-fd-3 chain remain later closure, as scoped.
+Verdict sent to JadeBeacon in Agent Mail 6707.
