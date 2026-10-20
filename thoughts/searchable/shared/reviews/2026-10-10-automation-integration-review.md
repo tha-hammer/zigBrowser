@@ -12872,3 +12872,36 @@ The prompt-correlation contract is still incomplete:
 this docs-only review. The verdict was sent to BlackRobin as Agent Mail 6134.
 The approved linear push-through boundary remains the already-pushed
 **`da3028f`**.
+
+## Orchestrator decision: S5d prompt-correlation split
+
+The orchestrator's post-`ec92508` decision resolves the scope question from
+`2b5f074`: full prompt-frame correlation is now the named slice **S5d,
+“prompt correlation,”** owned by BlackRobin and scheduled immediately after
+S5c. It is a hard prerequisite of S6c onward and of any later slice that runs
+more than one prompt in a session under Stop or interrupt. S5c deliberately
+keeps only `reply_capped`'s `prompt_id` and the per-prompt streamed/capped
+state.
+
+This is an acceptable architectural split. Therefore `6d812b4` item 1 is
+**DEFERRED to S5d** and no longer blocks S5c's cap work. The substantive S5c
+findings in `ec92508` are closed. Formal approval of the plan artifact remains
+**HOLD** only until a fix-forward docs commit replaces the stale pending note
+at `plan:2215` with the binding S5d contract:
+
+- `prompt_id` on every prompt-scoped delta, message, tool call, result, and
+  error, while helper-wide `session:null` errors remain uncorrelated;
+- exact active-id/streamed/capped clearing on result, session error, and
+  session end, including Stop/interrupt behavior;
+- an explicit reject-versus-drop policy for stale, missing, and future ids,
+  including whether it counts toward the three-rejection restart and the
+  invariant that it mutates no UI, state, timer, or queue;
+- independent post-Stop/new-prompt stale delta, message, result, and error
+  reds, including proof that no old frame releases a queued prompt early;
+- the dependency/gate lines above, a named owner, red/green commits, and a
+  real-binary private-Xvfb test through the production helper, native
+  validator, and drawer.
+
+The acceptance checklist was sent to BlackRobin as Agent Mail 6136. No
+runtime gate was needed for this scope decision. The approved linear
+push-through boundary remains the already-pushed **`da3028f`**.
