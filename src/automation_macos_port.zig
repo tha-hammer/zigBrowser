@@ -67,8 +67,10 @@ const vtable: PagePort.VTable = .{
     // MS2b.2 page dialogs: capture alert/confirm/prompt via WKUIDelegate; list + answer them.
     .listDialogs = listDialogs,
     .respondDialog = respondDialog,
-    // MS2c: enumerate open windows (page.list).
+    // MS2c: enumerate / target / close windows.
     .listWindows = listWindows,
+    .forWindow = forWindow,
+    .closeWindow = closeWindow,
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -305,6 +307,19 @@ fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
         filled += 1;
     }
     return windows;
+}
+
+/// MS2c: a PagePort bound to window `id` — a pure, non-blocking handle (no page work). Accepts an id
+/// with no window; the handle's first bounded call then fails NoPage.
+fn forWindow(_: *anyopaque, id: page_port.WindowId) PortError!PagePort {
+    if (id == 0) return error.NoPage;
+    return portFor(id);
+}
+
+/// MS2c: close window `id` (a popup); NoPage for the primary or an unknown id. Returns once destroyed.
+fn closeWindow(_: *anyopaque, id: page_port.WindowId, timeout_ms: u64) PortError!void {
+    if (id == 0) return error.NoPage;
+    return mapCode(c.zb_automation_close_window(@intCast(id), clampMs(timeout_ms)));
 }
 
 fn mapCode(rc: c_int) PortError!void {

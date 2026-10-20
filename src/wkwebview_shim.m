@@ -288,6 +288,7 @@ static void handle_signal(int signo) {
 // unanswered across a tick marks the window unresponsive (unresponsiveSinceUs != 0, incident bumped once
 // per stretch), cleared when a ping replies. Touched only on the main thread (timer + the list ABI's
 // main-queue hop), monotonic microseconds via systemUptime.
+@property(nonatomic, assign) uint32_t openerId;  // MS2c: the window (id) whose page opened this popup; 0 = none
 @property(nonatomic, strong) NSTimer *healthTimer;
 @property(nonatomic, assign) int64_t unresponsiveSinceUs;  // 0 while responsive
 @property(nonatomic, assign) uint32_t incident;            // count of unresponsive stretches (recover identity)
@@ -694,6 +695,8 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   WKWebView *childView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768)
                                            configuration:configuration];
   ZBWindowHost *child = [self.app createWindowWithWebView:childView child:YES uri:nil];
+  NSUInteger pidx = [self.app.windows indexOfObject:self];  // this window opened the popup
+  if (child != nil && pidx != NSNotFound) child.openerId = (uint32_t)(pidx + 1);
   return child.webView;
 }
 
@@ -1517,7 +1520,7 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
                             @"url": url,
                             @"title": title,
                             @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)
-                            @"opener": @0,
+                            @"opener": @(h.openerId),
                             @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO,
                             @"responsive": responsive ? @YES : @NO,       // MS2c page.health (watchdog)
                             @"unresponsive_ms": @(unresp_ms),
@@ -1534,6 +1537,36 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
   });
   int rc = zb_job_wait(job, timeout_ms);
   if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
+  zb_job_unref(job);
+  return rc;
+}
+
+// MS2c: close window `id` (a popup) and return once it is destroyed. The PRIMARY window cannot be closed
+// (NO_WINDOW), matching the shared contract (automation_windows_test). NO_WINDOW for an unknown id. Heap-
+// job claim/cancel model, so a timed-out caller never destroys a window late.
+int zb_automation_close_window(uint32_t id, unsigned int timeout_ms) {
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: don't close late
+    ZBAppHost *app = g_active_app;
+    ZBWindowHost *host = zb_auto_window_for_id(id);
+    int code;
+    if (host == nil || app == nil) {
+      code = ZB_AUTO_ERR_NO_WINDOW;
+    } else if (host == app.mainWindow) {
+      code = ZB_AUTO_ERR_NO_WINDOW;  // the primary window cannot be closed by automation
+    } else {
+      [host close];              // tears down delegates, health timer, answers any held dialog, orders out
+      [app removeWindow:host];   // drop from the registry; ARC frees the window
+      code = ZB_AUTO_OK;
+    }
+    zb_job_complete(job, code, NULL, NULL);
+    zb_job_unref(job);
+  });
+  int rc = zb_job_wait(job, timeout_ms);
   zb_job_unref(job);
   return rc;
 }
