@@ -14703,3 +14703,89 @@ bytecode compilation and shell syntax checks passed in a clean export of
 `38d121a`. No GUI or full gate was started. The linear push-through boundary
 remains the already-pushed **`70317c0`**: S6b1 still needs the user's Part-B
 rerun, and the macOS and S5d commits reviewed here remain blocked.
+
+## S6 teardown, authorization and exchange batch
+
+### Secrets-window teardown (`34a973d`)
+
+**APPROVED.** `zb_secrets_window_present` now gives the transient its GTK
+`destroy-with-parent` relationship and installs a weak-parent `delete-event`
+handler (`src/agent_secrets_window.c:813-846`). A close-button path therefore
+destroys Secrets before allowing the parent close to continue; other parent
+destruction lets GTK destroy it with the parent. The existing Secrets destroy
+handler increments the epoch, wipes pending material and calls the idempotent
+login cancellation path (`:678-689`), so a running sign-in receives its one
+ending. Re-presenting against another browser window disconnects and removes
+the old weak-parent relationship before installing the new one.
+
+The registered real-binary Xvfb test drives idle close, in-code close,
+SIGTERM, unrelated-window close and parent-close-with-a-surviving-window. Its
+quiet-window and map-state assertions preserve the `6b50712` fixes and kill
+the three reported lifetime mutants. The prior diagnostic SHOULD remains:
+the test's direct `XGetWindowAttributes` query has no local BadWindow trap, so
+a disappearance race can terminate the runner rather than return a clean
+false. This does not false-green the lifecycle contract.
+
+This is still defense in depth, **not closure of the GNOME Shell 48.7
+BadWindow crash**. Its mechanism was never reproduced and remains open, as
+both the commit and test state explicitly.
+
+### App-owned authorization-URL check (`225316a`)
+
+**APPROVED.** `agent_auth.authorizeUrl` enforces the authoritative complete
+URL grammar before use: at most 4096 visible-ASCII bytes, exact HTTPS
+host/path pairs, no user info/port/fragment, all eight raw/plain parameter
+names exactly once, the five fixed values, lowercase UUID client id,
+43-character base64url challenge and nonempty state
+(`src/agent_auth.zig:42-111`). `zb_login_validate` invokes it at the native
+login-frame boundary (`src/agent_login.zig:102-106`), before
+`agent_login.c` can deliver an `AUTH_URL` event to the Secrets or future auth
+window. A rejection therefore follows the existing fixed `error-protocol`
+path rather than exposing or loading the URL.
+
+One fixture table drives the direct Zig check, the exported native validator
+and Python helper parity. It includes exact 4096/4097 edges, raw encoded-name
+aliases/duplicates, controls/NUL/space/non-ASCII, every fixed value and unique
+case names. The one malformed-escape helper difference is declared and
+bounded. This cumulatively closes the test blockers on `ed2a2cd`, `4397030`
+and `2d7ea89`.
+
+### CLI-consumption exchange boundary (`522f252`)
+
+**APPROVED.** After writing a code, the helper now makes OAuth/retry text
+eligible only after the first eight-or-more-star masked echo at or after the
+write offset (`agent/host/zb_agent_host/login.py:241-248`). A new prompt still
+stops the exchange clock before answering it, a missing echo still reaches
+the existing 60-second timeout, and neither CLI text nor a token is added to
+an error frame. The second failing-first case separates the echo from the
+eventual token by one second, so taking the boundary at the helper's old read
+offset cannot pass accidentally. The bare retry fake now mirrors the real
+CLI's masked echo. This closes the red `b850544` and the earlier exchange
+boundary SHOULD.
+
+### S6b2 auth-test seam decision (`0f60910`)
+
+**APPROVED for the S6b2 seam-decision slice.** This does not claim the auth
+window or its TLS/proxy wiring. `authTestSeam` returns `none` when unset and
+returns `ignored` before parsing any text unless `--e2e-protocol` is active.
+When active it accepts only the exact loopback-HTTP decimal-port grammar and
+an absolute, no-follow-opened regular CA file of at most 65536 bytes
+(`src/agent_auth_seam.zig:30-68`); fixed stderr vocabulary distinguishes
+`shape`, `proxy` and `ca`. TLS-library certificate parsing remains explicitly
+owned by the later C/window slice. The registered unit table covers inertness,
+grammar and port edges, relative/directory/symlink/missing/size CA cases and
+the exact lines, closing the approved red `8a6ab6c`.
+
+BlueBeaver's shared evidence reports a private-Xvfb clean-export combined
+gate for these four greens: **189/189 steps succeeded; 949/949 tests passed**.
+I independently ran the narrow `test-agent-auth` target from a clean export
+at exact `0f60910`, under a private Xvfb and outer timeout: **17/17 steps
+succeeded; 30/30 tests passed**, rc 0; the throwaway tree was deleted. All
+four per-commit `git diff --check` invocations and Python bytecode compilation
+passed.
+
+These commits close the outstanding S6b1 **code-review follow-ups**, but
+S6b1's final acceptance still waits for the user's required `signin-paste`
+Part B rerun. `0f60910` opens S6b2 with a reviewed decision seam only; it is
+not S6b2 completion. The linear push-through boundary therefore remains the
+already-pushed **`70317c0`** until the user-only Part B condition is met.
