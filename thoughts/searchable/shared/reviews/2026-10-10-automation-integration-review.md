@@ -16308,3 +16308,31 @@ current real-screen run. Agent Mail 6626.
 No new push-through is claimed in this review. The user's S5c long-run result
 is still pending, and a fresh linear audit is required after it arrives.
 Independently, `8f36ee7` and `2a26dd5` are newly recorded later-chain holds.
+
+## S5c-1 real-screen acceptance and linear push audit
+
+The user's mandatory S5c-1 `long-run` check passed on a clean build of
+`fea55fb`, using the committed guarded real-screen harness. The retained local
+evidence is `/tmp/zb-long-run-4`; it contains no committed page or credential
+data.
+
+- `long-run-unbroken` displayed the bounded 4,097-character row with zero line
+  feeds, folded in **0.26 s**, and click/Ctrl+A/C copied exactly **204,800**
+  original characters.
+- `long-run-words` displayed the bounded 4,097-character row with zero line
+  feeds, folded in **0.30 s**, and copied exactly **204,800** original
+  characters.
+- The run reported **0 failed, 0 invalid**. This supplies the global UI-rule
+  acceptance that the prior audits at `84d520f` and `17a1e8f` left open.
+
+Therefore **`f9cb26a` is ACCEPTED cumulatively for S5c-1**, including its
+subsequently reviewed reply-cap corrections and guarded manual artifact. The
+newest contiguous approved/accepted push-through SHA after the already-pushed
+`70317c0` is **`f9cb26a`**.
+
+The immediate next commit, **`1b58f85`**, is the earliest blocked commit. Its
+Linux WS0 foundation is useful, but the commit's full “WS0 green” claim remains
+open: the later reviews still require the complete two-host Windows contract
+and its live, fail-closed evidence rather than only the registered Linux
+selftest/foundation. No later approval may advance the linear boundary across
+that open commit.
