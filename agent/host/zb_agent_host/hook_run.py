@@ -23,11 +23,13 @@ every hook command is rewritten as `zb-hook-run -- <command>`. In order it:
 Standard library only: it runs before, and outside of, the helper's venv.
 """
 
-import fcntl
 import json
 import os
 import struct
 import sys
+
+if sys.platform != "win32":  # POSIX-only (WS7.5, bead zigBrowser-2p3): the module still imports on Windows
+    import fcntl
 
 BWRAP = "/usr/bin/bwrap"
 REFUSED = (

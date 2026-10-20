@@ -32,23 +32,25 @@ zeroed, so the token lives in this process's memory until it exits: the helper
 is one-shot, and exits right after `done`."""
 
 import argparse
-import fcntl
 import json
 import os
-import pty
 import re
 import select
 import signal
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
 from urllib.parse import parse_qsl, urlsplit
 
 from . import sandbox
 from .frames import Emitter
+
+if sys.platform != "win32":  # POSIX-only (WS7.5, bead zigBrowser-2p3): the module still imports on Windows
+    import fcntl
+    import pty
+    import termios
 
 TOKEN_FD = 4
 TIMEOUT_S = 600

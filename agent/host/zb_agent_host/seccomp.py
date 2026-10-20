@@ -10,9 +10,12 @@ bwrap installs it after its own setup; every descendant inherits it.
 Standard library only.
 """
 
-import fcntl
 import os
 import struct
+import sys
+
+if sys.platform != "win32":  # POSIX-only (WS7.5, bead zigBrowser-2p3): the module still imports on Windows
+    import fcntl
 
 from .files import write_all
 

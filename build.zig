@@ -1154,6 +1154,14 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_authorize_parity",
     });
+    // WS7.5 (bead zigBrowser-2p3; red 56e0bcd): no zb_agent_host module imports a POSIX-only
+    // module at top level, so the package still imports on Windows (a static AST scan).
+    const agent_host_win_import = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 test_windows_import.py",
+    });
+    b.step("agent-host-win-import", "Check that no zb_agent_host module imports a POSIX-only module at top level (WS7.5)").dependOn(&agent_host_win_import.step);
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
     const agent_setup_e2e = b.addSystemCommand(&.{
@@ -1582,6 +1590,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
+    test_step.dependOn(&agent_host_win_import.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_auth_seam_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
