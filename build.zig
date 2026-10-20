@@ -476,6 +476,24 @@ pub fn build(b: *std.Build) void {
     });
     agent_protocol_prompt_tests_module.addImport("agent_protocol", agent_protocol_module);
     const run_agent_protocol_prompt_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_prompt_tests_module }));
+    // Chat drawer S7.0 (rev 16.20.30): the real Bridge's tool_call (agent/host/tests/bridge_producer.py)
+    // judged by the real validator.
+    const bridge_producer = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \"$py\" bridge_producer.py",
+    });
+    bridge_producer.addFileInput(b.path("agent/host/tests/bridge_producer.py"));
+    bridge_producer.addFileInput(b.path("agent/host/zb_agent_host/bridge.py"));
+    bridge_producer.addFileInput(b.path("agent/host/zb_agent_host/frames.py"));
+    const agent_bridge_frame_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_bridge_frame_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_bridge_frame_tests_module.addImport("agent_protocol", agent_protocol_module);
+    agent_bridge_frame_tests_module.addAnonymousImport("bridge_frames", .{ .root_source_file = bridge_producer.captureStdOut(.{}) });
+    const run_agent_bridge_frame_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_bridge_frame_tests_module }));
     // Chat drawer S5d fix-forward (rev 16.20.18; RoseCat 6286, 6307, 6314): the cap reason
     // order, prompt-id bounds, and the app's prompt path once a session's ids are spent.
     var s5d_fix_runs: [5]*std.Build.Step = undefined;
@@ -1295,6 +1313,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_redact",
     });
+    // Chat drawer S7.0 (rev 16.20.30, 16.20.32): the Bridge names the running prompt; tool_result by
+    // id, in section 3's grammar; every ending ends its calls. Each module runs alone.
+    const agent_host_bridge = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_result && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_bridge_endings",
+    });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
     const agent_host_login = b.addSystemCommand(&.{
@@ -1843,6 +1868,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_protocol_capped_tests.step);
     test_step.dependOn(&run_agent_protocol_prompt_tests.step);
+    test_step.dependOn(&run_agent_bridge_frame_tests.step);
     for (s5d_fix_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
@@ -1909,6 +1935,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat_fit.step);
     test_step.dependOn(&agent_host_redact.step);
     test_step.dependOn(&agent_host_chat_redact.step);
+    test_step.dependOn(&agent_host_bridge.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);

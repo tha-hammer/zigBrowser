@@ -153,13 +153,33 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(out.frames()), 1)
 
     async def test_the_bridge_reads_no_stdin_of_its_own(self):
-        out = Out()
+        """One stdin reader, Chat's pump (RoseCat 6527): the Bridge touches no stdin attribute,
+        registers no event-loop reader and starts no thread."""
+
+        class StdinSpy:
+            def __init__(self):
+                self.touched = []
+
+            def __getattr__(self, name):  # read, readline, fileno, buffer, ...
+                self.touched.append(name)
+                raise AttributeError(name)
+
+            def __iter__(self):
+                self.touched.append("__iter__")
+                return iter(())
+
+        out, spy = Out(), StdinSpy()
+        loop = asyncio.get_running_loop()
         before = {t.ident for t in threading.enumerate()}
-        b = bridge(out, lambda: 7)
-        task, calls = await started(b, out)
-        b.resolve(answer(calls[0]))
-        await asyncio.wait_for(task, 5)
-        self.assertEqual({t.ident for t in threading.enumerate()} - before, set(), "one stdin reader: Chat's pump")
+        with mock.patch("sys.stdin", spy), \
+                mock.patch.object(loop, "add_reader", side_effect=lambda *a: spy.touched.append("add_reader")):
+            b = bridge(out, lambda: 7)
+            task, calls = await started(b, out)
+            b.resolve(answer(calls[0]))
+            await asyncio.wait_for(task, 5)
+            await asyncio.sleep(0.05)  # a reader thread would have iterated by now
+        self.assertEqual(spy.touched, [], "one stdin reader: Chat's pump")
+        self.assertEqual({t.ident for t in threading.enumerate()} - before, set())
 
 
 class PromptEndTest(unittest.IsolatedAsyncioTestCase):

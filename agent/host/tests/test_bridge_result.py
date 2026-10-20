@@ -11,7 +11,9 @@ Pure Python: the real Bridge and Emitter. Run the module alone, as the gate does
 import asyncio
 import base64
 import copy
+import json
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -21,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_bridge import Out, answer, bridge, error_text, started  # noqa: E402
 
 from zb_agent_host.frames import encode  # noqa: E402
+from zb_agent_host import chat  # noqa: E402
 
 PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(64))).decode()
 JPEG = base64.b64encode(b"\xff\xd8\xff\xe0" + bytes(range(64))).decode()
@@ -51,6 +54,14 @@ class GoodTest(unittest.IsolatedAsyncioTestCase):
             {"type": "image", "data": JPEG, "mimeType": "image/jpeg"}]})
         self.assertEqual([f["type"] for f in out.frames()], ["tool_call"])
 
+    async def test_the_frames_envelope_is_accepted(self):
+        """The app writes every frame with the shared envelope {"v":1,"seq":n} (plan D7b)."""
+        out = Out()
+        b = bridge(out, lambda: 7)
+        task, calls = await started(b, out)
+        b.resolve(result(calls[0], v=1, seq=41, ok=True, content=[{"type": "text", "text": "framed"}]))
+        self.assertEqual(await asyncio.wait_for(task, 5), {"content": [{"type": "text", "text": "framed"}]})
+
     async def test_an_error_of_4_kib_is_returned_as_is(self):
         out = Out()
         b = bridge(out, lambda: 7)
@@ -69,6 +80,25 @@ class GoodTest(unittest.IsolatedAsyncioTestCase):
         returned = await asyncio.wait_for(task, 5)
         self.assertNotIn("is_error", returned)
         self.assertEqual(len(returned["content"][0]["text"]), len(frame["content"][0]["text"]))
+
+
+class FramingTest(unittest.IsolatedAsyncioTestCase):
+    """RoseCat 6526: the 1 MiB is the line Chat read, as the app wrote it (here with spaces
+    that a compact re-encoding would drop), not the frame re-encoded."""
+
+    async def test_the_limit_is_the_line_as_read(self):
+        out = Out()
+        b = bridge(out, lambda: 7)
+        c = types.SimpleNamespace(sessions={"s-1-1": types.SimpleNamespace(bridge=b)})
+        task, calls = await started(b, out)
+        frame = result(calls[0], ok=True, content=[{"type": "text", "text": ""}])
+        spaced = lambda f: json.dumps(f, separators=(", ", ": "), ensure_ascii=False)  # noqa: E731
+        frame["content"][0]["text"] = "x" * (LIMIT + 1 - len(spaced(frame).encode()))
+        line = spaced(frame)
+        self.assertEqual(len(line.encode()), LIMIT + 1)
+        self.assertLessEqual(len(encode(frame).encode()), LIMIT, "compact, it would fit")
+        await chat.Chat.handle(c, json.loads(line), size=len(line.encode()))
+        self.assertEqual(error_text(await asyncio.wait_for(task, 5)), (True, BAD))
 
 
 def malformed_cases(frame):
@@ -92,6 +122,8 @@ def malformed_cases(frame):
     over["content"][0]["text"] = "x" * (LIMIT + 1 - len(encode(over).encode()))
     return [
         ("an unknown field", with_(good, extra=1)),
+        ("an envelope v other than 1", with_(good, v=2, seq=1)),
+        ("an envelope seq that is not a positive integer", with_(good, v=1, seq=0)),
         ("no ok", with_(good, ok=KeyError)),
         ("ok a string", with_(good, ok="true")),
         ("ok a number", with_(good, ok=1)),

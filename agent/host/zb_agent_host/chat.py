@@ -31,6 +31,7 @@ import threading
 from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent, TextBlock
 
 from . import __version__, options, redact, sandbox, token
+from .bridge import Bridge
 from .contract import Route
 from .files import atomic_write
 from .frames import Emitter, encode
@@ -104,6 +105,8 @@ class Session:
     def __init__(self, chat, session_id):
         self.chat, self.id = chat, session_id
         self.task = None  # the one prompt in flight (RoseCat 5628.3)
+        self.running_prompt = None  # its prompt_id while it runs: the Bridge's calls name it (S7.0)
+        self.bridge = Bridge(chat.out, session_id, chat.tool_deadline_s, prompt=lambda: self.running_prompt)
         self._new_client()
 
     def _new_client(self):
@@ -219,6 +222,7 @@ class Chat:
         self.home, self.token = home, token_value
         self.fifo_dir, self.test_ca = fifo_dir, test_ca
         self.e2e = None
+        self.tool_deadline_s = TOOL_DEADLINE_S  # hello.e2e.tool_deadline_s may shorten it (S7.0.6)
         self.out = Emitter()
         self.sessions = {}
         self.scrubber = None  # S5.7: set by run(), before `ready`
@@ -231,10 +235,16 @@ class Chat:
         else:
             self.out.emit("error", session=session, prompt_id=prompt_id, code=code, message=message[:1024])
 
-    async def handle(self, frame):
+    async def handle(self, frame, size=None):
         kind, sid = frame.get("type"), frame.get("session")
         if kind == "hello":
             self.e2e = frame.get("e2e")
+            if "tool_deadline_s" in (self.e2e or {}):
+                deadline = self.e2e["tool_deadline_s"]
+                if type(deadline) is int and 1 <= deadline <= TOOL_DEADLINE_S:
+                    self.tool_deadline_s = deadline
+                else:
+                    self.error("protocol", "bad tool_deadline_s")
             atomic_write(self.home.scratchpad / "helper-hello.json", json.dumps(frame), 0o600)
         elif kind == "open_session":
             await self._open(sid)
@@ -251,7 +261,8 @@ class Chat:
         elif kind == "shutdown":
             return False
         elif kind == "tool_result":
-            pass  # no browser tool exists before S7
+            if sid in self.sessions:  # matched by id alone; a stray one changes nothing (S7.0.4)
+                self.sessions[sid].bridge.resolve(frame, size)
         else:
             self.error("protocol", f"unexpected frame {kind!r}" if kind in APP_FRAMES else "unknown frame type", sid)
         return True
@@ -274,6 +285,7 @@ class Chat:
         self.sessions[sid] = session
 
     async def _prompt(self, session, text, prompt_id=None):
+        session.running_prompt = prompt_id
         try:
             await session.prompt(text, prompt_id)
         except asyncio.CancelledError:
@@ -283,6 +295,9 @@ class Chat:
                 await session.renew()
             await self.scrubbed("prompt_end", session.id, prompt_id)
             self.error("sdk", type(exc).__name__, session.id, prompt_id)
+        finally:  # after the prompt's ending frame: no call of it is left (S7.0.5)
+            session.running_prompt = None
+            session.bridge.prompt_ended()
 
     async def scrubbed(self, kind, session=None, prompt_id=None):
         """A lifecycle scan, run by the scrubber's owner thread off this loop. A failure is
@@ -327,7 +342,7 @@ class Chat:
             except ValueError:
                 self.error("protocol", "bad frame")
                 continue
-            if not isinstance(frame, dict) or not await self.handle(frame):
+            if not isinstance(frame, dict) or not await self.handle(frame, len(line.rstrip("\n").encode())):
                 break
         for sid in list(self.sessions):
             await self.sessions.pop(sid).close("end")
