@@ -273,6 +273,16 @@ static void handle_signal(int signo) {
 // finishedOrFailed, the timeout timer, or the outcome — otherwise a late stale callback corrupts the
 // navigation now in flight (RoseCat 33b0827: identity-check BEFORE mutating current state).
 @property(nonatomic, strong) WKNavigation *currentNav;
+// MS2b.2 page dialogs. At most one open dialog per window; it is NEVER answered by default — the
+// captured WKUIDelegate completion handler is held until zb_automation_respond_dialog answers it (or the
+// window closes). kind: 0 none, 1 alert, 2 confirm, 3 prompt, 4 beforeunload. Touched only on the main
+// thread (the WKUIDelegate callbacks and the dialog ABI's main-queue hop).
+@property(nonatomic, assign) int pendingDialogKind;
+@property(nonatomic, copy) NSString *pendingDialogMessage;
+@property(nonatomic, copy) NSString *pendingDialogDefault;  // prompts only
+@property(nonatomic, copy) void (^pendingAlertCompletion)(void);
+@property(nonatomic, copy) void (^pendingConfirmCompletion)(BOOL);
+@property(nonatomic, copy) void (^pendingPromptCompletion)(NSString *);
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child;
 - (void)loadURI:(NSString *)uri;
 - (void)reloadBypassingCache:(BOOL)bypassCache;
@@ -459,6 +469,9 @@ static void handle_signal(int signo) {
 }
 
 - (void)close {
+  // Never release a held WKWebView dialog completion uncalled (WebKit raises NSException): answer any
+  // open dialog with its default (confirm->Cancel, prompt->null, alert->resume) as closing the window does.
+  if (self.pendingDialogKind != 0) [self zbRespondDialogAccept:NO text:nil];
   [self.timeoutTimer invalidate];
   self.timeoutTimer = nil;
   [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"zbHost"];
@@ -674,6 +687,75 @@ static void handle_signal(int signo) {
   NSString *error_text = string_from_c(err_text != NULL ? err_text : "UnknownCommand");
   emit_protocol2(self.app.e2eProtocol, "IPCERR", utf8_or_empty(cmd), utf8_or_empty(error_text));
   replyHandler(nil, error_text);
+}
+
+// --- MS2b.2 page dialogs (WKUIDelegate) ---
+// WKWebView surfaces alert/confirm/prompt through these WKUIDelegate methods; without them JS gets the
+// default answer and no dialog is shown. We CAPTURE each as the window's one pending dialog and hold its
+// completion handler — the page's JS turn stays blocked until zb_automation_respond_dialog answers it,
+// so automation can observe and answer it (never auto-answered). A second dialog arriving while one is
+// open is answered with its default immediately (JS is single-threaded, so this is defensive).
+
+- (void)webView:(WKWebView *)webView runJavaScriptAlertPanelWithMessage:(NSString *)message
+    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(void))completionHandler {
+  (void)webView; (void)frame;
+  if (self.pendingDialogKind != 0) { completionHandler(); return; }
+  self.pendingDialogKind = 1;
+  self.pendingDialogMessage = message ?: @"";
+  self.pendingDialogDefault = nil;
+  self.pendingAlertCompletion = completionHandler;
+}
+
+- (void)webView:(WKWebView *)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message
+    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(BOOL))completionHandler {
+  (void)webView; (void)frame;
+  if (self.pendingDialogKind != 0) { completionHandler(NO); return; }
+  self.pendingDialogKind = 2;
+  self.pendingDialogMessage = message ?: @"";
+  self.pendingDialogDefault = nil;
+  self.pendingConfirmCompletion = completionHandler;
+}
+
+- (void)webView:(WKWebView *)webView runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
+    defaultText:(NSString *)defaultText initiatedByFrame:(WKFrameInfo *)frame
+    completionHandler:(void (^)(NSString *))completionHandler {
+  (void)webView; (void)frame;
+  if (self.pendingDialogKind != 0) { completionHandler(nil); return; }
+  self.pendingDialogKind = 3;
+  self.pendingDialogMessage = prompt ?: @"";
+  self.pendingDialogDefault = defaultText ?: @"";
+  self.pendingPromptCompletion = completionHandler;
+}
+
+// Answer this window's open dialog on the main thread: alert -> resume; confirm -> accept bool; prompt ->
+// the given text when accepted (null = its default), nil when dismissed. Returns NO if none is open.
+- (BOOL)zbRespondDialogAccept:(BOOL)accept text:(NSString *)text {
+  int kind = self.pendingDialogKind;
+  if (kind == 0) return NO;
+  NSString *def = self.pendingDialogDefault;
+  self.pendingDialogKind = 0;
+  self.pendingDialogMessage = nil;
+  self.pendingDialogDefault = nil;
+  if (kind == 1) {
+    void (^c)(void) = self.pendingAlertCompletion; self.pendingAlertCompletion = nil; if (c) c();
+  } else if (kind == 2) {
+    void (^c)(BOOL) = self.pendingConfirmCompletion; self.pendingConfirmCompletion = nil; if (c) c(accept ? YES : NO);
+  } else if (kind == 3) {
+    void (^c)(NSString *) = self.pendingPromptCompletion; self.pendingPromptCompletion = nil;
+    if (c) c(accept ? (text != nil ? text : (def != nil ? def : @"")) : nil);
+  }
+  return YES;
+}
+
+// A page dialog open on this window blocks its web process, so a command that needs page script must
+// fail fast with DIALOG_OPEN instead of hanging (url, which reads no script, stays exempt).
+- (BOOL)zbHasOpenDialog {
+  return self.pendingDialogKind != 0;
+}
+
+- (void)dealloc {
+  // Safety net if -close did not run: a held WKWebView completion must never be released uncalled.
+  if (self.pendingDialogKind != 0) [self zbRespondDialogAccept:NO text:nil];
 }
 @end
 
@@ -1087,6 +1169,15 @@ static void zb_job_inflight(ZBAutoJob *job) {
   pthread_mutex_unlock(&job->mu);
 }
 
+// Still INFLIGHT (not yet DONE/ABANDONED)? A post-submit watch (e.g. the eval dialog-watch) checks this
+// to stop once the submission's own completion has finished the job.
+static int zb_job_is_inflight(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  int ok = (job->state == ZB_JOB_INFLIGHT);
+  pthread_mutex_unlock(&job->mu);
+  return ok;
+}
+
 // Re-own the job for the NEXT side-effect step of a multi-step op: INFLIGHT -> DISPATCHING. Returns 0 if
 // the waiter already abandoned (timed out while INFLIGHT). A caller that gets 1 holds the job through
 // DISPATCHING, where zb_job_wait blocks WITHOUT a deadline, so the step's side effect (e.g. a keyDown/
@@ -1244,6 +1335,8 @@ static int zb_auto_run_when_ready(uint32_t win, unsigned int timeout_ms, char **
 static int zb_auto_get_string(uint32_t win, unsigned int timeout_ms, char **out, BOOL want_title) {
   @autoreleasepool {
     return zb_auto_run_when_ready(win, timeout_ms, out, ^int(ZBWindowHost *host, char **result) {
+      // title reads the page's live document (blocked by an open dialog); url reads no page script.
+      if (want_title && [host zbHasOpenDialog]) return ZB_AUTO_ERR_DIALOG_OPEN;
       NSString *value = want_title ? (host.webView.title ?: @"")
                                     : (host.webView.URL.absoluteString ?: @"");
       const char *utf8 = value.UTF8String;
@@ -1259,6 +1352,66 @@ int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url)
 
 int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title) {
   return zb_auto_get_string(win, timeout_ms, out_title, YES);
+}
+
+// MS2b.2: every open page dialog as JSON [{window, type, message, default_text?}], the primary window's
+// first — the shape automation_*_port.parseDialogs expects. Reads per-window dialog state on the main
+// thread (the held dialog blocks the web process, not the main run loop, so this hop is prompt). No page
+// script, so it works WHILE a dialog is open.
+int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
+  if (out_json != NULL) *out_json = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  __block char *result = NULL;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+      NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
+      ZBAppHost *app = g_active_app;
+      if (app != nil) {
+        NSArray<ZBWindowHost *> *hosts = app.windows != nil ? app.windows
+                                       : (app.mainWindow != nil ? @[ app.mainWindow ] : @[]);
+        [hosts enumerateObjectsUsingBlock:^(ZBWindowHost *h, NSUInteger idx, BOOL *stop) {
+          (void)stop;
+          if (h == nil || h.pendingDialogKind == 0) return;
+          NSString *type = h.pendingDialogKind == 1 ? @"alert"
+                         : h.pendingDialogKind == 2 ? @"confirm"
+                         : h.pendingDialogKind == 3 ? @"prompt" : @"beforeunload";
+          NSMutableDictionary *d = [@{ @"window": @(idx + 1), @"type": type,
+                                       @"message": (h.pendingDialogMessage ?: @"") } mutableCopy];
+          if (h.pendingDialogKind == 3) d[@"default_text"] = h.pendingDialogDefault ?: @"";
+          [arr addObject:d];
+        }];
+      }
+      NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
+      NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
+      const char *utf8 = s.UTF8String;
+      result = strdup(utf8 != NULL ? utf8 : "[]");
+    }
+    dispatch_semaphore_signal(sem);
+  });
+  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC)) != 0) {
+    return ZB_AUTO_ERR_TIMEOUT;  // result (if it ever lands) is leaked, but a wedged main queue is fatal anyway
+  }
+  if (out_json != NULL) *out_json = result; else free(result);
+  return ZB_AUTO_OK;
+}
+
+// MS2b.2: answer window `win`'s open dialog (0 = primary). accept = OK/Leave, else Cancel/Stay; `text`
+// answers an accepted prompt (NULL = its default). NO_DIALOG when the window has none.
+int zb_automation_respond_dialog(uint32_t win, int accept, const char *text, unsigned int timeout_ms) {
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  NSString *answer = text != NULL ? [NSString stringWithUTF8String:text] : nil;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  __block int rc = ZB_AUTO_ERR_NO_DIALOG;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    ZBWindowHost *host = zb_auto_window_for_id(win);
+    if (host != nil && [host zbRespondDialogAccept:(accept != 0) text:answer]) rc = ZB_AUTO_OK;
+    dispatch_semaphore_signal(sem);
+  });
+  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC)) != 0) {
+    return ZB_AUTO_ERR_TIMEOUT;
+  }
+  return rc;
 }
 
 // Start a routed navigation on the main thread and wait for ITS outcome. `start(host)` performs the
@@ -1427,7 +1580,14 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
         return;
       }
-      poll = nil;  // ready: claim for submission (PREFLIGHT->DISPATCHING), then run the async eval.
+      poll = nil;  // ready
+      // A page dialog open on this window blocks its web process; eval would hang, so fail fast.
+      if ([host zbHasOpenDialog]) {
+        if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, NULL);
+        zb_job_unref(job);
+        return;
+      }
+      // claim for submission (PREFLIGHT->DISPATCHING), then run the async eval.
       if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: no submission
       zb_auto_test_dispatch_hold();  // test-only wedge: prove the waiter cannot return while DISPATCHING
       // Resolve the content world on the main thread (first worldWithName can init WebKit2).
@@ -1448,6 +1608,19 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
         zb_job_unref(job);
       }];
       zb_job_inflight(job);  // submission issued on the main thread: DISPATCHING -> INFLIGHT, release waiter
+      // Dialog-watch: if the script opens a page dialog, its completion can never come back (the web
+      // process blocks in the dialog), so this eval would hang until its deadline and wedge the serial
+      // socket. Watch for a dialog appearing while INFLIGHT and finish the eval promptly with
+      // DIALOG_OPEN (the held completion later no-ops on the DONE job). Its own ref outlives the watch.
+      zb_job_ref(job);
+      __block void (^dlgwatch)(void) = nil;
+      dlgwatch = ^{
+        if (!zb_job_is_inflight(job)) { dlgwatch = nil; zb_job_unref(job); return; }  // eval already settled
+        ZBWindowHost *h = zb_auto_window_for_id(win);
+        if (h != nil && [h zbHasOpenDialog]) { zb_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, NULL); dlgwatch = nil; zb_job_unref(job); return; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), dlgwatch);
+      };
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), dlgwatch);
     };
     // Dispatch `poll` DIRECTLY (not wrapped): dispatch_async Block_copies it now, retaining the
     // captured body/arg/world_name for the whole re-dispatch chain. A wrapper that merely calls poll()
@@ -1535,6 +1708,12 @@ int zb_native_click(uint32_t win, double x, double y, int button,
         return;
       }
       poll = nil;  // ready
+      if ([host zbHasOpenDialog]) {  // an open dialog blocks the web process: fail fast, no input
+        deliver = nil;
+        if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, NULL);
+        zb_job_unref(job);
+        return;
+      }
       if (expected == nil) {
         void (^d)(ZBWindowHost *) = deliver; deliver = nil; d(host);  // no guard: deliver straight away
         return;
@@ -1757,6 +1936,12 @@ static int zb_auto_native_input(uint32_t win, NSString *expected, unsigned int t
       return;
     }
     poll = nil;  // ready
+    if ([host zbHasOpenDialog]) {  // an open dialog blocks the web process: fail fast, no input
+      dlv = nil;
+      if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_DIALOG_OPEN, NULL, NULL);
+      zb_job_unref(job);
+      return;
+    }
     if (expected == nil) { void (^d)(ZBWindowHost *, ZBAutoJob *) = dlv; dlv = nil; d(host, job); return; }
     WKContentWorld *autoWorld = [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD];
     [host.webView callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"

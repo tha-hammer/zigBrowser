@@ -64,6 +64,9 @@ const vtable: PagePort.VTable = .{
     // MS2b.1b: native key + text, same phase model/guard, via trusted NSEvent key events.
     .nativeKey = nativeKey,
     .nativeText = nativeText,
+    // MS2b.2 page dialogs: capture alert/confirm/prompt via WKUIDelegate; list + answer them.
+    .listDialogs = listDialogs,
+    .respondDialog = respondDialog,
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -178,6 +181,53 @@ fn nativeText(ptr: *anyopaque, text: []const u8, document: ?[]const u8, timeout_
     const rc = c.zb_native_text(windowOf(ptr), text_z.ptr, expected, clampMs(timeout_ms), &releases, &chars, &err);
     c.zb_automation_free(err);
     if (chars > 0) sent_chars.* = @intCast(chars);
+    return mapCode(rc);
+}
+
+/// MS2b.2: every open page dialog (the shim lists all windows' dialogs as JSON). `gpa` owns the result
+/// (see page_port.freeDialogs).
+fn listDialogs(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]page_port.DialogInfo {
+    var out: [*c]u8 = null;
+    const rc = c.zb_automation_list_dialogs(clampMs(timeout_ms), &out);
+    defer c.zb_automation_free(out);
+    try mapCode(rc);
+    if (out == null) return error.EvalFailed;
+    return parseDialogs(gpa, std.mem.span(out));
+}
+
+/// Shim dialog JSON [{window, type, message, default_text?}] -> DialogInfo (mirrors the GTK port).
+fn parseDialogs(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.DialogInfo {
+    const Wire = struct { window: u32, type: page_port.DialogType, message: []const u8, default_text: ?[]const u8 = null };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EvalFailed,
+    };
+    defer parsed.deinit();
+    const dialogs = try gpa.alloc(page_port.DialogInfo, parsed.value.len);
+    var filled: usize = 0;
+    errdefer page_port.freeDialogs(gpa, dialogs[0..filled]);
+    for (parsed.value, dialogs) |wire, *info| {
+        const message = try gpa.dupe(u8, wire.message);
+        const default_text: ?[]u8 = if (wire.default_text) |text| gpa.dupe(u8, text) catch |e| {
+            gpa.free(message);
+            return e;
+        } else null;
+        info.* = .{ .window = wire.window, .type = wire.type, .message = message, .default_text = default_text };
+        filled += 1;
+    }
+    return dialogs;
+}
+
+/// MS2b.2: answer window `id`'s dialog (accept = OK/Leave, else Cancel/Stay; `text` answers an accepted
+/// prompt, null = its default). An embedded NUL in `text` is refused before the ABI (EvalFailed).
+fn respondDialog(_: *anyopaque, id: page_port.WindowId, accept: bool, text: ?[]const u8, timeout_ms: u64) PortError!void {
+    var text_z: ?[:0]u8 = null;
+    defer if (text_z) |z| std.heap.c_allocator.free(z);
+    if (text) |t| {
+        if (std.mem.indexOfScalar(u8, t, 0) != null) return error.EvalFailed;
+        text_z = try std.heap.c_allocator.dupeZ(u8, t);
+    }
+    const rc = c.zb_automation_respond_dialog(@intCast(id), @intFromBool(accept), if (text_z) |z| z.ptr else null, clampMs(timeout_ms));
     return mapCode(rc);
 }
 
