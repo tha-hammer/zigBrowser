@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Rev 16.20.24 (docs; RoseCat 6368, 6372, 6374, 6379, 6381, 6410, 6414, 6423 on the uncommitted S5c-2 scrubber): the scrubber walks the CLI's config directory as the sandboxed helper sees it, `realpath(.claude)/projects` (the host's `state` is not mounted there); masking is chunked; revalidation compares full keys; a failure has one bounded terminal path (owner hand-over before waking, a sealed output, the prompt's `error sdk` best effort, a fixed stderr line, exit 3). S5d's real-chain exhaustion red and seam green landed (`aabadf1`, `24f9b00`, build fix-forward `a031491`). Previous: rev 16.18.20 (the auth-window e2e's isolation canary, RoseCat 6402).
+status: plan for review. Rev 16.20.25 (docs; RoseCat 6440, 6442): the start sweep is a request to the scrub owner, awaited before `ready`; the CLI's stderr is drained, never reprinted. Rev 16.20.24 (RoseCat 6368, 6372, 6374, 6379, 6381, 6410, 6414, 6423 on the uncommitted S5c-2 scrubber): the scrubber walks the CLI's config directory as the sandboxed helper sees it, `realpath(.claude)/projects` (the host's `state` is not mounted there); masking is chunked; revalidation compares full keys; a failure has one bounded terminal path (owner hand-over before waking, a sealed output, the prompt's `error sdk` best effort, a fixed stderr line, exit 3). S5d's real-chain exhaustion red and seam green landed (`aabadf1`, `24f9b00`, build fix-forward `a031491`). Previous: rev 16.18.20 (the auth-window e2e's isolation canary, RoseCat 6402).
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -2486,6 +2486,8 @@ The drawer's own bounds are named in `src/agent_drawer.zig`: `break_run_min` 128
     4. It writes one fixed stderr line, nonblocking.
     5. It exits with code 3.
   - Nothing on that path waits for the app. When the app has stopped reading, the prompt's error is best effort, and the exit is still bounded.
+- **The start sweep is the owner's (rev 16.20.25, RoseCat 6440).** `Chat.run` makes the scrubber, starts the owner thread, and awaits a posted `start` request before `ready`, like every other scan. So a start failure takes the owner's one terminal path, once. Only a failure to make the scrubber (a missing or symlinked config directory) calls `fail_closed` directly: there is no owner and no request yet. Red: `test_chat_redact.OwnerStartTest`.
+- **The CLI's stderr is drained, never reprinted (rev 16.20.25, RoseCat 6442; T6).** The SDK's stderr callback discards each line. Red: `test_chat_redact.CliStderrTest`, where a stand-in CLI writes a token-shaped canary and control characters to its stderr; neither reaches the helper's stderr or a frame.
 - **The stderr line is fixed (6410):** exactly `zigBrowser: agent: transcript scrub failed`. A failure's detail (a path, an errno) stays in the exception, because names in the transcript tree are the agent's to choose.
 - **Reds:**
   - `test_redact.py` `TerminalTest`: a queued request never gets a clean answer after a failure; a failure nobody waits for still ends the owner; the hand-over comes before any waking.
