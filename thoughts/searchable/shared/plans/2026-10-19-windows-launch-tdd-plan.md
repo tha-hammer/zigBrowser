@@ -6,8 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.9)
-rev: 2.9
+status: plan for review (rev 2.10)
+rev: 2.10
+rev_2_10_note: "Rev 2.10 (2026-10-20, WS2.0 scope, BlueBeaver; RoseCat 6860, 41a296a): WS2.0's live production evidence is the Win11 VM only. Running the browser on the physical Windows 10 file server would mean copying an exe onto it, which the user's rule forbids: that machine is read-only as zbtest, with no writes and no installs (the file-server rule, plan:525,689,712-717). The physical-Win10 leg (the owner-side DACL check and the different-integrity connect) is withdrawn, not deferred under a claim, and Windows 10 AF_UNIX stays unverified. Where Win10 coverage would come from if ever needed: a separate, writable Windows 10 host that the user authorizes (for example a Win10 guest on the libvirt host), running the same tests/e2e/win_transport_test.py with ZB_WIN11_HOST pointed at it. Nothing here claims it."
 rev_2_7_note: "Rev 2.7 (2026-10-20, WS2.0, BlueBeaver; RoseCat 6647, 6668): the Windows automation server never started — std.Io.net enables AF_UNIX on Windows only when the target minimum is win10_rs4 (Windows 10 1803) or later, and the default x86_64-windows-msvc range starts lower, so server.start returned AddressFamilyUnsupported (exit 7) and its whole start path was dead code. build.zig windowsAfUnixFloor now gives every Windows target without an explicit minimum the win10_rs4 floor (the cross-check object uses it too); the newly reachable start path got Windows fixes (wallClockMs via RtlGetSystemTimePrecise, the token file without .fromMode, cookies.import refused on Windows until WS3). The ADR-1 spike no longer compiles on Zig 0.16 and is superseded: the production e2e tests/e2e/win_transport_test.py (red 970969f, green f29e490) is the AF_UNIX proof. Rev 2.6's claim that .fromMode compiles for Windows is withdrawn: it compiled only because the path was unreachable."
 rev_2_6_note: "(fix, RoseCat 6607: the check and the apply name one object, a handle opened without following a link or reparse point; O_PATH + /proc/self/fd on Linux, O_NOFOLLOW + fchmod on macOS, FILE_FLAG_OPEN_REPARSE_POINT + SetSecurityInfo on Windows, the AF_UNIX reparse tag accepted; swap reds; the readback contract is P + only AI/AR + the one ACE) Rev 2.6 (2026-10-20): WS2.0 owned by BlueBeaver (orchestrator; AzureRidge 6591 keeps the VM, host tooling, wincontain and the Job Object). One owner-only seam src/owner_only.zig: restrictToOwner(path, file|dir) — POSIX 0600/0700 with symlinks refused; Windows a PROTECTED DACL with exactly one allow ACE for the current user SID (no SYSTEM/Administrators/Everyone/Users/Authenticated Users, nothing inherited; OICI on a directory), built as SDDL by the pure ownerOnlySddl and applied with SetNamedSecurityInfoW; C form zb_restrict_to_owner for WS3.1. socketBaseDir: Windows %LOCALAPPDATA% only (NoLocalAppData, never /tmp or XDG); planSocketPath returns SocketPathTooLong instead of a cut path. The compile check is not the red (MinGW chmod compiles and sets no DACL); the reds are Linux-provable (owner_only_test, automation_transport_ws20_test) plus the VM e2e win_transport_test.py (zbother negative control after the user creates zbother)."
 rev_2_5_note: "Rev 2.5 (2026-10-20): WS3 flag table made literal from production (RoseCat 6405, 6415). Exact present-flag rows from media_config.parse (on|off), render_config.parseHwPolicy (never|always|webkit — no auto), render_config.parseRenderer (default|shm|mesa-egl, Linux only; refused on macOS/Windows); empty value is an explicit invalid value and is refused. backendFlagDecision decides a PRESENT flag only; absence makes no call and no apply and is resolved by the config defaults (media-source=on, hardware-acceleration=webkit, Linux renderer=shm; no renderer decision on macOS/Windows) via a separate absent-default oracle at the config/app boundary, never value=''. WS3.2's flag-decision property is now the registered, all-OS, anti-drift tests/backend_flag_test.zig (step test-backend-flag, BlueBeaver); the standalone src/ws3_backend_flag_table_test.zig (88e16cd) is removed so one literal oracle cannot drift."
@@ -932,13 +933,15 @@ FIFO semantics as Linux, proven by three production chains (the macOS plan's Clo
 | 27 `zb_automation_debug_*` test seams (header :364-424; the header declares 30 `_debug_` functions, the other three, `_hw_policy`, `_webkit_default_hw_policy`, `_media_source` at :97/:100/:131, ship with the WS3 flags) | the slice whose e2e drives each (as macOS table) | else absent at link time | per slice |
 
 ### WS2.0: the transport is local-only and owner-only   [W]
+**Live production evidence is the Win11 VM only (rev 2.10):** the physical Windows 10 file server is read-only
+as zbtest, with no writes and no installs (plan:525,689,712-717), so no browser runs there.
 **Given** the browser with `--automation-api`, **when** it starts, **then** exactly one AF_UNIX
 listener exists at `%LOCALAPPDATA%\zigbrowser\zigbrowser-automation-<nonce>.sock` (no TCP), the
 directory, socket and `<socket>.token` have a **protected DACL granting only the current user**
 (no inherited ACEs), and from the `zbother` account (VM) connecting or reading the token fails.
 - ~~First run the existing ADR-1 spike `automation-afunix-spike-win` on both hosts~~ (rev 2.7: the
   spike no longer compiles on Zig 0.16; superseded). **AF_UNIX is proven by the production e2e**
-  `tests/e2e/win_transport_test.py` (the real browser binds and accepts on each host). It needs the
+  `tests/e2e/win_transport_test.py` (the real browser binds and accepts on the Win11 VM, rev 2.10). It needs the
   **`win10_rs4` target floor** (build.zig `windowsAfUnixFloor`): below it std's `has_unix_sockets`
   is false. **If AF_UNIX fails on a host, stop and update ADR-1**: no silent TCP fallback.
 - Replace the POSIX-only `restrictSocketMode` (`chmod`, automation_server.zig:1513-1517) and the
@@ -951,11 +954,12 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   because std's AF_UNIX was off below the `win10_rs4` floor).
 - Property: invariant — for generated nonces, `planSocketPath(.windows, base, n)` stays under
   `base\zigbrowser\` and below `UnixAddress.max_len` (extends automation_transport.zig:49-62) [L].
-- **Host difference (rev 2):** the cross-user negative (`zbother` cannot connect or read the token) runs on
-  the **VM only**. The physical Windows 10 machine must not get a second local account (isolation rule 1),
-  so there the test asserts the DACL itself (`acl_principals(...) == {zbtest_sid}` with no inherited ACE and
-  no `Everyone`/`Users`/`Authenticated Users`) and that a connection from a *different-integrity* process of
-  the same user is allowed (the socket is per-user, not per-process). Mutant (both hosts): leave the default
+- **Host scope (rev 2.10, superseding rev 2's host difference):** all of WS2.0's live evidence, the cross-user
+  negative included, runs on the **Win11 VM only**. ~~On the physical Windows 10 machine the test asserts the DACL
+  itself and a different-integrity connect~~: **withdrawn**. Running the browser there would mean copying an exe
+  onto a machine the user keeps read-only as zbtest, with no writes and no installs. If Windows 10 coverage is
+  ever needed, it comes from a separate, writable Windows 10 host the user authorizes, running the same
+  `win_transport_test.py` with `ZB_WIN11_HOST` pointed at it; it is not claimed here. Mutant (the VM): leave the default
   inherited DACL from `%LOCALAPPDATA%` ⇒ the principals assertion is red (it contains `Administrators`/`SYSTEM`
   inherited ACEs). Rev 2.6 decided those are **not** acceptable; on the VM the base is hostile (Everyone, inheritable),
   and the unrestricted-directory and unrestricted-socket mutants both fail (f29e490).
@@ -998,8 +1002,9 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
       2. then the browser with `--automation-api`: exactly one AF_UNIX listener, no TCP;
       3. `acl_principals` of the directory, the socket and the token is exactly `{zbtext's SID}`, protected, with no inherited ACE;
       4. from `zbother`, the connection and the token read both fail.
-    - On the physical Windows 10 machine, the DACL assertion only (rev 2).
-    - Mutant (both hosts): leave the inherited `%LOCALAPPDATA%` DACL, and the principals assertion fails.
+    - ~~On the physical Windows 10 machine, the DACL assertion only (rev 2).~~ Withdrawn in rev 2.10: the file
+      server is read-only, with no writes and no installs, so no browser runs there.
+    - Mutant (the VM): leave the inherited `%LOCALAPPDATA%` DACL, and the principals assertion fails.
 
 ### WS2a: routed commands, private world, readiness   [W]
 - **WS2a.0 (spike, both hosts):** CDP isolated world exists, its globals are invisible to the page,
@@ -2028,7 +2033,10 @@ nonzero assertions on both hosts.
 
 1. CDP isolated worlds inside WebView2 (WS2a.0).
 2. CDP input producing `isTrusted: true` in WebView2 (WS2b.1).
-3. AF_UNIX on both hosts with the Zig 0.16 std (WS2.0). **Win11 VM: proven** by the production e2e at the `win10_rs4` floor (f29e490). Windows 10: still to run there (the file server must be 1803 or later).
+3. AF_UNIX with the Zig 0.16 std (WS2.0). **Win11 VM: proven** by the production e2e at the `win10_rs4` floor (f29e490;
+   the zbother run 3cb8722). **Windows 10: unverified, and not run on the file server** (rev 2.10: it is read-only,
+   with no writes and no installs). It would come from a separate, writable Win10 host the user authorizes; the
+   `win10_rs4` floor requires 1803 or later there.
 4. `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` as a runtime-missing seam (WS1.4).
 5. A public mechanism that recovers a hung WebView2 renderer (WS2c.3).
 6. `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` with an inherited handle on Windows (WS8.3).
