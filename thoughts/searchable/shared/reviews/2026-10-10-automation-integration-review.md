@@ -15874,3 +15874,98 @@ Expand the both-arch e2e to cover `/foo`, `/foo/bar`, `/foobar`, secure,
 expiry/session and SameSite Lax/Strict/None round trips, as well as the async
 timeout/no-late-delete reds. This is the MS3.3 increment only; profile-scoped
 persistence and flag application remain MS3.1/MS3.2. Agent Mail 6565.
+
+## Review at `6d82cae`: gate repair, recovery fix-forward and S7 reds
+
+All seven commit diffs are whitespace-clean. I did not take the shared GUI
+gate slot: BlackRobin's clean-export S7 gate was already running. The reviews
+below use focused owner evidence, Mac mutant evidence where applicable, and a
+local non-GUI reproduction of the failing startup-entrypoint red.
+
+### Windows `pid_t` cross-check repair (`f44aa75`)
+
+**APPROVED.** `src/agent_host.h:9` now limits the local `pid_t` typedef to
+Windows toolchains that are not MinGW. That preserves the fallback needed by
+the real MSVC build while allowing MinGW's `<sys/types.h>` definition to own
+the GNU cross-build. The registered cross-check is the original failing
+compile. Owner evidence covers a clean-export `zig build cross-check`, the
+three previously failing Windows import/entry steps, and a fresh real
+x86_64-windows-msvc build on win11-m8. Agent Mail 6572.
+
+### Production startup-entrypoint red (`34389a1`)
+
+**APPROVED as the failing-first red.** The source oracle reaches the production
+`main.zig` command switch as well as `app.zig`; it requires both `.open` and
+`.screenshot` to enter through `app.runWithIo`, forbids native render applies
+in `main.zig`, and orders `backend_flag.startup` before the screenshot backend.
+I independently ran it on HEAD: 3 tests ran and the two assertions exposing
+the current direct screenshot bypass failed. The green remains separately
+reviewable when committed. Agent Mail 6573.
+
+### macOS recovery lifetime fix-forward (`24dced6`)
+
+**APPROVED; cumulatively closes both blockers on `5efa5dd`.** Before detaching
+the old view, `recoverByReplacingWebView` answers any retained dialog
+completion through the existing default-response helper. A health completion
+captures the view it pinged and mutates watchdog state only while that object
+is still the host's current view. The registered real-recovery tests force a
+later dialog to release a dropped completion and force a delayed old-view ping
+to arrive after replacement; both mutants failed on arm64, and `ms2c_gate.sh`
+passed on both Mac architectures.
+
+NIT: `src/wkwebview_shim.m:673-678` repeats the same explanatory comment
+twice. It does not affect this verdict. Agent Mail 6574.
+
+### S7b plan rev 16.20.34 (`ac5684b`)
+
+**BLOCKED.** Three cross-layer contracts are not implementation-ready:
+
+1. The new table maps `window_info {}` directly to `page.health`, but
+   production `handleWindows` rejects every parameter for that method and
+   returns all windows. Generic bound-window injection therefore fails, while
+   an unfiltered call leaks the other windows' URLs and health. D9 already
+   requires health filtered to the bound window plus `page.url`/`page.title`.
+   Specify that composite/filter explicitly and add a two-window disclosure
+   red.
+2. The detach text still describes per-call jobs freeing themselves. D8 and
+   `6d82cae` now require one persistent worker and one deadline thread per
+   Broker. The plan must say who closes its queue, cancels/removes queued work,
+   owns the detached Broker, and reaps both threads off GTK without a use-after-
+   free. The detach red must observe resource reclamation, not only a missing
+   result.
+3. The plan promises to turn a `page.screenshot` JSON/base64 PNG into a
+   downscaled JPEG, but names no decoder/resizer production seam, size/quality
+   loop, or failure rule. Add the seam and an incompressible over-limit image
+   red that proves a valid JPEG no larger than the frame budget or the exact
+   fail-closed answer.
+
+Agent Mail 6575.
+
+### S7b helper red (`621d89c`)
+
+**BLOCKED-for-tests.** The schema table, names, forwarding and session-option
+checks are useful, but the claimed MCP-server oracle is incomplete.
+`test_tools.py:48-56` checks `Bridge.tools()` and only the server dictionary's
+type/name; a mutant whose actual server registers zero or different tools
+survives. Exercise its real list-tools/registry path. The test also accepts any
+nonempty description, so it does not pin the plan's promised selector-grammar
+guidance. Both mutants need failing assertions before the helper green. Agent
+Mail 6575.
+
+### S7b app-frame red (`c96a062`)
+
+**APPROVED as the failing-first red.** It pins the D7b envelope and sequence,
+the mutually exclusive success/failure fields, a UTF-8-safe 4 KiB error cut,
+the exact 1 MiB line boundary and fail-closed handling of content that is not a
+JSON array. Owner evidence records 0/4 on HEAD through the `@hasDecl` guard and
+4/4 against the unlanded green. Agent Mail 6575.
+
+### S7a serialization fix-forward red (`6d82cae`)
+
+**APPROVED as the failing-first red.** The two discriminating cases address
+the gap in `b14a300`: a call that expires while queued never reaches the
+engine, and twenty queued calls do not create per-call threads. They fail the
+old per-call-thread green while the ordinary A-before-B ordering alone does
+not. The suite additionally pins FIFO ids, one in-flight engine call, progress
+by another window's Broker, and socket/in-process parity for unknown methods
+and malformed/non-object parameters. Agent Mail 6575.
