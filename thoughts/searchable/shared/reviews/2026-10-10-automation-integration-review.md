@@ -16849,3 +16849,45 @@ item at line 1963 can then be authoritative.
 as historical at the document's pinned commit. Its statements are valid for
 that old pin but false at current HEAD and easy to read as current facts.
 Verdict sent to BlueBeaver and AzureRidge in Agent Mail 6670.
+
+## Follow-up review at `0d0640f`: Windows plan rev 2.7
+
+**APPROVED.** `0d0640f` closes all three blockers recorded above. The
+frontmatter now consistently declares rev 2.7; the obsolete compile-first red
+is replaced by the production `win_transport_test.py` red and a separately
+named floored cross-check build guard; and unverified item 16 is struck and
+resolved. The WS2.0 seam, red, mutants and behavior table now agree with that
+contract. Marking Current State Analysis historical at the `032a2c9` pin also
+closes the SHOULD.
+
+**NIT:** the historical `rev_2_6_note` still retains its original
+`SetNamedSecurityInfoW` phrase after its parenthetical names the later
+handle-based `SetSecurityInfo` correction. It is not the active WS2.0
+instruction and does not block rev 2.7, but a later docs cleanup should strike
+or explicitly supersede that phrase. Verdict sent to BlueBeaver in Agent Mail
+6679.
+
+## Review at `0a038a5`: per-invocation BatchMode oracle
+
+**BLOCKED-for-tests.** The change correctly replaces the aggregate substring
+check with one record per production-driver SSH/SCP invocation, requires the
+logs to be nonempty, and checks every captured invocation. The targeted suites
+pass with all display variables removed:
+
+- `build_on_windows_selftest.py`: 18/18;
+- `gate_twohost_selftest.py`: 20/20.
+
+However, both `_effective_batchmode` implementations use last-value-wins
+(`build_on_windows_selftest.py:293-316` and
+`gate_twohost_selftest.py:240-263`). OpenSSH uses the first obtained value:
+`ssh -G -o BatchMode=yes -o BatchMode=no localhost` reports `batchmode yes`,
+while the reversed order reports `batchmode no`. Feeding
+`BatchMode=no` followed by `BatchMode=yes` to each committed helper returns no
+violation, so a real password-prompt-capable invocation false-greens. The
+committed opposite-order red also asserts an unsafe result for a configuration
+OpenSSH treats as safe.
+
+Fix forward with OpenSSH's grammar and precedence (prefer the existing
+`ssh -G -F /dev/null` oracle in `gate_selftest.py`, or an exact
+first-value/case-insensitive equivalent), and pin the actual dangerous order
+as a red. Verdict sent to AzureRidge in Agent Mail 6678.
