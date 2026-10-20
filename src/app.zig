@@ -346,8 +346,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     defer if (comptime builtin.os.tag == .linux) c.zb_agent_helper_stop();
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
-    // S7b: the drawer's tools need the automation core (Linux, like the drawer).
-    const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer) and builtin.os.tag == .linux;
+    const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer);
     if (drawer_on) {
         agent_drawer.configure(io, arena, profile_dir, .{
             .demo = getenvOwned(arena, agent_drawer.demo_env_name),
@@ -359,7 +358,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         if (net) |n| configureAgentLogin(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
     }
 
-    if (spec.automation_api or drawer_on) {
+    // S7b: the drawer's tools need the automation core (Linux, like the drawer's helper). Kept
+    // apart from drawer_on: folding the OS into it would drop the drawer branch, and with it
+    // the portable drawer exports, from the Windows build (WS5's cross-check-drawer-win).
+    const drawer_core = drawer_on and builtin.os.tag == .linux;
+    if (spec.automation_api or drawer_core) {
         // automation.js must be registered before zb_app_run builds the window. macOS uses the
         // WKWebView port (MS2a); every other target uses the GTK port.
         if (builtin.os.tag == .macos) automation_macos_port.installScript() else automation_gtk_port.installScript();
@@ -376,7 +379,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         // After the GTK loop and before the core stops: the drawers' brokers detached and
         // their Reaper joined (a call still waiting for GTK then gives up, NO_LOOP).
         if (comptime builtin.os.tag == .linux) {
-            if (drawer_on) agent_tools.start(&server);
+            if (drawer_core) agent_tools.start(&server);
         }
         defer if (comptime builtin.os.tag == .linux) agent_tools.stop();
 

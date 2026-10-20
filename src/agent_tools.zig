@@ -41,11 +41,13 @@ pub fn start(core: *Server) void {
     reaper = .init(gpa);
 }
 
-/// After the GTK loop: every broker detached, then the Reaper joined.
+/// After the GTK loop: every broker detached, then the Reaper joined. The helper's own stop
+/// runs after this and detaches again (forget_process): that finds an empty map.
 pub fn stop() void {
     if (server == null) return;
     zb_agent_tools_detach_all();
     bound.deinit(gpa);
+    bound = .empty;
     reaper.deinit();
     server = null;
 }
