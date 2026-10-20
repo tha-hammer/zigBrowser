@@ -105,6 +105,8 @@ pub const Broker = struct {
     timer: ?std.Thread = null,
     engine: ?Engine = null,
     before_publish: ?Hook = null,
+    /// The next broker in its Reaper's list: adopting a broker allocates nothing (RoseCat 6650).
+    reap_next: ?*Broker = null,
 
     pub fn init(gpa: std.mem.Allocator, server: *Server, window: u32, deadline_ms: u64) Broker {
         return .{ .gpa = gpa, .server = server, .window = window, .deadline_ms = deadline_ms };
@@ -284,18 +286,22 @@ pub const Broker = struct {
 };
 
 /// The app's one reaper thread (rev 16.20.35): it joins each detached broker's threads and
-/// frees it, never on the GTK thread. `deinit` (at app exit) reaps what is left and joins it.
+/// frees it, never on the GTK thread. Adopting a broker allocates nothing, so no failure can
+/// make `detach` join on its caller (RoseCat 6650): the list is linked through the brokers.
+/// If the thread cannot start, the brokers wait in the list for `deinit`, at app exit, after
+/// the GTK loop has ended.
 pub const Reaper = struct {
-    gpa: std.mem.Allocator,
     io: ?std.Io = null,
     mutex: std.Io.Mutex = .init,
     cond: std.Io.Condition = .init,
-    brokers: std.ArrayListUnmanaged(*Broker) = .empty,
+    head: ?*Broker = null,
     stopping: bool = false,
     thread: ?std.Thread = null,
 
+    /// `gpa` is not used: the Reaper allocates nothing.
     pub fn init(gpa: std.mem.Allocator) Reaper {
-        return .{ .gpa = gpa };
+        _ = gpa;
+        return .{};
     }
 
     pub fn deinit(self: *Reaper) void {
@@ -306,26 +312,32 @@ pub const Reaper = struct {
             self.mutex.unlock(io);
         }
         if (self.thread) |t| t.join();
-        for (self.brokers.items) |b| b.reap(); // only if the thread could not start
-        self.brokers.deinit(self.gpa);
+        while (self.take()) |b| b.reap(); // only if the thread could not start
         self.* = undefined;
     }
 
     fn adopt(self: *Reaper, broker: *Broker, io: std.Io) void {
         if (self.io == null) self.io = io;
         self.mutex.lockUncancelable(io);
-        const queued = if (self.brokers.append(self.gpa, broker)) |_| true else |_| false;
-        if (queued and self.thread == null) self.thread = std.Thread.spawn(.{}, reapAll, .{ self, io }) catch null;
+        defer self.mutex.unlock(io);
+        broker.reap_next = self.head;
+        self.head = broker;
+        if (self.thread == null) self.thread = std.Thread.spawn(.{}, reapAll, .{ self, io }) catch null;
         self.cond.broadcast(io);
-        self.mutex.unlock(io);
-        if (!queued) broker.reap(); // out of memory: joined here rather than leaked
+    }
+
+    /// Under the mutex, or once the thread has ended.
+    fn take(self: *Reaper) ?*Broker {
+        const b = self.head orelse return null;
+        self.head = b.reap_next;
+        return b;
     }
 
     fn reapAll(self: *Reaper, io: std.Io) void {
         self.mutex.lockUncancelable(io);
         while (true) {
-            while (!self.stopping and self.brokers.items.len == 0) self.cond.waitUncancelable(io, &self.mutex);
-            const next = self.brokers.pop() orelse break; // stopping, and none left
+            while (!self.stopping and self.head == null) self.cond.waitUncancelable(io, &self.mutex);
+            const next = self.take() orelse break; // stopping, and none left
             self.mutex.unlock(io);
             next.reap();
             self.mutex.lockUncancelable(io);
