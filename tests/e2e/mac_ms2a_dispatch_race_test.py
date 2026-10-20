@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""MS2a RED (unregistered) — the claim->submit race (RoseCat 6298) is closed by linearization.
+"""MS2a — the claim->submit race (RoseCat 6298/6325) is closed by linearization, proven by an OBSERVABLE effect.
 
-The macOS bridge's phase model requires that once a job is DISPATCHING (claimed for submission), a
-timed-out waiter CANNOT return until the WebKit submission has linearized (DISPATCHING->INFLIGHT).
-This pins that invariant deterministically: the browser is launched with ZB_DEBUG_DISPATCH_HOLD_MS,
-which pauses the main thread for that long BETWEEN zb_job_claim_dispatch and callAsyncJavaScript
-(wkwebview_shim.c zb_auto_test_dispatch_hold). A routed eval (dom.getText) is then issued with a SHORT
-command timeout, far less than the hold.
+The macOS bridge's phase model requires that once a job is DISPATCHING (claimed for submission), a timed-out
+waiter CANNOT return until the WebKit submission has linearized (DISPATCHING->INFLIGHT). The browser is
+launched with ZB_DEBUG_DISPATCH_HOLD_MS, which pauses the main thread BETWEEN zb_job_claim_dispatch and
+callAsyncJavaScript (wkwebview_shim.m zb_auto_test_dispatch_hold). The held operation is a page.evaluate with
+a SHORT deadline (far below the hold) that performs a HARMLESS OBSERVABLE DOM EFFECT: it sets #heading to
+"SUBMITTED".
 
-Oracle (timing): the eval's deadline expires DURING the hold (while DISPATCHING), so a correct bridge
-makes the call block until the submission completes — the RPC round trip takes at least ~the hold,
-NOT ~the short timeout. A bridge that let the waiter abandon mid-DISPATCHING would return in ~the
-timeout. We assert the elapsed wall time, independent of whether the late result or a timeout is
-returned, and that the session stays usable afterwards.
+Oracle (not just timing, RoseCat 6325 item 2):
+  - the held eval's deadline expires DURING the hold, so it returns the EXACT action_timeout error (-32009);
+  - but the submission still linearizes, so AFTER the hold #heading reads "SUBMITTED" — proving the eval was
+    actually submitted (callAsyncJavaScript ran), not merely slept;
+  - the session stays usable.
+A bridge (or mutant) that claims, sleeps, marks in-flight, and never calls callAsyncJavaScript would return
+in ~the hold with the right timeout, but #heading would stay "Race Page" — red.
 
-Runs ON a Mac (console user, no xvfb), own process group (orphan-safe teardown). Unregistered.
+Runs ON a Mac (console user, no xvfb), own process group (orphan-safe teardown).
 """
 import argparse
 import http.server
@@ -32,6 +34,7 @@ from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # 
 SKIP_EXIT = 77
 HOLD_MS = 1500
 TIMEOUT_MS = 300
+ACTION_TIMEOUT = -32009  # errors.downstreamCode(.action_timeout)
 
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>Race</title></head>" \
        b"<body><h1 id='heading'>Race Page</h1></body></html>"
@@ -105,33 +108,50 @@ def main() -> int:
                 rpc = RpcClient(socket_path, args.timeout_sec)
             except Exception as exc:
                 print("FAIL\tms2a-dispatch-race-socket-not-connectable")
-                eprint(f"error={exc}")
-                eprint(f"stderr={err[-20:]}")
+                eprint(f"error={exc}; stderr={err[-20:]}")
                 return 1
 
-            # Warm up: wait for the page to finish loading (readiness), so the measured eval's PREFLIGHT
-            # is immediate and it actually reaches the DISPATCHING claim + hold (page.url uses the
-            # readiness path, not the held eval path).
+            # Warm up: wait for the page to finish loading (readiness path, not the held dispatch path).
             rpc.call("page.url", {"timeout_ms": 10000})
 
-            # A routed eval with a SHORT timeout, while the bridge holds between claim and submission.
+            # The held op: a page.evaluate with a harmless observable DOM effect, SHORT deadline (< the hold).
             t0 = time.monotonic()
-            try:
-                rpc.call("dom.getText", {"selector": "css=#heading", "timeout_ms": TIMEOUT_MS})
-            except Exception:
-                pass  # a late timeout is acceptable; the invariant under test is the ELAPSED time
+            resp = rpc.raw("page.evaluate", {
+                # An IIFE so it is valid whether the bridge wraps it in `return (...)` or runs it as a
+                # statement; the DOM write is the harmless observable effect.
+                "expression": "(function(){ document.getElementById('heading').textContent = 'SUBMITTED'; return 'SUBMITTED'; })()",
+                "timeout_ms": TIMEOUT_MS,
+            })
             elapsed = time.monotonic() - t0
 
-            # Must have waited through DISPATCHING (~the hold), not returned at ~the short timeout.
-            floor = (HOLD_MS - 400) / 1000.0  # generous margin below the 1.5s hold
-            if elapsed < floor:
-                failures.append(
-                    f"dom.getText returned in {elapsed:.3f}s (< {floor:.3f}s): the waiter abandoned "
-                    f"mid-DISPATCHING instead of waiting for the submission to linearize")
+            # 1) EXACT terminal: the waiter cannot abandon mid-DISPATCHING, so once the submission linearizes
+            #    the result is delivered — a clean success — or, if the (already-passed) deadline is re-checked
+            #    first at INFLIGHT, the exact action_timeout (-32009). Any OTHER error (e.g. a JS -32603) means
+            #    the submission misbehaved. Not a broad `except`: exactly one of these two named outcomes.
+            err_obj = resp.get("error")
+            if err_obj is not None and err_obj.get("code") != ACTION_TIMEOUT:
+                failures.append(f"held page.evaluate terminal was neither success nor action_timeout: {err_obj!r}")
 
-            # Session still usable after the held op.
+            # 2) Must have waited through DISPATCHING (~the hold), not abandoned at ~the short timeout.
+            floor = (HOLD_MS - 400) / 1000.0
+            if elapsed < floor:
+                failures.append(f"page.evaluate returned in {elapsed:.3f}s (< {floor:.3f}s): the waiter abandoned mid-DISPATCHING")
+
+            # 3) OBSERVABLE EFFECT: the submission linearized, so #heading now reads SUBMITTED. If the bridge
+            #    sleeps but never calls callAsyncJavaScript, this stays "Race Page" -> red. (This read itself
+            #    goes through the hold too, so give it a generous deadline.)
+            r = rpc.raw("dom.getText", {"selector": "css=#heading", "options": {"timeout_ms": HOLD_MS + 6000}})
+            if "error" in r:
+                failures.append(f"post-hold dom.getText errored: {r['error']}")
+            else:
+                text = (r.get("result") or {}).get("text")
+                if text != "SUBMITTED":
+                    failures.append(f"the held eval was NOT submitted: #heading is {text!r}, not 'SUBMITTED' "
+                                    f"(claim+sleep+mark-inflight without callAsyncJavaScript)")
+
+            # 4) Session still usable.
             try:
-                url = rpc.call("page.url")["url"]
+                url = rpc.call("page.url", {"timeout_ms": HOLD_MS + 6000})["url"]
                 if not url.startswith("http://127.0.0.1"):
                     failures.append(f"page.url after the held op looks wrong: {url!r}")
             except Exception as exc:  # noqa: BLE001
