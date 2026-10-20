@@ -14882,3 +14882,141 @@ BlackRobin in Agent Mail 6326.
 No GUI or full gate was started for this review. The linear push-through
 boundary remains the already-pushed **`70317c0`**: all four commits above
 remain blocked, and S6b1 still awaits the user's Part-B rerun.
+
+## Ownership reds and voice-plan re-review
+
+### S5d prompt-exhaustion red (`a3750e9`)
+
+**BLOCKED-for-tests.** Correcting the Python frame-fit oracle to size against
+the app's maximum signed-64-bit `seq` is right. The new Zig tests also usefully
+pin exhaustion-before-size precedence, the two fixed refusal sentences, no
+validator mutation on refusal, and no skipped outbound sequence number.
+
+They do not drive the production branch whose defect they are meant to catch.
+`tests/agent_frames_out_test.zig` calls the Zig exports directly; it never
+crosses `src/agent_helper.c`'s null-frame branch, which chooses the sentence
+shown by the drawer. A mutant that leaves that C branch mapping every null
+prompt frame to `Message too long (64 KiB at most)` passes both new tests while
+the user-visible exhaustion bug remains. Add a failing-first C/helper/drawer
+path test that exhausts prompt ids and observes `Agent error`, while a fresh
+session's oversized prompt still observes the size sentence. The file's claim
+that it runs “through” `agent_helper.c` must also be corrected. Finding sent to
+BlackRobin in Agent Mail 6330.
+
+### macOS exited-leader teardown red (`9736d62`)
+
+**APPROVED.** The browser-free regression establishes that the exact group
+child is alive after its session leader exits, invokes the real
+`stop_browser_macos`, waits boundedly for that child to disappear, and has its
+own failure cleanup. Restoring the old `proc.poll() is not None` early return
+leaves the child alive and turns the test red. I independently ran the module
+with an outer timeout: `PASS ms2a-teardown-reap`, rc 0, and no `sleep 300`
+process remained. Registration in `ms2a_gate.sh` closes the earlier
+teardown-reap coverage gap. NIT: its module header still says “unregistered.”
+Verdict sent to JadeBeacon in Agent Mail 6332.
+
+### Secrets watcher vanished-window red (`1555ddc`)
+
+**APPROVED as the failing-first red.** On a private Xvfb, the child reliably
+dies on `BadWindow` against the pre-fix code (rc 1). The bounded test checks
+three absent XIDs, requires each query to return false, compares the
+process-wide X error handler before and after, and then proves the root window
+is still readable. The private display was closed. The green must register
+this module and preserve the full Secrets shutdown suite.
+
+SHOULD: if the follow-up claims `BadDrawable` coverage too, add a case that
+actually generates `BadDrawable`; nonexistent window IDs demonstrate
+`BadWindow`. Verdict sent to BlueBeaver in Agent Mail 6331.
+
+### Voice output / TTS rev 2.3 (`6b5d2f6`)
+
+**NOT APPROVED.** The revision materially improves the feed lifetime,
+terminal semantics, enrolment IPC, model-consumption, `ZbChild`, local-canary,
+runtime-proof and package-phase contracts. The following blockers remain:
+
+1. The two sections declared “byte-identical” are not. TTS `:282-376` is 95
+   lines/7520 bytes; STT `:337-434` is 98 lines/7927 bytes. Beyond heading and
+   cross-reference differences, STT alone carries the withdrawn-owner text,
+   the in-process-STT child qualification, and a different consumer ordering.
+   A duplicated “single source of truth” has already drifted. Extract one
+   shared foundation document referenced by both plans, or make generated,
+   mechanically checked copies.
+2. VF's test-device/write contract is impossible as written. It requires a
+   render-to-file `FileSink` and simultaneously asserts that no audio-derived
+   bytes are written anywhere (`:346-352`). Scope the no-write oracle to live
+   capture/privacy owners or explicitly allow the one test-owned FileSink
+   artifact. The rest of TTS also still schedules automated private PulseAudio,
+   muted Core Audio and muted WASAPI (`:840-855`, `:904-918`, `:1264`, `:1463`,
+   `:1574`, `:1728-1738`) despite VF forbidding all real/muted device backends.
+3. V3.2 again says the native engine uses the shared **`SandboxBackend`**
+   (`:1321`), contradicting VF's explicit `ZbChild` boundary (`:354-369`) and
+   D9 (`:614-621`). This must name `ZbChild` everywhere.
+4. The package-cycle split is only a dependency-table label. The actual V3.5
+   behavior remains one all-platform slice (`:1343-1367`), and the execution
+   order at `:1024-1031` omits both V3.0 and V3.5a/b. Give V3.5a and V3.5b
+   their own behaviors, touched files, reds, gates, and success criteria.
+5. Personal Voice is AppKit Voice-window UI, but S4 still depends only on S2
+   (`:1659-1668`, `:1757`), not M2/MS7. It therefore can be scheduled before
+   the UI surface it modifies exists. Add the native UI dependency and gate.
+6. Several security/resource “bounds” remain placeholders rather than
+   implementable constants: D9.2 names a maximum frame payload/global queued
+   text bound without values (`:598-612`), and D9.1 caps enrolment duration,
+   bytes and samples without values (`:639-646`). Name the constants and edge
+   tests so implementations cannot silently choose incompatible limits.
+
+### Voice input / STT rev 2.1 (`c5d1cd9`)
+
+**NOT APPROVED.** The shared path set, state-machine intent, range-aware ABI,
+verified-byte load and platform ownership are directionally sound, but the
+revision's §4a promises are not actually integrated into executable slices:
+
+1. The shared-foundation drift and impossible FileSink/no-write rule above are
+   present verbatim here (`:337-434`, especially `:403-409`). Resolve them once
+   in a single shared artifact.
+2. §4a assigns the first-use Accept/Decline/persist/corrupt/reset/no-capture
+   UI to VS5 (`:455-462`), but VS5.1-VS5.7 and its touched-file/test list
+   (`:901-952`) contain no such behavior. It also assigns drawer denial UI to
+   VS8 before VS9 creates the Mac drawer, while VS8.1-VS8.4 (`:1006-1031`)
+   contain no drawer UI behavior or red. Put each contract in the actual UI
+   slice that owns it, with the named red and closure observation.
+3. The claimed unforgeable live-capture boundary exists only in §4a
+   (`:502-507`). Actual VS4.6 and VS10.2 expose shipping flags gated merely by
+   `--e2e-protocol` (`:891-895`, `:1065-1072`), and no slice owns the inherited
+   descriptor/handle (or test-only binary) plus negative agent/helper/hook
+   tests. Assign and test that production boundary explicitly.
+4. The model lifecycle and transfer controls are likewise summary-only.
+   §4a promises upgrade/repair/downgrade/tamper/orphan cleanup and a remote
+   package-input manifest (`:479-486`, `:509-513`), but VSP.1-VSP.4
+   (`:1093-1133`) specify fresh install/hash/uninstall only and name no remote
+   cache paths, transfer commands, permissions or cleanup. Add them to the
+   owning behaviors, files, mutants and gates.
+5. §4a promises concrete failing-first registration/mutant steps for VS9,
+   VS10, VS11 and VSP.2-VSP.4 (`:495-500`). Those slices still have no such
+   steps; VS9/VS11 merely say to repeat earlier behaviors, and VSP.2/VSP.4
+   contain only prose outcomes. A summary promise is not an executable TDD
+   plan.
+6. Automated gates still include physical microphones: VS10's Windows gate
+   explicitly runs live capture on the file-server Windows 10 host
+   (`:1052-1058`, `:1077-1079`). That conflicts with the project rule and VF
+   rule that automated tests never touch user hardware. Keep the gate on WAV,
+   Null and permission-state mappings; put live capture solely in the
+   orchestrator/user-approved real-hardware case.
+7. The async epoch rules in §4a (`:445-453`) do not appear in VS4's state,
+   engine-thread, touched-file or red definitions (`:853-897`). Move the
+   late-result-after-cancel/close/restart reds into VS4 so the owning slice
+   cannot be implemented without them.
+
+SHOULD: whisper.cpp 1.9.5 still exposes `whisper_init_from_buffer`, but marks
+it deprecated in favor of `whisper_init_from_buffer_with_params`; name the
+nondeprecated API in VF and VS10. Also turn the range-aware Unicode,
+selection, focus-change and late-typing list in §4a into concrete VS5/VS11
+reds rather than leaving it only in the review-clearing summary.
+
+Both plan commits pass `git diff-tree --check`. The plan-review cleanup audit
+found no implementation side effects because these are docs-only changes; the
+blocking issue is contract duplication and summary-only requirements, not
+Markdown formatting. No audio device, live browser, display, credential,
+network API, remote Mac or Windows host was used. Findings were sent to
+AzureRidge. The linear push-through boundary remains the already-pushed
+**`70317c0`**: `a3750e9` is still blocked, and S6b1 still awaits the user's
+Part-B rerun.
