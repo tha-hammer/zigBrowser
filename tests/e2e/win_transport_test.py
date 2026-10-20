@@ -48,6 +48,7 @@ WSAEACCES = 10013
 ERROR_ACCESS_DENIED = 5
 TOKEN_LEN = 64
 SOCK_RE = re.compile(r"^zigbrowser-automation-[0-9a-f]+\.sock$")
+PROFILE_RE = re.compile(r"\A[A-Za-z]:(\\[A-Za-z0-9._-]+)+\Z")
 
 _HTML = "<!doctype html><html><head><meta charset=\"utf-8\"><title>ZB transport</title></head><body>ws2.0</body></html>\n"
 
@@ -196,7 +197,8 @@ class WinTransport(unittest.TestCase):
         r = self._ssh(user, "cmd", "/c", "echo %USERPROFILE%", timeout=60)
         self.assertEqual(r.returncode, 0, f"USERPROFILE of {user} failed: {r.stderr}")
         profile = r.stdout.strip().splitlines()[-1].strip()
-        self.assertRegex(profile, r"^[A-Za-z]:\\", f"USERPROFILE of {user} is not a path: {profile!r}")
+        # Interpolated into `cmd /c` paths below: only a drive and plain path characters, no spaces or metacharacters.
+        self.assertRegex(profile, PROFILE_RE, f"USERPROFILE of {user} is not a plain path: {profile!r}")
         return profile
 
     def _probe_as(self, user, remote_probe, *args):

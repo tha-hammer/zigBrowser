@@ -22,12 +22,14 @@ Run live:  ZB_WIN11_HOST=127.0.0.1 ZB_WIN_EXE=zig-out/win/zigBrowser.exe \
 import json
 import os
 import pathlib
+import re
 import secrets
 import subprocess
 import tempfile
 import unittest
 
 REFUSAL = "zigBrowser: --renderer=shm is not supported on Windows"
+PROFILE_RE = re.compile(r"\A[A-Za-z]:(\\[A-Za-z0-9._-]+)+\Z")
 
 # VM-side runner: start the exe with the given arguments, wait, and print one JSON line.
 _RUNNER = r"""
@@ -82,10 +84,19 @@ class RefusalStderrLive(unittest.TestCase):
         return subprocess.run(["scp", *self._opts(), "-P", self.port, local, f"{self.user}@{self.host}:{remote}"],
                               capture_output=True, text=True, timeout=180, env=self._env(), stdin=subprocess.DEVNULL)
 
+    def _profile(self):
+        """The account's real profile directory, from %USERPROFILE% (it may carry a suffix)."""
+        r = self._ssh("cmd", "/c", "echo %USERPROFILE%")
+        self.assertEqual(r.returncode, 0, f"USERPROFILE failed: {r.stderr}")
+        profile = r.stdout.strip().splitlines()[-1].strip()
+        # Interpolated into `cmd /c` paths: only a drive and plain path characters, no spaces or metacharacters.
+        self.assertRegex(profile, PROFILE_RE, f"USERPROFILE is not a plain path: {profile!r}")
+        return profile
+
     def _run(self, *argv):
         """Run the exe on the VM with `argv` (@URL@ and @SHOT@ substituted there); returns the JSON result."""
         rel = f"zb/refusal-{os.getpid()}-{secrets.token_hex(4)}"
-        win = f"C:\\Users\\{self.user}\\{rel}".replace("/", "\\")
+        win = f"{self._profile()}\\{rel}".replace("/", "\\")
         mk = self._ssh("cmd", "/c", f"mkdir {win}")
         self.assertEqual(mk.returncode, 0, f"mkdir failed: {mk.stderr}")
         self.addCleanup(self._ssh, "cmd", "/c", f"rmdir /s /q {win}")
