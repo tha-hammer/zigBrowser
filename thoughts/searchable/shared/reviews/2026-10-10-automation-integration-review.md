@@ -17376,3 +17376,52 @@ the current unit and implementation validate only `data`. The C consumer/ABI
 also needs production-chain coverage rather than relying only on the
 Zig-facing `CFrame` unit. No full gate ran because BlueBeaver held the shared
 slot. Verdict sent to BlackRobin in Agent Mail 6743.
+
+## Exact MS2a closure checklist after push through `703b3de`
+
+The pushed boundary is now **`703b3de`** and `26fdfff` is its earliest blocked
+successor. A fresh comparison of current HEAD with the authoritative macOS
+plan leaves four MS2a closure buckets. The DOM-change assertion, orphan-safe
+process-group teardown, routed-navigation failure/refused-start behavior,
+stale-navigation callbacks, test-hook isolation and outer gate deadlines are
+already closed by reviewed fix-forwards and must remain in the gate.
+
+1. **MS2a.2 private world (`26fdfff`, finding 6181).** Plan lines 734 and
+   780-782 require automation.js before the first load in a private
+   `WKContentWorld` and a metamorphic page-world spoof. The mechanism exists at
+   `src/wkwebview_shim.m:487-496,1209-1215`, but
+   `mac_ms2a_routed_test.py:11-13` explicitly defers the property and the MS2a
+   gate has no such test. A registered real-binary socket e2e must let the
+   first document install/replace a hostile page-world `window.__zbAutomation`,
+   prove the page cannot observe the real automation-world object, and still
+   obtain the unchanged real DOM through `dom.getText`. A page-world or
+   post-first-load injection mutant must fail.
+2. **MS2a.3 timeout, lifetime and quit (`26fdfff`, plan rev 4).** The current
+   timeout e2e covers startup `page.title` only. A late Promise completion must
+   produce the exact timeout, no late/second reply or overwrite, a usable next
+   request and a live-job count returning to baseline. Success, JS error and
+   abandoned late result/error allocations must each be freed exactly once
+   through `zb_automation_free`, with an exact allocation/free oracle. Ending
+   the app loop with queued work must wake the waiter as cancelled/no-loop,
+   dispatch nothing afterward and leave zero jobs.
+3. **Literal MS2a ABI inventory.** The plan at lines 727 and 738-742 still
+   declares `zb_main_invoke_sync`, `zb_automation_loop_mark`,
+   `zb_automation_window_alive`, `zb_automation_window_id_at` and
+   `zb_automation_run_generation` implemented in MS2a, but the macOS shim does
+   not define them. A compile/link census plus behavioral registry/lifecycle
+   tests must land; constants or inert stubs do not close it. If the phase-job
+   architecture deliberately supersedes any symbol, the authoritative plan
+   must instead name the replacement mechanism and its behavior test rather
+   than claim an absent implementation.
+4. **Claim-to-submit mutation (`729c12c`, finding 6325 item 2).** Hook gating,
+   parsing and outer gate bounds are closed. The current race test still
+   catches any exception and observes only elapsed time plus a later URL, so a
+   mutant which never calls `callAsyncJavaScript` survives. The held operation
+   must make a harmless observable change, require the exact terminal result,
+   and observe that change after the hold so submission itself is proved.
+
+Every added test must join `tests/mac/ms2a_gate.sh`. Final acceptance requires
+the exact current commit to print both per-host PASS rows (x86_64 and arm64)
+and `PASS ms2a-gate both-arches`, plus recorded failing-first or mutation
+evidence for each bucket. This checklist was sent to JadeBeacon in Agent Mail
+6747.
