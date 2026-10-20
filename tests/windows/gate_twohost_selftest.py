@@ -83,19 +83,20 @@ def _fakes(bindir):
 
 
 def _vm_probe(**over):
-    p = {"schema": 1, "test_user": "linuxwin\\zbtext", "identity_marker": VM_MARKER,
+    p = {"schema": 2, "test_user": "linuxwin\\zbtext", "identity_marker": VM_MARKER,
          "native_arch": "x64", "webview2_pv": "155.0.4283.62", "interactive_session": True,
-         "locked": False, "console_user": "zbtext"}
+         "locked": False, "console_user": "zbtext", "snapshot_marker": "pre-ws0-green-2026-10-19"}
     p.update(over)
     return json.dumps(p)
 
 
 def _fs_probe(**over):
-    p = {"schema": 1, "test_user": "file_server_win\\zbtest", "identity_marker": FS_MARKER,
+    p = {"schema": 2, "test_user": "file_server_win\\zbtest", "identity_marker": FS_MARKER,
          "native_arch": "x64", "webview2_pv": "155.0.4283.62",
          "groups": [{"sid": "S-1-5-32-545", "name": "BUILTIN\\Users"}],
          "zbtest_write_paths": [], "console_user": "zbtest",
-         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123"}
+         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123",
+         "shares": [], "interactive_session": True, "locked": False}
     p.update(over)
     return json.dumps(p)
 
@@ -236,6 +237,43 @@ class WS07FileServerFence(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad,
                                                           "ZB_SELFTEST_PROBE_WIN10_POST": bad})
             self._assert_fail_closed(proc, "file-server")
+
+
+class WS0CompletionReadiness(_TwoHostCase):
+    # WS0-completion (Route A): the gate validates the complete schema-2 readiness fail-closed.
+    def test_vm_missing_snapshot_marker_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(snapshot_marker=None)})
+            self._assert_fail_closed(proc, "snapshot_marker")
+
+    def test_vm_inactive_session_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(interactive_session=False)})
+            self._assert_fail_closed(proc, "no active interactive session")
+
+    def test_vm_locked_session_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(locked=True)})
+            self._assert_fail_closed(proc, "locked")
+
+    def test_vm_old_schema_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(schema=1)})
+            self._assert_fail_closed(proc, "schema")
+
+    def test_fs_missing_shares_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=None)
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "shares")
+
+    def test_fs_inactive_session_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(interactive_session=False)
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "no active interactive session")
 
 
 # --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------

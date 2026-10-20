@@ -158,6 +158,24 @@ m = v.get("identity_marker")
 if not m or m != win11_marker:
     sys.stderr.write("wrong host: Win11 identity_marker does not match ZB_WIN11_MARKER\n"); sys.exit(1)
 
+# WS0.1/0.2 readiness (fail CLOSED): the VM must present the complete schema-2 probe, an ACTIVE and
+# UNLOCKED interactive console session, x64, and its snapshot marker. A missing/mistyped field is a
+# refusal, never silently treated as ready.
+if v.get("schema") != 2:
+    sys.stderr.write("win11: probe schema is %r, expected 2\n" % v.get("schema")); sys.exit(1)
+if v.get("native_arch") != "x64":
+    sys.stderr.write("win11: native_arch is %r, expected x64\n" % v.get("native_arch")); sys.exit(1)
+if v.get("interactive_session") is not True:
+    sys.stderr.write("win11: no active interactive session (interactive_session=%r)\n" % v.get("interactive_session")); sys.exit(1)
+if v.get("locked") is not False:
+    sys.stderr.write("win11: session is locked or its lock state is unknown (locked=%r)\n" % v.get("locked")); sys.exit(1)
+cu11 = v.get("console_user")
+if not isinstance(cu11, str) or not cu11.strip():
+    sys.stderr.write("win11: console_user missing or empty\n"); sys.exit(1)
+sm = v.get("snapshot_marker")
+if not isinstance(sm, str) or not sm.strip():
+    sys.stderr.write("win11: snapshot_marker missing or empty\n"); sys.exit(1)
+
 # WS0 is fail CLOSED: before ANY comparison, every file-server field we judge on must be present and
 # well-typed on BOTH probes. Malformed/missing data must be rejected, never silently coerced to a value
 # that compares "undisturbed". A bare `name or []` would let None/""/"bad"/["22"] masquerade as empty.
@@ -180,6 +198,15 @@ def require_schema(probe, who):
     fw = probe.get("fw_rules_hash")
     if not isinstance(fw, str) or not fw.strip():
         sys.stderr.write("file-server (%s): fw_rules_hash missing or empty\n" % who); sys.exit(1)
+    # WS0-completion: the complete schema-2 fields the file-server fence judges on.
+    if probe.get("schema") != 2:
+        sys.stderr.write("file-server (%s): probe schema is %r, expected 2\n" % (who, probe.get("schema"))); sys.exit(1)
+    if not isinstance(probe.get("shares"), list):
+        sys.stderr.write("file-server (%s): shares missing or not a list\n" % who); sys.exit(1)
+    if probe.get("interactive_session") is not True:
+        sys.stderr.write("file-server (%s): no active interactive session (interactive_session=%r)\n" % (who, probe.get("interactive_session"))); sys.exit(1)
+    if probe.get("locked") is not False:
+        sys.stderr.write("file-server (%s): session locked or its lock state unknown (locked=%r)\n" % (who, probe.get("locked"))); sys.exit(1)
 require_schema(a, "pre"); require_schema(b, "post")
 
 # WS0.7: the file server must be undisturbed.
