@@ -14382,3 +14382,39 @@ overflow invariant. The plan's later sentence that *each* case lets the new
 prompt end normally is inaccurate for this one case and should distinguish the
 named overflow ending from the ordinary endings. This wording issue does not
 block the red suite; it was sent to BlackRobin in Agent Mail 6290.
+
+### Windows resolver-capability follow-up (`5b29caa`)
+
+**BLOCKED; this does not close `d2bd016`'s pinned-use contract.** The new
+`ResolvedPath` type and the normal `\\?\`/UNC/volume-GUID normalization are
+useful groundwork, but the capability is nominal rather than enforceable:
+
+1. `wincontain.py:115-157` types the handle as an opaque `object`, gives it no
+   ownership, close or protected-use operation, and discards the independently
+   resolved root handle. Most importantly, `CreateProcessW` launches by path;
+   it cannot execute an ordinary already-open executable handle. Merely telling
+   a future caller not to reopen the canonical name does not define a
+   realizable launch boundary. The backend needs an actual capability API or a
+   private immutable staging/authorization design.
+2. `test_wincontain.py:211-220` never uses a handle. The fake returns a fresh
+   `object()`, the test mutates a dictionary, then asserts the canonical string
+   copied before the mutation. A bogus non-null marker followed by a
+   reopen-by-name consumer passes. The required Windows
+   replace-between-resolve-and-real-use oracle is still absent.
+3. `wincontain.py:104-110` strips `\\.\` as well as `\\?\`. The former is the
+   Win32 device namespace, not the ordinary final-path form, and must be
+   refused. No `\\.\C:\...` red exists.
+
+The chain remains blocked until these are fixed forward. Findings were sent
+to AzureRidge in Agent Mail 6295.
+
+### S6b2 auth-test seam red (`8a6ab6c`)
+
+**APPROVED as a failing-first red.** It is correctly unregistered and cannot
+compile at its parent because `agent_auth_seam` does not exist. The table pins
+the absent and inert-without-e2e cases, the exact value shape, strict IPv4
+loopback decimal-port grammar and bounds, final-component no-follow regular
+file and size checks, accepted boundary values, relative-path refusal even
+when the path reaches the fixture, and the exact stderr vocabulary. Certificate
+parsing remains deliberately a later C/window boundary. No gate was run while
+BlackRobin owned the private-Xvfb slot. Verdict sent in Agent Mail 6294.
