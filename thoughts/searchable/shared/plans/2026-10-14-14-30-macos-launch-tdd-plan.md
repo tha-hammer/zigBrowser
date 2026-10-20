@@ -1267,8 +1267,10 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
      4. Only then start the watcher thread, which blocks in `kevent`. A `NOTE_EXIT`, or any `kevent` error,
         kills the group.
 
-     "Kill the group" is always `os.killpg(os.getpgid(0), signal.SIGKILL)`, taking setup itself and every
-     descendant; never a bare exit.
+     "Kill the group" is always `os.killpg(own pgid, signal.SIGKILL)`, taking setup itself and every
+     descendant; never a bare exit. **One exception:** a setup that does not lead its own group never
+     `killpg`s the group it is in (that could be the browser's). Step 1 runs before any child exists, so it
+     kills only itself (`os.kill(own pid, SIGKILL)`). Built in `zb_agent_host/parent_watch.py` (a351086).
    - The browser's own exit paths (a normal quit, a signal it handles) still `killpg` the group and
      `waitpid` the child; that is the ordinary path, not the guarantee.
    - **Mac e2e, both arches:**
