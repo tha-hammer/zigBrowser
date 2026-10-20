@@ -1,14 +1,20 @@
-/* MS5.2 — the macOS Keychain token seam (agent_secrets_mac.m), driven headless against a DISPOSABLE
- * temp keychain (the login keychain refuses SecItem over ssh with errSecInteractionNotAllowed -25308).
- * Compiled with agent_secrets_mac.m by tests/mac/ms5_gate.sh. Uses a canary token, never a real credential.
+/* MS5.2 — the macOS Keychain token seam (agent_secrets_mac.m), driven headless against DISPOSABLE temp
+ * keychains (the login keychain refuses SecItem over ssh with errSecInteractionNotAllowed -25308).
+ * Compiled with agent_secrets_mac.m by tests/mac/ms5_gate.sh. Canary tokens only, never a real credential.
  *
- * Asserts: absent-before-store; store+lookup roundtrip; overwrite replaces the value; clear makes it absent;
- * and that a wrong (service, account) does not see the token. */
+ * Proves (RoseCat 38a9f37):
+ *  - absent-before-store; store+lookup roundtrip; overwrite replaces only the target value;
+ *  - COMPOSITE IDENTITY: changing only account, or only service, is a different item (#2);
+ *  - ISOLATION: overwrite/clear touch ONLY the target item — same-service and diff-service neighbors in
+ *    the target keychain survive, and a COLLIDING (service,account) item in a SECOND keychain survives (#2);
+ *  - DEFAULT PINNING: a production NULL op pins to the login keychain, NOT the search list — a disposable
+ *    keychain (which SecKeychainCreate adds to the search list) must NOT satisfy a NULL lookup (#1). */
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #include "agent_secrets_mac.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #pragma clang diagnostic push
@@ -17,62 +23,126 @@
 static int failures = 0;
 static void fail(const char *msg) { fprintf(stderr, "  %s\n", msg); failures++; }
 
+static SecKeychainRef mk(const char *path, const char *pw) {
+  SecKeychainRef kc = NULL;
+  if (SecKeychainCreate(path, (UInt32)strlen(pw), pw, false, NULL, &kc) != errSecSuccess || kc == NULL) return NULL;
+  SecKeychainUnlock(kc, (UInt32)strlen(pw), pw, true);
+  return kc;
+}
+
+/* Seed a generic password directly into keychain kc (test setup, not through the ABI). */
+static int seed(SecKeychainRef kc, const char *svc, const char *acct, const char *val) {
+  NSDictionary *d = @{ (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+                       (__bridge id)kSecAttrService:@(svc), (__bridge id)kSecAttrAccount:@(acct),
+                       (__bridge id)kSecValueData:[NSData dataWithBytes:val length:strlen(val)],
+                       (__bridge id)kSecUseKeychain:(__bridge id)kc };
+  return SecItemAdd((__bridge CFDictionaryRef)d, NULL) == errSecSuccess;
+}
+
+/* Read a generic password directly from keychain kc; malloc'd NUL-terminated string, or NULL if absent. */
+static char *peek(SecKeychainRef kc, const char *svc, const char *acct) {
+  NSDictionary *q = @{ (__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+                       (__bridge id)kSecAttrService:@(svc), (__bridge id)kSecAttrAccount:@(acct),
+                       (__bridge id)kSecReturnData:@YES, (__bridge id)kSecMatchLimit:(__bridge id)kSecMatchLimitOne,
+                       (__bridge id)kSecMatchSearchList:@[(__bridge id)kc] };
+  CFTypeRef o = NULL;
+  if (SecItemCopyMatching((__bridge CFDictionaryRef)q, &o) != errSecSuccess || o == NULL) return NULL;
+  NSData *data = (__bridge_transfer NSData *)o;
+  char *b = malloc(data.length + 1); memcpy(b, data.bytes, data.length); b[data.length] = '\0';
+  return b;
+}
+static void expect_peek(SecKeychainRef kc, const char *svc, const char *acct, const char *want, const char *msg) {
+  char *g = peek(kc, svc, acct);
+  if (g == NULL || strcmp(g, want) != 0) fail(msg);
+  free(g);
+}
+
 int main(void) {
   @autoreleasepool {
-    char path[256]; snprintf(path, sizeof path, "/tmp/zb-ms5-kc-%d.keychain", getpid());
+    int pid = getpid();
+    char tpath[256], opath[256];
+    snprintf(tpath, sizeof tpath, "/tmp/zb-ms5-kcT-%d.keychain", pid);
+    snprintf(opath, sizeof opath, "/tmp/zb-ms5-kcO-%d.keychain", pid);
     const char *pw = "zb-temp-pw";
-    const char *svc = "dev.zigbrowser.ClaudeAgentToken.test";
-    const char *acct = "default";
-    const char *canary = "zb-canary-TOKEN-7f3a";
-    const char *canary2 = "zb-canary-TOKEN-second-c91e";
+    const char *SVC = "dev.zigbrowser.ClaudeAgentToken.test";
+    const char *SVC2 = "dev.zigbrowser.OtherService.test";
+    const char *ACCT = "default", *ACCT2 = "second-account";
+    const char *canary = "zb-canary-TOKEN-7f3a", *canary2 = "zb-canary-TOKEN-second-c91e";
 
-    // The test owns the disposable keychain: create + unlock it, so the seam needs no GUI (headless).
-    SecKeychainRef kc = NULL;
-    OSStatus sc = SecKeychainCreate(path, (UInt32)strlen(pw), pw, false, NULL, &kc);
-    if (sc != errSecSuccess) { fprintf(stderr, "FAIL\tms5-keychain-seam\n  SecKeychainCreate failed: %d\n", (int)sc); return 1; }
-    SecKeychainUnlock(kc, (UInt32)strlen(pw), pw, true);
-    if (kc) CFRelease(kc);
+    SecKeychainRef T = mk(tpath, pw), O = mk(opath, pw);
+    if (T == NULL || O == NULL) { fprintf(stderr, "FAIL\tms5-keychain-seam\n  create disposable keychains failed\n"); return 1; }
+
+    // Neighbors that must SURVIVE all target ops: in T a same-service/diff-account and a diff-service/same-account
+    // item; in a SECOND keychain O a COLLIDING (SVC,ACCT) item (proves target ops pin to T, not a search list).
+    if (!seed(T, SVC, ACCT2, "neighbor-acct")) fail("setup: seed same-service/diff-account");
+    if (!seed(T, SVC2, ACCT, "neighbor-svc")) fail("setup: seed diff-service/same-account");
+    if (!seed(O, SVC, ACCT, "other-keychain")) fail("setup: seed colliding item in the other keychain");
 
     char *err = NULL, *tok = NULL;
 
-    // 1) absent before any store.
-    if (zb_keychain_lookup(path, pw, svc, acct, &tok, &err) != ZB_KC_ABSENT)
-      fail("lookup before store was not ABSENT");
-    if (tok) { fail("lookup before store returned a token"); zb_keychain_free(tok); tok = NULL; }
-
-    // 2) store + roundtrip.
-    if (zb_keychain_store(path, pw, svc, acct, canary, &err) != ZB_KC_OK)
-      fail(err ? err : "store failed");
-    free(err); err = NULL;
-    if (zb_keychain_lookup(path, pw, svc, acct, &tok, &err) != ZB_KC_OK || tok == NULL || strcmp(tok, canary) != 0)
-      fail("store+lookup did not roundtrip the canary");
-    zb_keychain_free(tok); tok = NULL;
-
-    // 3) a different (service, account) must NOT see it.
-    if (zb_keychain_lookup(path, pw, "dev.zigbrowser.OtherService", acct, &tok, &err) != ZB_KC_ABSENT)
-      fail("a different service saw the token");
+    // absent before store.
+    if (zb_keychain_lookup(tpath, pw, SVC, ACCT, &tok, &err) != ZB_KC_ABSENT) fail("lookup before store not ABSENT");
     if (tok) { zb_keychain_free(tok); tok = NULL; }
-
-    // 4) overwrite replaces the value (not a second item).
-    if (zb_keychain_store(path, pw, svc, acct, canary2, &err) != ZB_KC_OK)
-      fail(err ? err : "overwrite store failed");
     free(err); err = NULL;
-    if (zb_keychain_lookup(path, pw, svc, acct, &tok, &err) != ZB_KC_OK || tok == NULL || strcmp(tok, canary2) != 0)
+
+    // store + roundtrip.
+    if (zb_keychain_store(tpath, pw, SVC, ACCT, canary, &err) != ZB_KC_OK) fail(err ? err : "store failed");
+    free(err); err = NULL;
+    if (zb_keychain_lookup(tpath, pw, SVC, ACCT, &tok, &err) != ZB_KC_OK || tok == NULL || strcmp(tok, canary) != 0)
+      fail("store+lookup did not roundtrip the canary");
+    zb_keychain_free(tok); tok = NULL; free(err); err = NULL;
+
+    // composite identity: only-account and only-service differ -> distinct items.
+    if (zb_keychain_lookup(tpath, pw, SVC, ACCT2, &tok, &err) != ZB_KC_OK || tok == NULL || strcmp(tok, "neighbor-acct") != 0)
+      fail("same service / different account is not a distinct item");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    if (zb_keychain_lookup(tpath, pw, SVC2, ACCT, &tok, &err) != ZB_KC_OK || tok == NULL || strcmp(tok, "neighbor-svc") != 0)
+      fail("different service / same account is not a distinct item");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+
+    // overwrite replaces ONLY the target value; neighbors + other keychain untouched.
+    if (zb_keychain_store(tpath, pw, SVC, ACCT, canary2, &err) != ZB_KC_OK) fail(err ? err : "overwrite store failed");
+    free(err); err = NULL;
+    if (zb_keychain_lookup(tpath, pw, SVC, ACCT, &tok, &err) != ZB_KC_OK || tok == NULL || strcmp(tok, canary2) != 0)
       fail("overwrite did not replace the value with the second canary");
-    zb_keychain_free(tok); tok = NULL;
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    expect_peek(T, SVC, ACCT2, "neighbor-acct", "overwrite disturbed the same-service neighbor");
+    expect_peek(T, SVC2, ACCT, "neighbor-svc", "overwrite disturbed the diff-service neighbor");
+    expect_peek(O, SVC, ACCT, "other-keychain", "overwrite leaked into the other keychain");
 
-    // 5) clear makes it absent.
-    if (zb_keychain_clear(path, pw, svc, acct, &err) != ZB_KC_OK)
-      fail(err ? err : "clear failed");
+    // clear deletes ONLY the target item; neighbors + other keychain survive (catches a broadened delete).
+    if (zb_keychain_clear(tpath, pw, SVC, ACCT, &err) != ZB_KC_OK) fail(err ? err : "clear failed");
     free(err); err = NULL;
-    if (zb_keychain_lookup(path, pw, svc, acct, &tok, &err) != ZB_KC_ABSENT)
-      fail("lookup after clear was not ABSENT");
-    if (tok) { fail("lookup after clear returned a token"); zb_keychain_free(tok); tok = NULL; }
+    if (zb_keychain_lookup(tpath, pw, SVC, ACCT, &tok, &err) != ZB_KC_ABSENT) fail("lookup after clear not ABSENT");
+    if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+    expect_peek(T, SVC, ACCT2, "neighbor-acct", "clear removed the same-service neighbor");
+    expect_peek(T, SVC2, ACCT, "neighbor-svc", "clear removed the diff-service neighbor");
+    expect_peek(O, SVC, ACCT, "other-keychain", "clear reached into the other keychain");
 
-    // cleanup the disposable keychain.
-    SecKeychainRef del = NULL;
-    if (SecKeychainOpen(path, &del) == errSecSuccess && del) { SecKeychainDelete(del); CFRelease(del); }
-    unlink(path);
+    // #1 DEFAULT PINNING: a production NULL op must pin to the login keychain, not the default SEARCH LIST.
+    // Bait: keychain O still holds a colliding (SVC,ACCT)="other-keychain". Add O to the GLOBAL search list
+    // but it is NOT the default keychain, so a buggy NULL op (no pin -> searches the list) finds O's item,
+    // while a correctly default-pinned NULL op does not. The search list is saved and restored IMMEDIATELY
+    // (linear, no early return between mutate and restore; the login keychain holds no such item).
+    CFArrayRef origList = NULL;
+    OSStatus ls = SecKeychainCopySearchList(&origList);
+    if (ls != errSecSuccess || origList == NULL) {
+      fail("setup: could not read the keychain search list for the NULL-pinning check");
+    } else {
+      NSMutableArray *withO = [NSMutableArray arrayWithArray:(__bridge NSArray *)origList];
+      [withO addObject:(__bridge id)O];
+      SecKeychainSetSearchList((__bridge CFArrayRef)withO);
+      int r = zb_keychain_lookup(NULL, NULL, SVC, ACCT, &tok, &err);
+      SecKeychainSetSearchList(origList);  // restore the user's search list at once
+      if (r == ZB_KC_OK && tok != NULL && strcmp(tok, "other-keychain") == 0)
+        fail("NULL (login-keychain) lookup returned an item from a non-default search-list keychain — NULL is not pinned to the default keychain");
+      if (tok) { zb_keychain_free(tok); tok = NULL; } free(err); err = NULL;
+      CFRelease(origList);
+    }
+
+    SecKeychainDelete(T); SecKeychainDelete(O);  // also removes them from the search list
+    if (T) CFRelease(T); if (O) CFRelease(O);
+    unlink(tpath); unlink(opath);
 
     if (failures) { fprintf(stderr, "FAIL\tms5-keychain-seam\n"); return 1; }
     printf("PASS\tms5-keychain-seam\n");

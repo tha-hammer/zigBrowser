@@ -19,11 +19,19 @@ static char *zb_kc_errf(OSStatus st, const char *what) {
 }
 
 /* Open + (optionally) unlock the keychain named by path. Returns errSecSuccess with *out_kc set (the caller
- * CFReleases it), or an OSStatus on failure. A NULL path means the default keychain: *out_kc stays NULL and
- * SecItem uses the default search list. */
+ * CFReleases it), or an OSStatus on failure. A NULL path means the DEFAULT (login) keychain: it is resolved
+ * to a concrete ref via SecKeychainCopyDefault and pinned, so every SecItem op is confined to that one
+ * keychain — NOT the multi-keychain default SEARCH LIST, which could return/update/delete a colliding
+ * (service, account) item in another searched keychain (RoseCat 38a9f37 #1). */
 static OSStatus zb_kc_open(const char *keychain_path, const char *unlock_password, SecKeychainRef *out_kc) {
   *out_kc = NULL;
-  if (keychain_path == NULL) return errSecSuccess;  // default keychain
+  if (keychain_path == NULL) {
+    SecKeychainRef def = NULL;
+    OSStatus st = SecKeychainCopyDefault(&def);
+    if (st != errSecSuccess || def == NULL) return st == errSecSuccess ? errSecNoSuchKeychain : st;
+    *out_kc = def;
+    return errSecSuccess;
+  }
   SecKeychainRef kc = NULL;
   OSStatus st = SecKeychainOpen(keychain_path, &kc);
   if (st != errSecSuccess || kc == NULL) return st == errSecSuccess ? errSecNoSuchKeychain : st;

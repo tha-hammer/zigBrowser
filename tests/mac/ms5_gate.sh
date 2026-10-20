@@ -27,21 +27,32 @@ fi
 
 LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-180}"
 
-verify_host() { # $1=host $2=key $3=label
+verify_host() { # $1=host $2=key $3=label (the label is the EXPECTED uname -m, asserted on the host)
   local host="$1" key="$2" label="$3"
   local -a SSH SCP; mapfile -d '' SSH < <(ssh_opts "$key"); mapfile -d '' SCP < <(scp_opts "$key")
   echo "== MS5 Keychain seam on $host ($label) ==" >&2
-  "${SSH[@]}" "$host" 'mkdir -p "$HOME/zb-ms5"' || { echo "FAIL: mkdir zb-ms5 on $host" >&2; return 1; }
-  "${SCP[@]}" src/agent_secrets_mac.h src/agent_secrets_mac.m tests/mac/keychain_seam_test.m "$host":zb-ms5/ >/dev/null \
+  # Per-run nonce dir (RoseCat SHOULD): never a fixed shared tree, so concurrent runs can't collide, and
+  # cleanup deletes only this exact validated path.
+  local rdir="zb-ms5-$(date +%s)-$$-$RANDOM"
+  "${SSH[@]}" "$host" "mkdir -p \"\$HOME/${rdir}\"" || { echo "FAIL: mkdir ${rdir} on $host" >&2; return 1; }
+  "${SCP[@]}" src/agent_secrets_mac.h src/agent_secrets_mac.m tests/mac/keychain_seam_test.m "$host":"${rdir}"/ >/dev/null \
     || { echo "FAIL: scp MS5 sources to $host" >&2; return 1; }
-  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" /bin/bash -s <<'REMOTE' || { echo "FAIL: MS5 leg on $host timed out/failed" >&2; return 1; }
+  # Pass the expected arch + the nonce dir into the (quoted) remote; the remote asserts the EXECUTING arch
+  # against the label (RoseCat #3: two legs must be two architectures, not the same machine twice).
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_EXPECT_ARCH='${label}' ZB_RDIR='${rdir}' /bin/bash -s" <<'REMOTE' || { echo "FAIL: MS5 leg on $host timed out/failed" >&2; return 1; }
 set -euo pipefail
-d="$HOME/zb-ms5"; cd "$d"
+d="$HOME/${ZB_RDIR:?}"
+trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT  # delete only this exact nonce dir; the test self-cleans its keychains
+got="$(uname -m)"
+if [ "$got" != "$ZB_EXPECT_ARCH" ]; then
+  echo "FAIL: arch oracle — uname -m=$got but this leg expected $ZB_EXPECT_ARCH (same machine run twice?)" >&2
+  exit 1
+fi
+cd "$d"
 xcrun clang -fobjc-arc -Wno-deprecated-declarations -I "$d" \
   -framework Security -framework Foundation \
   keychain_seam_test.m agent_secrets_mac.m -o kc_seam_test
 ./kc_seam_test
-rm -f "$d"/kc_seam_test "$d"/*.m "$d"/*.h /tmp/zb-ms5-kc-*.keychain*
 REMOTE
   printf 'PASS\tms5-leg\t%s\t%s\n' "$host" "$label"
 }
