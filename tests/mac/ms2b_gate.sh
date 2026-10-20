@@ -46,6 +46,7 @@ python3 tests/e2e/mac_ms2b_partial_type_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_pair_race_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_ack_hang_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_dialogs_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2b_eval_dialog_test.py --browser zig-out/bin/zigBrowser
 REMOTE
   printf 'PASS\tms2b-leg\t%s\t%s\n' "$host" "$label"
 }

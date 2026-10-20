@@ -99,8 +99,10 @@ def main() -> int:
         rpc = None
 
         def trigger(expr):
-            # Open the dialog on the next JS turn so this call returns first.
-            rpc.raw("page.evaluate", {"expression": f"setTimeout(function(){{{expr}}},0)"})
+            # The dialog opens synchronously and blocks the web process, so this evaluate cannot get its
+            # completion back — it times out (or, once the shim maps it, returns dialog_open). Either way
+            # the dialog is open afterwards; the result is ignored.
+            rpc.raw("page.evaluate", {"expression": expr, "timeout_ms": 1500})
 
         def wait_dialog(deadline_s):
             end = time.monotonic() + deadline_s

@@ -1371,9 +1371,15 @@ int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_ti
 int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
   if (out_json != NULL) *out_json = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
-  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-  __block char *result = NULL;
+  // Heap-job model (not a raw semaphore): if the waiter times out first, the job is CANCELLED and the
+  // main block's claim fails, so no result is built or leaked; the result is owned by the job and moved
+  // out only on DONE (RoseCat 6469: owned result lifetime, no late strdup leak).
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
   dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: build nothing
+    char *result = NULL;
     @autoreleasepool {
       NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
       ZBAppHost *app = g_active_app;
@@ -1397,13 +1403,13 @@ int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
       const char *utf8 = s.UTF8String;
       result = strdup(utf8 != NULL ? utf8 : "[]");
     }
-    dispatch_semaphore_signal(sem);
+    zb_job_complete(job, ZB_AUTO_OK, result, NULL);  // job owns `result`; freed by complete if abandoned
+    zb_job_unref(job);
   });
-  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC)) != 0) {
-    return ZB_AUTO_ERR_TIMEOUT;  // result (if it ever lands) is leaked, but a wedged main queue is fatal anyway
-  }
-  if (out_json != NULL) *out_json = result; else free(result);
-  return ZB_AUTO_OK;
+  int rc = zb_job_wait(job, timeout_ms);
+  if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }  // sole reader on DONE
+  zb_job_unref(job);
+  return rc;
 }
 
 // MS2b.2: answer window `win`'s open dialog (0 = primary). accept = OK/Leave, else Cancel/Stay; `text`
@@ -1411,16 +1417,20 @@ int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
 int zb_automation_respond_dialog(uint32_t win, int accept, const char *text, unsigned int timeout_ms) {
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
   NSString *answer = text != NULL ? [NSString stringWithUTF8String:text] : nil;
-  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-  __block int rc = ZB_AUTO_ERR_NO_DIALOG;
+  // Heap-job model: if the waiter timed out (e.g. a held main queue), the job is CANCELLED and the
+  // claim below fails, so the dialog is NEVER answered late — no dispatch after abandon (RoseCat 6469).
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
   dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: do NOT answer the dialog
     ZBWindowHost *host = zb_auto_window_for_id(win);
-    if (host != nil && [host zbRespondDialogAccept:(accept != 0) text:answer]) rc = ZB_AUTO_OK;
-    dispatch_semaphore_signal(sem);
+    int code = (host != nil && [host zbRespondDialogAccept:(accept != 0) text:answer]) ? ZB_AUTO_OK : ZB_AUTO_ERR_NO_DIALOG;
+    zb_job_complete(job, code, NULL, NULL);
+    zb_job_unref(job);
   });
-  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC)) != 0) {
-    return ZB_AUTO_ERR_TIMEOUT;
-  }
+  int rc = zb_job_wait(job, timeout_ms);
+  zb_job_unref(job);
   return rc;
 }
 
