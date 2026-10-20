@@ -253,6 +253,12 @@ pub fn build(b: *std.Build) void {
     const windows_wincontain_resolve_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_resolve_live_test.py" });
     b.step("windows-wincontain-resolve-live", "Live Windows PathResolver/containment oracle on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_wincontain_resolve_live.step);
 
+    // d1d part 2: live Windows Job Object containment — real CreateProcessW(suspended) -> assign -> resume
+    // with KILL_ON_JOB_CLOSE on the VM; the child is in the job and dies when the job handle closes. Skips
+    // cleanly without ZB_WIN11_HOST; needs no slot.
+    const windows_wincontain_job_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_job_live_test.py" });
+    b.step("windows-wincontain-job-live", "Live Windows Job Object containment on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_wincontain_job_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1773,6 +1779,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_wincontain_argv_live.step);
     test_step.dependOn(&windows_wincontain_resolve_live.step);
+    test_step.dependOn(&windows_wincontain_job_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
