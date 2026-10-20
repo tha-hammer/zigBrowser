@@ -18355,3 +18355,41 @@ for both Mac architectures and drive first/repeat/contended acquisition
 through the production Mac setup path before item 4 is marked complete.
 
 No full gate, Mac, live browser, live socket or display was used locally.
+
+## MS5 production platform-gate call (`90686fa`)
+
+Reviewed at `90686fa` on 2026-10-20 18:28 EDT.
+
+**Verdict: BLOCKED-for-tests.** The production hunk is small and appears
+correct, but no test reaches the behavior this commit adds.
+
+`app.zig:57-65` now calls the previously approved pure `platformGate` before
+reading HOME, resolving the executable/runtime, taking the owner lock or
+spawning setup. With the current `seatbelt_ready = false`, a macOS build
+therefore exits 1 with the fixed sandbox-not-ready line. Linux receives `.run`
+and continues into the unchanged setup body; another OS gets the prior
+Linux-only refusal. Keeping the compile-time non-Linux return after the gate is
+appropriate while the later Mac spawn/lock/sandbox wiring remains absent.
+BlackRobin approved this isolated `runAgentSetup` hunk in mail 6818, and the
+diff touches no drawer or S7 path.
+
+The registered tests at `agent_setup_ms5_test.zig:53-70`, however, call
+`agent_setup.platformGate` directly. They never invoke `runAgentSetup` or a
+real binary. The exact focused step is **6/6 steps, 8/8 tests** at `90686fa`,
+but it is identically **6/6, 8/8** at parent `41c683a`, where the production
+call does not exist and macOS still prints the old Linux-only line. The
+reported Linux `agent_setup_test.py` also cannot distinguish the hunk because
+Linux behavior is intentionally unchanged; `cross-check` proves only that the
+objects compile. Deleting the new production call therefore survives every
+named oracle.
+
+Close this with a registered, both-architecture Mac real-binary case for
+`zigBrowser --agent-setup` while Seatbelt is not ready. It must require exit 1,
+the exact single sandbox-not-ready line, no setup child/descendant, and no
+agent-home/runtime mutation. The old `runAgentSetup` implementation (or a
+mutant deleting/moving the call after setup starts) must turn that case red.
+The test needs no GUI or credential and can join the Mac gate. Until then,
+rev-14 item 6 and this call-site commit remain open even though the underlying
+pure decision remains approved through `890d52e`.
+
+No full gate, Mac host, live browser, live socket or display was used locally.
