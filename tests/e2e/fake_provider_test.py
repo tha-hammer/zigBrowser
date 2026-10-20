@@ -91,7 +91,7 @@ class FakeProviderTest(unittest.TestCase):
             "no-code": "https://platform.claude.com/oauth/code/callback?state=zbState-0123",
             "popup": "#",
         }
-        self.assertEqual(sorted(want), sorted(fp.VARIANTS))
+        self.assertEqual(sorted(list(want) + ["iframe", "iframe-then-main"]), sorted(fp.VARIANTS))
         for variant, url in want.items():
             with fp.FakeProvider(self.tmp / variant, variant=variant) as p:
                 _, body, _ = via_proxy(p, "claude.com", AUTHORIZE)
@@ -101,13 +101,37 @@ class FakeProviderTest(unittest.TestCase):
                 opens = b"window.open('https://claude.ai/'" in body
                 self.assertEqual(opens, variant == "popup", variant)
 
+    def test_the_iframe_variants(self):
+        """Rev 16.20.33: a 1-pixel iframe on the exact callback (`iframe`, the right code; its
+        action does nothing) or on a callback with IFRAME_CODE (`iframe-then-main`, whose action
+        is the Authorize link to the exact callback)."""
+        exact = "https://platform.claude.com/oauth/code/callback?code={c}&state=zbState-0123"
+        for variant, frame_code, link in (("iframe", fp.CODE, None), ("iframe-then-main", fp.IFRAME_CODE, exact.format(c=fp.CODE))):
+            with fp.FakeProvider(self.tmp / variant, variant=variant) as p:
+                _, body, _ = via_proxy(p, "claude.com", AUTHORIZE)
+                src = re.search(rb'<iframe id="frame" src="([^"]+)"', body).group(1).decode().replace("&amp;", "&")
+                self.assertEqual(src, exact.format(c=frame_code), variant)
+                found = re.search(rb'id="action" href="([^"]+)"', body)
+                self.assertEqual(found.group(1).decode().replace("&amp;", "&") if found else None, link, variant)
+        with fp.FakeProvider(self.tmp / "plain") as p:
+            _, body, _ = via_proxy(p, "claude.com", AUTHORIZE)
+            self.assertNotIn(b"<iframe", body)
+
+    def test_the_code_page_beacons_when_it_runs(self):
+        with fp.FakeProvider(self.tmp) as p:
+            _, body, _ = via_proxy(p, "platform.claude.com", "/oauth/code/callback?code=x&state=y")
+            self.assertIn(b"new Image().src = '/beacon?ran='", body)
+            status, _, _ = via_proxy(p, "platform.claude.com", "/beacon?ran=%3Fcode%3Dx")
+            self.assertEqual((status, p.callback_beacons), (204, ["/beacon?ran=%3Fcode%3Dx"]))
+
     def test_the_page_reports_what_it_sees(self):
         with fp.FakeProvider(self.tmp) as p:
             _, body, _ = via_proxy(p, "claude.com", AUTHORIZE)
             self.assertIn(b"new Image().src = '/report?c='", body)
-            status, _, _ = via_proxy(p, "claude.com", "/report?c=zbprovider%3D1&z=0")
+            self.assertIn(b"'&m=' + typeof MediaSource", body)
+            status, _, _ = via_proxy(p, "claude.com", "/report?c=zbprovider%3D1&z=0&m=undefined")
             self.assertEqual(status, 204)
-            self.assertEqual(p.reports, [{"cookie": "zbprovider=1", "zbhost": "0"}])
+            self.assertEqual(p.reports, [{"cookie": "zbprovider=1", "zbhost": "0", "mse": "undefined"}])
 
     def test_a_code_page_request_is_recorded(self):
         with fp.FakeProvider(self.tmp) as p:

@@ -11,12 +11,18 @@ reaches through ZIGBROWSER_AGENT_AUTH_TEST, and nothing else.
     must refuse); otherwise the Authorize link to the callback the `variant` builds from the
     request's redirect_uri and state: `ok` (the exact callback), `wrong-state`,
     `missing-state`, `other-port` (:8443), `http`, `lookalike` (platform.claude.com.evil.example)
-    or `no-code`.
-  - `/report?c=<cookie>&z=<0|1>` (claude.com): the sign-in page reports, as soon as it runs,
-    the `document.cookie` it sees and whether a `zbHost` message handler exists (S6.3,
-    rev 16.18.20; the auth window has no automation to read it with); kept in `reports`.
+    or `no-code`. Rev 16.20.33 (RoseCat 6457 #1, 6466): `iframe`, the page loads the exact
+    callback (this sign-in's state, the right code) in a 1-pixel iframe and its action does
+    nothing; `iframe-then-main`, the iframe loads a callback with IFRAME_CODE and the action is
+    the Authorize link to the exact callback (CODE).
+  - `/report?c=<cookie>&z=<0|1>&m=<typeof MediaSource>` (claude.com): the sign-in page reports,
+    as soon as it runs, the `document.cookie` it sees, whether a `zbHost` message handler exists
+    (S6.3, rev 16.18.20; the auth window has no automation to read it with) and `typeof
+    MediaSource` (rev 16.20.33: the window's media policy, RoseCat 6457 #3); kept in `reports`.
   - `/oauth/code/callback` (platform.claude.com): the code page. A request for it is recorded
-    in `callback_loads`; the window must never load it (the callback is captured).
+    in `callback_loads` (rev 16.20.33: requested at most once per callback, the window ignores
+    its response); the page's script beacons `/beacon` as soon as it runs, recorded in
+    `callback_beacons`, which must stay empty: the page is never committed, rendered or run.
 - A recording loopback proxy (`seam_value()` names it): CONNECT to claude.com:443 or
   platform.claude.com:443 is tunnelled to the HTTPS server; every other CONNECT, and every
   plain-HTTP request, is refused with 403 and recorded in `refused`.
@@ -35,8 +41,10 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 HOSTS = ("claude.com", "platform.claude.com")
-VARIANTS = ("ok", "wrong-state", "missing-state", "other-port", "http", "lookalike", "no-code", "popup")
+VARIANTS = ("ok", "wrong-state", "missing-state", "other-port", "http", "lookalike", "no-code", "popup",
+            "iframe", "iframe-then-main")
 CODE = "zbFakeAuthCode-0123"
+IFRAME_CODE = "zbFakeIframeCode-0456"
 
 
 def make_provider_cert(directory: Path):
@@ -70,6 +78,7 @@ class FakeProvider:
         self.connects: list[str] = []         # every CONNECT target the proxy saw
         self.refused: list[str] = []          # CONNECT targets or plain-HTTP URLs it refused
         self.reports: list[dict] = []         # what each sign-in page saw: {"cookie", "zbhost"}
+        self.callback_beacons: list[str] = []  # a code page that ran (must stay empty)
         self.cert, self.key = make_provider_cert(Path(tmp) / "provider")
         self._https = self._start_https()
         self._proxy = self._start_proxy()
@@ -107,10 +116,23 @@ class FakeProvider:
             "lookalike": f"https://{host}.evil.example{path}?{code}&state={state}",
             "no-code": f"https://{host}{path}?state={state}",
             "popup": f"https://{host}{path}?{code}&state={state}",  # not the page's action
+            "iframe": f"https://{host}{path}?{code}&state={state}",  # the iframe's, not the action's
+            "iframe-then-main": f"https://{host}{path}?{code}&state={state}",
         }[self.variant]
+
+    def frame_html(self, redirect_uri: str, state: str) -> str:
+        """The `iframe` variants' 1-pixel iframe, else nothing."""
+        if self.variant not in ("iframe", "iframe-then-main"):
+            return ""
+        r = urlsplit(redirect_uri)
+        code = CODE if self.variant == "iframe" else IFRAME_CODE
+        src = html.escape(f"https://{r.hostname}{r.path}?code={code}&state={state}", quote=True)
+        return FRAME.format(src=src)
 
     def action_html(self, redirect_uri: str, state: str) -> str:
         """The page's one action, filling it."""
+        if self.variant == "iframe":
+            return '<div id="action">Waiting</div>'
         if self.variant == "popup":
             return ACTION.format(href="#", onclick=' onclick="window.open(\'https://claude.ai/\', \'_blank\'); return false;"',
                                  label="Open a popup")
@@ -133,16 +155,22 @@ class FakeProvider:
                     provider.requests.append({"host": host, "path": split.path, "query": query})
                 if host == "claude.com" and split.path == "/cai/oauth/authorize":
                     action = provider.action_html(query.get("redirect_uri", ""), query.get("state", ""))
-                    body = PAGE.format(action=action).encode()
+                    frame = provider.frame_html(query.get("redirect_uri", ""), query.get("state", ""))
+                    body = PAGE.format(action=action, frame=frame).encode()
                     return self._send(200, body, "text/html; charset=utf-8", cookie=True)
                 if host == "claude.com" and split.path == "/report":
                     with provider.lock:
-                        provider.reports.append({"cookie": query.get("c", ""), "zbhost": query.get("z", "")})
+                        provider.reports.append({"cookie": query.get("c", ""), "zbhost": query.get("z", ""),
+                                                 "mse": query.get("m", "")})
                     return self._send(204, b"", "text/plain")
                 if host == "platform.claude.com" and split.path == "/oauth/code/callback":
                     with provider.lock:
                         provider.callback_loads.append(self.path)
-                    return self._send(200, b"<!doctype html><p id=code>the code page</p>", "text/html")
+                    return self._send(200, CODE_PAGE, "text/html")
+                if host == "platform.claude.com" and split.path == "/beacon":
+                    with provider.lock:
+                        provider.callback_beacons.append(self.path)
+                    return self._send(204, b"", "text/plain")
                 return self._send(404, b"not found", "text/plain")
 
             def _send(self, status, body, ctype, cookie=False):
@@ -228,6 +256,7 @@ class FakeProvider:
     def report(self) -> str:
         with self.lock:
             return json.dumps({"requests": self.requests, "callback_loads": self.callback_loads,
+                               "callback_beacons": self.callback_beacons,
                                "connects": self.connects, "refused": self.refused, "reports": self.reports})
 
 
@@ -240,12 +269,17 @@ html, body {{ margin: 0; height: 100%; }}
 </style></head>
 <body>
 {action}
+{frame}
 <p id="cookies"></p>
 <script>
 document.getElementById('cookies').textContent = document.cookie;
 var zb = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.zbHost);
-new Image().src = '/report?c=' + encodeURIComponent(document.cookie) + '&z=' + (zb ? 1 : 0);
+new Image().src = '/report?c=' + encodeURIComponent(document.cookie) + '&z=' + (zb ? 1 : 0) + '&m=' + typeof MediaSource;
 </script>
 </body></html>
 """
 ACTION = '<a id="action" href="{href}"{onclick}>{label}</a>'
+FRAME = ('<iframe id="frame" src="{src}" style="position: fixed; left: 0; top: 0; width: 1px; height: 1px; '
+         'border: 0; pointer-events: none;"></iframe>')
+CODE_PAGE = (b"<!doctype html><p id=code>the code page</p>"
+             b"<script>new Image().src = '/beacon?ran=' + encodeURIComponent(location.search);</script>")
