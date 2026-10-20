@@ -12,7 +12,12 @@
 # (truncation). The whole script is itself delivered as -EncodedCommand (no cmd-line quoting).
 #
 # The selftest replaces this via ZB_RESOLVE_CMD; this real implementation resolves on the Windows
-# host over SSH. Its on-host behavior is live-verify pending (needs a junction fixture on the VM).
+# host over SSH. Live-verified on win11-m8: a normal in-root path resolves to itself; C:\Windows
+# resolves to itself. CreateFile opens with dwDesiredAccess 0 (GetFinalPathNameByHandle needs only
+# the handle) FOLLOWING reparse points — never OPEN_REPARSE_POINT, which would return the junction's
+# own in-root path and MASK an escape. A junction that cannot be followed (CreateFile returns
+# ERROR_CANT_RESOLVE_FILENAME / gle 448 on this build) fails closed via exit 3 -> gate DENY, which is
+# safe; resolving a legitimate in-root junction's target is a tracked refinement (see beads).
 set -uo pipefail
 p="${1:?usage: resolve_path.sh <windows-path>}"
 
@@ -43,7 +48,7 @@ public static extern System.IntPtr CreateFile(string n, uint a, uint s, System.I
 public static extern uint GetFinalPathNameByHandle(System.IntPtr h, System.Text.StringBuilder o, uint n, uint flags);
 [DllImport("kernel32.dll")] public static extern bool CloseHandle(System.IntPtr h);
 '@
-$h = [Zb.P]::CreateFile($p, 0x80000000, 1, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+$h = [Zb.P]::CreateFile($p, 0, 3, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
 if ($h -eq [IntPtr](-1)) { exit 3 }
 $sb = New-Object System.Text.StringBuilder 1024
 $n = [Zb.P]::GetFinalPathNameByHandle($h, $sb, 1024, 0)
