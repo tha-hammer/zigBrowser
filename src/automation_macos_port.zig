@@ -8,8 +8,9 @@
 //! error text may carry page data and is dropped here, never forwarded.
 //!
 //! MS2a.1 implements the mandatory routed-command methods (evalJson, navigate[WithPolicy], reload,
-//! url, title). Native input, windows, dialogs, screenshot etc. keep the PagePort `unsupported`
-//! defaults until their own slices (MS2b/MS2c) land.
+//! url, title). MS2b 2b-i adds nativeClick (a trusted in-process NSEvent, delivered by the shim).
+//! The rest of native input, windows, dialogs, screenshot etc. keep the PagePort `unsupported`
+//! defaults until their own slices (MS2b matrix / MS2c) land.
 const std = @import("std");
 const builtin = @import("builtin");
 const page_port = @import("automation/page_port.zig");
@@ -56,6 +57,7 @@ const vtable: PagePort.VTable = .{
     .reload = reload,
     .url = url,
     .title = title,
+    .nativeClick = nativeClick,
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -123,6 +125,20 @@ fn title(ptr: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]u
         return e;
     };
     return takeString(gpa, out);
+}
+
+/// MS2b 2b-i: a real left click at viewport CSS px (x, y). The shim synthesizes a trusted NSEvent
+/// and delivers it in-process; `document` is forwarded as the DOC_CHANGED guard token (enforced by
+/// the matrix slices). Blocks the calling thread until the page's click dispatch has finished.
+fn nativeClick(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_ms: u64) PortError!void {
+    const doc_z: ?[:0]u8 = if (document) |token| try std.heap.c_allocator.dupeZ(u8, token) else null;
+    defer if (doc_z) |b| std.heap.c_allocator.free(b);
+    const expected: [*c]const u8 = if (doc_z) |b| b.ptr else null;
+
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_click(windowOf(ptr), x, y, 1, expected, clampMs(timeout_ms), &err);
+    c.zb_automation_free(err);
+    return mapCode(rc);
 }
 
 fn mapCode(rc: c_int) PortError!void {

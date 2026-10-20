@@ -959,10 +959,11 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
     NSString *body = [NSString stringWithUTF8String:function_body];
     NSString *arg = [NSString stringWithUTF8String:(arg_json != NULL ? arg_json : "null")];
     // world == ZB_AUTOMATION_WORLD -> the named automation world (where __zbAutomation lives);
-    // NULL/empty -> the page world.
-    WKContentWorld *content_world = (world != NULL && world[0] != '\0')
-        ? [WKContentWorld worldWithName:[NSString stringWithUTF8String:world]]
-        : WKContentWorld.pageWorld;
+    // NULL/empty -> the page world. +[WKContentWorld worldWithName:] is a WebKit call: the FIRST one
+    // runs InitializeWebKit2() under a call_once, which TRAPS (EXC_BREAKPOINT) off the main thread.
+    // So it is resolved INSIDE the main-queue block below (after readiness), never on this calling
+    // thread — otherwise it races the main thread's startup webView creation and can win the init.
+    NSString *world_name = (world != NULL && world[0] != '\0') ? [NSString stringWithUTF8String:world] : nil;
 
     __block int rc = ZB_AUTO_ERR_TIMEOUT;
     __block char *result = NULL;
@@ -979,6 +980,10 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
         return;
       }
       poll = nil;  // ready: run the async eval; its completion handler signals.
+      // Resolve the content world on the main thread (first worldWithName can init WebKit2).
+      WKContentWorld *content_world = world_name != nil
+          ? [WKContentWorld worldWithName:world_name]
+          : WKContentWorld.pageWorld;
       [host.webView callAsyncJavaScript:body
                               arguments:@{ @"arg": arg }
                                 inFrame:nil
@@ -999,6 +1004,68 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
     dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
     if (out_result != NULL) *out_result = result; else free(result);
     if (out_err != NULL) *out_err = errmsg; else free(errmsg);
+    return rc;
+  }
+}
+
+// MS2b 2b-i — native click. Synthesize a TRUSTED NSEvent mouse down/up at the element's viewport
+// CSS px (x, y) and deliver it in-process through -[NSWindow sendEvent:]. The spike proved this path
+// yields event.isTrusted == true on both arches (scratchpad/ms2/spike_nsclick.m) — NO system
+// CGEventPost, NO TCC/Accessibility permission, NO private API. Coordinates: the engine passes
+// viewport CSS px (origin top-left, y down); an unflipped NSView has its origin bottom-left, so y is
+// flipped to the view's space (isFlipped views need no flip) before convertPoint:toView:nil.
+//
+// "Returns once the page's click dispatch has finished": a round-trip evaluateJavaScript issued
+// AFTER the mouse-up is processed by the web content process only after the mouse events it follows
+// on the same (single, FIFO) UI->web IPC connection — so its completion is a reliable ack that the
+// click's DOM dispatch ran, with no fixed delay and no page-specific counter. `button` (1 = left) and
+// `expected_doc` (the DOC_CHANGED guard) are honored by the MS2b matrix slices (2b-ii+); this
+// click-only spike delivers a left click and does not navigate, so it accepts both without enforcing.
+int zb_native_click(uint32_t win, double x, double y, int button,
+                    const char *expected_doc, unsigned int timeout_ms, char **out_err) {
+  (void)button;
+  (void)expected_doc;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;  // deadlock guard
+  @autoreleasepool {
+    __block int rc = ZB_AUTO_ERR_TIMEOUT;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+    __block void (^poll)(void) = nil;
+    poll = ^{
+      ZBWindowHost *host = zb_auto_window_for_id(win);
+      if (host == nil) { rc = ZB_AUTO_ERR_NO_WINDOW; poll = nil; dispatch_semaphore_signal(sem); return; }
+      if (!host.finishedOrFailed) {
+        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { rc = ZB_AUTO_ERR_TIMEOUT; poll = nil; dispatch_semaphore_signal(sem); return; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+        return;
+      }
+      poll = nil;  // ready: deliver the click, then ack via a FIFO-ordered eval round-trip.
+      NSWindow *window = host.window;
+      WKWebView *view = host.webView;
+      if (window == nil || view == nil) { rc = ZB_AUTO_ERR_NO_WINDOW; dispatch_semaphore_signal(sem); return; }
+      CGFloat h = view.bounds.size.height;
+      NSPoint vp = view.isFlipped ? NSMakePoint(x, y) : NSMakePoint(x, h - y);
+      NSPoint loc = [view convertPoint:vp toView:nil];
+      NSInteger wn = window.windowNumber;
+      NSTimeInterval ts = [[NSProcessInfo processInfo] systemUptime];
+      NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:loc modifierFlags:0
+                                        timestamp:ts windowNumber:wn context:nil eventNumber:0
+                                       clickCount:1 pressure:1.0];
+      NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:loc modifierFlags:0
+                                      timestamp:ts windowNumber:wn context:nil eventNumber:0
+                                     clickCount:1 pressure:0.0];
+      [window sendEvent:down];
+      [window sendEvent:up];
+      [view evaluateJavaScript:@"0" completionHandler:^(id value, NSError *error) {
+        (void)value;
+        (void)error;
+        rc = ZB_AUTO_OK;
+        dispatch_semaphore_signal(sem);
+      }];
+    };
+    dispatch_async(dispatch_get_main_queue(), poll);
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
     return rc;
   }
 }
