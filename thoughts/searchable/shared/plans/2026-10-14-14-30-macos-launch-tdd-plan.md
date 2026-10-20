@@ -1141,10 +1141,13 @@ normalized_args)`; pre-dispatch revalidation of `origin`/`load_serial`/`crashed`
 difference revokes, dispatches nothing); the commit carries `options.expect = {account, target_fp}` checked
 **atomically in the same FIFO ticket**, a mismatch returning **−32015 `expectation_mismatch`**; and **only
 the native Approve handler mints** — model/page text never approves. This plan does not restate or alter
-those fields; it only names where the macOS build plugs them in. The broker itself (`agent_broker.zig` per
-the drawer plan :1181/:1419) is **greenfield and shared** with the drawer plan — before building it,
-confirm with BlackRobin (drawer-plan owner) whether any broker part is already planned on that side, so it
-is not built twice.
+those fields; it only names where the macOS build plugs them in. **The broker already exists** —
+`src/agent_broker.zig` landed in `a7ff5db` (follow-ups under review), the drawer plan's component (rev 6
+correction, RoseCat 6608 #2). It is a **single shared broker**: MS4.1b does **not** build a second one; it
+**extends/consumes** that broker under coordinated ownership (the drawer-plan owner, BlackRobin, owns the
+shared broker implementation — assign/confirm the owner before MS4.1b). The macOS work is the platform wiring
+into it (revalidation against the macOS `WindowInfo`, the `options.expect` commit seam), not the grant
+engine.
 
 **IN SCOPE for MS4 (macOS):**
 - **MS4.1a — `load_serial` groundwork (prerequisite; self-contained, no broker).** A per-window counter
@@ -1153,11 +1156,12 @@ is not built twice.
   (additive; also flows to page.list/page.health). This is the only MS4 field the shim owns; it is built
   **now** (red-first, both arches, mutant: counter that never increments / resets). Nothing else in MS4
   starts until RoseCat approves this revision.
-- **MS4.1b — the grant authority + revalidation + `options.expect` seam** (the broker; **gated on RoseCat
-  approval of this revision AND BlackRobin coordination**). Builds the grant data structure, minting entry
-  point, revalidation against `WindowInfo` (origin/`load_serial`/`crashed`/`recovering`), and the
-  commit-seam `options.expect` check (−32015), with the drawer T5 mutants (navigation bumps `load_serial`,
-  selector-retarget, wrong-account, one-field tuple tampering).
+- **MS4.1b — macOS wiring into the shared broker's revalidation + `options.expect` seam** (**gated on
+  RoseCat approval of this revision AND coordinated ownership of the existing `agent_broker.zig`**). Does NOT
+  reimplement the grant engine — it wires the shared broker's revalidation to the macOS `WindowInfo`
+  (origin/`load_serial`/`crashed`/`recovering`) and the commit-seam `options.expect` check (−32015), with the
+  drawer T5 mutants (navigation bumps `load_serial`, selector-retarget, wrong-account, one-field tuple
+  tampering).
 - **MS4.2 — negative proofs:** page world, iframe, related popup, automation-socket client, model prompt,
   hook each **cannot** approve (real-binary).
 - **MS4.3 — per-write confirmation + dry-run inert:** each `Send`/`Post`/`Follow`/`Connect`/`Like`/`Next`
@@ -1172,9 +1176,12 @@ is not built twice.
   drawer plan :1419) that **only MS7's native Approve-button handler** calls; MS4 proves everything refuses
   without a grant and a test-only mint would bypass the forbidden span, so MS4 never mints. MS7.8 proves
   the native card mints/denies.
-- **MS8 — the positive `tool_use`→approve→commit chain.** The seam: the broker's dispatch path
-  (`dispatchParsed`) is driven in production by the real helper delivering `tool_use` off the in-process
-  socket (which exists only at MS8); MS4 exercises only preview/dry-run + refusal, never a real commit.
+- **MS8 — the positive `tool_use`→approve→commit chain.** The seam (rev 6 correction, RoseCat 6608 #2):
+  `tool_use` arrives over the **supervised helper↔app NDJSON pipe** (not the automation socket); the broker
+  then calls the **socket-free in-process automation core** to commit. The **external automation socket must
+  remain unable to reach the broker** (`agent.*`/`broker.*` give -32601; a grant id as `auth` gives -32000,
+  per the drawer plan). MS4 exercises only preview/dry-run + refusal, never a real commit; MS8 (when the
+  helper exists) drives the positive path.
   MS8.3 proves the one positive commit per approval.
 
 **Order:** MS4.1a now (groundwork); then, after RoseCat approves this revision, MS4.1b/4.2/4.3 (broker,
