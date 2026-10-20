@@ -17634,3 +17634,32 @@ prior WS0 findings or satisfy the authoritative Windows plan:
 The exact expected-snapshot/name/date issue from `69e9935` also remains open.
 The 28/28 hostless pass proves the current relaxed fake schema, not the real
 probe-to-gate chain. No full gate was run for this review.
+
+### MS2a.3 observable late completion and dispatch race (`1b477a2`)
+
+**APPROVED as the incremental fix-forward for `179f4dd` part A and
+`a823275`; it does not yet close `26fdfff`.** The delayed Promise now writes a
+DOM marker after its two-second delay, and the socket test reads that marker
+after receiving the exact `-32009` timeout. Together with the new lower timing
+bound, a bridge which returns an immediate timeout without submitting can no
+longer pass. The live-job parser accepts signed counts and requires exact
+return to its pre-command baseline, so both a retained job and counter
+underflow fail.
+
+The production change replaces the off-main call to
+`zb_auto_test_hooks_enabled()` with an atomic mirror of the immutable
+`--e2e-protocol` launch decision, written during main-thread app
+initialization and read by the server-thread job allocation/free paths. No
+server thread now dereferences `g_active_app` or its Objective-C property for
+these counter lines. The dispatch-race e2e places its 300 ms timeout in
+`options.timeout_ms`, which the reviewed router path actually parses, while
+the 1500 ms hold and DOM mutation retain the wait-through-dispatch and
+submission oracles.
+
+Both changed Python tests compile, `git diff --check` passes, and both remain
+registered in `tests/mac/ms2a_gate.sh`. JadeBeacon reports that full gate
+green on both Mac architectures. No Mac run was attempted locally. The
+rev-13 app-ended cancellation/part-C mechanism and exact result/error string
+ownership part B remain open; therefore `1df6df0` and the root `26fdfff`
+closure stay blocked pending those slices and the final current-SHA
+two-architecture gate.
