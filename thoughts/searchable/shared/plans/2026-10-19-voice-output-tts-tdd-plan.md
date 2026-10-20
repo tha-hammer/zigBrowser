@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "The browser's voice: agent replies spoken aloud, with user-customizable voices — TDD implementation plan"
 tags: [plan, tdd, tts, text-to-speech, voice, agent-drawer, pocket-tts, onnxruntime, macos, windows, linux-dev, voice-cloning, miniaudio]
-status: plan for review (rev 2.3)
-rev: 2.3
+status: plan for review (rev 2.4)
+rev: 2.4
 last_updated: 2026-10-20
 last_updated_note: "Rev 2 records the user's decisions of 2026-10-19: bundled engine first (system voices become a later, secondary option), read-aloud on by default, the STT side bundles whisper medium (installer about 0.8 GB larger), and a separate Windows launch plan as the Windows dependency. Slices re-sequenced: core, test backend, audio layer, bundled engine, then the drawer and Voice window, then Macs, cloning, Windows, and system voices last."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md
@@ -25,6 +25,15 @@ windows_dependency: thoughts/searchable/shared/plans/2026-10-19-windows-launch-t
 
 ## Revision history
 
+- **Rev 2.4 (2026-10-20):** macOS paths made as concrete as the Windows ones (orchestrator; Mac is
+  the primary user platform). New **§D11** pins the macOS bundle layout, the universal-components
+  census roles, the entitlement/usage-string deltas, the Core Audio + microphone-TCC path, and the
+  nested signing/notarization of the bundled binaries (`zb-speech`, ONNX Runtime) against the macOS
+  plan's MS1.1/MS1.3/MS5.1c/MS6/MS9 contracts (JadeBeacon). M1 and V3.5 cite D11; the remaining
+  "muted Core Audio" test wording is corrected to VF's render-to-file/Null rule. Changes the macOS
+  plan itself needs (census entries, the mic entitlement, the inside-out signing of the voice
+  binaries, the speech-child Seatbelt profile) are a **proposal mailed to JadeBeacon**, not edits to
+  his file. No user decision changed.
 - **Rev 2.3 (2026-10-20):** major revision clearing RoseCat's `9a6973b` / `9663333` voice-plan
   review (NOT APPROVED). Changes: a single **Shared Voice Foundation (VF)** section
   (§2.4, byte-identical in the STT plan) replaces the "named the same, first one wins"
@@ -149,7 +158,7 @@ helper and chat (WS11), the voice hook points (WS12) and the installer (WS13). I
 - Automated tests run only under a private Xvfb (Linux), on the remote Macs, or on the Windows
   launch plan's two hosts (WS0: `win11-m8` and the physical Windows 10 machine).
 - **Tests never use the user's real audio devices.** They use the `record` backend, a private
-  PulseAudio null sink in a private `XDG_RUNTIME_DIR`, render-to-file, or a muted test host
+  VF Null backend or a render-to-file FileSink (automated); live audio only in the §7.4 manual checks
   (section 7.3). Hearing the voice is a separate real-audio check run only by the
   orchestrator with the user.
 - Red commits go outside gate-registered steps. A new test file is registered in `build.zig`
@@ -279,12 +288,19 @@ implementation choose an incompatible ABI and forced the other plan into shared-
 RoseCat `9a6973b`/`9663333`). Every slice in this plan that uses a shared piece declares a
 `depends on VF` edge (§13).
 
-### 2.4 Shared Voice Foundation (VF) — one slice, one owner (byte-identical in the STT plan)
+### 2.4 Shared Voice Foundation (VF) — one slice, one owner
 
-> **This section is the single source of truth for everything the TTS and STT plans share. It is
-> byte-identical in both plans; any change lands in both, in the same commit.** It replaces the
-> conflicting shared definitions the review flagged (TTS review 2/3; STT review 1; `9663333`
-> TTS/STT BLOCKER 1-2).
+The bytes between the `VF:BEGIN` and `VF:END` markers below are **byte-identical in the sibling STT
+plan** (STT §4). They are the single source of truth for everything the two plans share; a change
+lands in both plans in the **same commit**, and `tools/check_vf_identical.sh` (proposed; see §15)
+asserts `diff` of the two marked regions is empty, so the copies cannot drift (RoseCat shared
+BLOCKER 1). Plan-specific notes stay **outside** the markers.
+
+<!-- VF:BEGIN -->
+> **This section is the single source of truth for everything the TTS and STT plans share. The bytes
+> between VF:BEGIN and VF:END are byte-identical in both plans; any change lands in both, in the same
+> commit.** It replaces the conflicting shared definitions the review flagged (shared review 1;
+> `9663333` TTS/STT BLOCKER 1-2).
 
 **Owner and order.** VF is **one slice**, landed **once**, before any consumer slice in either
 plan. It is owned by a single implementing agent (the orchestrator assigns them; it is **not**
@@ -334,7 +350,7 @@ ends the session with `error device-lost` and never hangs.
 
 **Model integrity pinned through consumption.** The loader verifies size + SHA-256 and then loads
 **the verified bytes**, never a re-opened path:
-- STT: `whisper_init_from_buffer(verified_bytes)` (not `whisper_init_from_file`).
+- STT: `whisper_init_from_buffer_with_params(verified_bytes, params)` (not `whisper_init_from_file`).
 - TTS/ONNX: `OrtCreateSessionFromArray(verified_bytes)` (not a path), or a single OS handle opened
   once, verified, and memory-mapped for the load.
 - A `(size, mtime, inode)` record is a **performance hint only**, never the identity proof.
@@ -345,11 +361,14 @@ ends the session with `error device-lost` and never hangs.
 
 **The test-device rule (automated runs never touch a real device).** Every automated run uses the
 miniaudio **Null** backend, a `WavFileSource`/`SilenceSource`, and a render-to-file **`FileSink`** —
-never Core Audio/WASAPI/PulseAudio/ALSA, and never a "muted real device". A hermetic **write
+never Core Audio/WASAPI/PulseAudio/ALSA, and never a "muted real device". A hermetic **privacy write
 oracle** runs the process in a test-owned temp/mount namespace with a file-open census and asserts
-**no audio-derived bytes are written anywhere** on complete/cancel/error, and every PCM/transcript
-buffer is zeroed (`std.crypto.secureZero`) at session end. Only the orchestrator's user-approved
-`real_audio_check` / `real_screen_check` open a physical device (§7.4).
+that, on complete/cancel/error, **no audio-derived bytes are written anywhere EXCEPT the one
+`FileSink` artifact path the test explicitly declared** (the oracle allowlists exactly that path, and
+a render-to-file test asserts the artifact exists; every other audio-derived write — temp, log, cwd —
+fails the test). A dictation/no-output test declares **no** `FileSink`, so any audio-derived write
+fails. Every PCM/transcript buffer is zeroed (`std.crypto.secureZero`) at session end. Only the
+orchestrator's user-approved `real_audio_check` / `real_screen_check` open a physical device.
 
 **The native arbitrary-child interface `ZbChild` (NOT the agent `SandboxBackend`).** The production
 `SandboxBackend` is a **Python, agent-home-specific** launch contract
@@ -372,8 +391,9 @@ implemented per OS:
 `audio_miniaudio.c` (Null + WavFile + FileSink), `voice/models.zig` + `build/voice_model.zig`
 (catalog + verify-through-consumption), `voice/voice_config.zig` (schema + migrate + lock),
 `voice_settings_window.c` (shell + section registry), `voice/consent.zig`, and `ZbChild` (Linux).
-Consumers declaring `depends on VF`: TTS V2, V3, V3.0, V5, C1-C3, M1/M2, W1/W2, CW; STT VS3, VS1,
-VS4, VS5, VS6, VS7-VS11, VSP.
+Consumers declaring `depends on VF` — TTS: V2, V3, V3.0, V5, C1-C3, M1, M2, W1, W2, CW. STT: VS1,
+VS3, VS4, VS5, VS6, VS7, VS8, VS9, VS10, VS11, VSP.
+<!-- VF:END -->
 
 ## 3. Design
 
@@ -610,6 +630,15 @@ rows.
   within a deadline) is killed and the utterance reports `error`; **manager deinit** drains and
   frees every pending utterance; **child reap** — the exit status is collected (no zombie) and a
   crash triggers the 1/2/4/8 s backoff restart.
+- **Concrete limits (defaults, each a named tunable with an edge red).** Max frame payload **1 MiB**
+  (a 1 MiB + 1 byte frame ⇒ `error`); `pcm` payload **≤ 64 KiB** per frame; `speak` text **≤ 64 KiB**
+  per utterance (longer ⇒ `error`, before the chunker); **global queued-text bound 256 KiB across all
+  windows** and at most **16 pending utterances** (the 17th or the byte past 256 KiB ⇒ refused with a
+  `SPEECH … refused queue-full` row); **backpressure** caps in-flight PCM at **2 s** of audio at the
+  declared rate; **stalled-child deadlines** — no `ready` within **10 s**, or no `pcm`/`done` within
+  **30 s** of a `speak`, ⇒ kill + `error`. `seq` is a `u32` monotonic per utterance; a gap or a
+  `(utt,epoch)` past a `stop` is dropped. Reds assert each boundary at `limit` (ok) and `limit+1`
+  (refused/killed).
 
 **The sandbox**, through VF's native **`ZbChild`** interface (§2.4 — **not** the Python agent
 `SandboxBackend`):
@@ -641,9 +670,13 @@ derive speaker state from live samples, which the D9.2 frame set alone cannot ca
 enrolment frames over the same versioned pipe, plus a second inherited **sample pipe** (`ZbChild`):
 - browser→child `enroll_begin <id>`, `enroll_pcm <id> <seq> <n>` (16 kHz mono f32), `enroll_end <id>`,
   `enroll_abort <id>`; child→browser `enroll_ready <id>` (speaker state derived) / `error <id> <code>`.
-- **Bounds:** total enrolment audio is capped (duration, byte count, and sample-count), oversize ⇒
-  `error`; one enrolment at a time; a partial enrolment on crash/cancel writes nothing under
-  `voices/<id>/` (the child's scratch is discarded).
+- **Bounds (defaults, named tunables; edge reds):** total enrolment audio **≤ 120 s** and **≤ 16
+  MiB** and **≤ 1,920,000 samples** (120 s × 16 kHz) — the first frame that would exceed any ⇒
+  `error` and the session is discarded; `enroll_pcm` payload **≤ 64 KiB** per frame; **one enrolment
+  at a time** (a second `enroll_begin` ⇒ `error busy`); a minimum of **≥ 6 s** of speech is required
+  before `enroll_end` succeeds (shorter ⇒ `error too-short`). A partial enrolment on crash/cancel
+  writes **nothing** under `voices/<id>/` (the child's scratch is discarded). Reds assert each cap at
+  `limit` and `limit+1`.
 - **Storage + Windows ACL (refcounted).** The derived speaker state and samples live under
   `voices/<id>/` (0700 dir, 0600 files on POSIX; on Windows a **private DACL** via
   `SetNamedSecurityInfoW`, `PROTECTED_DACL`, owner-only, no inherited ACEs). A **grant/revoke
@@ -670,6 +703,85 @@ enrolment frames over the same versioned pipe, plus a second inherited **sample 
   engine, the watermark stays on.
 - **Delete** removes everything and stops any utterance using the voice.
 - **macOS Personal Voice** is a later extra (S4): Apple's flow, and the app stores nothing.
+
+### D11. macOS bundling, entitlements, signing and the audio/mic path (rev 2.4)
+
+Mac is the primary user platform, so the macOS path is pinned as concretely as the Windows one, and
+bound to the macOS plan (`2026-10-14-14-30-macos-launch-tdd-plan.md`, JadeBeacon) by milestone. The
+items that require a change to **his** file are collected at the end and mailed to him as a proposal;
+nothing here edits the macOS plan.
+
+**Bundle layout (inside `zigBrowser.app/Contents/`).**
+- `Contents/MacOS/zb-speech` — the bundled TTS engine, a **separate universal Mach-O** (arm64 +
+  x86_64 via `lipo`). (Whisper, by contrast, links **statically** into `zigBrowser`, so STT adds no
+  new Mach-O — see the STT plan D7.)
+- `Contents/Frameworks/libonnxruntime.dylib` — ONNX Runtime, a **universal dylib**.
+- `Contents/Resources/models/tts/<files>` — the Pocket TTS model/voice files, **non-code resources**
+  (STT's model is the sibling `…/models/stt/<file>`).
+- Cloned voices live **outside** the bundle, under the per-user profile data dir (`voices/<id>/`,
+  D10) — never in the signed, read-only `.app`.
+
+**Universal-components census (macOS plan MS1.1 + MS5.1c).** The TTS binaries and resources join
+`packaging/macos/universal_components.json` **typed by form**, so the existing census enforces them:
+- `zb-speech` and `libonnxruntime.dylib` are **`components`** (native Mach-O) ⇒ the census requires
+  each a **fat** Mach-O (both arches); added by their exact bundle-relative `path_glob`.
+- the `models/tts/` files are **`resources`** ⇒ the two-tree `resource_compat` oracle
+  (`mac_resource_compat.py`) requires them **byte-identical across the arm64 and x86_64 trees**
+  (models are arch-independent, so this holds), exactly as STT's `models/stt/` do (MS5.1c).
+- Adding the first resources moves the bundle off MS1's browser-only empty-inventory shape, so the
+  voice component/resource rows land **with or after** MS5.1c's nonempty oracle run — never against
+  MS1's empty-allowed exception.
+
+**Entitlements and usage strings (macOS plan MS1.3).** The single least-privilege manifest is
+`packaging/macos/entitlements.plist`; today it holds only `com.apple.security.network.client`
+(§2.2). Voice needs, added to **that** manifest (a proposal to JadeBeacon, since MS1.3 owns it):
+- `com.apple.security.device.audio-input` — the **microphone**, needed for **cloning enrolment**
+  (C1-C3, CW) and by the STT plan for dictation; playback needs no audio entitlement.
+- `Info.plist` gains `NSMicrophoneUsageDescription` (the first-capture TCC prompt string; the user
+  may edit the wording).
+- `zb-speech` loading `libonnxruntime.dylib` must **not** need
+  `com.apple.security.cs.disable-library-validation` in a release build (the macOS plan's
+  `release_least_privilege` rule forbids it): both are signed under the **same Developer ID team** in
+  MS9, so library validation passes. The ad-hoc dev build may use it; the release must not.
+
+**Audio device + microphone TCC.** Playback and capture both go through **VF's one `ma_context`**
+(§2.4) on **Core Audio** (`AudioToolbox`/`AudioUnit`, linked in `build.zig`). The microphone is
+gated by TCC: `AVCaptureDevice authorizationStatusForMediaType:` then `requestAccessForMediaType:`
+on the first enrolment (shared with the STT plan's D8/`src/voice_mac.m`); a `denied`/`restricted`
+status shows the clone screen's "Microphone access is off for zigBrowser" with a System-Settings
+deep link. Automated runs use VF's **Null/`FileSink`** — never a real device, muted or not.
+
+**Signing and notarization of the bundled binaries (macOS plan MS9).** `zb-speech`,
+`libonnxruntime.dylib` and the model resources are signed and notarized with the rest of the app, via
+the macOS plan's MS9 flow — there is no separate voice signing step:
+- **MS9.1 inside-out order:** nested code is signed innermost-first — `libonnxruntime.dylib`, then
+  `zb-speech`, then the embedded frameworks, then the `.app` — each with the **MS1.3** manifest and
+  `--options runtime` (hardened), per arch. (This adds `zb-speech`/`libonnxruntime` to MS9's
+  inside-out list — a proposal to JadeBeacon.)
+- **MS9.2:** `codesign --verify --strict` passes on the universal bundle on both arches; then
+  `notarytool submit --wait` → `Accepted`, `stapler staple`/`validate`, and `spctl --assess
+  --type execute` accept the `.app`. Code signing seals each model resource's hash in `CodeResources`;
+  notarization uploads the whole DMG (the ~100-240 MB TTS model + whisper medium grow it — the DMG
+  notarization time/size is the STT plan's VSP concern, measured there).
+- Until the user obtains the Developer ID (MS9's gate), the voice `.dmg` is an **ad-hoc development
+  build, not distributable** — the same status the macOS plan already carries.
+
+**The `zb-speech` sandbox on macOS (VF `ZbChild` → MS6 Seatbelt).** `zb-speech` is a **native child**
+(not the Python agent helper), so its confinement is a **Seatbelt profile** built with the macOS
+plan's MS6 machinery (`/usr/bin/sandbox-exec`, deny-default, profile file + `-D` params), but a
+**distinct profile**: **no network** (not even the egress proxy port), **no audio device** (the
+browser plays/records), **read-only** the model dir and the one cloned voice's embedding, **write
+only** its scratch, and orphan-reaped by the same kqueue `NOTE_EXIT`/pipe-EOF scheme. Whether MS6
+hosts this second profile or VF ships a sibling `sandbox-exec` invocation is a coordination item for
+JadeBeacon (below).
+
+**Proposed changes to the macOS plan (mailed to JadeBeacon, not edited here):** (1) add
+`zb-speech` + `libonnxruntime.dylib` as fat `components` and `models/tts/` (+ `models/stt/`) as
+byte-identical `resources` to `universal_components.json` (MS1.1/MS5.1c); (2) add
+`com.apple.security.device.audio-input` to `entitlements.plist` and `NSMicrophoneUsageDescription`
+to `Info.plist` (MS1.3), keeping `release_least_privilege`; (3) add the voice binaries to MS9's
+inside-out signing list; (4) confirm the speech-child Seatbelt profile under MS6 (or that VF owns a
+sibling profile built with MS6's machinery).
 
 ## 4. Desired end state and observable behaviors
 
@@ -837,18 +949,20 @@ version.
   - in the `record` backend, the engine plus the audio device;
   - in the model fetch test, the model host (a local HTTPS fixture).
 - Every record-backend closure has a sibling closure through the **real engine** into a
-  private null sink (Linux), a rendered file and Core Audio's muted output (Macs), or the
+  private null sink (Linux), a rendered file via FileSink (Macs; no real device), or the
   Windows hosts.
 
 ### 7.3 The audio rule: tests never use the real speakers
 
-**Linux.** Each speech e2e starts with a private `XDG_RUNTIME_DIR` and a dead D-Bus address.
-- Real-audio tests start a private PulseAudio in that directory:
-  `pulseaudio -n --daemonize=no --exit-idle-time=-1 -L module-native-protocol-unix -L
-  module-null-sink sink_name=zbtest -L module-always-sink`.
-- The test sets `PULSE_SERVER` to it and records `zbtest.monitor` with `parec`.
-- `tests/e2e/audio_common.py` builds this world, and **refuses** with exit 1 if any variable
-  would reach the user's session. `audio_common_test.py` proves the refusal.
+**Linux.** Each speech e2e starts with a private `XDG_RUNTIME_DIR` and a dead D-Bus address, and
+every **automated** run uses VF's **Null backend or a render-to-file `FileSink`** — it opens no
+PulseAudio/ALSA device. `tests/e2e/audio_common.py` builds this world and **refuses** with exit 1 if
+any variable (`PULSE_SERVER`, `XDG_RUNTIME_DIR`, …) would reach the user's session;
+`audio_common_test.py` proves the refusal.
+- The optional **private-PulseAudio capture** path (`pulseaudio -n … module-null-sink
+  sink_name=zbtest`; record `zbtest.monitor` with `parec`) is a **§7.4 manual check only** — it opens
+  a real (if null-sink) Pulse server, so it is not in any automated gate. Automated intelligibility
+  is proven from the `FileSink` artifact (V3.0), not from a live Pulse monitor.
 
 Per VF's test-device rule (§2.4), **every automated run uses the miniaudio Null backend or a
 render-to-file `FileSink`; no automated run opens Core Audio, WASAPI, PulseAudio or ALSA, and no
@@ -901,21 +1015,21 @@ It asks the user y/n per line and refuses without a terminal. Agents check it on
 |---|---|---|---|
 | V0 core | Linux | Linux | nothing |
 | V1 record backend + reply feed | Linux | Linux (Xvfb) | nothing |
-| V2 `zb_audio` playback | Linux; cross-compiles for Mac and Windows | Linux (private Pulse); Macs (muted) | nothing; Macs for Core Audio |
-| V3 bundled engine `zb-speech` | Linux | Linux (private Pulse, real model) | OD2; OD7 before V3.5 ships |
+| V2 `zb_audio` playback | Linux; cross-compiles for Mac and Windows | Linux (Null/FileSink); Macs (Null/FileSink) | nothing (automated runs open no real device; §7.4 manual only) |
+| V3 bundled engine `zb-speech` | Linux | Linux (Null/FileSink, real model) | OD2; OD7 before V3.5 ships |
 | V4 drawer controls (UI) | Linux | Linux (Xvfb, private AT-SPI) + real-screen | the user for the check |
 | V5 Voice window (UI) | Linux | Linux (Xvfb) + real-screen | the user for the check |
 | M1 bundled engine on macOS | **Mac** | **both Macs** | MS1 (done); MS6 for M1.3 |
-| C1-C3 cloning (UI) | Linux first, then Macs | Linux (Xvfb, private Pulse with a fixture as the microphone); both Macs | V3, a capture path in `zb_audio` (the STT plan's or added here), the user for the checks |
+| C1-C3 cloning (UI) | Linux first, then Macs | Linux (Xvfb; VF WavFileSource fixture as the mic; FileSink out); both Macs (FileSink) | V3, a capture path in `zb_audio` (the STT plan's or added here), the user for the checks |
 | M2 Mac drawer speech + Voice window (UI) | **Mac** | both Macs + real-screen + real-audio on the user's Mac | **MS7, MS8** |
 | W0 Windows engine + audio, compile only | Linux (cross-compile) | compile and link checks | nothing |
 | W1 Windows engine + audio at run time | Windows (built on `win11-m8`, WS1) | `win11-m8` and the physical Windows 10 machine (WS0) | WS0, WS1, WS8.7, WS13 |
 | W2 Windows drawer speech (UI) | Windows | both hosts + real-screen + real-audio with the user | WS5, WS11, WS12.1 |
 | CW Windows cloning (UI) | Windows | both hosts with the WAV fixture seam; live microphone on the Windows 10 machine | W2, C1-C3, a WASAPI capture path (STT VS10's, or added here), WS8.7 |
-| S1 Linux speech-dispatcher (secondary) | Linux | Linux (private Pulse) | OD6 |
+| S1 Linux speech-dispatcher (secondary) | Linux | Linux (Null/FileSink) | OD6 |
 | S2 macOS AVSpeechSynthesizer (secondary) | Mac | both Macs | OD6 |
 | S3 Windows WinRT + SAPI (secondary) | Windows (compile from Linux with SDK headers) | the Windows hosts | OD6, the SDK `winrt` headers |
-| S4 macOS Personal Voice (UI, cloning extra) | Mac | both Macs (status paths); creation needs **Apple Silicon** and the user | S2 |
+| S4 macOS Personal Voice (UI, cloning extra) | Mac | both Macs (status paths); creation needs **Apple Silicon** and the user | S2, **M2 / macOS MS7** (its control lives in M2's AppKit Voice window) |
 
 ## 8. Workflow closure
 
@@ -1022,13 +1136,16 @@ helper's stdout (`fake_host.py`) or further out, never below `on_frame`.
 ## 9. Slices
 
 **Order:**
-1. Linux: `V0 → V1 → V2 → V3 → V4 → V5`.
-2. macOS: `M1` (after V3 and MS1; M1.3 after MS6).
-3. Cloning: `C1 → C2 → C3` (after V3 and a capture path).
-4. macOS drawer: `M2` (after V4, V5, **MS7 and MS8**).
-5. Windows: `W0` (after V3, any time); then `W1` (after WS0, WS1, WS8.7, WS13); then `W2`
+1. **VF first** (shared foundation, §2.4), then Linux: `V0 → V1 → V2 → V3.0 → V3 → V4 → V5`
+   (V2/V3.0/V3/V5 depend on VF; **V3.0** proves the Pocket runtime/OD2 before V3).
+2. **Packaging:** `V3.5a` (slots + census + attribution) after V3 and each platform's packaging slice;
+   `V3.5b` (final packaged-runtime proof + macOS notarization) after V3.5a, V3, M1, W1 and OD7.
+3. macOS: `M1` (after V3 and MS1; M1.3 after MS6; bundling/signing per D11).
+4. Cloning: `C1 → C2 → C3` (after V3 and a capture path; the Mac legs after **M2/MS7**).
+5. macOS drawer: `M2` (after V4, V5, **MS7 and MS8**).
+6. Windows: `W0` (after V3, any time); then `W1` (after WS0, WS1, WS8.7, WS13 slot); then `W2`
    (after WS5, WS11, WS12.1); then `CW` (after W2 and C1-C3).
-6. Secondary system voices, last: `S1`, `S2`, `S3`, then `S4` (after S2).
+7. Secondary system voices, last: `S1`, `S2`, `S3`, then `S4` (after S2 and **M2/MS7**).
 
 Every behavior follows the per-slice gate protocol (section 11).
 
@@ -1318,7 +1435,8 @@ before V3 builds on it, and records the OD2 decision and the model-gate/redistri
   - `third_party/onnxruntime/` (prebuilt, pinned per platform, with its license);
   - `tools/export_pocket_onnx.py` (OD2 a; developer tool, not shipped);
   - `src/speech_engine.c`: the backend, with spawn, pipe, cancel and restart backoff;
-  - the sandbox spec through the shared `SandboxBackend` contract;
+  - the sandbox spec through VF's native **`ZbChild`** interface (§2.4) — bwrap-style on Linux, MS6
+    Seatbelt on macOS, WS8.7 sandbox user on Windows — **not** the Python agent `SandboxBackend`;
   - `build.zig`;
   - `tests/e2e/speech_engine_test.py`.
 
@@ -1340,31 +1458,44 @@ before V3 builds on it, and records the OD2 decision and the model-gate/redistri
 - Pitch is reported in `caps`. If the engine cannot change pitch, the Voice window hides the
   slider for that voice (asserted in V5).
 
-#### Behavior V3.5: the model and runtime are in the installer, with attribution
-- **Given** the Linux `.deb`, the macOS `.dmg` and the Windows MSI built by their packaging
-  scripts,
-- **Then**:
-  - each contains `zb-speech`, ONNX Runtime and the pinned model files at the
-    model-manager's bundled location;
-  - the hashes match the manifest;
-  - **CC-BY-4.0 attribution, as a packaging task:**
-    - every installer carries the full CC BY 4.0 license text and the attribution ("Pocket
-      TTS by Kyutai, licensed under CC BY 4.0", with a link to the license and to the model
-      card) and the changes note (for example "converted to ONNX and quantized to int8 by
-      zigBrowser");
-    - the app shows the same text in a credits screen: "About this voice" in the Voice window
-      (V5.4) and the app's About or credits screen;
-    - `package_speech_test.py` checks that the license file is present in each package and
-      matches the manifest's text, and the Voice window e2e reads the credits text back
-      through a `VOICE` row;
-    - the exact attribution wording Kyutai asks for (if any) is read with the gate terms
-      (OD7);
-  - the measured total is recorded in the plan's status. If it exceeds 200 MB, it goes back
-    to the user (section 6.2).
-- **Gate:** OD7 (legal review) before this behavior ships.
+#### V3.5a — package slots + census scaffolding (depends on V3 + each platform's packaging slice)
+
+Reserves the bundle **slots** and wires the component/resource census, **without** asserting the
+real runtime runs (that is V3.5b). This is the half that can land as each platform's packaging slice
+reserves the slot, breaking the old V3.5↔W1/WS13 cycle.
+- **Behavior V3.5a.1:** each packaging script declares the voice slots — Linux `.deb`
+  `/usr/share/zigbrowser/{bin,lib,share/.../models/tts}`; macOS `.dmg` the **D11** paths
+  (`Contents/MacOS/zb-speech`, `Contents/Frameworks/libonnxruntime.dylib`,
+  `Contents/Resources/models/tts/`) added to `packaging/macos/universal_components.json` typed as
+  `components`/`resources` (MS1.1/MS5.1c); Windows MSI the WS13.1 census slot `models\tts\` + the
+  engine/dll components. 🔴 Red: the census (`mac_universal_test.py` / `mac_resource_compat.py`,
+  and the Linux/Windows equivalents) fails with the slots declared but empty/mismatched.
+- **Behavior V3.5a.2 (attribution scaffolding):** every installer carries the full **CC BY 4.0**
+  text + the attribution ("Pocket TTS by Kyutai, licensed under CC BY 4.0", link to the license and
+  model card) + the changes note; `package_speech_test.py` checks the license file is present and
+  matches the manifest. (The exact wording Kyutai requires is read with OD7.)
+- **Depends on:** V3 (component exists) + each platform's packaging slice that reserves the slot
+  (Linux `.deb` step, macOS **VSP/MS5.1c**, Windows **WS13.1**). **Not** on the final runtime.
 - **Files touched:** `packaging/linux/build-deb.sh`, `packaging/macos/build-dmg.sh`,
   `packaging/macos/universal_components.json`, `packaging/windows/zigBrowser.wxs`,
-  `packaging/assets/THIRD_PARTY_LICENSES` (new or extended), `tests/e2e/package_speech_test.py`.
+  `packaging/assets/THIRD_PARTY_LICENSES` (new/extended), `tests/e2e/package_speech_test.py`.
+- **Gate:** census green with slots declared; no runtime assertion.
+
+#### V3.5b — final packaged-runtime proof (depends on V3.5a + V3 + M1 + W1 + OD7)
+
+Asserts the **real** engine/model/UI are present and run from the installed package.
+- **Behavior V3.5b.1:** from each built package (`.deb`, `.dmg`, MSI), the installed browser renders
+  the V3.0 reference phrase **intelligibly** through the bundled `zb-speech` + model (FileSink; no
+  real device), and the hashes match the manifest. On macOS the package is **signed + notarized**
+  (D11/MS9) — `codesign --verify --strict`, `spctl --assess`, `stapler validate` pass on both arches.
+- **Behavior V3.5b.2 (credits UI):** the app shows the attribution in "About this voice" (V5.4) and
+  the About screen; the Voice-window e2e reads the credits text back through a `VOICE` row.
+- **Behavior V3.5b.3 (size):** the measured installer total is recorded; if it exceeds 200 MB it goes
+  back to the user (§6.2).
+- **Depends on:** V3.5a **and** the platform runtime slices that fill the slots (V3, **M1**, **W1**)
+  **and** OD7 (legal). This is the edge that previously made the graph cyclic; it now points one way
+  (slots → runtime → final proof).
+- **Gate:** OD7 before it ships; runtime + (macOS) notarization assertions green per platform.
 
 ---
 
@@ -1460,8 +1591,10 @@ stop on each control, and hears nothing after mute.
   if it misses real time, that goes to the user.
 - **M1.3** (after MS6) `zb-speech` runs under the Seatbelt backend with no network and
   read-only model access, proven by the same probes as V3.2.
-- **M1.4** With output muted, playback through Core Audio (`zb_audio`) runs and ends `done`,
-  and stop gives `cancelled` within 250 ms.
+- **M1.4** Automated: playback renders through VF's `AudioSink` into a **`FileSink`** (no real
+  device), ends `done`, and stop gives `cancelled` within the two-stage budget (control ≤200 ms, sink
+  ≤250 ms). The real Core Audio output is exercised only in the §7.4 `mac-voice` manual check with the
+  user. Bundle paths, census, entitlements and signing are per **D11**.
 - **M1.5** The hardened-runtime build runs `zb-speech` (a nested signed executable) without a
   new entitlement. If it fails, the key that fixes it is added with its justification, as
   `entitlements.plist` requires.
@@ -1489,7 +1622,7 @@ capture added here with the same interface.
   leaves nothing on disk.
 - **C1.2 A random consent sentence first.** The sentence includes the date and is recorded as
   the first sample. Then the enrolment text. Microphone only, with a level meter. The e2e
-  feeds a fixture as the private PulseAudio's source and checks the row order (`consent` →
+  feeds a fixture through VF's WavFileSource (capture) and renders to a FileSink and checks the row order (`consent` →
   `recording` → `processing` → `ready`) and `consent.json`.
 - **C1.3 No other source.** No file picker (OD9), no automation method, no agent tool and no
   page API can start or feed enrolment. A test lists the automation methods and the agent's
@@ -1635,7 +1768,7 @@ These come after the bundled engine on each platform. They appear in the Voice w
 - **S1 Linux speech-dispatcher** (developer tool).
   - `src/speech_spd.c` `dlopen`s `libspeechd.so.2` (`spd_open2`, `spd_say`, `spd_cancel`, the
     rate, pitch and volume setters, `spd_list_synthesis_voices`, callbacks).
-  - Tests run in the private PulseAudio world. If the library or daemon is missing:
+  - Tests run against VF's Null backend / FileSink (no real device). If the library is missing:
     `SPEECH 0 backend spd unavailable <dlopen|connect>`.
   - Step `speech-spd-e2e`.
 - **S2 macOS AVSpeechSynthesizer.**
@@ -1725,17 +1858,17 @@ def case_badge_stops_minimized(binary):
 |---|---|---|---|---|
 | `speech-core-test` | V0 | Zig core | none | Linux |
 | `speech-record-e2e` | V1 | browser, GTK, helper or `fake_host.py`, real-CLI variant | Anthropic API; engine + device (record) | Linux Xvfb |
-| `audio-common-test`, `audio-out-e2e` | V2 | miniaudio, private PulseAudio | none | Linux |
-| `speech-engine-e2e` | V3 | `zb-speech`, ONNX Runtime, real model, sandbox, private PulseAudio | none | Linux |
+| `audio-common-test`, `audio-out-e2e` | V2 | miniaudio Null backend / FileSink | none | Linux |
+| `speech-engine-e2e` | V3 | `zb-speech`, ONNX Runtime, real model, ZbChild sandbox, VF Null/FileSink | none | Linux |
 | `package-speech-e2e` | V3.5 | the three packages | none | Linux (+ Mac and Windows packaging hosts) |
 | `agent-drawer-speech-e2e`, `speech-screen-reader-e2e` | V4 | browser, GTK, X input, private AT-SPI | Anthropic API; record and engine variants | Linux Xvfb |
 | `voice-window-e2e` | V5 | browser, GTK, X input, settings file | record | Linux Xvfb |
-| `speech-mac-e2e` | M1, M2, S2, S4 | universal binary, `zb-speech`, Core Audio (muted), AVSpeech (S2) | none | both Macs |
-| `voice-clone-e2e` | C1-C3 | capture through private PulseAudio, `zb-speech` | none | Linux; both Macs |
+| `speech-mac-e2e` | M1, M2, S2, S4 | universal binary, `zb-speech`, VF FileSink/Null (no real device; real Core Audio only in §7.4 manual), AVSpeech (S2) | none | both Macs |
+| `voice-clone-e2e` | C1-C3 | capture through VF WavFileSource; FileSink out; `zb-speech` | none | Linux; both Macs |
 | `speech-win-compile` | W0 | compiler, linker | none | Linux (cross) |
 | `speech-win-e2e` | W1, W2, S3 | engine, WASAPI, Win32 drawer | none | `win11-m8` and the Windows 10 machine via `tests/windows/gate.sh --phase voice` (WS12.2) |
 | `voice-clone-win-e2e` | CW | capture (WAV seam; live microphone on Windows 10), `zb-speech`, DACL store | none | both Windows hosts |
-| `speech-spd-e2e` | S1 | speech-dispatcher, private PulseAudio | none | Linux |
+| `speech-spd-e2e` | S1 | speech-dispatcher, VF Null/FileSink | none | Linux |
 | `real_screen_check_unit`, `real_audio_check_unit` | V4+ | the manual scripts' logic with fakes | captures, device | Linux |
 
 ## 13. Dependency order
@@ -1770,6 +1903,11 @@ local-only; still **do not** `bd dolt push` from an agent). When filing:
 
 ## 15. References
 
+- **`tools/check_vf_identical.sh` (proposed, rev 2.3):** diffs the `VF:BEGIN`..`VF:END` region of this
+  plan against the STT plan's and exits nonzero if they differ, so the shared foundation cannot drift.
+  Run by the voice gate (and by anyone editing §2.4). A docs-only CI check, not product code.
+- **Sibling + macOS plans:** STT `2026-10-19-voice-input-stt-tdd-plan.md` (VF §4);
+  macOS `2026-10-14-14-30-macos-launch-tdd-plan.md` (MS1.1/MS1.3/MS5.1c/MS6/MS9 — see §D11).
 - **Research:** `thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md` (rev 2:
   decisions, the Pocket TTS check, the Closure Map and ClosureMap JSON).
 - **Sibling research (STT):**
