@@ -3,13 +3,14 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 
+#include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#import <os/lock.h>
+#include <time.h>
 
 static const int ZB_DECISION_USE = 0;
 static const int ZB_DECISION_IGNORE = 1;
@@ -35,6 +36,10 @@ struct ZbWindow {
 
 static ZBAppHost *g_active_app = nil;
 static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automation_set_script)
+// Set once a routed (automation) navigation has run. While active, a load FAILURE never brings the
+// browser down: the current routed navigation reports navigation_failed, and a superseded routed
+// navigation's late failure is ignored. Only a user-initiated load before automation exits the app.
+static atomic_int g_automation_active = 0;
 static void handle_signal(int signo);
 
 static void emit_safe_field(const char *text) {
@@ -252,6 +257,13 @@ static void handle_signal(int signo) {
 @property(nonatomic, assign) BOOL finishedOrFailed;
 @property(nonatomic, strong) NSTimer *timeoutTimer;
 @property(nonatomic, copy) NSString *requestedURI;
+// Routed (automation) navigation tracking. routedNav is the in-flight WKNavigation a routed
+// page.navigate/reload started; routedOutcome is 0 pending / 1 success / 2 failure for THAT
+// navigation (identity-matched, so a stale completion from an older navigation cannot satisfy a new
+// wait — RoseCat 6227.2). While routedNav is set, a load failure for it reports navigation_failed and
+// must NOT exit the app (unlike a user-initiated load failure).
+@property(nonatomic, strong) WKNavigation *routedNav;
+@property(nonatomic, assign) int routedOutcome;
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child;
 - (void)loadURI:(NSString *)uri;
 - (void)reloadBypassingCache:(BOOL)bypassCache;
@@ -470,8 +482,10 @@ static void handle_signal(int signo) {
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-  (void)navigation;
   self.finishedOrFailed = YES;
+  if (navigation != nil && navigation == self.routedNav) {
+    self.routedOutcome = 1;  // success for THIS routed navigation
+  }
   [self.timeoutTimer invalidate];
   self.timeoutTimer = nil;
 
@@ -492,22 +506,31 @@ static void handle_signal(int signo) {
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-  (void)navigation;
-  [self handleLoadFailureForWebView:webView error:error];
+  [self handleLoadFailureForWebView:webView navigation:navigation error:error];
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-  (void)navigation;
-  [self handleLoadFailureForWebView:webView error:error];
+  [self handleLoadFailureForWebView:webView navigation:navigation error:error];
 }
 
-- (void)handleLoadFailureForWebView:(WKWebView *)webView error:(NSError *)error {
+- (void)handleLoadFailureForWebView:(WKWebView *)webView navigation:(WKNavigation *)navigation error:(NSError *)error {
   if (self.finishedOrFailed && error.code == NSURLErrorCancelled) {
     return;
   }
   self.finishedOrFailed = YES;
   [self.timeoutTimer invalidate];
   self.timeoutTimer = nil;
+  // A routed (automation) navigation that fails is reported to the caller as navigation_failed and
+  // must NOT bring the whole browser down — the session stays usable on its previous document
+  // (RoseCat 6227.2). Only a user-initiated load failure exits.
+  if (navigation != nil && navigation == self.routedNav) {
+    self.routedOutcome = 2;
+    return;
+  }
+  // A superseded routed navigation's late failure during automation: do not exit, do not report.
+  if (atomic_load(&g_automation_active)) {
+    return;
+  }
   NSString *uri = [self failingURIForWebView:webView error:error];
   NSInteger code = error != nil ? error.code : -1;
   [self.app emitLoadFailForURI:uri code:code];
@@ -825,25 +848,43 @@ void zb_automation_set_script(const char *source, size_t len) {
   }
 }
 
-// --- Bridge job ownership (mirrors the GTK ZbAutoJob state machine, webkit_shim.c:1564-1769) --------
-// Each ABI call that runs WKWebView work on the main thread owns a heap job. The main-thread block runs
-// a side effect ONLY while the job is RUNNING; the waiter's deadline moves a not-yet-finished job to
-// CANCELLED (never started -> the queued block does nothing) or ABANDONED (async work in flight -> its
-// completion is discarded). Results live in the heap job, never the caller's stack, so a late completion
-// after the caller returned cannot write freed memory or turn a retired op into success. This is the
-// fix for RoseCat 6227.1 / 6244.1 / 6253.1 (late dispatch / late write / late success).
-enum { ZB_JOB_PENDING = 0, ZB_JOB_RUNNING, ZB_JOB_DONE, ZB_JOB_CANCELLED, ZB_JOB_ABANDONED };
+// --- Bridge job ownership: PENDING -> PREFLIGHT -> DISPATCHING -> INFLIGHT -> DONE (RoseCat 6287) ----
+// Each ABI call that runs WKWebView work on the main thread owns a heap job. The phases linearize every
+// SUBMITTED side effect before the ABI returns, so a concurrent timeout can never (a) dispatch after
+// abandonment, (b) skip a submission mid-flight, (c) write freed memory, or (d) report success to a
+// retired op:
+//   PENDING      queued on the main queue; nothing has run.
+//   PREFLIGHT    optional async readiness/guard work (e.g. the finishedOrFailed poll). At the deadline
+//                the waiter may CANCEL it; a preflight step that sees that does nothing.
+//   DISPATCHING  claimed for submission (PENDING/PREFLIGHT -> DISPATCHING under the lock). While
+//                DISPATCHING the waiter MUST wait, even past its deadline, so the Cocoa/WebKit
+//                submission that follows cannot be skipped by a concurrent timeout.
+//   INFLIGHT     the submission happened; an async completion is pending. At the deadline the waiter
+//                may ABANDON (the completion is then discarded).
+//   DONE         completed; the outcome lives in the heap job (never the caller stack).
+// A pthread mutex+cond (not a dispatch_semaphore) carries the wait: dispatch objects are ARC-managed
+// under -fobjc-arc and freeing a malloc-backed strong field is UB (RoseCat 6301); pthread primitives
+// are plain C, destroyed explicitly before free.
+enum {
+  ZB_JOB_PENDING = 0,
+  ZB_JOB_PREFLIGHT,
+  ZB_JOB_DISPATCHING,
+  ZB_JOB_INFLIGHT,
+  ZB_JOB_DONE,
+  ZB_JOB_CANCELLED,
+  ZB_JOB_ABANDONED,
+};
 
 typedef struct ZBAutoJob {
-  int state;                 // guarded by zb_auto_lock
-  int refcount;              // guarded by zb_auto_lock
-  int code;                  // valid once state == DONE
-  char *result;              // owned; moved out by the waiter on DONE
-  char *err;                 // owned; freed with the job
-  dispatch_semaphore_t sem;  // signaled exactly once, on DONE
+  pthread_mutex_t mu;
+  pthread_cond_t cv;
+  int state;     // guarded by mu
+  int refcount;  // guarded by mu
+  int code;      // valid once state == DONE
+  char *result;  // owned; moved out by the waiter on DONE
+  char *err;     // owned; freed with the job
 } ZBAutoJob;
 
-static os_unfair_lock zb_auto_lock = OS_UNFAIR_LOCK_INIT;
 static atomic_int zb_auto_live_jobs = 0;
 static atomic_uint zb_auto_waiter_grace_ms = 0;  // test hook: waiter wakes late so a late completion wins
 
@@ -851,137 +892,206 @@ int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs)
 void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
 
 static ZBAutoJob *zb_job_new(void) {
-  atomic_fetch_add(&zb_auto_live_jobs, 1);
   ZBAutoJob *job = calloc(1, sizeof(ZBAutoJob));
+  if (job == NULL) return NULL;  // callers map NULL -> ZB_AUTO_ERR_INTERNAL
+  pthread_mutex_init(&job->mu, NULL);
+  pthread_cond_init(&job->cv, NULL);
   job->state = ZB_JOB_PENDING;
   job->refcount = 1;
   job->code = ZB_AUTO_ERR_TIMEOUT;
-  job->sem = dispatch_semaphore_create(0);
+  atomic_fetch_add(&zb_auto_live_jobs, 1);
   return job;
 }
 
-static ZBAutoJob *zb_job_ref(ZBAutoJob *job) {
-  os_unfair_lock_lock(&zb_auto_lock);
+static void zb_job_ref(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
   job->refcount++;
-  os_unfair_lock_unlock(&zb_auto_lock);
-  return job;
+  pthread_mutex_unlock(&job->mu);
 }
 
 static void zb_job_unref(ZBAutoJob *job) {
   if (job == NULL) return;
-  os_unfair_lock_lock(&zb_auto_lock);
+  pthread_mutex_lock(&job->mu);
   int rc = --job->refcount;
-  os_unfair_lock_unlock(&zb_auto_lock);
+  pthread_mutex_unlock(&job->mu);
   if (rc != 0) return;
+  // refcount 0: no waiter or callback can still reference the job. Destroy the primitives, then free.
+  pthread_cond_destroy(&job->cv);
+  pthread_mutex_destroy(&job->mu);
   free(job->result);
   free(job->err);
   free(job);
   atomic_fetch_sub(&zb_auto_live_jobs, 1);
 }
 
-// Main thread, before the first side effect: claim the job. Returns 1 (now RUNNING) only if the waiter
-// has not already abandoned it; 0 means do nothing (no dispatch after abandonment).
-static int zb_job_begin(ZBAutoJob *job) {
-  os_unfair_lock_lock(&zb_auto_lock);
+// First main-thread run: PENDING -> PREFLIGHT. Returns 0 if the waiter already cancelled (do nothing).
+static int zb_job_enter_preflight(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
   int ok = (job->state == ZB_JOB_PENDING);
-  if (ok) job->state = ZB_JOB_RUNNING;
-  os_unfair_lock_unlock(&zb_auto_lock);
+  if (ok) job->state = ZB_JOB_PREFLIGHT;
+  pthread_mutex_unlock(&job->mu);
   return ok;
 }
 
-// Still owned by the waiter? False once the waiter moved it to ABANDONED; a running poll checks this
-// before issuing a further side effect.
-static int zb_job_running(ZBAutoJob *job) {
-  os_unfair_lock_lock(&zb_auto_lock);
-  int running = (job->state == ZB_JOB_RUNNING);
-  os_unfair_lock_unlock(&zb_auto_lock);
-  return running;
+// A preflight step still owned by the waiter? False once the waiter cancelled/abandoned it.
+static int zb_job_in_preflight(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  int ok = (job->state == ZB_JOB_PREFLIGHT);
+  pthread_mutex_unlock(&job->mu);
+  return ok;
 }
 
-// Record the outcome once and wake the waiter; takes ownership of result/err and frees them if the
-// waiter already abandoned (so a late completion neither writes freed memory nor reports success).
+// Claim the job for submission: PENDING/PREFLIGHT -> DISPATCHING. Returns 0 if the waiter abandoned.
+// The caller MUST then either submit and call zb_job_inflight()/zb_job_complete(), so the waiter that
+// is forced to wait during DISPATCHING is released.
+static int zb_job_claim_dispatch(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  int ok = (job->state == ZB_JOB_PENDING || job->state == ZB_JOB_PREFLIGHT);
+  if (ok) job->state = ZB_JOB_DISPATCHING;
+  pthread_mutex_unlock(&job->mu);
+  return ok;
+}
+
+// Submission returned (the Cocoa/WebKit call was issued): DISPATCHING -> INFLIGHT; release the waiter.
+static void zb_job_inflight(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  if (job->state == ZB_JOB_DISPATCHING) job->state = ZB_JOB_INFLIGHT;
+  pthread_cond_broadcast(&job->cv);
+  pthread_mutex_unlock(&job->mu);
+}
+
+// Record the outcome once, only while the job is still owned (DISPATCHING or INFLIGHT), and wake the
+// waiter. Takes ownership of result/err and frees them if the waiter already abandoned, so a late
+// completion neither writes freed memory nor reports success to a retired op.
 static void zb_job_complete(ZBAutoJob *job, int code, char *result, char *err) {
-  os_unfair_lock_lock(&zb_auto_lock);
-  int recorded = (job->state == ZB_JOB_RUNNING);
+  pthread_mutex_lock(&job->mu);
+  int recorded = (job->state == ZB_JOB_DISPATCHING || job->state == ZB_JOB_INFLIGHT);
   if (recorded) {
     job->code = code;
     job->result = result;
     job->err = err;
     job->state = ZB_JOB_DONE;
+    pthread_cond_broadcast(&job->cv);
   }
-  os_unfair_lock_unlock(&zb_auto_lock);
-  if (recorded) {
-    dispatch_semaphore_signal(job->sem);
-  } else {
+  pthread_mutex_unlock(&job->mu);
+  if (!recorded) {
     free(result);
     free(err);
   }
 }
 
-// Waiter (calling thread). Waits for DONE until the deadline; on expiry moves the job to CANCELLED
-// (never started) or ABANDONED (RUNNING). Returns the job code. On DONE the caller then reads/moves
-// job->result; it is the sole reader and no one writes result after DONE.
+static void zb_abs_deadline(struct timespec *ts, unsigned int ms) {
+  clock_gettime(CLOCK_REALTIME, ts);  // pthread_cond_timedwait uses CLOCK_REALTIME by default
+  ts->tv_sec += (time_t)(ms / 1000);
+  ts->tv_nsec += (long)(ms % 1000) * 1000000L;
+  if (ts->tv_nsec >= 1000000000L) {
+    ts->tv_sec += 1;
+    ts->tv_nsec -= 1000000000L;
+  }
+}
+
+// Waiter (calling thread). Waits for DONE until the deadline. While DISPATCHING it waits WITHOUT a
+// deadline (the submission is linearizing and must complete first). On a real timeout it moves the job
+// to CANCELLED (never submitted) or ABANDONED (INFLIGHT). Returns the job code; on DONE the caller then
+// reads/moves job->result as the sole reader.
 static int zb_job_wait(ZBAutoJob *job, unsigned int timeout_ms) {
-  dispatch_semaphore_wait(job->sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC));
-  unsigned int grace = atomic_load(&zb_auto_waiter_grace_ms);
-  if (grace > 0 && zb_job_running(job)) {
-    // Test hook: wake late so an in-flight completion can win the race before we abandon.
-    dispatch_semaphore_wait(job->sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)grace * NSEC_PER_MSEC));
+  struct timespec deadline;
+  zb_abs_deadline(&deadline, timeout_ms);
+  int graced = 0;
+  pthread_mutex_lock(&job->mu);
+  for (;;) {
+    if (job->state == ZB_JOB_DONE) break;
+    if (job->state == ZB_JOB_DISPATCHING) {
+      pthread_cond_wait(&job->cv, &job->mu);  // submission in progress: wait past the deadline
+      continue;
+    }
+    int rc = pthread_cond_timedwait(&job->cv, &job->mu, &deadline);
+    if (job->state == ZB_JOB_DONE || job->state == ZB_JOB_DISPATCHING) continue;
+    if (rc == ETIMEDOUT) {
+      unsigned int grace = atomic_load(&zb_auto_waiter_grace_ms);
+      if (grace > 0 && !graced && job->state == ZB_JOB_INFLIGHT) {
+        // Test hook: wake late so an in-flight completion can win the race before we abandon.
+        graced = 1;
+        zb_abs_deadline(&deadline, grace);
+        continue;
+      }
+      job->state = (job->state == ZB_JOB_PENDING || job->state == ZB_JOB_PREFLIGHT)
+                       ? ZB_JOB_CANCELLED
+                       : ZB_JOB_ABANDONED;
+      break;
+    }
+    // spurious wakeup with the job not yet terminal: loop (the absolute deadline still bounds us).
   }
-  os_unfair_lock_lock(&zb_auto_lock);
-  int code;
-  if (job->state == ZB_JOB_DONE) {
-    code = job->code;
-  } else {
-    job->state = (job->state == ZB_JOB_PENDING) ? ZB_JOB_CANCELLED : ZB_JOB_ABANDONED;
-    code = ZB_AUTO_ERR_TIMEOUT;
-  }
-  os_unfair_lock_unlock(&zb_auto_lock);
+  int code = (job->state == ZB_JOB_DONE) ? job->code : ZB_AUTO_ERR_TIMEOUT;
+  pthread_mutex_unlock(&job->mu);
   return code;
 }
 
-// Poll finishedOrFailed on the main thread (non-blocking) until the current load completes or the
-// deadline; when it does, run onReady(host) on the main thread, then wake the caller. Deadlock
-// guard: a main-thread caller would dispatch+wait on itself forever, so return ZB_AUTO_ERR_INTERNAL.
-// Returns ZB_AUTO_OK (onReady ran), ZB_AUTO_ERR_NO_WINDOW, or ZB_AUTO_ERR_TIMEOUT.
-static int zb_auto_await(uint32_t win, unsigned int timeout_ms, void (^onReady)(ZBWindowHost *host)) {
+// Run `work(host, &result)` on the main thread once the window's current load has settled
+// (finishedOrFailed), bounded by timeout_ms, under job ownership. `work` is a SYNCHRONOUS read: the job
+// goes PENDING -> PREFLIGHT (the readiness poll) -> DISPATCHING -> DONE in one main-thread step, so a
+// concurrent timeout either cancels the preflight (work never runs) or the waiter abandons before the
+// result is read — never a write to the caller's stack after it returned (RoseCat 6227.1, zb_auto_await).
+static int zb_auto_run_when_ready(uint32_t win, unsigned int timeout_ms, char **out_result,
+                                  int (^work)(ZBWindowHost *host, char **out)) {
+  if (out_result != NULL) *out_result = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
-  __block int rc = ZB_AUTO_ERR_TIMEOUT;
-  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+  zb_job_ref(job);
+  __block BOOL entered = NO;
   __block void (^poll)(void) = nil;
   poll = ^{
+    if (!entered) {
+      entered = YES;
+      if (!zb_job_enter_preflight(job)) { poll = nil; zb_job_unref(job); return; }
+    } else if (!zb_job_in_preflight(job)) {
+      poll = nil; zb_job_unref(job); return;
+    }
     ZBWindowHost *host = zb_auto_window_for_id(win);
     if (host == nil) {
-      rc = ZB_AUTO_ERR_NO_WINDOW; poll = nil; dispatch_semaphore_signal(sem); return;
+      poll = nil;
+      if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL);
+      zb_job_unref(job);
+      return;
     }
-    if (host.finishedOrFailed) {
-      onReady(host); rc = ZB_AUTO_OK; poll = nil; dispatch_semaphore_signal(sem); return;
+    if (!host.finishedOrFailed) {
+      if ([[NSDate date] compare:deadline] != NSOrderedAscending) {
+        poll = nil;
+        if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, NULL);
+        zb_job_unref(job);
+        return;
+      }
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+      return;
     }
-    if ([[NSDate date] compare:deadline] != NSOrderedAscending) {
-      rc = ZB_AUTO_ERR_TIMEOUT; poll = nil; dispatch_semaphore_signal(sem); return;
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+    poll = nil;
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: do not read
+    char *result = NULL;
+    int code = work(host, &result);
+    zb_job_complete(job, code, result, NULL);  // synchronous: DISPATCHING -> DONE
+    zb_job_unref(job);
   };
   dispatch_async(dispatch_get_main_queue(), poll);
-  // Backstop longer than the poll deadline so the main-thread poll is the arbiter, never a hang.
-  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
+  int rc = zb_job_wait(job, timeout_ms);
+  if (rc == ZB_AUTO_OK && out_result != NULL) {
+    *out_result = job->result;
+    job->result = NULL;
+  }
+  zb_job_unref(job);
   return rc;
 }
 
 static int zb_auto_get_string(uint32_t win, unsigned int timeout_ms, char **out, BOOL want_title) {
   @autoreleasepool {
-    __block char *result = NULL;
-    int rc = zb_auto_await(win, timeout_ms, ^(ZBWindowHost *host) {
+    return zb_auto_run_when_ready(win, timeout_ms, out, ^int(ZBWindowHost *host, char **result) {
       NSString *value = want_title ? (host.webView.title ?: @"")
                                     : (host.webView.URL.absoluteString ?: @"");
       const char *utf8 = value.UTF8String;
-      result = strdup(utf8 != NULL ? utf8 : "");
+      *result = strdup(utf8 != NULL ? utf8 : "");
+      return ZB_AUTO_OK;
     });
-    if (rc == ZB_AUTO_OK) {
-      if (out != NULL) *out = result; else free(result);
-    }
-    return rc;
   }
 }
 
@@ -993,11 +1103,58 @@ int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_ti
   return zb_auto_get_string(win, timeout_ms, out_title, YES);
 }
 
+// Start a routed navigation on the main thread and wait for ITS outcome. `start(host)` performs the
+// loadRequest/reload and returns the WKNavigation it created (nil = refused). Phase model: PENDING ->
+// DISPATCHING (claim + submit) -> INFLIGHT (poll the per-navigation outcome) -> DONE. The submission
+// linearizes before the ABI returns, so a blocked main queue cannot dispatch the load after the caller
+// timed out. A load failure for THIS navigation returns navigation_failed and does NOT exit the browser
+// (RoseCat 6227.1/6227.2); the outcome is matched by WKNavigation identity so a stale completion from an
+// older navigation cannot satisfy this wait.
+static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigation *(^start)(ZBWindowHost *host)) {
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  atomic_store(&g_automation_active, 1);
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+  zb_job_ref(job);
+  __block BOOL started = NO;
+  __block void (^poll)(void) = nil;
+  poll = ^{
+    ZBWindowHost *host = zb_auto_window_for_id(win);
+    if (!started) {
+      if (!zb_job_claim_dispatch(job)) { poll = nil; zb_job_unref(job); return; }  // waiter cancelled first
+      if (host == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      [host.timeoutTimer invalidate];
+      host.timeoutTimer = nil;  // no user-load watchdog on a routed nav -> never self-exits
+      host.finishedOrFailed = NO;
+      host.routedOutcome = 0;
+      host.routedNav = start(host);
+      if (host.routedNav == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
+      started = YES;
+      zb_job_inflight(job);  // submission issued: DISPATCHING -> INFLIGHT, release the waiter
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+      return;
+    }
+    if (host == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+    if (host.routedOutcome == 1) { poll = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
+    if (host.routedOutcome == 2) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
+    if ([[NSDate date] compare:deadline] != NSOrderedAscending) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, NULL); zb_job_unref(job); return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+  };
+  dispatch_async(dispatch_get_main_queue(), poll);
+  int rc = zb_job_wait(job, timeout_ms);
+  zb_job_unref(job);
+  return rc;
+}
+
 int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unload,
                                    unsigned int timeout_ms, char **out_err) {
-  // MS2a.1: FAIL policy only; the fixtures raise no beforeunload prompt (full policy is a later
-  // refinement). A failed load sets finishedOrFailed AND requests app exit (lifecycle), so MS2a.1
-  // navigates only to valid URLs; distinguishing nav failure without exiting is a later step.
+  // before_unload (accept/dismiss/fail) governs how a beforeunload PROMPT is answered. WKWebView does
+  // not surface beforeunload prompts without a dialog (WKUIDelegate) handler; that handler — and the
+  // enforcement of this policy through it — lands with the dialog slice (MS2b.2). FAIL (the engine
+  // default) is the no-prompt path and is exact here; accept/dismiss become distinguishable only once
+  // the dialog handler exists. A documented split of the contract (RoseCat 6227.3), not a silent
+  // conflation: a routed navigate that would raise a beforeunload prompt is not yet exercised.
   (void)before_unload;
   if (out_err != NULL) *out_err = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
@@ -1005,20 +1162,9 @@ int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unl
     NSString *url_text = url != NULL ? [NSString stringWithUTF8String:url] : nil;
     NSURL *nsurl = url_text != nil ? [NSURL URLWithString:url_text] : nil;
     if (nsurl == nil) return ZB_AUTO_ERR_NAV_FAILED;
-    __block BOOL started = NO;
-    dispatch_semaphore_t kick = dispatch_semaphore_create(0);
-    dispatch_async(dispatch_get_main_queue(), ^{
-      ZBWindowHost *host = zb_auto_window_for_id(win);
-      if (host != nil) {
-        host.finishedOrFailed = NO;  // clear before the load so the await waits for THIS navigation
-        [host.webView loadRequest:[NSURLRequest requestWithURL:nsurl]];
-        started = YES;
-      }
-      dispatch_semaphore_signal(kick);
+    return zb_auto_routed_nav(win, timeout_ms, ^WKNavigation *(ZBWindowHost *host) {
+      return [host.webView loadRequest:[NSURLRequest requestWithURL:nsurl]];
     });
-    dispatch_semaphore_wait(kick, dispatch_time(DISPATCH_TIME_NOW, (int64_t)5 * NSEC_PER_SEC));
-    if (!started) return ZB_AUTO_ERR_NO_WINDOW;
-    return zb_auto_await(win, timeout_ms, ^(ZBWindowHost *host) { (void)host; });
   }
 }
 
@@ -1030,20 +1176,9 @@ int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err) 
   if (out_err != NULL) *out_err = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
   @autoreleasepool {
-    __block BOOL started = NO;
-    dispatch_semaphore_t kick = dispatch_semaphore_create(0);
-    dispatch_async(dispatch_get_main_queue(), ^{
-      ZBWindowHost *host = zb_auto_window_for_id(win);
-      if (host != nil) {
-        host.finishedOrFailed = NO;
-        [host.webView reload];
-        started = YES;
-      }
-      dispatch_semaphore_signal(kick);
+    return zb_auto_routed_nav(win, timeout_ms, ^WKNavigation *(ZBWindowHost *host) {
+      return [host.webView reload];
     });
-    dispatch_semaphore_wait(kick, dispatch_time(DISPATCH_TIME_NOW, (int64_t)5 * NSEC_PER_SEC));
-    if (!started) return ZB_AUTO_ERR_NO_WINDOW;
-    return zb_auto_await(win, timeout_ms, ^(ZBWindowHost *host) { (void)host; });
   }
 }
 
@@ -1084,27 +1219,39 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
     NSString *world_name = (world != NULL && world[0] != '\0') ? [NSString stringWithUTF8String:world] : nil;
 
     ZBAutoJob *job = zb_job_new();
+    if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
-    ZBAutoJob *jref = zb_job_ref(job);  // one ref for the whole main-queue work chain
-    __block BOOL began = NO;
+    zb_job_ref(job);  // one ref for the whole main-queue work chain (released at its single terminal)
+    __block BOOL entered = NO;
     __block void (^poll)(void) = nil;
     poll = ^{
-      // First main-thread run: claim the job (PENDING->RUNNING). If the waiter already abandoned it,
-      // do nothing (no dispatch after abandonment). Re-dispatches only re-check we are still RUNNING.
-      if (!began) {
-        began = YES;
-        if (!zb_job_begin(jref)) { poll = nil; zb_job_unref(jref); return; }
-      } else if (!zb_job_running(jref)) {
-        poll = nil; zb_job_unref(jref); return;  // waiter abandoned mid-poll: stop
+      // First main-thread run: PENDING->PREFLIGHT. If the waiter already cancelled (e.g. a blocked main
+      // queue let its deadline pass first), do nothing. Re-dispatches re-check we are still in PREFLIGHT.
+      if (!entered) {
+        entered = YES;
+        if (!zb_job_enter_preflight(job)) { poll = nil; zb_job_unref(job); return; }
+      } else if (!zb_job_in_preflight(job)) {
+        poll = nil; zb_job_unref(job); return;  // waiter cancelled mid-poll: stop (poll=nil breaks the byref cycle)
       }
       ZBWindowHost *host = zb_auto_window_for_id(win);
-      if (host == nil) { poll = nil; zb_job_complete(jref, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(jref); return; }
+      if (host == nil) {
+        poll = nil;
+        if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL);
+        zb_job_unref(job);
+        return;
+      }
       if (!host.finishedOrFailed) {
-        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { poll = nil; zb_job_complete(jref, ZB_AUTO_ERR_TIMEOUT, NULL, NULL); zb_job_unref(jref); return; }
+        if ([[NSDate date] compare:deadline] != NSOrderedAscending) {
+          poll = nil;
+          if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, NULL);
+          zb_job_unref(job);
+          return;
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
         return;
       }
-      poll = nil;  // ready: run the async eval; its completion records the outcome into the heap job.
+      poll = nil;  // ready: claim for submission (PREFLIGHT->DISPATCHING), then run the async eval.
+      if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: no submission
       // Resolve the content world on the main thread (first worldWithName can init WebKit2).
       WKContentWorld *content_world = world_name != nil
           ? [WKContentWorld worldWithName:world_name]
@@ -1116,12 +1263,13 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
                       completionHandler:^(id value, NSError *error) {
         if (error != nil) {
           const char *m = error.localizedDescription.UTF8String;
-          zb_job_complete(jref, ZB_AUTO_ERR_JS, NULL, strdup(m != NULL ? m : "evaluation failed"));
+          zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, strdup(m != NULL ? m : "evaluation failed"));
         } else {
-          zb_job_complete(jref, ZB_AUTO_OK, zb_auto_result_string(value), NULL);
+          zb_job_complete(job, ZB_AUTO_OK, zb_auto_result_string(value), NULL);
         }
-        zb_job_unref(jref);
+        zb_job_unref(job);
       }];
+      zb_job_inflight(job);  // submission issued on the main thread: DISPATCHING -> INFLIGHT, release waiter
     };
     // Dispatch `poll` DIRECTLY (not wrapped): dispatch_async Block_copies it now, retaining the
     // captured body/arg/world_name for the whole re-dispatch chain. A wrapper that merely calls poll()
