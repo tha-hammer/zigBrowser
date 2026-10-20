@@ -191,6 +191,14 @@ class WinTransport(unittest.TestCase):
         return subprocess.run(["scp", *self._opts(), "-P", self.port, local, f"{user}@{self.host}:{remote}"],
                               capture_output=True, text=True, timeout=180, env=self._env(), stdin=subprocess.DEVNULL)
 
+    def _profile(self, user):
+        """The account's real profile directory (Windows may name it C:\\Users\\<user>.<suffix>)."""
+        r = self._ssh(user, "cmd", "/c", "echo %USERPROFILE%", timeout=60)
+        self.assertEqual(r.returncode, 0, f"USERPROFILE of {user} failed: {r.stderr}")
+        profile = r.stdout.strip().splitlines()[-1].strip()
+        self.assertRegex(profile, r"^[A-Za-z]:\\", f"USERPROFILE of {user} is not a path: {profile!r}")
+        return profile
+
     def _probe_as(self, user, remote_probe, *args):
         r = self._ssh(user, remote_probe, *args)
         self.assertEqual(r.returncode, 0, f"probe as {user} failed: {r.stdout}\n{r.stderr}")
@@ -199,7 +207,7 @@ class WinTransport(unittest.TestCase):
     # ---- one browser launch, held open while the checks run ---------------------------------------------
     def _launch(self):
         rel = f"zb/ws20-{os.getpid()}-{secrets.token_hex(4)}"
-        win = f"C:\\Users\\{self.user}\\{rel}".replace("/", "\\")
+        win = f"{self._profile(self.user)}\\{rel}".replace("/", "\\")
         mk = self._ssh(self.user, "cmd", "/c", f"mkdir {win}")
         self.assertEqual(mk.returncode, 0, f"mkdir failed: {mk.stderr}")
         self.addCleanup(self._remove, self.user, win)
@@ -275,7 +283,7 @@ class WinTransport(unittest.TestCase):
         win, r = self._launch()
         self._assert_started(r)
         orel = f"zb/ws20-{os.getpid()}-{secrets.token_hex(4)}"
-        owin = f"C:\\Users\\{self.other}\\{orel}".replace("/", "\\")
+        owin = f"{self._profile(self.other)}\\{orel}".replace("/", "\\")
         mk = self._ssh(self.other, "cmd", "/c", f"mkdir {owin}")
         self.assertEqual(mk.returncode, 0, f"mkdir as {self.other} failed: {mk.stderr}")
         self.addCleanup(self._remove, self.other, owin)
