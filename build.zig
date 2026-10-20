@@ -1726,7 +1726,7 @@ pub fn build(b: *std.Build) void {
     const real_screen_check_unit = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "cd tests/manual && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_check",
+        "cd tests/manual && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_check && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_tools",
     });
     // The same check's input guard against a real X server: decoy windows on
     // a private Xvfb (xsession.py) must receive no click or key.

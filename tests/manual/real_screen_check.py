@@ -42,6 +42,16 @@ goes through the same server-grab checks as the other cases.
 
     python3 tests/manual/real_screen_check.py --confirm-user-permission --case long-run \\
         --bin zig-out/bin/zigBrowser --out /tmp/zb-long-run
+
+`--case tools` (S7b) checks the agent's read tools on this screen: the same throwaway agent
+home and fake API, which, for the prompt "tools", has the model call get_text on the
+fixture's header and then screenshot, then answer. It passes when the model got the
+header's text, when the screenshot it got decodes, is not one colour, and shows the
+fixture's blue (an accelerated page captured blank or black fails), and when the drawer
+shows the final answer on the screen. The screenshot the model saw is saved in --out.
+
+    python3 tests/manual/real_screen_check.py --confirm-user-permission --case tools \\
+        --bin zig-out/bin/zigBrowser --out /tmp/zb-tools
 """
 
 from __future__ import annotations
@@ -49,6 +59,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import json
 import shutil
 import signal
 import struct
@@ -801,7 +812,7 @@ class LongRunBrowser:
     """The built binary on $DISPLAY with a throwaway agent home and the local fake API;
     its `--e2e-protocol` rows are read from its stdout."""
 
-    def __init__(self, binary: str, work: Path, out: Path) -> None:
+    def __init__(self, binary: str, work: Path, out: Path, respond=None, label: str = "long-run") -> None:
         import threading
         import agent_host_lifecycle_test as life
         import agent_setup_test
@@ -812,7 +823,8 @@ class LongRunBrowser:
         self.parse_row, self.rows, self.lines = parse_row, [], []
         self.proc = self.api = self.decoys = None
         agent_setup_test.PYTHON = host_python()
-        self.world = agent_setup_test.World(work, "long-run")  # its own HOME, data and PATH
+        self.label = label
+        self.world = agent_setup_test.World(work, label)  # its own HOME, data and PATH
         rc, _out, err, _events, _seen = agent_setup_test.run_setup(Path(binary), self.world)
         if rc != 0:
             raise RuntimeError(f"--agent-setup failed: {err.strip()[-300:]}")
@@ -823,7 +835,7 @@ class LongRunBrowser:
         os.close(fd)
         replies = {prompt: reply for _case, prompt, reply in LONG_RUN}
 
-        def respond(request, index):
+        def long_run(request, index):
             users = [m for m in (request.get("body") or {}).get("messages") or [] if m.get("role") == "user"]
             content = users[-1].get("content") if users else ""
             said = content if isinstance(content, str) else " ".join(
@@ -831,7 +843,7 @@ class LongRunBrowser:
             return {"text": next((reply for prompt, reply in replies.items() if prompt in said), "A reply")}
 
         cert, key = make_test_cert(work / "cert")
-        self.api = FakeAnthropicApi(responder=respond, tls=(cert, key))
+        self.api = FakeAnthropicApi(responder=respond or long_run, tls=(cert, key))
         self.api.start()
         self.decoys = HookNetDecoys()  # the agent's hooks reach these, never a real service
         seams = {"ZIGBROWSER_AGENT_NET_TEST": " ".join([
@@ -850,7 +862,7 @@ class LongRunBrowser:
         page.write_text(FIXTURE_HTML)
         self.argv = [binary, "--profile-dir", str(work / "profile"), "--agent-drawer", "on",
                      "--agent-secret-store", "file", "--media-source", "off", "--e2e-protocol", page.as_uri()]
-        self.err = (out / "long-run.stderr.txt").open("wb")
+        self.err = (out / f"{label}.stderr.txt").open("wb")
         self.err.write(("argv: " + " ".join(self.argv) + "\n").encode())
         self.err.flush()
         self.proc = subprocess.Popen(self.argv, env=env, stdout=subprocess.PIPE, stderr=self.err,
@@ -887,7 +899,7 @@ class LongRunBrowser:
                 except subprocess.TimeoutExpired:
                     os.killpg(self.proc.pid, signal.SIGKILL)
                     self.proc.wait()
-            (out / "long-run.rows.txt").write_text("".join(self.lines))
+            (out / f"{self.label}.rows.txt").write_text("".join(self.lines))
             self.err.close()
         if self.api is not None:
             self.api.stop()
@@ -921,6 +933,203 @@ def describe(text: str | None) -> str:
     return f"{len(text)} characters, {text.count(chr(10))} line feeds, {text[:6]!r}...{text[-6:]!r}"
 
 
+# --- the tools case (chat-drawer plan S7b) ----------------------------------------------
+
+TOOLS_PROMPT = "tools"
+TOOLS_DONE = "zb-tools-shown-on-this-screen"
+PAGE_BLUE = (0x1E, 0x6F, 0xB4)
+
+
+def tool_results_of(request) -> list[dict]:
+    """Every tool_result block of a /v1/messages request (its user turns)."""
+    blocks = []
+    for message in (request.get("body") or {}).get("messages") or []:
+        content = message.get("content")
+        if message.get("role") == "user" and isinstance(content, list):
+            blocks += [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+    return blocks
+
+
+def latest_tool_results(requests: list) -> list[dict]:
+    """The tool results the model got so far: those of the request that holds the most (each
+    request carries the earlier ones again)."""
+    return max((tool_results_of(r) for r in requests), key=len, default=[])
+
+
+def tools_turn(request):
+    """The fake API's script for the tools case: the prompt gets get_text on the header, its
+    answer gets a screenshot, and that answer the final text. Other prompts: None."""
+    users = [m for m in (request.get("body") or {}).get("messages") or [] if m.get("role") == "user"]
+    first = users[0].get("content") if users else ""
+    said = first if isinstance(first, str) else " ".join(
+        b.get("text", "") for b in first or [] if isinstance(b, dict) and b.get("type") == "text")
+    if TOOLS_PROMPT not in said:
+        return None
+    answered = len(tool_results_of(request))
+    if answered == 0:
+        return {"tool_use": {"name": "mcp__zigbrowser__get_text", "input": {"selector": "css=header"}}}
+    if answered == 1:
+        return {"tool_use": {"name": "mcp__zigbrowser__screenshot", "input": {}}}
+    return {"text": TOOLS_DONE}
+
+
+IMAGE_STATS = r"""
+import json, sys
+import gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf
+data = sys.stdin.buffer.read()
+fmt = "png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "jpeg" if data[:3] == b"\xff\xd8\xff" else None
+out = {"format": fmt, "width": 0, "height": 0, "dominant": 1.0, "page_blue": 0.0, "white": 0.0}
+if fmt:
+    loader = GdkPixbuf.PixbufLoader()
+    loader.write(data)
+    loader.close()
+    pb = loader.get_pixbuf()
+    w, h, n, stride, px = pb.get_width(), pb.get_height(), pb.get_n_channels(), pb.get_rowstride(), pb.get_pixels()
+    counts, blue, white, total = {}, 0, 0, 0
+    for y in range(0, h, 4):
+        for x in range(0, w, 4):
+            i = y * stride + x * n
+            r, g, b = px[i], px[i + 1], px[i + 2]
+            key = (r // 16, g // 16, b // 16)
+            counts[key] = counts.get(key, 0) + 1
+            blue += abs(r - 0x1E) <= 24 and abs(g - 0x6F) <= 24 and abs(b - 0xB4) <= 24
+            white += r >= 225 and g >= 225 and b >= 225
+            total += 1
+    out.update(width=w, height=h, dominant=max(counts.values()) / total, page_blue=blue / total, white=white / total)
+print(json.dumps(out))
+"""
+
+
+def image_stats(data: bytes) -> dict:
+    """The decoded screenshot's format, size, the share of its most common colour and of the
+    fixture's blue: GdkPixbuf in the system Python (its gi), in a process of its own."""
+    done = subprocess.run(["/usr/bin/python3", "-I", "-c", IMAGE_STATS], input=data, capture_output=True, timeout=60)
+    if done.returncode != 0:
+        return {"format": None, "width": 0, "height": 0, "dominant": 1.0, "page_blue": 0.0, "white": 0.0,
+                "error": done.stderr.decode(errors="replace").strip()[-200:]}
+    return json.loads(done.stdout)
+
+
+def judge_tool_image(stats: dict) -> tuple[bool, str]:
+    """The screenshot the model got is this page, drawn: it decodes, at least a fifth of it is
+    the fixture's blue (it is this page, not black or another window), and at least 0.5% is
+    the white of its text, lines and circles (its content was drawn, not just its fill)."""
+    if not stats.get("format"):
+        return False, f"it is no PNG or JPEG ({stats.get('error', 'no image')})"
+    detail = (f"{stats['format']} {stats['width']}x{stats['height']}, the page's blue {stats['page_blue']:.0%}, "
+              f"its white {stats['white']:.1%}")
+    if stats["page_blue"] < 0.2:
+        return False, "it is not the page: " + detail
+    if stats["white"] < 0.005:
+        return False, "the page's text is not drawn in it: " + detail
+    return True, detail
+
+
+def run_tools(binary: str, out: Path, settle: float) -> list[tuple[str, str, str]]:
+    """(PASS | FAIL | INVALID, case, detail) for the tools case's three checks."""
+    import base64
+
+    work = Path(tempfile.mkdtemp(prefix="zb-real-screen-tools-"))
+    b = None
+    try:
+        b = LongRunBrowser(binary, work, out, respond=lambda request, index: tools_turn(request), label="tools")
+        deadline, wid = time.monotonic() + 30, None
+        while wid is None and time.monotonic() < deadline and b.proc.poll() is None:
+            time.sleep(0.5)
+            wid = our_window(b.proc.pid)
+        if wid is None:
+            return [(FAIL, "tools", f"no window (browser exit {b.proc.poll()})")]
+        x11 = X11()
+        try:
+            if not raise_window(x11, wid) and not (ensure_active(x11, wid) and raise_window(x11, wid, tries=1)):
+                return [(INVALID, "tools", "the window stayed covered or inactive: nothing judged, no input sent")]
+            time.sleep(settle)
+            drawer = DrawerInput(b, x11, wid)
+            if not b.wait(lambda: b.of("icon") != [], 30):
+                return [(FAIL, "tools", "no icon row")]
+            if not drawer.reopen():
+                return [(FAIL, "tools", "the drawer did not open")]
+            for ch in TOOLS_PROMPT:
+                drawer.key(ord(ch), what=f"typing {TOOLS_PROMPT!r}")
+            drawer.key(KEY_RETURN, what="Enter")
+            shown = b.wait(lambda: any(r.fields[0] == "assistant" and r.fields[1] == TOOLS_DONE for r in b.of("msg")), 180)
+            blocks = latest_tool_results(b.api.messages_requests())
+            results = []
+            text = "".join(c.get("text", "") for c in (blocks[0].get("content") or []) if isinstance(c, dict)) if blocks else ""
+            results.append((PASS, "tools-get-text", f"the model got {text[:60]!r}") if "real-screen check" in text and not blocks[0].get("is_error")
+                           else (FAIL, "tools-get-text", f"the model got {text[:80]!r} ({len(blocks)} tool results)"))
+            images = [c for c in (blocks[1].get("content") or []) if isinstance(c, dict) and c.get("type") == "image"] if len(blocks) > 1 else []
+            if images:
+                data = base64.b64decode((images[0].get("source") or {}).get("data", ""))
+                media = (images[0].get("source") or {}).get("media_type", "")
+                (out / ("tools-screenshot." + ("jpg" if media == "image/jpeg" else "png"))).write_bytes(data)
+                ok, detail = judge_tool_image(image_stats(data))
+                results.append((PASS if ok else FAIL, "tools-screenshot", detail))
+            else:
+                got = json.dumps(blocks[1])[:120] if len(blocks) > 1 else "no second tool result"
+                results.append((FAIL, "tools-screenshot", f"no image reached the model ({got})"))
+            time.sleep(1.0)
+            window, screen = capture_both(wid, out, "tools.shown")
+            x, y, w, h = geometry(wid)
+            seen, why = judge_not_blank(window, screen, (max(x, 0), max(y, 0), w, h))
+            results.append((PASS, "tools-shown", f"the drawer shows the final answer; {why}") if shown and seen
+                           else (FAIL, "tools-shown", f"final answer shown: {shown}; the window: {why}"))
+            return results
+        except Refused as stop:
+            return [(INVALID, "tools", f"{stop}; nothing more sent")]
+        finally:
+            x11.close()
+    finally:
+        if b is not None:
+            b.close(out)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+class DrawerInput:
+    """The drawer's controls driven on the user's screen. Every click and key goes through
+    ensure_active and the server-grab checks (safe_click, safe_key); a refused one raises
+    Refused, and the run stops."""
+
+    def __init__(self, b, x11, wid: int) -> None:
+        self.b, self.x11, self.wid = b, x11, wid
+
+    def origin(self) -> tuple[int, int]:
+        gx, gy, _w, _h = geometry(self.wid)
+        return gx, gy
+
+    def click(self, rect: tuple[int, int, int, int], what: str) -> None:
+        """`rect` in the window's coordinates."""
+        if not ensure_active(self.x11, self.wid):
+            raise Refused(f"click on {what} refused: our window did not become active; no input sent")
+        at = self.origin()
+        point = screen_point(rect, at)
+        refused = safe_click(self.x11, self.wid, *point)
+        if refused:
+            raise Refused(f"click on {what} at {point} (window at {at}) refused: {refused}")
+
+    def key(self, keysym: int, modifiers: tuple[int, ...] = (), what: str = "a key") -> None:
+        if not ensure_active(self.x11, self.wid):
+            raise Refused(f"{what} refused: our window did not become active; no input sent")
+        refused = safe_key(self.x11, self.wid, keysym, modifiers)
+        if refused:
+            raise Refused(f"{what} refused: {refused}")
+
+    def control(self, kind: str) -> tuple[int, int, int, int]:
+        """The drawer's `kind` where it is drawn now (drawn_now); never a row's place."""
+        now = drawn_now(self.b, kind)
+        if now is None:
+            named = self.b.of(kind)[-1].rect() if self.b.of(kind) else None
+            raise Refused(f"the drawer's {kind} {named} is not drawn in the windows rows: no input sent")
+        return now
+
+    def reopen(self) -> bool:
+        opened = len(self.b.of("open"))
+        self.click(self.control("icon"), "the icon")
+        return self.b.wait(lambda: len(self.b.of("open")) > opened, 10)
+
+
 def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, str]]:
     """(PASS | FAIL | INVALID, case, detail) for each LONG_RUN reply. Every click and key
     goes through safe_click or safe_key; a refused one stops the run (INVALID)."""
@@ -943,39 +1152,8 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                 return [(INVALID, "long-run", "the window stayed covered or inactive: nothing judged, no input sent")]
             time.sleep(settle)
 
-            def origin() -> tuple[int, int]:
-                gx, gy, _w, _h = geometry(wid)
-                return gx, gy
-
-            def click(rect: tuple[int, int, int, int], what: str) -> None:
-                """`rect` in the window's coordinates."""
-                if not ensure_active(x11, wid):
-                    raise Refused(f"click on {what} refused: our window did not become active; no input sent")
-                at = origin()
-                point = screen_point(rect, at)
-                refused = safe_click(x11, wid, *point)
-                if refused:
-                    raise Refused(f"click on {what} at {point} (window at {at}) refused: {refused}")
-
-            def key(keysym: int, modifiers: tuple[int, ...] = (), what: str = "a key") -> None:
-                if not ensure_active(x11, wid):
-                    raise Refused(f"{what} refused: our window did not become active; no input sent")
-                refused = safe_key(x11, wid, keysym, modifiers)
-                if refused:
-                    raise Refused(f"{what} refused: {refused}")
-
-            def control(kind: str) -> tuple[int, int, int, int]:
-                """The drawer's `kind` where it is drawn now (drawn_now); never a row's place."""
-                now = drawn_now(b, kind)
-                if now is None:
-                    named = b.of(kind)[-1].rect() if b.of(kind) else None
-                    raise Refused(f"the drawer's {kind} {named} is not drawn in the windows rows: no input sent")
-                return now
-
-            def reopen() -> bool:
-                opened = len(b.of("open"))
-                click(control("icon"), "the icon")
-                return b.wait(lambda: len(b.of("open")) > opened, 10)
+            drawer = DrawerInput(b, x11, wid)
+            origin, click, key, control, reopen = drawer.origin, drawer.click, drawer.key, drawer.control, drawer.reopen
 
             if not b.wait(lambda: b.of("icon") != [], 30):
                 return [(FAIL, "long-run", "no icon row")]
@@ -1071,10 +1249,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--variant-page-only", action="append", default=[], metavar="NAME=PATH",
                     help="like --variant, for a build that draws no icon: only the page is checked")
     ap.add_argument("--settle", type=float, default=4.0, help="seconds between the window appearing and capture")
-    ap.add_argument("--case", choices=["long-run"],
+    ap.add_argument("--case", choices=["long-run", "tools"],
                     help="run only this case: long-run is S5.6's 200 KiB replies (with no spaces, then words) "
                          "from a local fake API in a throwaway agent home; each must show, fold within 1 s and "
-                         "copy exactly with a click, Ctrl+A and Ctrl+C")
+                         "copy exactly with a click, Ctrl+A and Ctrl+C. tools is S7b's read tools: the model's "
+                         "get_text and screenshot of the fixture, and the answer shown")
     ap.add_argument("--url", help="load this page instead of the fixture (for example the page the user saw blank); "
                                   "then a page is drawn when no single colour covers 90%% of it")
     args = ap.parse_args(argv)
@@ -1104,6 +1283,16 @@ def main(argv: list[str]) -> int:
         (out / "glxinfo.txt").write_text(info.stdout + info.stderr)
     print("Keep the screen free while this runs: each window is raised, and the screen under it is captured.",
           flush=True)
+    if args.case == "tools":
+        print("tools types one prompt into the drawer; the local fake API has the model read the page.", flush=True)
+        results = run_tools(args.bin, out, args.settle)
+        for status, name, detail in results:
+            print(f"{status:<7} {name:<22} {detail}", flush=True)
+        statuses = [status for status, _name, _detail in results]
+        print(f"{statuses.count(FAIL)} failed, {statuses.count(INVALID)} invalid; captures and logs in {out}")
+        if INVALID in statuses:
+            return 3
+        return 0 if statuses.count(PASS) == 3 else 1
     if args.case == "long-run":
         print("long-run types two prompts into the drawer and replaces the clipboard's contents.", flush=True)
         results = run_long_run(args.bin, out, args.settle)
