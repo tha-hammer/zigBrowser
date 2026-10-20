@@ -30,21 +30,9 @@ plan: thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md, WS
   caps a cookie's lifetime at **400 days** (RFC 6265bis), and GTK does not. Points 1, 3 and 5
   stand. The GPU arguments' and the MSE script's effect in a page wait for the WS3 e2es.
 
-## Why this is a draft, not a commit
+## How it got here (history)
 
-`cross-check-ws3-win` only checks names. It reads `webview2_shim.cpp` as text, and passes once each `zb_*` symbol is defined there. It never compiles the shim.
-
-The shim can't be compiled on this Linux box. It needs the WebView2 SDK headers (`WebView2.h`, `WebView2EnvironmentOptions.h`) and `wrl.h`, and neither zig's mingw headers nor this machine have them.
-
-If I committed this code now, the cross-check would go green while the real Windows build could still fail to compile. So under the orchestrator's rule it is drafted here and queued:
-- It lands once it compiles against the SDK (the Win11 VM, or the coming Windows toolchain).
-- It must pass WS3's own reds there: `win_profile_persist_test.py`, `win_config_flags_test.py` and `win_cookie_test.py`.
-- Until then the cross-check stays red, as AzureRidge designed it.
-
-What I reviewed without a build:
-- Every signature below matches `src/webkit_shim.h:81-114, 246, 276-286` exactly.
-- Every call site in `src/automation_wv2_cookie_port.zig` and `src/webview2_config.zig` passes `win` 0 and frees with `zb_automation_free`.
-- The return codes are the `ZB_AUTO_*` enum.
+It was drafted on Linux first, because this box has no WebView2 SDK or `wrl.h`, and `cross-check-ws3-win` checks names only. It landed once the Win11 VM had the toolchain: red `cfd218b`, green `15fb6ee`, both proved there with `tests/windows/ws3_shim_test.c`. RoseCat then blocked the marshal (6504), and the fix-forward is described in "The UI-thread marshal" below. The signatures match `src/webkit_shim.h`, and every call site in `src/automation_wv2_cookie_port.zig` and `src/webview2_config.zig` passes `win` 0 and frees with `zb_automation_free`.
 
 ## The seven symbols, and the getters
 
@@ -74,7 +62,14 @@ WebView2 objects belong to the UI (STA) thread. The automation server calls from
 - A call made before `zb_app_run` waits up to its deadline for the loop to start. This is GTK's rule (`webkit_shim.h:70-72`).
 - `win` other than 0 is `ZB_AUTO_ERR_NO_WINDOW`: the Windows shell has one window.
 
-## The draft code
+**Fix-forward (RoseCat 6504).** Two blockers in `15fb6ee`, both fixed:
+1. **A timed-out job could still run.** The UI side read "abandoned?" and then ran the job, which is check-then-act. Now the UI side's claim is one atomic step, QUEUED to RUNNING, at the moment the job starts. A waiter whose deadline passes moves QUEUED or RUNNING to ABANDONED. So a job abandoned before its claim never runs.
+2. **Loop end missed jobs in flight.** A job whose WebView2 callback was pending was in no queue. Now a started job sits in an in-flight list until it completes, and loop end answers it NO_LOOP.
+   - The answer is written by exactly one party, whoever moves RUNNING to COMPLETING. Then the state becomes DONE and the event is set, so a quit racing a callback can't both write.
+   - Each pending WebView2 callback holds its own reference to the job. So a callback after loop end finds the job alive and changes nothing.
+- **Test seams** (exported by the shim, not in `webkit_shim.h`): `zb_automation_debug_hold_dispatch_ms` holds the UI side before its claim, and `zb_automation_debug_park_callbacks`, `_parked_callbacks` and `_run_parked_callbacks` park the cookie completions and run them later.
+
+## The draft code (superseded: `src/webview2_shim.cpp` is the source of truth)
 
 Includes to add: `<shlobj.h>` (`SHCreateDirectoryExW`; shell32 is already linked), `<WebView2EnvironmentOptions.h>`, `<functional>`, `<deque>`, `<string.h>`.
 
@@ -422,13 +417,11 @@ extern "C" int zb_cookies_delete(uint32_t win, const char *name, const char *dom
 2. **Session cookies.** `zb_cookies_add` leaves `Expires` unset for `-1`, which makes a session cookie in WebView2. `get_all` reports `-1` when `IsSession` is set. Check this on the first build.
 3. **Domain form.** WebView2 treats `.host` and `host` as different domains, so the domain string is passed through unchanged. This matches GTK's "host = host-only, .host = domain cookie" if WebView2's `CreateCookie` keeps the leading dot as a domain cookie. Pin it with `win_cookie_test.py`.
 4. **No owner of `zb_automation_loop_mark` on Windows yet.** The draft uses its own started/ended state. When WS2 adds the marshal for the page ops, these jobs move onto that one queue.
-5. **The 0700 rule.** POSIX modes have no Windows meaning. The folder lives under `%LOCALAPPDATA%` (WS3.1's default), whose ACL already limits it to the user. A user-given `--profile-dir` keeps whatever ACL its parent has.
+5. **The owner-only DACL: not done, WS3 incomplete on this point** (RoseCat 6504). The Windows plan (WS3.1) creates `<profile>\WebView2` with WS2.0's owner-only DACL helper, `restrictToOwner`, which does not exist yet. Today the folder gets the DACL it inherits: under `%LOCALAPPDATA%`, the user, SYSTEM and Administrators. The shim calls the helper once WS2.0 lands it; until then this point stays open.
+6. **The 400-day cookie cap** (found on the VM). WebView2 keeps a cookie at most 400 days from when it is set (Chromium, RFC 6265bis). GTK keeps the expiry it was given. So on Windows a far expiry reads back capped. The test pins it, and the Windows plan states it as a cross-backend difference of `cookies.set`.
 
-## Queue
+## Status
 
-- **When:** the Windows toolchain, or a writable Win11 VM window. Tonight's VM rule is read-only.
-- **Steps:** compile against the SDK; run WS3's three e2e reds; then commit to `src/webview2_shim.cpp` in its own slice (red → green), with `cross-check-ws3-win` registered by AzureRidge in the same green.
-- **Mutants to run there:**
-  - drop the user data folder: `win_profile_persist_test` goes red;
-  - write the cookie to a second manager or profile: `win_cookie_test` goes red;
-  - leave the MSE script out: `win_config_flags_test` goes red.
+- **Landed:** red `cfd218b`, green `15fb6ee` (RoseCat 6504: BLOCKED, two marshal blockers).
+- **Fix-forward:** the atomic claim and the in-flight settle, proved on the VM with the test seams; see the marshal section above.
+- **Still open:** points 1, 3 and 5 above, and the GPU arguments' and MSE script's effect in a page, which AzureRidge's WS3 e2es (`win_config_flags_test`, `win_cookie_test`, `win_profile_persist_test`) cover once the Windows automation arm exists.
