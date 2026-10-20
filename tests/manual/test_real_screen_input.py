@@ -129,7 +129,7 @@ class GuardOnRealX(unittest.TestCase):
         self.canary.set_root(b"_NET_ACTIVE_WINDOW", None)
         self.x11 = rsc.X11()
         self.calls = []
-        for name in ("move", "button", "escape"):
+        for name in ("move", "button", "escape", "key"):  # safe_key presses through key
             real = getattr(self.x11, name)
             setattr(self.x11, name, self._spy(name, real))
         self.addCleanup(self.x11.close)

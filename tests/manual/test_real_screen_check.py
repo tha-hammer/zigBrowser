@@ -128,6 +128,9 @@ class FakeX11:
     def escape(self):
         self.sent.append(("escape",))
 
+    def key(self, keysym, modifiers=()):  # safe_key's press (S5c-1 long-run)
+        self.sent.append(("escape",) if keysym == rsc.KEY_ESCAPE and not modifiers else ("key", keysym, tuple(modifiers)))
+
 
 OURS, TERMINAL, FRAME = 0x400001, 0x700001, 0x300001
 ON_TOP = staticmethod(lambda px, py: [FRAME, OURS])
@@ -202,6 +205,17 @@ class SafetyTest(unittest.TestCase):
             refused = rsc.safe_escape(x, OURS)
             self.assertEqual(refused is None, allowed, (hex(focus), refused))
             self.assertEqual(x.sent, [("escape",)] if allowed else [])
+            self.assertEqual(x.grabs, ["grab", "ungrab"])
+
+    def test_a_key_with_modifiers_only_with_the_focus_inside_our_window(self):
+        """S5c-1's long-run case types prompts and Ctrl+A, Ctrl+C through safe_key."""
+        for focus, pointer, parents, allowed in (
+                (TERMINAL, [FRAME, OURS], {TERMINAL: 1}, False), (OURS, [], {}, True),
+                (1, [FRAME, TERMINAL], {}, False), (1, [FRAME, OURS], {}, True)):
+            x = self.ready(pointer_path=pointer, focus=focus, parents=parents)
+            refused = rsc.safe_key(x, OURS, ord("a"), (rsc.KEY_CONTROL_L,))
+            self.assertEqual(refused is None, allowed, (hex(focus), refused))
+            self.assertEqual(x.sent, [("key", ord("a"), (rsc.KEY_CONTROL_L,))] if allowed else [])
             self.assertEqual(x.grabs, ["grab", "ungrab"])
 
     def test_a_window_covered_at_any_sample_point_is_not_judged(self):

@@ -31,6 +31,17 @@ fails, because then the capture itself is not trusted.
     python3 tests/manual/real_screen_check.py --confirm-user-permission \\
         --bin zig-out/bin/zigBrowser --out /tmp/zb-real-screen [--matrix] \\
         [--variant no-ghost=/path/to/build] [--variant-page-only empty=/path/to/build]
+
+`--case long-run` (S5.6) runs only the long-replies check instead: a throwaway agent
+home (its own HOME, data and runtime directories), no real token, the local fake
+Messages API and hook decoys, `--media-source off`. The fake answers "long" with
+204,800 `y` and "words" with 204,800 bytes of words. For each, the drawer must show
+the reply, '-' must fold it within 1 s, and a click in the reply, Ctrl+A and Ctrl+C
+must put exactly the original on the clipboard (no added line breaks). Every input
+goes through the same server-grab checks as the other cases.
+
+    python3 tests/manual/real_screen_check.py --confirm-user-permission --case long-run \\
+        --bin zig-out/bin/zigBrowser --out /tmp/zb-long-run
 """
 
 from __future__ import annotations
@@ -434,14 +445,27 @@ class X11:
             self.t.XTestFakeButtonEvent(self.dpy, 1, 0, 0)
             self.x.XSync(self.dpy, 0)
 
-    def escape(self) -> None:
-        code = self.x.XKeysymToKeycode(self.dpy, 0xFF1B)
-        self.t.XTestFakeKeyEvent(self.dpy, code, 1, 0)
+    def key(self, keysym: int, modifiers: tuple[int, ...] = ()) -> None:
+        """One key press and release with `modifiers` held; every key pressed is released."""
+        held = []
         try:
-            self.x.XSync(self.dpy, 0)
+            for mod in modifiers:
+                code = self.x.XKeysymToKeycode(self.dpy, mod)
+                self.t.XTestFakeKeyEvent(self.dpy, code, 1, 0)
+                held.append(code)
+            code = self.x.XKeysymToKeycode(self.dpy, keysym)
+            self.t.XTestFakeKeyEvent(self.dpy, code, 1, 0)
+            try:
+                self.x.XSync(self.dpy, 0)
+            finally:
+                self.t.XTestFakeKeyEvent(self.dpy, code, 0, 0)
         finally:
-            self.t.XTestFakeKeyEvent(self.dpy, code, 0, 0)
+            for code in reversed(held):
+                self.t.XTestFakeKeyEvent(self.dpy, code, 0, 0)
             self.x.XSync(self.dpy, 0)
+
+    def escape(self) -> None:
+        self.key(KEY_ESCAPE)
 
 
 # --- safety: input goes only to our own window, which must be on top ------------
@@ -469,6 +493,7 @@ def focus_inside(wid: int, focus: int, parent_of) -> bool:
 
 
 POINTER_ROOT = 1  # X's focus mode in which keys go to the window under the pointer
+KEY_ESCAPE, KEY_RETURN, KEY_CONTROL_L = 0xFF1B, 0xFF0D, 0xFFE3  # X keysyms
 
 
 def window_ready(x11, wid: int) -> str | None:
@@ -527,8 +552,8 @@ def safe_click(x11, wid: int, px: int, py: int) -> str | None:
         x11.ungrab()
 
 
-def safe_escape(x11, wid: int) -> str | None:
-    """Escape only if, under a server grab, our window is viewable, active,
+def safe_key(x11, wid: int, keysym: int, modifiers: tuple[int, ...] = ()) -> str | None:
+    """A key only if, under a server grab, our window is viewable, active,
     and holds the keyboard focus (or, with PointerRoot focus, the pointer)."""
     x11.grab()
     try:
@@ -537,10 +562,14 @@ def safe_escape(x11, wid: int) -> str | None:
             reason = "the keyboard focus is not in our window"
         if reason:
             return reason + "; no input sent"
-        x11.escape()
+        x11.key(keysym, modifiers)
         return None
     finally:
         x11.ungrab()
+
+
+def safe_escape(x11, wid: int) -> str | None:
+    return safe_key(x11, wid, KEY_ESCAPE)
 
 
 def our_window(pid: int) -> int | None:
@@ -664,6 +693,269 @@ def run_case(case: Case, default_bin: str, out: Path, settle: float, url: str | 
         shutil.rmtree(work, ignore_errors=True)
 
 
+# --- the long-run case (chat-drawer plan S5.6, rev 16.20.10 and 16.20.11) ----------
+
+LONG_RUN = [  # (case, prompt, the reply the fake API gives it)
+    ("long-run-unbroken", "long", "y" * (200 * 1024)),
+    ("long-run-words", "words", "word " * (200 * 1024 // 5)),
+]
+LONG_RUN_TOKEN = "sk-ant-oat01-REALSCREEN-not-a-real-token-0123"  # the setup-token shape, not a token
+FOLD_MAX_S = 1.0
+
+
+class LongRunBrowser:
+    """The built binary on $DISPLAY with a throwaway agent home and the local fake API;
+    its `--e2e-protocol` rows are read from its stdout."""
+
+    def __init__(self, binary: str, work: Path, out: Path) -> None:
+        import threading
+        import agent_host_lifecycle_test as life
+        import agent_setup_test
+        from agent_common import host_python, parse_row
+        from agent_hook_net import HookNetDecoys
+        from fake_anthropic_api import FakeAnthropicApi, make_test_cert
+
+        self.parse_row, self.rows, self.lines = parse_row, [], []
+        self.proc = self.api = self.decoys = None
+        agent_setup_test.PYTHON = host_python()
+        self.world = agent_setup_test.World(work, "long-run")  # its own HOME, data and PATH
+        rc, _out, err, _events, _seen = agent_setup_test.run_setup(Path(binary), self.world)
+        if rc != 0:
+            raise RuntimeError(f"--agent-setup failed: {err.strip()[-300:]}")
+        secrets = self.world.agent / "secrets"
+        secrets.mkdir(mode=0o700, exist_ok=True)
+        fd = os.open(secrets / "claude-token", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, LONG_RUN_TOKEN.encode())
+        os.close(fd)
+        replies = {prompt: reply for _case, prompt, reply in LONG_RUN}
+
+        def respond(request, index):
+            users = [m for m in (request.get("body") or {}).get("messages") or [] if m.get("role") == "user"]
+            content = users[-1].get("content") if users else ""
+            said = content if isinstance(content, str) else " ".join(
+                b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+            return {"text": next((reply for prompt, reply in replies.items() if prompt in said), "A reply")}
+
+        cert, key = make_test_cert(work / "cert")
+        self.api = FakeAnthropicApi(responder=respond, tls=(cert, key))
+        self.api.start()
+        self.decoys = HookNetDecoys()  # the agent's hooks reach these, never a real service
+        seams = {"ZIGBROWSER_AGENT_NET_TEST": " ".join([
+                     f"--test-allow fake.zb.invalid={self.api.port}",
+                     f"--test-bridge 51091={self.decoys.bridges[51091].port}",
+                     f"--test-bridge 31337={self.decoys.bridges[31337].port}"]),
+                 "ZIGBROWSER_AGENT_NET_TEST_CA": str(cert),
+                 "ZIGBROWSER_AGENT_TEST_BASE_URL": "https://fake.zb.invalid"}
+        runtime = work / "run"
+        runtime.mkdir(mode=0o700)
+        env = life.env_for(self.world, runtime, seams, hostile=False)
+        for name in RENDER_ENV:
+            env.pop(name, None)
+        self.env = env
+        page = work / "page.html"
+        page.write_text(FIXTURE_HTML)
+        self.argv = [binary, "--profile-dir", str(work / "profile"), "--agent-drawer", "on",
+                     "--agent-secret-store", "file", "--media-source", "off", "--e2e-protocol", page.as_uri()]
+        self.err = (out / "long-run.stderr.txt").open("wb")
+        self.err.write(("argv: " + " ".join(self.argv) + "\n").encode())
+        self.err.flush()
+        self.proc = subprocess.Popen(self.argv, env=env, stdout=subprocess.PIPE, stderr=self.err,
+                                     start_new_session=True, text=True)
+
+        def read() -> None:
+            for line in self.proc.stdout:
+                self.lines.append(line)
+                try:
+                    self.rows.append(self.parse_row(line.rstrip("\n")))
+                except Exception:  # noqa: BLE001 - not a DRAWER row
+                    pass
+        threading.Thread(target=read, daemon=True).start()
+
+    def of(self, kind: str) -> list:
+        return [r for r in list(self.rows) if r.kind == kind and r.win == 1]
+
+    def wait(self, predicate, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            if self.proc.poll() is not None:
+                return bool(predicate())
+            time.sleep(0.02)
+        return bool(predicate())
+
+    def close(self, out: Path) -> None:
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+                try:
+                    self.proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                    self.proc.wait()
+            (out / "long-run.rows.txt").write_text("".join(self.lines))
+            self.err.close()
+        if self.api is not None:
+            self.api.stop()
+        if self.decoys is not None:
+            self.decoys.close()
+
+
+def clipboard_env(home: Path) -> dict[str, str]:
+    env = {"PATH": "/usr/bin:/bin", "DISPLAY": os.environ["DISPLAY"], "HOME": str(home), "LANG": "C.UTF-8",
+           "NO_AT_BRIDGE": "1"}
+    if os.environ.get("XAUTHORITY"):
+        env["XAUTHORITY"] = os.environ["XAUTHORITY"]
+    return env
+
+
+def read_clipboard(home: Path) -> str | None:
+    import ast
+    from agent_drawer_copy_test import CLIPBOARD_READ
+    done = subprocess.run(["/usr/bin/python3", "-c", CLIPBOARD_READ], env=clipboard_env(home),
+                          capture_output=True, text=True, timeout=20)
+    try:
+        return ast.literal_eval(done.stdout.strip())
+    except (SyntaxError, ValueError):
+        return None
+
+
+def describe(text: str | None) -> str:
+    """A bounded description: never the whole reply."""
+    if text is None:
+        return "nothing"
+    return f"{len(text)} characters, {text.count(chr(10))} line feeds, {text[:6]!r}...{text[-6:]!r}"
+
+
+def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, str]]:
+    """(PASS | FAIL | INVALID, case, detail) for each LONG_RUN reply. Every click and key
+    goes through safe_click or safe_key; a refused one stops the run (INVALID)."""
+    from agent_common import centre
+    from agent_drawer_copy_test import CLIPBOARD_OWNER, DECOY
+
+    work = Path(tempfile.mkdtemp(prefix="zb-real-screen-long-run-"))
+    results: list[tuple[str, str, str]] = []
+    b = None
+    try:
+        b = LongRunBrowser(binary, work, out)
+        deadline, wid = time.monotonic() + 30, None
+        while wid is None and time.monotonic() < deadline and b.proc.poll() is None:
+            time.sleep(0.5)
+            wid = our_window(b.proc.pid)
+        if wid is None:
+            return [(FAIL, "long-run", f"no window (browser exit {b.proc.poll()})")]
+        x11 = X11()
+        try:
+            if not raise_window(x11, wid):
+                return [(INVALID, "long-run", "the window stayed covered: nothing judged, no input sent")]
+            time.sleep(settle)
+
+            def root(rect: tuple[int, int, int, int]) -> tuple[int, int]:
+                gx, gy, _w, _h = geometry(wid)
+                cx, cy = centre(rect)
+                return gx + cx, gy + cy
+
+            def click(rect: tuple[int, int, int, int], what: str) -> None:
+                refused = safe_click(x11, wid, *root(rect))
+                if refused:
+                    raise Refused(f"click on {what} refused: {refused}")
+
+            def key(keysym: int, modifiers: tuple[int, ...] = (), what: str = "a key") -> None:
+                refused = safe_key(x11, wid, keysym, modifiers)
+                if refused:
+                    raise Refused(f"{what} refused: {refused}")
+
+            def icon_rect() -> tuple[int, int, int, int]:
+                return tuple(int(v) for v in b.of("icon")[-1].fields[0].split(","))
+
+            def reopen() -> bool:
+                opened = len(b.of("open"))
+                click(icon_rect(), "the icon")
+                return b.wait(lambda: len(b.of("open")) > opened, 10)
+
+            if not b.wait(lambda: b.of("icon") != [], 30):
+                return [(FAIL, "long-run", "no icon row")]
+            if not reopen():
+                return [(FAIL, "long-run", "the drawer did not open")]
+            for n, (case, prompt, reply) in enumerate(LONG_RUN):
+                if n > 0:  # the copy's click left the focus in a bubble: fold and reopen focus the input
+                    minimized = len(b.of("minimized"))
+                    click(b.of("minus")[-1].rect(), "'-'")
+                    if not (b.wait(lambda: len(b.of("minimized")) > minimized, 10) and reopen()):
+                        results.append((FAIL, case, "the drawer did not fold and reopen before the prompt"))
+                        continue
+                answered = len([r for r in b.of("msg") if r.fields[0] == "assistant"])
+                for ch in prompt:
+                    key(ord(ch), what=f"typing {prompt!r}")
+                key(KEY_RETURN, what="Enter")
+                if not b.wait(lambda: len([r for r in b.of("msg") if r.fields[0] == "assistant"]) > answered, 120):
+                    results.append((FAIL, case, f"no reply within 120 s ({describe(None)})"))
+                    continue
+                shown = [r for r in b.of("msg") if r.fields[0] == "assistant"][-1].fields[1]
+                if not reply.startswith(shown.rstrip("…")[:64]):
+                    results.append((FAIL, case, f"the reply shown is not the fake's: {shown[:40]!r}"))
+                    continue
+                # '-' at once: the drawer folds within FOLD_MAX_S of the click.
+                minimized = len(b.of("minimized"))
+                started = time.monotonic()
+                click(b.of("minus")[-1].rect(), "'-'")
+                folded = b.wait(lambda: len(b.of("minimized")) > minimized, 30)
+                took = time.monotonic() - started
+                window, screen = capture_both(wid, out, f"{case}.folded")
+                if not folded or took > FOLD_MAX_S:
+                    results.append((FAIL, case, f"shown, but '-' folded {'in %.2f s' % took if folded else 'never'} "
+                                                f"(at most {FOLD_MAX_S} s)"))
+                    continue
+                if not reopen():
+                    results.append((FAIL, case, "the drawer did not reopen"))
+                    continue
+                time.sleep(1.0)
+                text_rows = [r for r in b.of("textrect") if r.fields[0] == "assistant"]
+                opened = b.of("open")[-1].rect()
+                rect = tuple(int(v) for v in text_rows[-1].fields[1].split(",")) if text_rows else None
+                top, bottom = (max(rect[1], opened[1] + 48), min(rect[1] + rect[3], opened[1] + opened[3] - 64)) if rect else (0, 0)
+                if rect is None or bottom - top < 8:
+                    results.append((FAIL, case, f"the reply's text is not visible in the drawer ({rect}, {opened})"))
+                    continue
+                point = (rect[0] + min(rect[2] // 2, 200), (top + bottom) // 2)
+                owner = subprocess.Popen(["/usr/bin/python3", "-c", CLIPBOARD_OWNER, DECOY],
+                                         env=clipboard_env(b.world.home), stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, text=True)
+                try:
+                    owner.stdout.readline()
+                    decoy = read_clipboard(b.world.home) == DECOY
+                    click((point[0], point[1], 1, 1), "the reply")
+                    time.sleep(0.6)
+                    key(ord("a"), (KEY_CONTROL_L,), "Ctrl+A")
+                    time.sleep(0.3)
+                    key(ord("c"), (KEY_CONTROL_L,), "Ctrl+C")
+                    time.sleep(0.5)
+                    got = read_clipboard(b.world.home)
+                finally:
+                    owner.kill()
+                    owner.wait()
+                window, screen = capture_both(wid, out, f"{case}.copied")
+                if decoy and got == reply:
+                    results.append((PASS, case, f"shown ({describe(shown)} in its row), folded in {took:.2f} s, "
+                                                f"copied exactly {len(reply)} characters"))
+                else:
+                    results.append((FAIL, case, f"copy: want {describe(reply)}, got {describe(got)} "
+                                                f"(the decoy owned the clipboard first: {decoy})"))
+            return results
+        except Refused as stop:
+            return results + [(INVALID, "long-run", f"{stop}; nothing more sent")]
+        finally:
+            x11.close()
+    finally:
+        if b is not None:
+            b.close(out)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+class Refused(Exception):
+    """An input the safety check refused: the run stops, and nothing more is sent."""
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--confirm-user-permission", action="store_true",
@@ -676,6 +968,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--variant-page-only", action="append", default=[], metavar="NAME=PATH",
                     help="like --variant, for a build that draws no icon: only the page is checked")
     ap.add_argument("--settle", type=float, default=4.0, help="seconds between the window appearing and capture")
+    ap.add_argument("--case", choices=["long-run"],
+                    help="run only this case: long-run is S5.6's 200 KiB replies (with no spaces, then words) "
+                         "from a local fake API in a throwaway agent home; each must show, fold within 1 s and "
+                         "copy exactly with a click, Ctrl+A and Ctrl+C")
     ap.add_argument("--url", help="load this page instead of the fixture (for example the page the user saw blank); "
                                   "then a page is drawn when no single colour covers 90%% of it")
     args = ap.parse_args(argv)
@@ -705,6 +1001,16 @@ def main(argv: list[str]) -> int:
         (out / "glxinfo.txt").write_text(info.stdout + info.stderr)
     print("Keep the screen free while this runs: each window is raised, and the screen under it is captured.",
           flush=True)
+    if args.case == "long-run":
+        print("long-run types two prompts into the drawer and replaces the clipboard's contents.", flush=True)
+        results = run_long_run(args.bin, out, args.settle)
+        for status, name, detail in results:
+            print(f"{status:<7} {name:<22} {detail}", flush=True)
+        statuses = [status for status, _name, _detail in results]
+        print(f"{statuses.count(FAIL)} failed, {statuses.count(INVALID)} invalid; captures and logs in {out}")
+        if INVALID in statuses:
+            return 3
+        return 0 if statuses.count(PASS) == len(LONG_RUN) else 1
     tally = {PASS: 0, FAIL: 0, INVALID: 0}
     statuses: dict[str, str] = {}
     for case in cases(args.matrix, variants["variant"], variants["variant_page_only"]):
