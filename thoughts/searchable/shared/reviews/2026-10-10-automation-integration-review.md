@@ -17294,3 +17294,26 @@ API: remove the stale-copy safety claim, minimize raw-field exposure, disarm
 before the C call, and pin the never-copy rule across all production callers.
 No production consumer is wired yet, so this can be settled before the API is
 depended upon. Finding sent to JadeBeacon in Agent Mail 6733.
+
+## Windows live-resolver regression hardening (`7751e6e`)
+
+**APPROVED.** The live regression now removes ambient `ZB_RESOLVE_CMD` from
+the production gate's environment, pins the same Win11 port, key and
+known-hosts defaults used to create the escaping junction, and refuses to
+count the negative unless `fsutil reparsepoint query` first succeeds and
+identifies `C:\\Windows` as the junction target. Thus a missing junction, an
+SSH/setup failure, or a caller-supplied permissive resolver can no longer
+produce the intended `DENY` by accident.
+
+The owner demonstrated all three discriminators on the live VM: the hardened
+test passes with two assertions; restoring the ambient resolver makes the
+junction path `ALLOW` and the test fail; and skipping junction creation makes
+the `fsutil` proof fail. A hostless run with display and Windows-host variables
+removed skips cleanly, and `git diff --check 7751e6e^ 7751e6e` passes. No full
+gate was run because BlueBeaver held the shared slot.
+
+This fix-forward cumulatively closes **`6e0a1b1`** and **`e7e0083`**. The
+newest approved push-through SHA is therefore **`e7e0083`**. The next blocked
+commit is **`2cc125c`**, whose WS13.4 red still omits the promised profile
+folder, WFP provider and WFP sublayer survival censuses described in the
+provisional audit above.
