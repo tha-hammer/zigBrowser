@@ -19071,3 +19071,28 @@ keys without prompts; stream the Win10 probe over stdin with no writes; and
 expose no display variable to a child. The mail requests one final evidence
 response mapped to those conditions so the next review can be a single
 closure pass.
+
+## S7b tools real-screen acceptance (`110daaa`)
+
+Recorded on 2026-10-20 from the orchestrator's user-watched run of the
+`tools` case on the user's real screen. The clean check build was
+`/tmp/zb-tools-build-e458b91`; the private run artifacts are in
+`/tmp/zb-tools-1` and are not committed.
+
+**Real-screen verdict: PASS; the user-acceptance condition left open for
+`110daaa` is CLOSED.** All three named observations passed, with **0 failed
+and 0 invalid**:
+
+- `tools-get-text`: the model received exactly
+  `{"text":"zigBrowser real-screen check 361"}`;
+- `tools-screenshot`: the decoded PNG was **1024x461**, with the intended
+  page blue at **93%** and white content at **3.5%**;
+- `tools-shown`: the drawer displayed the final answer, and the top-colour
+  measurement agreed between the whole-screen and window captures at
+  **56% / 56%**.
+
+This supplies the global UI-rule evidence that the earlier review at
+`110daaa` explicitly deferred to the user. It accepts the real-screen
+artifact and its `get_text`/screenshot/final-answer presentation path; it does
+not by itself close the separately recorded S7b canary, error, socket or
+deadline coverage findings on later commits.
