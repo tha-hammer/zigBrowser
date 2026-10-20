@@ -671,8 +671,9 @@ interactive session carries that precondition itself when it runs, not the WS0 r
 
 ### Behavior WS0.1: the host probe reports identity and readiness
 **Given** a provisioned host, **when** `host_probe.ps1` runs over SSH, **then** it prints one JSON
-object: `os_build`, `edition`, `native_arch` (from `IsWow64Process2`'s native machine, not
-`PROCESSOR_ARCHITECTURE`), `test_user`, `interactive_session` (id, state `Active`, connected to
+object: `os_build`, `edition`, `native_arch` (from `RuntimeInformation.OSArchitecture` — a managed
+property needing no P/Invoke, so the zero-write Win10 probe needs no `Add-Type`; not
+`PROCESSOR_ARCHITECTURE`, which a WOW shell can misreport), `test_user`, `interactive_session` (id, state `Active`, connected to
 the console or an RDP session that was moved to the console), `locked` (LogonUI running in that
 session), `webview2_pv` (read from the three registry places in provisioning item 4), `python`, `zig` (VM only),
 `free_gb`, `root` (the allowed remote root), plus (rev 2) `schema` (an integer the gate pins), `identity_marker`
@@ -681,10 +682,16 @@ session), `webview2_pv` (read from the three registry places in provisioning ite
 and `sshd_allowusers` (the physical host). **Snapshot readiness is NOT an in-VM probe field (rev 2.9):**
 the gate proves it host-side with read-only `virsh` — the pinned expected clean baseline
 (`ZB_WIN11_SNAPSHOT`, e.g. `zb-clean-provisioned`) must exist and have State `shutoff`; the physical
-file server has no VM snapshot and is `not_applicable`. **`console_user`** is read network-safe
-(`WTSUserName`), so the read-only probe emits it directly on both hosts; **`interactive_session`/`locked`**
-need the console's input desktop, so they come from the in-console session helper and are required on the
-VM only (`not_applicable` on the read-only file server, which runs no helper under the no-install rule).
+file server has no VM snapshot and is `not_applicable`. The current pinned clean baseline is
+**`pre-4dr-toolchain-2026-10-20`** (shut-off). **`console_user`** is read network-safe
+(`WTSUserName`, via a zero-write Reflection.Emit P/Invoke — no `Add-Type`/CodeDOM temp files), so the
+read-only probe emits it directly on both hosts; **`interactive_session`/`locked`** need the console's
+input desktop, so they come from the in-console session helper and are required on the VM only
+(`not_applicable` on the read-only file server, which runs no helper under the no-install rule).
+**Deferred (WS0 records but does not gate on these):** `python` and `zig` (VM only) and `webview2_pv`
+on the file server are reported for visibility but NOT enforced by the WS0 gate — the toolchain is
+proven by the build itself in a later WS, and the file server runs no browser. `native_arch`,
+`os_build`, `free_gb`, `root`, the SSH fence and the file-server isolation fields remain gate-enforced.
 
 ### Behavior WS0.2: the gate fails closed
 **Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset; a host unreachable; build below OD-W7;
@@ -749,10 +756,11 @@ requires, listed in one manifest file), and deletes the remote staging under `zb
   one case; the "healthy" case asserts `returncode == 0` and that `ASSERTS` totals are > 0. Named
   assertions for the other behaviors (each case also has a **mutant** that must flip it, run before the
   green commit is accepted):
-  - WS0.1 `assert set(json.loads(probe_out)) >= REQUIRED_KEYS and probe["schema"] == 1` — red: no
+  - WS0.1 `assert set(json.loads(probe_out)) >= REQUIRED_KEYS and probe["schema"] == 2` — red: no
     `host_probe.ps1`. Mutant: drop `native_arch` from the script ⇒ the case fails. A second, **real-host**
     red (`tests/windows/host_probe_live.py`, runs only through the gate, unregistered until green) asserts
-    `probe["native_arch"] == "x64"` on a host whose `PROCESSOR_ARCHITECTURE` lies (an x86 shell on x64).
+    `probe["native_arch"] == "x64"` from `RuntimeInformation.OSArchitecture` (the true OS architecture,
+    which a WOW/x86 shell cannot misreport the way `PROCESSOR_ARCHITECTURE` can).
   - WS0.3 `assert not (set(child_env) & {"DISPLAY","WAYLAND_DISPLAY","XAUTHORITY"})` for every child the
     fake `ssh` records, with `DISPLAY=:0` exported to the driver. Mutant: remove `env -u` ⇒ red.
   - WS0.4 `assert selftest_cleanup["tasks_left"] == 0 and selftest_cleanup["procs_left"] == 0`, and the

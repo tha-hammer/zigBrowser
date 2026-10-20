@@ -160,25 +160,34 @@ try {
   $shares = @($shareList)
   $me = [Security.Principal.WindowsIdentity]::GetCurrent()
   $mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
-  # Effective-access oracle: a path is writable iff an Allow ACE for one of my SIDs grants a write right
-  # AND no Deny ACE for my SIDs denies it (Deny wins). Match the real FileSystemRights flags bitwise, not
-  # a substring, so WriteAttributes/WriteExtendedAttributes do not masquerade as a data write.
-  $WR = [System.Security.AccessControl.FileSystemRights]'Write,Modify,FullControl,WriteData,CreateFiles,AppendData,CreateDirectories,Delete'
+  # Effective-access oracle, computed PER BIT so Deny precedence is exact: OR every Allow ACE's rights for
+  # my SIDs into $allowMask and every Deny ACE's into $denyMask, then effective = allow AND NOT deny (bit
+  # by bit). A path is writable iff any DANGEROUS (content-mutating) bit survives in the effective mask.
+  # This fixes the composite-mask bug where a Deny of one bit (e.g. WriteAttributes) wrongly suppressed an
+  # Allow of a *different* mutating bit (e.g. WriteData). WriteAttributes/WriteExtendedAttributes are NOT
+  # in the dangerous set, so denying/allowing them never flips the verdict. (SMB share-level permissions
+  # are a separate layer and are out of this NTFS calculation.)
+  $R = [System.Security.AccessControl.FileSystemRights]
+  $DANGER = ([int][System.Security.AccessControl.FileSystemRights]::WriteData) `
+      -bor ([int][System.Security.AccessControl.FileSystemRights]::AppendData) `
+      -bor ([int][System.Security.AccessControl.FileSystemRights]::Delete) `
+      -bor ([int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles) `
+      -bor ([int][System.Security.AccessControl.FileSystemRights]::ChangePermissions) `
+      -bor ([int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
   $w = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
     try {
       $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-      $allowW = $false; $denyW = $false
+      $allowMask = 0; $denyMask = 0
       foreach ($ace in $acl.Access) {
         $sid = $null; try { $sid = $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch {}
         if (-not ($sid -and ($mySids -contains $sid))) { continue }
-        if (([int]$ace.FileSystemRights -band [int]$WR) -ne 0) {
-          if ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowW = $true }
-          elseif ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { $denyW = $true }
-        }
+        if ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowMask = $allowMask -bor [int]$ace.FileSystemRights }
+        elseif ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { $denyMask = $denyMask -bor [int]$ace.FileSystemRights }
       }
-      if ($allowW -and -not $denyW) { $w += $p }
+      $effective = $allowMask -band (-bnot $denyMask)
+      if (($effective -band $DANGER) -ne 0) { $w += $p }
     } catch { $w += $p }   # cannot read the ACL => treat as possibly writable (fail-safe, never hide)
   }
   $writePaths = @($w | Sort-Object -Unique)

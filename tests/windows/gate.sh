@@ -198,8 +198,9 @@ if not isinstance(v.get("webview2_pv"), str) or not v.get("webview2_pv").strip()
 # see the plan's WS0 free-space note). The physical file server keeps the 20 GB bar (it has ample disk).
 if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb"), bool) or v.get("free_gb") < 10:
     sys.stderr.write("win11: free_gb %r is below 10\n" % v.get("free_gb")); sys.exit(1)
-if not isinstance(v.get("root"), str) or not v.get("root").strip():
-    sys.stderr.write("win11: root missing or empty\n"); sys.exit(1)
+vm_root_expected = "C:\\Users\\%s\\zb" % win11_user
+if not isinstance(v.get("root"), str) or v.get("root").strip().rstrip("\\").lower() != vm_root_expected.lower():
+    sys.stderr.write("win11: root %r is not the pinned %r\n" % (v.get("root"), vm_root_expected)); sys.exit(1)
 # snapshot_marker is NOT an in-VM probe field — a file inside the VM proves only that someone wrote a
 # file, not that a rollback snapshot exists. The gate proves it host-side with read-only virsh (see
 # probe_only); the physical file server has no VM snapshot and is explicitly not_applicable.
@@ -210,9 +211,12 @@ if not isinstance(v.get("root"), str) or not v.get("root").strip():
 def _is_port_list(x):
     return isinstance(x, list) and all(isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 65535 for p in x)
 def _is_share_list(x):
-    # Typed shares: each is {name, path} so a rename/alias (same path, new share name) is detected.
+    # Typed shares: each is {name, path}, both NONEMPTY, so a rename/alias (same path, new share name)
+    # is detected AND an empty-string identity ({name:'',path:''}) cannot masquerade as a real share.
     return isinstance(x, list) and all(
-        isinstance(s, dict) and isinstance(s.get("name"), str) and isinstance(s.get("path"), str) for s in x)
+        isinstance(s, dict)
+        and isinstance(s.get("name"), str) and s.get("name").strip()
+        and isinstance(s.get("path"), str) and s.get("path").strip() for s in x)
 def _share_key(s):
     return (s.get("name"), s.get("path"))
 def require_schema(probe, who):
@@ -228,6 +232,8 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): zbtest_write_paths missing or not a list\n" % who); sys.exit(1)
     if not _is_port_list(probe.get("listeners")):
         sys.stderr.write("file-server (%s): listeners missing or not a list of ports\n" % who); sys.exit(1)
+    if 22 not in probe.get("listeners"):
+        sys.stderr.write("file-server (%s): baseline sshd port 22 is not listening\n" % who); sys.exit(1)
     fw = probe.get("fw_rules_hash")
     if not isinstance(fw, str) or not fw.strip():
         sys.stderr.write("file-server (%s): fw_rules_hash missing or empty\n" % who); sys.exit(1)
@@ -242,14 +248,27 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): native_arch %r, expected x64\n" % (who, probe.get("native_arch"))); sys.exit(1)
     if _build_int(probe.get("os_build")) < 19045:
         sys.stderr.write("file-server (%s): os_build %r is below the Windows 10 22H2 floor (19045)\n" % (who, probe.get("os_build"))); sys.exit(1)
-    if not isinstance(probe.get("root"), str) or not probe.get("root").strip():
-        sys.stderr.write("file-server (%s): root missing or empty\n" % who); sys.exit(1)
+    fs_root_expected = "C:\\Users\\%s\\zb" % win10_user
+    if not isinstance(probe.get("root"), str) or probe.get("root").strip().rstrip("\\").lower() != fs_root_expected.lower():
+        sys.stderr.write("file-server (%s): root %r is not the pinned %r\n" % (who, probe.get("root"), fs_root_expected)); sys.exit(1)
     if not isinstance(probe.get("free_gb"), (int, float)) or isinstance(probe.get("free_gb"), bool) or probe.get("free_gb") < 20:
         sys.stderr.write("file-server (%s): free_gb %r is below 20\n" % (who, probe.get("free_gb"))); sys.exit(1)
-    if not isinstance(probe.get("sshd_listen"), list):
-        sys.stderr.write("file-server (%s): sshd_listen missing or not a list\n" % who); sys.exit(1)
-    if not isinstance(probe.get("sshd_allowusers"), list):
+    # sshd network fence: ListenAddress must be a concrete (tailnet) address, NOT a wildcard/all-interfaces
+    # bind, and AllowUsers must be EXACTLY the test user — enforce the values, not just the list type.
+    sl = probe.get("sshd_listen")
+    if not isinstance(sl, list) or not sl:
+        sys.stderr.write("file-server (%s): sshd_listen missing or empty\n" % who); sys.exit(1)
+    wild = [a for a in sl if str(a).strip() in ("0.0.0.0", "*", "::", "[::]", "::0")]
+    if wild:
+        sys.stderr.write("file-server (%s): sshd ListenAddress binds a wildcard/all-interfaces address %s (must be tailnet-only)\n" % (who, wild)); sys.exit(1)
+    au = probe.get("sshd_allowusers")
+    if not isinstance(au, list):
         sys.stderr.write("file-server (%s): sshd_allowusers missing or not a list\n" % who); sys.exit(1)
+    au_users = set()
+    for e in au:
+        au_users |= {u.strip().split("\\")[-1].lower() for u in str(e).split() if u.strip()}
+    if au_users != {win10_user.lower()}:
+        sys.stderr.write("file-server (%s): sshd AllowUsers %r is not exactly [%s]\n" % (who, au, win10_user)); sys.exit(1)
     # interactive_session / locked are not_applicable on the physical file server: it runs no GUI and no
     # in-console helper under the read-only rule. console_user (network-safe, checked above) proves the
     # test user owns its console; an active unlocked interactive session is the VM's requirement, not the FS's.
@@ -315,6 +334,12 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   fi
   if [ -z "$screated" ]; then
     echo "NOT RUN: Win11 VM snapshot '$want' has no Creation Time in virsh snapshot-info (cannot confirm the baseline)" >&2
+    return 1
+  fi
+  # The Creation Time must be a REAL, parseable date — not just nonempty — so a malformed line cannot
+  # pass as baseline evidence.
+  if ! date -d "$screated" >/dev/null 2>&1; then
+    echo "NOT RUN: Win11 VM snapshot '$want' Creation Time '$screated' is not a parseable date" >&2
     return 1
   fi
   echo "WS0.6: Win11 snapshot '$want' state=$sstate created='$screated'" >&2

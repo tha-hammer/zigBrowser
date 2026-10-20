@@ -69,8 +69,11 @@ _VIRSH_STUB = r"""
 [ -n "${ZB_SELFTEST_VIRSH_LOG:-}" ] && printf 'ARGV: %s\n' "$*" >> "$ZB_SELFTEST_VIRSH_LOG"
 case "$1" in
   domstate) echo "${ZB_SELFTEST_VIRSH_STATE:-running}" ;;
-  snapshot-list) printf '%s\n' "${ZB_SELFTEST_SNAPSHOTS-pre-ws0-green-2026-10-19}" ;;
-  snapshot-info) echo "State:          ${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}"; [ -z "${ZB_SELFTEST_SNAPSHOT_NOCREATED:-}" ] && echo "Creation Time:  2026-10-19 08:00:00 -0700" ;;
+  snapshot-list) printf '%s\n' "${ZB_SELFTEST_SNAPSHOTS-pre-4dr-toolchain-2026-10-20}" ;;
+  snapshot-info)
+    echo "State:          ${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}"
+    if [ -n "${ZB_SELFTEST_SNAPSHOT_BADCREATED:-}" ]; then echo "Creation Time:  not-a-real-date"
+    elif [ -z "${ZB_SELFTEST_SNAPSHOT_NOCREATED:-}" ]; then echo "Creation Time:  2026-10-19 08:00:00 -0700"; fi ;;
   *) : ;;
 esac
 exit 0
@@ -104,7 +107,7 @@ def _fs_probe(**over):
          "zbtest_write_paths": [], "console_user": "zbtest",
          "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123", "shares": [],
          "root": "C:\\Users\\zbtest\\zb", "free_gb": 500.0,
-         "sshd_listen": ["0.0.0.0"], "sshd_allowusers": ["zbtest"]}
+         "sshd_listen": ["100.123.34.15"], "sshd_allowusers": ["zbtest"]}
     p.update(over)
     return json.dumps(p)
 
@@ -116,7 +119,7 @@ class _TwoHostCase(unittest.TestCase):
             "PATH": _fakes(td) + os.pathsep + _BASE_PATH, "HOME": str(home),
             "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_WIN11_DOMAIN": "win11-m8",
             "ZB_WIN11_USER": "zbtext", "ZB_WIN11_MARKER": VM_MARKER,
-            "ZB_WIN11_SNAPSHOT": "pre-ws0-green-2026-10-19",
+            "ZB_WIN11_SNAPSHOT": "pre-4dr-toolchain-2026-10-20",
             "ZB_WIN10_HOST": "100.123.34.15", "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest",
             "ZB_WIN10_MARKER": FS_MARKER,
             # Per-host key + known_hosts (distinct files — the two hosts pin different host keys).
@@ -278,7 +281,7 @@ class WS0CompletionReadiness(_TwoHostCase):
             log = td / "virsh.log"
             self._run_probe_only(td, {"ZB_SELFTEST_VIRSH_LOG": str(log)})
             text = log.read_text() if log.exists() else ""
-            self.assertIn("snapshot-info win11-m8 pre-ws0-green-2026-10-19", text,
+            self.assertIn("snapshot-info win11-m8 pre-4dr-toolchain-2026-10-20", text,
                           f"gate must query snapshot-info for the exact pinned name; virsh log:\n{text}")
 
     def test_vm_snapshot_not_shutoff_fails_closed(self):
@@ -392,14 +395,14 @@ class WS0CompletionReadiness(_TwoHostCase):
     def test_vm_root_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(root="")})
-            self._assert_fail_closed(proc, "root missing")
+            self._assert_fail_closed(proc, "root")
 
     def test_fs_root_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
             bad = _fs_probe(root="")
             proc = self._run_probe_only(pathlib.Path(t),
                                         {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
-            self._assert_fail_closed(proc, "root missing")
+            self._assert_fail_closed(proc, "root")
 
     def test_fs_low_free_gb_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -496,6 +499,68 @@ class SshHygiene(_TwoHostCase):
         # Mirror: `yes` then `no` is effectively YES (first wins) — OpenSSH treats it safe.
         invs, bad = _batchmode_violations("ARGV: -o BatchMode=yes -o BatchMode=no host probe\n")
         self.assertEqual(bad, [], "effective BatchMode=yes (first wins) must be accepted")
+
+
+class WS0FieldHardening(_TwoHostCase):
+    def test_vm_wrong_root_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(root="C:\\Users\\zbtext\\elsewhere")})
+            self._assert_fail_closed(proc, "root")
+
+    def test_fs_wrong_root_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(root="D:\\elsewhere")})
+            self._assert_fail_closed(proc, "root")
+
+    def test_empty_identity_share_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=[{"name": "", "path": ""}])
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "shares")
+
+    def test_sshd_wildcard_listen_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_listen=["0.0.0.0"])})
+            self._assert_fail_closed(proc, "wildcard")
+
+    def test_sshd_empty_listen_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_listen=[])})
+            self._assert_fail_closed(proc, "sshd_listen")
+
+    def test_sshd_allowusers_extra_user_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_allowusers=["zbtest zbother"])})
+            self._assert_fail_closed(proc, "AllowUsers")
+
+    def test_sshd_allowusers_wrong_user_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(sshd_allowusers=["someoneelse"])})
+            self._assert_fail_closed(proc, "AllowUsers")
+
+    def test_fs_missing_baseline_ssh_port_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=[135, 139, 445, 3389])})
+            self._assert_fail_closed(proc, "22")
+
+    def test_snapshot_unparseable_creation_time_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SNAPSHOT_BADCREATED": "1"})
+            self._assert_fail_closed(proc, "parseable")
+
+    def test_sshd_tailnet_allowusers_exact_passes(self):
+        # Healthy FS (concrete ListenAddress, AllowUsers exactly zbtest, port 22 up) still passes.
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {})
+            self.assertEqual(proc.returncode, 0, f"healthy FS must pass\n{proc.stderr}")
 
 
 def _known_hosts_of(tokens):
