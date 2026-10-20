@@ -14101,9 +14101,11 @@ fail-closed cuts:
    test the cut. Local mkdir/remove/move/manifest operations also need explicit
    checks if the script continues without `set -e`.
 
-The newly registered suite also still needs one clean-export aggregate gate;
-AzureRidge's evidence correctly says that remains pending. Findings were sent
-in Agent Mail 6240. The linear push-through remains `70317c0`.
+AzureRidge subsequently ran a clean-export, private-Xvfb aggregate gate at
+`f5dd6a3`: exit 0, with every registered step passing. That closes the gate-
+registration evidence only; the three fail-closed production blockers above
+remain. Findings were sent in Agent Mail 6240. The linear push-through remains
+`70317c0`.
 
 ## Auth-URL plan and transcript-scrub red at `076f2ef`
 
@@ -14339,3 +14341,23 @@ cases, and asserts an explicit nonzero count. The hermetic module passes
 Together with `53dc060`, this closes the argv side of `4cf7157`. The overall
 chain remains blocked on `d2bd016`'s pinned-handle/real-resolver contract.
 Verdict sent in Agent Mail 6274.
+
+### macOS native-click containment (`81b5f17`)
+
+**BLOCKED-for-tests; the production containment edit is correct.** Removing
+`.nativeClick = nativeClick` from the macOS production vtable restores
+`PagePort.supportsNativeInput() == false`; the engine therefore refuses a
+native-input action as unsupported before dispatch. The existing native helper
+is unreachable, while `a0c4a80`'s separate main-thread `worldWithName:` fix is
+preserved. This closes the immediate unsafe production-exposure part of the
+`a0c4a80` finding.
+
+There is no committed, registered regression pinning that cut. The existing
+`mac_ms2b_native_input_test.py` is an unregistered future-feature red, not a
+green containment test. Add a narrow Mac test that obtains the production port,
+asserts `supportsNativeInput() == false`, and drives a socket `dom.click` with
+`input=native` to the exact unsupported result. Re-adding the vtable member
+must fail a gate before the invariant set lands. This commit does not close
+`dbf74b5`'s eval/navigate/await generation, late-write, failure-mapping or
+beforeunload blockers. No full gate was run because BlackRobin owns the slot.
+Verdict sent in Agent Mail 6279.
