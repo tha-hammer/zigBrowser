@@ -1230,8 +1230,8 @@ Claude token into the Keychain. Today `runAgentSetup` refuses non-Linux (`app.zi
 ### Rev 14: MS5 contracts, BlueBeaver's half (setup, fd-3 delivery, census)
 
 The behaviours below stay as written; these are the per-OS contracts their reds pin. Agreed with JadeBeacon
-(mail 6756): the runtime location (item 3), item 6 and the Keychain consumer in item 7. Item 4 needs BlackRobin's OK on S3a's
-`agent_host.c`. The partial-green status of items 6 and 7 is RoseCat's call.
+(mail 6756): the runtime location (item 3), item 6 and the Keychain consumer in item 7. Item 4 is **pending BlackRobin's OK** on S3a's
+`agent_host.c` and is not built until BlackRobin gives it. The partial-green status of items 6 and 7 is RoseCat's call.
 
 1. **Home.** Unchanged: `agent_setup.defaultHomeDir` sits beside the profile, which macOS already resolves
    through the same XDG data subdirectory (MS3.1). No new red.
@@ -1246,11 +1246,24 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
 4. **Home lock.** `zb_agent_home_lock` (flock) moves, unchanged, out of the GLib-only `agent_host.c` into a
    POSIX-only `src/agent_home_lock.c`, built on both OSes. It is a behaviour-preserving extraction, gated on
    Linux by the existing lock tests.
-5. **Spawn, and dying with the browser.** macOS has no `PR_SET_PDEATHSIG`.
-   - `posix_spawn` plus `waitpid`, with the child leading its own process group, which the browser kills on
-     every exit path.
-   - `setup.py` on Darwin also watches its parent with `select.kqueue` `NOTE_EXIT` and exits if the parent dies.
-   - Mac e2e: kill the browser during setup, and no setup process survives. Linux keeps PDEATHSIG.
+5. **Spawn, and dying with the browser** (rev 14 fix, RoseCat 6771). macOS has no `PR_SET_PDEATHSIG`, and a
+   SIGKILLed browser runs no exit path, so cleanup cannot rest on the browser.
+   - The browser starts setup with `posix_spawn` (`POSIX_SPAWN_SETPGROUP`, pgid 0): the setup child **leads
+     its own process group**, and every descendant setup starts stays in that group: on macOS setup starts
+     no child with `setsid` or `setpgid`, and the e2e census below catches one that leaves.
+   - **The group cleans itself up.** On Darwin, `setup.py`'s first act is a watcher thread on
+     `select.kqueue` `EVFILT_PROC`/`NOTE_EXIT` for the browser's pid, checked once against `getppid()`
+     first, so a browser already gone is caught. When the browser dies, the watcher sends `SIGKILL` to the
+     **whole process group** (`os.killpg(os.getpgid(0), SIGKILL)`), which takes setup itself and every
+     descendant. It does not merely exit.
+   - The browser's own exit paths (a normal quit, a signal it handles) still `killpg` the group and
+     `waitpid` the child; that is the ordinary path, not the guarantee.
+   - **Mac e2e, both arches:**
+     - SIGKILL the browser during setup (the e2e pause seam);
+     - then census every member of setup's process group and every descendant by `ps -o pid,pgid,ppid`;
+     - none may survive past a bound of 2 s;
+     - a mutant whose watcher only exits setup (no `killpg`) leaves a descendant and fails.
+   - Linux keeps PDEATHSIG, unchanged.
 6. **No sandbox, no setup.** `setup.py` sandboxes its probe and `--version` with bwrap on Linux. On macOS that
    must be the MS6 Seatbelt backend. **Until MS6 is accepted, macOS `--agent-setup` exits 1 with one fixed line
    and spawns nothing; it never runs unsandboxed.**
