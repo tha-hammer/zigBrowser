@@ -26,9 +26,15 @@ from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, S
 from . import __version__, options, sandbox, token
 from .contract import Route
 from .files import atomic_write
-from .frames import Emitter
+from .frames import Emitter, encode
 
 DELTA_INTERVAL_S = 0.05
+# S5.6 (rev 16.20.2): the app's validator caps (src/agent_protocol.zig), in bytes as
+# it measures them: a delta's text, a message's text, and any frame's line.
+DELTA_TEXT_MAX = 16 * 1024
+MESSAGE_TEXT_MAX = 256 * 1024
+FRAME_MAX = 256 * 1024
+TRUNCATED = "\n[output truncated]"
 TOOL_DEADLINE_S = int(options.TOOL_DEADLINE_S)
 APP_FRAMES = ("hello", "open_session", "prompt", "interrupt", "end_session", "shutdown", "tool_result")
 
@@ -40,15 +46,69 @@ APP_FRAMES = ("hello", "open_session", "prompt", "interrupt", "end_session", "sh
 API_ERROR_CODES = {"authentication_failed": "auth", "rate_limit": "overloaded", "server_error": "overloaded"}
 
 
+def utf8_prefix(text, limit):
+    """The longest prefix of `text` whose UTF-8 is at most `limit` bytes."""
+    data = text.encode("utf-8", "replace")
+    end = min(limit, len(data))
+    while 0 < end < len(data) and (data[end] & 0xC0) == 0x80:
+        end -= 1
+    return data[:end].decode("utf-8")
+
+
+def utf8_pieces(text, limit):
+    """`text` in pieces of at most `limit` (>= 4) UTF-8 bytes, each cut on a character
+    boundary; their join is `text`."""
+    data = text.encode("utf-8", "replace")
+    pieces, start = [], 0
+    while start < len(data):
+        end = min(start + limit, len(data))
+        while end < len(data) and end > start and (data[end] & 0xC0) == 0x80:
+            end -= 1
+        pieces.append(data[start:end].decode("utf-8"))
+        start = end
+    return pieces
+
+
+def fit_message(session, text):
+    """`text` as one assistant_message: whole when its line and its text fit the
+    app's caps, else its longest prefix that fits with TRUNCATED after it."""
+    def fits(candidate):
+        line = encode({"v": 1, "seq": 2**53, "type": "assistant_message", "session": session, "text": candidate})
+        return len(line.encode()) <= FRAME_MAX and len(candidate.encode("utf-8", "replace")) <= MESSAGE_TEXT_MAX
+    if fits(text):
+        return text
+    low, high = 0, len(text)  # fits(text[:low] + TRUNCATED) holds; text[:high] + TRUNCATED does not
+    while high - low > 1:
+        mid = (low + high) // 2
+        if fits(text[:mid] + TRUNCATED):
+            low = mid
+        else:
+            high = mid
+    return text[:low] + TRUNCATED
+
+
 class Session:
     def __init__(self, chat, session_id):
         self.chat, self.id = chat, session_id
-        self.route = Route(chat.home, chat.token, chat.fifo_dir)
-        self.opts = session_options(chat.home, route_env=self.route.env, cli_path=self.route.cli_path,
-                                    e2e=chat.e2e, test_ca=chat.test_ca,
+        self.task = None  # the one prompt in flight (RoseCat 5628.3)
+        self._new_client()
+
+    def _new_client(self):
+        self.route = Route(self.chat.home, self.chat.token, self.chat.fifo_dir)
+        self.opts = session_options(self.chat.home, route_env=self.route.env, cli_path=self.route.cli_path,
+                                    e2e=self.chat.e2e, test_ca=self.chat.test_ca,
                                     stderr=lambda line: print(line, file=sys.stderr))
         self.client = ClaudeSDKClient(options=self.opts)
-        self.task = None  # the one prompt in flight (RoseCat 5628.3)
+
+    async def renew(self):
+        """S5c-1 (rev 16.20.9): the SDK client failed (its reader can die on a CLI message
+        over its 1 MiB buffer, as an interrupted endless reply's is). A fresh CLI takes the
+        session's place, so its next prompt is answered; that conversation's context is lost."""
+        with contextlib.suppress(Exception):
+            await self.client.disconnect()  # ends the old CLI (the SDK escalates to SIGKILL)
+        self.route.close()
+        self._new_client()
+        await self.client.connect()
 
     @property
     def busy(self):
@@ -61,13 +121,25 @@ class Session:
 
     async def prompt(self, text):
         pending, last = [], 0.0
+        forwarded = 0  # the reply's delta bytes sent: the app shows at most MESSAGE_TEXT_MAX
         api_error = None
         loop = asyncio.get_running_loop()
 
         def flush():
-            nonlocal pending, last
+            nonlocal pending, last, forwarded
             if pending:
-                self.chat.out.emit("assistant_delta", session=self.id, text="".join(pending)[:16 * 1024])
+                # Nothing is dropped below the cap (S5.6); past it the app shows no more, so the
+                # rest of an endless reply is not sent (rev 16.20.9).
+                for piece in utf8_pieces("".join(pending), DELTA_TEXT_MAX):
+                    room = MESSAGE_TEXT_MAX - forwarded
+                    if room <= 0:
+                        break
+                    if len(piece.encode("utf-8", "replace")) > room:  # the longest prefix that fits
+                        piece = utf8_prefix(piece, room)
+                        if not piece:
+                            break
+                    self.chat.out.emit("assistant_delta", session=self.id, text=piece)
+                    forwarded += len(piece.encode("utf-8", "replace"))
                 pending, last = [], loop.time()
 
         await self.client.query(text)
@@ -85,7 +157,7 @@ class Session:
                 flush()
                 text = "".join(b.text for b in message.content if isinstance(b, TextBlock))
                 if text:
-                    self.chat.out.emit("assistant_message", session=self.id, text=text[:256 * 1024])
+                    self.chat.out.emit("assistant_message", session=self.id, text=fit_message(self.id, text))
             elif isinstance(message, ResultMessage) and api_error is not None:
                 self.chat.error(API_ERROR_CODES.get(api_error, "sdk"), f"the API refused the request ({api_error})", self.id)
             elif isinstance(message, ResultMessage):
@@ -176,6 +248,8 @@ class Chat:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - reported as a frame, never with the token
+            with contextlib.suppress(Exception):  # before the error frame: the next prompt finds it ready
+                await session.renew()
             self.error("sdk", type(exc).__name__, session.id)
 
     async def run(self):

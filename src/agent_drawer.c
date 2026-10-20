@@ -35,11 +35,20 @@ void zb_drawer_remember(const ZbDrawerRatios *ratios);
 void zb_drawer_lerp(const ZbDrawerRect *a, const ZbDrawerRect *b, double t, ZbDrawerRect *out);
 double zb_drawer_ease(double t);
 size_t zb_drawer_row_text_len(const char *text, size_t len);
+char *zb_drawer_break_runs(const char *text, size_t len, size_t *out_len);
+size_t zb_drawer_original_offset(const char *text, size_t len, size_t shown);
+size_t zb_drawer_reply_text_max(void);
+size_t zb_drawer_label_text_max(void);
 unsigned int zb_drawer_demo_messages(void);
 unsigned int zb_drawer_anim_ms(void);
 
 enum { ZB_GESTURE_DRAG = 1 };
 #define ZB_STOPPED_TEXT "(stopped)" /* S5.2 */
+#define ZB_TRUNCATED_TEXT "\n[output truncated]" /* S5.6 */
+/* S5.6: a streaming bubble is laid out at most this often (its one pending refresh). */
+#define ZB_STREAM_REFRESH_MS 100
+/* A streaming text view (over label_text_max) is laid out at most this often. */
+#define ZB_STREAM_REFRESH_LARGE_MS 250
 /* netd could not start or stopped (plan rev 16.2 §3c.2): shown on that Send and
  * every later one; netd is never started again in this browser. */
 /* S4.1: no token is stored (or the store did not answer); the Secrets window opens. */
@@ -83,6 +92,10 @@ struct ZbDrawer {
    * NULL until the reply's first delta and again once it is whole. */
   GtkWidget *streaming;
   GString *stream_text;
+  /* S5.6 (rev 16.20.2): the one pending refresh that shows stream_text (0: none), and
+   * whether the reply reached reply_text_max (later deltas are not shown). */
+  guint stream_idle;
+  int stream_full;
   GtkAdjustment *vadj;
   int open;
   int report_open; /* the `open` and `minus` rows wait for the panel's allocation */
@@ -126,6 +139,7 @@ static const char *zb_drawer_css =
     ".zb-msg { padding: 6px 10px; margin: 4px 10px; border-radius: 10px; }"
     ".zb-msg-user { background-color: #d97757; color: #ffffff; }"
     ".zb-msg-assistant { background-color: #ffffff; color: #1f1e1d; }"
+    "textview.zb-msg text { background-color: transparent; color: inherit; }"
     ".zb-msg-system { background-color: #ece7dc; color: #4a463e; font-style: italic; }"
     "#zb-agent-input-row { padding: 6px 8px; border-top: 1px solid #ddd6c8; }";
 
@@ -574,35 +588,177 @@ static gboolean on_text_drawn(GtkWidget *widget, cairo_t *cr, gpointer data) {
   return FALSE;
 }
 
-/* Every bubble and the status label: the mouse selects their text and Ctrl+C
- * copies it (the user's requirement, 2026-10-15). */
-static void report_text(ZbDrawer *d, GtkWidget *label, const char *role) {
-  gtk_label_set_selectable(GTK_LABEL(label), TRUE);
-  g_object_set_data(G_OBJECT(label), "zb-text-role", (gpointer)role);
-  g_signal_connect_after(label, "draw", G_CALLBACK(on_text_drawn), d);
+/* A bubble's original text: what Copy gives and what its rows carry. */
+typedef struct {
+  char *text;
+  size_t len;
+} ZbOriginal;
+
+static void original_free(gpointer data) {
+  ZbOriginal *o = data;
+  g_free(o->text);
+  g_free(o);
 }
 
-/* A bubble on screen; its `msg` row is bubble_row's. */
-static GtkWidget *new_bubble(ZbDrawer *d, const char *role, const char *text) {
-  GtkWidget *label = gtk_label_new(NULL);
-  gtk_label_set_text(GTK_LABEL(label), text);
-  gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
-  gtk_label_set_line_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
-  gtk_label_set_max_width_chars(GTK_LABEL(label), 80);
-  gtk_label_set_xalign(GTK_LABEL(label), 0);
-  gtk_widget_set_halign(label, strcmp(role, "user") == 0 ? GTK_ALIGN_END : GTK_ALIGN_START);
-  GtkStyleContext *style = gtk_widget_get_style_context(label);
+/* S5.6 (rev 16.20.2, the user's decision 1): a bubble shows `text` with break
+ * points in its long unbroken runs, so GTK can wrap them, and keeps the original
+ * for Copy. A bubble over label_text_max is a read-only text view, whose layout
+ * stays fast where a label's takes seconds (rev 16.20.6). */
+static void set_bubble_text(GtkWidget *bubble, const char *text, size_t len) {
+  ZbOriginal *o = g_new(ZbOriginal, 1);
+  o->text = g_strndup(text, len);
+  o->len = len;
+  g_object_set_data_full(G_OBJECT(bubble), "zb-original", o, original_free);
+  size_t shown_len = 0;
+  char *shown = zb_drawer_break_runs(o->text, o->len, &shown_len);
+  const char *show = shown != NULL ? shown : o->text;
+  if (GTK_IS_LABEL(bubble)) {
+    gtk_label_set_text(GTK_LABEL(bubble), show);
+  } else {
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(bubble)), show, -1);
+  }
+  free(shown);
+}
+
+/* Ctrl+C and the menu's Copy: the selection's original bytes, never the break
+ * points the bubble shows. */
+static void on_bubble_copy(GtkWidget *bubble, gpointer unused) {
+  (void)unused;
+  ZbOriginal *o = g_object_get_data(G_OBJECT(bubble), "zb-original");
+  int start = 0, end = 0;
+  if (GTK_IS_LABEL(bubble)) {
+    if (!gtk_label_get_selection_bounds(GTK_LABEL(bubble), &start, &end)) {
+      return;
+    }
+  } else {
+    GtkTextIter a, b;
+    if (!gtk_text_buffer_get_selection_bounds(gtk_text_view_get_buffer(GTK_TEXT_VIEW(bubble)), &a, &b)) {
+      return;
+    }
+    start = gtk_text_iter_get_offset(&a);
+    end = gtk_text_iter_get_offset(&b);
+  }
+  if (o == NULL) {
+    return;
+  }
+  size_t from = zb_drawer_original_offset(o->text, o->len, (size_t)MIN(start, end));
+  size_t to = zb_drawer_original_offset(o->text, o->len, (size_t)MAX(start, end));
+  gtk_clipboard_set_text(gtk_widget_get_clipboard(bubble, GDK_SELECTION_CLIPBOARD), o->text + from, (gint)(to - from));
+  g_signal_stop_emission_by_name(bubble, "copy-clipboard");
+}
+
+/* Every bubble and the status label: the mouse selects their text and Ctrl+C
+ * copies it (the user's requirement, 2026-10-15). */
+static void report_text(ZbDrawer *d, GtkWidget *widget, const char *role) {
+  if (GTK_IS_LABEL(widget)) {
+    gtk_label_set_selectable(GTK_LABEL(widget), TRUE);
+  }
+  g_object_set_data(G_OBJECT(widget), "zb-text-role", (gpointer)role);
+  g_signal_connect_after(widget, "draw", G_CALLBACK(on_text_drawn), d);
+}
+
+static const char *text_role(const char *role) {
+  return strcmp(role, "user") == 0        ? "user"
+         : strcmp(role, "assistant") == 0 ? "assistant"
+         : strcmp(role, "error") == 0     ? "error"
+                                          : "system";
+}
+
+/* The widget of a bubble holding `len` bytes: a label, or past label_text_max a
+ * read-only text view; styled for `role`, with its text set. */
+static GtkWidget *bubble_widget(ZbDrawer *d, const char *role, const char *text, size_t len) {
+  GtkWidget *bubble;
+  if (len <= zb_drawer_label_text_max()) {
+    bubble = gtk_label_new(NULL);
+    gtk_label_set_line_wrap(GTK_LABEL(bubble), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(bubble), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(bubble), 80);
+    gtk_label_set_xalign(GTK_LABEL(bubble), 0);
+    gtk_widget_set_halign(bubble, strcmp(role, "user") == 0 ? GTK_ALIGN_END : GTK_ALIGN_START);
+  } else {
+    bubble = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(bubble), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(bubble), TRUE); /* else arrow keys scroll, not select */
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(bubble), GTK_WRAP_WORD_CHAR);
+    gtk_widget_set_halign(bubble, GTK_ALIGN_FILL);
+  }
+  set_bubble_text(bubble, text, len);
+  g_signal_connect(bubble, "copy-clipboard", G_CALLBACK(on_bubble_copy), NULL);
+  GtkStyleContext *style = gtk_widget_get_style_context(bubble);
   gtk_style_context_add_class(style, "zb-msg");
   char *role_class = g_strdup_printf("zb-msg-%s", role);
   gtk_style_context_add_class(style, role_class);
   g_free(role_class);
-  gtk_container_add(GTK_CONTAINER(d->list), label);
-  gtk_widget_show_all(gtk_widget_get_parent(label)); /* its GtkListBoxRow */
-  report_text(d, label, strcmp(role, "user") == 0        ? "user"
-                        : strcmp(role, "assistant") == 0 ? "assistant"
-                        : strcmp(role, "error") == 0     ? "error"
-                                                         : "system");
-  return label;
+  report_text(d, bubble, text_role(role));
+  return bubble;
+}
+
+/* A text-view bubble keeps the keyboard: its list row neither takes the focus
+ * nor activates on a click (a row that did would take Ctrl+A and Shift+arrows). */
+static void bubble_row_settle(GtkWidget *bubble) {
+  GtkWidget *row = gtk_widget_get_parent(bubble);
+  if (GTK_IS_TEXT_VIEW(bubble) && GTK_IS_LIST_BOX_ROW(row)) {
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_widget_set_can_focus(row, FALSE);
+  }
+}
+
+/* A bubble on screen; its `msg` row is bubble_row's. */
+static GtkWidget *new_bubble(ZbDrawer *d, const char *role, const char *text) {
+  GtkWidget *bubble = bubble_widget(d, role, text, strlen(text));
+  gtk_container_add(GTK_CONTAINER(d->list), bubble);
+  bubble_row_settle(bubble);
+  gtk_widget_show_all(gtk_widget_get_parent(bubble)); /* its GtkListBoxRow */
+  return bubble;
+}
+
+/* A streaming text view's new text: only the part after what it already shows
+ * changes in its buffer, so GTK lays out only the changed tail again. */
+static void text_view_replace_tail(GtkWidget *bubble, const char *text, size_t len) {
+  ZbOriginal *o = g_new(ZbOriginal, 1);
+  o->text = g_strndup(text, len);
+  o->len = len;
+  g_object_set_data_full(G_OBJECT(bubble), "zb-original", o, original_free);
+  size_t shown_len = 0;
+  char *shown = zb_drawer_break_runs(o->text, o->len, &shown_len);
+  const char *show = shown != NULL ? shown : o->text;
+  size_t show_len = shown != NULL ? shown_len : o->len;
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(bubble));
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds(buffer, &start, &end);
+  char *old = gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
+  size_t same = 0, old_len = strlen(old);
+  while (same < old_len && same < show_len && old[same] == show[same]) {
+    same += 1;
+  }
+  while (same > 0 && ((unsigned char)show[same] & 0xC0) == 0x80) { /* back to a character's start */
+    same -= 1;
+  }
+  GtkTextIter from;
+  gtk_text_buffer_get_iter_at_offset(buffer, &from, (gint)g_utf8_strlen(show, (gssize)same));
+  gtk_text_buffer_delete(buffer, &from, &end);
+  gtk_text_buffer_insert(buffer, &from, show + same, (gint)(show_len - same));
+  g_free(old);
+  free(shown);
+}
+
+/* The streaming bubble now holds `len` bytes: a label that grew past
+ * label_text_max is replaced, in its row, by a text view (rev 16.20.6). */
+static void streaming_text(ZbDrawer *d, const char *text, size_t len) {
+  if (GTK_IS_LABEL(d->streaming) && len > zb_drawer_label_text_max()) {
+    GtkWidget *row = gtk_widget_get_parent(d->streaming);
+    gtk_container_remove(GTK_CONTAINER(row), d->streaming);
+    d->streaming = bubble_widget(d, "assistant", text, len);
+    gtk_container_add(GTK_CONTAINER(row), d->streaming);
+    bubble_row_settle(d->streaming);
+    gtk_widget_show(d->streaming);
+    return;
+  }
+  if (GTK_IS_TEXT_VIEW(d->streaming)) {
+    text_view_replace_tail(d->streaming, text, len);
+    return;
+  }
+  set_bubble_text(d->streaming, text, len);
 }
 
 static void bubble_row(ZbDrawer *d, const char *role, const char *text) {
@@ -621,12 +777,53 @@ static void add_message(ZbDrawer *d, const char *role, const char *text) {
   bubble_row(d, role, text);
 }
 
-/* The streaming bubble is whole: `text` is its last word, and its row is written. */
+static void stream_idle_cancel(ZbDrawer *d) {
+  if (d->stream_idle != 0) {
+    g_source_remove(d->stream_idle);
+    d->stream_idle = 0;
+  }
+}
+
+/* The streaming bubble is whole: `text` is its last word, and its row is written.
+ * Every end of a reply comes here (its message, Stop, an error, the session's end,
+ * a crash), so the pending idle ends with it. */
 static void end_stream(ZbDrawer *d, const char *text) {
-  gtk_label_set_text(GTK_LABEL(d->streaming), text);
+  stream_idle_cancel(d);
+  streaming_text(d, text, strlen(text));
   bubble_row(d, "assistant", text);
   d->streaming = NULL;
+  d->stream_full = 0;
   g_string_truncate(d->stream_text, 0);
+}
+
+/* The one pending refresh (S5.6), at most every ZB_STREAM_REFRESH_MS: the bubble
+ * shows the reply's text so far. */
+static gboolean on_stream_idle(gpointer data) {
+  ZbDrawer *d = data;
+  d->stream_idle = 0;
+  if (d->streaming != NULL) {
+    streaming_text(d, d->stream_text->str, d->stream_text->len);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+/* A delta's text joins the reply's, up to reply_text_max (cut on a character
+ * boundary), after which the reply ends with the marker and later text is not shown. */
+static void stream_append(ZbDrawer *d, const char *text, size_t len) {
+  if (d->stream_full) {
+    return;
+  }
+  size_t room = zb_drawer_reply_text_max() - d->stream_text->len;
+  if (len <= room) {
+    g_string_append_len(d->stream_text, text, (gssize)len);
+    return;
+  }
+  while (room > 0 && ((unsigned char)text[room] & 0xC0) == 0x80) {
+    room -= 1;
+  }
+  g_string_append_len(d->stream_text, text, (gssize)room);
+  g_string_append(d->stream_text, ZB_TRUNCATED_TEXT);
+  d->stream_full = 1;
 }
 
 /* --- the agent's reports (agent_helper.h; S3b) ------------------------------- */
@@ -682,15 +879,20 @@ void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char 
   for (GList *l = zb_drawers; l != NULL; l = l->next) {
     ZbDrawer *d = l->data;
     if (d->win_id == win_id) {
+      if (d->stream_full) { /* the bubble shows no more of this reply, and its row says so */
+        continue;
+      }
       size_t keep = zb_drawer_row_text_len(text, len);
       char *capped = g_strdup_printf("%.*s%s", (int)keep, text, keep < len ? "…" : "");
       drawer_row(d, "delta", session, capped, NULL);
       g_free(capped);
-      g_string_append_len(d->stream_text, text, (gssize)len);
+      size_t before = d->stream_text->len;
+      stream_append(d, text, len);
       if (d->streaming == NULL) {
         d->streaming = new_bubble(d, "assistant", d->stream_text->str);
-      } else {
-        gtk_label_set_text(GTK_LABEL(d->streaming), d->stream_text->str);
+      } else if (d->stream_idle == 0 && d->stream_text->len != before) {
+        guint every = GTK_IS_TEXT_VIEW(d->streaming) ? ZB_STREAM_REFRESH_LARGE_MS : ZB_STREAM_REFRESH_MS;
+        d->stream_idle = g_timeout_add_full(G_PRIORITY_DEFAULT_IDLE, every, on_stream_idle, d, NULL);
       }
     }
   }
@@ -1225,6 +1427,7 @@ void zb_drawer_detach(ZbDrawer *d) {
   g_atomic_int_add(&zb_drawer_live, -1);
   zb_drawers = g_list_remove(zb_drawers, d);
   g_free(d->windows_reported);
+  stream_idle_cancel(d);
   g_string_free(d->stream_text, TRUE);
   g_free(d);
 }

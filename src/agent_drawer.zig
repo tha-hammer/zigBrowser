@@ -145,6 +145,104 @@ pub fn rowTextLen(text: []const u8) usize {
     return end;
 }
 
+/// S5c-1 (plan S5.6, rev 16.20.2; the user's decision 1): a run of more than
+/// `break_run_min` characters with no whitespace gets a line break after every
+/// `break_every` characters of it, so GTK can lay it out (a long unbroken run froze
+/// the bubble's layout). Rev 16.20.9: the break is a line feed, not U+200B, so a run
+/// becomes short paragraphs that a text view lays out piece by piece (one 256 KB
+/// paragraph took 0.65 s per layout). Copy removes it (originalOffset). Whitespace is ASCII SP, HT, LF, VT, FF and CR; a
+/// character is a UTF-8 code point. Nothing else is changed.
+/// The most of one reply a bubble shows: the helper's message cap (256 KiB of
+/// UTF-8). A streaming reply stops growing there and ends with the marker.
+pub const reply_text_max: usize = 256 * 1024;
+/// A bubble over this many bytes is a read-only text view, not a label: a label's
+/// first layout of 200 KB takes 6-7 s, a text view's under 1 s (rev 16.20.6).
+pub const label_text_max: usize = 32 * 1024;
+pub const break_run_min: usize = 128;
+pub const break_every: usize = 64;
+const break_point = "\n";
+
+fn isSpace(byte: u8) bool {
+    return switch (byte) {
+        ' ', '\t', '\n', 0x0b, 0x0c, '\r' => true,
+        else => false,
+    };
+}
+
+/// The byte length of the character at `text[i]`: its UTF-8 length, or 1 for a
+/// stray byte, never past the end.
+fn charLen(text: []const u8, i: usize) usize {
+    const n = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+    return @min(n, text.len - i);
+}
+
+/// One run starting at `start`: its end (byte offset) and its length in characters.
+fn runAt(text: []const u8, start: usize) struct { end: usize, chars: usize } {
+    var end = start;
+    var chars: usize = 0;
+    while (end < text.len and !isSpace(text[end])) : (chars += 1) end += charLen(text, end);
+    return .{ .end = end, .chars = chars };
+}
+
+/// The text a bubble shows: `text` with the break points added. Caller frees.
+pub fn breakRuns(gpa: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.ensureTotalCapacity(gpa, text.len);
+    var i: usize = 0;
+    while (i < text.len) {
+        if (isSpace(text[i])) {
+            try out.append(gpa, text[i]);
+            i += 1;
+            continue;
+        }
+        const run = runAt(text, i);
+        if (run.chars <= break_run_min) {
+            try out.appendSlice(gpa, text[i..run.end]);
+            i = run.end;
+            continue;
+        }
+        var k: usize = 0;
+        while (i < run.end) {
+            const n = charLen(text, i);
+            try out.appendSlice(gpa, text[i .. i + n]);
+            i += n;
+            k += 1;
+            if (k % break_every == 0 and i < run.end) try out.appendSlice(gpa, break_point);
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Copy's map: the byte offset in the original `text` of the shown text's
+/// character offset `shown` (an added break point maps to the offset after the
+/// character before it). Past the end: `text.len`.
+pub fn originalOffset(text: []const u8, shown: usize) usize {
+    var at: usize = 0; // characters of the shown text passed so far
+    var i: usize = 0;
+    while (i < text.len) {
+        if (at == shown) return i;
+        if (isSpace(text[i])) {
+            at += 1;
+            i += 1;
+            continue;
+        }
+        const run = runAt(text, i);
+        var k: usize = 0;
+        while (i < run.end) {
+            if (at == shown) return i;
+            i += charLen(text, i);
+            at += 1;
+            k += 1;
+            if (run.chars > break_run_min and k % break_every == 0 and i < run.end) {
+                if (at == shown) return i;
+                at += 1;
+            }
+        }
+    }
+    return text.len;
+}
+
 pub const file_name = "agent-drawer.json";
 pub const max_file_bytes: usize = 1024;
 pub const version: u32 = 1;
@@ -252,6 +350,10 @@ comptime {
         @export(&zb_drawer_lerp, .{ .name = "zb_drawer_lerp" });
         @export(&zb_drawer_ease, .{ .name = "zb_drawer_ease" });
         @export(&zb_drawer_row_text_len, .{ .name = "zb_drawer_row_text_len" });
+        @export(&zb_drawer_break_runs, .{ .name = "zb_drawer_break_runs" });
+        @export(&zb_drawer_original_offset, .{ .name = "zb_drawer_original_offset" });
+        @export(&zb_drawer_reply_text_max, .{ .name = "zb_drawer_reply_text_max" });
+        @export(&zb_drawer_label_text_max, .{ .name = "zb_drawer_label_text_max" });
         @export(&zb_drawer_demo_messages, .{ .name = "zb_drawer_demo_messages" });
         @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
     }
@@ -306,6 +408,28 @@ fn zb_drawer_ease(t: f64) callconv(.c) f64 {
 
 fn zb_drawer_row_text_len(text: [*]const u8, len: usize) callconv(.c) usize {
     return rowTextLen(text[0..len]);
+}
+
+/// The shown text of a bubble (breakRuns), NUL-terminated, from malloc: the
+/// caller frees it with free(). Null when out of memory.
+fn zb_drawer_break_runs(text: [*]const u8, len: usize, out_len: *usize) callconv(.c) ?[*:0]u8 {
+    const shown = breakRuns(std.heap.c_allocator, text[0..len]) catch return null;
+    defer std.heap.c_allocator.free(shown);
+    const z = std.heap.c_allocator.dupeZ(u8, shown) catch return null;
+    out_len.* = shown.len;
+    return z.ptr;
+}
+
+fn zb_drawer_label_text_max() callconv(.c) usize {
+    return label_text_max;
+}
+
+fn zb_drawer_reply_text_max() callconv(.c) usize {
+    return reply_text_max;
+}
+
+fn zb_drawer_original_offset(text: [*]const u8, len: usize, shown: usize) callconv(.c) usize {
+    return originalOffset(text[0..len], shown);
 }
 
 /// How many seeded system messages a new drawer starts with (0: none).

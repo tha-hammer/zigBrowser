@@ -75,6 +75,15 @@ the flag, and its window has no drawer.
   - "Agent error" for anything else.
 - Every bubble and the status text can be selected with the mouse and copied
   with Ctrl+C.
+- Long replies are shown whole, up to 256 KiB. A long run with no spaces (a
+  base64 blob, a minified line) is shown as lines of 64 characters: the drawer
+  breaks it so it never freezes. Ctrl+C and the menu's Copy give the original
+  text, without those line breaks. A middle-click paste of such a run (X11's
+  primary selection) still carries them. A triple-click selects one of those
+  lines; Ctrl+A selects the whole reply.
+- A reply that goes past 256 KiB ends with "[output truncated]". If it is still
+  running 10 s later, the drawer stops it with "Agent output overflow", and the
+  next message works as usual.
 
 ## What pages can and cannot do
 

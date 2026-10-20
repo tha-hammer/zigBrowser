@@ -65,6 +65,10 @@ int zb_agent_config_changed(const char *home);
 #define ZB_TEXT_AUTH "Claude rejected the saved token. Open Account to replace it."
 #define ZB_TEXT_OVERLOADED "Claude is busy; try again shortly."
 #define ZB_TEXT_OVERFLOW "Agent output overflow"
+/* S5.6 (rev 16.20.2): a reply still running this long after its text passed the
+ * drawer's reply_text_max is interrupted with ZB_TEXT_OVERFLOW. */
+#define ZB_OVERFLOW_S 10
+size_t zb_drawer_reply_text_max(void);
 #define ZB_TEXT_AGENT_ERROR "Agent error"
 
 enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE, H_STOPPING };
@@ -77,6 +81,11 @@ typedef struct {
   int confirmed; /* the helper answered session_opened */
   int checking;  /* a new session's config check runs (its prompt waits in pending) */
   int stopping;  /* Stop sent `interrupt`: the prompt's frames until its result are dropped */
+  /* S5.6: the running reply's delta bytes, its overflow timer (0: none), and whether
+   * that timer interrupted it (its end then shows ZB_TEXT_OVERFLOW). */
+  size_t reply_bytes;
+  guint overflow_timer;
+  int overflowed;
   GPtrArray *pending; /* prompts (char *) waiting for a ready helper */
 } ZbWin;
 
@@ -194,6 +203,31 @@ static void write_frame(char *frame) {
   zb_agent_out_free(frame);
 }
 
+static void overflow_reset(ZbWin *w) {
+  if (w->overflow_timer != 0) {
+    g_source_remove(w->overflow_timer);
+    w->overflow_timer = 0;
+  }
+  w->reply_bytes = 0;
+  w->overflowed = 0;
+}
+
+/* The reply is still running ZB_OVERFLOW_S after it passed the cap: interrupt it,
+ * as Stop does; its end shows ZB_TEXT_OVERFLOW. */
+static gboolean on_overflow(gpointer data) {
+  ZbWin *w = zb_helper.wins != NULL ? g_hash_table_lookup(zb_helper.wins, data) : NULL;
+  if (w == NULL) {
+    return G_SOURCE_REMOVE;
+  }
+  w->overflow_timer = 0;
+  if (w->open && w->busy && !w->stopping && zb_helper.state == H_READY) {
+    w->overflowed = 1;
+    w->stopping = 1;
+    write_frame(zb_agent_out_session(0, w->session));
+  }
+  return G_SOURCE_REMOVE;
+}
+
 /* A ready helper: open the window's session if needed, then send its next
  * prompt. One prompt runs per session (the helper answers a second one with
  * `busy`): the rest wait here until the running one's `result`. */
@@ -222,6 +256,7 @@ static void flush(ZbWin *w) {
     write_frame(frame);
     w->busy = 1;
     w->stopping = 0; /* a stopped prompt that ended without its result (error, crash) */
+    overflow_reset(w);
     zb_drawer_agent_status(w->win, "busy", "-");
   }
 }
@@ -260,6 +295,10 @@ static void on_frame(const ZbAgentFrame *f) {
   case ZB_FRAME_DELTA:
     if (w != NULL && !w->stopping) {
       zb_drawer_agent_delta(win, w->session, f->text, f->text_len);
+      w->reply_bytes += f->text_len;
+      if (w->reply_bytes >= zb_drawer_reply_text_max() && w->overflow_timer == 0) {
+        w->overflow_timer = g_timeout_add_seconds(ZB_OVERFLOW_S, on_overflow, GUINT_TO_POINTER(w->win));
+      }
     }
     break;
   case ZB_FRAME_MESSAGE:
@@ -270,10 +309,14 @@ static void on_frame(const ZbAgentFrame *f) {
   case ZB_FRAME_RESULT:
     zb_helper.restarts = 0;
     if (w != NULL) {
-      if (w->stopping) { /* the interrupted prompt's end */
+      if (w->stopping && w->overflowed) { /* the overflow's interrupt ended it (S5.6) */
+        w->stopping = 0;
+        zb_drawer_agent_message(win, "error", ZB_TEXT_OVERFLOW, strlen(ZB_TEXT_OVERFLOW));
+      } else if (w->stopping) { /* the interrupted prompt's end */
         w->stopping = 0;
         zb_drawer_agent_stopped(win);
       }
+      overflow_reset(w);
       w->busy = 0;
       zb_drawer_agent_status(win, "ready", "-");
       flush(w);
@@ -287,7 +330,7 @@ static void on_frame(const ZbAgentFrame *f) {
       break; /* no prompt runs: a second ending frame of an ended prompt shows nothing (rev 16.15) */
     }
     { /* win 0: a helper-wide error */
-      const char *text = error_text(f->code, f->code_len);
+      const char *text = w != NULL && w->overflowed ? ZB_TEXT_OVERFLOW : error_text(f->code, f->code_len);
       zb_drawer_agent_message(win, "error", text, strlen(text));
     }
     if (w != NULL) { /* a session's error ends its prompt (chat's _prompt) */
@@ -378,7 +421,9 @@ static void on_read(GObject *source, GAsyncResult *res, gpointer data) {
 }
 
 static void reader_arm(ZbReader *r) {
-  g_input_stream_read_async(r->stream, r->buf, sizeof r->buf, G_PRIORITY_DEFAULT, r->cancel, on_read, r);
+  /* Below input and redraw (S5.6): a helper that floods the pipe never holds up
+   * the drawer's fold or the page; the full pipe slows the helper instead. */
+  g_input_stream_read_async(r->stream, r->buf, sizeof r->buf, G_PRIORITY_DEFAULT_IDLE, r->cancel, on_read, r);
 }
 
 static ZbReader *reader_start(GInputStream *stream, int frames) {
@@ -839,6 +884,7 @@ void zb_agent_helper_window_closed(unsigned int win) {
      * (RoseCat 5681). With the window gone they are accepted and dropped. */
     write_frame(zb_agent_out_session(1, w->session));
   }
+  overflow_reset(w);
   g_hash_table_remove(zb_helper.wins, GUINT_TO_POINTER(win));
   g_ptr_array_unref(w->pending);
   g_free(w);

@@ -348,6 +348,17 @@ pub fn build(b: *std.Build) void {
     const agent_drawer_tests = b.addTest(.{ .root_module = agent_drawer_tests_module });
     const run_agent_drawer_tests = b.addRunArtifact(agent_drawer_tests);
     run_agent_drawer_tests.skip_foreign_checks = true;
+    // Chat drawer S5c-1 (S5.6, rev 16.20.2): long unbroken runs get break points,
+    // and Copy maps a selection back to the original bytes.
+    const agent_drawer_breaks_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_drawer_breaks_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_drawer_breaks_tests_module.addImport("agent_drawer", agent_drawer_module);
+    const run_agent_drawer_breaks_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_drawer_breaks_tests_module }));
+    run_agent_drawer_breaks_tests.skip_foreign_checks = true;
 
     // Chat drawer S3n2, native spawn wiring: netd's socket directory, the e2e
     // seams' grammar and netd's argv and environment (src/agent_net.zig).
@@ -842,6 +853,15 @@ pub fn build(b: *std.Build) void {
         "agent-window-sessions-e2e",
     });
     agent_window_sessions_e2e.addArtifactArg(exe);
+    // Chat drawer S5c-1 (S5.6, rev 16.20.2): a flood of output stays bounded, long
+    // unbroken runs fold at once, Copy gives the original, an endless reply overflows.
+    const agent_flood_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_flood_test.py --binary \"$1\"",
+        "agent-flood-e2e",
+    });
+    agent_flood_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.5, user answer 1): the drawer is on by default; with no agent
     // home Send says the runtime is not set up; stop_browser fails a test a helper ran in.
     const agent_default_on_e2e = b.addSystemCommand(&.{
@@ -928,6 +948,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_errors",
+    });
+    // Chat drawer S5c-1 (S5.6): no streamed character is lost, and every frame fits the
+    // app's caps as encoded.
+    const agent_host_chat_flood = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_flood",
     });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
@@ -1306,6 +1333,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
+    test_step.dependOn(&run_agent_drawer_breaks_tests.step);
     test_step.dependOn(&run_agent_net_tests.step);
     test_step.dependOn(&run_agent_net_manifest_tests.step);
     test_step.dependOn(&run_agent_secrets_tests.step);
@@ -1373,6 +1401,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_drawer_copy_e2e.step);
     test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_window_sessions_e2e.step);
+    test_step.dependOn(&agent_flood_e2e.step);
     test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
@@ -1385,6 +1414,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_provision_unit.step);
     test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_chat_errors.step);
+    test_step.dependOn(&agent_host_chat_flood.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
