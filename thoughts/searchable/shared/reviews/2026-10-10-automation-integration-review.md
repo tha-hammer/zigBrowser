@@ -16464,3 +16464,66 @@ utterance, discard only queued samples, acknowledge irreversible output, and
 add the sink regression. Therefore, once Route B is accepted, the prepared
 next push-through is **`f69e2e9`**, not a later commit; this section does not
 pre-approve the pending Route-B artifact itself.
+
+## Review at `015fba3`: Windows screenshot fix-forward and S7b reds
+
+The exact commit diffs are whitespace-clean, and
+`tests/windows/screenshot_live_test.py` compiles with Python. No full Linux
+gate was taken: the Windows behavior needs its Windows-host proof, while the
+S7b files are intentionally unregistered failing-first tests.
+
+### Windows screenshot failure red (`af9bd69`)
+
+**APPROVED as a limited failing-first red.** The nonexistent local file
+deterministically reaches the `NavigationCompleted` failure, requires a
+nonzero product exit, and owner evidence shows the intended before/after:
+exit 5 with empty stderr before the fix, and the named navigation diagnostic
+after it. The runner's explicit string coercion also fixes PowerShell's ETS
+serialization without changing the product path.
+
+This approval covers that one red. It does not claim the full error-path suite
+required by finding 6624.
+
+### Windows screenshot production fix (`6c771ff`)
+
+**BLOCKED-for-tests; the production changes reviewed are otherwise sound.**
+
+- `src/webview2_shim.cpp:849-858,907-941,1119-1124` now gives the watchdog,
+  missing/synchronous navigation, document-script callback and failed
+  navigation paths explicit screenshot diagnostics.
+- `src/webview2_shim.cpp:964-1014` uses `STATSTG.cbSize`, bounds it to the
+  `DWORD` write ABI, and removes a failed or short output. This closes the
+  earlier logical-length/partial-file SHOULD in production.
+- The WebView2-runtime message is deliberately left to WS1.4 rather than
+  claiming the wrong pinned contract here.
+
+The committed test at
+`tests/windows/screenshot_live_test.py:137-158` reaches only the
+`NavigationCompleted` branch, and line 157 accepts any nonempty stderr even
+though its own comment and finding 6624 require the specific diagnostic. An
+unrelated warning can therefore false-green it. The watchdog timeout,
+synchronous `Navigate` failure and asynchronous document-script completion
+failure have no committed deterministic reds; deleting any of their new
+diagnostic calls leaves the suite green. Add branch-selecting tests or inert
+e2e seams for all three and assert each exact `zigBrowser: screenshot: ...`
+line; tighten the existing navigation red likewise.
+
+**SHOULD-for-tests:** add a stream/write oracle for logical length and partial
+deletion. The implementation is correct on inspection but neither property is
+mutation guarded. Verdict sent to AzureRidge in Agent Mail 6639.
+
+### S7b reply and detach reds (`015fba3`)
+
+**APPROVED as the unregistered failing-first red.** The scripted engine has
+rev 16.20.36's exact call shape and the reply suite covers the exact happy
+content/call sequence, typed health/URL/title results, error/result
+exclusivity, redaction, foreign-byte exclusion and the single-method boundary.
+The detach suite reaches `before_publish` only after the engine answer, proves
+that detach returns before release, then proves no sink publication and a
+joined/freed broker. That is the required mutex-linearization race, without
+bypassing the production broker.
+
+Owner evidence is 0/8 and 0/3 on the pre-green guarded seams; because the
+files remain unregistered, they do not make the ordinary gate red. Publication
+outside the mutex and missing-detached-check mutants remain required evidence
+for the green review. Verdict sent to BlackRobin in Agent Mail 6640.
