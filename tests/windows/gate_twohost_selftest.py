@@ -66,7 +66,7 @@ _VIRSH_STUB = r"""
 case "$1" in
   domstate) echo "${ZB_SELFTEST_VIRSH_STATE:-running}" ;;
   snapshot-list) printf '%s\n' "${ZB_SELFTEST_SNAPSHOTS-pre-ws0-green-2026-10-19}" ;;
-  snapshot-info) echo "State:          ${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}"; echo "Creation Time:  2026-10-19 08:00:00 -0700" ;;
+  snapshot-info) echo "State:          ${ZB_SELFTEST_SNAPSHOT_STATE:-shutoff}"; [ -z "${ZB_SELFTEST_SNAPSHOT_NOCREATED:-}" ] && echo "Creation Time:  2026-10-19 08:00:00 -0700" ;;
   *) : ;;
 esac
 exit 0
@@ -88,7 +88,7 @@ def _vm_probe(**over):
     p = {"schema": 2, "test_user": "linuxwin\\zbtext", "identity_marker": VM_MARKER,
          "native_arch": "x64", "os_build": "26200", "free_gb": 50.0,
          "webview2_pv": "155.0.4283.62", "interactive_session": True,
-         "locked": False, "console_user": "zbtext"}
+         "locked": False, "console_user": "zbtext", "root": "C:\\Users\\zbtext\\zb"}
     p.update(over)
     return json.dumps(p)
 
@@ -98,7 +98,9 @@ def _fs_probe(**over):
          "native_arch": "x64", "os_build": "19045", "webview2_pv": "155.0.4283.62",
          "groups": [{"sid": "S-1-5-32-545", "name": "BUILTIN\\Users"}],
          "zbtest_write_paths": [], "console_user": "zbtest",
-         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123", "shares": []}
+         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123", "shares": [],
+         "root": "C:\\Users\\zbtest\\zb", "free_gb": 500.0,
+         "sshd_listen": ["0.0.0.0"], "sshd_allowusers": ["zbtest"]}
     p.update(over)
     return json.dumps(p)
 
@@ -227,19 +229,16 @@ class WS07FileServerFence(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(d)})
             self._assert_fail_closed(proc, "file-server")
 
-    def test_win10_marker_missing_fails_closed(self):
+    def test_fs_identity_is_host_key_only(self):
+        # The physical file server is pinned by its SSH host key (StrictHostKeyChecking=yes + known_hosts),
+        # NOT a nonce file (read-only rule, orchestrator): a probe with no identity_marker still passes —
+        # the field is intentionally not required there.
         with tempfile.TemporaryDirectory() as t:
             d = json.loads(_fs_probe()); d.pop("identity_marker", None)
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(d),
                                                           "ZB_SELFTEST_PROBE_WIN10_POST": json.dumps(d)})
-            self._assert_fail_closed(proc, "file-server")
-
-    def test_win10_marker_wrong_fails_closed(self):
-        with tempfile.TemporaryDirectory() as t:
-            bad = _fs_probe(identity_marker="SOMETHING-ELSE")
-            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad,
-                                                          "ZB_SELFTEST_PROBE_WIN10_POST": bad})
-            self._assert_fail_closed(proc, "file-server")
+            self.assertEqual(proc.returncode, 0,
+                             f"FS identity is host-key-only; the marker must not be required:\n{proc.stderr}")
 
 
 class WS0CompletionReadiness(_TwoHostCase):
@@ -363,9 +362,60 @@ class WS0CompletionReadiness(_TwoHostCase):
     def test_fs_shares_changed_pre_post_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
             proc = self._run_probe_only(pathlib.Path(t),
-                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(shares=["C:\\Served"]),
-                 "ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(shares=["C:\\Served", "C:\\NewHole"])})
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(shares=[{"name": "data", "path": "C:\\Served"}]),
+                 "ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(shares=[{"name": "data", "path": "C:\\Served"},
+                                                                   {"name": "hole", "path": "C:\\NewHole"}])})
             self._assert_fail_closed(proc, "shares changed")
+
+    def test_fs_untyped_shares_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(shares=["C:\\Served"])   # path-only, not {name, path}
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "{name, path}")
+
+    def test_vm_console_user_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(console_user="linuxwin\\boss")})
+            self._assert_fail_closed(proc, "console_user")
+
+    def test_vm_root_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(root="")})
+            self._assert_fail_closed(proc, "root missing")
+
+    def test_fs_root_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(root="")
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "root missing")
+
+    def test_fs_low_free_gb_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(free_gb=3.0)
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "free_gb")
+
+    def test_fs_sshd_listen_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(sshd_listen=None)
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "sshd_listen")
+
+    def test_fs_sshd_allowusers_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(sshd_allowusers=None)
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "sshd_allowusers")
+
+    def test_vm_snapshot_no_creation_time_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_SNAPSHOT_NOCREATED": "1"})
+            self._assert_fail_closed(proc, "no Creation Time")
 
 
 # --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------

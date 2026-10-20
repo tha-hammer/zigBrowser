@@ -109,8 +109,15 @@ try {
   $sj = Join-Path $env:USERPROFILE 'zb\runs\session\session.json'
   if (Test-Path -LiteralPath $sj) {
     $sess = Get-Content -LiteralPath $sj -Raw -ErrorAction Stop | ConvertFrom-Json
-    $interactive = $sess.interactive_session
-    $locked      = $sess.locked
+    # Correlation: only trust a FRESH session result. A stale session.json left from a previous run or
+    # state must never stand in for this run. (A per-run nonce is the stronger form once the gate triggers
+    # the in-console task; freshness within 15 min is the available correlation today.)
+    $fresh = $false
+    try { $fresh = ([datetime]::Parse($sess.ts).ToUniversalTime() -gt (Get-Date).ToUniversalTime().AddMinutes(-15)) } catch {}
+    if ($fresh) {
+      $interactive = $sess.interactive_session
+      $locked      = $sess.locked
+    }
   }
 } catch {}
 
@@ -121,23 +128,36 @@ try {
 $shares = $null; $writePaths = $null
 try {
   $sp = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Shares' -ErrorAction Stop
-  $paths = @()
+  # Typed shares: {name, path} so a rename/alias (same path, new share name) is detectable pre/post.
+  $shareList = @()
   foreach ($prop in $sp.PSObject.Properties) {
     if ($prop.Name -like 'PS*') { continue }
-    foreach ($elem in @($prop.Value)) { if ($elem -match '^(?i)\s*Path=(.+)$') { $paths += $matches[1].Trim() } }
+    $sharePath = $null
+    foreach ($elem in @($prop.Value)) { if ($elem -match '^(?i)\s*Path=(.+)$') { $sharePath = $matches[1].Trim() } }
+    if ($sharePath) { $shareList += [pscustomobject]@{ name = $prop.Name; path = $sharePath } }
   }
-  $shares = @($paths | Sort-Object -Unique)
+  $shares = @($shareList)
   $me = [Security.Principal.WindowsIdentity]::GetCurrent()
   $mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
+  # Effective-access oracle: a path is writable iff an Allow ACE for one of my SIDs grants a write right
+  # AND no Deny ACE for my SIDs denies it (Deny wins). Match the real FileSystemRights flags bitwise, not
+  # a substring, so WriteAttributes/WriteExtendedAttributes do not masquerade as a data write.
+  $WR = [System.Security.AccessControl.FileSystemRights]'Write,Modify,FullControl,WriteData,CreateFiles,AppendData,CreateDirectories,Delete'
   $w = @()
-  foreach ($p in $shares) {
+  foreach ($sh in $shareList) {
+    $p = $sh.path
     try {
       $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
+      $allowW = $false; $denyW = $false
       foreach ($ace in $acl.Access) {
         $sid = $null; try { $sid = $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch {}
-        if ($sid -and ($mySids -contains $sid) -and $ace.AccessControlType -eq 'Allow' -and
-            ($ace.FileSystemRights.ToString() -match 'Write|Modify|FullControl')) { $w += $p; break }
+        if (-not ($sid -and ($mySids -contains $sid))) { continue }
+        if (([int]$ace.FileSystemRights -band [int]$WR) -ne 0) {
+          if ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) { $allowW = $true }
+          elseif ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) { $denyW = $true }
+        }
       }
+      if ($allowW -and -not $denyW) { $w += $p }
     } catch { $w += $p }   # cannot read the ACL => treat as possibly writable (fail-safe, never hide)
   }
   $writePaths = @($w | Sort-Object -Unique)

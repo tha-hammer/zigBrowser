@@ -175,6 +175,8 @@ if v.get("locked") is not False:
 cu11 = v.get("console_user")
 if not isinstance(cu11, str) or not cu11.strip():
     sys.stderr.write("win11: console_user missing or empty\n"); sys.exit(1)
+if cu11.split("\\")[-1].lower() != win11_user.lower():
+    sys.stderr.write("win11: console_user %r is not %s (a real operator may be at the console)\n" % (cu11, win11_user)); sys.exit(1)
 if str(v.get("test_user", "")).split("\\")[-1].lower() != win11_user.lower():
     sys.stderr.write("win11: test_user %r is not %s\n" % (v.get("test_user"), win11_user)); sys.exit(1)
 if _build_int(v.get("os_build")) < 22621:
@@ -183,6 +185,8 @@ if not isinstance(v.get("webview2_pv"), str) or not v.get("webview2_pv").strip()
     sys.stderr.write("win11: webview2_pv missing or empty\n"); sys.exit(1)
 if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb"), bool) or v.get("free_gb") < 20:
     sys.stderr.write("win11: free_gb %r is below 20\n" % v.get("free_gb")); sys.exit(1)
+if not isinstance(v.get("root"), str) or not v.get("root").strip():
+    sys.stderr.write("win11: root missing or empty\n"); sys.exit(1)
 # snapshot_marker is NOT an in-VM probe field — a file inside the VM proves only that someone wrote a
 # file, not that a rollback snapshot exists. The gate proves it host-side with read-only virsh (see
 # probe_only); the physical file server has no VM snapshot and is explicitly not_applicable.
@@ -192,11 +196,16 @@ if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb")
 # that compares "undisturbed". A bare `name or []` would let None/""/"bad"/["22"] masquerade as empty.
 def _is_port_list(x):
     return isinstance(x, list) and all(isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 65535 for p in x)
+def _is_share_list(x):
+    # Typed shares: each is {name, path} so a rename/alias (same path, new share name) is detected.
+    return isinstance(x, list) and all(
+        isinstance(s, dict) and isinstance(s.get("name"), str) and isinstance(s.get("path"), str) for s in x)
+def _share_key(s):
+    return (s.get("name"), s.get("path"))
 def require_schema(probe, who):
-    # identity: the file server must present the pinned Win10 marker (missing/empty/wrong => wrong host).
-    mk = probe.get("identity_marker")
-    if not mk or mk != win10_marker:
-        sys.stderr.write("file-server (%s): identity_marker does not match ZB_WIN10_MARKER\n" % who); sys.exit(1)
+    # identity: the physical file server is pinned by its SSH host key ALONE (StrictHostKeyChecking=yes +
+    # the pinned known_hosts), per the orchestrator's read-only rule — no nonce file is ever written there,
+    # so there is no identity_marker to check. The host-key pin is enforced by ssh before this probe runs.
     if not isinstance(probe.get("groups"), list):
         sys.stderr.write("file-server (%s): groups missing or not a list\n" % who); sys.exit(1)
     cu = probe.get("console_user")
@@ -212,14 +221,22 @@ def require_schema(probe, who):
     # WS0-completion: the complete schema-2 fields the file-server fence judges on.
     if probe.get("schema") != 2:
         sys.stderr.write("file-server (%s): probe schema is %r, expected 2\n" % (who, probe.get("schema"))); sys.exit(1)
-    if not isinstance(probe.get("shares"), list):
-        sys.stderr.write("file-server (%s): shares missing or not a list\n" % who); sys.exit(1)
+    if not _is_share_list(probe.get("shares")):
+        sys.stderr.write("file-server (%s): shares missing or not a list of {name, path} objects\n" % who); sys.exit(1)
     if str(probe.get("test_user", "")).split("\\")[-1].lower() != win10_user.lower():
         sys.stderr.write("file-server (%s): test_user %r is not %s\n" % (who, probe.get("test_user"), win10_user)); sys.exit(1)
     if probe.get("native_arch") != "x64":
         sys.stderr.write("file-server (%s): native_arch %r, expected x64\n" % (who, probe.get("native_arch"))); sys.exit(1)
     if _build_int(probe.get("os_build")) < 19045:
         sys.stderr.write("file-server (%s): os_build %r is below the Windows 10 22H2 floor (19045)\n" % (who, probe.get("os_build"))); sys.exit(1)
+    if not isinstance(probe.get("root"), str) or not probe.get("root").strip():
+        sys.stderr.write("file-server (%s): root missing or empty\n" % who); sys.exit(1)
+    if not isinstance(probe.get("free_gb"), (int, float)) or isinstance(probe.get("free_gb"), bool) or probe.get("free_gb") < 20:
+        sys.stderr.write("file-server (%s): free_gb %r is below 20\n" % (who, probe.get("free_gb"))); sys.exit(1)
+    if not isinstance(probe.get("sshd_listen"), list):
+        sys.stderr.write("file-server (%s): sshd_listen missing or not a list\n" % who); sys.exit(1)
+    if not isinstance(probe.get("sshd_allowusers"), list):
+        sys.stderr.write("file-server (%s): sshd_allowusers missing or not a list\n" % who); sys.exit(1)
     # interactive_session / locked are not_applicable on the physical file server: it runs no GUI and no
     # in-console helper under the read-only rule. console_user (network-safe, checked above) proves the
     # test user owns its console; an active unlocked interactive session is the VM's requirement, not the FS's.
@@ -247,8 +264,9 @@ if pre_ports != post_ports:
 if a.get("fw_rules_hash") != b.get("fw_rules_hash"):
     sys.stderr.write("file-server: firewall rules changed between pre and post\n"); sys.exit(1)
 # WS0.7: the served shares themselves must be undisturbed pre/post (names/root paths), not just writable.
-if sorted(a.get("shares")) != sorted(b.get("shares")):
-    sys.stderr.write("file-server: served shares changed %s -> %s\n" % (sorted(a.get("shares")), sorted(b.get("shares")))); sys.exit(1)
+pre_shares = sorted(map(_share_key, a.get("shares"))); post_shares = sorted(map(_share_key, b.get("shares")))
+if pre_shares != post_shares:
+    sys.stderr.write("file-server: served shares changed %s -> %s\n" % (pre_shares, post_shares)); sys.exit(1)
 print("ALLOW")
 PY
 }
@@ -282,7 +300,11 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
     echo "NOT RUN: Win11 VM snapshot '$want' was taken in state '${sstate:-unknown}', not shutoff" >&2
     return 1
   fi
-  echo "WS0.6: Win11 snapshot '$want' state=$sstate created='${screated:-unknown}'" >&2
+  if [ -z "$screated" ]; then
+    echo "NOT RUN: Win11 VM snapshot '$want' has no Creation Time in virsh snapshot-info (cannot confirm the baseline)" >&2
+    return 1
+  fi
+  echo "WS0.6: Win11 snapshot '$want' state=$sstate created='$screated'" >&2
   local vm_json fs_pre fs_post
   vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}")
   fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}")

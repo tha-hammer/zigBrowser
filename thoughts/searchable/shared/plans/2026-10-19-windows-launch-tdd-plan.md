@@ -660,7 +660,11 @@ the guest clock, Tailscale/SSH state and Windows Update state, so the gate re-pr
 ## WS0: Test hosts + fail-closed two-host gate   [L] then [W]
 
 **Goal.** A gate that cannot false-green, driven from Linux, that proves each host is the host it
-claims to be, with an unlocked interactive session, before any product test runs.
+claims to be — and that the **GUI host (the Win11 VM)** has an unlocked, active interactive session —
+before any product test runs. (The physical file server runs no GUI and, under the read-only rule, no
+in-console helper, so its interactive-session state is **`not_applicable`** at the WS0 gate: it is
+pinned by its SSH host key and fenced as undisturbed instead. A file-server product test that needs an
+interactive session carries that precondition itself when it runs, not the WS0 readiness gate.)
 
 ### Behavior WS0.1: the host probe reports identity and readiness
 **Given** a provisioned host, **when** `host_probe.ps1` runs over SSH, **then** it prints one JSON
@@ -681,7 +685,8 @@ VM only (`not_applicable` on the read-only file server, which runs no helper und
 
 ### Behavior WS0.2: the gate fails closed
 **Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset; a host unreachable; build below OD-W7;
-`native_arch` not `x64`; no active interactive session; session locked; `webview2_pv` empty;
+`native_arch` not `x64`; the **Win11 VM** without an active interactive session, or its session locked
+(`not_applicable` on the read-only file server, which is pinned by its SSH host key); `webview2_pv` empty;
 `test_user` not the configured user; a test exiting 77; a test printing no `ASSERTS <n>` or
 `n == 0`, **when** the gate runs, **then** it exits nonzero naming the host and the reason; with
 both hosts healthy and all tests passing, it exits 0.
