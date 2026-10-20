@@ -209,6 +209,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }));
         oo_live_module.linkSystemLibrary("advapi32", .{});
+        oo_live_module.linkSystemLibrary("ws2_32", .{}); // the AF_UNIX socket case
         b.step("owner-only-test-win", "WS2.0: the owner-only seam's DACLs, read back on Windows")
             .dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = oo_live_module })).step);
     }

@@ -6,6 +6,8 @@
 //! inherited by what is created in it, so the socket and token never exist with a looser DACL.
 //! The Windows DACL is built as SDDL by `ownerOnlySddl`, pure, so Linux pins its exact text; the
 //! live ACL check is tests/e2e/win_transport_test.py on the VM. Outside the gate until the green.
+//! RoseCat 6607: the check and the apply name one object (a handle, not the path twice); the swap
+//! cases below prove it with a test-only hook, `owner_only.after_check`, between them.
 const std = @import("std");
 const builtin = @import("builtin");
 const oo = @import("owner_only");
@@ -133,4 +135,75 @@ test "POSIX: the wrong kind, or nothing there, is an error" {
     try std.testing.expectError(error.NotOwnerOnlyTarget, oo.restrictToOwner(dir, .file));
     var mb: [96]u8 = undefined;
     try std.testing.expectError(error.NotOwnerOnlyTarget, oo.restrictToOwner(try tmpPath(&mb, "missing"), .file));
+}
+
+// RoseCat 6607: the check and the apply must name the same object. `after_check` (test builds only)
+// runs between them; here it swaps the checked leaf for a symlink to a victim. The seam must
+// restrict the object it checked (now renamed), and leave the victim alone.
+const Swap = struct {
+    var leaf: [:0]const u8 = "";
+    var moved: [:0]const u8 = "";
+    var victim: [:0]const u8 = "";
+    fn swap() void {
+        if (std.c.rename(leaf, moved) != 0) @panic("rename");
+        if (std.c.symlink(victim, leaf) != 0) @panic("symlink");
+    }
+};
+
+fn swapCase(kind: oo.Kind) !void {
+    if (!@hasDecl(oo, "after_check")) return error.TestNoAfterCheckHook;
+    var b1: [96]u8 = undefined;
+    var b2: [96]u8 = undefined;
+    var b3: [96]u8 = undefined;
+    const a = std.testing.allocator;
+    const leaf = try a.dupeZ(u8, try tmpPath(&b1, "swap-leaf"));
+    defer a.free(leaf);
+    const moved = try a.dupeZ(u8, try tmpPath(&b2, "swap-moved"));
+    defer a.free(moved);
+    const victim = try a.dupeZ(u8, try tmpPath(&b3, "swap-victim"));
+    defer a.free(victim);
+    switch (kind) {
+        .file => for ([_][:0]const u8{ leaf, victim }) |p| {
+            const fd = std.c.open(p, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true }, @as(std.c.mode_t, 0o644));
+            try std.testing.expect(fd >= 0);
+            _ = std.c.close(fd);
+            _ = std.c.chmod(p, 0o644);
+        },
+        .dir => for ([_][:0]const u8{ leaf, victim }) |p| {
+            try std.testing.expectEqual(@as(c_int, 0), std.c.mkdir(p, 0o755));
+            _ = std.c.chmod(p, 0o755);
+        },
+    }
+    defer {
+        _ = std.c.unlink(leaf);
+        if (kind == .dir) {
+            _ = std.c.rmdir(moved);
+            _ = std.c.rmdir(victim);
+        } else {
+            _ = std.c.unlink(moved);
+            _ = std.c.unlink(victim);
+        }
+    }
+    Swap.leaf = leaf;
+    Swap.moved = moved;
+    Swap.victim = victim;
+    oo.after_check = Swap.swap;
+    defer oo.after_check = null;
+    try oo.restrictToOwner(leaf, kind);
+    const before: u32 = if (kind == .dir) 0o755 else 0o644;
+    const want: u32 = if (kind == .dir) 0o700 else 0o600;
+    try std.testing.expectEqual(before, try modeOf(victim)); // never redirected
+    try std.testing.expectEqual(want, try modeOf(moved)); // the object it checked
+}
+
+test "POSIX: a leaf swapped for a symlink after the check: the checked file is restricted, the victim is not" {
+    if (!has) return error.TestNoOwnerOnly;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try swapCase(.file);
+}
+
+test "POSIX: the same for a directory" {
+    if (!has) return error.TestNoOwnerOnly;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try swapCase(.dir);
 }
