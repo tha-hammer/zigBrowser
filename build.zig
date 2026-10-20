@@ -233,6 +233,12 @@ pub fn build(b: *std.Build) void {
     const windows_wincontain_argv_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_argv_live_test.py" });
     b.step("windows-wincontain-argv-live", "Live Windows argv oracle on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_wincontain_argv_live.step);
 
+    // d1d: live Windows PathResolver / containment oracle — real CreateFileW + GetFinalPathNameByHandleW on
+    // the VM; proves normalize_final_path on the real \\?\ output and that resolved_within fails closed on
+    // agent-created junctions (untrusted mount points). Skips cleanly without ZB_WIN11_HOST; needs no slot.
+    const windows_wincontain_resolve_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_resolve_live_test.py" });
+    b.step("windows-wincontain-resolve-live", "Live Windows PathResolver/containment oracle on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_wincontain_resolve_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1726,6 +1732,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
     test_step.dependOn(&windows_wincontain_argv_live.step);
+    test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
