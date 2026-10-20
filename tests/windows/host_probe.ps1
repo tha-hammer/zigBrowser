@@ -35,39 +35,51 @@ function New-ZbNative {
 }
 $ZbN = New-ZbNative
 
-# >>> ZB_ACL_FN : effective-writability evaluator, extracted VERBATIM by tests/windows/host_live_test.py
-# so the live DACL test exercises this exact code (and a hostless guard asserts the two copies match).
-# Keep it SELF-CONTAINED (no outside variables) between these markers. Mirrors Windows AccessCheck:
-# skips inherit-only ACEs, honors the object owner's implicit WRITE_DAC, fails CLOSED on null/unsupported
-# or unreadable DACLs, and resolves each dangerous right by the FIRST matching ACE in DACL order.
+# >>> ZB_ACL_FN : effective-writability via the REAL Win32 AccessCheck (zero-disk Reflection.Emit),
+# extracted VERBATIM by tests/windows/host_live_test.py so the live DACL test runs this exact code. Keep it
+# SELF-CONTAINED between the markers. AccessCheck consumes the caller's impersonation token, so the kernel —
+# not our code — honors SID attributes (disabled / deny-only groups), restricted tokens, privileges, the
+# object owner's implicit WRITE_DAC, inherit-only skipping and null/unsupported DACLs. We fail CLOSED
+# (writable) whenever the token, the descriptor, or AccessCheck itself is unavailable.
+function New-ZbAccessCheckType {
+  $ab=[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('ZbAC')),[System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $tb=$ab.DefineDynamicModule('ZbACMod').DefineType('ZbAC',[System.Reflection.TypeAttributes]::Public)
+  $pub=[System.Reflection.MethodAttributes]'Public,Static,PinvokeImpl'; $std=[System.Reflection.CallingConventions]::Standard
+  $wa=[System.Runtime.InteropServices.CallingConvention]::Winapi; $psf=[System.Reflection.MethodImplAttributes]::PreserveSig; $ansi=[System.Runtime.InteropServices.CharSet]::Ansi
+  $m=$tb.DefinePInvokeMethod('OpenProcessToken','advapi32.dll',$pub,$std,[bool],@([IntPtr],[uint32],[IntPtr].MakeByRefType()),$wa,$ansi); $m.SetImplementationFlags($m.GetMethodImplementationFlags()-bor$psf)
+  $m=$tb.DefinePInvokeMethod('DuplicateToken','advapi32.dll',$pub,$std,[bool],@([IntPtr],[int],[IntPtr].MakeByRefType()),$wa,$ansi); $m.SetImplementationFlags($m.GetMethodImplementationFlags()-bor$psf)
+  $m=$tb.DefinePInvokeMethod('AccessCheck','advapi32.dll',$pub,$std,[bool],@([byte[]],[IntPtr],[uint32],[IntPtr],[IntPtr],[IntPtr],[IntPtr],[IntPtr]),$wa,$ansi); $m.SetImplementationFlags($m.GetMethodImplementationFlags()-bor$psf)
+  return $tb.CreateType()
+}
+function Initialize-ZbAccessCheck {
+  try {
+    $t=New-ZbAccessCheckType
+    $primary=[IntPtr]::Zero
+    if(-not $t::OpenProcessToken([System.Diagnostics.Process]::GetCurrentProcess().Handle,(0x2-bor0x8),[ref]$primary)){ return $null }
+    $imp=[IntPtr]::Zero
+    if(-not $t::DuplicateToken($primary,2,[ref]$imp)){ return $null }   # 2 = SecurityImpersonation
+    return @{ T=$t; Token=$imp }
+  } catch { return $null }
+}
 function Get-ZbWritable {
-  param($acl, [string[]]$mySids)
-  $sddl = $null
-  try { $sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access) } catch { return $true }
-  if ($sddl -notmatch 'D:') { return $true }                       # no DACL present
-  if ($sddl -match 'D:[A-Z]*NO_ACCESS_CONTROL') { return $true }   # explicit NULL DACL => everyone full access
-  try { $own = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; if ($own -and ($mySids -contains $own)) { return $true } } catch { return $true }
-  $DANGER_BITS = @(
-    [int][System.Security.AccessControl.FileSystemRights]::WriteData,
-    [int][System.Security.AccessControl.FileSystemRights]::AppendData,
-    [int][System.Security.AccessControl.FileSystemRights]::Delete,
-    [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
-    [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions,
-    [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership)
-  $rules = $null
-  try { $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) } catch { return $true }
-  $myAces = @()
-  foreach ($ace in $rules) {
-    if (($ace.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }  # applies to children only
-    if (-not ($mySids -contains $ace.IdentityReference.Value)) { continue }
-    $myAces += [pscustomobject]@{ allow = ($ace.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow); mask = [int]$ace.FileSystemRights }
-  }
-  foreach ($bit in $DANGER_BITS) {
-    foreach ($a in $myAces) { if (($a.mask -band $bit) -ne 0) { if ($a.allow) { return $true }; break } }  # first match per right decides
-  }
-  return $false
+  param($acl, $ctx)
+  if($null -eq $ctx){ return $true }
+  $M=[System.Runtime.InteropServices.Marshal]
+  try { $sdb=$acl.GetSecurityDescriptorBinaryForm() } catch { return $true }
+  $gm=$M::AllocHGlobal(16); $psb=$M::AllocHGlobal(256); $psl=$M::AllocHGlobal(4); $ga=$M::AllocHGlobal(4); $st=$M::AllocHGlobal(4)
+  try {
+    # GENERIC_MAPPING for files (FILE_GENERIC_READ/WRITE/EXECUTE/ALL); our desired bits are specific.
+    $M::WriteInt32($gm,0,0x120089);$M::WriteInt32($gm,4,0x120116);$M::WriteInt32($gm,8,0x1200A0);$M::WriteInt32($gm,12,0x1F01FF)
+    foreach($bit in @(0x2,0x4,0x10000,0x40,0x40000,0x80000)){  # WriteData,AppendData,Delete,DeleteChild,WriteDAC,WriteOwner
+      $M::WriteInt32($psl,0,256)
+      if(-not $ctx.T::AccessCheck($sdb,$ctx.Token,[uint32]$bit,$gm,$psb,$psl,$ga,$st)){ return $true }  # API error => fail closed
+      if($M::ReadInt32($st) -ne 0){ return $true }   # kernel granted this dangerous right => writable
+    }
+    return $false
+  } catch { return $true } finally { $M::FreeHGlobal($gm);$M::FreeHGlobal($psb);$M::FreeHGlobal($psl);$M::FreeHGlobal($ga);$M::FreeHGlobal($st) }
 }
 # <<< ZB_ACL_FN
+$ZbAcCtx = Initialize-ZbAccessCheck   # per-run AccessCheck context (impersonation token); $null => fail closed
 
 function Get-NativeArch {
   # Managed, no P/Invoke: OSArchitecture is X64 / Arm64 / X86 (.NET 4.7.1+, present on Win10 22H2 / .NET 4.8).
@@ -202,16 +214,14 @@ try {
     if ($sharePath) { $shareList += [pscustomobject]@{ name = $prop.Name; path = $sharePath } }
   }
   $shares = @($shareList)
-  $me = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
-  # Which served paths the test user can WRITE, via Get-ZbWritable (Windows AccessCheck semantics; see its
-  # definition above). Unreadable ACL => fail-safe (treated writable, never hidden).
+  # Which served paths the test user can WRITE, via Get-ZbWritable (real Win32 AccessCheck; see above).
+  # Unreadable ACL or no AccessCheck context => fail-safe (treated writable, never hidden).
   $w = @()
   foreach ($sh in $shareList) {
     $p = $sh.path
     try {
       $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-      if (Get-ZbWritable $acl $mySids) { $w += $p }
+      if (Get-ZbWritable $acl $ZbAcCtx) { $w += $p }
     } catch { $w += $p }
   }
   $writePaths = @($w | Sort-Object -Unique)

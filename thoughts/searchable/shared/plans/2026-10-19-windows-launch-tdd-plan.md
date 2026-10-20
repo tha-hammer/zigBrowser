@@ -468,9 +468,11 @@ stops the gate before any product test runs.
    sandbox users are denied interactive and network logon (`SeDenyInteractiveLogonRight`,
    `SeDenyNetworkLogonRight`) **only after a spike shows the launcher still works**, and are hidden from
    the sign-in screen (`SpecialAccounts\UserList`) so the owner never sees them.
-6. **Resources.** The probe records free space on `C:`. The bar is **20 GB on the physical file server**
-   but **10 GB on the Win11 VM** (orchestrator decision 2026-10-20): the KVM host disk is ~97% full so the
-   VM image cannot grow, and a zigBrowser build plus the WebView2 runtime fit comfortably in the VM's ~13 GB.
+6. **Resources.** The probe records free space on `C:`. The bar is **10 GB on the Win11 VM**
+   (orchestrator decision 2026-10-20): the KVM host disk is ~97% full so the VM image cannot grow, and a
+   zigBrowser build plus the WebView2 runtime fit comfortably in the VM's ~13 GB. On the **physical file
+   server free space is not_applicable** (orchestrator real-FS check 2026-10-20): it gets no writes — C:
+   was ~0 GB — so the gate does not judge it on `free_gb` (the field is reported for visibility only).
    The gate keeps run artifacts
    under `zb\runs\<id>\`, deletes them at the end, and caps a run at 30 minutes of wall time; benchmarks
    (item 4) are scheduled with the owner. No test runs while another user is signed in on the console
@@ -710,8 +712,10 @@ input desktop, so they come from the in-console session helper and are required 
 (`not_applicable` on the read-only file server, which runs no helper under the no-install rule).
 **Deferred (WS0 records but does not gate on these):** `python` and `zig` (VM only) and `webview2_pv`
 on the file server are reported for visibility but NOT enforced by the WS0 gate — the toolchain is
-proven by the build itself in a later WS, and the file server runs no browser. `native_arch`,
-`os_build`, `free_gb`, `root`, the SSH fence and the file-server isolation fields remain gate-enforced.
+proven by the build itself in a later WS, and the file server runs no browser. `native_arch` and
+`os_build` are gate-enforced on both hosts; `free_gb` and `root` are gate-enforced on the **VM only**
+(not_applicable on the read-only file server — no writes, no `C:\Users\<user>\zb`); the SSH fence
+(exact `ListenAddress` + `AllowUsers`) and the file-server isolation fields remain gate-enforced.
 
 ### Behavior WS0.2: the gate fails closed
 **Given** any of: `ZB_WIN10_HOST` or `ZB_WIN11_HOST` unset; a host unreachable; build below OD-W7;
@@ -747,11 +751,13 @@ under "How the gate reaches the Win11 VM". The gate has no flag that starts, rev
 
 ### Behavior WS0.7: the file-server host is not disturbed
 **Given** the Windows 10 host, **when** the probe runs, **then** it reports `groups` of `zbtest`,
-`console_user`, `shares` (names and root paths), `zbtest_write_paths` (served paths where the ACL math says
-`zbtest` has Modify/Write/Full), `free_gb`, `listeners` (22, 135, 139, 445, 3389) and `fw_rules_hash`; the gate
+`console_user`, `shares` (names + absolute root paths), `zbtest_write_paths` (served paths the real Win32
+**AccessCheck** says `zbtest` can mutate), `listeners` (whatever set this host has — no fixed baseline; the
+real FS has e.g. 135/445/5040/5357, dynamic RPC 49664+, 139, 22 and no 3389) and `fw_rules_hash`; the gate
 fails if `groups` has a forbidden group, `zbtest_write_paths` is non-empty, `console_user` is not `zbtest`
-(it never switches users), or `listeners`/`fw_rules_hash` differ between the pre-run and post-run probes
-(any difference means the run changed the machine).
+(it never switches users), the sshd `ListenAddress`/`AllowUsers` are not exactly the pinned values, or
+`listeners`/`fw_rules_hash`/`shares` differ between the pre-run and post-run probes (any difference means the
+run changed the machine). `free_gb`/`root` are not_applicable here (no writes).
 
 ### Behavior WS0.8: transport hygiene
 **Given** any remote copy, **when** the gate stages files, **then** it uses `mktemp -d` staging on Linux (never

@@ -58,10 +58,10 @@ def _extract_acl_fn():
 # owner-implicit WRITE_DAC does not fire), and the current user (injected as __MYSID__) for the owner case.
 # Rights are hex FileSystemRights: WriteData 0x2, Delete 0x10000, WriteAttributes 0x100 (not dangerous).
 _ACL_SCENARIOS = r'''
-$me = [Security.Principal.WindowsIdentity]::GetCurrent()
-$mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
-$S = $me.User.Value
-function W([string]$sddl){ $sd = New-Object System.Security.AccessControl.DirectorySecurity; $sd.SetSecurityDescriptorSddlForm($sddl); return (Get-ZbWritable $sd $mySids) }
+$S = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$ctx = Initialize-ZbAccessCheck
+if ($null -eq $ctx) { throw "Initialize-ZbAccessCheck returned null (AccessCheck unavailable)" }
+function W([string]$sddl){ $sd = New-Object System.Security.AccessControl.DirectorySecurity; $sd.SetSecurityDescriptorSddlForm($sddl); return (Get-ZbWritable $sd $ctx) }
 Write-Output ("R allow "       + (W ("O:SYG:SYD:(A;;0x2;;;"      + $S + ")")))
 Write-Output ("R deny "        + (W ("O:SYG:SYD:(D;;0x2;;;"      + $S + ")")))
 Write-Output ("R delete "      + (W ("O:SYG:SYD:(A;;0x10000;;;"  + $S + ")")))
@@ -152,6 +152,94 @@ class NonceLive(unittest.TestCase):
     def test_future_ts_ignored(self):
         inter, _ = self._prep_and_probe("N-FUT", "N-FUT", "30")
         self.assertIsNone(inter, "a future-dated session result must be ignored (null)")
+
+
+VERIFY_TASK = (REPO / "tests" / "windows" / "verify_task.ps1").read_text()
+
+
+def _staged_path(env):
+    return "C:\\Users\\%s\\zb\\session_probe.ps1" % env["user"]
+
+
+def _sess_sha():
+    import hashlib
+    return hashlib.sha256((REPO / "tests" / "windows" / "session_probe.ps1").read_bytes()).hexdigest()
+
+
+@unittest.skipUnless(_vm_env(), "VM env (ZB_WIN11_HOST...) not set; live host test skipped")
+class TaskPinLive(unittest.TestCase):
+    """Exercise the REAL verify_task.ps1 (the exact code gate.sh prepends) against real registered tasks."""
+    TASK = "zb-pintest"
+
+    @classmethod
+    def tearDownClass(cls):
+        env = _vm_env()
+        if env:
+            _ssh_run(env, "schtasks /Delete /TN %s /F 2>&1 | Out-Null; Write-Output DONE" % cls.TASK)
+
+    def _verify(self, task_name, staged_path, staged_sha):
+        env = _vm_env()
+        hdr = ("$env:ZB_TASK_NAME='%s'; $env:ZB_STAGED_PATH='%s'; $env:ZB_STAGED_SHA='%s'\n"
+               % (task_name, staged_path, staged_sha))
+        p = _ssh_run(env, hdr + VERIFY_TASK)
+        self.assertEqual(p.returncode, 0, "verify_task.ps1 ssh failed:\n" + p.stderr)
+        m = re.search(r"VERIFY=(\S+)", p.stdout)
+        self.assertIsNotNone(m, "no VERIFY= line:\n" + p.stdout)
+        return m.group(1)
+
+    def _create_task(self, tr):
+        env = _vm_env()
+        _ssh_run(env, "schtasks /Delete /TN %s /F 2>&1 | Out-Null" % self.TASK)
+        p = _ssh_run(env, "schtasks /Create /TN %s /TR \"%s\" /SC ONCE /ST 23:59 /IT /F 2>&1 | Out-String"
+                     % (self.TASK, tr))
+        self.assertIn("SUCCESS", p.stdout, "task create failed:\n" + p.stdout + p.stderr)
+
+    def test_real_task_verifies_ok(self):
+        env = _vm_env()
+        self.assertEqual(self._verify("zb-session-probe", _staged_path(env), _sess_sha()), "OK")
+
+    def test_missing_task_rejected(self):
+        env = _vm_env()
+        self.assertEqual(self._verify("zb-does-not-exist", _staged_path(env), _sess_sha()), "TASK_MISSING")
+
+    def test_hash_mismatch_rejected(self):
+        env = _vm_env()
+        self.assertEqual(self._verify("zb-session-probe", _staged_path(env), "deadbeef"), "TASK_SCRIPT_HASH_MISMATCH")
+
+    def test_hostile_action_rejected(self):
+        env = _vm_env()
+        self._create_task("calc.exe")
+        self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "TASK_ACTION_MISMATCH")
+
+    def test_wrong_action_script_rejected(self):
+        env = _vm_env()
+        self._create_task("powershell -NoProfile -File C:\\Windows\\Temp\\somethingelse.ps1")
+        self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "TASK_ACTION_MISMATCH")
+
+    def test_disabled_task_rejected(self):
+        env = _vm_env()
+        self._create_task("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + _staged_path(env))
+        _ssh_run(env, "schtasks /Change /TN %s /DISABLE 2>&1 | Out-Null; Write-Output DONE" % self.TASK)
+        self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "TASK_DISABLED")
+
+
+@unittest.skipUnless(os.environ.get("ZB_EXPECT_LOCKED"), "locked-desktop check needs an owner-locked console (set ZB_EXPECT_LOCKED=1)")
+@unittest.skipUnless(_vm_env(), "VM env not set")
+class LockedDesktopLive(unittest.TestCase):
+    """Owner-gated: lock the VM console, then run with ZB_EXPECT_LOCKED=1. session_probe must report locked=true.
+    Cannot be automated over SSH (a network logon cannot lock the console), so it is skipped by default."""
+    def test_locked_console_reports_locked(self):
+        env = _vm_env()
+        # Trigger the console task (console is locked by the owner) and read what session_probe wrote.
+        _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; New-Item -ItemType Directory -Force -Path $d|Out-Null; "
+                      r"Set-Content -LiteralPath (Join-Path $d 'nonce.txt') -Value 'LOCKCHK' -NoNewline -Encoding ascii; "
+                      r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; "
+                      r"schtasks /Run /TN 'zb-session-probe' | Out-Null; Start-Sleep -Seconds 6; "
+                      r"Get-Content -LiteralPath (Join-Path $d 'session.json') -Raw")
+        p = _ssh_run(env, r"Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'zb\runs\session\session.json') -Raw")
+        import json
+        d = json.loads(p.stdout.strip())
+        self.assertEqual(d.get("locked"), True, "a locked console must report locked=true")
 
 
 if __name__ == "__main__":

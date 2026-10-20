@@ -162,21 +162,15 @@ probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts -> prints the hos
 SESSION_TIMEOUT="${ZB_SESSION_TIMEOUT:-60}"
 run_session_probe() { # $1=user $2=host $3=port $4=key $5=known_hosts $6=nonce $7=expected session_probe.ps1 sha256
   local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
-  local ps
-  ps=$(cat <<'PS'
-$ErrorActionPreference='Stop'
-# Pin-verify the pre-registered console task BEFORE triggering: the task is provisioned externally (as the
-# test user, post-snapshot), so the gate refuses to trust it unless its name, script action, principal and
-# the staged script's SHA-256 all match what we expect. A tampered or absent task fails closed.
-$staged = Join-Path $env:USERPROFILE 'zb\session_probe.ps1'
-if (-not (Test-Path -LiteralPath $staged)) { Write-Output 'RESULT=TASK_SCRIPT_MISSING'; exit 0 }
-$h = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLower()
-if ($h -ne '__SHA__') { Write-Output ('RESULT=TASK_SCRIPT_HASH_MISMATCH ' + $h); exit 0 }
-$q = $null; try { $q = (schtasks /Query /TN 'zb-session-probe' /FO LIST /V 2>&1 | Out-String) } catch {}
-if (-not $q) { Write-Output 'RESULT=TASK_MISSING'; exit 0 }
-if ($q -notmatch 'session_probe\.ps1') { Write-Output 'RESULT=TASK_ACTION_MISMATCH'; exit 0 }
-$meLeaf = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -split '\\')[-1]
-if ($q -notmatch [regex]::Escape($meLeaf)) { Write-Output 'RESULT=TASK_PRINCIPAL_MISMATCH'; exit 0 }
+  # Pin-verify the externally-provisioned console task BEFORE triggering, using the SAME verify_task.ps1 the
+  # live negative tests exercise (single source of truth). It sets $ZB_VERIFY=OK or a TASK_* reason; we only
+  # write the nonce + trigger + poll when $ZB_VERIFY -eq 'OK'. A tampered/absent/non-interactive task fails
+  # closed. The header sets verify_task.ps1's inputs (task name, staged script path, expected SHA-256).
+  local header verify tail ps
+  header="\$env:ZB_TASK_NAME='zb-session-probe'; \$env:ZB_STAGED_PATH=(Join-Path \$env:USERPROFILE 'zb\\session_probe.ps1'); \$env:ZB_STAGED_SHA='__SHA__'"
+  verify=$(cat "$HERE/verify_task.ps1")
+  tail=$(cat <<'PS'
+if ($ZB_VERIFY -ne 'OK') { exit 0 }   # verify_task.ps1 already printed VERIFY=TASK_*; the gate treats any non-OK as failure
 $dir = Join-Path $env:USERPROFILE 'zb\runs\session'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Set-Content -LiteralPath (Join-Path $dir 'nonce.txt') -Value '__NONCE__' -NoNewline -Encoding ascii
@@ -196,6 +190,7 @@ while ((Get-Date) -lt $deadline) {
 Write-Output 'RESULT=TIMEOUT'
 PS
 )
+  ps="$header"$'\n'"$verify"$'\n'"$tail"
   ps=${ps//__NONCE__/$6}
   ps=${ps//__TIMEOUT__/$SESSION_TIMEOUT}
   ps=${ps//__SHA__/$7}

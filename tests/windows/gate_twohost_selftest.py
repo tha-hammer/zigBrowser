@@ -656,10 +656,13 @@ class WS0SessionTrigger(_TwoHostCase):
             self.assertIn("schtasks /Run /TN 'zb-session-probe'", streamed,
                           "gate must trigger the in-console session task")
             self.assertIn("nonce.txt", streamed, "gate must write a per-run nonce before triggering")
-            # The gate must PIN-VERIFY the task (name, action, principal, script hash) before triggering.
-            self.assertIn("schtasks /Query /TN 'zb-session-probe'", streamed, "gate must verify the task exists")
+            # The gate must PIN-VERIFY the task by exact XML fields (via the prepended verify_task.ps1).
+            self.assertIn("ZB_TASK_NAME='zb-session-probe'", streamed, "gate must set the task name for verify_task.ps1")
+            self.assertIn("schtasks /Query", streamed, "gate must query the task")
+            self.assertIn("/XML", streamed, "gate must verify the task by XML, not localized list output")
             self.assertIn("Get-FileHash", streamed, "gate must verify the staged session_probe.ps1 hash")
-            self.assertIn("session_probe.ps1", streamed, "gate must verify the task action script")
+            self.assertIn("InteractiveToken", streamed, "gate must require the task's InteractiveToken logon type")
+            self.assertIn("$ZB_VERIFY -ne 'OK'", streamed, "gate must only trigger when verify_task.ps1 returns OK")
 
     def test_session_task_missing_fails_closed(self):
         with tempfile.TemporaryDirectory() as t:
@@ -747,8 +750,27 @@ class WS0ZeroWrite(unittest.TestCase):
         src = (REPO / "tests" / "windows" / "host_probe.ps1").read_text()
         m = re.search(r"# >>> ZB_ACL_FN.*?\n(.*?)\n# <<< ZB_ACL_FN", src, re.S)
         self.assertIsNotNone(m, "host_probe.ps1 is missing the ZB_ACL_FN extraction markers")
-        self.assertIn("function Get-ZbWritable", m.group(1), "the marked block must define Get-ZbWritable")
-        self.assertRegex(src, r"Get-ZbWritable \$acl \$mySids", "host_probe.ps1 must call Get-ZbWritable")
+        block = m.group(1)
+        self.assertIn("function Get-ZbWritable", block, "the marked block must define Get-ZbWritable")
+        self.assertIn("function Initialize-ZbAccessCheck", block, "the marked block must define Initialize-ZbAccessCheck")
+        self.assertIn("AccessCheck", block, "Get-ZbWritable must use the real Win32 AccessCheck")
+        self.assertRegex(src, r"Get-ZbWritable \$acl \$ZbAcCtx", "host_probe.ps1 must call Get-ZbWritable with the AccessCheck context")
+
+
+def load_tests(loader, tests, pattern):
+    # Register the live VM suite (host_live_test.py) alongside the hostless cases so one run covers both.
+    # The live cases SKIP when the VM env (ZB_WIN11_HOST...) is absent, so this is a no-op in CI without a VM.
+    import importlib.util
+    try:
+        _p = pathlib.Path(__file__).with_name("host_live_test.py")
+        _spec = importlib.util.spec_from_file_location("host_live_test", str(_p))
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        tests.addTests(loader.loadTestsFromModule(_mod))
+    except Exception as _e:  # never let registration break the hostless suite
+        import sys as _sys
+        _sys.stderr.write("note: could not load host_live_test.py: %r\n" % (_e,))
+    return tests
 
 
 if __name__ == "__main__":
