@@ -17455,3 +17455,112 @@ SHOULD; the present C implementation initializes it to null. The prior owner
 blockers close cumulatively once the secure wipe and C-buffer release oracle
 land. Verdict sent to JadeBeacon in Agent Mail 6749. `bb15d4e` remains
 APPROVED as the already-reviewed incremental S7b unit green, not full S7b.
+
+## MS2a closure attempt after `32635b6` (`713d6eb`, `a823275`, `1df6df0`, `d241286`, `179f4dd`)
+
+The five commits do **not** close `26fdfff`. The pushed and approved linear
+boundary remains **`703b3de`**, with `26fdfff` still the earliest blocked
+successor.
+
+- **`713d6eb` APPROVED.** Its registered real-binary socket test starts on the
+  first document, lets page code define and replace a hostile
+  `window.__zbAutomation`, proves `dom.getText` still returns the real DOM, and
+  proves the page sees only its own spoof. The test never injects the script or
+  calls the shim directly. JadeBeacon's both-Mac green and page-world mutation
+  are accepted.
+- **`a823275` BLOCKED-for-tests at that SHA, cumulatively repaired by the
+  router portion of `179f4dd`.** At `a823275`, `page.evaluate` did not parse
+  `timeout_ms`, so its nominal 300 ms deadline did not expire within the
+  1500 ms DISPATCHING hold. The DOM marker was a valid submission oracle, but
+  it did not yet exercise the deadline/claim race. Once `179f4dd` adds
+  `optionU64`, that same registered test becomes a valid observable race test.
+- **`1df6df0` BLOCKED.** Superseding the stale GTK symbols is reasonable for
+  the marshal, generation and window-registry rows, but the proposed loop-end
+  replacement has no mechanism for its stated result. The plan at
+  `:771-780` says that after `[NSApp run]` ends, a queued main-queue job times
+  out and `live_jobs` drains to zero. The queued block owns the chain reference;
+  after the main loop stops it cannot run to release that reference, while
+  `AutomationApiServer.stop` joins the connection thread. A real app-ended
+  cancellation/ref-release mechanism must be named and proved by prompt waiter
+  wake, no post-quit dispatch and an exact zero-job result. It can remain an
+  internal mechanism; the review does not require exporting the GTK symbol.
+- **`d241286` APPROVED as bucket 2 part D only.** It inspects the dylib beside
+  the browser that will load it, requires the real automation exports, rejects
+  the five deliberately absent GTK exports, and makes a popup prove that
+  `list_windows` returns distinct ids and the real primary/popup URLs. This
+  inventory approval does not validate the blocked quit lifecycle.
+- **`179f4dd` BLOCKED.** Parsing a bounded `page.evaluate` timeout is a useful
+  production correction, but its closure test can false-green if the
+  JavaScript is never submitted: the delayed expression at test lines 36-37
+  makes no page-observable change, there is no lower timing bound, and an
+  implementation which immediately returns `-32009` and balances the job
+  passes lines 125-148. The delayed Promise must change a DOM marker and the
+  test must read it after the delay. The live count check at line 147 also
+  accepts `final < baseline`; require exact equality and parse signed counts so
+  underflow cannot disappear. Finally, shim lines 1431 and 1454 call
+  `zb_auto_test_hooks_enabled` from the automation/server thread even though
+  its contract at lines 1266-1270 says main-thread-only and it reads
+  non-atomic `g_active_app` plus an Objective-C property. Cache the e2e bit in
+  an atomic set/cleared on main, or carry it in each job; do not dereference
+  AppKit-owned state off-main.
+
+JadeBeacon's mail 6762 also explicitly leaves bucket 2 part B (exact
+success/error/abandoned string ownership) and part C (immediate quit) absent.
+No Mac run was attempted locally. The owner's reported both-architecture
+evidence is accepted for the approved pieces; local `py_compile` of all four
+new e2e files and `git diff --check 32635b6..179f4dd` passed. Findings and the
+unchanged push boundary were sent in Agent Mail 6767.
+
+## WS0-completion gate start (`32a0a04`, `69e9935`)
+
+**Both commits BLOCKED pending fix-forward.** `32a0a04` adds several useful
+fail-closed schema-2 checks, and the current hostless suite passes 28/28, but
+the new negative cases at `gate_twohost_selftest.py:242-276` omit VM
+wrong/missing `native_arch`, VM missing/empty `console_user`, file-server old
+schema and file-server locked state. Deleting those production checks
+survives. The gate accepts `shares` as any list and does not compare pre/post
+shares, while the Windows plan requires share names/root paths and an
+undisturbed file-server fence. Its “complete schema-2 readiness” claim also
+does not yet validate all plan-required identity/readiness values, including
+the configured test user, minimum OS build, nonempty WebView2, root/free-space
+and host-specific tool fields.
+
+`69e9935` correctly moves snapshot evidence out of the guest, but
+`gate.sh:248-255` takes the first arbitrary nonempty snapshot. Any unrelated
+old shutoff snapshot can therefore make readiness pass. The authoritative
+plan names the clean phase snapshots and requires their names and creation
+dates in the gate log. Require an explicit expected snapshot, query that exact
+name, log name/date/state, and add an argv oracle plus wrong-name/missing/date/
+state negatives. The plan's stale in-guest `snapshot_marker` row also needs to
+be superseded. Findings were sent to AzureRidge in Agent Mail 6769.
+
+## macOS MS5 contract/red and bundled Python decision (`8bfcec8`, `706382a`, `6ea1064`)
+
+**`706382a` APPROVED as the unregistered failing-first red for rev-14 items 3
+and 6 only.** It pins Linux runtime compatibility, bundle and dev-tree runtime
+locations (including a space and a false `Contents/MacOS` suffix), refuses
+Resources, and pins the fail-closed macOS sandbox gate plus unchanged Linux/
+Windows behavior. A display-free direct run failed all six tests for the named
+missing declarations, as intended. It is not an MS5 green.
+
+**`8bfcec8` BLOCKED as the authoritative MS5 plan.** Items 1-3 and 6-7 give
+useful platform contracts, but item 5 says the browser kills the setup process
+group on every exit path. That is impossible when the browser itself receives
+SIGKILL. The Darwin kqueue child must, on parent death, terminate and reap its
+whole process group (not merely exit), and the e2e must census all descendants
+after an uncatchable browser death. Item 4 also remains explicitly pending its
+file owner's coordination. Item 8's user decision is now resolved by the
+follow-up below.
+
+**`6ea1064` BLOCKED, although it records the core user decision correctly:**
+the app bundles official python.org CPython 3.12.10 universal2, expands it at
+build time into `Contents/Frameworks/agent-host`, never runs the installer and
+never installs it system-wide. The build-input contract currently pins only
+MD5. It must also pin the measured SHA-256
+`8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4` and the
+verified Sigstore identity. The measured payload has 94 Mach-Os but only 93
+are universal2: `Versions/3.12/bin/python3.12-intel64` and its link are the
+x86_64 Rosetta launcher and must be excluded from the bundled copy/census.
+The plan must also pin, or explicitly defer before implementation, the fat
+runtime interpreter path and no-venv relocatability rule. Verdict sent to
+JadeBeacon and BlueBeaver in Agent Mail 6770.
