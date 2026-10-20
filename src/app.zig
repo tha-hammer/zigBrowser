@@ -10,6 +10,7 @@ const agent_frames = @import("agent_frames.zig");
 const agent_login = @import("agent_login.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
+const automation_macos_port = @import("automation_macos_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
@@ -350,8 +351,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     }
 
     if (spec.automation_api) {
-        // automation.js must be registered before zb_app_run builds the window.
-        automation_gtk_port.installScript();
+        // automation.js must be registered before zb_app_run builds the window. macOS uses the
+        // WKWebView port (MS2a); every other target uses the GTK port.
+        if (builtin.os.tag == .macos) automation_macos_port.installScript() else automation_gtk_port.installScript();
         const config = buildAutomationConfig(arena, io, spec, profile_dir) catch |err| {
             if (err == error.EmptyTokenFile) std.debug.print("--automation-token-file is empty\n", .{});
             return error.WriteFailed;
@@ -445,7 +447,7 @@ fn buildAutomationConfig(
         .socket_path = socket_path,
         .token = credentials.token,
         .token_file_path = credentials.token_file_path,
-        .page_port = automation_gtk_port.pagePort(),
+        .page_port = if (builtin.os.tag == .macos) automation_macos_port.pagePort() else automation_gtk_port.pagePort(),
         .cookie_port = automation_gtk_cookie_port.cookiePort(),
     };
 }

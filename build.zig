@@ -190,6 +190,12 @@ pub fn build(b: *std.Build) void {
     const ms1b_gate = b.addSystemCommand(&.{ "bash", "tests/mac/ms1b_signed_gate.sh" });
     b.step("ms1b-gate", "Run the macOS MS1b signed-bundle gate (the signed universal runs on both Macs)").dependOn(&ms1b_gate.step);
 
+    // MS2a (plan): the WKWebView routed-command port runs on BOTH Macs (unsigned build) — the
+    // routed commands (navigate/url/title + the dom.getText eval in the automation world) and the
+    // main-thread-bridge hang guard. Driven from Linux over SSH.
+    const ms2a_gate = b.addSystemCommand(&.{ "bash", "tests/mac/ms2a_gate.sh" });
+    b.step("ms2a-gate", "Run the macOS MS2a routed-command gate (WKWebView port on both Macs)").dependOn(&ms2a_gate.step);
+
     // WS0: the Windows gate's Linux-side selftest drives tests/windows/gate.sh against fake
     // ssh/virsh/tar on PATH (fail-closed, path fence, display scrub, transport hygiene). Hermetic
     // — no Windows host, display or live socket. The [W] gate.sh --probe-only runs separately.
@@ -1632,7 +1638,7 @@ pub fn build(b: *std.Build) void {
 fn guardDisplay(b: *std.Build) void {
     const guard = b.addSystemCommand(&.{ "python3", "tools/display_guard.py" });
     guard.has_side_effects = true; // the environment is read on every run, never cached
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);

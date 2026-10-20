@@ -31,6 +31,7 @@ struct ZbWindow {
 };
 
 static ZBAppHost *g_active_app = nil;
+static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automation_set_script)
 static void handle_signal(int signo);
 
 static void emit_safe_field(const char *text) {
@@ -389,6 +390,16 @@ static void handle_signal(int signo) {
                                                     injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                  forMainFrameOnly:NO];
   [configuration.userContentController addUserScript:userScript];
+  // MS2a: automation.js (set by zb_automation_set_script before zb_app_run) is injected into the
+  // named automation content world, where handle_body reads globalThis.__zbAutomation.
+  if (zb_auto_script != nil) {
+    WKContentWorld *autoWorld = [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD];
+    WKUserScript *autoUserScript = [[WKUserScript alloc] initWithSource:zb_auto_script
+                                                         injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                      forMainFrameOnly:NO
+                                                        inContentWorld:autoWorld];
+    [configuration.userContentController addUserScript:autoUserScript];
+  }
   return [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) configuration:configuration];
 }
 
@@ -784,6 +795,213 @@ static void handle_signal(int signo) {
   self.done = YES;
 }
 @end
+
+// --- MS2a: WKWebView routed-command port (zb_automation_* ABI, webkit_shim.h) ---
+// The automation server calls these from its own (non-main) thread; each runs the WKWebView work on
+// the main thread and BLOCKS the caller until done or timeout, via a dispatch_semaphore (the Cocoa
+// analog of webkit_shim.c's g_cond bridge). Deadlock guard: a main-thread caller would
+// dispatch_async+wait forever, so the main-thread guard answers ZB_AUTO_ERR_INTERNAL.
+
+static ZBWindowHost *zb_auto_window_for_id(uint32_t win) {
+  ZBAppHost *app = g_active_app;
+  if (app == nil) return nil;
+  if (win <= 1) return app.mainWindow;  // id 1 (and the 0 "primary" alias) is the main window
+  if (app.windows != nil && (NSUInteger)(win - 1) < app.windows.count) return app.windows[win - 1];
+  return nil;
+}
+
+void zb_automation_free(char *p) {
+  free(p);
+}
+
+void zb_automation_set_script(const char *source, size_t len) {
+  @autoreleasepool {
+    zb_auto_script = (source != NULL && len > 0)
+        ? [[NSString alloc] initWithBytes:source length:len encoding:NSUTF8StringEncoding]
+        : nil;
+  }
+}
+
+// Poll finishedOrFailed on the main thread (non-blocking) until the current load completes or the
+// deadline; when it does, run onReady(host) on the main thread, then wake the caller. Deadlock
+// guard: a main-thread caller would dispatch+wait on itself forever, so return ZB_AUTO_ERR_INTERNAL.
+// Returns ZB_AUTO_OK (onReady ran), ZB_AUTO_ERR_NO_WINDOW, or ZB_AUTO_ERR_TIMEOUT.
+static int zb_auto_await(uint32_t win, unsigned int timeout_ms, void (^onReady)(ZBWindowHost *host)) {
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  __block int rc = ZB_AUTO_ERR_TIMEOUT;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+  __block void (^poll)(void) = nil;
+  poll = ^{
+    ZBWindowHost *host = zb_auto_window_for_id(win);
+    if (host == nil) {
+      rc = ZB_AUTO_ERR_NO_WINDOW; poll = nil; dispatch_semaphore_signal(sem); return;
+    }
+    if (host.finishedOrFailed) {
+      onReady(host); rc = ZB_AUTO_OK; poll = nil; dispatch_semaphore_signal(sem); return;
+    }
+    if ([[NSDate date] compare:deadline] != NSOrderedAscending) {
+      rc = ZB_AUTO_ERR_TIMEOUT; poll = nil; dispatch_semaphore_signal(sem); return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+  };
+  dispatch_async(dispatch_get_main_queue(), poll);
+  // Backstop longer than the poll deadline so the main-thread poll is the arbiter, never a hang.
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
+  return rc;
+}
+
+static int zb_auto_get_string(uint32_t win, unsigned int timeout_ms, char **out, BOOL want_title) {
+  @autoreleasepool {
+    __block char *result = NULL;
+    int rc = zb_auto_await(win, timeout_ms, ^(ZBWindowHost *host) {
+      NSString *value = want_title ? (host.webView.title ?: @"")
+                                    : (host.webView.URL.absoluteString ?: @"");
+      const char *utf8 = value.UTF8String;
+      result = strdup(utf8 != NULL ? utf8 : "");
+    });
+    if (rc == ZB_AUTO_OK) {
+      if (out != NULL) *out = result; else free(result);
+    }
+    return rc;
+  }
+}
+
+int zb_automation_get_url(uint32_t win, unsigned int timeout_ms, char **out_url) {
+  return zb_auto_get_string(win, timeout_ms, out_url, NO);
+}
+
+int zb_automation_get_title(uint32_t win, unsigned int timeout_ms, char **out_title) {
+  return zb_auto_get_string(win, timeout_ms, out_title, YES);
+}
+
+int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unload,
+                                   unsigned int timeout_ms, char **out_err) {
+  // MS2a.1: FAIL policy only; the fixtures raise no beforeunload prompt (full policy is a later
+  // refinement). A failed load sets finishedOrFailed AND requests app exit (lifecycle), so MS2a.1
+  // navigates only to valid URLs; distinguishing nav failure without exiting is a later step.
+  (void)before_unload;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  @autoreleasepool {
+    NSString *url_text = url != NULL ? [NSString stringWithUTF8String:url] : nil;
+    NSURL *nsurl = url_text != nil ? [NSURL URLWithString:url_text] : nil;
+    if (nsurl == nil) return ZB_AUTO_ERR_NAV_FAILED;
+    __block BOOL started = NO;
+    dispatch_semaphore_t kick = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBWindowHost *host = zb_auto_window_for_id(win);
+      if (host != nil) {
+        host.finishedOrFailed = NO;  // clear before the load so the await waits for THIS navigation
+        [host.webView loadRequest:[NSURLRequest requestWithURL:nsurl]];
+        started = YES;
+      }
+      dispatch_semaphore_signal(kick);
+    });
+    dispatch_semaphore_wait(kick, dispatch_time(DISPATCH_TIME_NOW, (int64_t)5 * NSEC_PER_SEC));
+    if (!started) return ZB_AUTO_ERR_NO_WINDOW;
+    return zb_auto_await(win, timeout_ms, ^(ZBWindowHost *host) { (void)host; });
+  }
+}
+
+int zb_automation_navigate(uint32_t win, const char *url, unsigned int timeout_ms, char **out_err) {
+  return zb_automation_navigate_guarded(win, url, ZB_BEFORE_UNLOAD_FAIL, timeout_ms, out_err);
+}
+
+int zb_automation_reload(uint32_t win, unsigned int timeout_ms, char **out_err) {
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  @autoreleasepool {
+    __block BOOL started = NO;
+    dispatch_semaphore_t kick = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBWindowHost *host = zb_auto_window_for_id(win);
+      if (host != nil) {
+        host.finishedOrFailed = NO;
+        [host.webView reload];
+        started = YES;
+      }
+      dispatch_semaphore_signal(kick);
+    });
+    dispatch_semaphore_wait(kick, dispatch_time(DISPATCH_TIME_NOW, (int64_t)5 * NSEC_PER_SEC));
+    if (!started) return ZB_AUTO_ERR_NO_WINDOW;
+    return zb_auto_await(win, timeout_ms, ^(ZBWindowHost *host) { (void)host; });
+  }
+}
+
+// Serialize a callAsyncJavaScript result to the ABI string: an NSString verbatim (handle_body
+// returns JSON.stringify(...), already a string), else the JSON encoding of the value ("null" for
+// nil/undefined), per webkit_shim.h.
+static char *zb_auto_result_string(id value) {
+  NSString *s = nil;
+  if ([value isKindOfClass:[NSString class]]) {
+    s = (NSString *)value;
+  } else if (value == nil || value == [NSNull null]) {
+    s = @"null";
+  } else {
+    NSData *data = [NSJSONSerialization isValidJSONObject:value]
+        ? [NSJSONSerialization dataWithJSONObject:value options:0 error:nil]
+        : nil;
+    s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"null";
+  }
+  const char *utf8 = s.UTF8String;
+  return strdup(utf8 != NULL ? utf8 : "null");
+}
+
+int zb_automation_eval_json(uint32_t win, const char *function_body, const char *arg_json,
+                            const char *world, unsigned int timeout_ms, char **out_result,
+                            char **out_err) {
+  if (out_result != NULL) *out_result = NULL;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;  // deadlock guard
+  if (function_body == NULL) return ZB_AUTO_ERR_INTERNAL;
+  @autoreleasepool {
+    NSString *body = [NSString stringWithUTF8String:function_body];
+    NSString *arg = [NSString stringWithUTF8String:(arg_json != NULL ? arg_json : "null")];
+    // world == ZB_AUTOMATION_WORLD -> the named automation world (where __zbAutomation lives);
+    // NULL/empty -> the page world.
+    WKContentWorld *content_world = (world != NULL && world[0] != '\0')
+        ? [WKContentWorld worldWithName:[NSString stringWithUTF8String:world]]
+        : WKContentWorld.pageWorld;
+
+    __block int rc = ZB_AUTO_ERR_TIMEOUT;
+    __block char *result = NULL;
+    __block char *errmsg = NULL;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+    __block void (^poll)(void) = nil;
+    poll = ^{
+      ZBWindowHost *host = zb_auto_window_for_id(win);
+      if (host == nil) { rc = ZB_AUTO_ERR_NO_WINDOW; poll = nil; dispatch_semaphore_signal(sem); return; }
+      if (!host.finishedOrFailed) {
+        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { rc = ZB_AUTO_ERR_TIMEOUT; poll = nil; dispatch_semaphore_signal(sem); return; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+        return;
+      }
+      poll = nil;  // ready: run the async eval; its completion handler signals.
+      [host.webView callAsyncJavaScript:body
+                              arguments:@{ @"arg": arg }
+                                inFrame:nil
+                         inContentWorld:content_world
+                      completionHandler:^(id value, NSError *error) {
+        if (error != nil) {
+          rc = ZB_AUTO_ERR_JS;
+          const char *m = error.localizedDescription.UTF8String;
+          errmsg = strdup(m != NULL ? m : "evaluation failed");
+        } else {
+          result = zb_auto_result_string(value);
+          rc = ZB_AUTO_OK;
+        }
+        dispatch_semaphore_signal(sem);
+      }];
+    };
+    dispatch_async(dispatch_get_main_queue(), poll);
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
+    if (out_result != NULL) *out_result = result; else free(result);
+    if (out_err != NULL) *out_err = errmsg; else free(errmsg);
+    return rc;
+  }
+}
 
 int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   @autoreleasepool {
