@@ -70,7 +70,7 @@ async def run_turn(args, value, out):
             deadline_ms = args.tool_deadline_ms or args.mcp_tool_timeout_ms - 10_000
             bridge = Bridge(out, "contract", deadline_ms / 1000, prompt=lambda: 1)  # the turn is its one prompt
             bridge.start()
-            mcp = {"servers": {"zigbrowser": bridge.server()}, "allowed": bridge.allowed_tools(),
+            mcp = {"servers": {"zigbrowser": bridge.echo_server()}, "allowed": bridge.echo_tools(),
                    "can_use_tool": deny_all}
         opts = options.build(home, route_env=route.env, cli_path=route.cli_path,
                              base_url=args.base_url, proxy=args.proxy,

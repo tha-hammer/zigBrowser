@@ -35,6 +35,25 @@ def tool_name(name):
     return f"mcp__{SERVER}__{name}"
 
 
+def _schema(properties, required=()):
+    return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
+
+
+_SELECTOR = {"type": "string", "description": "An engine selector: css=..., text=..., as the SDKs send it."}
+READ_TOOLS = (  # S7.5's list (rev 16.20.34): (name, description, input schema)
+    ("window_info", "This drawer's window: its page's health, URL and title.", _schema({})),
+    ("query", "The elements a selector matches in this window's page.", _schema({"selector": _SELECTOR}, ["selector"])),
+    ("get_text", "The text of the element a selector matches.", _schema({"selector": _SELECTOR}, ["selector"])),
+    ("get_attribute", "One attribute of the element a selector matches.",
+     _schema({"selector": _SELECTOR, "name": {"type": "string"}}, ["selector", "name"])),
+    ("wait_for", "Waits until the element a selector matches is in a state.",
+     _schema({"selector": _SELECTOR,
+              "state": {"type": "string", "enum": ["visible", "hidden", "attached", "detached"]},
+              "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 10000}}, ["selector"])),
+    ("screenshot", "A picture of this window's page.", _schema({})),
+)
+
+
 def failed(text):
     return {"content": [{"type": "text", "text": text}], "is_error": True}
 
@@ -151,7 +170,25 @@ class Bridge:
             return failed("The browser did not answer in time.")
         return failed("the prompt ended") if answer is None else answer
 
+    def tools(self):
+        """S7b (rev 16.20.34): S7.5's six read tools; each forwards its name and args."""
+        return [tool(name, description, input_schema)(self._forward(name)) for name, description, input_schema in READ_TOOLS]
+
+    def _forward(self, name):
+        async def handler(args):
+            return await self.call(name, args)
+
+        return handler
+
     def server(self):
+        return create_sdk_mcp_server(SERVER, tools=self.tools())
+
+    @staticmethod
+    def allowed_tools():
+        return [tool_name(name) for name, _, _ in READ_TOOLS]
+
+    def echo_server(self):
+        """P0's contract tool (the `contract` command only)."""
         @tool("echo", "Echoes the text back through the browser (contract tool).", {"text": str})
         async def echo(args):
             return await self.call("echo", {"text": args.get("text", "")})
@@ -159,7 +196,7 @@ class Bridge:
         return create_sdk_mcp_server(SERVER, tools=[echo])
 
     @staticmethod
-    def allowed_tools():
+    def echo_tools():
         return [tool_name("echo")]
 
 
