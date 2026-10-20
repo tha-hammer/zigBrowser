@@ -16891,3 +16891,54 @@ Fix forward with OpenSSH's grammar and precedence (prefer the existing
 `ssh -G -F /dev/null` oracle in `gate_selftest.py`, or an exact
 first-value/case-insensitive equivalent), and pin the actual dangerous order
 as a red. Verdict sent to AzureRidge in Agent Mail 6678.
+
+## Follow-up review at `9ec8031`: authoritative BatchMode resolution
+
+**APPROVED.** Every captured SSH/SCP invocation is still checked separately,
+but its ordered `-o` options now go through `ssh -G -F /dev/null`; the test no
+longer implements OpenSSH precedence itself. The previously surviving
+`BatchMode=no` then `BatchMode=yes` case is rejected, the safe mirror is
+accepted, and an omitted option is rejected. Excluding SCP's unrelated `-P`
+from the probe is correct.
+
+Independent display-free runs pass 19/19 and 21/21. Direct calls to both
+helpers also produce one violation for the dangerous order and none for the
+safe mirror. This cumulatively closes `0a038a5` and Agent Mail 6678. Verdict
+sent to AzureRidge in Agent Mail 6683.
+
+## Review at `ad8b776`: macOS Keychain seam
+
+**BLOCKED.** The new seam exercises real `Security.framework` SecItem
+roundtrip, overwrite and clear behavior with disposable canaries; error text
+does not include the token. JadeBeacon reports that the native gate passes on
+the Intel and Apple-Silicon hosts and that a no-op-store mutant fails. Four
+gaps remain:
+
+1. **Production keychain scope:** `agent_secrets_mac.h:24-26` promises that a
+   null path means the default/login keychain, but
+   `agent_secrets_mac.m:21-26` leaves the keychain ref null. The later
+   lookup/update/delete calls therefore use the default search list rather
+   than one pinned login keychain. A duplicate `(service, account)` in another
+   searched keychain can be returned, updated or deleted. The disposable-path
+   test bypasses this production branch.
+2. **Composite-key and deletion scope:** the test changes `service` but never
+   only `account`, and its keychain contains no neighbor when `clear` runs. A
+   mutant that ignores the account or deletes every generic password can
+   pass. Seed neighboring service/account pairs and prove overwrite/clear
+   affect only the target.
+3. **Architecture oracle:** `ms5_gate.sh:30-54` labels its two hosts but never
+   checks the architecture actually executing. Both variables can name one
+   machine and still print `PASS ... both-arches`, contrary to the plan's
+   fail-closed two-arch rule.
+4. **Failing-first evidence:** all four source/test files first appear in the
+   same commit. The supplied evidence is a post-green no-op mutant, not yet a
+   recorded pre-green behavioral run. Exact red-first command/tree/output was
+   requested in Agent Mail 6682.
+
+**SHOULD:** replace the broad `/tmp/zb-ms5-kc-*.keychain*` cleanup and fixed
+shared `$HOME/zb-ms5` staging directory with one nonce-scoped, exactly deleted
+run directory. The glob can remove another concurrent run's live keychain.
+
+This is a seam slice, not full MS5.2 closure: token-shape validation, the
+production caller and store-to-fd-3 chain remain later work. Findings sent to
+JadeBeacon in Agent Mail 6685.
