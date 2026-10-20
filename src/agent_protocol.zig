@@ -376,7 +376,8 @@ pub const LoginFrame = union(enum) {
 };
 pub const LoginOutcome = union(enum) { ok: LoginFrame, rejected: LoginReason };
 
-const login_error_codes = [_][]const u8{ "cli", "timeout", "cancelled", "shape", "protocol" };
+// Rev 16.18.9: `exchange`, the CLI failed to exchange a typed code ("OAuth error").
+const login_error_codes = [_][]const u8{ "cli", "timeout", "cancelled", "shape", "protocol", "exchange" };
 
 pub const LoginValidator = struct {
     last_seq: i64 = 0,

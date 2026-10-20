@@ -49,6 +49,12 @@ int zb_secrets_file_present(const char *agent_home);
 #define TEXT_BAD_CODE "That doesn't look like a sign-in code."
 #define TEXT_SIGNIN_FAILED "Sign-in failed."
 #define TEXT_SIGNIN_CANCELLED "Sign-in cancelled."
+/* The reason line under "Sign-in failed." (rev 16.18.9): one fixed sentence per ending. */
+#define TEXT_REASON_EXCHANGE "Claude.ai could not be reached, or it did not accept the code. Try again."
+#define TEXT_REASON_TIMEOUT "The sign-in took too long. Try again."
+#define TEXT_REASON_CLI "The Claude CLI stopped before it gave a token. Try again."
+#define TEXT_REASON_NETWORK "The sign-in's network could not start. Try again."
+#define TEXT_REASON_OTHER "Something unexpected happened during sign-in. Try again."
 #define TEXT_LINK "Open this link in your browser to sign in:"
 #define TEXT_COPY_LINK "Copy link"
 
@@ -76,6 +82,9 @@ typedef struct {
   GtkWidget *save;
   GtkWidget *remove;
   GtkWidget *status;
+  /* Under the status line after a failed sign-in (rev 16.18.9): why it failed. */
+  GtkWidget *reason;
+  int reason_shown;
   GtkWidget *file_box; /* the warning and "Save to a private file instead" */
   GtkWidget *file_button;
   /* Sign in with Claude.ai: the button, the code entry and its Send code
@@ -205,6 +214,41 @@ static void set_state(State state, const char *text) {
 
 /* `SECRETS login <state>` (D7b, rev 16.18.3). */
 static void login_row(const char *state) { secrets_row("login", state, NULL); }
+
+/* The fixed reason for a sign-in's error ending (rev 16.18.9); NULL for `store`,
+ * which has its own sentences, and for `cancelled`. Never the CLI's text. */
+static const char *reason_for(const char *code) {
+  if (code == NULL || strcmp(code, "cli") == 0) {
+    return TEXT_REASON_CLI;
+  }
+  if (strcmp(code, "exchange") == 0) {
+    return TEXT_REASON_EXCHANGE;
+  }
+  if (strcmp(code, "timeout") == 0) {
+    return TEXT_REASON_TIMEOUT;
+  }
+  if (strcmp(code, "network") == 0) {
+    return TEXT_REASON_NETWORK;
+  }
+  if (strcmp(code, "store") == 0 || strcmp(code, "cancelled") == 0) {
+    return NULL;
+  }
+  return TEXT_REASON_OTHER; /* shape, protocol */
+}
+
+/* Shows `text` on the reason line, or hides it (NULL); each change writes
+ * `SECRETS reason <sentence>` or `SECRETS reason -`. */
+static void set_reason(const char *text) {
+  if (secrets.window == NULL || (text == NULL && !secrets.reason_shown)) {
+    return;
+  }
+  if (text != NULL) {
+    gtk_label_set_text(GTK_LABEL(secrets.reason), text);
+  }
+  gtk_widget_set_visible(secrets.reason, text != NULL);
+  secrets.reason_shown = text != NULL;
+  secrets_row("reason", text != NULL ? text : "-", NULL);
+}
 
 /* One credential change at a time (rev 16.18.6, RoseCat 6024): a sign-in, from
  * Sign in until its token's store answered, locks the entry, Save, Remove and the
@@ -457,6 +501,10 @@ static void on_login_event(ZbLoginEvent event, const char *detail, void *unused)
     signin_controls(0, 0);
     if (secrets.window != NULL) {
       set_status_text(TEXT_SIGNIN_FAILED);
+      const char *why = reason_for(detail);
+      if (why != NULL) {
+        set_reason(why);
+      }
     }
     break;
   }
@@ -477,6 +525,7 @@ static void on_signin(GtkWidget *button, gpointer unused) {
   if (secrets.busy || signing_in() || zb_login_running()) {
     return; /* one credential change at a time; a sign-in still tearing down is waited out */
   }
+  set_reason(NULL);
   if (zb_login_start(on_login_event, NULL) != 0) {
     set_status_text(TEXT_SIGNIN_FAILED);
   }
@@ -631,6 +680,8 @@ static void on_destroy(GtkWidget *window, gpointer unused) {
   wipe_pending();
   secrets.epoch++;
   secrets.window = NULL;
+  secrets.reason = NULL;
+  secrets.reason_shown = 0;
   secrets.busy = 0;
   secrets.signin_store = 0;
   zb_login_cancel(); /* closing the window cancels a running sign-in */
@@ -709,6 +760,11 @@ static GtkWidget *build(void) {
   gtk_label_set_line_wrap(GTK_LABEL(secrets.status), TRUE);
   gtk_box_pack_start(GTK_BOX(box), secrets.status, FALSE, FALSE, 0);
 
+  secrets.reason = gtk_label_new(NULL);
+  gtk_label_set_xalign(GTK_LABEL(secrets.reason), 0);
+  gtk_label_set_line_wrap(GTK_LABEL(secrets.reason), TRUE);
+  gtk_box_pack_start(GTK_BOX(box), secrets.reason, FALSE, FALSE, 0);
+
   secrets.file_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
   GtkWidget *warning = gtk_label_new(TEXT_FILE_WARNING);
   gtk_label_set_xalign(GTK_LABEL(warning), 0);
@@ -734,6 +790,8 @@ static GtkWidget *build(void) {
   gtk_widget_show_all(box);
   gtk_widget_set_no_show_all(secrets.file_box, TRUE);
   gtk_widget_hide(secrets.file_box);
+  gtk_widget_set_no_show_all(secrets.reason, TRUE);
+  gtk_widget_hide(secrets.reason);
   gtk_widget_set_no_show_all(secrets.link_box, TRUE);
   gtk_widget_hide(secrets.link_box);
   gtk_widget_set_no_show_all(secrets.code_box, TRUE);

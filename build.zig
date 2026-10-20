@@ -1028,6 +1028,13 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_contract",
     });
+    // Rev 16.18.9 (S6b1 part B): the CLI's relay proxy; an OAuth error or silence
+    // after a code ends the sign-in (error exchange, the 60 s exchange clock).
+    const agent_host_login_exchange = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_exchange",
+    });
     // Chat drawer S3.1/S3.7: the real `zigBrowser --agent-setup` against a
     // decoy HOME, with the real token-route probe on the bundled CLI.
     const agent_setup_e2e = b.addSystemCommand(&.{
@@ -1101,6 +1108,15 @@ pub fn build(b: *std.Build) void {
         "agent-login-locks-e2e",
     });
     agent_login_locks_e2e.addArtifactArg(exe);
+    // Rev 16.18.9 (S6b1 part B's finding): the sign-in through the relay proxy, and
+    // a visible reason, never a silent wait, when the CLI fails or says nothing.
+    const agent_login_exchange_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_login_exchange_test.py --binary \"$1\"",
+        "agent-login-exchange-e2e",
+    });
+    agent_login_exchange_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -1430,17 +1446,20 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_locks_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_exchange_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_contract.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_exchange.step);
     const agent_auth_step = b.step("test-agent-auth", "Run the Claude Agent sign-in's callback check, login frames, login helper and setup-token fake tests");
     agent_auth_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
     agent_auth_step.dependOn(&run_agent_login_protocol_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_exchange.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
     test_step.dependOn(&run_agent_protocol_capped_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);

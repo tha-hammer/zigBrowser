@@ -5,7 +5,7 @@
 //! - `need_code` {}: after `auth_url`, any number of times (once per prompt);
 //! - `done` {}: after `auth_url`; the token is already on fd 4;
 //! - `error` {code, message}: code one of cli, timeout, cancelled, shape,
-//!   protocol; message at most 1 KiB.
+//!   protocol, exchange (rev 16.18.9); message at most 1 KiB.
 //! The envelope is {"v":1,"seq":n,"type":...} with `seq` strictly increasing;
 //! unknown fields reject; a frame is at most 8 KiB; after `done` or `error`
 //! every frame is out of order.
@@ -66,7 +66,7 @@ test "a whole sign-in: auth_url, need_code (twice), done" {
 
 test "error frames: each code, at any point" {
     if (!has) return error.TestNoLoginValidator;
-    for ([_][]const u8{ "cli", "timeout", "cancelled", "shape", "protocol" }) |code| {
+    for ([_][]const u8{ "cli", "timeout", "cancelled", "shape", "protocol", "exchange" }) |code| {
         var buf: [128]u8 = undefined;
         const e = try std.fmt.bufPrint(&buf, "{{\"v\":1,\"seq\":2,\"type\":\"error\",\"code\":\"{s}\",\"message\":\"m\"}}", .{code});
         try expectOk(&.{e}, .@"error");

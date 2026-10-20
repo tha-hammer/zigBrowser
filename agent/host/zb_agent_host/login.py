@@ -15,6 +15,13 @@ stdout carries `auth_url` (once), `need_code` (each time the CLI prompts),
 closed; it is never on stdout, stderr or in a frame. The helper exits after
 `done`, `error` or `cancel`, or after 10 minutes.
 
+Rev 16.18.9 (S6b1 part B's finding): the CLI gets the backend's relay proxy, its
+only way out of the sandbox (without it the real CLI resolves platform.claude.com
+itself and fails). Once a code is typed, the CLI's "OAuth error" or "Press Enter to
+retry" ends the sign-in at once with `error exchange`, and a CLI that within
+EXCHANGE_S has neither printed the token nor asked again ends it with `error
+timeout`. None of the CLI's text goes into a frame.
+
 The pty is 4096 columns wide, so the CLI's renderer does not wrap the URL;
 CSI and OSC sequences (an OSC 8 link around the URL included) are dropped
 before anything is parsed. BROWSER is /bin/true: the CLI never opens a browser
@@ -40,10 +47,12 @@ import threading
 import time
 from urllib.parse import parse_qsl, urlsplit
 
+from . import sandbox
 from .frames import Emitter
 
 TOKEN_FD = 4
 TIMEOUT_S = 600
+EXCHANGE_S = 60  # after a typed code: the token, or the prompt again (rev 16.18.9)
 COLUMNS = 4096
 MAX_CODE = 512
 MAX_URL = 4096
@@ -67,6 +76,9 @@ CONTROL = re.compile(rb"[\x00-\x09\x0b-\x1f\x7f]")
 URL = re.compile(rb"https://[\x21-\x7e]+")
 PROMPT = b"Pastecodehereifprompted>"
 SUCCESS = b"Long-livedauthenticationtokencreatedsuccessfully"
+# The real CLI after a failed exchange (2.1.294, probed offline): "OAuth error: <why>",
+# then "Press Enter to retry." while it waits. Matched with spaces removed.
+EXCHANGE_FAILED = (b"OAutherror", b"PressEntertoretry")
 TOKEN = re.compile(rb"(?<![A-Za-z0-9_-])sk-ant-oat01-[A-Za-z0-9_-]{22,499}(?=\n)")
 CODE = re.compile(r"[\x21-\x22\x24-\x7e]+#[\x21-\x22\x24-\x7e]+")
 
@@ -95,7 +107,15 @@ def valid_code(code):
     return isinstance(code, str) and 3 <= len(code) <= MAX_CODE and CODE.fullmatch(code) is not None
 
 
+def relay_proxy():
+    """The chat helper's HTTPS_PROXY (options.RELAY_PROXY), from the same backend
+    endpoint; read here directly so the login helper does not import the SDK."""
+    ep = sandbox.egress_endpoint()
+    return f"http://{ep.host}:{ep.port}"
+
+
 def cli_env(home):
+    proxy = relay_proxy()
     return {
         "HOME": home,
         "CLAUDE_CONFIG_DIR": os.path.join(home, ".claude"),
@@ -103,13 +123,20 @@ def cli_env(home):
         "LANG": "C.UTF-8",
         "TERM": "xterm-256color",
         "BROWSER": "/bin/true",
+        # The sandbox's only way out is the outer relay (rev 16.18.9).
+        "HTTPS_PROXY": proxy,
+        "HTTP_PROXY": proxy,
+        "NO_PROXY": "127.0.0.1,localhost",
     }
 
 
 class Login:
-    def __init__(self, home, cli, out, token_fd, timeout_s=TIMEOUT_S):
+    def __init__(self, home, cli, out, token_fd, timeout_s=TIMEOUT_S, exchange_s=EXCHANGE_S):
         self.home, self.cli, self.out, self.token_fd = home, cli, out, token_fd
         self.deadline = time.monotonic() + timeout_s
+        self.exchange_s = exchange_s
+        self.exchange_by = None  # set when a code is typed; cleared when the CLI asks again
+        self.typed_at = 0  # the screen offset where the CLI's answer to the typed code begins
         self.screen = bytearray()  # the pty output, escapes removed; zeroed at the end
         self.prompts = 0  # prompts seen
         self.answered = 0  # prompts a code was written to
@@ -146,9 +173,13 @@ class Login:
         chunk = bytearray(16384)
         try:
             while not self.ended.is_set():
-                left = self.deadline - time.monotonic()
+                now = time.monotonic()
+                left = self.deadline - now
                 if left <= 0:
                     return self.end("error", code="timeout", message="sign-in timed out")
+                exchange_by = self.exchange_by
+                if exchange_by is not None and now >= exchange_by:
+                    return self.end("error", code="timeout", message="the Claude CLI did not finish the sign-in")
                 if not select.select([self.master], [], [], min(left, 0.5))[0]:
                     continue
                 try:
@@ -184,18 +215,25 @@ class Login:
             self.prompts += 1
             if not self.sent_url:
                 return self.end("error", code="cli", message="the Claude CLI printed no sign-in address")
+            self.exchange_by = None  # it asked again: the user's time, not the exchange's
             self.out.emit("need_code")
         self.answer()
         at = self.screen.find(b"successfully!")
         if SUCCESS in squeezed and at >= 0:
             m = TOKEN.search(self.screen, at)
             if m:
-                self.hand_off(*m.span())
+                return self.hand_off(*m.span())
+        if self.exchange_by is not None:
+            reply = bytes(self.screen[self.typed_at:]).replace(b" ", b"")
+            if any(word in reply for word in EXCHANGE_FAILED):
+                return self.end("error", code="exchange", message="the Claude CLI could not exchange the code")
 
     def answer(self):
         if self.code is not None and self.answered < self.prompts:
             code, self.code = self.code, None
             self.answered = self.prompts
+            self.typed_at = len(self.screen)
+            self.exchange_by = time.monotonic() + self.exchange_s
             os.write(self.master, code.encode("ascii") + b"\r")
 
     def claim(self):
