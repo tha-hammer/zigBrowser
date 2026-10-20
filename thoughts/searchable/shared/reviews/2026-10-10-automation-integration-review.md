@@ -18000,3 +18000,88 @@ failures were existing registered gate assertions broken specifically by
 `git diff --check d7c5207^..d14a6cf` is clean. No full gate, Mac host, live
 browser or real display was used locally; the architecture runs and mutation
 results above are the owners' supplied evidence.
+
+## S7b real-screen artifact and acceptance follow-up (`d33095d` through `527485f`)
+
+Reviewed against plan rev 16.20.36 at `527485f` on 2026-10-20 17:31 EDT.
+
+### `d33095d` — APPROVED as the failing-first real-screen red
+
+The seven pure cases pin the fake API's ordered `get_text` → `screenshot` →
+final-answer script, prevent repeated requests from stacking duplicate tool
+results, and reject undecodable, black, wrong-page and fill-only captures. The
+functions are absent before the green, so the red fails by missing behavior,
+not by a broken fixture. The owner's three decision mutants (no blue check, no
+white/content check, and repeated `get_text`) each fail.
+
+### `110daaa` — APPROVED as the guarded artifact; user acceptance pending
+
+The `tools` case uses the real helper/CLI against the local TLS fake, has the
+model call `get_text` and `screenshot`, inspects the exact tool results that
+reached the model, decodes the image in an isolated system-Python process, and
+saves the image and window/screen captures for inspection. Its blue-plus-white
+oracle distinguishes the deliberately blue page from black, another page, or
+a fill whose content did not draw. The private-Xvfb measurement (93% blue,
+3.3% white) is consistent with the fixture.
+
+Every new click and key passes through `DrawerInput`, which retains the
+existing activation/focus/topmost checks and the X-server grab around each
+XTest event. Moving the long-run closures into that class does not weaken its
+guard. My display-free run of both manual modules passes **38/38 tests**. The
+global UI rule still requires the orchestrator and user to run `--case tools`
+on the real screen before this real-screen acceptance can be called complete.
+
+NIT: the top-level help says the captured page is “not one colour,” although
+the implemented and tested rule deliberately allows a 93%-blue fixture when
+at least 0.5% of its pixels are the white content. Describe that as “not
+fill-only” in a later docs touch.
+
+### `527485f` — BLOCKED-for-tests
+
+The suite materially closes two earlier findings. The drawer-only top frame,
+same-origin iframe, cross-origin iframe and related popup see neither the
+isolated automation object/handlers nor any agent surface, and their real
+`zbHost` probes all fail closed. With both flags, the socket cannot address the
+agent, drawer, broker or secrets before or during a broker session. The new
+real-chain cases also exercise `window_info`, `query`, `get_attribute`, both
+tool hooks and their bridge-only network namespace. The `window-fixed` text
+now honestly states that this e2e stops at the SDK schema while the broker
+defense remains unit-tested.
+
+Four binding S7 assertions remain incomplete:
+
+1. **BLOCKER-for-tests — not every read tool is under the S7.4 canary
+   scanner.** `agent_tools_acceptance_test.py:159-184` runs `window_info`,
+   `query` and `get_attribute` with no cookie/auth canary scan, while
+   `:259-304` scans only failed `get_text` and `screenshot`; `wait_for` is not
+   covered by that scanner either. S7.4 requires all six tools with the cookie
+   and automation-token canaries absent from model-returned content and saved
+   transcripts. Add a normal-selector all-tools turn with the cookie stored,
+   scan its complete returned blocks and actual transcript files, and retain
+   the separate canary-selector error/telemetry case so the model's own
+   scripted input is not mistaken for a browser leak.
+2. **BLOCKER-for-tests — the drawer-error assertion is vacuous.** The
+   canary case's fake ends with `DONE`; `:300-304` merely scans whatever
+   `DRAWER` rows happen to exist. It never proves that the failed `get_text`'s
+   required redacted error reaches the intended drawer error path. Assert a
+   named error row/bubble with the fixed text and no canary, and mutation-test
+   both its absence and a raw-error pass-through.
+3. **BLOCKER-for-tests — forbidden-tool errors are not pinned.** At `:342-343`
+   any `is_error` text passes. S7.8 requires each of `secrets_get`,
+   `cookies_get`, `evaluate`, `set_pacing` and `click` to answer the fixed
+   “tool not available” result. Require that exact text so an SDK/CLI failure
+   that leaks arbitrary detail cannot satisfy the security oracle; keep the
+   existing exact engine-count and unchanged-page checks.
+4. **BLOCKER-for-tests — the moved S3.11 continuation is absent.** S7.6
+   requires a `SessionStart` attempt to plant `hooks.Stop` and
+   `mcpServers.evil`, followed in that same session by a working `get_text`
+   with neither marker executing. `hook_world` at `:201-211` replaces the
+   fixture's hooks with only Pre/Post probes and never installs or checks the
+   planting markers. Extend the real-chain hook case rather than relying only
+   on the older pure helper contract.
+
+Accordingly, `63158b4`/`2209c4a` remain blocked for S7b acceptance pending a
+fix-forward to `527485f` and the user's real-screen `tools` verdict. The new
+Python files compile, `git diff --check d33095d^..527485f` is clean, and the
+manual pure suites pass 38/38. I did not take the shared full-gate slot or
+touch a live browser/real display.
