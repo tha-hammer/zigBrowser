@@ -1242,7 +1242,13 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    - On macOS an exe at `<X>.app/Contents/MacOS/zigBrowser` maps to **`<X>.app/Contents/Frameworks/agent-host`**:
      nested code (python, `.so`, `.dylib`) must live where it is signed as code (JadeBeacon, MS9).
    - A macOS dev tree (`<prefix>/bin/zigBrowser`, not inside an `.app`) keeps the Linux rule.
-   - The interpreter's path inside `agent-host` on macOS waits on the universal2-runtime decision (item 8).
+   - **The interpreter, pinned** (the user's universal2 decision, 6ea1064; RoseCat 6797): for an app bundle,
+     `runtimeFor` names `<X>.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12`,
+     the python.org framework's fat launcher (`x86_64 arm64`, measured on the Intel Mac). There is **no venv
+     on macOS**: a venv records an absolute home, which breaks when the app moves. The framework's
+     `Resources/Python.app/Contents/MacOS/Python` is what that launcher execs; it is not named directly.
+     A macOS dev tree keeps the Linux `venv/bin/python`. The test asserts both `package_dir` and `python`
+     (`tests/agent_setup_ms5_python_test.zig`).
 4. **Home lock.** `zb_agent_home_lock` (flock) moves, unchanged, out of the GLib-only `agent_host.c` into a
    POSIX-only `src/agent_home_lock.c`, built on both OSes. It is a behaviour-preserving extraction, gated on
    Linux by the existing lock tests.
