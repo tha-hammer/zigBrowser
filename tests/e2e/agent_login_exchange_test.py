@@ -17,9 +17,14 @@ Cases (run alone or with --only):
   one CONNECT zb-proxy-probe.invalid:443 (refused, and censused, by the login netd;
   nothing goes further), then prints the token: the sign-in ends `done` and the keyring
   holds the token.
-- oauth-error: `oauth-error`. Within 15 s of Send code the one ending is
-  `error-exchange`; the window says "Sign-in failed." with the exchange reason; nothing
-  is stored and no login helper remains.
+- oauth-error: `oauth-error`, with a canary planted in the CLI's "OAuth error" line
+  (RoseCat 6165). Within 15 s of Send code the one ending is `error-exchange`; the
+  window says "Sign-in failed." with the exchange reason; nothing is stored, no login
+  helper remains, every row is a fixed one, and the canary is nowhere: no process
+  environment or cmdline, no stdout row, no stderr line, no file under the agent home
+  or the profile.
+- noise-first: the CLI prints its "OAuth error" lines before its prompt (RoseCat
+  6165); only what follows the typed code counts, so the sign-in still ends `done`.
 - silent: `silent`. The one ending is `error-timeout`, 55 to 75 s after Send code (the
   60 s exchange clock), with the timeout reason.
 - again: after an `error-exchange`, Sign in hides the reason (`SECRETS reason -`), and
@@ -55,9 +60,11 @@ def with_mode(si, word: str | None) -> None:
 
 
 def send_right_code(si, check) -> float:
+    signing = lt.texts(si.b).count(lt.TEXT_SIGNING)
     si.paste(f"fakecode#{si.state()}")
     sent = time.monotonic()
-    check(si.b.wait(lambda: lt.texts(si.b)[-1:] == [lt.TEXT_SIGNING], 10), "Send code shows \"Signing in...\"", si.b)
+    check(si.b.wait(lambda: lt.texts(si.b).count(lt.TEXT_SIGNING) > signing, 10),
+          "Send code shows \"Signing in...\"", si.b)
     return sent
 
 
@@ -82,8 +89,10 @@ def case_proxy(binary: Path, tmp: Path, check) -> None:
 def case_oauth_error(binary: Path, tmp: Path, check) -> None:
     si = lt.SignIn(binary, tmp, "exch-oauth")
     b = si.b
+    canary = sec.canary()
     try:
         with_mode(si, "oauth-error")
+        (si.fake_dir / "oauth-detail").write_text(canary + "\n", encoding="ascii")
         if not si.open_and_sign_in(check):
             return
         sent = send_right_code(si, check)
@@ -95,6 +104,33 @@ def case_oauth_error(binary: Path, tmp: Path, check) -> None:
         check(b.wait(lambda: reasons(b)[-1:] == [REASON_EXCHANGE], 5), f"the reason: {REASON_EXCHANGE!r} ({reasons(b)})", b)
         check(b.wait(lambda: lt.login_helpers(b) == [], 10), "no login helper remains", b)
         check(si.kr.lookup() is None, "nothing is stored")
+        rows = [line for line in list(b.out) if line.startswith("SECRETS\t")]
+        try:
+            sec.secrets_rows(rows)
+            fixed = True
+        except sec.SecretsRowError as e:
+            fixed = str(e)
+        check(fixed is True, f"every SECRETS row is a fixed one ({fixed})", b)
+        (si.fake_dir / "oauth-detail").unlink()  # the test's own input, not the browser's
+        found = sec.scan_for(canary, b, si.world, si.api)
+        check(found == [], f"the CLI's own text is nowhere: {found}", b)
+    finally:
+        si.close()
+
+
+def case_noise_first(binary: Path, tmp: Path, check) -> None:
+    si = lt.SignIn(binary, tmp, "exch-noise")
+    b = si.b
+    try:
+        with_mode(si, "noise-first")
+        if not si.open_and_sign_in(check):
+            return
+        time.sleep(1.0)  # the early lines reach the helper before the code
+        send_right_code(si, check)
+        check(b.wait(lambda: lt.endings(b) != [], 30) and lt.endings(b) == ["done"],
+              f"lines before the typed code do not end it: done ({lt.login_states(b)})", b)
+        check(b.wait(lambda: lt.statuses(b)[-1:] == ["connected-secret-service"], 15), "connected-secret-service", b)
+        check(reasons(b) == [], f"no reason was shown ({reasons(b)})", b)
     finally:
         si.close()
 
@@ -151,6 +187,7 @@ def case_again(binary: Path, tmp: Path, check) -> None:
 CASES = {
     "proxy": case_proxy,
     "oauth-error": case_oauth_error,
+    "noise-first": case_noise_first,
     "silent": case_silent,
     "again": case_again,
 }

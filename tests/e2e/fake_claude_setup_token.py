@@ -31,10 +31,14 @@ plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
     platform.claude.com" and "Press Enter to retry.", then it waits; each line it reads
     prints them again;
   - `silent`: nothing; it waits;
+  - `noise-first` (RoseCat 6165): the `oauth-error` lines once BEFORE the prompt, then
+    today's success: only what follows the typed code may end the sign-in;
   - `needs-proxy`: without HTTPS_PROXY, as `oauth-error` (the real CLI resolves the
     host itself, and the sandbox has no network); with it, one
     `CONNECT zb-proxy-probe.invalid:443` through that proxy (the login netd refuses
     and censuses it: nothing goes further), then success.
+- `oauth-detail` (RoseCat 6165): when it exists, its text replaces the reason in the
+  "OAuth error: ..." line, so a test can plant a canary in the CLI's own text.
 Standard library only: it runs inside the helper's sandbox, which has /usr only.
 """
 
@@ -106,6 +110,14 @@ def mode():
         return ""
 
 
+def oauth_error():
+    try:
+        with open(os.path.join(fake_dir(), "oauth-detail"), encoding="ascii") as f:
+            return "OAuth error: " + f.read().strip()
+    except OSError:
+        return OAUTH_ERROR
+
+
 def through_proxy():
     """One CONNECT to PROBE through $HTTPS_PROXY; True when the proxy answered at all."""
     proxy = os.environ.get("HTTPS_PROXY")
@@ -123,7 +135,7 @@ def through_proxy():
 def fail_and_wait():
     """The real CLI after a failed exchange: two lines, then each Enter retries and fails again."""
     while True:
-        out(OAUTH_ERROR)
+        out(oauth_error())
         out(RETRY)
         if sys.stdin.readline() == "":
             return 1
@@ -139,17 +151,21 @@ def prompt():
     out("\x1b\x0f\x1b\x1b\x1b\x1b\x0f\x1b\x1b\x1b")
 
 
-def read_masked():
-    """One line from the terminal with echo off; echoes a '*' per character."""
+def echo_off():
+    """Echo off for the whole run, before the first prompt: a code typed the moment the
+    prompt appears is never echoed (a test that answered at once raced a per-read toggle
+    under load). The terminal's settings come back at exit. Returns the restorer."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     new = termios.tcgetattr(fd)
     new[3] &= ~termios.ECHO
     termios.tcsetattr(fd, termios.TCSANOW, new)
-    try:
-        line = sys.stdin.readline()
-    finally:
-        termios.tcsetattr(fd, termios.TCSANOW, old)
+    return lambda: termios.tcsetattr(fd, termios.TCSANOW, old)
+
+
+def read_masked():
+    """One line from the terminal (echo is off); echoes a '*' per character."""
+    line = sys.stdin.readline()
     if not line:
         return None
     line = line.rstrip("\r\n")
@@ -164,6 +180,14 @@ def main(argv):
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("fake setup-token: stdin and stdout must be a terminal", file=sys.stderr)
         return 2
+    restore = echo_off()
+    try:
+        return run()
+    finally:
+        restore()
+
+
+def run():
     state = b64url(32)
     out("\x1b7\x1b8\x1b\x1b\x1bWelcometoClaudeCodev2.1.301")
     out(INTRO)
@@ -171,6 +195,9 @@ def main(argv):
     out("Browser didn't open? Use the url below to sign in (c to copy)")
     out(authorize_url(b64url(32), state))
     write_state(state)
+    if mode() == "noise-first":
+        out(oauth_error())
+        out(RETRY)
     prompt()
     while True:
         line = read_masked()

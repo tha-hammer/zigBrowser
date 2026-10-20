@@ -10,7 +10,10 @@ to retry." and waited; the helper had no pattern for that and waited out its 10 
 - after a typed code, "OAuth error" or "Press Enter to retry" ends the sign-in at once
   with `error exchange`, and none of the CLI's text is in the frame;
 - a CLI that, after a typed code, neither prints the token nor asks again within
-  EXCHANGE_S (60 s) ends it with `error timeout`; a new prompt stops that clock.
+  EXCHANGE_S (60 s) ends it with `error timeout`; a new prompt stops that clock;
+- (RoseCat 6165) the CLI's own text, with a canary planted in it, is in no frame and
+  not on stderr, and the frame is the exact fixed one; OAuth-looking lines printed
+  before the code was typed (before the prompt, or after it) do not end the sign-in.
 
 The CLI is tests/e2e/fake_claude_setup_token.py with its `mode` file, or a small script.
 Run the module alone, as the gate does."""
@@ -102,6 +105,54 @@ sleep 5
         self.assertEqual(env.get("HTTPS_PROXY"), options.RELAY_PROXY)
         self.assertEqual(env.get("HTTP_PROXY"), options.RELAY_PROXY)
         self.assertEqual(env.get("NO_PROXY"), "127.0.0.1,localhost")
+
+    # --- the CLI's text stays in the helper (RoseCat 6165) ----------------------------------
+    def test_the_cli_text_stays_in_the_helper(self):
+        canary = "ZBOAUTHCANARY-" + os.urandom(12).hex()
+        self.mode("oauth-error")
+        (self.fake / "oauth-detail").write_text(canary + "\n", encoding="ascii")
+        h = self.start()
+        state = tl.state_of(h.frame()["url"])
+        self.assertEqual(h.frame(), {"type": "need_code"})
+        h.send("code", code=f"c0de#{state}")
+        self.assertEqual(h.frame(timeout=5), {"type": "error", "code": "exchange",
+                                              "message": "the Claude CLI could not exchange the code"})
+        code, err, token = h.finish()
+        self.assertEqual((code, token), (1, b""))
+        self.assertNotIn(canary.encode(), bytes(h.raw_out))
+        self.assertNotIn(canary.encode(), err)
+        self.assertNotIn(b"OAuth", bytes(h.raw_out) + err)
+
+    # --- only what follows the typed code counts (RoseCat 6165) --------------------------
+    def test_oauth_lines_before_the_prompt_do_not_end_it(self):
+        self.mode("noise-first")
+        h = self.start()
+        state = tl.state_of(h.frame()["url"])
+        self.assertEqual(h.frame(), {"type": "need_code"})
+        time.sleep(1.0)  # the early lines are on the helper's screen before the code is typed
+        h.send("code", code=f"c0de#{state}")
+        self.assertEqual(h.frame(), {"type": "done"})
+        code, _err, token = h.finish()
+        self.assertEqual((code, token), (0, tl.CANARY.encode()))
+
+    def test_oauth_lines_after_the_prompt_but_before_the_code_do_not_end_it(self):
+        cli = self.script("early-cli", f"""
+printf '%s\\n' "{tl.URL.format(state='early')}"
+printf 'Paste\\033[1Ccode\\033[1Chere\\033[1Cif\\033[1Cprompted\\033[1C> '
+printf 'OAuth\\033[1Cerror:\\033[1Cearly\\nPress\\033[1CEnter\\033[1Cto\\033[1Cretry.\\n'
+read line
+printf '\\342\\234\\223 Long-lived authentication token created successfully!\\n'
+printf 'Your OAuth token (valid for 1 year):\\n{tl.CANARY}\\n'
+sleep 5
+""")
+        h = self.start(cli)
+        h.frame()
+        self.assertEqual(h.frame(), {"type": "need_code"})
+        time.sleep(1.0)
+        h.send("code", code="c0de#early")
+        self.assertEqual(h.frame(), {"type": "done"})
+        code, _err, token = h.finish()
+        self.assertEqual((code, token), (0, tl.CANARY.encode()))
 
     # --- no silent wait ----------------------------------------------------------------
     def test_an_oauth_error_after_the_code_ends_with_exchange_at_once(self):
