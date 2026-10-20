@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""MS2b.1b RED (unregistered) — native key + text input deliver TRUSTED events on the macOS backend.
+"""MS2b.1b RED (unregistered) — native key + text deliver complete TRUSTED key SEQUENCES.
 
-MS2b.1b: a native key press (dom.press options.input="native") and native typing (dom.type
-options.input="native") must deliver TRUSTED key events (event.isTrusted === true) to the real
-WKWebView — the in-process NSEvent path, no synthetic DOM events. The macOS port does not implement
-nativeKey/nativeText yet (the PagePort keeps the unsupported defaults), so the engine rejects these
-native commands — the red. The native-click capability (MS2b.1a) is already wired; key/text are the
-next matrix slice.
+MS2b.1b: dom.press (native) and dom.type (native) must deliver real, TRUSTED key events to the
+WKWebView — per page_port.zig:223-232, nativeKey returns only after the trusted keyUP is acknowledged,
+and nativeText uses real key events for every code point. A green that emitted a trusted keydown but no
+keyup, or synthetic events for part of the input, must fail — so this records the ORDERED keydown /
+keyup / input log (key + isTrusted) and asserts complete trusted down+up pairs, with NO untrusted
+(synthetic) key events anywhere (RoseCat 6360).
 
-Mutation-resistant: it asserts the key reached the page with e.isTrusted === true and e.key correct,
-and that typing set the input's value via trusted events — so a synthetic-event stub (isTrusted false)
-or an unsupported stub both fail.
-
-Runs ON a Mac (console user, no xvfb), own process group (orphan-safe teardown). Unregistered.
+Covers: a printable key (a), typing (hi), and a named navigation key (ArrowLeft). Reds on the
+unsupported port (session_invalid/unsupported). Runs ON a Mac, own process group. Unregistered.
 """
 import argparse
 import http.server
@@ -30,10 +27,12 @@ SKIP_EXIT = 77
 FIXTURE = b"""<!doctype html><html><head><meta charset="utf-8"><title>MS2b Key/Text</title></head><body>
 <input id="inp" type="text">
 <script>
-  window.__keyTrusted = null; window.__lastKey = null; window.__textTrusted = null;
+  window.__ev = [];
   var inp = document.getElementById('inp');
-  inp.addEventListener('keydown', function (e) { window.__keyTrusted = e.isTrusted; window.__lastKey = e.key; });
-  inp.addEventListener('input', function (e) { window.__textTrusted = e.isTrusted; });
+  function rec(t) { return function (e) { window.__ev.push({t: t, k: e.key, tr: e.isTrusted}); }; }
+  inp.addEventListener('keydown', rec('keydown'));
+  inp.addEventListener('keyup', rec('keyup'));
+  inp.addEventListener('input', function (e) { window.__ev.push({t: 'input', k: null, tr: e.isTrusted}); });
 </script></body></html>"""
 
 
@@ -82,10 +81,6 @@ def main() -> int:
     _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
     failures: list[str] = []
 
-    def expect_eq(label, actual, expected):
-        if actual != expected:
-            failures.append(f"{label}: got {actual!r}, want {expected!r}")
-
     with _FixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-ms2b-kt-") as tmp:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
@@ -111,17 +106,59 @@ def main() -> int:
                 eprint(f"stderr={err[-20:]}")
                 return 1
 
+            def events():
+                return rpc.evaluate("JSON.stringify(window.__ev)") or "[]"
+
+            def has_trusted_pair(log, key):
+                import json
+                ev = json.loads(log)
+                down = any(e["t"] == "keydown" and e["k"] == key and e["tr"] is True for e in ev)
+                up = any(e["t"] == "keyup" and e["k"] == key and e["tr"] is True for e in ev)
+                untrusted = [e for e in ev if e["t"] in ("keydown", "keyup") and e["tr"] is not True]
+                return down, up, untrusted
+
             try:
-                # Native key press: focuses #inp, then a trusted keydown with key "a".
-                expect_eq("dom.press (native)", rpc.call("dom.press", {"selector": "css=#inp", "key": "a", "options": {"input": "native", "timeout_ms": 10000}}), {"ok": True})
-                expect_eq("keydown is trusted (native)", rpc.evaluate("window.__keyTrusted"), True)
-                expect_eq("keydown key", rpc.evaluate("window.__lastKey"), "a")
-                # Native typing: trusted input events set the field value.
-                expect_eq("dom.type (native)", rpc.call("dom.type", {"selector": "css=#inp", "text": "hi", "options": {"input": "native", "timeout_ms": 10000}}), {"ok": True})
-                expect_eq("typed value", rpc.evaluate("document.getElementById('inp').value"), "ahi")
-                expect_eq("input is trusted (native)", rpc.evaluate("window.__textTrusted"), True)
+                # Printable key: a complete trusted down+up pair for "a".
+                expect = rpc.call("dom.press", {"selector": "css=#inp", "key": "a", "options": {"input": "native", "timeout_ms": 10000}})
+                if expect != {"ok": True}:
+                    failures.append(f"dom.press (native) -> {expect!r}")
+                down, up, untrusted = has_trusted_pair(events(), "a")
+                if not down:
+                    failures.append("dom.press: no trusted keydown for 'a'")
+                if not up:
+                    failures.append("dom.press: no trusted keyup for 'a' (nativeKey must return after keyup)")
+                if untrusted:
+                    failures.append(f"dom.press: untrusted (synthetic) key events present: {untrusted}")
+
+                rpc.evaluate("window.__ev = []")
+                # Typing: complete trusted sequences for every code point of "hi".
+                expect = rpc.call("dom.type", {"selector": "css=#inp", "text": "hi", "options": {"input": "native", "timeout_ms": 10000}})
+                if expect != {"ok": True}:
+                    failures.append(f"dom.type (native) -> {expect!r}")
+                log = events()
+                for key in ("h", "i"):
+                    down, up, untrusted = has_trusted_pair(log, key)
+                    if not (down and up):
+                        failures.append(f"dom.type: incomplete trusted down/up for {key!r} (down={down}, up={up})")
+                _, _, untrusted = has_trusted_pair(log, "h")
+                if untrusted:
+                    failures.append(f"dom.type: untrusted (synthetic) key events present: {untrusted}")
+                typed_value = rpc.evaluate("document.getElementById('inp').value")
+                if typed_value != "ahi":
+                    failures.append(f"typed value wrong: {typed_value!r}")
+
+                rpc.evaluate("window.__ev = []")
+                # Named navigation key: a complete trusted down+up pair for "ArrowLeft".
+                expect = rpc.call("dom.press", {"selector": "css=#inp", "key": "ArrowLeft", "options": {"input": "native", "timeout_ms": 10000}})
+                if expect != {"ok": True}:
+                    failures.append(f"dom.press ArrowLeft (native) -> {expect!r}")
+                down, up, untrusted = has_trusted_pair(events(), "ArrowLeft")
+                if not (down and up):
+                    failures.append(f"dom.press ArrowLeft: incomplete trusted down/up (down={down}, up={up})")
+                if untrusted:
+                    failures.append(f"dom.press ArrowLeft: untrusted key events present: {untrusted}")
             except AssertionError as exc:
-                failures.append(f"native key/text rejected (expected on macOS today): {exc}")
+                failures.append(f"native key/text rejected (expected on the unsupported port): {exc}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

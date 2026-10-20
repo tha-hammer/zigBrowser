@@ -1493,40 +1493,106 @@ static NSEventModifierFlags zb_ns_mod_flags(int modifiers) {
   return f;
 }
 
-// Map a DOM key name to the characters it produces + a macOS keyCode. For a printable single character
-// the characters drive insertion and e.key (the spike confirms characters is authoritative; keyCode is
-// best-effort 0). Named keys use their function-key unicode + the standard US keyCode. Returns NO for an
-// unknown multi-character name.
-static BOOL zb_dom_key_to_ns(NSString *name, unsigned short *kc, NSString **chars) {
+typedef enum { ZB_KEY_CHAR, ZB_KEY_NAMED, ZB_KEY_MODIFIER } ZBKeyKind;
+
+// Map a DOM key name to how to synthesize it. CHAR: a printable code point (characters drive insertion
+// and e.key; keyCode best-effort 0). NAMED: a key with its function-key/control unicode + US keyCode,
+// sent as keyDown/keyUp. MODIFIER: Shift/Control/Alt/Meta, sent as flagsChanged (no keyDown). Covers the
+// whole router.native_key_names set (RoseCat 6361.3). Returns NO for an unknown multi-char name.
+static BOOL zb_dom_key_to_ns(NSString *name, ZBKeyKind *kind, unsigned short *kc, NSString **chars,
+                             NSEventModifierFlags *modFlag) {
   static NSDictionary<NSString *, NSArray *> *named = nil;
+  static NSDictionary<NSString *, NSArray *> *mods = nil;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     named = @{
       @"Enter": @[@36, @"\r"], @"Tab": @[@48, @"\t"], @"Backspace": @[@51, @"\x08"],
-      @"Delete": @[@51, @"\x08"], @"Escape": @[@53, @"\x1b"], @"Space": @[@49, @" "],
+      @"Escape": @[@53, @"\x1b"], @"Space": @[@49, @" "],
+      @"Delete": @[@117, [NSString stringWithFormat:@"%C", (unichar)NSDeleteFunctionKey]],  // forward delete
+      @"Insert": @[@114, [NSString stringWithFormat:@"%C", (unichar)NSInsertFunctionKey]],
+      @"Home": @[@115, [NSString stringWithFormat:@"%C", (unichar)NSHomeFunctionKey]],
+      @"End": @[@119, [NSString stringWithFormat:@"%C", (unichar)NSEndFunctionKey]],
+      @"PageUp": @[@116, [NSString stringWithFormat:@"%C", (unichar)NSPageUpFunctionKey]],
+      @"PageDown": @[@121, [NSString stringWithFormat:@"%C", (unichar)NSPageDownFunctionKey]],
       @"ArrowLeft": @[@123, [NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey]],
       @"ArrowRight": @[@124, [NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey]],
       @"ArrowDown": @[@125, [NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey]],
       @"ArrowUp": @[@126, [NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey]],
+      @"F1": @[@122, [NSString stringWithFormat:@"%C", (unichar)NSF1FunctionKey]],
+      @"F2": @[@120, [NSString stringWithFormat:@"%C", (unichar)NSF2FunctionKey]],
+      @"F3": @[@99, [NSString stringWithFormat:@"%C", (unichar)NSF3FunctionKey]],
+      @"F4": @[@118, [NSString stringWithFormat:@"%C", (unichar)NSF4FunctionKey]],
+      @"F5": @[@96, [NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey]],
+      @"F6": @[@97, [NSString stringWithFormat:@"%C", (unichar)NSF6FunctionKey]],
+      @"F7": @[@98, [NSString stringWithFormat:@"%C", (unichar)NSF7FunctionKey]],
+      @"F8": @[@100, [NSString stringWithFormat:@"%C", (unichar)NSF8FunctionKey]],
+      @"F9": @[@101, [NSString stringWithFormat:@"%C", (unichar)NSF9FunctionKey]],
+      @"F10": @[@109, [NSString stringWithFormat:@"%C", (unichar)NSF10FunctionKey]],
+      @"F11": @[@103, [NSString stringWithFormat:@"%C", (unichar)NSF11FunctionKey]],
+      @"F12": @[@111, [NSString stringWithFormat:@"%C", (unichar)NSF12FunctionKey]],
+    };
+    mods = @{
+      @"Shift": @[@56, @(NSEventModifierFlagShift)], @"Control": @[@59, @(NSEventModifierFlagControl)],
+      @"Alt": @[@58, @(NSEventModifierFlagOption)], @"Meta": @[@55, @(NSEventModifierFlagCommand)],
     };
   });
+  NSArray *m = mods[name];
+  if (m != nil) { *kind = ZB_KEY_MODIFIER; *kc = (unsigned short)[m[0] intValue]; *chars = @""; *modFlag = (NSEventModifierFlags)[m[1] unsignedLongLongValue]; return YES; }
   NSArray *e = named[name];
-  if (e != nil) { *kc = (unsigned short)[e[0] intValue]; *chars = e[1]; return YES; }
-  if (name.length == 1) { *kc = 0; *chars = name; return YES; }  // printable single character
+  if (e != nil) { *kind = ZB_KEY_NAMED; *kc = (unsigned short)[e[0] intValue]; *chars = e[1]; *modFlag = 0; return YES; }
+  // A single Unicode code point (1 BMP unit, or a surrogate pair) is a printable key.
+  if (name.length == 1 || (name.length == 2 && CFStringIsSurrogateHighCharacter([name characterAtIndex:0]))) {
+    *kind = ZB_KEY_CHAR; *kc = 0; *chars = name; *modFlag = 0; return YES;
+  }
   return NO;
 }
 
-static void zb_send_key(NSWindow *window, NSString *chars, unsigned short kc, NSEventModifierFlags flags) {
+// Append the NSEvent(s) for one key to `out`: keyDown+keyUp for a char/named key (distinct timestamps),
+// or flagsChanged press+release for a modifier-only key. `flags` are extra held modifiers.
+static void zb_build_key_events(NSWindow *window, ZBKeyKind kind, unsigned short kc, NSString *chars,
+                                NSEventModifierFlags modFlag, NSEventModifierFlags flags,
+                                NSMutableArray<NSEvent *> *out) {
   NSInteger wn = window.windowNumber;
   NSTimeInterval ts = [[NSProcessInfo processInfo] systemUptime];
-  NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
-                                  timestamp:ts windowNumber:wn context:nil characters:chars
-                charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc];
-  NSEvent *up = [NSEvent keyEventWithType:NSEventTypeKeyUp location:NSZeroPoint modifierFlags:flags
-                                timestamp:ts windowNumber:wn context:nil characters:chars
-              charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc];
-  [window sendEvent:down];
-  [window sendEvent:up];
+  if (kind == ZB_KEY_MODIFIER) {
+    [out addObject:[NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:(flags | modFlag)
+                                   timestamp:ts windowNumber:wn context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:kc]];
+    [out addObject:[NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:flags
+                                   timestamp:ts + 0.01 windowNumber:wn context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:kc]];
+    return;
+  }
+  [out addObject:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+                                 timestamp:ts windowNumber:wn context:nil characters:chars charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc]];
+  [out addObject:[NSEvent keyEventWithType:NSEventTypeKeyUp location:NSZeroPoint modifierFlags:flags
+                                 timestamp:ts + 0.01 windowNumber:wn context:nil characters:chars charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc]];
+}
+
+// Deliver `events` one at a time, each FIFO-acked by a round-trip evaluateJavaScript, so a synthetic
+// event is processed (and its keydown/keyup/input dispatched) before the next is sent — rapid
+// back-to-back synthetic keys otherwise drop/coalesce through the input method. Called in DISPATCHING;
+// goes INFLIGHT after the first send; a waiter that abandons mid-sequence stops further delivery
+// (onProgress reports events dispatched). Owns the chain ref: completes + unrefs exactly once.
+static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob *job,
+                                    NSArray<NSEvent *> *events, void (^onProgress)(NSUInteger delivered)) {
+  if (events.count == 0) {
+    [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); }];
+    zb_job_inflight(job);
+    return;
+  }
+  __block void (^step)(NSUInteger) = nil;
+  step = ^(NSUInteger idx) {
+    [window sendEvent:events[idx]];
+    if (onProgress != nil) onProgress(idx + 1);
+    [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
+      (void)v;
+      if (e != nil) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+      if (idx + 1 >= events.count) { step = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
+      if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // waiter abandoned: stop
+      step(idx + 1);
+    }];
+  };
+  step(0);
+  zb_job_inflight(job);
 }
 
 // Shared phase-model driver: run the readiness poll + (optional) documentToken guard in PREFLIGHT, then
@@ -1588,9 +1654,11 @@ int zb_native_key(uint32_t win, const char *key, int modifiers, const char *expe
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
   @autoreleasepool {
     NSString *name = key != NULL ? [NSString stringWithUTF8String:key] : nil;
+    ZBKeyKind kind;
     unsigned short kc = 0;
     NSString *chars = nil;
-    if (name == nil || !zb_dom_key_to_ns(name, &kc, &chars)) return ZB_AUTO_ERR_INTERNAL;  // unknown key
+    NSEventModifierFlags modFlag = 0;
+    if (name == nil || !zb_dom_key_to_ns(name, &kind, &kc, &chars, &modFlag)) return ZB_AUTO_ERR_INTERNAL;  // unknown key
     NSEventModifierFlags flags = zb_ns_mod_flags(modifiers);
     NSString *expected = expected_doc != NULL ? [NSString stringWithUTF8String:expected_doc] : nil;
     __block int releases = 0;
@@ -1599,14 +1667,9 @@ int zb_native_key(uint32_t win, const char *key, int modifiers, const char *expe
       NSWindow *window = host.window;
       WKWebView *view = host.webView;
       if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
-      zb_send_key(window, chars, kc, flags);
-      releases = 1;
-      [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
-        (void)v;
-        zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL);
-        zb_job_unref(job);
-      }];
-      zb_job_inflight(job);
+      NSMutableArray<NSEvent *> *events = [NSMutableArray array];
+      zb_build_key_events(window, kind, kc, chars, modFlag, flags, events);
+      zb_deliver_events_paced(window, view, job, events, ^(NSUInteger d) { releases = (int)(d / 2); });
     });
     if (out_releases != NULL) *out_releases = releases;
     return rc;
@@ -1624,42 +1687,28 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
     NSString *str = [NSString stringWithUTF8String:text];
     if (str == nil) return ZB_AUTO_ERR_INTERNAL;
     NSString *expected = expected_doc != NULL ? [NSString stringWithUTF8String:expected_doc] : nil;
-    NSMutableArray<NSString *> *chars = [NSMutableArray array];
-    [str enumerateSubstringsInRange:NSMakeRange(0, str.length)
-                            options:NSStringEnumerationByComposedCharacterSequences
-                         usingBlock:^(NSString *sub, NSRange r, NSRange er, BOOL *stop) {
-      (void)r; (void)er; (void)stop;
-      [chars addObject:[sub isEqualToString:@"\n"] ? @"\r" : sub];  // newline -> Return
-    }];
+    // One substring per Unicode CODE POINT (not grapheme cluster), so sent_chars counts code points
+    // (RoseCat 6361.2); a surrogate pair is one code point.
+    NSMutableArray<NSString *> *cps = [NSMutableArray array];
+    NSUInteger i = 0;
+    while (i < str.length) {
+      unichar c = [str characterAtIndex:i];
+      NSUInteger len = (CFStringIsSurrogateHighCharacter(c) && i + 1 < str.length) ? 2 : 1;
+      NSString *cp = [str substringWithRange:NSMakeRange(i, len)];
+      [cps addObject:[cp isEqualToString:@"\n"] ? @"\r" : cp];  // newline -> Return
+      i += len;
+    }
     __block int sent = 0;
     int rc = zb_auto_native_input(win, expected, timeout_ms, ^(ZBWindowHost *host, ZBAutoJob *job) {
       if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
       NSWindow *window = host.window;
       WKWebView *view = host.webView;
       if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
-      if (chars.count == 0) {  // empty text: just ack
-        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); }];
-        zb_job_inflight(job);
-        return;
-      }
-      // Type one character per FIFO-acked round trip: the ack for char N is processed by the web process
-      // only after char N's key events on the same ordered IPC connection, so char N+1 is never sent
-      // before char N landed (rapid back-to-back synthetic keys otherwise drop/coalesce). A waiter that
-      // abandons mid-text stops further delivery (partial typing; sent counts the characters dispatched).
-      __block void (^step)(NSUInteger) = nil;
-      step = ^(NSUInteger idx) {
-        zb_send_key(window, chars[idx], 0, 0);
-        sent = (int)(idx + 1);
-        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
-          (void)v;
-          if (e != nil) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
-          if (idx + 1 >= chars.count) { step = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
-          if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // waiter abandoned: stop
-          step(idx + 1);
-        }];
-      };
-      step(0);
-      zb_job_inflight(job);  // the first char's eval is the submission; INFLIGHT after issuing it
+      NSMutableArray<NSEvent *> *events = [NSMutableArray array];
+      for (NSString *cp in cps) zb_build_key_events(window, ZB_KEY_CHAR, 0, cp, 0, 0, events);
+      // Each code point is one keyDown/keyUp pair -> every completed pair (an even delivered count) is a
+      // typed code point; a mid-text abandon leaves `sent` at the code points fully dispatched.
+      zb_deliver_events_paced(window, view, job, events, ^(NSUInteger d) { sent = (int)(d / 2); });
     });
     if (out_chars != NULL) *out_chars = sent;
     if (out_releases != NULL) *out_releases = sent;
