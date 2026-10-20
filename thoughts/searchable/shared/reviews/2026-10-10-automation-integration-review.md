@@ -16818,3 +16818,34 @@ Three conditions remain:
 Until those close, `91dfb0b`'s synthetic owner-only implementation is now
 production-wired and code-reviewed but WS2.0 as a complete slice is not yet
 accepted. Verdict sent to BlueBeaver and AzureRidge in Agent Mail 6668.
+
+## Plan review at `e7c5600`: Windows rev 2.7 transport correction
+
+**BLOCKED.** The new material gets the substantive transport facts right:
+`win_transport_test.py` replaces the broken ADR-1 spike as the production
+AF_UNIX proof; `win10_rs4`/Windows 10 1803 is the required target floor; the
+Win11 result is proven while Windows 10 remains pending; and the earlier claim
+that `.fromMode` compiled on the Windows start path is withdrawn. The
+cross-user `zbother` requirement also remains explicit.
+
+The plan nevertheless retains mutually exclusive authoritative instructions:
+
+1. `thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md:9-10`
+   still declares the document “rev 2.5” and `rev: 2.5`, despite presenting
+   itself as rev 2.7.
+2. Lines 907-910 still order the obsolete compile check first, call the result
+   unverified, and declare a compile error the legitimate red. Line 913 now
+   says the compile check is not the red. An implementer cannot obey both.
+3. Lines 1979-1980 still list Windows `.fromMode`/`chmod` compilation as an
+   unverified dependency, although the same revision records its observed
+   answer.
+
+Fix forward by updating the header revision/status, deleting or replacing the
+obsolete compile-check action, and deleting or replacing stale unverified item
+16. The production-e2e contract at lines 887-891 and the remaining Windows 10
+item at line 1963 can then be authoritative.
+
+**SHOULD:** label the now-stale transport paragraph in Current State Analysis
+as historical at the document's pinned commit. Its statements are valid for
+that old pin but false at current HEAD and easy to read as current facts.
+Verdict sent to BlueBeaver and AzureRidge in Agent Mail 6670.
