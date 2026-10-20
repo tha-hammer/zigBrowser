@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""MS2b RED (unregistered) — native-input capability spike on the macOS WKWebView backend.
+"""MS2b.1a RED (unregistered) — native-input feasibility spike (click) on the macOS WKWebView backend.
 
-MS2b.1 (spike): a native input command (dom.click) must deliver a TRUSTED event
-(`event.isTrusted === true`) to the real WKWebView — the in-process responder-chain NSEvent /
-CGEvent->NSEvent path, no system post, no TCC. The macOS shim implements only the 6 lifecycle
-fns (no zb_automation_* / zb_native_* port), so the automation server has no WKWebView session
-and rejects the command — the red. MS2b runs the UNSIGNED build (parallel with MS1b).
+MS2b.1a (click-only spike): a NATIVE click (dom.click with options.input="native") must deliver a
+TRUSTED event (`event.isTrusted === true`) to the real WKWebView — the in-process responder-chain
+NSEvent / CGEvent->NSEvent path, no system post, no TCC. The macOS shim implements only the 6
+lifecycle fns (no zb_automation_* / zb_native_* port), so the automation server has no WKWebView
+session and rejects the command — the red. MS2b runs the UNSIGNED build (parallel with MS1b).
 
-Runs ON a Mac (console user, no xvfb, like gate.sh). Unregistered in build.zig
-(red-outside-the-gate); the MS2b green registers the native-input gate and changes the capability
-table entry (automation_platform.zig) only after this passes.
+SCOPE: this is the click-only feasibility spike (MS2b.1a). Plan MS2b.1 is the FULL trusted-event
+matrix — focus, click, key, text, contenteditable + beforeinput cancellation, scroll, pointer
+movement, navigation-during-input, partial typing, deadline abandonment, on BOTH Macs — and the
+capability table (automation_platform.zig) may flip ONLY after the whole matrix passes. This spike
+therefore does NOT register the final MS2b gate and does NOT flip capabilities; the remaining red
+slices (MS2b.1b key/text/contenteditable+beforeinput, MS2b.1c scroll/pointer/navigation/partial-typing,
+MS2b.1d deadline-abandonment, MS2b.2 dialogs) follow before the MS2b green.
+
+Runs ON a Mac (console user, no xvfb, like gate.sh), in its own process group (orphan-safe teardown).
+Unregistered in build.zig (red-outside-the-gate).
 
 Mutation-resistant: it asserts the click is TRUSTED (e.isTrusted === true), so a synthetic-event
 stub (isTrusted false) or a no-op that returns {"ok": true} without delivering the click both fail.
@@ -113,14 +120,16 @@ def main() -> int:
             try:
                 rpc = RpcClient(socket_path, args.timeout_sec)
             except Exception as exc:
-                print("FAIL\tms2b-socket-not-connectable")
+                print("FAIL\tms2b.1a-socket-not-connectable")
                 eprint(f"error={exc}")
                 eprint(f"stderr={err[-20:]}")
                 return 1
 
-            # MS2b.1: a native click must deliver a TRUSTED event. All of these return a capability
-            # error on macOS today (-> AssertionError from rpc.call), which is the red.
-            expect_eq("dom.click", rpc.call("dom.click", {"selector": "css=#btn", "timeout_ms": 10000}), {"ok": True})
+            # MS2b.1a: a NATIVE click must deliver a TRUSTED event. options.input="native" selects the
+            # native port (router defaults to synthetic, router.zig parseInputMode) — without it this
+            # would exercise the synthetic path, not the native capability it spikes. Returns a
+            # capability error on macOS today (-> AssertionError), which is the red.
+            expect_eq("dom.click (native)", rpc.call("dom.click", {"selector": "css=#btn", "options": {"input": "native", "timeout_ms": 10000}}), {"ok": True})
             expect_eq("click reached the page", rpc.evaluate("window.__clicks"), 1)
             # Mutation-resistant: the delivered click must be a TRUSTED (native) event, not synthetic.
             expect_eq("click is trusted (native)", rpc.evaluate("window.__trustedClick"), True)
@@ -134,12 +143,12 @@ def main() -> int:
             stop_browser_macos(proc)
 
     if failures:
-        print("FAIL\tms2b-native-input")
+        print("FAIL\tms2b.1a-native-click")
         for f in failures:
             eprint(f"  {f}")
         eprint(f"stderr={err[-20:]}")
         return 1
-    print("PASS\tms2b-native-input")
+    print("PASS\tms2b.1a-native-click")
     return 0
 
 
