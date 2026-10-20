@@ -13730,3 +13730,80 @@ Verdict sent in Agent Mail 6207.
 The current approved linear push-through boundary is the now-pushed
 **`70317c0`**. The earliest unapproved commit remains `2713c20`, pending the
 S6b1 Part-B production green and required user-screen rerun.
+
+## Overnight follow-up queue at `fb77e25`
+
+### S5c-1 reply-cap green and S5d red (`2258d71`, `974d91c`)
+
+**`2258d71` is BLOCKED-for-tests.** Its production chain otherwise follows
+the terminal-forwarding contract: the helper forwards at most 262,125 bytes
+on a UTF-8 boundary, emits one prompt-specific `reply_capped`, the validator
+enforces the cap ordering, the drawer never shrinks the completed bubble, and
+the app's first overflow deadline remains authoritative. BlackRobin's private-
+Xvfb clean export passed **171/171 steps and 929/929 tests**. One numeric
+boundary is not pinned:
+
+- the plan admits prompt ids through exactly `2^53 - 1`, but the suite only
+  rejects zero and `2^53`; it never accepts the maximum. Lowering the maximum
+  by one survives;
+- `Validator.promptSent` itself accepts zero, negatives and values above the
+  maximum, relying on callers; and
+- the app's transition at the maximum does not have a no-wrap/no-frame/no-seq-
+  advance red.
+
+The green needs an inclusive-maximum acceptance case, direct invalid
+`promptSent` cases that leave state unchanged, and an outbound maximum-to-
+refusal transition whose max-minus-one mutant fails. Verdict sent in Agent
+Mail 6214.
+
+**`974d91c` is APPROVED as the unregistered failing-first S5d red.** It covers
+the schema and lifecycle for every newly prompt-scoped frame, exact-once
+ending, Stop retaining the active prompt, helper-wide and idle-session errors,
+non-commit on rejection, helper propagation across success/error/cap/renew,
+and the six production-chain stale/future cases while a third prompt is
+queued. Python compilation and Zig formatting are clean. It does not by itself
+close the numeric-boundary finding on `2258d71`. Verdict sent in Agent Mail
+6217.
+
+### WS1 Windows build driver (`defb5a2`)
+
+**`defb5a2` is BLOCKED.** `bash -n` passes, but the driver is not yet a
+trustworthy producer of the artifact the later census reviews:
+
+- it archives the shared dirty working tree—including untracked files in the
+  named directories—into a persistent remote tree that is never cleaned, so
+  deleted local files and unrelated agent work can affect the exe;
+- build-step and tool/SDK/path values are interpolated into one remote
+  `cmd.exe` command, with the step unquoted, rather than validated and encoded
+  as safe arguments;
+- it has no hermetic selftest for hostile values, child display scrubbing,
+  transport failures, stale-tree isolation, or artifact provenance;
+- the connected stage/build/fetch operations have no outer deadlines;
+- a failed repository-root resolution can continue from the caller's
+  directory; and
+- `scp` writes the final output path directly, leaving a possible partial
+  artifact on failure.
+
+Use an explicit clean commit archive and fresh per-run remote directory, bind
+the fetched artifact to that run, validate or safely encode every remote
+argument, and add fail-closed reds. Verdict sent in Agent Mail 6215.
+
+### WS0.7 listener follow-up (`fb77e25`)
+
+**`fb77e25` is BLOCKED.** The non-GUI two-host selftest is green 10/10 and
+`netstat` is a plausible standard-user data source, but the new policy fails
+open:
+
+- the authoritative WS0.7 contract says any pre/post listener difference
+  fails. Ignoring every port at or above 49152 also ignores a persistent
+  product/test listener on (for example) port 50000. Normal dynamic churn must
+  be distinguished by stronger identity or explicitly approved in a plan
+  revision, not erased wholesale;
+- missing, malformed and wrong-typed listener values all collapse to an empty
+  stable set; two missing firewall hashes also compare equal. Required probe
+  fields need strict schema validation before comparison; and
+- the live probe still emits no `console_user`, `zbtest_write_paths`, or
+  `fw_rules_hash`, and the Win10 marker still is not validated, so the real
+  file-server path cannot satisfy the claimed contract.
+
+Verdict sent in Agent Mail 6216.
