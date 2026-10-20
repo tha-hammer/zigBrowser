@@ -6,9 +6,10 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Voice input (speech-to-text) with whisper.cpp — TDD implementation plan"
 tags: [plan, tdd, voice, stt, whisper.cpp, microphone, agent-drawer, macos, windows, linux, model-management, miniaudio]
-status: plan for review (rev 2.2)
-rev: 2.2
+status: plan for review (rev 2.3)
+rev: 2.3
 last_updated: 2026-10-20
+last_updated_note_2_3: "Rev 2.3 (2026-10-20): clears RoseCat's effde38 re-review (still BLOCKED). (1) The unforgeable capture capability is pinned (VS4.8): a Linux/macOS inherited O_CLOEXEC fd (--voice-cap-fd) / Windows inherited HANDLE (--voice-cap-handle), created/owned/closed by a test launcher tools/zb-voice-launch, with a wrong-kind-handle red; VS4.6/VS8.1/VS10.1/VSP.2 now invoke through the launcher, not the bare exe. (2) No live capture in any Windows gate: VS10's capture mappings use an injected ZB_E2E_CAPTURE seam; real enumeration and live mic are manual (win-voice-live) only. (3) The (size,mtime,inode) tuple may only schedule work, never establish identity, skip hashing, or authorize bytes — every consumed model is hash-verified and loaded from verified bytes/handle. (4) macOS deps are a hard gate: VS7/VS8/VSP.3 block until JadeBeacon's committed Mac-plan revision lands the voice roles (he approved directionally, mail 6347). No user decision changed."
 last_updated_note_2_2: "Rev 2.2 (2026-10-20): macOS paths made as concrete as the Windows ones AND RoseCat's re-review drift cleared. VF §4 is now byte-identical to the TTS plan's §2.4 between explicit VF:BEGIN/VF:END markers (a proposed tools/check_vf_identical.sh asserts diff is empty); the VF privacy oracle allowlists exactly the test's declared FileSink artifact; automated gates are Null/WAV/FileSink only (VS10's live mic moved to the manual win-voice-live check). The §4a contracts are folded into the owning slices as concrete reds: VS4.7 async epoch/cancel/close/restart, VS4.6+VS4.8 the unforgeable capture capability + sandbox negatives, VS5.8 the first-use privacy notice (no capture before Accept / decline / persistence / corrupt re-prompt), VSP.5 upgrade/repair/downgrade/tamper/orphan, VSP.6 the orchestrator-only remote model-transfer, and concrete reds for VS9/VS11. SHOULD: whisper_init_from_buffer_with_params (nondeprecated 1.9.5). macOS entitlement/census deltas are proposed to JadeBeacon, not edited into his plan."
 last_updated_note: "Rev 2.1 (2026-10-20): major revision clearing RoseCat's 9a6973b / 9663333 voice-plan review (NOT APPROVED). The shared subsystems are now specified once in §4 Shared Voice Foundation (VF), byte-identical in the TTS plan: one path set (src/voice/*, src/voice_settings_window.c), one audio API, one owner, one voice.json schema with migration + lock + single writer, verify-through-consumption model loading (whisper_init_from_buffer), the render-to-file/null test-device rule, and a native ZbChild interface (not the Python agent SandboxBackend). The dictation state machine (D4) gains an epoch/session token and stale-result rejection; a headless native permission contract and the VS5/VS8 privacy-notice UI assertions are added; the macOS mic source is bound to the signing/census route; a range-aware insert ABI replaces zb_drawer_set_draft; the medium verify/load race is closed and installer upgrade/repair/downgrade/tamper/orphan tests added; failing-first is made executable for VS0.2/VS9-VS11/VSP; live capture is put behind an unforgeable capability; and remote packaging gets a model-transfer protocol. No user decision is changed; open decisions are sharpened only. Rev 2 (2026-10-19): recorded the user's decisions — bundle the model (O2), Windows launch plan dependency, Windows 10 support; VS2 optional; VSP added."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-input-stt.md
@@ -250,7 +251,7 @@ The user decided to bundle the model (0.2.4). There is no first-run download.
 - **First-load check (run time):**
   - The engine verifies size + SHA-256 against the compiled catalog once per process and then loads **the verified bytes** via `whisper_init_from_buffer_with_params` (VF's verify-through-consumption, §4) — it never re-opens the path for the load, so a swap at the verify/use seam cannot reach whisper.
   - Hashing 0.8 to 1.5 GB takes seconds, not milliseconds; VS1 measures it. It runs on the engine thread while the status shows "Preparing voice…", so the UI never blocks.
-  - A cached verify record keyed by `(size, mtime, inode)` is the refactor option if the hash cost hurts.
+  - A cached `(size, mtime, inode)` record may only **schedule** whether to re-hash eagerly; it **never** establishes identity or skips the hash-verify-then-load-from-verified-bytes path (VF §4).
   - A missing or damaged file disables voice input with "The voice model is missing or damaged. Reinstall zigBrowser." It never loads an unverified file.
 - **The bundle is read-only.** The browser never writes, moves or deletes the bundled model. That also keeps the macOS signature intact.
 - **Network:** the running browser makes **no** network request for the model. O5 (download host) is no longer needed for first use. It only matters if the optional update path (VS2) is ever built, and then it is the user's decision again. The agent sandbox's allowlist (`sandbox.py:51`) is unchanged, and the agent never touches models.
@@ -400,7 +401,7 @@ ends the session with `error device-lost` and never hangs.
 - STT: `whisper_init_from_buffer_with_params(verified_bytes, params)` (not `whisper_init_from_file`).
 - TTS/ONNX: `OrtCreateSessionFromArray(verified_bytes)` (not a path), or a single OS handle opened
   once, verified, and memory-mapped for the load.
-- A `(size, mtime, inode)` record is a **performance hint only**, never the identity proof.
+- A `(size, mtime, inode)` record **only schedules work** (whether to re-hash eagerly); it can **never** establish identity, skip hashing, or authorize bytes. **Every consumed model is hash-verified and loaded from those verified bytes/handle, every time.**
 - **Red (VF):** at the verify/use seam, replace or truncate the file after verify and before load;
   the load must consume the verified bytes/handle, and the swapped file must never reach the engine
   (mutant: reopen-by-path ⇒ the swapped bytes load ⇒ red). "The bundle is read-only" is an install
@@ -491,7 +492,7 @@ test in the slice named.
    accuracy), `q8_0` (823 MB, near-f16 accuracy, recommended default pending O1), `f16` (1.53 GB,
    reference accuracy, 2× install). The verify/load race is closed by **VF's
    verify-through-consumption** (`whisper_init_from_buffer_with_params` over the verified bytes; no reopen; the
-   `(size,mtime,inode)` cache is a perf hint only). VSP tests cover not just fresh install but
+   `(size,mtime,inode)` cache may only schedule work, never authorize bytes — VF §4). VSP tests cover not just fresh install but
    **upgrade, repair, downgrade, tamper (swapped/truncated file at the verify/use seam), and orphan
    cleanup** of an old model on upgrade.
 
@@ -529,6 +530,15 @@ with the specific HRESULT** rather than claiming Windows denied permission; **Ap
 (VS11) settings-window** sections are named; third-party notices are packaged; dependency status is
 repinned; cleanup rules use guard clauses, no side-effectful conditions, and named timing/sample
 constants. The WiX directory id is **`INSTALLFOLDER`** (not the plan's `<INSTALLDIR>`).
+
+**macOS ownership is a HARD prerequisite (not a proposal).** The macOS entitlement, the
+`universal_components.json` resource role (`stt-model`), and the `resource_compat`/census checks this
+plan leans on are owned by the macOS plan (MS1.3/MS5.1c). JadeBeacon **directionally approved** them
+(mail 6347) and will land them in `2026-10-14-14-30-macos-launch-tdd-plan.md` once these voice plans
+clear RoseCat. Therefore **VS7, VS8 and VSP.3's macOS gates are BLOCKED until that committed Mac-plan
+revision lands** the voice role/entitlement/resource checks — the two plans must not diverge, and no
+macOS voice gate may be marked done against an uncommitted proposal. Citations stay "proposed (MS…)"
+until his commit.
 
 ## 5. Decisions for the user
 
@@ -899,7 +909,7 @@ If none is chosen, VS2 is dropped. When it is built, O5 (download host) comes ba
 - No test: it is a measurement.
 
 #### Behavior VS4.6: `--voice-selftest` runs the whole core without a window
-- **Given / When / Then:** `zigBrowser --voice-selftest wav:PATH --e2e-protocol` locates and checks the bundled model (VS1), runs one dictation session from the WAV through the real engine, and prints `VOICE model <id> ready` and `voice inserted <len>` (and the text, under `--e2e-protocol` only). Without `--e2e-protocol` it is usage (exit 2), like the D6 seams.
+- **Given / When / Then:** run through the test launcher — `tools/zb-voice-launch -- --voice-selftest wav:PATH --e2e-protocol` (the launcher passes the inherited capability of VS4.8) — the browser locates and checks the bundled model (VS1), runs one dictation session from the WAV through the real engine, and prints `VOICE model <id> ready` and `voice inserted <len>` (and the text, under `--e2e-protocol` only). Invoked **without the capability** (bare `zigBrowser --voice-selftest…`) or without `--e2e-protocol`, it is usage (exit 2) — the VS4.8 gate.
 - This is the headless probe that VS7, VS8, VS10 and VSP run on the Macs, the Windows hosts and inside installed packages.
 - LEAF for parsing; the run is a Tier-2 integration test.
 - **Files touched:** `src/cli.zig`, `src/app.zig`, `src/voice/dictation.zig`, `tests/e2e/voice_selftest_test.py` (new).
@@ -910,7 +920,31 @@ If none is chosen, VS2 is dropped. When it is built, O5 (download host) comes ba
 - **Files touched:** `src/voice/dictation.zig` (epoch, idempotent cancel, join order), `tests/e2e/voice_async_lifetime_test.py` (new).
 
 #### Behavior VS4.8: live capture is unreachable from agent/hook code (clears §4a #8, review #8)
-- **Given / When / Then:** `--voice-selftest` and `--voice-capture-probe` require an **unforgeable inherited capability** — a descriptor/handle the browser passes only to itself — **in addition to** `--e2e-protocol`; without the capability they are usage (exit 2), so a sandboxed agent/hook that re-execs the binary cannot start capture. (Or they are built only into a test-only binary; the plan picks the capability form in the green.)
+- **The capability, pinned.** `--voice-selftest` and `--voice-capture-probe` require an **unforgeable
+  inherited capability** in addition to `--e2e-protocol`; without it they are usage (exit 2).
+  - **Transport.** On **Linux/macOS** it is an **inherited file descriptor** opened on an `O_CLOEXEC`
+    anonymous pipe/`memfd` by the launcher; its number is passed as `--voice-cap-fd=<n>` and the child
+    verifies the fd is the expected kind (a pipe/memfd it can `fstat`), not an arbitrary inherited fd.
+    On **Windows** it is an **inherited `HANDLE`** created with `bInheritHandle=TRUE` and passed as
+    `--voice-cap-handle=<value>` with the child verifying the object type. The browser creates the
+    capability per launch, marks it inheritable **only** for the child it spawns, and **closes** it in
+    the parent after the child starts; it is never written to disk, an env var, or a frame, so a
+    sandboxed agent/hook that re-execs the binary cannot forge or inherit it.
+  - **Ownership/lifetime:** the launcher owns creation and close; the child holds a borrowed handle for
+    the run and closes it at exit; a leaked or reused capability across runs is a test failure.
+  - **Test launcher.** A test-only `tools/zb-voice-launch` (and the in-process `voice_launch` helper)
+    creates the capability and execs `zigBrowser --voice-selftest…/--voice-capture-probe…`. **Every
+    automated selftest/probe invocation in this plan runs through it** (VS4.6, VS7, VS8.1, VS10.1/.2,
+    VSP.2-.4); none invokes the bare executable. Production never builds the selftest/probe entry
+    points into the shipped binary unless the capability check is compiled in (the green picks the
+    test-only-binary form or the compiled-in capability).
+- 🔴 **Negative reds from every real sandbox:** from the agent helper's sandbox and from each hook's
+  sandbox, an attempt to invoke a live-capture entry point **fails** — not merely "no frame/tool/socket
+  method names it", but the entry point itself refuses **without the capability**. Mutant: gate on
+  `--e2e-protocol` alone ⇒ the sandboxed re-exec reaches capture ⇒ red. A second mutant hands the child
+  an arbitrary inherited fd/HANDLE (wrong kind) ⇒ the type check refuses ⇒ the capture stays closed.
+- This slice **owns the sandbox-capture negatives**. The agent-sandbox allowlist (`sandbox.py:51`) is
+  unchanged; the agent never touches audio.
 - 🔴 **Negative reds from every real sandbox:** from the agent helper's sandbox and from each hook's sandbox, an attempt to invoke a live-capture entry point **fails** — not merely "no frame/tool/socket method names it", but the entry point itself refuses without the capability. Mutant: gate on `--e2e-protocol` alone ⇒ the sandboxed re-exec reaches capture ⇒ red.
 - This slice **owns the sandbox-capture negatives** (they are not left to a summary). The agent-sandbox allowlist (`sandbox.py:51`) is unchanged; the agent never touches audio.
 - **Files touched:** `src/cli.zig` (capability check), `src/app.zig`, `tests/e2e/voice_capture_capability_test.py` (new), reused agent/hook sandbox harnesses.
@@ -1036,7 +1070,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 - Until MS1b is green, VS8's permission checks run on the arm64 host only (its signed slice runs, macOS plan `:567-570`), and the Intel results are marked pending.
 
 #### Behavior VS8.1: headless WAV-path dictation over SSH (no TCC involved)
-- **Given / When / Then:** on both hosts, `zigBrowser --voice-selftest wav:jfk.wav --e2e-protocol` (no mic, no AppKit window needed) transcribes with the real engine and prints `voice inserted <len>`.
+- **Given / When / Then:** on both hosts, through the test launcher `zb-voice-launch -- --voice-selftest wav:jfk.wav --e2e-protocol` (VS4.8 capability; no mic, no AppKit window needed) transcribes with the real engine and prints `voice inserted <len>`.
 - This proves capture-free parity on both arches without a GUI session.
 
 #### Behavior VS8.2: the usage string and the entitlement are present and proven
@@ -1086,7 +1120,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 - On the physical machine, which is also a file server, every run follows WLP's file-server isolation rules (`:415-470`): user `zbtest`, under `C:\Users\zbtest\zb\` only, and recorded load windows for CPU-heavy runs such as `voice-bench`.
 
 #### Behavior VS10.1: the engine builds and transcribes on Windows 10 and 11
-- **Given / When / Then:** the WS1 build on the VM produces `zigBrowser.exe`. On both the Win11 VM `win11-m8` and the physical Windows 10 machine, `zigBrowser.exe --voice-selftest wav:jfk.wav --e2e-protocol` prints the known sentence with tiny.en.
+- **Given / When / Then:** the WS1 build on the VM produces `zigBrowser.exe`. On both the Win11 VM `win11-m8` and the physical Windows 10 machine, through the launcher `zb-voice-launch.exe -- --voice-selftest wav:jfk.wav --e2e-protocol` (VS4.8 capability HANDLE) prints the known sentence with tiny.en.
 - A CPU without the baseline ISA prints the D3 message and exits cleanly. The test records `cpuid` on both hosts (the VM's virtual CPU flags are unverified).
 - **Files touched:** `build/whisper.zig` (msvc flags), `src/voice/whisper_engine.zig` (loads via `whisper_init_from_buffer_with_params` over the verified bytes — VF §4 — so no Windows wide-char path-open is needed for the load), `tests/e2e/win_voice_selftest_test.py` (new).
 
@@ -1094,8 +1128,8 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 - **Given / When / Then:**
   - on the physical Windows 10 machine with a microphone, live capture delivers 16 kHz mono f32 (RMS above the D8 floor while the user speaks, in `win-voice-permission`);
   - on the physical Windows 10 machine, with the desktop-apps microphone switch turned off **for `zbtest` only, never machine-wide** (WLP WS12 table; by the orchestrator through Settings; the registry key path is unverified), starting capture yields `error permission-denied` or `error no-signal`, whichever that build shows. The exact HRESULT is recorded. The same case runs on the VM once its capture device is proven, because 10 and 11 may differ (research 5.2);
-  - on the VM while no capture device is proven, `--voice-capture-probe --list` reports `no-device` and the dictation core maps it to `error no-device`. This is a recorded-file-tier assertion about the mapping, not a live-capture test.
-  - The probe itself (`--voice-capture-probe`, `--e2e-protocol`-gated like D6) is added here. It is also the tool for D8's VM proof.
+  - the **access-failure and no-device mappings are driven by an injected device-map/error seam** in automation — `ZB_E2E_CAPTURE=no-device|access-denied|zero-stream|ok:wav:PATH` (inert without `--e2e-protocol`) — so the automated test never enumerates real hardware; it asserts the mapping (`error no-device`, `error permission-denied`, `error no-signal`). **Real** `--voice-capture-probe --list` enumeration runs only in D8's **manual** VM device proof and the `win-voice-live` manual check, never in the gate.
+  - The probe entry point (`--voice-capture-probe`) carries the VS4.8 capability and `--e2e-protocol`, and is the tool for D8's manual VM proof.
 - If `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` misbehaves on the Windows 10 build, the capture path falls back to miniaudio's resampler (D8). A test asserts the same output format either way.
 - **Files touched:** `src/voice_win.cpp` (new; compiled in `configureWebView2Backend`, `build.zig:1535-1558`; links `ole32`, already linked), `src/voice/audio_miniaudio.c` (conversion fallback).
 
@@ -1104,7 +1138,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 
 **Real-hardware check (VS10):** `win-voice-permission` on the physical Windows 10 machine, user at the screen.
 
-**Gate (VS10):** WS1 build + `tests/windows/gate.sh --phase voice`: `win_voice_selftest` (recorded file) on both hosts, plus live capture on the physical Windows 10 machine.
+**Gate (VS10):** WS1 build + `tests/windows/gate.sh --phase voice`: `win_voice_selftest` (recorded file, through the launcher) + the injected capture-mapping seam on both hosts. **No live capture in the gate** — the physical-Windows-10 live-microphone run is the user-approved manual `win-voice-live` check (§8.1).
 
 ---
 
@@ -1135,7 +1169,7 @@ Rev 2: no download or consent UI, because the model is bundled (0.2.4).
 - 🔵 One hash-and-compare function shared with VS1's first-load check (Zig, used by both the build helper and the browser).
 
 #### Behavior VSP.2: the .deb carries the model [L][P]
-- **Given / When / Then:** `packaging/linux/build-deb.sh` includes `/usr/share/zigbrowser/models/stt/<file>`. `packaging/linux/gate.sh` (container install) checks its SHA-256 after install, and runs `zigBrowser --voice-selftest wav:jfk.wav --e2e-protocol` under `xvfb-run`, which reports `VOICE model <id> ready`.
+- **Given / When / Then:** `packaging/linux/build-deb.sh` includes `/usr/share/zigbrowser/models/stt/<file>`. `packaging/linux/gate.sh` (container install) checks its SHA-256 after install, and runs the launcher `zb-voice-launch -- --voice-selftest wav:jfk.wav --e2e-protocol` (VS4.8 capability) under `xvfb-run`, which reports `VOICE model <id> ready`.
 - 🔴 **Red (mutant):** the `.deb` built without the model ⇒ `deb_install_test.py` fails the post-install SHA-256 check and the selftest reports `damaged`; registered in the packaging gate on green.
 - **Files touched:** `packaging/linux/build-deb.sh`, `packaging/linux/control.in` (installed size), `packaging/linux/gate.sh`, `tests/e2e/deb_install_test.py`.
 
