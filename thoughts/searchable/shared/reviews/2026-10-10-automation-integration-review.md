@@ -18085,3 +18085,65 @@ fix-forward to `527485f` and the user's real-screen `tools` verdict. The new
 Python files compile, `git diff --check d33095d^..527485f` is clean, and the
 manual pure suites pass 38/38. I did not take the shared full-gate slot or
 touch a live browser/real display.
+
+## MS5 item-5 spawn seam and WS0 zero-write transport (`98be18d` through `7e0a9bf`)
+
+Reviewed at `7e0a9bf` on 2026-10-20 17:35 EDT.
+
+### MS5 item 5
+
+- **`98be18d` APPROVED as the isolated failing-first red.** The weak import
+  makes the absent spawn seam fail by behavior. The armed case proves that
+  setup leads its process group and that a real descendant remains in that
+  group, then SIGKILLs the browser stand-in and requires no live group member
+  after two seconds. The barrier case holds the real Darwin watcher between
+  its first parent check and kqueue registration and kills the stand-in there.
+  The owner's x86_64 and arm64 reds failed on the missing symbol, and the
+  no-process-group and watcher-only-exits mutants both fail the completed
+  chain.
+- **`8ab47d4` APPROVED as the isolated green seam.** The production sequence is
+  `posix_spawnattr_init` -> `POSIX_SPAWN_SETPGROUP` -> pgroup zero ->
+  `posix_spawn`; every initialized path destroys the attributes. The group
+  kill rejects non-positive pids, and `waitpid` retries `EINTR`. The owner
+  reports 2/2 cases on each Mac architecture, and the local display-free
+  `-Wall -Wextra -Werror` compile is clean.
+
+These approvals do **not** close plan rev 14 item 5. Nothing links the seam
+into `runAgentSetup` yet. The real browser must still pass `--browser-pid`,
+setup must arm the Darwin watcher before any work, the normal browser-exit
+path must exercise `zb_agent_kill_group` plus `zb_agent_wait`, and the
+both-architecture real-binary SIGKILL/barrier census must pass.
+
+### `7e0a9bf` — BLOCKED; do not run it on Win10 yet
+
+The commit correctly removes explicit remote script staging: `probe_host`
+streams `host_probe.ps1` into one SSH process, and `probe_only` invokes that
+path for the Win10 pre/post probes with the Win10 key and known-hosts
+arguments. There is no Win10 `scp`, remote redirection, mkdir, cleanup or
+result file in that call graph. The separate known-hosts values retain
+`StrictHostKeyChecking=yes`. The Win11 VM threshold is correctly 10 GiB while
+the file-server threshold remains 20 GiB. The targeted hostless suite is
+green, **53/53 tests**, and the shell/Python syntax checks pass.
+
+However, transport without a staged file is not a zero-write execution. The
+streamed script executes `Add-Type -MemberDefinition` at
+`tests/windows/host_probe.ps1:12-21`. Windows PowerShell 5.1 implements that
+dynamic compilation through .NET Framework CodeDOM temporary compiler files,
+even though the resulting assembly is loaded in memory. PowerShell's own
+[#7914](https://github.com/PowerShell/PowerShell/issues/7914) records the
+write-access dependency; the .NET Framework compiler path uses a
+`TempFileCollection` and deletes those artifacts only after compilation.
+That violates the user's literal rule that this gate writes nothing on the
+physical Win10 file server.
+
+The new test at `tests/windows/gate_twohost_selftest.py:513-530` does not catch
+this: fake SSH records stdin and returns canned JSON; it never executes the
+PowerShell script. It proves only the absence of `-File` and presence of the
+streamed bytes. Before the first live run, add a Win10-specific probe path with
+no dynamic compilation or other write-capable primitive, plus a failing-first
+contract proving that the file-server route selects it while retaining the
+exact stdin oracle. The stale header at `host_probe.ps1:2` should also name the
+actual `$input | Out-String | iex` command rather than `powershell -Command -`.
+
+No full gate, Windows host, live browser or real display was used for this
+review. Findings were mailed to BlueBeaver (6817) and AzureRidge (6816).
