@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from test_bridge import Out, answer, bridge, error_text, started  # noqa: E402
+from test_bridge import SEQ, Out, answer, bridge, error_text, started  # noqa: E402
 
 from zb_agent_host.frames import encode  # noqa: E402
 from zb_agent_host import chat  # noqa: E402
@@ -32,7 +32,8 @@ BAD = "the browser sent a bad result"
 
 
 def result(frame, **fields):
-    reply = {"type": "tool_result", "session": frame["session"], "id": frame["id"]}
+    """A tool_result for `frame` in its D7b envelope, with `fields`."""
+    reply = {"v": 1, "seq": next(SEQ), "type": "tool_result", "session": frame["session"], "id": frame["id"]}
     reply.update(fields)
     return reply
 

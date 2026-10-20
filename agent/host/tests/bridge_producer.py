@@ -35,7 +35,7 @@ async def main():
     while not tap.lines and not task.done():
         await asyncio.sleep(0.01)
     frame = json.loads(tap.lines[-1])
-    bridge.resolve({"type": "tool_result", "session": "s-1-1", "id": frame["id"], "ok": True,
+    bridge.resolve({"v": 1, "seq": 1, "type": "tool_result", "session": "s-1-1", "id": frame["id"], "ok": True,
                     "content": [{"type": "text", "text": "Hello from page 1"}]})
     await asyncio.wait_for(task, 5)
 

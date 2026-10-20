@@ -10,6 +10,7 @@ written to memory by the real Emitter. Run the module alone, as the gate does.""
 
 import asyncio
 import io
+import itertools
 import json
 import random
 import re
@@ -63,8 +64,13 @@ async def started(b, out, name="get_text", args=None):
     return task, out.calls()[before:]
 
 
+SEQ = itertools.count(1)
+
+
 def answer(frame, ok=True, **fields):
-    reply = {"type": "tool_result", "session": frame["session"], "id": frame["id"], "ok": ok}
+    """The app's tool_result for `frame`, in its D7b envelope {"v":1,"seq":n}."""
+    reply = {"v": 1, "seq": next(SEQ), "type": "tool_result", "session": frame["session"], "id": frame["id"],
+             "ok": ok}
     reply.update({"content": TEXT} if ok else {"error": "the page has a dialog open"})
     reply.update(fields)
     return reply
