@@ -290,5 +290,20 @@ class DisplayScrub(_Case):
             self.assertNotIn("XAUTH=[/tmp/parent.Xauth]", logs)
 
 
+class SshHygiene(_Case):
+    def test_every_ssh_and_scp_passes_batchmode(self):
+        # Team rule: a refused key must fail at once, never open a GUI password prompt on
+        # the user's DISPLAY :0. Every real ssh/scp build-on-windows.sh runs must carry
+        # -o BatchMode=yes. (The fake ssh/scp stubs log their argv to ssh.log/scp.log.)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("BatchMode=yes", self._read(td / "ssh.log"),
+                          "build-on-windows.sh ssh must pass -o BatchMode=yes")
+            self.assertIn("BatchMode=yes", self._read(td / "scp.log"),
+                          "build-on-windows.sh scp must pass -o BatchMode=yes")
+
+
 if __name__ == "__main__":
     unittest.main()

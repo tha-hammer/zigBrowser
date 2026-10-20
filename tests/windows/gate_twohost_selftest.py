@@ -237,5 +237,18 @@ class WS07FileServerFence(_TwoHostCase):
             self._assert_fail_closed(proc, "file-server")
 
 
+class SshHygiene(_TwoHostCase):
+    def test_gate_ssh_passes_batchmode(self):
+        # Team rule: a refused key must fail at once, never open a GUI password prompt on
+        # the user's DISPLAY :0. Every ssh gate.sh runs must carry -o BatchMode=yes.
+        # (The fake ssh stub appends its argv to ZB_SELFTEST_SSH_LOG.)
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            log = td / "ssh.log"
+            self._run_probe_only(td, {"ZB_SELFTEST_SSH_LOG": str(log)})
+            text = log.read_text() if log.exists() else ""
+            self.assertIn("BatchMode=yes", text, "gate.sh ssh must pass -o BatchMode=yes")
+
+
 if __name__ == "__main__":
     unittest.main()
