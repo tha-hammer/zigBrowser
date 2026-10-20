@@ -2688,8 +2688,8 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
   }
 }
 
-// MS3.1: a deterministic UUID from the profile path (two FNV-1a 64-bit hashes -> 16 bytes, RFC4122 v4
-// version/variant bits set so dataStoreForIdentifier accepts it). Same path -> same UUID -> same store.
+// MS3.1: a deterministic UUID from the profile path (SHA-256 of the normalized path -> first 16 bytes,
+// RFC4122 v4 version/variant bits set so dataStoreForIdentifier accepts it). Same path -> same UUID -> same store.
 static NSUUID *zb_uuid_from_path(NSString *path) {
   // A collision-resistant digest of the NORMALIZED path (RoseCat 6608 #1): SHA-256, first 16 bytes, with
   // the RFC4122 v4 version/variant bits set so dataStoreForIdentifier accepts it. Same path -> same UUID.
@@ -2728,7 +2728,20 @@ int zb_app_set_profile_dir(const char *dir, char **out_err) {
     if (out_err != NULL) *out_err = strdup("--profile-dir is not valid UTF-8");
     return ZB_AUTO_ERR_INTERNAL;
   }
-  g_profile_dir = [path stringByStandardizingPath];  // normalize (~, .., // collapse) for a stable profile identity
+  // RoseCat 6625: bind a RELATIVE --profile-dir to the STARTUP CWD before the digest. The CLI accepts a
+  // relative spelling (cli.zig), and Linux resolves it to a concrete directory; without binding, the same
+  // spelling from two CWDs would share one managed store (an isolation leak) and an absolute spelling would
+  // split from its equivalent relative spelling. ~ expansion is lexical (NSHomeDirectory, no filesystem
+  // access); the CWD read is the process's startup working directory.
+  NSString *expanded = [path stringByExpandingTildeInPath];
+  if (![expanded isAbsolutePath]) {
+    NSString *cwd = [[NSFileManager defaultManager] currentDirectoryPath];
+    expanded = [cwd stringByAppendingPathComponent:expanded];
+  }
+  // Collapse "." / ".." LEXICALLY only — no symlink resolution, no existence dependency (RoseCat 6625):
+  // fileURLWithPath:isDirectory: does not touch the filesystem, and URLByStandardizingPath is purely lexical.
+  NSString *norm = [[NSURL fileURLWithPath:expanded isDirectory:NO] URLByStandardizingPath].path;
+  g_profile_dir = norm ?: expanded;  // a stable, CWD-bound, lexically-normalized profile identity
   return ZB_AUTO_OK;
 }
 
