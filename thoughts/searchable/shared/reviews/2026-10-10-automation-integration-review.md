@@ -15969,3 +15969,96 @@ old per-call-thread green while the ordinary A-before-B ordering alone does
 not. The suite additionally pins FIFO ids, one in-flight engine call, progress
 by another window's Broker, and socket/in-process parity for unknown methods
 and malformed/non-object parameters. Agent Mail 6575.
+
+## Review at `c98bd61`: S7 envelope/core, backend screenshot and macOS popup fixes
+
+All six requested commit diffs are whitespace-clean. I did not take the shared
+GUI gate slot. BlackRobin's clean-export run predates the final D8 broker
+rewrite and `startSocket` split; BlueBeaver's focused private-Xvfb run covers
+the screenshot entrypoint. I independently ran the two non-GUI source/bridge
+oracles: `test_bridge_envelope` passed 2/2 and
+`tests/startup_entrypoint_test.py` passed 3/3. The unrelated working-tree edit
+in `agent/host/tests/test_tools.py` was left untouched.
+
+### S7.0 exact tool-result envelope (`fb62112`)
+
+**APPROVED.** `_envelope` now requires both shared fields: `v` must be the
+exact integer 1, and `seq` an exact integer of at least 1. Missing, boolean,
+floating, string and null values fail closed; a malformed result for a pending
+id ends only that call with the fixed bad-result text and helper-wide protocol
+error, without exposing its content. The red is registered in the Bridge gate.
+This closes the envelope gap in `dcc5364`. Agent Mail 6585.
+
+### S7a in-process core and broker (`a7ff5db`)
+
+**BLOCKED.** The shared post-auth dispatch, no-socket `startCore`, one-worker
+FIFO, one deadline thread, queued-expiry removal, atomic one-answer claim and
+cross-broker independence are coherent and address `b14a300`/`6d82cae`.
+However, one of the six advertised production tools cannot work:
+`src/agent_broker.zig:34,147-159` maps `window_info` to `page.health` and
+unconditionally injects `window_id`, while `src/automation_server.zig:750-768`
+requires `page.health` to receive an empty object. It therefore answers
+-32602 rather than window information. The owner has acknowledged this and
+scheduled the composite fix for S7b.
+
+The exact final D8 rewrite and `startSocket` split also have focused unit
+evidence only: the cited clean-export gate was run on the earlier per-call
+worker version. A clean-export descendant gate is required after the S7b fix.
+Agent Mail 6585.
+
+### Backend-flag screenshot entrypoint (`3252f64`)
+
+**APPROVED; cumulatively closes the block on `fedf76c`/`413fcec`.** The
+production `.screenshot` arm retains its specific URI diagnosis, then routes
+through `app.runWithIo`. `runScreenshot` calls `backend_flag.startup` before
+the sole `webkit.runScreenshot`, so a supported platform decision is applied
+once and a platform refusal cannot bypass the shared seam. The source oracle
+drives both production entrypoints and is registered in both
+`test-backend-flag` and the full test step. The optional non-gate PIL pixel
+assertion being unavailable in the owner's environment does not weaken this
+entrypoint regression. Agent Mail 6586.
+
+### macOS opener publication and close/recovery tests (`b74f799`, `2e86e94`)
+
+- **`b74f799` APPROVED.** The WebKit `window.open` path supplies its opener to
+  window creation, and creation assigns the stable opener id and inherited
+  process group before publishing the immutable snapshot. Policy-created and
+  C-ABI subwindows explicitly preserve their previous nil-opener behavior.
+- **`2e86e94` APPROVED.** The close test now evaluates `window.close()` in the
+  popup's own context, proves its opener and DOM survive, and separately pins
+  that the primary's self-close is ignored. The recovery assertion now fails
+  when the primary disappears instead of treating absence as recovery.
+
+Both-architecture owner gates and branch-specific killed mutants support these
+verdicts. Agent Mail 6587.
+
+### Chat-drawer plan rev 16.20.35 (`c98bd61`)
+
+**BLOCKED.** The GdkPixbuf fit seam, deterministic scale/quality loop,
+fail-closed image answers and single off-GTK reaper are concrete, but two
+cross-layer contracts remain unsafe or contradictory:
+
+1. D9 still requires `page.health` filtered to the bound window plus
+   `page.url` and `page.title` (`plan:493-499`). The new detailed contract
+   calls only health and title, taking URL from the cached health snapshot
+   (`plan:2842,2851`). The plan must either call `page.url` and test that value,
+   or deliberately revise D9 and explain why the cached OOB health URL is the
+   authoritative contract.
+2. “No sink is called after `detach` returns” has no publication
+   linearization. Today the worker can win `answered` and then pause before
+   calling `answer`/the sink outside the broker mutex
+   (`src/agent_broker.zig:238-247`). Detach can acquire the mutex, observe an
+   already-claimed answer and return; the worker can then invoke the sink.
+   Specify a shared mutex/generation linearization and add a deterministic red
+   held after engine completion/claim but before sink publication. Holding the
+   engine call, as the current proposed red does, cannot expose this race.
+
+Agent Mail 6585.
+
+### Linear push audit from `4b04ff2`
+
+**No newer push-through exists. The newest approved push-through remains
+`4b04ff2`; the first child, `f9cb26a`, is still the earliest blocked commit.**
+Its committed long-run artifact has code review, but final acceptance still
+waits for the user's real-screen long-run. Every later approval is therefore
+non-contiguous and cannot advance the linear boundary.
