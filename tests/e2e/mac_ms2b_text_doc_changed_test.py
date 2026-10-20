@@ -69,7 +69,8 @@ class _FixtureServer:
         self._srv.shutdown()
 
 
-def run_case(browser: Path, timeout_sec: float, after_n: int, want_sent: int, failures: list[str]):
+def run_case(browser: Path, timeout_sec: float, after_n: int, want_sent: int, failures: list[str],
+             proc_holder: list[subprocess.Popen]):
     """Fresh browser per case (the stale hook counts reads process-wide)."""
     with _FixtureServer() as fixture, tempfile.TemporaryDirectory(prefix="zb-textdc-") as tmp:
         socket_path = Path(tmp) / "automation.sock"
@@ -81,6 +82,7 @@ def run_case(browser: Path, timeout_sec: float, after_n: int, want_sent: int, fa
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
+        proc_holder[:] = [proc]  # register for signal cleanup (RoseCat 6455: no stranded process group)
         out: list[str] = []
         err: list[str] = []
         for stream, buf in ((proc.stdout, out), (proc.stderr, err)):
@@ -119,6 +121,7 @@ def run_case(browser: Path, timeout_sec: float, after_n: int, want_sent: int, fa
             if rpc is not None:
                 rpc.close()
             stop_browser_macos(proc)
+            proc_holder.clear()
 
 
 def main() -> int:
@@ -135,7 +138,7 @@ def main() -> int:
     _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
     failures: list[str] = []
     for after_n, want_sent in CASES:
-        run_case(browser, args.timeout_sec, after_n, want_sent, failures)
+        run_case(browser, args.timeout_sec, after_n, want_sent, failures, proc_holder)
 
     if failures:
         print("FAIL\tms2b-text-doc-changed")

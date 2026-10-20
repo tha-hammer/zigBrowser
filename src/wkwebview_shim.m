@@ -1024,6 +1024,16 @@ static void zb_auto_test_dispatch_hold(void) {
   usleep((useconds_t)(ms * 1000));
 }
 
+// Test-only (ZB_DEBUG_ACK_HANG): the per-pair FIFO ack (issued AFTER the keyUp, while INFLIGHT) never
+// resolves, modelling a frozen/dead web process that never acknowledges. The ABI must still return
+// bounded at its deadline (the ack is INFLIGHT, abandonable) with the keyUp already delivered (no stuck
+// key) — proving DISPATCHING no longer spans an unbounded async (RoseCat 6455). Gated on --e2e-protocol.
+static int zb_auto_test_ack_hang(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
+  const char *v = getenv("ZB_DEBUG_ACK_HANG");
+  return v != NULL && v[0] != '0' && v[0] != '\0';
+}
+
 // Test-only (ZB_DEBUG_PAIR_HOLD_MS): during native typing, pause on the main thread AFTER the per-pair
 // ownership transition (reclaim: INFLIGHT -> DISPATCHING) and BEFORE the next pair's keyDown is sent, so
 // a red can let the command deadline fall exactly inside that window. Because the transition is atomic
@@ -1858,16 +1868,18 @@ static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob
   }
   WKContentWorld *autoWorld = (expected != nil) ? [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD] : nil;
   // Precondition on entry to deliverPair(p): the job is DISPATCHING (p == 0 from the deliver block's
-  // claim; p > 0 from the reclaim in `advance`). The whole pair runs while DISPATCHING, where zb_job_wait
-  // blocks WITHOUT a deadline, so a concurrent timeout can never split the keyDown from its keyUp (no
-  // stuck-down key) nor land an event after the waiter gave up. A FIFO round trip sits BETWEEN the down
-  // and the up: a keyUp delivered in the same run-loop turn as its keyDown is coalesced/dropped by the
-  // input method, so each event needs its own acknowledged turn. The job returns to INFLIGHT only
-  // BETWEEN pairs — the one window where the deadline may abandon it (RoseCat 6397.1/6397.2).
+  // claim; p > 0 from the reclaim in `advance`). The keyDown/keyUp pair is delivered as a GUARANTEED
+  // next-main-queue dispatch — keyDown this turn, keyUp the next — with NO WebView callback in between,
+  // so the span DISPATCHING covers is bounded by the main run loop, never by the web process (the
+  // separate turn also lets the input method process the keyDown before the keyUp, which same-turn
+  // delivery coalesces). Only AFTER both events are sent does the job go INFLIGHT, and only then is the
+  // FIFO ack / documentToken recheck issued — a WebView round trip the deadline MAY abandon. So a frozen
+  // web process times the ack out (bounded return) and never leaves a key stuck down, since the keyUp
+  // was already delivered before INFLIGHT (RoseCat 6455: DISPATCHING must not span an unbounded async).
   __block void (^deliverPair)(NSUInteger) = nil;
   deliverPair = ^(NSUInteger p) {
     NSUInteger base = p * 2;
-    void (^afterUp)(NSString *, NSError *) = ^(NSString *tok, NSError *e) {
+    void (^afterAck)(NSString *, NSError *) = ^(NSString *tok, NSError *e) {  // INFLIGHT: deadline may have abandoned
       if (e != nil) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
       if (expected != nil) {  // per-code-point documentToken recheck (after the pair's input is processed)
         NSString *t = tok;
@@ -1875,12 +1887,11 @@ static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob
         if (t == nil || ![t isEqualToString:expected]) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL); zb_job_unref(job); return; }
       }
       if (p + 1 >= nPairs) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
-      zb_job_inflight(job);  // between pairs: DISPATCHING -> INFLIGHT, so a deadline can abandon here
       unsigned int delay = zb_auto_test_type_delay_ms();  // test-only inter-pair delay
       void (^advance)(void) = ^{
         if (deliverPair == nil) return;
         // Re-own atomically before the next pair's first send: if the waiter abandoned (timed out while
-        // INFLIGHT, possibly during the delay) this returns 0 and we stop WITHOUT sending — no late event.
+        // INFLIGHT, possibly during the delay or a hung ack) this returns 0 and we stop WITHOUT sending.
         if (!zb_job_reclaim_dispatch(job)) { deliverPair = nil; zb_job_unref(job); return; }
         zb_auto_test_pair_hold();  // e2e: hold INSIDE the owned (DISPATCHING) window; the waiter must not abandon here
         deliverPair(p + 1);
@@ -1888,20 +1899,30 @@ static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob
       if (delay > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_MSEC), dispatch_get_main_queue(), advance);
       else advance();
     };
-    void (^afterDown)(NSError *) = ^(NSError *e) {
-      if (e != nil) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
-      [window sendEvent:events[base + 1]];     // keyUp / flags-release, after the keyDown's own turn
-      zb_job_set_progress(job, (int)(p + 1));  // this code point is fully dispatched (down + up both sent)
+    // keyUp on the next main-queue turn, STILL DISPATCHING; then INFLIGHT, then the abandonable ack.
+    void (^upStep)(void) = ^{
+      [window sendEvent:events[base + 1]];     // keyUp / flags-release
+      zb_job_set_progress(job, (int)(p + 1));  // this code point is fully dispatched (both events sent)
+      zb_job_inflight(job);                    // DISPATCHING -> INFLIGHT: the pair is delivered; release the waiter
+      if (zb_auto_test_ack_hang()) {
+        // e2e: model a frozen/dead web process whose ack NEVER arrives. Issue no ack and never run
+        // afterAck; the job stays INFLIGHT, so the deadline abandons it and the ABI returns bounded — the
+        // keyUp was already delivered (no stuck key). Release the chain ref now (afterAck won't). OS-
+        // independent: no reliance on JS that some WebKit versions resolve/throw early.
+        deliverPair = nil;
+        zb_job_unref(job);
+        return;
+      }
       if (expected != nil) {
         [view callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
                         arguments:@{} inFrame:nil inContentWorld:autoWorld
-                completionHandler:^(id v, NSError *e2) { afterUp([v isKindOfClass:[NSString class]] ? (NSString *)v : nil, e2); }];
+                completionHandler:^(id v, NSError *e2) { afterAck([v isKindOfClass:[NSString class]] ? (NSString *)v : nil, e2); }];
       } else {
-        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e2) { (void)v; afterUp(nil, e2); }];
+        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e2) { (void)v; afterAck(nil, e2); }];
       }
     };
-    [window sendEvent:events[base]];           // keyDown / flags-press
-    [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; afterDown(e); }];
+    [window sendEvent:events[base]];           // keyDown / flags-press (DISPATCHING)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(16 * NSEC_PER_MSEC)), dispatch_get_main_queue(), upStep);
   };
   deliverPair(0);
 }

@@ -30,8 +30,8 @@ from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # 
 
 SKIP_EXIT = 77
 TEXT = "ab"          # two code points -> exactly one inter-pair re-own (the discriminating window)
-HOLD_MS = 1200       # main-thread hold inside the owned window
-TIMEOUT_MS = 400     # command deadline falls DURING the hold
+HOLD_MS = 3000       # main-thread hold inside the owned window (>> the command deadline)
+TIMEOUT_MS = 1500    # command deadline: well past the first pair (no premature abandon), but inside the hold
 FIXTURE = b"""<!doctype html><html><head><meta charset="utf-8"><title>PairRace</title></head><body>
 <input id="inp" type="text"></body></html>"""
 
@@ -108,14 +108,25 @@ def main() -> int:
                 return 1
 
             rpc.call("page.url", {"timeout_ms": 10000})  # warm up readiness
-            # The hold (1200ms) is far longer than the command timeout (400ms). Because the next pair was
-            # re-owned atomically (DISPATCHING) before the hold, the waiter must block past the deadline
-            # and the command must SUCCEED. A check-then-act build abandons at the deadline and errors.
+            # The second pair is re-owned atomically (INFLIGHT->DISPATCHING) before the hold, and the
+            # waiter cannot abandon while DISPATCHING, so BOTH code points are delivered within the owned
+            # window before the command returns — even though the hold (3000ms) outlasts the deadline
+            # (1500ms), so the command ends in action_timeout. The telling fact is data.sent_chars == 2:
+            # every pair landed before the waiter returned. A check-then-act build leaves the job INFLIGHT
+            # during the hold, so the waiter abandons at the deadline with sent_chars == 1 and the second
+            # pair lands LATE (after give-up) — the red.
             resp = rpc.raw("dom.type", {"selector": "css=#inp", "text": TEXT, "options": {"input": "native", "timeout_ms": TIMEOUT_MS}})
-            if "error" in resp:
-                failures.append(f"dom.type abandoned during an owned pair (check->send race not closed): {resp['error']}")
-            elif resp.get("result") != {"ok": True}:
-                failures.append(f"dom.type did not return ok: {resp.get('result')!r}")
+            err_obj = resp.get("error")
+            if not err_obj:
+                # A straight success is also fine (both pairs owned-and-delivered inside the deadline).
+                if resp.get("result") not in ({"ok": True}, None):
+                    failures.append(f"dom.type unexpected result: {resp.get('result')!r}")
+            else:
+                sent = (err_obj.get("data") or {}).get("sent_chars")
+                if err_obj.get("code") != -32009:
+                    failures.append(f"expected action_timeout (-32009), got {err_obj}")
+                if sent != len(TEXT):
+                    failures.append(f"sent_chars={sent!r}, want {len(TEXT)} — a pair was abandoned mid-hold (check->send race not closed)")
             value = rpc.evaluate("document.getElementById('inp').value")
             if value != TEXT:
                 failures.append(f"field value {value!r} != {TEXT!r} (a pair was lost or landed late)")
