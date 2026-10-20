@@ -13,7 +13,11 @@ set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
 HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+# BatchMode=yes: agents have no terminal but inherit DISPLAY=:0 with ssh-askpass installed, so a
+# brief key-auth refusal (port 22 cycling, Tailscale SSH answering) would otherwise pop a graphical
+# password window on the user's Linux desktop. Key-only login works on both Macs, so this loses nothing.
+# scp below reuses this array via "${SSH[@]:1}", so it is covered too.
+SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o BatchMode=yes \
      -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10)
 ZIG='$HOME/.local/bin/zig'
 
