@@ -16527,3 +16527,65 @@ Owner evidence is 0/8 and 0/3 on the pre-green guarded seams; because the
 files remain unregistered, they do not make the ordinary gate red. Publication
 outside the mutex and missing-detached-check mutants remain required evidence
 for the green review. Verdict sent to BlackRobin in Agent Mail 6640.
+
+## Review at `29d9e5c`: MS3 profile identity, WS2.0 and noninteractive Mac builds
+
+All reviewed diffs are whitespace-clean. The new Python profile test compiles,
+and `tests/mac/build-on-mac.sh` passes `bash -n`. No full gate was taken: the
+shared slot passed to BlackRobin, WS2.0's submitted full gate was red, and the
+macOS MS3 arm64 leg is explicitly paused pending the user's host clearance.
+
+### Relative macOS profile identity (`501cc1b`)
+
+**Code APPROVED; commit acceptance BLOCKED-on-gate.** The implementation binds
+a relative spelling to `currentDirectoryPath` before SHA-256, expands `~`, and
+uses lexical URL path standardization without resolving symlinks or depending
+on the path's existence. Invalid UTF-8 still fails closed. The real-binary red
+distinguishes both required identities: the same relative name under two fresh
+CWDs is isolated, while its canonical absolute equivalent in one CWD shares.
+Intel red/green and the reverted-binding mutant prove both halves.
+
+The authoritative MS3 gate requires both arches. The test is registered in
+both legs, but only the Intel leg completed; acceptance waits for the arm64
+leg to run `mac_profile_persist_test.py` and
+`mac_profile_cwd_isolation_test.py` green after the user clears that host.
+
+**SHOULD:** the per-launch socket directory from
+`mac_profile_cwd_isolation_test.py:61` uses `tempfile.mkdtemp()` and is never
+removed. Use a temporary-directory context or remove it after the stopped
+browser. **NIT:** the module header still says “unregistered.” Verdict sent to
+JadeBeacon in Agent Mail 6643.
+
+### WS2.0 owner-only green and restoration (`91dfb0b`, `29d9e5c`)
+
+- **`91dfb0b` BLOCKED as a claimed WS2.0 green.** The implementation matches
+  rev 2.6 on inspection: the POSIX/Windows operations check and apply to one
+  opened object, the DACL is protected and owner-only, Windows selects only
+  `%LOCALAPPDATA%`, overlong Unix-socket paths fail, and the directory is
+  restricted before the token and socket. The Windows 4/4 seam result and the
+  path-based mutant validate the synthetic boundary. However, the plan and
+  finding 6607 explicitly call that test partial. The required
+  `tests/e2e/win_transport_test.py` is absent: no test starts the real browser,
+  observes its actual directory/listener/token DACLs, then proves `zbother`
+  cannot connect or read the token. The production wiring can therefore be
+  bypassed without a failure. The submitted full gate was also red at 241/244
+  steps and 1018/1020 tests; isolated reruns support the load-flake diagnosis
+  but a later quiet clean-export gate is still required.
+- **`29d9e5c` APPROVED.** A direct comparison from `91dfb0b^` (`501cc1b`)
+  through this fix-forward confirms the accidental damage is completely
+  repaired. The macOS `applyProfileDir` branch and the two `load_serial`
+  emissions are restored. The only net deleted production lines are exactly
+  the old XDG-or-`/tmp` path construction and the old direct-`chmod` block that
+  WS2.0 replaces. The targeted Linux build, Windows cross-check and 13 tests
+  support that repair.
+
+Verdicts sent to BlueBeaver in Agent Mail 6647.
+
+### Noninteractive macOS remote build (`9a72c44`)
+
+**APPROVED.** `BatchMode=yes` is part of the shared SSH argv, so the direct SSH
+call and the `scp` argv derived from `${SSH[@]:1}` both inherit it. With
+`IdentitiesOnly=yes`, a rejected key now fails instead of launching
+`ssh-askpass` through the inherited real-screen display. The sibling guest
+script gap is honestly left outside this commit and tracked separately.
+Verdict sent to JadeBeacon in Agent Mail 6649.
