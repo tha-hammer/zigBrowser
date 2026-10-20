@@ -51,7 +51,7 @@ test "a NUL or control byte in the frame's url is refused (rev 16.18.12; RoseCat
     var line: [8192]u8 = undefined;
     var text: [4097]u8 = undefined;
     // JSON escapes: the validator decodes them into the url's bytes.
-    for ([_][]const u8{ "", "\\u0000", "\\u0001", "\\u001f", "\\u007f", "\\t", "\\n" }) |esc| {
+    for ([_][]const u8{ "", "\\u0000", "\\u0001", "\\u001f", "\\u007f", "\\t", "\\n", " ", "\\u00e9", "\\u2028" }) |esc| {
         const frame = try std.fmt.bufPrint(&line, "{{\"v\":1,\"seq\":1,\"type\":\"auth_url\",\"url\":\"{s}zb{s}State{s}\"}}", .{ captured[0..at], esc, captured[at + "zbState-0123".len ..] });
         const v = zb_login_validator_new() orelse return error.OutOfMemory;
         defer zb_login_validator_free(v);

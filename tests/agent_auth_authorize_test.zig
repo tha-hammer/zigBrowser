@@ -68,7 +68,7 @@ test "a NUL or control byte anywhere is refused (rev 16.18.12; RoseCat 6252)" {
     const plain = try capturedWithState(a, "zbState");
     defer a.free(plain);
     try std.testing.expect(agent_auth.authorizeUrl(plain));
-    for ([_][]const u8{ "zb\x00State", "zb\x01State", "zb\x1fState", "zb\x7fState", "zb\tState", "zb\nState", "zb State" }) |bad| {
+    for ([_][]const u8{ "zb\x00State", "zb\x01State", "zb\x1fState", "zb\x7fState", "zb\tState", "zb\nState", "zb State", "zb\xc3\xa9State", "zb\xe2\x80\xa8State" }) |bad| {
         const url = try capturedWithState(a, bad);
         defer a.free(url);
         if (agent_auth.authorizeUrl(url)) {

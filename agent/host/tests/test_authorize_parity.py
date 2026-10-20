@@ -26,6 +26,28 @@ class AuthorizeParity(unittest.TestCase):
                  if bool(login.authorize_url(c["url"])) != c.get("helper", c["app"])]
         self.assertEqual(wrong, [])
 
+    def test_only_visible_ascii_anywhere(self):
+        """Rev 16.18.14 (RoseCat 6261): the helper refuses a NUL, a control byte, a space, DEL
+        or a non-ASCII character anywhere in the URL, as the app does; so its 4096 cap counts
+        bytes (bytes equal characters)."""
+        captured = {c["name"]: c for c in json.loads(TABLE.read_text(encoding="utf-8"))["cases"]}["captured-shape"]["url"]
+        self.assertTrue(login.authorize_url(captured))
+        scheme_end = captured.index("://") + 3
+        path_at = captured.index("/cai/")
+        query_at = captured.index("?") + 1
+        state_at = captured.index("zbState-0123")
+        for bad in ("\x00", "\x01", "\x1f", "\x7f", "\t", "\n", " ", "\u00e9", "\u2028"):
+            for at in (scheme_end, path_at, query_at, state_at, len(captured)):
+                url = captured[:at] + bad + captured[at:]
+                with self.subTest(byte=repr(bad), at=at):
+                    self.assertIsNone(login.authorize_url(url))
+        # bytes, not characters: a non-ASCII state that would fit as characters is refused anyway
+        pad = 4096 - len(captured) + len("zbState-0123") - 1
+        url = captured.replace("zbState-0123", "\u00e9" + "s" * pad)
+        self.assertEqual(len(url), 4096)
+        self.assertGreater(len(url.encode("utf-8")), 4096)
+        self.assertIsNone(login.authorize_url(url))
+
     def test_case_names_are_unique(self):
         names = [c["name"] for c in json.loads(TABLE.read_text(encoding="utf-8"))["cases"]]
         self.assertEqual(len(names), len(set(names)))
