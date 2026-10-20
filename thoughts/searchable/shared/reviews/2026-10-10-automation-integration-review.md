@@ -19096,3 +19096,58 @@ This supplies the global UI-rule evidence that the earlier review at
 artifact and its `get_text`/screenshot/final-answer presentation path; it does
 not by itself close the separately recorded S7b canary, error, socket or
 deadline coverage findings on later commits.
+
+## WS0 checklist review (`dc6cb67`)
+
+Reviewed exact commit `dc6cb67` on 2026-10-20 against Agent Mail 6882 and the
+checklist recorded at `b1d817a`. **Verdict: BLOCKED. This is a material partial
+fix-forward, but it does not close `7d85cd5` or authorize the first watched
+two-host run.** Findings were sent to AzureRidge in Agent Mail **6889**.
+
+A clean export of the exact commit, with every display and Windows-host
+variable removed, passes the registered targeted suite **86/86, with 14
+expected live skips**. The temporary export was deleted immediately. That
+result confirms the existing suite; it does not supply the absent oracles.
+
+The new task verifier usefully pins one Exec action, the canonical System32
+path intent, the normalized argument tuple, one exact-SID principal, matching
+Context, InteractiveToken, least privilege, enabled state and the staged
+hash. Its crafted matrix and real-task tests cover many hostile values. Three
+exactness holes remain in `verify_task.ps1`: absent Principal `id` and absent
+Actions `Context` compare equal as empty strings (`:35-40`); repeated outer
+quotes around Command and a present empty/whitespace WorkingDirectory are
+accepted (`:25-29`); and a present empty RunLevel is treated as absent
+(`:48-51`). Each needs a production rejection and a red. The matrix at
+`host_live_test.py:121-151,324-356` also lacks malformed XML, a missing
+action, a missing staged script, those empty-field cases and a genuine
+same-leaf principal case—the current `NOPEDOMAIN\nobody` is only an
+unresolvable different leaf. The production provisioner is bypassed by a
+duplicated task constructor and does not fail its own process when `schtasks`
+fails; the live test must invoke a disposable-task seam in the real
+provisioner and verify it through the real verifier.
+
+All four original `7d85cd5` coverage gaps remain. The fake transports at
+`gate_twohost_selftest.py:41-84` cannot produce per-host connection failure
+or record child environments. The suite has no VM/file-server unreachable
+cases, no actual host-key-refusal case, no different-nonempty firewall-hash
+case, and no planted display-variable census across every `ssh` and `virsh`
+child. The header still falsely says unregistered/red (`:2-12`) and the probe
+comment still says Add-Type (`:593-598`).
+
+The locked test's bounded poll and SSH-result checks are improvements, but
+`host_live_test.py:364-392` still uses fixed `LOCKCHK`, does not self-verify
+the task/hash, ignores timestamp freshness and console/session identity,
+allows a missing desktop because `None != "Default"`, and leaves its planted
+files. These remain blockers before the owner-locked proof.
+
+The plan now explains OpenInputDesktop and most of the exact task contract,
+but edits rev 2.10 in place rather than adding a fix-forward revision and
+still describes Active state plus LogonUI at `:711-713`. It must record the
+owner-gated locked ordering and distinguish readiness `--probe-only` from the
+unimplemented no-argument product gate.
+
+After those code/test/docs fixes, the outstanding evidence is: the complete
+real Win11 suite, the owner-locked PASS followed by unlock, a final-SHA clean
+export aggregate gate on private Xvfb, and the watched two-host
+`--probe-only` result with the exact stdout/stderr and invariants listed in
+Agent Mail 6882.
