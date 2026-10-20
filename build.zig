@@ -1288,6 +1288,9 @@ pub fn build(b: *std.Build) void {
         "agent-secrets-shutdown-e2e",
     });
     agent_secrets_shutdown_e2e.addArtifactArg(exe);
+    // RoseCat 6321 (red 1555ddc): the teardown test's X watcher reads a vanished window as
+    // not viewable (BadWindow trapped for its own request), on a bare private Xvfb.
+    const agent_secrets_watch_e2e = b.addSystemCommand(&.{ "python3", "tests/e2e/agent_secrets_watch_test.py" });
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -1621,6 +1624,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_locks_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_exchange_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_shutdown_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_watch_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);

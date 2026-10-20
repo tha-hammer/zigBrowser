@@ -59,6 +59,18 @@ X.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
 X.XCloseDisplay.argtypes = [ctypes.c_void_p]
 X.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
 IS_VIEWABLE = 2  # XWindowAttributes.map_state
+X.XSetErrorHandler.restype = ctypes.c_void_p
+X.XSetErrorHandler.argtypes = [ctypes.c_void_p]
+BAD_WINDOW, BAD_DRAWABLE = 3, 9  # X.h
+
+
+class _XErrorEvent(ctypes.Structure):  # XErrorEvent (Xlib.h)
+    _fields_ = [("type", ctypes.c_int), ("display", ctypes.c_void_p), ("resourceid", ctypes.c_ulong),
+                ("serial", ctypes.c_ulong), ("error_code", ctypes.c_ubyte), ("request_code", ctypes.c_ubyte),
+                ("minor_code", ctypes.c_ubyte)]
+
+
+_X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(_XErrorEvent))
 
 
 class _Attributes(ctypes.Structure):  # XWindowAttributes (Xlib.h)
@@ -146,10 +158,28 @@ class Watch:
                 self.events.append(("unmap" if ev.any.type == UNMAP else "destroy", ev.any.window))
 
     def viewable(self, window: int) -> bool:
-        """The window exists and is mapped with all its ancestors (map_state IsViewable)."""
+        """The window exists and is mapped with all its ancestors (map_state IsViewable). A window
+        destroyed meanwhile answers BadWindow (or BadDrawable): trapped for this one request,
+        which then reads as False, with the process's own X error handler put back after it
+        (RoseCat 6321; agent_secrets_watch_test.py). Any other X error is raised."""
         attrs = _Attributes()
-        X.XSync(self.dpy, 0)
-        return bool(X.XGetWindowAttributes(self.dpy, window, ctypes.byref(attrs))) and attrs.map_state == IS_VIEWABLE
+        X.XSync(self.dpy, 0)  # earlier requests' errors go to the process's handler, not ours
+        errors: list[int] = []
+
+        def trap(dpy, event):
+            errors.append(event.contents.error_code)
+            return 0
+
+        handler = _X_ERROR_HANDLER(trap)
+        previous = X.XSetErrorHandler(ctypes.cast(handler, ctypes.c_void_p))
+        try:
+            ok = X.XGetWindowAttributes(self.dpy, window, ctypes.byref(attrs))
+            X.XSync(self.dpy, 0)
+        finally:
+            X.XSetErrorHandler(previous)
+        if any(code not in (BAD_WINDOW, BAD_DRAWABLE) for code in errors):
+            raise RuntimeError(f"X error {errors} reading window {window:#x}")
+        return not errors and bool(ok) and attrs.map_state == IS_VIEWABLE
 
     def close(self) -> None:
         if self.dpy:
