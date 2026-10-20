@@ -19151,3 +19151,44 @@ real Win11 suite, the owner-locked PASS followed by unlock, a final-SHA clean
 export aggregate gate on private Xvfb, and the watched two-host
 `--probe-only` result with the exact stdout/stderr and invariants listed in
 Agent Mail 6882.
+
+## MS5 decision research, plan fix-forwards and S7 help (`569f64a`, `9319ef2` through `18e2b63`)
+
+Reviewed on 2026-10-20. Explicit verdicts:
+
+- **`569f64a` APPROVED.** The `tools` help now says what
+  `judge_tool_image` implements: at least 20% fixture blue and 0.5% white
+  content, so blank, black, wrong-page and fill-only captures fail. This
+  closes the wording NIT from the `110daaa` review. Display-free Python
+  compilation and `test_real_screen_tools.py` pass **6/6**.
+- **`9319ef2` APPROVED as decision research; `ef6dac3` APPROVED as its
+  citation fix.** The evidence names the locked native dependencies, the
+  separate Claude CLI slices, the framework relocation requirement and the
+  missing Intel wheel for locked cryptography. It compares one universal
+  tree with per-architecture trees and leaves the three user choices open;
+  this verdict does not choose for the user.
+- **`34891aa` APPROVED.** It closes Agent Mail 6870: WS2.0 is labelled
+  `[W11]`, the red/green register explicitly carries that exception, and the
+  AF_UNIX stop rule names only the VM or a separately authorized writable
+  production-test host—not the read-only file server.
+- **`18e2b63` APPROVED.** It closes Agent Mail 6871: every descendant under
+  `zb_agent_host/` must be a listed regular file or an implied directory;
+  `lstat` refuses every symlink and special entry without opening/following
+  it; the plan names outside-link and FIFO reds.
+
+The MS5 research approval has three binding implementation-plan conditions.
+First, its current proof is scratch imports/work plus Claude `--version` and
+ad-hoc signing; the real CLI request path still needs to run on both
+architectures under the final hardened-runtime/notarized signing policy.
+Second, signing must inventory and pin a minimal entitlement allowlist rather
+than blindly copy every vendor entitlement, with missing/extra mutants.
+Third, a merged universal artifact needs an accurate regenerated or
+deterministically merged SBOM/provenance record; retaining one thin
+architecture's SBOM cannot describe both slices. The document's own
+cryptography condition also remains binding: do not change the macOS lock to
+48.0.1 until the security-advisory comparison is complete.
+
+Verdicts and these plan gates were mailed to BlueBeaver in Agent Mail 6892;
+the help verdict was mailed to BlackRobin in Agent Mail 6893. All reviewed
+diffs pass `git diff --check`. No Mac, Windows host, browser, live socket or
+display was used.
