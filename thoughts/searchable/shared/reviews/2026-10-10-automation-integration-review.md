@@ -17730,3 +17730,71 @@ tool checks and 10/10 separation checks at the green, with the detach repeated
 four times. Local `py_compile` for both new e2es and `git diff --check` passed.
 I did not start another build because BlackRobin's full private-Xvfb gate was
 already running. Findings were sent in Agent Mail 6784.
+
+## WS0 readiness fix-forwards and `%USERPROFILE%` read (`3450b63`, `d14e02f`, `3cb8722`)
+
+**`3450b63` is BLOCKED.** It usefully adds fail-closed checks for the two
+configured SSH users, both minimum OS builds, both architectures, the VM's
+WebView2/free-space fields, and exact pre/post equality of the current share
+list. The hostless suite is green 41/41. It does not, however, validate every
+schema-2 field as its subject and owner report claim, and it does not close
+the open `fb5470d` findings:
+
+1. `gate.sh:175-177` accepts any nonempty VM `console_user`; it never requires
+   that user to be `ZB_WIN11_USER`, contrary to WS0.2's configured-console-user
+   refusal (`plan:597-600`). A synthetic probe with `test_user=zbtext` but
+   `console_user=someoneelse` exits 0.
+2. `gate.sh:167-225` still accepts missing VM `root`, `python` and `zig`, and
+   missing file-server `root`, `free_gb`, `sshd_listen` and
+   `sshd_allowusers`, although WS0.1 still declares those fields at
+   `plan:665-680`. A focused call through the production validator with all
+   those values absent exits 0. If tool versions are intentionally deferred
+   to WS1, the authoritative plan must say so; the commit message cannot
+   narrow the contract by itself.
+3. `host_probe.ps1:123-129` still discards SMB share names and serializes only
+   deduplicated root-path strings. `gate.sh:215-216` merely accepts any list.
+   Exact pre/post comparison at `gate.sh:249-251` is useful, but it cannot
+   detect a share rename or a second name over the same root, so it does not
+   implement WS0.7's “names and root paths” contract (`plan:713-719`). Add a
+   typed `{name,path}` schema plus malformed/name-change/path-change reds.
+4. The fixed `runs/session/session.json` read at `host_probe.ps1:103-115`
+   remains uncorrelated to this gate run. `--probe-only` does not launch or
+   await the helper, so a stale unlocked result can still green a currently
+   locked VM. The validator reds exercise supplied JSON, not freshness.
+5. The ACL calculation at `host_probe.ps1:130-143` remains a substring scan of
+   Allow ACEs. It neither computes effective deny/order semantics nor covers
+   granular mutating rights and SMB share permissions, so a writable served
+   path can still be omitted. The prior allow/deny/individual-right test
+   requirement remains open.
+
+**`d14e02f` is BLOCKED as a whole, although its exact-name snapshot lookup is
+the right direction.** Requiring `ZB_WIN11_SNAPSHOT`, matching that exact name,
+querying `snapshot-info` for it and refusing a non-`shutoff` state close the
+arbitrary-first-snapshot hole. The exact-argv, missing-name, wrong-name,
+unpinned and wrong-state reds all pass. Two specified closure points remain:
+
+- `gate.sh:277-285` accepts absent/malformed `Creation Time` and logs
+  `created='unknown'`; there is no missing/date negative. Finding 6769
+  explicitly required name/date/state evidence. Require a nonempty parseable
+  creation time (no age policy is needed unless the plan adds one) and test
+  its absence/malformed form.
+- Rev 2.9 declares physical-host `interactive_session`/`locked` not applicable
+  at `plan:674-680`, but the same authoritative plan still says the gate proves
+  an unlocked interactive session before *any* product test (`plan:660-663`)
+  and lists “no active unlocked interactive test session” as a fail-closed
+  condition without a VM-only qualification (`plan:593-600,682-687`). Reconcile
+  those normative clauses. The read-only/no-install file-server rule can
+  justify a scoped exception, but the contract cannot say both things.
+
+These two verdicts do not reopen the portions actually closed: configured
+SSH-user, architecture, OS-floor, VM WebView2/free-space, share-list equality,
+and exact pinned-snapshot identity/state are accepted increments.
+
+**`3cb8722` is APPROVED.** Passing `"echo %USERPROFILE%"` as one remote command
+lets sshd's existing `cmd.exe` expand the variable and removes the nested
+`cmd /c` quoting artifact, while the strict plain-drive/path regex remains in
+both callers. BlueBeaver's live Win11 evidence is non-vacuous: both positive
+and `zbother` negative transport cases pass; the all-off DACL mutant lets the
+other user connect; and refusal stderr passes 3/3. Both changed scripts and
+the WS0 hostless suite compile, `git diff --check` is clean, and no local live
+host was touched.
