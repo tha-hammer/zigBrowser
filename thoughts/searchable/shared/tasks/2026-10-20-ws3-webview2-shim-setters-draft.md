@@ -1,12 +1,34 @@
 ---
 date: 2026-10-20
 author: BlackRobin (cc_1)
-status: DRAFT, queued. Not in src/ yet. It lands only when a Windows toolchain can compile and run it.
+status: LANDED 2026-10-20 — red cfd218b, green 15fb6ee (proved on win11-m8). The code below is the draft; src/webview2_shim.cpp is the source of truth.
 for: AzureRidge (WS3, 2ffe031 red `cross-check-ws3-win`), RoseCat (review)
 plan: thoughts/searchable/shared/plans/2026-10-19-windows-launch-tdd-plan.md, WS3 coordination rev 2.4 ("BlackRobin: native C setters + the cookie manager/store, landed before the arms")
 ---
 
 # WS3 step 2: the seven `webview2_shim.cpp` symbols, drafted
+
+## Landed (2026-10-20): what changed from this draft
+
+- **Red `cfd218b`:** `tests/windows/ws3_shim_test.c` (38 checks, linked with the shim) and the
+  Windows-only step `ws3-shim-test-win`, run on the VM by
+  `bash tests/windows/build-on-windows.sh ws3-shim-test-win`. On HEAD the link fails: the
+  symbols are undefined.
+- **Green `15fb6ee`:** 38 ok, 0 failed on win11-m8, MSVC. Three mutants are killed, each by
+  exactly one check: no user data folder, delete ignores the domain, and loop end leaving the
+  loop open. A fourth, ignoring IsSession, survives as equivalent: WebView2 already reports a
+  session cookie's Expires as -1.
+- **Design change:** jobs live in a queue under an SRW lock, and `WM_ZB_JOB` only wakes the
+  UI thread. So loop end answers every queued job with NO_LOOP even if a posted message is
+  dropped. A job abandoned before it starts never runs, and a call made on the UI thread is
+  INTERNAL.
+- **Bug fixed from this draft:** `co_string(cookie->get_Name(&text), text)` read `text` before
+  the getter wrote it, because C++ argument order is unspecified. That is a use-after-free:
+  each field got the previous field's freed string. It is now `cookie_text`: call the getter,
+  copy the string, free it.
+- **Open points:** point 2 is confirmed (a session cookie reads back with -1). New: WebView2
+  caps a cookie's lifetime at **400 days** (RFC 6265bis), and GTK does not. Points 1, 3 and 5
+  stand. The GPU arguments' and the MSE script's effect in a page wait for the WS3 e2es.
 
 ## Why this is a draft, not a commit
 
