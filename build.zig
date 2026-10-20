@@ -987,6 +987,36 @@ pub fn build(b: *std.Build) void {
     const automation_server_tests = b.addTest(.{ .root_module = automation_server_tests_module });
     const run_automation_server_tests = b.addRunArtifact(automation_server_tests);
     run_automation_server_tests.skip_foreign_checks = true;
+    // WS2.0 (Windows plan rev 2.6): the owner-only seam and where the socket lives.
+    const owner_only_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/owner_only_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    owner_only_tests_module.addImport("owner_only", b.createModule(.{
+        .root_source_file = b.path("src/owner_only.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }));
+    const run_owner_only_tests = b.addRunArtifact(b.addTest(.{ .root_module = owner_only_tests_module }));
+    run_owner_only_tests.skip_foreign_checks = true;
+    const transport_ws20_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/automation_transport_ws20_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    transport_ws20_tests_module.addImport("automation_transport", b.createModule(.{
+        .root_source_file = b.path("src/automation_transport.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_transport_ws20_tests = b.addRunArtifact(b.addTest(.{ .root_module = transport_ws20_tests_module }));
+    run_transport_ws20_tests.skip_foreign_checks = true;
+    const owner_only_step = b.step("test-owner-only", "Run WS2.0's owner-only seam and socket-place tests");
+    owner_only_step.dependOn(&run_owner_only_tests.step);
+    owner_only_step.dependOn(&run_transport_ws20_tests.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it.
     var s7a_runs: [3]*std.Build.Step = undefined;
@@ -1974,6 +2004,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_x_tests.step);
     test_step.dependOn(&run_automation_x_tests.step);
     test_step.dependOn(&run_automation_server_tests.step);
+    test_step.dependOn(&run_owner_only_tests.step);
+    test_step.dependOn(&run_transport_ws20_tests.step);
     for (s7a_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&automation_api_e2e.step);
     test_step.dependOn(&automation_core_e2e.step);

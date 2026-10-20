@@ -3,6 +3,7 @@ pub const automation = @import("automation.zig");
 /// S7a: the chat drawer's in-process broker over this core (callInProcess).
 pub const agent_broker = @import("agent_broker.zig");
 const automation_websocket = @import("automation_websocket.zig");
+const owner_only = @import("owner_only.zig");
 
 const net = std.Io.net;
 const page_port = automation.page_port;
@@ -799,7 +800,6 @@ fn handleWindows(
                     window.id, std.json.fmt(window.url, .{}), std.json.fmt(window.title, .{}), window.primary,
                 }) catch return error.OutOfMemory;
                 if (window.opener) |opener| w.print(",\"opener_window_id\":\"" ++ window_prefix ++ "{d}\"", .{opener}) catch return error.OutOfMemory;
-                w.print(",\"load_serial\":{d}", .{window.load_serial}) catch return error.OutOfMemory;  // MS4.1a: approval-grant revalidation
                 if (window.terminated) |reason| w.print(",\"crashed\":\"{s}\"", .{@tagName(reason)}) catch return error.OutOfMemory;
                 w.writeAll("}") catch return error.OutOfMemory;
             }
@@ -823,7 +823,6 @@ fn handleWindows(
                     window.loading,
                     window.dialog_open,
                 }) catch return error.OutOfMemory;
-                w.print(",\"load_serial\":{d}", .{window.load_serial}) catch return error.OutOfMemory;  // MS4.1a: same per-window serial as page.list
                 if (window.terminated) |reason| w.print(",\"crashed\":\"{s}\"", .{@tagName(reason)}) catch return error.OutOfMemory;
                 w.writeAll("}") catch return error.OutOfMemory;
             }
@@ -1552,6 +1551,9 @@ fn writeTokenFile(io: std.Io, path: []const u8, token: []const u8) !void {
     defer file.close(io);
     // Created: from here on any failure removes the partial file.
     errdefer cleanupSocketPath(io, path) catch {};
+    // WS2.0: on Windows `.permissions` sets no DACL, so the empty file is made owner-only before
+    // the token is written (its directory's owner-only ACE is inherited already).
+    if (comptime @import("builtin").os.tag == .windows) owner_only.restrictToOwner(path, .file) catch return error.TokenPermissions;
     if (testing_hooks.fail_token_write) return error.InjectedTokenWriteFailure;
     var buf: [256]u8 = undefined;
     var writer = file.writer(io, &buf);
@@ -1559,10 +1561,11 @@ fn writeTokenFile(io: std.Io, path: []const u8, token: []const u8) !void {
     try writer.interface.flush();
 }
 
+/// WS2.0: the socket is its owner's alone (owner_only.restrictToOwner: 0600 on POSIX, a protected
+/// owner-only DACL on Windows).
 fn restrictSocketMode(allocator: std.mem.Allocator, socket_path: []const u8) !void {
-    const path_z = try allocator.dupeZ(u8, socket_path);
-    defer allocator.free(path_z);
-    if (std.c.chmod(path_z, 0o600) != 0) return error.SocketPermissions;
+    _ = allocator;
+    owner_only.restrictToOwner(socket_path, .file) catch return error.SocketPermissions;
 }
 
 fn paramsJson(allocator: std.mem.Allocator, maybe_params: ?std.json.Value) error{ OutOfMemory, InvalidParams }![]u8 {

@@ -14,13 +14,16 @@ pub const AutomationConfig = struct {
     token: []const u8 = "",
 };
 
+/// The automation socket's path (WS2.0): `<base>\zigbrowser\zigbrowser-automation-<hex>.sock` on
+/// Windows (an owner-only directory of its own), `<base>/zigbrowser-automation-<hex>.sock` elsewhere.
+/// A path the bind could not hold (UnixAddress.max_len) is error.SocketPathTooLong, never cut.
 pub fn planSocketPath(
     allocator: std.mem.Allocator,
     platform: Platform,
     base_dir: []const u8,
     nonce: u64,
 ) ![]u8 {
-    return switch (platform) {
+    const path = try switch (platform) {
         .windows => std.fmt.allocPrint(
             allocator,
             "{s}\\zigbrowser\\zigbrowser-automation-{x}.sock",
@@ -31,6 +34,21 @@ pub fn planSocketPath(
             "{s}/zigbrowser-automation-{x}.sock",
             .{ base_dir, nonce },
         ),
+    };
+    if (path.len >= std.Io.net.UnixAddress.max_len) {
+        allocator.free(path);
+        return error.SocketPathTooLong;
+    }
+    return path;
+}
+
+/// The socket's base directory (WS2.0): Windows, %LOCALAPPDATA% and nothing else (no /tmp or
+/// XDG_RUNTIME_DIR fallback: missing or empty is error.NoLocalAppData); Linux and macOS,
+/// XDG_RUNTIME_DIR, else /tmp.
+pub fn socketBaseDir(platform: Platform, xdg_runtime_dir: ?[]const u8, local_app_data: ?[]const u8) error{NoLocalAppData}![]const u8 {
+    return switch (platform) {
+        .windows => if (local_app_data) |v| (if (v.len > 0) v else error.NoLocalAppData) else error.NoLocalAppData,
+        .linux, .macos => xdg_runtime_dir orelse "/tmp",
     };
 }
 

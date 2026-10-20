@@ -16,6 +16,7 @@ const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
 const render_config = @import("render_config.zig");
+const owner_only = @import("owner_only.zig");
 const backend_flag = @import("backend_flag.zig");
 const errors = @import("errors.zig");
 const uri = @import("uri.zig");
@@ -382,17 +383,6 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
 /// created, the browser runs on WebKit's default context. Returns the
 /// profile directory in use, or null when there is none.
 fn applyProfileDir(arena: std.mem.Allocator, spec: OpenSpec) errors.BrowserError!?[]const u8 {
-    if (comptime builtin.os.tag == .macos) {
-        // MS3.1: only an explicit --profile-dir binds a profile store on macOS (the path is the identity
-        // seed; the shim maps it to an isolated persistent store on macOS 14+, else the shared default).
-        const dir = spec.profile_dir orelse return null;
-        const dir_z = arena.dupeZ(u8, dir) catch return error.WriteFailed;
-        var err: [*c]u8 = null;
-        if (c.zb_app_set_profile_dir(dir_z.ptr, &err) == c.ZB_AUTO_OK) return dir;
-        defer c.zb_automation_free(err);
-        std.debug.print("profile: {s}\n", .{if (err != null) std.mem.span(err) else dir});
-        return error.WriteFailed;
-    }
     if (comptime builtin.os.tag != .linux) return null;
     const explicit = spec.profile_dir != null;
     const dir = spec.profile_dir orelse
@@ -508,8 +498,19 @@ fn automationSocketPath(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
         return socket_path;
     }
 
-    const base_dir = getenvOwned(allocator, "XDG_RUNTIME_DIR") orelse try allocator.dupe(u8, "/tmp");
-    return automation_transport.planSocketPath(allocator, platform(), base_dir, try socketNonce(io));
+    // WS2.0: Windows uses %LOCALAPPDATA%\zigbrowser\ only, made owner-only before the server
+    // writes the token or binds the socket there; Linux and macOS keep XDG_RUNTIME_DIR, else /tmp.
+    const base_dir = try automation_transport.socketBaseDir(platform(), getenvOwned(allocator, "XDG_RUNTIME_DIR"), getenvOwned(allocator, "LOCALAPPDATA"));
+    const path = try automation_transport.planSocketPath(allocator, platform(), base_dir, try socketNonce(io));
+    if (comptime builtin.os.tag == .windows) {
+        const dir = std.fs.path.dirname(path) orelse return error.SocketPathTooLong;
+        std.Io.Dir.cwd().createDir(io, dir, .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        try owner_only.restrictToOwner(dir, .dir);
+    }
+    return path;
 }
 
 /// Unpredictable socket-name nonce from OS entropy (no PID, no fallback), so
