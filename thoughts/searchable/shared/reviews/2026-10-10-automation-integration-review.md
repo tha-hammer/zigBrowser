@@ -15782,3 +15782,95 @@ all code bytes arrived exactly once, and no earlier read had Enter. This removes
 the false “Enter must be a read of its own” assertion without weakening the
 64-byte paste defense. Focused owner evidence: paste 5, enter 5, typing 2,
 login 16 and fake 10, all green. Agent Mail 6555.
+
+## Review at `413fcec`: S6b2 response capture, backend flags, S7a red and macOS cookies
+
+All seven reviewed commit diffs are whitespace-clean. I did not run a full
+gate: BlackRobin held the shared slot. BlueBeaver's combined gate was itself
+red (226/232 steps, 987/987 tests) on the two known Windows cross-check
+compiles and `test_windows_import_deep`; those same failures reproduced on its
+base. I therefore use the focused and mutation evidence below without calling
+that full gate green.
+
+### S6b2 callback response fix-forward (`71a6d08`, `bde279f`, `0131f59`)
+
+- **`71a6d08` APPROVED.** Rev 16.20.33 makes the response decision, pending
+  callback, new refusal reasons, fixed stderr line, policy census and
+  hand-close fallback explicit.
+- **`bde279f` APPROVED as the failing-first red.** The pure decision suite and
+  real-window suite cover the exact pending URI, main-frame/main-resource
+  distinction, subframe refusal, response non-commit, rejection stderr,
+  inherited media/hardware policy and manual close followed by paste. On the
+  old implementation the owner observed 6/6 unit failures and 21/120 e2e
+  failures; six GUI and four decision mutants were killed.
+- **`0131f59` APPROVED.** `decideResponse` requires the exact pending URI,
+  `main_frame=true`, and a fresh `decideNavigation` result. The C handler
+  ignores every callback response before commit, captures only the accepted
+  main resource, wipes the captured buffer, and clears only the matching
+  subframe pending record. Destroy clears the pending allocation without
+  ending the sign-in. The focused auth set passed, including 125/125 oracle
+  checks and 45/45 `test-agent-auth` tests.
+
+This cumulatively closes the earlier `4fd6e44` blockers recorded in Agent
+Mails 6457/6466. Agent Mail 6564.
+
+### Backend-flag startup (`fedf76c`, `413fcec`)
+
+- **`fedf76c` BLOCKED-for-tests.** Its seven pure sink cases correctly pin
+  present-versus-absent flags, decision order, a refusal before apply and one
+  resolved apply, but no red drives both production entrypoints.
+- **`413fcec` BLOCKED.** The normal open path uses
+  `backend_flag.startup`. The real screenshot entrypoint does not:
+  `src/main.zig:75-88` still validates the URI and calls
+  `webkit.runScreenshot` directly. The newly changed `app.runScreenshot` is
+  dead to production. Consequently an otherwise valid but unsupported
+  `--renderer` on macOS/Windows can bypass `applyBackendFlag` in screenshot
+  mode, contradicting the commit's two-entrypoint claim.
+
+Fix forward by routing the production screenshot arm through the same
+decision without double-applying. Add a production-entrypoint red for open
+and screenshot: unsupported recognized renderer gives the exact refusal,
+nonzero exit and no native apply; malformed `bogus` remains CLI usage. Agent
+Mail 6564.
+
+### S7a broker red (`b14a300`)
+
+**BLOCKED-for-tests.** The allowlist property, window binding, no-engine
+refusals, error-data redaction, worker-thread hop, deadline arithmetic,
+exactly-once timeout answer and late-result drain are useful reds. The suite
+does not cover D8's one-worker/one-in-flight-call-per-session serialization,
+however. It submits no pair of accepted calls while the first is held, so an
+implementation with a worker per job and parallel engine calls can pass.
+
+Add a two-call red that observes max concurrency one and B not entering until
+A is released, while a second Broker/window can progress independently. Also
+add unknown-method and malformed/non-object-params parity as a SHOULD: the SDK
+wire fixture enumerates valid methods and does not prove the promised
+-32601/-32602 split. Agent Mail 6566.
+
+### macOS MS3.3 cookie port (`befdbeb`)
+
+**BLOCKED.** Selecting the primary view's `WKHTTPCookieStore`, copying native
+inputs before dispatch, retaining the heap job through the callbacks, and the
+normal/httpOnly/delete/value-redaction e2e are good. Three contract violations
+remain:
+
+1. `wkwebview_shim.m:1864-1888,1909-1933,1946-1979` claims DISPATCHING and
+   starts an asynchronous cookie-store method but never calls
+   `zb_job_inflight`. `zb_job_wait` intentionally waits without a deadline in
+   DISPATCHING (`:1474-1490`), so a missing WebKit completion can hang forever
+   past `timeout_ms`.
+2. Delete is a two-stage operation. Once getAll becomes correctly
+   abandonable, its callback must atomically reclaim dispatch ownership before
+   issuing any delete; otherwise a timeout can be followed by late deletion.
+   Reds must hold each callback and prove bounded return, exactly one terminal
+   completion and no post-give-up side effect.
+3. URL filtering uses a plain path prefix (`:1849-1851`), incorrectly matching
+   a `/foo` cookie to `/foobar`. The Zig port accepts SameSite `None`, while
+   the native add/get paths handle only Lax and Strict (`:1828-1832,
+   :1920-1923`), silently dropping a valid field.
+
+Expand the both-arch e2e to cover `/foo`, `/foo/bar`, `/foobar`, secure,
+expiry/session and SameSite Lax/Strict/None round trips, as well as the async
+timeout/no-late-delete reds. This is the MS3.3 increment only; profile-scoped
+persistence and flag application remain MS3.1/MS3.2. Agent Mail 6565.
