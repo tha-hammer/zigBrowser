@@ -908,6 +908,24 @@ static void zb_auto_test_dispatch_hold(void) {
   if (ms > 0) usleep((useconds_t)ms * 1000);
 }
 
+// Test-only (ZB_DEBUG_REFUSE_NEXT_NAV): one-shot — the next routed navigation's start is treated as
+// refused (as if loadRequest returned nil), so a red can exercise the refused-start branch (RoseCat
+// 38d121a #3: a refused start must leave the old document settled and not suppress later failures).
+static int zb_auto_test_refuse_next_nav(void) {
+  static atomic_int consumed = 0;
+  if (atomic_load(&consumed)) return 0;
+  const char *v = getenv("ZB_DEBUG_REFUSE_NEXT_NAV");
+  if (v == NULL || v[0] == '0' || v[0] == '\0') return 0;
+  return atomic_exchange(&consumed, 1) == 0;  // one-shot: true exactly once
+}
+
+// Test-only (ZB_DEBUG_ACK_FAIL): the native-click FIFO ack eval throws, so its completion returns an
+// error, letting a red prove an ack error maps to a failure and not OK (RoseCat 6253.3).
+static int zb_auto_test_ack_fail(void) {
+  const char *v = getenv("ZB_DEBUG_ACK_FAIL");
+  return v != NULL && v[0] != '0' && v[0] != '\0';
+}
+
 static ZBAutoJob *zb_job_new(void) {
   ZBAutoJob *job = calloc(1, sizeof(ZBAutoJob));
   if (job == NULL) return NULL;  // callers map NULL -> ZB_AUTO_ERR_INTERNAL
@@ -1143,7 +1161,7 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
       // Submit FIRST; only on a real (non-nil) navigation do we invalidate the watchdog and clear the
       // settled state. A refused start leaves the old document settled, so a later url/title/eval does
       // not wait to timeout (RoseCat 6227.2 #3).
-      WKNavigation *nav = start(host);
+      WKNavigation *nav = zb_auto_test_refuse_next_nav() ? nil : start(host);
       if (nav == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
       objc_setAssociatedObject(nav, kZBRoutedNavKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);  // identity tag
       // A refused start never reaches here, so it never suppresses a later user-navigation failure.
@@ -1356,7 +1374,8 @@ int zb_native_click(uint32_t win, double x, double y, int button,
                                      clickCount:1 pressure:0.0];
       [window sendEvent:down];
       [window sendEvent:up];
-      [view evaluateJavaScript:@"0" completionHandler:^(id value, NSError *error) {
+      NSString *ackJS = zb_auto_test_ack_fail() ? @"throw new Error('zb-test-ack-fail');" : @"0";
+      [view evaluateJavaScript:ackJS completionHandler:^(id value, NSError *error) {
         (void)value;
         zb_job_complete(job, error != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL);  // ack error -> failure
         zb_job_unref(job);
