@@ -16699,3 +16699,60 @@ BatchMode value to be exactly `yes` for every SSH and SCP call. Add
 failing-first cases for one missing invocation and a later `no` override; the
 existing whole-driver stripping mutant does not distinguish either false
 green. Finding sent to AzureRidge in Agent Mail 6662.
+
+## Follow-up review at `d0adb84`: allocation-free broker reaping and MS3 cleanup
+
+Both reviewed ranges are whitespace-clean, and the changed macOS Python test
+compiles. No full gate was taken because BlackRobin owns the slot; the broker
+green remains explicitly conditioned on his clean descendant full gate.
+
+### Broker OOM detach red (`8cf8d05`)
+
+**APPROVED as the failing-first red.** The test supplies a fail-at-first-use
+allocator to the production `Reaper`, holds a real broker call inside the fake
+engine, and invokes `detach` on a helper so the old synchronous join becomes a
+bounded test failure rather than hanging the runner. On `1925787`, the failed
+list append reaches `broker.reap()` on that caller and cannot return before the
+held call is released; owner evidence records `TestNotReached`. After release,
+the test also requires no sink call, reaper completion, baseline thread count
+and allocator cleanliness.
+
+**SHOULD-for-tests:** assert the no-late-sink count again after
+`reaper.deinit()` has joined all broker threads. That is a causal endpoint and
+does not need the current 300 ms sleep. The `<50 ms` timing assertion is also
+load-sensitive and redundant with the stronger fact that detach returned
+within the outer bound while the engine remained held.
+
+### Allocation-free intrusive Reaper (`d0adb84`)
+
+**Production code APPROVED; final acceptance BLOCKED-on-gate only.**
+`Broker.reap_next` makes the reaper queue intrusive. `Reaper.adopt` now performs
+only pointer mutations under its mutex; it has no allocator and therefore no
+failure path that can call `Broker.reap()` on the GTK caller. If thread spawn
+fails, the broker stays owned by the list, a later adoption retries spawning,
+and shutdown `deinit` drains it after the GTK loop. The worker pops under the
+same mutex and still performs the potentially blocking joins off that mutex.
+
+The OOM red is registered in the ordinary S7 test set. Reported focused results
+are OOM 1/1 (three repeats), detach 3/3, broker 11/11, reply 8/8, window-info
+2/2, in-process 5/5 and server 55/55. Restoring caller-side reap makes the OOM
+red fail. Finding 6650 explicitly required a clean descendant full gate after
+the fix; that gate had not completed at review time, so it is the sole remaining
+acceptance condition. Verdict sent to BlackRobin in Agent Mail 6665.
+
+### MS3.1 socket-directory cleanup (`c735296`)
+
+**APPROVED.** The stale “unregistered” label is removed. After a browser is
+created, every normal or exceptional exit from the test body closes the RPC,
+stops the browser process group, and only then removes its per-launch socket
+directory. This closes the ordinary leak from finding 6643. The reported MS3
+gate is green on x86_64 and arm64. A failure of `subprocess.Popen` itself could
+still leave the just-created directory, but the binary is validated before the
+helper runs and this exceptional hygiene edge is nonblocking. Verdict sent to
+JadeBeacon in Agent Mail 6666.
+
+Separately, JadeBeacon supplied independent mutation evidence for both sides
+of `0722ee0`: removing the open-dialog publisher fails while health ticks are
+frozen, and removing only the respond publisher leaves `dialog_open` stale.
+The SHOULD-for-tests recorded in the preceding review is therefore **CLOSED by
+evidence in Agent Mail 6663**.
