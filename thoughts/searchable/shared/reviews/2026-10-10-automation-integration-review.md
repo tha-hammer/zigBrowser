@@ -12766,3 +12766,61 @@ the fix; spelling out all three would make the hostile case independently
 complete. Verdict and evidence were sent to AzureRidge as Agent Mail 6132.
 The approved linear push-through boundary remains the already-pushed
 **`da3028f`**.
+
+## Plan rev 16.20.13: completed capped bubbles and prompt correlation (`e1d44c5`)
+
+### `e1d44c5` — BLOCKED (plan/tests)
+
+The revision correctly closes the user-visible defect from `5aea621`: a
+completed capped bubble is immutable, a later shorter `assistant_message`
+cannot replace it, and a `result` or `error` finalizes a delta-only stream
+without discarding its text (`plan:2182-2184`). The proposed
+`capped-finite` case observes the completed bubble through Ctrl+A/C after the
+shorter message and result, so it exercises the exact production failure
+(`plan:2203`). The helper-side escaped-text case also distinguishes a text
+payload below the content cap from its larger JSON representation
+(`plan:2184,2201,2205`).
+
+The prompt-correlation contract is still incomplete:
+
+- **BLOCKER — `prompt_id` identifies only the cap, not the prompt-scoped
+  stream.** D7 adds the id to `prompt` and `reply_capped`, while
+  `assistant_delta`, `assistant_message`, `result`, and session-scoped
+  `error` remain session-only (`plan:406,418-423`). A delayed old delta can
+  append to a new bubble, an old message can replace/end it, and an old result
+  or error can end the new prompt and release another queued prompt. This is
+  the real production shape today: the parsed frames are session-only
+  (`src/agent_protocol.zig:20-24,152-185`), the C frames have no prompt id
+  (`src/agent_frames.zig:27-38,73-94`), and dispatch selects only by session
+  and busy state (`src/agent_helper.c:285-345`). If `prompt_id` is the
+  correlation mechanism, every prompt-scoped delta, message, cap, result, and
+  session error needs it; helper-wide null errors remain explicitly
+  uncorrelated. The plan must define active-id clearing, exactly-once ending,
+  and session-close behavior, with stale/missing/future/duplicate ending-frame
+  reds across prompt transitions. As written, the claim that the id covers
+  every late frame (`plan:2190`) is false.
+- **BLOCKER — identity does not replace within-prompt ordering.** A legitimate
+  cap means the helper already emitted the reply's maximal delta prefix. The
+  revision instead drops `delta-seen` (`plan:2190`) and has no red for a cap
+  carrying the current prompt id before that prompt's first delta
+  (`plan:2193-2198`). Such a malformed frame can arm the overflow timer and
+  put a truncation marker on an empty/current bubble. Keep a per-prompt
+  `delta_seen` state in addition to the id, reject current-id/no-delta without
+  committing state, and keep the old ordering red.
+- **BLOCKER-for-tests — the drawer's local byte-cap path has no no-shrink
+  red.** The app contract covers both an explicit `reply_capped` and a stream
+  capped by the drawer's own byte limit (`plan:2183`), but `capped-finite`
+  covers only the explicit-frame path. A native scripted-helper case must
+  exceed the app cap with deltas, send no cap frame, then send a shorter
+  `assistant_message` and `result`; clipboard text must remain exactly the
+  prefix plus one marker.
+- **SHOULD — make the canonical table internally consistent and bound the
+  id.** The `reply_capped` row says rev 16.20.13 replaces the old ordering
+  rule, but retains that rule verbatim (`plan:420`), while the new section says
+  it is dropped. Rewrite the row as one normative rule. State the positive
+  integer bound/overflow behavior and per-session reset for `prompt_id` too.
+
+`git diff --check e1d44c5^ e1d44c5` passes. No runtime gate was needed for
+this docs-only review. The verdict was sent to BlackRobin as Agent Mail 6134.
+The approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
