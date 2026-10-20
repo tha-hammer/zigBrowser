@@ -741,7 +741,7 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_automation_navigate` / `_navigate_guarded` / `_reload` | int | MS2a | impl — navigation + per-WKNavigation success/failure (navigation_failed, no app-exit). **beforeunload is UNSUPPORTED on macOS** (MS2b.2 probe: WKWebView surfaces no beforeunload prompt to any public API): the port rejects accept/dismiss as `error.Unsupported`, and `.fail` **cannot** honor the shared DialogOpen-and-leave-prompt-open contract — a navigate away from a page with a `beforeunload` handler simply loads. A documented cross-platform divergence, pending the private-API decision | MS2a.1 |
 | `zb_automation_get_url` / `_get_title` | int+out | MS2a | impl | MS2a.1 |
 | `zb_automation_free` | void | MS2a | impl — allocator paired with every returned C string | allocator-pairing test (MS2a) |
-| `zb_automation_loop_mark` | void | MS2a | **SUPERSEDED (rev 13)** — not exported; on quit `[NSApp run]` ends, the main queue stops (no dispatch after), waiters time out → CANCELLED/ABANDONED, `live_jobs`→0 | immediate-quit-cancellation test (MS2a) |
+| `zb_automation_loop_mark` | void | MS2a | **SUPERSEDED (rev 13; part C corrected 2026-10-20)** — not exported; on loop end `zb_auto_on_loop_ended()` sets `zb_auto_loop_ended` then DRAINS the queued main-queue poll blocks (bounded `CFRunLoopRunInMode`), each completing its own job NO_LOOP + unref so the waiter wakes at once and `live_jobs`→0 (no leak, no double-unref) | immediate-quit-cancellation test (MS2a) |
 | `zb_automation_window_alive` | int | MS2a | **SUPERSEDED (rev 13)** — subsumed by `zb_automation_list_windows` (id present in the list) | MS2a window test |
 | `zb_automation_window_id_at` | uint32 | **MS2a** | **SUPERSEDED (rev 13)** — subsumed by `zb_automation_list_windows` enumeration | MS2a window-registry test |
 | `zb_automation_run_generation` | uint32 | **MS2a** | **SUPERSEDED (rev 13)** — not exported; the per-job state machine (`zb_job_complete` records only while DISPATCHING/INFLIGHT; `zb_job_claim_dispatch` abandon guard) replaces the generation counter | MS2a.3 late-completion test |
@@ -773,9 +773,17 @@ No seam silently returns zero and no config export fakes an error channel it doe
 >   abandoned (CANCELLED/ABANDONED) writes nothing and reports nothing; `zb_job_claim_dispatch` returning
 >   0 is the "waiter abandoned → never submit" guard. Driven deterministically by
 >   `zb_automation_debug_live_jobs` + `zb_automation_debug_waiter_grace`.
-> - **`zb_automation_loop_mark`** → no explicit loop-mark: on quit the `[NSApp run]` loop ends, the main
->   queue stops (no queued job work dispatches after quit), each blocked waiter times out and its job goes
->   CANCELLED/ABANDONED returning the timeout/no-loop code, and `live_jobs` drains to 0 as jobs unref.
+> - **`zb_automation_loop_mark`** → replaced by an app-ended **drain** (part C; corrected 2026-10-20): a
+>   stopped `[NSApp run]` can no longer run the main-queue poll blocks a readiness wait leaves queued, so
+>   leaving them to "just time out" would leak each queued block's job ref (`live_jobs` stuck > 0). Instead,
+>   on loop end `zb_auto_on_loop_ended()` sets an atomic `zb_auto_loop_ended` flag, then **drains** the
+>   pending main-queue blocks with a bounded `CFRunLoopRunInMode` loop (while `live_jobs > 0`). Each queued
+>   poll block observes the flag and finishes its own job NOW — `zb_job_claim_dispatch` → `zb_job_complete(…
+>   NO_LOOP …)` → `zb_job_unref` — so the blocked waiter wakes immediately with the no-loop code and the
+>   ref is released (no force-unref from outside the block, so no double-unref). `live_jobs` reaches 0
+>   because the queued blocks actually run, not because waiters expire. It is called both from the real
+>   quit (after `[application run]` returns) and, in e2e, from the `ZB_DEBUG_QUIT_AFTER_MS` hook that ends
+>   the loop with work in flight.
 > - **`zb_automation_window_alive` / `zb_automation_window_id_at`** → subsumed by
 >   `zb_automation_list_windows`, the real primary/popup registry (MS2c): "alive" = the id is present in
 >   the list; enumeration = the list itself. No separate symbols.

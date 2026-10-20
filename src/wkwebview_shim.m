@@ -1265,6 +1265,10 @@ static atomic_uint zb_auto_waiter_grace_ms = 0;  // test hook: waiter wakes late
 // to be freed via zb_automation_free / zb_job_unref / the abandon path). Every such string is allocated via
 // zb_auto_dup_tracked and freed via zb_auto_free_tracked; the balance must return to 0 after each op drains.
 static atomic_int zb_auto_strings_live = 0;
+// MS2a.3 part C (RoseCat 6767 lifecycle): set once the app run loop is ending. A readiness poll that sees it
+// finishes its queued job with NO_LOOP and unrefs, so a block the stopped loop can no longer run is drained
+// (zb_auto_on_loop_ended) and its ref released — live jobs reach 0 instead of leaking.
+static atomic_int zb_auto_loop_ended = 0;
 
 int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs); }
 void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
@@ -1644,6 +1648,12 @@ static int zb_auto_run_when_ready(uint32_t win, unsigned int timeout_ms, char **
   __block BOOL entered = NO;
   __block void (^poll)(void) = nil;
   poll = ^{
+    if (atomic_load(&zb_auto_loop_ended)) {  // app loop ending: finish this queued job NOW (no late dispatch)
+      poll = nil;
+      if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_LOOP, NULL, NULL);
+      zb_job_unref(job);
+      return;
+    }
     if (!entered) {
       entered = YES;
       if (!zb_job_enter_preflight(job)) { poll = nil; zb_job_unref(job); return; }
@@ -2814,6 +2824,43 @@ int zb_app_get_media_source(void) { return g_media_source_enabled; }
 void zb_app_set_hw_policy(int policy) { g_hw_policy = policy; }
 int zb_app_get_hw_policy(void) { return g_hw_policy; }
 
+// MS2a.3 part C (RoseCat 6767): the app run loop is ending. Mark it so readiness polls finish their queued
+// jobs with NO_LOOP, then DRAIN the pending main-queue blocks (bounded) so each queued block runs that branch
+// and unrefs — a block the stopped loop can no longer run is released here, so live jobs reach 0 (not leak).
+// No force-unref (each block unrefs itself), so no double-unref.
+static void zb_auto_on_loop_ended(void) {
+  atomic_store(&zb_auto_loop_ended, 1);
+  for (int i = 0; i < 200 && atomic_load(&zb_auto_live_jobs) > 0; i++) {
+    @autoreleasepool { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true); }
+  }
+}
+
+// Test-only (ZB_DEBUG_QUIT_AFTER_MS, inert without --e2e-protocol): after N ms end the run loop with work in
+// flight, so the immediate-quit test can prove the waiter wakes (NO_LOOP), no post-quit dispatch, live jobs 0.
+static void *zb_auto_test_quit_thread(void *arg) {
+  unsigned int ms = (unsigned int)(uintptr_t)arg;
+  usleep((useconds_t)ms * 1000);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    zb_auto_on_loop_ended();  // drain queued blocks + wake waiters (NO_LOOP), before stopping the loop
+    [NSApp stop:nil];
+    NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
+                                  modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
+    [NSApp postEvent:wake atStart:YES];  // force [NSApp run] to notice the stop promptly
+  });
+  return NULL;
+}
+
+static void zb_auto_test_schedule_quit(void) {
+  if (!zb_auto_test_hooks_enabled()) return;  // main thread (called from zb_app_run): safe to read g_active_app
+  const char *v = getenv("ZB_DEBUG_QUIT_AFTER_MS");
+  if (v == NULL) return;
+  long ms = strtol(v, NULL, 10);
+  if (ms <= 0) return;
+  if (ms > 60000) ms = 60000;
+  pthread_t t;
+  if (pthread_create(&t, NULL, zb_auto_test_quit_thread, (void *)(uintptr_t)ms) == 0) pthread_detach(t);
+}
+
 int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   @autoreleasepool {
     NSString *uri_text = string_from_c(uri);
@@ -2850,7 +2897,9 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     ZBWindowHost *window_host = (__bridge ZBWindowHost *)window->host;
     [window_host loadURI:uri_text];
 
+    zb_auto_test_schedule_quit();  // e2e-only: arm ZB_DEBUG_QUIT_AFTER_MS (immediate-quit test)
     [application run];
+    zb_auto_on_loop_ended();  // app loop ended: drain queued jobs so their refs release (no leak)
 
     signal(SIGINT, SIG_DFL);
     signal(SIGTERM, SIG_DFL);
