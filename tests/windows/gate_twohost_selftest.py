@@ -570,5 +570,51 @@ class ProbeTransport(_TwoHostCase):
             self._assert_fail_closed(proc, "free_gb")
 
 
+def _strip_ps_comments(src):
+    # Heuristic for our own script: drop each line from its first '#' to EOL. host_probe.ps1 uses '#'
+    # only for comments (never inside a string literal), so this cleanly separates code from comments.
+    out = []
+    for line in src.splitlines():
+        i = line.find("#")
+        out.append(line if i < 0 else line[:i])
+    return "\n".join(out)
+
+
+# Write primitives / dynamic compilation that would touch disk on the zero-write Win10 file server.
+# Add-Type -MemberDefinition compiles via CodeDOM (csc.exe) -> %TEMP% files on Windows PowerShell 5.1.
+_FS_WRITE_PRIMITIVES = [
+    r"\bAdd-Type\b", r"\bcsc(?:\.exe)?\b",
+    r"\bSet-Content\b", r"\bAdd-Content\b", r"\bOut-File\b",
+    r"\bNew-Item\b", r"\bSet-ItemProperty\b", r"\bNew-ItemProperty\b",
+    r"\bExport-Csv\b", r"\bExport-Clixml\b",
+    r"StreamWriter", r"WriteAllText", r"WriteAllBytes", r"AppendAllText", r"AppendAllLines",
+    r"\bschtasks\b", r"\bscp\b",
+]
+
+
+class WS0ZeroWrite(unittest.TestCase):
+    def test_host_probe_is_zero_write_no_dynamic_compilation(self):
+        # The probe streamed to the Win10 file server must write NOTHING and compile NOTHING there.
+        import re
+        src = (REPO / "tests" / "windows" / "host_probe.ps1").read_text()
+        code = _strip_ps_comments(src)
+        for pat in _FS_WRITE_PRIMITIVES:
+            self.assertIsNone(re.search(pat, code),
+                              f"host_probe.ps1 contains a write/compile primitive: {pat}")
+        # File redirection to a path. Allow only the stderr-to-null / stderr-to-stdout idioms.
+        redir = code
+        for ok in (r"2>\$null", r"2>&1", r">\$null", r">&1"):
+            redir = re.sub(ok, "", redir)
+        self.assertNotIn(">", redir, "host_probe.ps1 has a file redirection (writes to disk)")
+
+    def test_host_probe_still_emits_full_schema(self):
+        # Zero-write must not drop fields: the ordered object must still declare every WS0 field.
+        src = (REPO / "tests" / "windows" / "host_probe.ps1").read_text()
+        for field in ("schema", "native_arch", "console_user", "console_session_id", "my_session_id",
+                      "identity_marker", "shares", "zbtest_write_paths", "fw_rules_hash",
+                      "sshd_listen", "sshd_allowusers", "root", "free_gb"):
+            self.assertRegex(src, rf"\b{field}\b", f"host_probe.ps1 no longer declares {field}")
+
+
 if __name__ == "__main__":
     unittest.main()

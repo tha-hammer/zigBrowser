@@ -1,30 +1,49 @@
 # host_probe.ps1 — WS0.1 read-only host probe. Emits ONE JSON object (schema 2) to stdout.
-# Streamed to the host over ssh stdin (powershell -Command -); never written to disk on the host.
+# Streamed to the host over ssh stdin and run with `$input | Out-String | iex`; never written to disk
+# on the host, and never compiled on the host.
 #
-# Standard-user safe by construction: no WMI/CIM (access-denied 0x80041003 for a standard user),
-# no `tasklist /v`, no scheduled tasks, no writes to the host. It reports console_session_id and
-# my_session_id, and leaves interactive_session/locked null — those come from the in-console
-# session helper (a separate, snapshot-gated step), because a network (SSH) logon cannot read the
-# console session's lock state on this security boundary.
+# ZERO-WRITE by construction (required for the Win10 file server): no WMI/CIM (access-denied 0x80041003
+# for a standard user), no `tasklist /v`, no scheduled tasks, NO writes, and critically NO `Add-Type`.
+# Add-Type -MemberDefinition compiles C# via CodeDOM (csc.exe) on Windows PowerShell 5.1, which writes
+# temporary source/compiler files into %TEMP% — a disk write on the file server (PowerShell #7914). The
+# P/Invoke we need (console session id + console user) is instead built with Reflection.Emit in an
+# in-memory dynamic assembly (AssemblyBuilderAccess.Run), which emits nothing to disk. native_arch and
+# my_session_id come from managed .NET properties with no P/Invoke at all.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # keep stdout pure JSON (no CLIXML progress records over SSH)
 
-Add-Type -Namespace Zb -Name Native -MemberDefinition @'
-[DllImport("kernel32.dll", SetLastError=true)]
-public static extern bool IsWow64Process2(IntPtr hProcess, out ushort pProcessMachine, out ushort pNativeMachine);
-[DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
-[DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
-[DllImport("kernel32.dll", SetLastError=true)] public static extern bool ProcessIdToSessionId(uint dwProcessId, out uint pSessionId);
-[DllImport("kernel32.dll")] public static extern uint GetCurrentProcessId();
-[DllImport("wtsapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool WTSQuerySessionInformationW(IntPtr hServer, uint sessionId, int infoClass, out IntPtr ppBuffer, out uint pBytesReturned);
-[DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr pMemory);
-'@
+# Zero-write P/Invoke: a dynamic in-memory assembly (Run = never saved, no csc, no temp files).
+function New-ZbNative {
+  $ab = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+    (New-Object System.Reflection.AssemblyName('ZbNativeRE')),
+    [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+  $tb = $ab.DefineDynamicModule('ZbNativeREMod').DefineType('ZbNativeRE', [System.Reflection.TypeAttributes]::Public)
+  $pub = [System.Reflection.MethodAttributes]'Public,Static,PinvokeImpl'
+  $std = [System.Reflection.CallingConventions]::Standard
+  $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
+  $uni = [System.Runtime.InteropServices.CharSet]::Unicode
+  $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
+  $ps = [System.Reflection.MethodImplAttributes]::PreserveSig
+  $m1 = $tb.DefinePInvokeMethod('WTSGetActiveConsoleSessionId','kernel32.dll',$pub,$std,[uint32],@(),$winapi,$ansi)
+  $m1.SetImplementationFlags($m1.GetMethodImplementationFlags() -bor $ps)
+  $m2 = $tb.DefinePInvokeMethod('WTSQuerySessionInformationW','wtsapi32.dll',$pub,$std,[bool],
+        @([IntPtr],[uint32],[int],[IntPtr].MakeByRefType(),[uint32].MakeByRefType()),$winapi,$uni)
+  $m2.SetImplementationFlags($m2.GetMethodImplementationFlags() -bor $ps)
+  $m3 = $tb.DefinePInvokeMethod('WTSFreeMemory','wtsapi32.dll',$pub,$std,[void],@([IntPtr]),$winapi,$ansi)
+  $m3.SetImplementationFlags($m3.GetMethodImplementationFlags() -bor $ps)
+  return $tb.CreateType()
+}
+$ZbN = New-ZbNative
 
 function Get-NativeArch {
+  # Managed, no P/Invoke: OSArchitecture is X64 / Arm64 / X86 (.NET 4.7.1+, present on Win10 22H2 / .NET 4.8).
   try {
-    $pm = 0; $nm = 0
-    [void][Zb.Native]::IsWow64Process2([Zb.Native]::GetCurrentProcess(), [ref]$pm, [ref]$nm)
-    switch ($nm) { 0x8664 { 'x64' } 0xAA64 { 'arm64' } 0x14c { 'x86' } default { ('0x{0:x}' -f $nm) } }
+    switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()) {
+      'x64'   { 'x64' }
+      'arm64' { 'arm64' }
+      'x86'   { 'x86' }
+      default { [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower() }
+    }
   } catch { $null }
 }
 
@@ -81,8 +100,9 @@ try {
   $sshdAllowUsers = @($cfg | ForEach-Object { if ($_ -match '^\s*AllowUsers\s+(.+?)\s*$') { $matches[1] } })
 } catch {}
 
-$mySess = 0;  try { [void][Zb.Native]::ProcessIdToSessionId([Zb.Native]::GetCurrentProcessId(), [ref]$mySess) } catch {}
-$console = $null; try { $console = [int][Zb.Native]::WTSGetActiveConsoleSessionId() } catch {}
+# my_session_id: managed property, no P/Invoke. console session id: zero-write Reflection.Emit P/Invoke.
+$mySess = $null; try { $mySess = [int][System.Diagnostics.Process]::GetCurrentProcess().SessionId } catch {}
+$console = $null; try { $console = [int]$ZbN::WTSGetActiveConsoleSessionId() } catch {}
 
 # WS0.6 identity marker (rev 2.2): the provisioning nonce the gate pins as ZB_WIN11_MARKER. Read-only;
 # empty/absent when not provisioned (the gate then fails "wrong host"). Replaces the unreadable SMBIOS UUID.
@@ -94,9 +114,9 @@ try { $identityMarker = (Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'z
 # under the read-only rule). Empty/absent => $null, and the gate fails closed.
 $consoleUser = $null
 try {
-  $ptr = [IntPtr]::Zero; $nb = 0
-  if ($console -ne $null -and [Zb.Native]::WTSQuerySessionInformationW([IntPtr]::Zero, [uint32]$console, 5, [ref]$ptr, [ref]$nb)) {
-    try { $consoleUser = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr) } finally { [Zb.Native]::WTSFreeMemory($ptr) }
+  $ptr = [IntPtr]::Zero; $nb = [uint32]0
+  if ($console -ne $null -and $ZbN::WTSQuerySessionInformationW([IntPtr]::Zero, [uint32]$console, 5, [ref]$ptr, [ref]$nb)) {
+    try { $consoleUser = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr) } finally { $ZbN::WTSFreeMemory($ptr) }
   }
   if ($consoleUser) { $consoleUser = $consoleUser.Trim() }
 } catch {}
@@ -204,7 +224,7 @@ $o = [ordered]@{
   sshd_allowusers     = $sshdAllowUsers
   console_session_id  = $console
   my_session_id       = $mySess
-  console_user        = $consoleUser   # from the in-console session helper (session.json); $null => fail closed
+  console_user        = $consoleUser   # WTSUserName of the console session (direct, network-safe); $null => fail closed
   interactive_session = $interactive   # from the in-console session helper (session.json); $null => fail closed
   locked              = $locked        # from the in-console session helper (session.json); $null => fail closed
 }

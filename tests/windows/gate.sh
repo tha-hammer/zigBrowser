@@ -323,7 +323,10 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   # ZB_WIN_* then the on-disk defaults). The VM and the file server pin DIFFERENT host keys.
   local vm_key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
   local vm_kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
-  local fs_key="${ZB_WIN10_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win10-fs/zb_win_key}}"
+  # The Win10 file server uses the SAME private key as the VM (only its known_hosts differs — the two
+  # hosts pin different host keys). So the key default is the win11-m8 key path; only known_hosts
+  # defaults under win10-fs. ZB_WIN10_KEY still overrides if a separate key is ever issued.
+  local fs_key="${ZB_WIN10_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
   local fs_kh="${ZB_WIN10_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win10-fs/known_hosts}}"
   vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh")
   fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh")
