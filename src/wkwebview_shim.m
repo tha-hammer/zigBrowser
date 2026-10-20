@@ -442,6 +442,8 @@ static void handle_signal(int signo) {
 static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
 static long zb_auto_test_health_reply_hold_ms(void);  // e2e hook (defined below); used by healthTick
 static BOOL zb_auto_test_health_tick_suspended(void);  // e2e hook (defined below); used by healthTick
+static char *zb_auto_dup_tracked(const char *s);  // part B: strdup + account a caller-returned string (defined below)
+static void zb_auto_free_tracked(char *p);         // part B: free + account a caller-returned string (defined below)
 
 // MS2c #6: KVO context for a webView's observable fields; a change republishes the window snapshot so
 // page.list/page.health reflect title/url/loading promptly without polling the main queue.
@@ -1208,7 +1210,7 @@ static ZBWindowHost *zb_auto_window_for_id(uint32_t win) {
 }
 
 void zb_automation_free(char *p) {
-  free(p);
+  zb_auto_free_tracked(p);
 }
 
 void zb_automation_set_script(const char *source, size_t len) {
@@ -1259,9 +1261,33 @@ typedef struct ZBAutoJob {
 
 static atomic_int zb_auto_live_jobs = 0;
 static atomic_uint zb_auto_waiter_grace_ms = 0;  // test hook: waiter wakes late so a late completion wins
+// MS2a.3 part B: caller-returned C strings currently alive (handed to a job's result/err or an *out param,
+// to be freed via zb_automation_free / zb_job_unref / the abandon path). Every such string is allocated via
+// zb_auto_dup_tracked and freed via zb_auto_free_tracked; the balance must return to 0 after each op drains.
+static atomic_int zb_auto_strings_live = 0;
 
 int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs); }
 void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
+
+// strdup + account the string as a live caller-returned allocation (part B). Emits the balance under
+// --e2e-protocol (atomic, off-main safe) so a socket e2e can assert it returns to 0.
+static char *zb_auto_dup_tracked(const char *s) {
+  char *c = strdup(s != NULL ? s : "");
+  if (c != NULL) {
+    int n = atomic_fetch_add(&zb_auto_strings_live, 1) + 1;
+    if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-str-live=%d\n", n); fflush(stderr); }
+  }
+  return c;
+}
+
+// free a caller-returned string and account it (part B). Used at every free site of job->result/err / *out.
+static void zb_auto_free_tracked(char *p) {
+  if (p != NULL) {
+    int n = atomic_fetch_sub(&zb_auto_strings_live, 1) - 1;
+    if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-str-live=%d\n", n); fflush(stderr); }
+  }
+  free(p);
+}
 
 // Test-only, inert unless ZB_DEBUG_DISPATCH_HOLD_MS is set (an e2e test can set it at launch; the C
 // debug ABI is not reachable over the automation socket). When set, a DISPATCHING claim pauses on the
@@ -1452,8 +1478,8 @@ static void zb_job_unref(ZBAutoJob *job) {
   // refcount 0: no waiter or callback can still reference the job. Destroy the primitives, then free.
   pthread_cond_destroy(&job->cv);
   pthread_mutex_destroy(&job->mu);
-  free(job->result);
-  free(job->err);
+  zb_auto_free_tracked(job->result);
+  zb_auto_free_tracked(job->err);
   free(job);
   int live_after_sub = atomic_fetch_sub(&zb_auto_live_jobs, 1) - 1;
   if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_sub); fflush(stderr); }  // e2e-only (atomic, off-main safe): observe the live-job count (MS2a.3 baseline)
@@ -1550,8 +1576,8 @@ static void zb_job_complete(ZBAutoJob *job, int code, char *result, char *err) {
   }
   pthread_mutex_unlock(&job->mu);
   if (!recorded) {
-    free(result);
-    free(err);
+    zb_auto_free_tracked(result);
+    zb_auto_free_tracked(err);
   }
 }
 
@@ -1666,7 +1692,7 @@ static int zb_auto_get_string(uint32_t win, unsigned int timeout_ms, char **out,
       NSString *value = want_title ? (host.webView.title ?: @"")
                                     : (host.webView.URL.absoluteString ?: @"");
       const char *utf8 = value.UTF8String;
-      *result = strdup(utf8 != NULL ? utf8 : "");
+      *result = zb_auto_dup_tracked(utf8);
       return ZB_AUTO_OK;
     });
   }
@@ -1717,7 +1743,7 @@ int zb_automation_list_dialogs(unsigned int timeout_ms, char **out_json) {
       NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
       NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
       const char *utf8 = s.UTF8String;
-      result = strdup(utf8 != NULL ? utf8 : "[]");
+      result = zb_auto_dup_tracked(utf8);
     }
     zb_job_complete(job, ZB_AUTO_OK, result, NULL);  // job owns `result`; freed by complete if abandoned
     zb_job_unref(job);
@@ -1813,7 +1839,7 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
     pthread_mutex_lock(&g_window_snapshot_lock);
     NSString *snap = g_window_snapshot;
     const char *utf8 = (snap != nil && snap.UTF8String != NULL) ? snap.UTF8String : "[]";
-    copy = strdup(utf8);
+    copy = zb_auto_dup_tracked(utf8);
     pthread_mutex_unlock(&g_window_snapshot_lock);
   }
   if (copy == NULL) return ZB_AUTO_ERR_INTERNAL;
@@ -1886,7 +1912,7 @@ int zb_automation_recover_windows(const uint32_t *ids, int n, unsigned int timeo
       NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
       NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
       const char *utf8 = s.UTF8String;
-      result = strdup(utf8 != NULL ? utf8 : "[]");
+      result = zb_auto_dup_tracked(utf8);
     }
     free(ids_copy);
     zb_job_complete(job, ZB_AUTO_OK, result, NULL);
@@ -1971,7 +1997,7 @@ int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms, c
         }
         NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
         NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
-        result = strdup(s.UTF8String != NULL ? s.UTF8String : "[]");
+        result = zb_auto_dup_tracked(s.UTF8String);
       }
       zb_job_complete(job, ZB_AUTO_OK, result, NULL);
       zb_job_unref(job);
@@ -2188,7 +2214,7 @@ static char *zb_auto_result_string(id value) {
     s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"null";
   }
   const char *utf8 = s.UTF8String;
-  return strdup(utf8 != NULL ? utf8 : "null");
+  return zb_auto_dup_tracked(utf8);
 }
 
 int zb_automation_eval_json(uint32_t win, const char *function_body, const char *arg_json,
@@ -2261,7 +2287,7 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
                       completionHandler:^(id value, NSError *error) {
         if (error != nil) {
           const char *m = error.localizedDescription.UTF8String;
-          zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, strdup(m != NULL ? m : "evaluation failed"));
+          zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, zb_auto_dup_tracked(m != NULL ? m : "evaluation failed"));
         } else {
           zb_job_complete(job, ZB_AUTO_OK, zb_auto_result_string(value), NULL);
         }
