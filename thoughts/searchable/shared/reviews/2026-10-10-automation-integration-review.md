@@ -14285,3 +14285,30 @@ The boundary proof is not yet sufficient for a Windows launcher:
 Findings were sent to AzureRidge in Agent Mail 6267. The in-progress shared
 tree already begins the prefilter documentation and malformed-character
 hardening, but uncommitted work does not change this verdict.
+
+### Windows containment partial fix-forward (`d2bd016`)
+
+**APPROVED only as a partial fix-forward; the `4cf7157` chain remains
+BLOCKED.** The independent hermetic module passes **30/30**. This commit
+correctly labels `normalize_within` as a lexical prefilter, adds a pure
+resolver seam and a fake junction-escape case, rejects malformed Windows
+component characters, and carries the create-suspended intent in the pure Job
+Object choice. It does not close the independent-Windows-argv or embedded-NUL
+blockers above, and its new “full containment” seam is not sufficient for a
+production authorization decision:
+
+- `PathResolver.resolve(path) -> str` discards the handle that made resolution
+  trustworthy, and `resolved_within` returns only a string. Reopening or acting
+  on that path later permits a junction or ancestor to be retargeted between
+  check and use. The backend must retain a pinned handle/capability and perform
+  the protected operation through it, or prove the relevant tree immutable;
+  add a real Windows replace-between-resolve-and-use red.
+- Define the real resolver's output grammar. `GetFinalPathNameByHandleW`
+  normally returns a device-prefixed final path, while `_check_shape` rejects
+  that namespace. A fake identity resolver cannot prove safe prefix stripping,
+  volume handling or the directory/file requirement.
+
+The committed test's standalone `python3 -I -m unittest` instruction is also
+incorrect: isolated mode removes the test directory and fails import; the
+registered build command correctly omits `-I`. Verdict and remaining blockers
+were sent in Agent Mail 6270.
