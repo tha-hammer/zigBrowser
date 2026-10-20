@@ -36,6 +36,7 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 GATE = REPO / "tests" / "windows" / "gate.sh"
+RESOLVE = REPO / "tests" / "windows" / "resolve_path.sh"
 _BASE_PATH = "/usr/bin:/bin"
 TAR_SENTINEL = "ZB_TAR_STDERR_SENTINEL"
 
@@ -201,12 +202,33 @@ class _GateCase(unittest.TestCase):
 
 class FailClosedTests(_GateCase):
     def test_no_windows_host_configured_fails_closed(self):
-        """WS0.2: neither ZB_WIN10_HOST nor ZB_WIN11_HOST set => fail closed."""
+        """WS0.2: neither ZB_WIN10_HOST nor ZB_WIN11_HOST set => fail closed, naming both."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t); home = td / "home"; home.mkdir()
             proc = self._run_gate({}, _fakes(td), home=str(home))
             detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             self.assertNotEqual(proc.returncode, 0, "must exit nonzero" + detail)
+            self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)
+            self.assertIn("ZB_WIN10_HOST", proc.stderr, detail)
+            self.assertIn("ZB_WIN11_HOST", proc.stderr, detail)
+
+    def test_fail_closed_when_only_win10_configured(self):
+        """WS0.2: EITHER host missing must fail closed. Win10 set, Win11 missing => fail, name Win11."""
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t); home = td / "home"; home.mkdir()
+            proc = self._run_gate({"ZB_WIN10_HOST": "zbtest@10.0.0.9"}, _fakes(td), home=str(home))
+            detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotEqual(proc.returncode, 0, "one host is not a two-host gate" + detail)
+            self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)
+            self.assertIn("ZB_WIN11_HOST", proc.stderr, detail)
+
+    def test_fail_closed_when_only_win11_configured(self):
+        """WS0.2: Win11 set, Win10 missing => fail, name Win10."""
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t); home = td / "home"; home.mkdir()
+            proc = self._run_gate({"ZB_WIN11_HOST": "127.0.0.1"}, _fakes(td), home=str(home))
+            detail = f"\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertNotEqual(proc.returncode, 0, "one host is not a two-host gate" + detail)
             self.assertIn("NOT RUN: no Windows host configured", proc.stderr, detail)
             self.assertIn("ZB_WIN10_HOST", proc.stderr, detail)
 
@@ -226,22 +248,30 @@ class StageHealthyTests(_GateCase):
 
 
 class NoDisplayTests(_GateCase):
-    def test_no_child_sees_the_linux_display(self):
-        """WS0.3 (findings 1,2): with DISPLAY set, a HEALTHY stage runs and NO child carries display vars."""
+    _DISPLAY = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "XAUTHORITY": "/home/x/.Xauthority"}
+
+    def test_no_child_of_any_class_sees_the_linux_display(self):
+        """WS0.3: with DISPLAY/WAYLAND/XAUTHORITY in the gate's env, the whole-gate scrub keeps every
+        child class — python (fence), ssh and tar (stage) — display-free; each is observed to run."""
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
-            env, home, _kh, logs = self._stage_env(td)
-            env.update({"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0",
-                        "XAUTHORITY": str(td / ".Xauthority")})
-            proc = self._run_gate(env, _fakes(td), args=["--selftest-stage"], home=home)
-            detail = f"\nrc={proc.returncode}\nstderr:\n{proc.stderr}\nenv_log:\n{self._read(logs['env'])}"
-            self.assertEqual(proc.returncode, 0, "stage must succeed so the scrub is actually exercised" + detail)
+            env, home, _kh, logs = self._stage_env(td)   # shared ran/env logs across both invocations
+            bindir = _fakes(td)
+            # (1) stage: exercises the ssh and tar child classes
+            e1 = dict(env); e1.update(self._DISPLAY)
+            p1 = self._run_gate(e1, bindir, args=["--selftest-stage"], home=home)
+            self.assertEqual(p1.returncode, 0, f"stage must succeed\n{p1.stderr}")
+            # (2) fence: exercises the python child class
+            e2 = dict(env); e2.update(self._DISPLAY)
+            p2 = self._run_gate(e2, bindir, args=["--fence-string", rf"C:\Users\{_TEST_USER}\zb\x"], home=home)
+            self.assertEqual((p2.stdout or "").strip(), "ALLOW", f"fence must run\n{p2.stderr}")
             ran = self._read(logs["ran"])
-            self.assertIn("tar", ran, "tar must run" + detail)
-            self.assertIn("ssh", ran, "ssh must run" + detail)
+            for child in ("python", "ssh", "tar"):
+                self.assertIn(child, ran, f"the {child} child must actually run (else nothing is observed)")
             env_log = self._read(logs["env"])
-            self.assertNotIn("DISPLAY=", env_log, "a child inherited DISPLAY/WAYLAND/XAUTHORITY" + detail)
-            self.assertNotIn("XAUTHORITY=", env_log, detail)
+            detail = f"\nenv_log:\n{env_log}"
+            for v in ("DISPLAY=", "WAYLAND_DISPLAY=", "XAUTHORITY="):
+                self.assertNotIn(v, env_log, f"a child inherited {v}" + detail)
 
 
 class PathFenceTests(_GateCase):
@@ -441,6 +471,48 @@ class TransportHygieneTests(_GateCase):
             self.assertIn("tar", self._read(logs["ran"]), "tar must actually have been invoked" + detail)
             self.assertEqual(proc.returncode, 2, "the gate must propagate tar's exit code (2)" + detail)
             self.assertIn("tar failed", proc.stderr, "the gate must name the tar failure" + detail)
+
+
+class ResolvePathSafetyTests(unittest.TestCase):
+    """SECURITY (item 1): resolve_path.sh must pass the Windows path to PowerShell as base64 DATA,
+    never spliced into PowerShell source, so a quote/backtick/newline in a path cannot inject."""
+
+    def _resolver_ssh_argv(self, path, td):
+        bindir = _fakes(td)
+        ssh_log = td / "ssh.log"
+        env = {
+            "PATH": bindir + os.pathsep + _BASE_PATH, "HOME": str(td),
+            "ZB_WIN11_HOST": "127.0.0.1", "ZB_WIN11_PORT": "2222", "ZB_GUEST_USER": _TEST_USER,
+            "ZB_WIN_KEY": str(td / "k"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+            "ZB_SELFTEST_SSH_LOG": str(ssh_log),
+        }
+        (td / "k").write_text("x"); (td / "kh").write_text("#")
+        subprocess.run([str(RESOLVE), path], env=env, capture_output=True, text=True, timeout=30)
+        return ssh_log.read_text() if ssh_log.exists() else ""
+
+    def test_path_is_encoded_data_not_powershell_source(self):
+        import base64
+        import re
+        dangerous = [
+            rf'C:\Users\{_TEST_USER}\zb\a"; Remove-Item C:\ -Recurse; "',  # quote break-out attempt
+            rf'C:\Users\{_TEST_USER}\zb\a`b',                               # backtick (PS escape)
+            'C:\\Users\\%s\\zb\\a\nb' % _TEST_USER,                         # embedded newline
+        ]
+        for path in dangerous:
+            with tempfile.TemporaryDirectory() as t:
+                argv = self._resolver_ssh_argv(path, pathlib.Path(t))
+                self.assertIn("-EncodedCommand", argv, "resolver must deliver PS via -EncodedCommand")
+                line = [l for l in argv.splitlines() if "-EncodedCommand" in l][0]
+                b64 = line.split("-EncodedCommand", 1)[1].strip()
+                ps = base64.b64decode(b64).decode("utf-16-le")
+                # the raw dangerous path must NOT appear as PowerShell source
+                self.assertNotIn(path, ps, f"raw path spliced into PS source: {path!r}")
+                self.assertIn("FromBase64String(", ps, "PS must decode the path from base64 data")
+                # and the embedded base64 must decode back to the exact path (pure data channel)
+                m = re.search(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", ps)
+                self.assertIsNotNone(m, "PS must carry the path as a base64 literal")
+                self.assertEqual(base64.b64decode(m.group(1)).decode("utf-8"), path,
+                                 "the path must round-trip through the base64 data channel unchanged")
 
 
 if __name__ == "__main__":

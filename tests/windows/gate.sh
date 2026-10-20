@@ -15,6 +15,13 @@
 # tests/mac/gate.sh): functions return nonzero and callers check with `|| return 1`.
 set -uo pipefail
 
+# Whole-gate display scrub: re-exec once with the X/Wayland vars removed, so EVERY child the gate
+# starts (python, virsh, ssh, tar, resolve_path.sh) inherits a display-free environment (WS0.3).
+if [ -z "${ZB_GATE_SCRUBBED:-}" ]; then
+  export ZB_GATE_SCRUBBED=1
+  exec env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY "$0" "$@"
+fi
+
 cd "$(git rev-parse --show-toplevel)" || { echo "gate: not in a git repo" >&2; exit 1; }
 REPO="$PWD"
 HERE="tests/windows"
@@ -42,7 +49,18 @@ run_remote() { # $@ = full ssh argv (already assembled); scrubs display vars fro
 #     a path to its real resolved target), the resolved path must ALSO pass the string fence.
 fence_str() { # $1 = path ; prints ALLOW or DENY for the STRING fence only
   python3 - "$1" "${ZB_GUEST_USER:-}" <<'PY'
-import sys, ntpath
+import sys, ntpath, os
+# Observability for the WS0.3 selftest: record that this python child ran and any display var it
+# still sees (it should see none after the whole-gate scrub).
+_ran = os.environ.get("ZB_SELFTEST_RAN_LOG")
+if _ran:
+    open(_ran, "a").write("python\n")
+_envlog = os.environ.get("ZB_SELFTEST_ENV_LOG")
+if _envlog:
+    with open(_envlog, "a") as _fh:
+        for _v in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+            if os.environ.get(_v):
+                _fh.write("python %s=%s\n" % (_v, os.environ[_v]))
 p, user = sys.argv[1], sys.argv[2]
 if not user:
     print("DENY"); sys.exit(0)
@@ -85,9 +103,9 @@ allowed_path() { # $1 = path ; prints ALLOW or DENY. Resolution is MANDATORY and
 }
 
 # ---- WS0.2 fail-closed banner ------------------------------------------------------------
-no_host_configured() {
-  echo "NOT RUN: no Windows host configured (set ZB_WIN10_HOST=user@host and/or ZB_WIN11_HOST=127.0.0.1)" >&2
-  echo "        the two-host Windows gate is INCOMPLETE and cannot pass until a host runs" >&2
+no_host_configured() { # $1 = space-separated names of the missing host variable(s)
+  echo "NOT RUN: no Windows host configured (missing:$1)" >&2
+  echo "        both ZB_WIN10_HOST and ZB_WIN11_HOST are required for the two-host gate" >&2
 }
 
 # ---- WS0.3 + WS0.8 stage-to-host ---------------------------------------------------------
@@ -119,6 +137,7 @@ selftest_stage() {
 }
 
 # ---- orchestration -----------------------------------------------------------------------
+# Sub-commands that do NOT need the full two-host set:
 case "${1:-}" in
   --fence-string)
     # The named LEXICAL seam (string normalization only), used by the WS0.5 property corpus.
@@ -130,27 +149,36 @@ case "${1:-}" in
     allowed_path "${2:-}"
     exit 0
     ;;
+  --selftest-stage)
+    # Stages to the Win11 host only; needs just that one host variable.
+    if [ -z "${ZB_WIN11_HOST:-}" ]; then
+      echo "gate: --selftest-stage needs ZB_WIN11_HOST" >&2
+      exit 1
+    fi
+    selftest_stage
+    exit $?
+    ;;
 esac
 
-if [ -z "${ZB_WIN10_HOST:-}" ] && [ -z "${ZB_WIN11_HOST:-}" ]; then
-  no_host_configured
+# The full gate run and --probe-only need BOTH hosts. Fail CLOSED if EITHER is missing (WS0.2),
+# naming which one(s) — a one-host gate is not a two-host gate.
+missing=""
+[ -z "${ZB_WIN10_HOST:-}" ] && missing="$missing ZB_WIN10_HOST"
+[ -z "${ZB_WIN11_HOST:-}" ] && missing="$missing ZB_WIN11_HOST"
+if [ -n "$missing" ]; then
+  no_host_configured "$missing"
   exit 1
 fi
 
 case "${1:-}" in
-  --selftest-stage)
-    selftest_stage
-    exit $?
-    ;;
   --probe-only)
-    # [W] step: probe each configured host and print its JSON. Implemented with host_probe.ps1
-    # and the console-session helper; verified live on the VM after the shut-off snapshot. The
-    # full product-test run builds on this and is the next slice (WS1+).
-    echo "gate: --probe-only requires a live host; run under the gate slot on the VM" >&2
+    # [W] step: probe each host and print its JSON (host_probe.ps1 + the console-session helper).
+    # The two-host orchestration (WS0.4/0.6/0.7 + the Win10 side) lands once the Win10 host exists.
+    echo "gate: --probe-only two-host orchestration not implemented yet (needs the Win10 host)" >&2
     exit 2
     ;;
   "")
-    echo "gate: full two-host run is the WS1+ slice; use --probe-only / --selftest-stage for WS0" >&2
+    echo "gate: two-host run not implemented yet (needs the Win10 host); WS0 foundation only" >&2
     exit 2
     ;;
   *)
