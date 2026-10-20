@@ -36,6 +36,7 @@ pub const Window = struct {
         .url = url,
         .title = title,
         .forWindow = forWindow,
+        .listWindows = listWindows,
     };
 
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, _: page_port.World, _: []const u8, _: []const u8, _: u64) page_port.PortError![]u8 {
@@ -62,6 +63,20 @@ pub const Window = struct {
     fn title(ptr: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]u8 {
         const self: *Window = @ptrCast(@alignCast(ptr));
         return std.fmt.allocPrint(gpa, "Page {d}", .{self.id}) catch error.OutOfMemory;
+    }
+    /// Both windows, each with its own URL and title (page.list, page.health).
+    fn listWindows(ptr: *anyopaque, gpa: std.mem.Allocator, _: u64) page_port.PortError![]page_port.WindowInfo {
+        const self: *Window = @ptrCast(@alignCast(ptr));
+        const list = gpa.alloc(page_port.WindowInfo, self.pages.windows.len) catch return error.OutOfMemory;
+        for (&self.pages.windows, 0..) |*w, i| {
+            list[i] = .{
+                .id = w.id,
+                .url = std.fmt.allocPrint(gpa, "file:///fixture/page{d}.html", .{w.id}) catch return error.OutOfMemory,
+                .title = std.fmt.allocPrint(gpa, "Page {d}", .{w.id}) catch return error.OutOfMemory,
+                .primary = w.id == 1,
+            };
+        }
+        return list;
     }
     fn forWindow(ptr: *anyopaque, id: page_port.WindowId) page_port.PortError!page_port.PagePort {
         const self: *Window = @ptrCast(@alignCast(ptr));
