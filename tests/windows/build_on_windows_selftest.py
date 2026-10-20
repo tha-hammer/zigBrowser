@@ -17,6 +17,7 @@ no network, no display). Asserts the hardened contract:
 Point ZB_SELFTEST_SCRIPT at an alternate script to prove these red against the pre-fix version.
 Run alone:  python3 -I tests/windows/build_on_windows_selftest.py -v
 """
+import base64
 import os
 import pathlib
 import subprocess
@@ -97,7 +98,7 @@ def _fakes(bindir):
 
 
 class _Case(unittest.TestCase):
-    def _run(self, td, extra=None, args=None):
+    def _run(self, td, extra=None, args=None, unset=None):
         bindir = td / "bin"; bindir.mkdir(exist_ok=True)
         root = td / "root"; root.mkdir(exist_ok=True)
         out = td / "out" / "zigBrowser.exe"
@@ -121,6 +122,8 @@ class _Case(unittest.TestCase):
         (td / "key").write_text("x"); (td / "kh").write_text("#")
         if extra:
             env.update(extra)
+        for k in (unset or []):
+            env.pop(k, None)
         cmd = ["bash", SCRIPT] + (args or [])
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=90)
         proc.out_path = out
@@ -132,6 +135,17 @@ class _Case(unittest.TestCase):
             return (p).read_text()
         except Exception:
             return ""
+
+    def _decoded_build(self, td):
+        """Decode the base64 UTF-16LE -EncodedCommand the build ssh call carried, from ssh.log."""
+        for line in self._read(td / "ssh.log").splitlines():
+            if "ARGV:" in line and "-EncodedCommand" in line:
+                tok = line.split("-EncodedCommand", 1)[1].split()[0]
+                try:
+                    return base64.b64decode(tok).decode("utf-16-le")
+                except Exception:
+                    return ""
+        return ""
 
     def _fail_closed(self, proc, needle):
         detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
@@ -150,6 +164,26 @@ class HappyPath(_Case):
             self.assertEqual(proc.out_path.read_bytes()[:2], b"MZ", "artifact must be the fetched PE")
             self.assertEqual((proc.out_path.parent / "zigBrowser.exe.sha").read_text().strip(), FAKE_SHA,
                              "provenance .sha must record the source commit")
+
+
+class MachineWideDefaults(_Case):
+    """bead zigBrowser-4dr, option B: zig 0.16.0 in C:\\tools\\zig and the WebView2 SDK nuget in
+    C:\\tools\\webview2 are installed machine-wide (readable by all users), so the build driver must
+    default to those paths when ZB_ZIG / ZB_WEBVIEW2_INCLUDE / ZB_WEBVIEW2_LIB are not set. The paths
+    land inside the base64 -EncodedCommand, so we decode it rather than scan the raw argv."""
+
+    def test_defaults_to_c_tools_layout_when_unset(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            proc = self._run(td, unset=["ZB_ZIG", "ZB_WEBVIEW2_INCLUDE", "ZB_WEBVIEW2_LIB"])
+            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+            self.assertEqual(proc.returncode, 0, "must build with the machine-wide C:\\tools defaults" + detail)
+            cmd = self._decoded_build(td)
+            self.assertIn(r"C:\tools\zig\zig.exe", cmd, "zig must default to C:\\tools\\zig\\zig.exe" + detail)
+            self.assertIn(r"C:\tools\webview2\build\native\include", cmd,
+                          "WebView2 include must default to the nuget's build\\native\\include" + detail)
+            self.assertIn(r"C:\tools\webview2\build\native\x64", cmd,
+                          "WebView2 x64 lib must default to the nuget's build\\native\\x64" + detail)
 
 
 class Injection(_Case):

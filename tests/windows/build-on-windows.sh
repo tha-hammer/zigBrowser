@@ -20,11 +20,15 @@
 # guest is display-scrubbed (no DISPLAY/WAYLAND/XAUTHORITY leaves Linux). A plain build is not a gate run, so
 # this needs no Linux slot; the build itself runs remotely on the VM.
 #
-# LIVE-VERIFY PENDING: zig + the WebView2 SDK must be made readable/executable by zbtext first (bead
-# zigBrowser-4dr); MSVC (VS18 BuildTools) and the Windows SDK are already machine-wide.
+# TOOLCHAIN (bead zigBrowser-4dr, option B): zig 0.16.0 and the WebView2 SDK nuget are installed
+# machine-wide under C:\tools (readable+executable by all users), so zig/include/lib default to that
+# layout (see below) and need no per-run env. MSVC (VS18 BuildTools) and the Windows SDK are already
+# machine-wide. LIVE-VERIFY PENDING: the user runs the C:\tools install on the VM console as admin (the
+# exact PowerShell is in the session morning-brief); then this driver builds without ZB_ZIG/ZB_WEBVIEW2_*.
 #
-# Usage:
-#   ZB_ZIG=... ZB_WEBVIEW2_INCLUDE=... ZB_WEBVIEW2_LIB=... bash tests/windows/build-on-windows.sh
+# Usage (machine-wide install: no toolchain env needed):
+#   bash tests/windows/build-on-windows.sh                                 # defaults to C:\tools layout
+#   ZB_ZIG=... ZB_WEBVIEW2_INCLUDE=... ZB_WEBVIEW2_LIB=... bash tests/windows/build-on-windows.sh  # override
 #   ZB_BUILD_COMMIT=<ref> bash tests/windows/build-on-windows.sh           # a specific commit (default HEAD)
 #   bash tests/windows/build-on-windows.sh ipc-test-win                    # a specific build step
 #
@@ -43,9 +47,13 @@ port="${ZB_WIN11_PORT:-2222}"
 user="${ZB_WIN11_USER:-zbtext}"
 key="${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}"
 kh="${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}"
-zig="${ZB_ZIG:-zig}"                               # zig.exe on the host (once zbtext can run it)
-inc="${ZB_WEBVIEW2_INCLUDE:?set ZB_WEBVIEW2_INCLUDE (WebView2 SDK include dir on the host)}"
-lib="${ZB_WEBVIEW2_LIB:?set ZB_WEBVIEW2_LIB (WebView2 SDK x64 lib dir on the host)}"
+# bead zigBrowser-4dr (option B): zig 0.16.0 and the WebView2 SDK nuget are installed MACHINE-WIDE under
+# C:\tools (readable+executable by all users), so these default to the known layout; override only for an
+# off-standard host. zig => C:\tools\zig\zig.exe; the WebView2 nuget unzips to C:\tools\webview2 with its
+# headers at build\native\include and its x64 import libs at build\native\x64.
+zig="${ZB_ZIG:-C:\\tools\\zig\\zig.exe}"
+inc="${ZB_WEBVIEW2_INCLUDE:-C:\\tools\\webview2\\build\\native\\include}"
+lib="${ZB_WEBVIEW2_LIB:-C:\\tools\\webview2\\build\\native\\x64}"
 winrt="${ZB_WINRT_INCLUDE:-C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.26100.0\\winrt}"
 mode="${ZB_BUILD_MODE:-ReleaseSafe}"
 commit="${ZB_BUILD_COMMIT:-HEAD}"
