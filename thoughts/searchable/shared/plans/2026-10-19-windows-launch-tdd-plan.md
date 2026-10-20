@@ -10,7 +10,7 @@ status: plan for review (rev 2.2)
 rev: 2.2
 rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses the SMBIOS UUID (a standard user cannot read Win32_ComputerSystemProduct.UUID — WMI Access-denied 0x80041003, wmic absent; verified on win11-m8). Identity = pinned SSH host key + a provisioning marker nonce (ZB_WIN11_MARKER / C:\\Users\\<user>\\zb\\.gate-identity, probe field identity_marker); virsh stays read-only (domstate, snapshot-list). Updated the reach-VM identity section, the WS0.1 probe fields, the fail-closed list and WS0.6."
 rev_2_1_note: "Rev 2.1 (RoseCat 6146): WS8.7 folded into WS8's own gate (WS8.1-WS8.7); WS12 reconciled with the committed TTS Windows cloning leg (CW) and the committed STT live-mic = physical Windows 10 only (VM = WAV seam); WS13.4 uninstall must not report success while any sandbox user / WFP filter / task survives; WS13's final gate depends on every release component + the voice packaging, not merely starting after WS7."
-last_updated: 2026-10-19
+last_updated: 2026-10-20
 last_updated_by: Claude (Sonnet 5.5) review subagent
 last_updated_note: "Rev 2 (review pass): verified every file:line anchor at HEAD 032a2c9 and corrected the ones that drifted or were wrong (see 'Review log (rev 2)' at the end); added the missing red assertions, green files, refactor gates, closures and real-screen cases for WS0-WS13; added the Win11 VM reachability/snapshot design, the file-server isolation requirements and WS0.6-WS0.8; reconciled the voice and macOS plans (WS12 table, milestone role map, netd listener port, backend-flag seam name); sharpened OD-W1..OD-W9 trade-offs without choosing."
 primary_research: thoughts/searchable/shared/research/2026-10-19-windows-launch-support-surface.md
@@ -525,6 +525,12 @@ from a small WTS-API helper (`WTSGetActiveConsoleSessionId` + `WTSQuerySessionIn
     whether Windows shows a capture endpoint and whether `virt-viewer` forwards a microphone is
     **unverified**. Until proven, VS10/VS11 on the VM use the WAV seam and `win-voice-live` is
     Windows 10 only.
+13. **Identity marker (rev 2.2, WS0.6).** The user writes a random nonce to
+    `C:\Users\<user>\zb\.gate-identity` (e.g. `[guid]::NewGuid().Guid`) and records the same value as
+    `ZB_WIN11_MARKER` in the private `tests/windows/hosts.env` (never committed). The probe reads the file into
+    `identity_marker`; the gate fails `wrong host` on any mismatch, missing or empty value. This replaces the
+    SMBIOS-UUID identity check (unreadable by a standard user, bead zigBrowser-126). The same applies to the
+    Windows 10 host via `ZB_WIN10_MARKER` and its own `.gate-identity`.
 
 ### How the gate reaches the Win11 VM, snapshot strategy, and how a down VM fails closed (rev 2)
 
@@ -731,10 +737,12 @@ requires, listed in one manifest file), and deletes the remote staging under `zb
     `schtasks /delete` ⇒ red.
   - WS0.5 `assert allowed(p) is False` for the generated bad paths plus `assert allowed(r"C:\Users\zbtest\zb\x") is True`.
     Mutant: normalize with a naive `startswith` (no `..`/junction handling) ⇒ the property fails.
-  - WS0.6 `assert rc != 0 and "Win11 VM win11-m8 is shut off" in err` (fake `virsh domstate`), the unreachable,
-    host-key and **identity-marker mismatch** cases likewise (rev 2.2: `identity_marker != ZB_WIN11_MARKER` ⇒
-    `wrong host`; the SMBIOS-UUID case is removed, bead zigBrowser-126). Mutant: treat a marker mismatch as a
-    warning ⇒ red.
+  - WS0.6 `assert rc != 0 and "Win11 VM win11-m8 is shut off" in err` (fake `virsh domstate`); the unreachable
+    and host-key cases likewise; and three explicit **identity-marker** cases (rev 2.2, bead zigBrowser-126) —
+    the probe's `identity_marker` **missing**, **empty**, or **different** from the pinned `ZB_WIN11_MARKER` each
+    gives `rc != 0 and "wrong host" in err`, while the **healthy** fake carries `identity_marker == ZB_WIN11_MARKER`
+    and passes. Mutant: treat a marker mismatch, or a missing/empty marker, as a warning or skip ⇒ red. (The
+    SMBIOS-UUID case is removed — a standard user cannot read it.)
   - WS0.7 `assert rc != 0 and "zbtest can write to" in err` with a canned `zbtest_write_paths`, and the
     changed-listeners case. Mutant: compare only the pre-run probe ⇒ red.
   - WS0.8 `assert "StrictHostKeyChecking=yes" in recorded_ssh_argv and "2>/dev/null" not in tar_cmd`; a
