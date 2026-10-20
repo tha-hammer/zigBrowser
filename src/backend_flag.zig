@@ -10,10 +10,13 @@
 //! - `renderer`: render_config.parseRenderer (`default`, `shm`, `mesa-egl`), Linux only (macOS and
 //!   Windows have no renderer choice);
 //! - any other flag, or any other OS: refuse.
-//! It decides a flag that is PRESENT on the command line, only (RoseCat 6415). An absent flag makes
-//! no call here and no backend apply: the existing config defaults resolve it (media-source `on`,
-//! hardware-acceleration `webkit`, the Linux renderer `shm`; no renderer decision on macOS or
-//! Windows). An empty value is an explicit, invalid value, and is refused.
+//! It decides a flag that is PRESENT on the command line, only (RoseCat 6415, 6451). An absent flag
+//! makes no call here and no present-flag apply, but the effective startup defaults are still applied
+//! on every start: on Linux app.zig always calls webkit.applyRender and webkit.applyMediaSource,
+//! which set WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 (renderer `shm`) and call the native hardware
+//! (`webkit`) and MSE (`on`) setters. macOS and Windows have no renderer decision, and their startup
+//! path applies their hardware and media defaults the same way, without this call. An empty value is
+//! an explicit, invalid value, and is refused.
 const std = @import("std");
 /// Production's parsers, which the decision reuses (re-exported so tests compare against the
 /// very same functions).
