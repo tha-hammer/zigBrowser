@@ -41,13 +41,16 @@ def _batteries():
         ["C:\\Program Files\\zig\\zig.exe", "build", "-Dfoo=a b", "-Dp=a\\b\\"],
         ['weird " \\ "" \\\\" end'],
         ["trailing\\\\\\", "mid\\\\\"q"],
+        ["accénted café", "naïve"],                         # non-ASCII (BMP)
+        ["astral \U0001F600 end", "\U0001F680x"],            # astral (surrogate pairs in UTF-16)
+        ["\\" * 9 + '"' + "\\" * 4, "q" + '"' * 3],          # long backslash runs around quotes
     ]
-    rng = random.Random(20261020)
-    alphabet = list('ab \t"\\x')
+    rng = random.Random(20261020)  # deterministic
+    alphabet = list('ab \t"\\xé\U0001F600')
     for _ in range(40):
         args = []
         for _ in range(rng.randint(1, 4)):
-            args.append("".join(rng.choice(alphabet) for _ in range(rng.randint(0, 6))))
+            args.append("".join(rng.choice(alphabet) for _ in range(rng.randint(0, 10))))
         fixed.append(args)
     return fixed
 
@@ -79,34 +82,44 @@ class ArgvLiveOracle(unittest.TestCase):
 
     def test_join_argv_roundtrips_through_commandlinetoargvw(self):
         batteries = _batteries()
+        self.assertGreater(len(batteries), 0, "the battery must be non-empty")
         lines = [PROG + " " + wc.join_argv(args) for args in batteries]
         payload = {"lines": lines}
 
+        import secrets
         import tempfile
+        # A unique per-run remote dir so concurrent or stale runs never collide; try/finally so it is
+        # always cleaned up even if an assertion below fails.
+        rdir = f"zb/argv-{os.getpid()}-{secrets.token_hex(4)}"
+        rdir_win = rdir.replace("/", "\\")
         with tempfile.TemporaryDirectory() as t:
             td = pathlib.Path(t)
             (td / "batteries.json").write_text(json.dumps(payload), encoding="utf-8")
-            mk = self._ssh("cmd", "/c", r"if not exist %USERPROFILE%\zb\argv mkdir %USERPROFILE%\zb\argv")
+            mk = self._ssh("cmd", "/c", rf"mkdir %USERPROFILE%\{rdir_win}")
             self.assertEqual(mk.returncode, 0, f"mkdir failed: {mk.stderr}")
-            for f in ("batteries.json",):
-                r = self._scp(str(td / f), f"zb/argv/{f}")
-                self.assertEqual(r.returncode, 0, f"scp {f} failed: {r.stderr}")
-            r = self._scp(str(REPO / "tests" / "windows" / "cmdline_oracle.py"), "zb/argv/cmdline_oracle.py")
-            self.assertEqual(r.returncode, 0, f"scp oracle failed: {r.stderr}")
+            try:
+                r = self._scp(str(td / "batteries.json"), f"{rdir}/batteries.json")
+                self.assertEqual(r.returncode, 0, f"scp batteries failed: {r.stderr}")
+                r = self._scp(str(REPO / "tests" / "windows" / "cmdline_oracle.py"), f"{rdir}/cmdline_oracle.py")
+                self.assertEqual(r.returncode, 0, f"scp oracle failed: {r.stderr}")
 
-            run = self._ssh("python", r"%USERPROFILE%\zb\argv\cmdline_oracle.py",
-                            r"%USERPROFILE%\zb\argv\batteries.json")
-            self.assertEqual(run.returncode, 0, f"oracle failed: {run.stdout}\n{run.stderr}")
-            parsed = json.loads(run.stdout)["parsed"]
-
-            # tidy up our own staging
-            self._ssh("cmd", "/c", r"rmdir /s /q %USERPROFILE%\zb\argv")
+                run = self._ssh("python", rf"%USERPROFILE%\{rdir_win}\cmdline_oracle.py",
+                                rf"%USERPROFILE%\{rdir_win}\batteries.json")
+                self.assertEqual(run.returncode, 0, f"oracle failed: {run.stdout}\n{run.stderr}")
+                parsed = json.loads(run.stdout)["parsed"]
+            finally:
+                self._ssh("cmd", "/c", rf"rmdir /s /q %USERPROFILE%\{rdir_win}")
 
         self.assertEqual(len(parsed), len(batteries))
+        checked = 0
         for args, got in zip(batteries, parsed):
             self.assertEqual(got[0], PROG, "argv[0] should parse back to the fixed program name")
             self.assertEqual(got[1:], args,
                              f"round-trip mismatch for {args!r}: line={PROG + ' ' + wc.join_argv(args)!r} -> {got!r}")
+            checked += 1
+        # Explicit evidence the live path actually exercised assertions (a skip can never satisfy this).
+        self.assertEqual(checked, len(batteries))
+        self.assertGreaterEqual(checked, 50, f"live oracle must check a substantial battery; checked {checked}")
 
 
 if __name__ == "__main__":

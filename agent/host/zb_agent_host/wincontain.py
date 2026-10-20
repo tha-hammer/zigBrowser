@@ -127,6 +127,10 @@ def quote_arg(s: str) -> str:
     An empty argument becomes `""`. Note: this is the C runtime / CommandLineToArgvW convention, NOT cmd.exe
     metacharacter escaping — a command line going through cmd needs the separate cmd layer on top.
     """
+    if "\x00" in s:
+        # A NUL can never appear in a Win32 command line (LPCWSTR is NUL-terminated): it would silently
+        # truncate the argument. Refuse locally, fail closed, before any argument reaches a process.
+        raise ContainError("NUL byte in argument")
     if s == "":
         return '""'
     if not any(c in s for c in ' \t\n\v"'):

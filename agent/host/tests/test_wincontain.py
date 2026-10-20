@@ -79,6 +79,13 @@ class ArgvQuoting(unittest.TestCase):
         with self.assertRaises(wc.ContainError):
             wc.join_argv([])
 
+    def test_embedded_nul_refused_locally(self):
+        # a NUL would silently truncate a Win32 command line; it must fail closed before any process sees it
+        with self.assertRaises(wc.ContainError):
+            wc.quote_arg("a\x00b")
+        with self.assertRaises(wc.ContainError):
+            wc.join_argv(["ok", "a\x00b"])
+
 
 class PathContainment(unittest.TestCase):
     ROOT = r"C:\Users\zbtext\zb"
