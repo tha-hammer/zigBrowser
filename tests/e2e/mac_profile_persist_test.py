@@ -105,6 +105,31 @@ def main() -> int:
             failures.append(f"macOS-13 fallback did not SHARE the default store (profile B got {shared!r}, want {w!r})")
         # cleanup the shared default-store cookie so it doesn't linger for other tests.
         run(PROFILE_A, lambda rpc: rpc.raw("cookies.delete", {"name": "zbshared", "domain": "127.0.0.1"}), force_pre14=True)
+
+        # RoseCat 6608 #1: an invalid-UTF-8 --profile-dir must FAIL STARTUP (never silently fall back to the
+        # shared store, which would lose isolation). Pass it as raw bytes so the invalid sequence survives argv.
+        tmp2 = tempfile.mkdtemp(prefix="zb-ms3prof-bad-")
+        env2 = dict(os.environ)
+        env2["ZIGBROWSER_SOCKET"] = str(Path(tmp2) / "automation.sock")
+        argv = [os.fsencode(str(browser)), b"about:blank", b"--automation-api", b"--profile-dir", b"/tmp/zb-\xff\xfe-bad"]
+        # bytes argv (so the invalid UTF-8 survives), but text pipes so the stderr message is readable.
+        pbad = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env2,
+                                start_new_session=True, text=True, errors="replace")
+        proc_holder[:] = [pbad]
+        eo, ee = [], []
+        for stream, buf in ((pbad.stdout, eo), (pbad.stderr, ee)):
+            threading.Thread(target=_read_lines, args=(stream, buf), daemon=True).start()
+        try:
+            rc = pbad.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            rc = None
+            stop_browser_macos(pbad)
+        time.sleep(0.2)
+        blob = "\n".join(ee)
+        if rc is None or rc == 0:
+            failures.append(f"invalid-UTF-8 --profile-dir did not fail startup (rc={rc}) — silent fallback?")
+        if "not valid UTF-8" not in blob:
+            failures.append(f"invalid-UTF-8 --profile-dir: missing the fail-closed message: {blob[-200:]!r}")
     except Exception as exc:  # noqa: BLE001
         failures.append(f"unexpected error: {exc}")
 

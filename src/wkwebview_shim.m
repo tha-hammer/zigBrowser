@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
+#import <CommonCrypto/CommonDigest.h>  // MS4/MS3.1: SHA-256 for the profile-dir identity digest
 
 #include <errno.h>
 #include <pthread.h>
@@ -2688,15 +2689,13 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
 // MS3.1: a deterministic UUID from the profile path (two FNV-1a 64-bit hashes -> 16 bytes, RFC4122 v4
 // version/variant bits set so dataStoreForIdentifier accepts it). Same path -> same UUID -> same store.
 static NSUUID *zb_uuid_from_path(NSString *path) {
+  // A collision-resistant digest of the NORMALIZED path (RoseCat 6608 #1): SHA-256, first 16 bytes, with
+  // the RFC4122 v4 version/variant bits set so dataStoreForIdentifier accepts it. Same path -> same UUID.
   const char *s = path.UTF8String ?: "";
-  uint64_t h1 = 14695981039346656037ULL, h2 = 1099511628211ULL;
-  for (const char *p = s; *p != '\0'; p++) {
-    h1 = (h1 ^ (uint64_t)(unsigned char)*p) * 1099511628211ULL;
-    h2 = (h2 ^ (uint64_t)(unsigned char)*p) * 14695981039346656037ULL;
-  }
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(s, (CC_LONG)strlen(s), digest);
   uuid_t b;
-  memcpy(b, &h1, 8);
-  memcpy(b + 8, &h2, 8);
+  memcpy(b, digest, 16);
   b[6] = (b[6] & 0x0F) | 0x40;
   b[8] = (b[8] & 0x3F) | 0x80;
   return [[NSUUID alloc] initWithUUIDBytes:b];
@@ -2720,7 +2719,14 @@ int zb_app_set_profile_dir(const char *dir, char **out_err) {
   if (out_err != NULL) *out_err = NULL;
   g_profile_data_store = nil;
   g_profile_resolved = NO;
-  g_profile_dir = (dir != NULL && dir[0] != '\0') ? [NSString stringWithUTF8String:dir] : nil;
+  g_profile_dir = nil;
+  if (dir == NULL || dir[0] == '\0') return ZB_AUTO_OK;
+  NSString *path = [NSString stringWithUTF8String:dir];
+  if (path == nil) {  // not valid UTF-8: FAIL CLOSED (never silently fall back to the shared store — RoseCat 6608 #1)
+    if (out_err != NULL) *out_err = strdup("--profile-dir is not valid UTF-8");
+    return ZB_AUTO_ERR_INTERNAL;
+  }
+  g_profile_dir = [path stringByStandardizingPath];  // normalize (~, .., // collapse) for a stable profile identity
   return ZB_AUTO_OK;
 }
 
