@@ -16,6 +16,7 @@ const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
 const cli = @import("cli.zig");
 const render_config = @import("render_config.zig");
+const backend_flag = @import("backend_flag.zig");
 const errors = @import("errors.zig");
 const uri = @import("uri.zig");
 const webkit = @import("webkit.zig");
@@ -327,10 +328,11 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     };
     // Before the automation server's threads and before WebKit starts its network process.
     webkit.preferHttp1();
-    // Before WebKit, EGL and the web processes start (they read the environment once).
-    webkit.applyRender(render_config.resolve(spec.hw_policy, spec.renderer));
-    // Before zb_app_run builds the first window (every window reads it when created).
-    webkit.applyMediaSource(spec.media_source);
+    // j76: every present flag decided for this OS, then the resolved configuration applied once,
+    // before WebKit, EGL and the web processes start (they read the environment once) and
+    // before zb_app_run builds the first window (every window reads it when created).
+    var sink: OpenSink = .{};
+    backend_flag.startup(&sink, spec.hw_policy, spec.renderer, spec.media_source) catch return error.Usage;
     const profile_dir = try applyProfileDir(arena, spec);
     // At quit, after the main loop (a no-op when netd never started). Linux
     // only: agent_host.c is GTK-only, and the cross builds must not name it.
@@ -420,11 +422,48 @@ fn runScreenshot(arena: std.mem.Allocator, spec: ScreenshotSpec) errors.BrowserE
         return mapUriErr(err);
     };
 
+    // The same flag step as an open window (j76); runScreenshot applies the resolved settings
+    // before WebKit starts.
+    var sink: ScreenshotSink = .{};
+    backend_flag.startup(&sink, spec.hw_policy, spec.renderer, spec.media_source) catch return error.Usage;
     const out_z = arena.dupeZ(u8, spec.out) catch return error.WriteFailed;
-    // The same rendering and media settings as an open window (applied before WebKit starts).
-    const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, render_config.resolve(spec.hw_policy, spec.renderer), spec.media_source);
+    const code = webkit.runScreenshot(valid_uri, out_z, spec.print_title, sink.render, sink.media);
     return @intCast(code);
 }
+
+/// backend_flag.startup's `decide` for this build: the seam for its own OS; a refusal prints the
+/// exact message (Windows plan WS3.2), and the caller makes it a usage error (exit 1).
+fn decideFlag(flag: []const u8, value: []const u8) error{UnsupportedFlag}!void {
+    webkit.applyBackendFlag(builtin.os.tag, flag, value) catch |err| {
+        var buf: [160]u8 = undefined;
+        std.debug.print("{s}\n", .{backend_flag.refusalMessage(&buf, builtin.os.tag, flag, value) catch "zigBrowser: a flag is not supported here"});
+        return err;
+    };
+}
+
+/// The open window's sink: the resolved configuration is applied here, once.
+const OpenSink = struct {
+    pub fn decide(_: *OpenSink, flag: []const u8, value: []const u8) error{UnsupportedFlag}!void {
+        return decideFlag(flag, value);
+    }
+    pub fn applyResolved(_: *OpenSink, cfg: render_config.RenderConfig, media: ?backend_flag.media_config.MediaSource) void {
+        webkit.applyRender(cfg);
+        webkit.applyMediaSource(media);
+    }
+};
+
+/// The screenshot's sink: runScreenshot applies what it keeps, before WebKit starts.
+const ScreenshotSink = struct {
+    render: render_config.RenderConfig = render_config.default_render,
+    media: ?backend_flag.media_config.MediaSource = null,
+    pub fn decide(_: *ScreenshotSink, flag: []const u8, value: []const u8) error{UnsupportedFlag}!void {
+        return decideFlag(flag, value);
+    }
+    pub fn applyResolved(self: *ScreenshotSink, cfg: render_config.RenderConfig, media: ?backend_flag.media_config.MediaSource) void {
+        self.render = cfg;
+        self.media = media;
+    }
+};
 
 fn mapUriErr(err: uri.UriError) errors.BrowserError {
     return switch (err) {

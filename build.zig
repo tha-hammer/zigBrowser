@@ -673,7 +673,22 @@ pub fn build(b: *std.Build) void {
     }));
     const run_backend_flag_tests = b.addRunArtifact(b.addTest(.{ .root_module = backend_flag_tests_module }));
     run_backend_flag_tests.skip_foreign_checks = true;
-    b.step("test-backend-flag", "Run the shared backend-flag decision's tests (WS3 coordination)").dependOn(&run_backend_flag_tests.step);
+    // j76: the startup's flag step (backend_flag.startup): decide every present flag, then apply once.
+    const backend_flag_startup_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/backend_flag_startup_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    backend_flag_startup_tests_module.addImport("backend_flag", b.createModule(.{
+        .root_source_file = b.path("src/backend_flag.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_backend_flag_startup_tests = b.addRunArtifact(b.addTest(.{ .root_module = backend_flag_startup_tests_module }));
+    run_backend_flag_startup_tests.skip_foreign_checks = true;
+    const backend_flag_step = b.step("test-backend-flag", "Run the shared backend-flag decision's tests (WS3 coordination)");
+    backend_flag_step.dependOn(&run_backend_flag_tests.step);
+    backend_flag_step.dependOn(&run_backend_flag_startup_tests.step);
     // Rev 16.18.16-16.18.17: S6b2's navigation decision (agent_auth.decideNavigation), the A2
     // cases among its unit cases, before any auth window exists.
     const agent_auth_navigation_tests_module = b.createModule(.{
@@ -1859,6 +1874,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
+    test_step.dependOn(&run_backend_flag_startup_tests.step);
     test_step.dependOn(&run_agent_auth_navigation_tests.step);
     test_step.dependOn(&run_agent_auth_response_tests.step);
     test_step.dependOn(&run_agent_auth_thirdparty_tests.step);

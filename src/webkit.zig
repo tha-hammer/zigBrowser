@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const backend_flag = @import("backend_flag.zig");
 
 pub const c = @cImport({
     @cInclude("webkit_shim.h");
@@ -28,6 +29,27 @@ pub fn shouldForceHttp1(soup_force_http1: ?[]const u8, zigbrowser_http2: ?[]cons
     if (soup_force_http1 != null) return false;
     const opt_out = zigbrowser_http2 orelse return true;
     return !std.mem.eql(u8, opt_out, "1");
+}
+
+/// The backend-flag seam (Windows plan WS3 coordination, "Order (binding)" step 1; j76): one
+/// flag present on the command line, already parsed by cli.zig, for this build's own OS (never a
+/// non-host target's arm). backend_flag.backendFlagDecision decides it first: an unsupported
+/// one is error.UnsupportedFlag before any C call (the app prints backend_flag.refusalMessage
+/// and exits nonzero). backend_flag.startup calls it for every present flag, then applies the
+/// resolved configuration once.
+pub fn applyBackendFlag(comptime os: std.Target.Os.Tag, flag: []const u8, value: []const u8) error{UnsupportedFlag}!void {
+    if (backend_flag.backendFlagDecision(os, flag, value) == .refuse) return error.UnsupportedFlag;
+    switch (os) {
+        // GTK: nothing per flag. The resolved configuration is applied once, together, by
+        // applyRender and applyMediaSource (the renderer's environment needs the policy and the
+        // user's own variables), after every present flag was decided: byte-identical to before.
+        .linux => {},
+        // MS3.2 (JadeBeacon): the WKWebView arm.
+        .macos => {},
+        // WS3.2 (AzureRidge): the WebView2 arm.
+        .windows => {},
+        else => {},
+    }
 }
 
 /// Sets SOUP_FORCE_HTTP1=1 unless the user set it or ZIGBROWSER_HTTP2=1. Call it before
