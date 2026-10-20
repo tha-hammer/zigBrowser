@@ -120,7 +120,10 @@ def main() -> int:
                 # An IIFE so it is valid whether the bridge wraps it in `return (...)` or runs it as a
                 # statement; the DOM write is the harmless observable effect.
                 "expression": "(function(){ document.getElementById('heading').textContent = 'SUBMITTED'; return 'SUBMITTED'; })()",
-                "timeout_ms": TIMEOUT_MS,
+                # options.timeout_ms (honored since the router page_evaluate parse): the 300 ms deadline
+                # expires DURING the 1500 ms DISPATCHING hold, so the waiter is forced to wait for the
+                # submission to linearize — a real claim->timeout race, not just a submission proof (RoseCat 6767).
+                "options": {"timeout_ms": TIMEOUT_MS},
             })
             elapsed = time.monotonic() - t0
 

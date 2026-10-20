@@ -39,6 +39,10 @@ struct ZbWindow {
 
 static ZBAppHost *g_active_app = nil;
 static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automation_set_script)
+// Thread-safe mirror of the --e2e-protocol flag: zb_auto_test_hooks_enabled() derefs g_active_app (AppKit,
+// main-thread-only), so off-main callers (zb_job_new/unref run on server threads) read this atomic instead,
+// set ONCE on the main thread in -initWithURI... (RoseCat 6767 #3).
+static atomic_int zb_auto_e2e_enabled = 0;
 // MS2c (RoseCat 6508 #6): the window snapshot is a lock-backed cache. The main thread republishes it on
 // every window state change (create/remove/health tick); page.list/page.health read it under the lock and
 // NEVER dispatch to the main queue, so a backed-up/hung main queue cannot stall them.
@@ -340,6 +344,7 @@ static void handle_signal(int signo) {
   }
   _printTitle = printTitle;
   _e2eProtocol = e2eProtocol;
+  atomic_store(&zb_auto_e2e_enabled, e2eProtocol ? 1 : 0);  // set on the main thread; read off-main by the job counters
   _exitCode = ZB_EXIT_SUCCESS;
   _appBase = derive_app_base(uri);
   _windows = [NSMutableArray array];
@@ -1428,7 +1433,7 @@ static ZBAutoJob *zb_job_new(void) {
   job->refcount = 1;
   job->code = ZB_AUTO_ERR_TIMEOUT;
   int live_after_add = atomic_fetch_add(&zb_auto_live_jobs, 1) + 1;
-  if (zb_auto_test_hooks_enabled()) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_add); fflush(stderr); }  // e2e-only: observe the live-job count (MS2a.3 baseline)
+  if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_add); fflush(stderr); }  // e2e-only (atomic, off-main safe): observe the live-job count (MS2a.3 baseline)
   return job;
 }
 
@@ -1451,7 +1456,7 @@ static void zb_job_unref(ZBAutoJob *job) {
   free(job->err);
   free(job);
   int live_after_sub = atomic_fetch_sub(&zb_auto_live_jobs, 1) - 1;
-  if (zb_auto_test_hooks_enabled()) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_sub); fflush(stderr); }  // e2e-only: observe the live-job count (MS2a.3 baseline)
+  if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-live-jobs=%d\n", live_after_sub); fflush(stderr); }  // e2e-only (atomic, off-main safe): observe the live-job count (MS2a.3 baseline)
 }
 
 // First main-thread run: PENDING -> PREFLIGHT. Returns 0 if the waiter already cancelled (do nothing).

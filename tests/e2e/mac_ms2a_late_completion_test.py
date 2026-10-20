@@ -33,8 +33,11 @@ SKIP_EXIT = 77
 ACTION_TIMEOUT = -32009
 DEADLINE_MS = 300
 JS_DELAY_MS = 2000
-LATE_EVAL = ("(async function(){ await new Promise(function(r){ setTimeout(r, %d); }); return 'LATE-RESULT'; })()"
-             % JS_DELAY_MS)
+# When the Promise resolves (well after the deadline), it mutates #t to a page-observable marker. The result
+# is dropped, but the DOM side effect proves the eval WAS actually submitted (callAsyncJavaScript ran) — a
+# bridge that never submits and just returns -32009 leaves #t at 'ready' (RoseCat 6767 #1).
+LATE_EVAL = ("(async function(){ await new Promise(function(r){ setTimeout(r, %d); }); "
+             "document.getElementById('t').textContent = 'LATE-DONE'; return 'LATE-RESULT'; })()" % JS_DELAY_MS)
 PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>Late</title></head><body><div id='t'>ready</div></body></html>"
 
 
@@ -45,7 +48,7 @@ def eprint(*a):
 def last_live_jobs(err_lines):
     val = None
     for ln in err_lines:
-        m = re.search(r"zb-live-jobs=(\d+)", ln)
+        m = re.search(r"zb-live-jobs=(-?\d+)", ln)  # signed: a double-free underflow shows as negative
         if m:
             val = int(m.group(1))
     return val
@@ -128,6 +131,10 @@ def main() -> int:
             err_obj = resp.get("error")
             if err_obj is None or err_obj.get("code") != ACTION_TIMEOUT:
                 failures.append(f"late eval did not return action_timeout: {resp.get('error') or resp.get('result')!r}")
+            # Timing WINDOW: it must abandon ~at the deadline — neither instantly (a never-submit mutant returns
+            # -32009 at ~0 s) nor after the ~2 s JS (deadline not honored).
+            if elapsed < (DEADLINE_MS / 1000.0) - 0.1:
+                failures.append(f"late eval returned in {elapsed:.3f}s — faster than the {DEADLINE_MS} ms deadline (did it submit at all?)")
             if elapsed > 1.0:
                 failures.append(f"late eval blocked {elapsed:.2f}s — it waited for the ~2 s JS instead of abandoning at the {DEADLINE_MS} ms deadline (page.evaluate not honoring options.timeout_ms?)")
 
@@ -135,17 +142,26 @@ def main() -> int:
             if not u.startswith("http://127.0.0.1"):
                 failures.append(f"follow-up page.url wrong right after the timeout: {u!r}")
 
+            # Wait PAST the JS completion, then: (a) no late frame desynced the stream; (b) the SUBMISSION
+            # actually ran — #t carries the marker the (dropped) late eval wrote. A never-submit bridge leaves
+            # #t at 'ready'.
             time.sleep((JS_DELAY_MS / 1000.0) + 0.7)
             for _ in range(3):
                 got = rpc.call("page.url", {"timeout_ms": 10000})["url"]  # raw() raises on id mismatch -> a stray late frame fails here
                 if not got.startswith("http://127.0.0.1"):
                     failures.append(f"a late eval frame desynced the stream (got {got!r})")
                     break
+            marker = rpc.raw("dom.getText", {"selector": "css=#t", "options": {"timeout_ms": 8000}})
+            mtext = (marker.get("result") or {}).get("text") if "error" not in marker else None
+            if mtext != "LATE-DONE":
+                failures.append(f"the late eval was NOT submitted: #t is {mtext!r}, not 'LATE-DONE' (callAsyncJavaScript never ran)")
 
             time.sleep(0.3)
             final = last_live_jobs(err)
-            if final is None or final > baseline:
-                failures.append(f"live jobs did not return to baseline after the late completion: baseline={baseline} final={final}")
+            # EXACT: the abandoned job must be freed exactly once — not left live (final>baseline) and not
+            # double-freed (final<baseline underflow). (RoseCat 6767 #2.)
+            if final is None or final != baseline:
+                failures.append(f"live jobs did not return EXACTLY to baseline after the late completion: baseline={baseline} final={final}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error (possible stray late response desyncing the stream): {exc}")
         finally:
