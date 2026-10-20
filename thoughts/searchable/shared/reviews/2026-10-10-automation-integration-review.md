@@ -16626,3 +16626,76 @@ SSH and SCP argv lists. The guest script puts it in the shared SSH argv that
 SCP reuses. `SSH_ASKPASS_REQUIRE=never` is defense in depth; BatchMode is the
 decisive noninteractive control. Fake-SSH-only selftests correctly need no
 change. Verdict sent to AzureRidge in Agent Mail 6651.
+
+## Review after `55079fa`: deterministic macOS tests and remote-prompt guards
+
+The reviewed range is `caf51b5`, `5dfa170`, `0722ee0` and `673c6bc`.
+`git diff --check 55079fa..673c6bc` is clean. The two Windows selftest
+modules compile and pass directly with both display variables removed:
+`build_on_windows_selftest.py` is 16/16 and
+`gate_twohost_selftest.py` is 18/18. No full gate was taken because
+BlackRobin owns the shared gate slot.
+
+### Exact out-of-band queue outcome (`caf51b5`)
+
+**APPROVED.** The macOS MS2c test now distinguishes the exact queue-only
+failure—JSON-RPC `-32009`, message `action_timeout`, and
+`data.reason == queued_past_deadline`—from an arbitrary failure. Before
+blocking the FIFO it proves `dom.getText` reaches the known `#t` content; the
+unknown-window negative proves an ownership/routing failure does not satisfy
+the queue predicate. The barrier still starts only after the long call has
+entered production. The submitted x86_64 and arm64 gates passed, and replacing
+the exact predicate with the old any-error predicate makes the mutant fail.
+Verdict sent to JadeBeacon in Agent Mail 6658.
+
+### Deterministic dialog snapshot publisher (`0722ee0`)
+
+**APPROVED.** `src/automation_server.zig` exposes the health-tick suspension
+only while the production `--e2e-protocol` hook gate is active; ordinary runs
+cannot set the seam through the environment. The e2e launches with that gate,
+removes the periodic snapshot publisher, and observes the false → true → false
+dialog state through `page.health`. On the static alert fixture there is no
+title, URL, loading or crash transition to provide an accidental publisher,
+so the test exercises dialog-open/respond publication rather than polling.
+Both macOS architectures passed, and removing the dialog-open publish fails
+deterministically.
+
+**SHOULD-for-tests:** retain the same mutation evidence independently for the
+respond/close publication; the submitted mutant explicitly demonstrates the
+open edge. Verdict sent to JadeBeacon in Agent Mail 6658.
+
+### macOS package builder prompt guard (`5dfa170`)
+
+**APPROVED.** Both independently assembled remote commands in
+`packaging/macos/build-dmg.sh` now include `-o BatchMode=yes`: the SSH build
+command and the SCP artifact fetch. A rejected key therefore fails instead of
+invoking an askpass GUI on the user's desktop. The script passes `bash -n`.
+Verdict sent to JadeBeacon in Agent Mail 6658.
+
+### Deferred MS3 arm64 evidence (`501cc1b`)
+
+**APPROVED, closing the earlier gate hold.** The deferred arm64 leg has now
+passed the full MS3 suite, including profile persistence and relative-CWD
+identity; the x86_64 leg was already green. The prior temp socket-directory
+cleanup remains a nonblocking SHOULD (and is addressed by a later commit not
+reviewed in this section). Verdict sent to JadeBeacon in Agent Mail 6658.
+
+### Windows BatchMode selftest enforcement (`673c6bc`)
+
+**BLOCKED-for-tests.** The production drivers inspected are currently safe,
+and both new tests pass. Their oracles do not establish the invariant claimed
+by the commit, however:
+
+- `tests/windows/build_on_windows_selftest.py:302-305` searches each aggregate
+  SSH/SCP log for one occurrence of `BatchMode=yes`.
+- `tests/windows/gate_twohost_selftest.py:247-250` does the same for the
+  aggregate gate SSH log.
+
+Those assertions still pass if one invocation keeps `BatchMode=yes` while a
+second invocation omits it, or if an invocation supplies `BatchMode=yes` and
+then overrides it with `BatchMode=no`. Record unambiguous invocation
+boundaries, parse every invocation's `-o` options, and require the effective
+BatchMode value to be exactly `yes` for every SSH and SCP call. Add
+failing-first cases for one missing invocation and a later `no` override; the
+existing whole-driver stripping mutant does not distinguish either false
+green. Finding sent to AzureRidge in Agent Mail 6662.
