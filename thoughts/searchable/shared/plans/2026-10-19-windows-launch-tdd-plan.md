@@ -6,8 +6,9 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.4)
-rev: 2.4
+status: plan for review (rev 2.5)
+rev: 2.5
+rev_2_5_note: "Rev 2.5 (2026-10-20): WS3 flag table made literal from production (RoseCat 6405, 6415). Exact present-flag rows from media_config.parse (on|off), render_config.parseHwPolicy (never|always|webkit — no auto), render_config.parseRenderer (default|shm|mesa-egl, Linux only; refused on macOS/Windows); empty value is an explicit invalid value and is refused. backendFlagDecision decides a PRESENT flag only; absence makes no call and no apply and is resolved by the config defaults (media-source=on, hardware-acceleration=webkit, Linux renderer=shm; no renderer decision on macOS/Windows) via a separate absent-default oracle at the config/app boundary, never value=''. WS3.2's flag-decision property is now the registered, all-OS, anti-drift tests/backend_flag_test.zig (step test-backend-flag, BlueBeaver); the standalone src/ws3_backend_flag_table_test.zig (88e16cd) is removed so one literal oracle cannot drift."
 rev_2_4_note: "Rev 2.4 (2026-10-20): fix-forward of the WS3 coordination section per RoseCat's block of 311e682. (1) The full flag×value decision matrix (Linux/macOS/Windows columns, defaults + exact unsupported outcomes) is documented in the plan and the [L] test is literal from it. (2) The seam is split: a pure all-OS backendFlagDecision(os,flag,value) (runtime-testable, no C ABI) and a target-only applyBackendFlag(comptime os,…) compiled for the current target — the Linux property never calls a non-host target ABI. (3) CookiePort names corrected to getAll/set/delete (src/automation/cookie_port.zig). (4) One owner per file/hunk with an ordered handoff: BlackRobin's shim setters land before the Zig apply arms that call them; WS3/MS3 each edit only their own webkit.zig branch + their own new cookie-port file; no file has two simultaneous editors. SHOULD: the --profile-dir persistence closure uses a local localStorage/cookie fixture, not a live-site login."
 rev_2_3_note: "Rev 2.3 (2026-10-20): added the WS3 cross-plan coordination proposal (section 'WS3 cross-plan coordination') — the shared config-flag seam applyBackendFlag(os,flag,value), the CookiePort interface with three backend impls, and the --profile-dir contract: which plan owns what, the pinned shared contracts, and the binding order (BlueBeaver lands the backend-flag seam pre-slice first; WS3 and MS3 add their os-arms in parallel; JadeBeacon adopts the shared name; BlackRobin owns the native setters). Mailed to BlackRobin, BlueBeaver, JadeBeacon and RoseCat. WS3's first Linux-only reds (the flag-decision-table property + the windows cookie-port cross-check) are written unregistered."
 rev_2_2_note: "Rev 2.2 (bead zigBrowser-126): WS0.6 VM identity no longer uses the SMBIOS UUID (a standard user cannot read Win32_ComputerSystemProduct.UUID — WMI Access-denied 0x80041003, wmic absent; verified on win11-m8). Identity = pinned SSH host key + a provisioning marker nonce (ZB_WIN11_MARKER / C:\\Users\\<user>\\zb\\.gate-identity, probe field identity_marker); virsh stays read-only (domstate, snapshot-list). Updated the reach-VM identity section, the WS0.1 probe fields, the fail-closed list and WS0.6."
@@ -1178,25 +1179,36 @@ the three backends cannot diverge. It was mailed to BlackRobin, BlueBeaver, Jade
 
 ### The documented flag×value table (the single oracle; the [L] test is literal from this)
 
-`backendFlagDecision(os, flag, value)` returns `apply` or `refuse` exactly as below. `refuse` ⇒
-`app.zig` prints `zigBrowser: --<flag>=<value> is not supported on <os>` and exits nonzero, touching no
-C ABI. `default` marks the value used when the flag is absent.
+`backendFlagDecision(os, flag, value)` decides a flag that is **PRESENT** on the command line, only
+(RoseCat 6415): it returns `apply` or `refuse`. `refuse` ⇒ `app.zig` prints
+`zigBrowser: --<flag>=<value> is not supported on <os>` and exits nonzero, touching no C ABI. The
+values are **production's own parsers, verbatim** — `media_config.parse` (`on`/`off`),
+`render_config.parseHwPolicy` (`never`/`always`/`webkit`), `render_config.parseRenderer`
+(`default`/`shm`/`mesa-egl`), `src/render_config.zig:18-26,33-35,48-65`, CLI help `src/main.zig:46,51`.
+An **empty value is an explicit, invalid value** and is refused (it is NOT "absent").
 
-| flag | value | Linux | macOS | Windows | apply = backend action |
+| flag | value (present) | Linux | macOS | Windows | apply = backend action |
 |---|---|---|---|---|---|
-| `media-source` | `on` (default) | apply | apply | apply | MSE left enabled |
+| `media-source` | `on` | apply | apply | apply | MSE left enabled |
 | `media-source` | `off` | apply | apply | apply | document-start user script deletes `MediaSource`/`SourceBuffer` |
-| `media-source` | any other | refuse | refuse | refuse | — |
-| `hardware-acceleration` | `auto` (default) | apply | apply | apply | backend default |
-| `hardware-acceleration` | `always` | apply | apply | apply | force GPU on |
+| `media-source` | `""` (empty) / any other | refuse | refuse | refuse | — |
 | `hardware-acceleration` | `never` | apply | apply | apply | GTK: disable; macOS: `WKPreferences`; Windows: `AdditionalBrowserArguments "--disable-gpu"` |
-| `hardware-acceleration` | any other | refuse | refuse | refuse | — |
-| `renderer` | `gl`/`angle`/etc. (GTK set) | apply | refuse | refuse | GTK only; macOS/Windows have no renderer choice |
-| `renderer` | any value | (per GTK set) | refuse | refuse | macOS/Windows: unsupported |
+| `hardware-acceleration` | `always` | apply | apply | apply | force GPU on |
+| `hardware-acceleration` | `webkit` | apply | apply | apply | backend's own policy |
+| `hardware-acceleration` | `""` (empty) / `auto` / any other | refuse | refuse | refuse | — (there is **no `auto`**) |
+| `renderer` | `default` | apply | refuse | refuse | Linux renderer; macOS/Windows have no renderer choice |
+| `renderer` | `shm` | apply | refuse | refuse | Linux: shared-memory frames |
+| `renderer` | `mesa-egl` | apply | refuse | refuse | Linux: Mesa EGL |
+| `renderer` | `""` (empty) / `mesa_egl` / any other | refuse | refuse | refuse | — |
 | any unknown flag | any | refuse | refuse | refuse | — |
 
-(The GTK `renderer` value set is the existing `webkit.zig:47-72` list; BlueBeaver pins it verbatim when
-refactoring the GTK arm. macOS/Windows refuse every `renderer` value.)
+**Absence is not a decision (RoseCat 6415).** An absent flag makes **no** `backendFlagDecision` call and
+**no** backend apply; the existing config **defaults** resolve it at the config/app boundary —
+`media-source` = `on`, `hardware-acceleration` = `webkit`, Linux `renderer` = `shm`, and **no renderer
+decision on macOS/Windows**. The absent/default behaviour is asserted by a separate **absent-default
+oracle** at the config boundary (`render_config`/`media_config` defaults + `app.zig`'s arg-apply path
+not calling the seam when the flag is unset), distinct from the present-flag table above. Absence is
+never encoded as `value = ""`.
 
 ### Which plan owns what — one owner per file/hunk, with an ordered handoff (RoseCat #4)
 
@@ -1239,14 +1251,16 @@ The native shim files are **BlackRobin's alone**; the per-OS **apply** lives in 
 4. **JadeBeacon** renames MS3.2's `applyMacBackendFlag` to `applyBackendFlag(.macos, …)` (one function).
 
 ### WS3's Linux-only reds (writable now, before the seam lands)
-- **Flag-decision-table property** (`src/ws3_backend_flag_table_test.zig`, unregistered — committed): the
-  rows of the table above for the **`.windows`** column are asserted literally against
-  `backendFlagDecision(.windows, flag, value)` (the **pure, all-OS** decision — the [L] test never calls
-  the target-only `applyBackendFlag`). **Red today** because `src/backend_flag.zig`/`backendFlagDecision`
-  do not exist (only the Linux apply path). Verified red (FileNotFound) and green against a
-  documented-table stub. Green when BlueBeaver's seam + the WS3 `.windows` arm land; mutant: accept an
-  unknown value ⇒ red. (MS3 and GTK carry the `.macos`/`.linux` columns in their own tests, from the same
-  table.)
+- **Flag-decision-table property** — now the **registered** `tests/backend_flag_test.zig` (step
+  `test-backend-flag`, in the aggregate `test`; BlueBeaver owns `src/backend_flag.zig` + the test). Every
+  row of the table above is asserted literally for **all three** `os` columns (`.linux`/`.macos`/
+  `.windows`) against the **pure, all-OS** `backendFlagDecision(os, flag, value)` — the [L] test never
+  calls the target-only `applyBackendFlag`; it also enumerates every other `std.Target.Os.Tag` (all
+  refuse) and cross-checks the Linux column against production's own `media_config.parse` /
+  `render_config.parseHwPolicy` / `parseRenderer` so the table and the CLI cannot drift. **Green today**
+  (the seam exists). Mutant: accept an unknown/empty value ⇒ red. This supersedes AzureRidge's earlier
+  standalone `src/ws3_backend_flag_table_test.zig` (`.windows`-only, 88e16cd), which is **removed** to
+  keep a single literal oracle (no duplicated table to drift).
 - **Windows cookie-port cross-check** (reuses the `cross-check` object + `--require-defined`): the
   `x86_64-windows-gnu` object compiles and references `automation_wv2_cookie_port.zig`'s `getAll`/`set`/
   `delete` impl + the `zb_cookies_*` setters once they exist; **red today** (file/decl absent).
