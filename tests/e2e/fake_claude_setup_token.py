@@ -15,13 +15,22 @@ What it copies from the real CLI (2.1.301's own source, read, not run):
   not give it a pty fails loudly);
 - a pasted line is trimmed and split on '#' into code and state; a line without
   both parts, or with another sign-in's state, gets the CLI's own sentence and
-  the prompt again; input is not echoed, a '*' per character is.
+  the prompt again; input is not echoed, a '*' per character is, as it arrives;
+- a paste (rev 16.20.27; 2.1.294 probed offline 2026-10-20, Part B's second finding):
+  the terminal is read raw, a read at a time, and one read that holds a line end and
+  more than PASTE_MAX other bytes is a paste: its text goes into the input (masked)
+  and its line end does NOT submit; only a later read's line end does. The real CLI
+  never submitted a code written with its Enter in one write once the write reached
+  about 64 bytes (a real code with its 43-character state is longer), and always
+  submitted it when the Enter came as its own write.
 
 Its files live in $HOME/scratchpad/.zb-fake-setup-token/ when $HOME/scratchpad is a
 directory (inside the helper's sandbox only the agent home's scratchpad is writable;
 plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
 - `codes.log`: every line it reads at the prompt (the "received-code log" the S6
   tests read);
+- `reads.log`: one line per terminal read at the prompt, `<text bytes> <line ends>`
+  (lengths only, never the text), so a test sees how the code and its Enter arrived;
 - `state`: this run's state, written before the prompt (the S6b1 e2e pastes it);
 - `token`: when it exists, the token it prints, else CANARY;
 - `mode` (rev 16.18.9, S6b1 part B's finding): when it exists, what follows a right
@@ -62,6 +71,8 @@ FOREIGN = "That code is not from this sign-in. Paste the code shown after openin
 OAUTH_ERROR = "OAuth error: getaddrinfo EAI_AGAIN platform.claude.com"
 RETRY = "Press Enter to retry."
 PROBE = "zb-proxy-probe.invalid:443"
+# One read with a line end and more than this many other bytes is a paste (see above).
+PASTE_MAX = 64
 
 
 def b64url(n):
@@ -94,6 +105,11 @@ def token():
             return f.read().strip()
     except OSError:
         return CANARY
+
+
+def log_read(text_bytes, line_ends):
+    with open(os.path.join(fake_dir(), "reads.log"), "a", encoding="ascii") as f:
+        f.write(f"{text_bytes} {line_ends}\n")
 
 
 def log_code(line):
@@ -137,7 +153,7 @@ def fail_and_wait():
     while True:
         out(oauth_error())
         out(RETRY)
-        if sys.stdin.readline() == "":
+        if TERM.line() is None:
             return 1
 
 
@@ -152,25 +168,72 @@ def prompt():
 
 
 def echo_off():
-    """Echo off for the whole run, before the first prompt: a code typed the moment the
-    prompt appears is never echoed (a test that answered at once raced a per-read toggle
-    under load). The terminal's settings come back at exit. Returns the restorer."""
+    """Echo and line editing off for the whole run, before the first prompt: a code typed
+    the moment the prompt appears is never echoed (a test that answered at once raced a
+    per-read toggle under load), and each read is seen as it arrived, as the real CLI's
+    raw terminal sees it (a paste). The terminal's settings come back at exit. Returns
+    the restorer."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     new = termios.tcgetattr(fd)
-    new[3] &= ~termios.ECHO
+    new[3] &= ~(termios.ECHO | termios.ICANON)
+    new[6][termios.VMIN] = 1
+    new[6][termios.VTIME] = 0
     termios.tcsetattr(fd, termios.TCSANOW, new)
     return lambda: termios.tcsetattr(fd, termios.TCSANOW, old)
 
 
+class Terminal:
+    """The raw terminal, a read at a time, with the real CLI's paste rule."""
+
+    def __init__(self):
+        self.pending = b""  # bytes read after a line end, for the next line
+
+    def line(self, masked=False):
+        """One submitted line, or None at EOF. `masked`: a '*' per character as it arrives,
+        the line end when it is submitted; each read at the prompt goes to reads.log."""
+        text = bytearray()
+        while True:
+            if self.pending:
+                data, self.pending = self.pending, b""
+            else:
+                try:
+                    data = os.read(sys.stdin.fileno(), 4096)
+                except OSError:
+                    data = b""
+                if not data:
+                    return None
+                ends = data.count(b"\r") + data.count(b"\n")
+                if masked:
+                    log_read(len(data) - ends, ends)
+                if ends and len(data) - ends > PASTE_MAX:  # a paste: kept, not submitted
+                    pasted = data.replace(b"\r", b"").replace(b"\n", b"")
+                    text += pasted
+                    if masked:
+                        echo("*" * len(pasted))
+                    continue
+            for i, byte in enumerate(data):
+                if byte in (0x0D, 0x0A):
+                    self.pending = data[i + 1:].lstrip(b"\r\n")
+                    if masked:
+                        out()
+                    return text.decode("utf-8", "replace")
+                text.append(byte)
+                if masked:
+                    echo("*")
+
+
+TERM = Terminal()
+
+
+def echo(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
 def read_masked():
-    """One line from the terminal (echo is off); echoes a '*' per character."""
-    line = sys.stdin.readline()
-    if not line:
-        return None
-    line = line.rstrip("\r\n")
-    out("*" * len(line))
-    return line
+    """One line from the terminal (echo is off); a '*' per character as it arrives."""
+    return TERM.line(masked=True)
 
 
 def main(argv):
@@ -222,7 +285,7 @@ def run():
     if how == "oauth-error" or (how == "needs-proxy" and not through_proxy()):
         return fail_and_wait()
     if how == "silent":
-        while sys.stdin.readline() != "":
+        while TERM.line() is not None:
             pass
         return 1
     out("✓ Long-lived authentication token created successfully!")
