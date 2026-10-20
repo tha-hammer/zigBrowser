@@ -55,6 +55,16 @@ class ToolListTest(unittest.TestCase):
         server = b.server()
         self.assertEqual((server["type"], server["name"]), ("sdk", "zigbrowser"))
 
+    def test_a_selector_tools_selector_states_the_engine_grammar(self):
+        """RoseCat 6575: the model is told the selector syntax the engine takes."""
+        for t in bridge().tools():
+            selector = t.input_schema["properties"].get("selector")
+            if t.name in ("window_info", "screenshot"):
+                self.assertIsNone(selector, t.name)
+                continue
+            self.assertIn("css=", selector.get("description", ""), t.name)
+            self.assertIn("text=", selector.get("description", ""), t.name)
+
     def test_allowed_tools_are_exactly_their_names(self):
         self.assertEqual(sorted(bridge().allowed_tools()), NAMES)
 
@@ -62,6 +72,19 @@ class ToolListTest(unittest.TestCase):
         names = {t.name for t in bridge().tools()}
         for act in ("click", "navigate", "hover", "scroll", "type", "fill", "evaluate", "echo", "cookies_get"):
             self.assertNotIn(act, names)
+
+
+class ServerListTest(unittest.IsolatedAsyncioTestCase):
+    async def test_the_mcp_servers_own_list_is_exactly_the_six_tools(self):
+        """RoseCat 6575: through the server's tools/list path, as the CLI sees it."""
+        b = bridge()
+        listed = await b.server()["instance"].get_request_handler("tools/list").handler(None, None)
+        self.assertEqual(sorted(t.name for t in listed.tools), sorted(TOOLS))
+        mine = {t.name: t for t in b.tools()}
+        for t in listed.tools:
+            self.assertEqual(t.input_schema, TOOLS[t.name], t.name)
+            self.assertEqual(t.description, mine[t.name].description, t.name)
+            self.assertTrue(t.description, t.name)
 
 
 class ForwardTest(unittest.IsolatedAsyncioTestCase):
