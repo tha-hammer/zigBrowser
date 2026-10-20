@@ -18194,3 +18194,70 @@ describes the removed Add-Type here-string.
 
 No Windows host, full gate, live browser or real display was used locally.
 Approval and the follow-up SHOULD were mailed to AzureRidge (6821).
+
+## WS0 field-validation hardening (`f766655`)
+
+Reviewed at `f766655` on 2026-10-20 18:03 EDT.
+
+**Verdict: BLOCKED.** This fix-forward correctly closes part of finding 6799:
+the VM and file-server roots are exact, empty share identities are refused,
+port 22 is required, the pinned snapshot name is updated and its creation time
+must parse, and the plan explicitly defers VM Python/Zig and the file-server
+WebView2 value to the slices that actually use them. The exact-commit clean
+export passes all **65/65** hostless two-host tests plus `bash -n`.
+
+Four fail-closed holes remain:
+
+1. `tests/windows/gate.sh:258-263` only rejects an empty SSH listen list and a
+   short wildcard blacklist. The plan pins `ListenAddress 100.123.34.15`, but
+   a focused production-path call with `sshd_listen=["192.0.2.44"]` exits 0.
+   Require typed strings and the exact configured tailnet address.
+2. `gate.sh:213-220` requires only nonempty share-name/path strings. A share
+   `{name:"docs", path:"relative\\docs"}` exits 0. Finding 6799 required
+   absolute normalized roots and explicit duplicate/alias behavior; add those
+   validators and mutants. The WS0.7 baseline is also specified as listeners
+   22, 135, 139, 445 and 3389, but the gate requires only 22, so both probes
+   can omit the other four and still pass.
+3. `host_probe.ps1:182-190` ORs every applicable Allow mask, ORs every Deny
+   mask, then subtracts the latter. This is per-bit but not Windows access-check
+   semantics: AccessCheck processes ACEs sequentially and can stop when the
+   requested right is granted or denied. In particular, an explicit Allow can
+   satisfy a right before a later inherited Deny, while this aggregate removes
+   the bit and unsafely reports the path read-only. The new tests feed canned
+   JSON and never execute the ACL calculation; the required allow/deny/order
+   and individual-right PowerShell oracle is still absent.
+4. Numeric narrowing is still incomplete. Python's JSON decoder accepts NaN,
+   and both VM and file-server `free_gb=NaN` exit 0 because `NaN < limit` is
+   false. Require a finite real number. Both focused survivors were exercised
+   through the real `gate.sh --probe-only` validator, not a copied helper.
+
+No live Windows host, full gate, browser or display was used. Findings were
+mailed to AzureRidge in Agent Mail 6822.
+
+## macOS plan rev 15 (`b4ec5e9`)
+
+Reviewed at `b4ec5e9` on 2026-10-20 18:03 EDT.
+
+**Verdict: BLOCKED as an implementation-ready plan.** Rev 15 correctly records
+the measured SHA-256 and the Sigstore signer identity/issuer, excludes
+`python3.12-intel64` plus its link from the bundle and census, and pins the fat
+`bin/python3.12` interpreter with no macOS venv. Those are the right resolutions
+for most of finding 6770.
+
+The acquisition contract is internally inconsistent. Lines 1324-1329 record
+SHA-256 and Sigstore, but lines 1330-1333 still direct the build to verify only
+the Apple package signature and **MD5** before unpacking. They neither compare
+the SHA-256 nor verify the downloaded `.sigstore` bundle against
+`thomas@python.org` and `https://accounts.google.com`. The official Python
+3.12.10 release page publishes the MD5 and links the Sigstore artifact; it does
+not publish the SHA-256, so line 1325 also misattributes the independently
+measured hash to that page.
+
+Fix forward by making SHA-256 the mandatory byte-integrity check, making the
+Sigstore bundle's identity and issuer a mandatory verification step with a
+named command/seam, retaining `pkgutil --check-signature`/notarization as the
+Apple package check, and treating MD5 as informational only. The slice needs
+failing-first oracles for wrong SHA-256, missing/wrong Sigstore bundle,
+identity and issuer, plus survival of either excluded `*-intel64` entry in the
+payload/census. Finding 6770 therefore remains open. The verdict was mailed to
+JadeBeacon in Agent Mail 6823.
