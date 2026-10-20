@@ -3,9 +3,18 @@ is locked, observably, for the whole sign-in, including while the signed-in toke
 store is still in flight.
 
 Under --e2e-protocol the Secrets window reports each credential control's sensitivity
-as GTK holds it (gtk_widget_get_sensitive, read back after every change):
+as GTK holds it (gtk_widget_get_sensitive). Rev 16.18.8 (RoseCat 6122): each time it
+recomputes them it writes all five rows, in a fixed order, a complete census:
 
-    SECRETS sensitive <entry|save|remove|file|signin> <0|1>
+    SECRETS sensitive entry <0|1>
+    SECRETS sensitive save <0|1>
+    SECRETS sensitive remove <0|1>
+    SECRETS sensitive file <0|1>
+    SECRETS sensitive signin <0|1>
+
+Every check takes the row count before its transition and requires a fresh, complete
+census after it, asserting all five values; the first census after the window opens
+must name all five.
 
 Cases (run alone or with --only):
 - locks-through-the-store: the keyring store is delayed 3 s. A token saved by hand
@@ -35,19 +44,46 @@ DELAY = {sec.DELAY_ENV: "store=3000"}
 CONTROLS = ("entry", "save", "remove", "file", "signin")
 
 
-def sensitive(b) -> dict[str, str]:
-    """The latest reported sensitivity of each credential control."""
-    out = {}
+def sensitive_rows(b) -> list[tuple[str, str]]:
+    out = []
     for f in lt.rows(b, "sensitive"):
         if len(f) != 2 or f[0] not in CONTROLS or f[1] not in ("0", "1"):
             raise AssertionError(f"malformed SECRETS sensitive row: {f!r}")
-        out[f[0]] = f[1]
+        out.append((f[0], f[1]))
     return out
 
 
-def has(b, **want) -> bool:
-    got = sensitive(b)
-    return all(got.get(name) == value for name, value in want.items())
+def mark(b) -> int:
+    """The row count before a transition: only censuses written after it count."""
+    return len(sensitive_rows(b))
+
+
+def census_after(b, since: int):
+    """The latest complete census (five rows in the order entry, save, remove, file,
+    signin) written after row `since`, as a dict, or None."""
+    rows = sensitive_rows(b)[since:]
+    for start in range(len(rows) - 5, -1, -1):
+        window = rows[start:start + 5]
+        if tuple(name for name, _ in window) == CONTROLS:
+            return dict(window)
+    return None
+
+
+def fresh(b, since: int, timeout: float = 10, **want) -> bool:
+    """A census written after `since` holds exactly `want` for all five controls."""
+    assert set(want) == set(CONTROLS), want
+    return b.wait(lambda: census_after(b, since) == want, timeout)
+
+
+ALL_ON = dict(entry="1", save="1", remove="1", file="1", signin="1")
+ALL_OFF = dict(entry="0", save="0", remove="0", file="0", signin="0")
+
+
+def initial_census(si, check) -> bool:
+    """The first census after the window opens names all five controls."""
+    b = si.b
+    return check(b.wait(lambda: census_after(b, 0) is not None, 10),
+                 f"the first census names entry, save, remove, file and signin ({sensitive_rows(b)[:5]})", b)
 
 
 def save_by_hand(si, check, token: str, done_status: str) -> bool:
@@ -62,23 +98,24 @@ def case_locks_through_the_store(binary: Path, tmp: Path, check) -> None:
     si = lt.SignIn(binary, tmp, "locks-store", bus_extra=DELAY)
     b = si.b
     try:
-        if not si.open_window(check):
+        if not (si.open_window(check) and initial_census(si, check)):
             return
+        m = mark(b)
         if not save_by_hand(si, check, sec.canary(), "connected-secret-service"):
             return
-        check(b.wait(lambda: has(b, entry="1", save="1", remove="1", signin="1"), 10),
-              f"with a token stored: entry, Save, Remove and Sign in are enabled ({sensitive(b)})", b)
+        check(fresh(b, m, **ALL_ON), f"with a token stored, a fresh census: all five enabled ({census_after(b, m)})", b)
+        m = mark(b)
         if not si.sign_in(check):
             return
-        check(b.wait(lambda: has(b, entry="0", save="0", remove="0", signin="0"), 10),
-              f"Sign in locks the entry, Save, Remove and Sign in ({sensitive(b)})", b)
+        check(fresh(b, m, **ALL_OFF), f"Sign in: a fresh census, all five locked ({census_after(b, m)})", b)
         saving_before = lt.texts(b).count("Saving...")
+        m = mark(b)
         si.paste(f"fakecode#{si.state()}")
         if not check(b.wait(lambda: lt.texts(b).count("Saving...") > saving_before, 15),
                      "the signed-in token's store is in flight (its Saving...)", b):
             return
-        check(has(b, entry="0", save="0", remove="0", signin="0"),
-              f"during that store all four stay locked ({sensitive(b)})", b)
+        check(fresh(b, m, 5, **ALL_OFF) and lt.login_states(b)[-1:] != ["done"],
+              f"at the store's start, a fresh census: all five still locked ({census_after(b, m)})", b)
         empty = sec.dark(sec.entry_pixels(b))
         sec.click_rect(b, lt.rect(b, "entry"))
         sec.type_text(b, sec.canary())
@@ -86,9 +123,9 @@ def case_locks_through_the_store(binary: Path, tmp: Path, check) -> None:
         time.sleep(0.3)
         check(sec.dark(sec.entry_pixels(b)) <= empty + 12, "typing during that store leaves the entry empty", b)
         check(lt.texts(b).count("Saving...") == saving_before + 1, "Save during that store starts no store", b)
+        m = mark(b)
         check(b.wait(lambda: lt.login_states(b)[-1:] == ["done"], 15), "the sign-in ends with done", b)
-        check(b.wait(lambda: has(b, entry="1", save="1", remove="1", signin="1"), 10),
-              f"after the store answered, they unlock ({sensitive(b)})", b)
+        check(fresh(b, m, **ALL_ON), f"after the store answered, a fresh census: all five enabled ({census_after(b, m)})", b)
         time.sleep(4.0)
         check(si.kr.lookup() == si.token, "the keyring holds the signed-in token")
     finally:
@@ -99,21 +136,24 @@ def case_file_choice_locked(binary: Path, tmp: Path, check) -> None:
     si = lt.SignIn(binary, tmp, "file-locked", keyring=False)
     b = si.b
     try:
-        if not si.open_window(check):
+        if not (si.open_window(check) and initial_census(si, check)):
             return
         manual = sec.canary()
+        # No keyring: nothing is stored, so Remove does not apply (it stays 0).
+        offered = dict(entry="1", save="1", remove="0", file="1", signin="1")
+        m = mark(b)
         if not save_by_hand(si, check, manual, "no-keyring"):
             return
-        check(b.wait(lambda: lt.rect(b, "file") is not None and has(b, file="1"), 10),
-              f"the file choice is offered and enabled ({sensitive(b)})", b)
+        check(b.wait(lambda: lt.rect(b, "file") is not None, 10) and fresh(b, m, **offered),
+              f"the file choice is offered: a fresh census with it enabled ({census_after(b, m)})", b)
+        m = mark(b)
         if not si.sign_in(check):
             return
-        check(b.wait(lambda: has(b, file="0", save="0", entry="0"), 10),
-              f"Sign in locks the file choice, Save and the entry ({sensitive(b)})", b)
+        check(fresh(b, m, **ALL_OFF), f"Sign in: a fresh census, all five locked ({census_after(b, m)})", b)
+        m = mark(b)
         sec.click_rect(b, lt.rect(b, "cancel"))
         check(b.wait(lambda: lt.login_states(b)[-1:] == ["cancelled"], 15), "the sign-in is cancelled", b)
-        check(b.wait(lambda: has(b, file="1", save="1", entry="1"), 10),
-              f"after it, the file choice, Save and the entry are enabled again ({sensitive(b)})", b)
+        check(fresh(b, m, **offered), f"after Cancel, a fresh census: as offered again ({census_after(b, m)})", b)
         sec.click_rect(b, lt.rect(b, "file"))
         check(b.wait(lambda: lt.statuses(b)[-1:] == ["connected-file"], 10), "the file choice stores the token", b)
         token_file = si.world.agent / "secrets" / "claude-token"
@@ -126,18 +166,19 @@ def case_signin_locked_during_save(binary: Path, tmp: Path, check) -> None:
     si = lt.SignIn(binary, tmp, "signin-locked", bus_extra=DELAY)
     b = si.b
     try:
-        if not si.open_window(check):
+        if not (si.open_window(check) and initial_census(si, check)):
             return
-        check(b.wait(lambda: has(b, signin="1"), 10), f"Sign in is enabled ({sensitive(b)})", b)
+        check(b.wait(lambda: lt.statuses(b)[-1:] == ["empty"], 10) and fresh(b, 0, entry="1", save="1", remove="0", file="1", signin="1"),
+              f"with nothing stored: everything but Remove enabled ({census_after(b, 0)})", b)
         sec.click_rect(b, lt.rect(b, "entry"))
         sec.type_text(b, sec.canary())
+        m = mark(b)
         sec.click_rect(b, lt.rect(b, "save"))
         check(b.wait(lambda: "Saving..." in lt.texts(b), 5), "the manual store is in flight", b)
-        check(b.wait(lambda: has(b, signin="0", save="0", entry="0"), 5),
-              f"during it Sign in, Save and the entry are locked ({sensitive(b)})", b)
+        check(fresh(b, m, 5, **ALL_OFF), f"during it, a fresh census: all five locked ({census_after(b, m)})", b)
+        m = mark(b)
         check(b.wait(lambda: lt.statuses(b)[-1:] == ["connected-secret-service"], 15), "the store answers", b)
-        check(b.wait(lambda: has(b, signin="1", save="1", entry="1"), 10),
-              f"after it, Sign in, Save and the entry are enabled ({sensitive(b)})", b)
+        check(fresh(b, m, **ALL_ON), f"after it, a fresh census: all five enabled ({census_after(b, m)})", b)
     finally:
         si.close()
 
