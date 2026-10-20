@@ -47,6 +47,8 @@ python3 tests/e2e/mac_ms2c_close_window_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_crash_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_crash_recovery_controls_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_recover_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_recover_dialog_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_recover_stale_health_test.py --browser zig-out/bin/zigBrowser
 REMOTE
   printf 'PASS\tms2c-leg\t%s\t%s\n' "$host" "$label"
 }

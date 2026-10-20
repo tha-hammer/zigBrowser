@@ -417,6 +417,7 @@ static void handle_signal(int signo) {
 @end
 
 static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
+static long zb_auto_test_health_reply_hold_ms(void);  // e2e hook (defined below); used by healthTick
 
 // MS2c #6: KVO context for a webView's observable fields; a change republishes the window snapshot so
 // page.list/page.health reflect title/url/loading promptly without polling the main queue.
@@ -536,13 +537,21 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.pingOutstanding = YES;
   self.pingSentUs = zb_now_us();
   __weak ZBWindowHost *weakSelf = self;
+  WKWebView *pinged = view;  // the view this ping was issued on
   [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
     (void)v; (void)e;  // any reply (even an error) means the web process answered -> responsive
-    ZBWindowHost *s = weakSelf;
-    if (s == nil) return;
-    s.pingOutstanding = NO;
-    s.unresponsiveSinceUs = 0;
-    zb_publish_window_snapshot();  // MS2c #6: responsive restored + current url/title/loading
+    void (^apply)(void) = ^{
+      ZBWindowHost *s = weakSelf;
+      // Identity gate (RoseCat 6551 #2): a late reply from a REPLACED/abandoned view must never clear the
+      // fresh view's in-flight ping or falsely mark the replacement responsive.
+      if (s == nil || s.webView != pinged) return;
+      s.pingOutstanding = NO;
+      s.unresponsiveSinceUs = 0;
+      zb_publish_window_snapshot();  // MS2c #6: responsive restored + current url/title/loading
+    };
+    long hold_ms = zb_auto_test_health_reply_hold_ms();  // e2e-only: defer the reply to prove the gate
+    if (hold_ms > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)hold_ms * NSEC_PER_MSEC), dispatch_get_main_queue(), apply);
+    else apply();
   }];
   zb_publish_window_snapshot();  // MS2c #6: every tick refreshes url/title/loading/crashed/dialog_open
 }
@@ -661,6 +670,14 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   WKWebView *fresh = [ZBWindowHost newConfiguredWebView];
   if (fresh == nil) return nil;
 
+  // Answer any dialog held open on the OLD view BEFORE abandoning it: releasing a WKWebView with an
+  // uncalled JS-panel completion raises an NSException (RoseCat 6551 #1), and after the swap close/dealloc
+  // would skip it (pendingDialogKind would be 0). Default answer, exactly as -close does.
+  // Answer any dialog held open on the OLD view BEFORE abandoning it: releasing a WKWebView with an
+  // uncalled JS-panel completion raises an NSException (RoseCat 6551 #1), and after the swap close/dealloc
+  // would skip it (pendingDialogKind would be 0). Default answer, exactly as -close does.
+  if (self.pendingDialogKind != 0) [self zbRespondDialogAccept:NO text:nil];
+
   // Detach the old (dead/hung) webView so ARC can free it once the window stops referencing it.
   [self.healthTimer invalidate];
   self.healthTimer = nil;
@@ -679,10 +696,10 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   [self zbStartObserving];  // MS2c #6: observe the fresh webView
   self.window.contentView = fresh;
 
-  // Clear crash/dialog state; startHealthWatchdog resets the ping/unresponsive/incident counters.
+  // Clear crash state; the held dialog (if any) was already answered above. startHealthWatchdog resets the
+  // ping/unresponsive/incident counters.
   self.terminatedReason = nil;
   self.showingCrashDoc = NO;
-  self.pendingDialogKind = 0;
   [self startHealthWatchdog];
 
   [self loadURI:committed];
@@ -1229,6 +1246,20 @@ static void zb_auto_test_dispatch_hold(void) {
   if (ms <= 0) return;
   if (ms > 60000) ms = 60000;  // clamp: bound the test hold so (ms * 1000) us cannot overflow
   usleep((useconds_t)(ms * 1000));
+}
+
+// Test-only (ZB_DEBUG_HEALTH_REPLY_HOLD_MS): defer each health-ping reply by this many ms, so a reply from
+// a view that recovery has replaced lands AFTER the swap — exercising healthTick's identity gate. Inert
+// without --e2e-protocol. Read on the main thread, where g_active_app is stable.
+static long zb_auto_test_health_reply_hold_ms(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
+  long ms = zb_parse_nonneg(getenv("ZB_DEBUG_HEALTH_REPLY_HOLD_MS"));
+  if (ms <= 0) return 0;
+  if (ms > 60000) ms = 60000;
+  static int consumed = 0;  // one-shot (main thread): hold ONLY the first ping reply, so a recovery can
+  if (consumed) return 0;   // replace the view before it lands; later pings (incl. the fresh view's) apply normally
+  consumed = 1;
+  return ms;
 }
 
 // Test-only (ZB_DEBUG_ACK_HANG): the per-pair FIFO ack (issued AFTER the keyUp, while INFLIGHT) never
