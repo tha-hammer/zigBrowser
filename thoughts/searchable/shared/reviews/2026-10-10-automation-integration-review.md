@@ -15675,3 +15675,110 @@ SHOULD: the live oracle proves only that the direct `cmd.exe` PID exits, while
 the command spawns `ping.exe` and the module claims every process in the job is
 terminated. Record the descendant PID and verify it is gone after job close,
 or narrow the claim until WS8's descendant/no-breakaway test. Agent Mail 6544.
+
+## Fix-forward review: Job Object, WS3 marshal, S7 envelope, MS2c recovery/snapshot and login pacing
+
+All nine commit diffs are whitespace-clean. No full gate was run because the
+shared slot remained occupied. The owner-supplied Mac/Windows evidence is
+recorded below, and I independently ran the non-GUI Windows helper/import
+suites: **44/44 passed** in 0.643 seconds.
+
+### Windows Job Object (`52a86b3`, `20651a8`)
+
+- **`52a86b3` APPROVED** as the failing-first fix-forward.
+- **`20651a8` APPROVED.** Kernel32 and every prototype are now bound lazily;
+  importing the package on a non-Windows host succeeds, while attempting to
+  launch there raises `ContainmentError` before any child can exist. The red is
+  registered and the existing controlled Windows-shaped import is green. The
+  live oracle now finds the `ping.exe` descendant of `cmd.exe`, proves both
+  direct and descendant processes die with `KILL_ON_JOB_CLOSE`, and proves both
+  survive without the flag. This cumulatively closes the `337b937` blocker and
+  descendant-proof SHOULD, while remaining a primitive rather than final WS8
+  launcher closure.
+
+SHOULD harden the negative-control cleanup: `jobobject_oracle.py:129-132`
+uses `OpenProcess` without declaring its 64-bit HANDLE return/argument types
+and terminates without waiting. This occurs after the evidence is captured, so
+it does not invalidate the result, but typed bindings plus bounded waits would
+prevent a high-valued truncated handle from leaving a short-lived orphan.
+Agent Mail 6552.
+
+### WebView2 WS3 marshal (`c4e713a`, `f762094`, `61dfbe3`)
+
+- **`c4e713a` APPROVED** as the failing-first regression. The test creates a
+  real queued job, holds it before its commit point until the waiter expires,
+  and proves the cookie write never runs. Its parked callback also drives a
+  genuinely in-flight read across loop termination and then delivers the late
+  completion.
+- **`f762094` APPROVED.** `QUEUED -> RUNNING` is one interlocked ownership
+  transition; pre-claim abandonment cannot run. Running jobs are tracked under
+  the jobs lock, loop end drains queued and in-flight sets, and
+  `RUNNING -> COMPLETING` grants exactly one writer of result/error before the
+  DONE event. Callback references keep late completions alive, and the waiter
+  handles the COMPLETING race by waiting for publication. This closes the
+  timeout, in-flight-loop-end and double-completer blockers from the `15fb6ee`
+  review.
+- **`61dfbe3` APPROVED.** The history document now describes the shipped
+  state machine and 400-day WebView2 cookie cap, while honestly leaving the
+  owner-only profile DACL to WS2.0's shared `restrictToOwner` work.
+
+The supplied clean-object Windows evidence was old marshal 3 failures, green
+45/45 and loop-end mutant 2 failures. Agent Mail 6553.
+
+### S7.0 D7b envelope red (`dcc5364`)
+
+**APPROVED as the failing-first fix.** Missing `v`, missing `seq`, both
+missing, and bool/float/string/null sequence values are covered. Each missing
+case ends the call, emits one helper-wide protocol error and forgets the id.
+Normal Bridge/result/producer fixtures now carry the envelope, eliminating
+the previous test bias. `ecbc246` remains BLOCKED until the green requires
+both fields, registers this module and supplies its real-CLI/gate evidence.
+Agent Mail 6554.
+
+### MS2c view-replacement recovery (`5efa5dd`)
+
+**BLOCKED.** Replacing a WKWebView is a viable public-API recovery mechanism,
+the host preserves its stable id/opener/process-group metadata, and the
+existing two-phase queue/consent flow remains in production. The implementation
+has two old-view lifetime violations, however:
+
+1. `recoverByReplacingWebView` clears `pendingDialogKind` without answering or
+   releasing the held alert/confirm/prompt completion. Close/dealloc explicitly
+   documents that WebKit requires those completions to be called. The stale
+   block remains retained while kind is zero; a later dialog can release it
+   uncalled, and close/dealloc will skip it. Answer any pending dialog through
+   `zbRespondDialogAccept:NO` before detaching the old delegate, and add a real
+   two-phase recovery test with an open dialog.
+2. `healthTick` captures the old view for its JavaScript ping, but the callback
+   checks only weak `self`. A late old-view reply after replacement can clear
+   the fresh view's in-flight ping and unresponsive state. Gate it by view
+   identity/generation and add a deterministic stale-health-callback red.
+
+The frozen-primary test proves the basic swap but cannot detect either failure.
+Reporting `ended=false` for an abandoned frozen process is otherwise honest.
+Agent Mail 6551.
+
+### MS2c lock-backed snapshot (`32ecbb6`)
+
+**APPROVED for its snapshot/OOB diff.** The main thread serializes the complete
+window set and publishes one immutable JSON value under a mutex. `page.list`
+and `page.health` duplicate only that value under the same lock and never queue
+main-thread work. Creation/removal, health, navigation/crash and KVO
+title/URL/loading transitions republish; observer registration is balanced
+across create, close, replacement and deallocation. The held-main-queue mutant
+is the right discriminator and failed on both Mac architectures.
+
+SHOULD publish dialog transitions immediately rather than on the next health
+tick, clear the snapshot when `g_active_app` is cleared, and replace the test's
+400 ms scheduling sleep with an observed hold-start barrier. The commit still
+inherits `5efa5dd`'s recovery blockers; approval of this isolated diff does not
+make the linear MS2c chain pushable past the recovery commit. Agent Mail 6556.
+
+### Agent-login paste pacing oracle (`cbbab50`)
+
+**APPROVED.** The corrected tests enforce the real rev-16.20.29 property: the
+sole Enter is in the last read, that read contains at most `CHUNK` code bytes,
+all code bytes arrived exactly once, and no earlier read had Enter. This removes
+the false “Enter must be a read of its own” assertion without weakening the
+64-byte paste defense. Focused owner evidence: paste 5, enter 5, typing 2,
+login 16 and fake 10, all green. Agent Mail 6555.
