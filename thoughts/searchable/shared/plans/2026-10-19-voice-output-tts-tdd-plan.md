@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "The browser's voice: agent replies spoken aloud, with user-customizable voices — TDD implementation plan"
 tags: [plan, tdd, tts, text-to-speech, voice, agent-drawer, pocket-tts, onnxruntime, macos, windows, linux-dev, voice-cloning, miniaudio]
-status: plan for review (rev 2.6)
-rev: 2.6
+status: plan for review (rev 2.7)
+rev: 2.7
 last_updated: 2026-10-20
 last_updated_note: "Rev 2 records the user's decisions of 2026-10-19: bundled engine first (system voices become a later, secondary option), read-aloud on by default, the STT side bundles whisper medium (installer about 0.8 GB larger), and a separate Windows launch plan as the Windows dependency. Slices re-sequenced: core, test backend, audio layer, bundled engine, then the drawer and Voice window, then Macs, cloning, Windows, and system voices last."
 primary_research: thoughts/searchable/shared/research/2026-10-19-voice-output-tts.md
@@ -25,6 +25,13 @@ windows_dependency: thoughts/searchable/shared/plans/2026-10-19-windows-launch-t
 
 ## Revision history
 
+- **Rev 2.7 (2026-10-20):** clears RoseCat's enrollment-wire blocker (6404/6426). One coherent wire:
+  **no second pipe** — `enroll_pcm` (type 10) is the only enrolment sample transport, pinned
+  `str voice_id | u32 seq | sample_bytes` with offset `k = 4 + voice_id.len + 4`, samples always
+  16 kHz mono f32 LE, `(len-k) % 4 == 0`. Enrolment failures get their **own** correlated frame
+  `enroll_error` (**type 14**, `str voice_id | u16 code | str detail`), never overloaded onto type-8
+  `error`. Codec/golden-vector range widened to types **1-14**. VF `ZbChild` updated in both plans
+  (byte-identical) to "PCM pipe only; enrolment reuses it". No user decision changed.
 - **Rev 2.6 (2026-10-20):** clears RoseCat's voice re-review (mail 6375) of the D9.2 wire format.
   (1) **Stream framing** — the reader read-exacts + buffers across partial reads, preserves the next
   frame (coalesced frames are normal), and rejects only EOF/deadline mid-frame or a payload that
@@ -395,7 +402,7 @@ orchestrator's user-approved `real_audio_check` / `real_screen_check` open a phy
 (`agent/host/zb_agent_host/sandbox.py`); the speech engine and the cloning-enrolment helper are
 **native** children the browser spawns, so VF defines its own `ZbChild` platform interface,
 implemented per OS:
-- inherits **exactly** the PCM pipe (and, for enrolment, the sample pipe) and nothing else; **no
+- inherits **exactly** the PCM pipe (enrolment reuses the same pipe via type-10 `enroll_pcm` frames — no second pipe) and nothing else; **no
   network**; read-only model dir; write only its own scratch; **no audio device** (the browser
   plays/records);
 - parent-death kill (Linux `PR_SET_PDEATHSIG`; macOS kqueue `NOTE_EXIT` or a watchdog; Windows a
@@ -667,13 +674,20 @@ rows.
     `(len-8) / (bytes_per_sample * channels)`.
   - `done` (type 7): `u32 utt`.
   - `error` (type 8): `u32 utt` (`0` = session-level), `u16 code`, `str detail`.
-  - **enrolment (D9.1), same codec:** `enroll_begin` (type 9): `str voice_id`; `enroll_pcm` (type 10):
-    `str voice_id`, `u32 seq`, then sample bytes (same `(len-k) % (bytes_per_sample*channels)==0` rule);
-    `enroll_end` (type 11): `str voice_id`; `enroll_abort` (type 12): `str voice_id`; `enroll_ready`
-    (child→browser, type 13): `str voice_id`.
+  - **enrolment (D9.1), same codec + same pipe (no second pipe):**
+    - `enroll_begin` (type 9): `str voice_id`.
+    - `enroll_pcm` (type 10, **the only enrolment sample transport**): `str voice_id`, `u32 seq`, then
+      sample bytes. The sample offset is `k = 4 + voice_id.len + 4` (the `str`'s own `u32` length is
+      included); enrolment samples are **always 16 kHz mono IEEE-f32 LE**, independent of the output
+      `hello` format, so **`len >= k` and `(len-k) % 4 == 0`**; otherwise ⇒ `enroll_error`.
+    - `enroll_end` (type 11): `str voice_id`; `enroll_abort` (type 12): `str voice_id`.
+    - `enroll_ready` (child→browser, type 13): `str voice_id` (speaker state derived).
+    - `enroll_error` (child→browser, **type 14**): `str voice_id`, `u16 code`, `str detail` — enrolment
+      failures are correlated by `voice_id` on their **own** frame, never overloaded onto type-8 `error`
+      (whose first field is a `u32 utt`, not a string).
 - **One shared codec + golden vectors.** A single `src/speech_wire.zig` encodes/decodes **every** frame
-  type above (1-13); a **golden-vector test** (byte arrays for one of each type, incl. enrolment and a
-  2-channel f32 `pcm`, in `tests/fixtures/speech/`) runs on **both** the browser side and `zb-speech`,
+  type above (1-14); a **golden-vector test** (byte arrays for one of each type, incl. all enrolment
+  frames and a 2-channel f32 `pcm`, in `tests/fixtures/speech/`) runs on **both** the browser side and `zb-speech`,
   plus the framing reds (fragmented / coalesced / truncated), the non-whole-sample `pcm` red, the
   oversize-`text` red, and a bad rate/channels `hello` red. Browser and child never hand-roll a parser.
 - **Bounds (each a failing-first red).** A single frame payload has a **maximum** (oversized ⇒
@@ -720,17 +734,18 @@ MS6 Seatbelt profile; on Windows the Windows plan's WS8.7 no-network `zb-speech`
 **A crash** gives `error` for the current utterance and a restart on the next one, with the same
 1/2/4/8 s backoff pattern as the helper (and `ZbChild` reaps the exit status).
 
-**D9.1 Cloning enrolment sub-protocol (rev 2.3; clears review #5).** Enrolment needs the child to
-derive speaker state from live samples, which the D9.2 frame set alone cannot carry. Add bounded
-enrolment frames over the same versioned pipe, plus a second inherited **sample pipe** (`ZbChild`):
-- the frames are **wire types 9-13 in the D9.2 shared codec** (exact layouts + golden vectors there):
-  browser→child `enroll_begin <id>`, `enroll_pcm <id> <seq> <n>` (16 kHz mono f32), `enroll_end <id>`,
-  `enroll_abort <id>`; child→browser `enroll_ready <id>` (speaker state derived) / `error <id> <code>`.
+**D9.1 Cloning enrolment sub-protocol (rev 2.3; wire pinned rev 2.6).** Enrolment needs the child to
+derive speaker state from live samples. These travel over the **same** versioned pipe as speech —
+**there is no second pipe** (rev 2.6, RoseCat 6404): `enroll_pcm` (type 10) is the only enrolment
+sample transport.
+- the frames are **wire types 9-14 in the D9.2 shared codec** (exact layouts + golden vectors there):
+  browser→child `enroll_begin <id>`, `enroll_pcm <id> <seq> <samples>` (16 kHz mono f32), `enroll_end
+  <id>`, `enroll_abort <id>`; child→browser `enroll_ready <id>` (speaker state derived) and
+  `enroll_error <id> <code> <detail>` (type 14, its own correlated-by-id failure frame).
 - **Bounds (defaults, named tunables; edge reds):** total enrolment audio **≤ 120 s** and **≤ 16
-  MiB** and **≤ 1,920,000 samples** (120 s × 16 kHz) — the first frame that would exceed any ⇒
-  `error` and the session is discarded; `enroll_pcm` payload **≤ 64 KiB** per frame; **one enrolment
-  at a time** (a second `enroll_begin` ⇒ `error busy`); a minimum of **≥ 6 s** of speech is required
-  before `enroll_end` succeeds (shorter ⇒ `error too-short`). A partial enrolment on crash/cancel
+  MiB** and **≤ 1,920,000 samples** (120 s × 16 kHz) — the first frame that would exceed any ⇒ `enroll_error` and the session is discarded; `enroll_pcm` payload **≤ 64 KiB** per frame; **one enrolment
+  at a time** (a second `enroll_begin` ⇒ `enroll_error busy`); a minimum of **≥ 6 s** of speech is required
+  before `enroll_end` succeeds (shorter ⇒ `enroll_error too-short`). A partial enrolment on crash/cancel
   writes **nothing** under `voices/<id>/` (the child's scratch is discarded). Reds assert each cap at
   `limit` and `limit+1`.
 - **Storage + Windows ACL (refcounted).** The derived speaker state and samples live under
@@ -1711,7 +1726,7 @@ capture added here with the same interface.
 - **Files touched:** VF `src/voice_settings_window.c` (clone pages in the "Browser voice" section),
   `src/voice_clone.zig` (state machine, storage, consent record; uses VF `AudioSource` capture and
   the D9.1 enrolment sub-protocol), `engine/zb_speech/pocket.zig` (derive the speaker state from the
-  samples, over D9.1's sample pipe), `tests/e2e/voice_clone_test.py`. **Depends on M2** for the
+  samples, over the D9.1 enroll_pcm frames), `tests/e2e/voice_clone_test.py`. **Depends on M2** for the
   AppKit clone UI on macOS (C1-C3's Mac legs land with M2, not before it — review `9663333` #4).
 - **Real-screen check:** `voice-clone-consent`. The orchestrator also asks the user to try one
   real enrolment.
