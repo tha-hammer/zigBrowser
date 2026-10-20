@@ -24,6 +24,10 @@ answers every `prompt` with its ITEMs in order:
 - {"flood": [FRAME, N]}: FRAME (as for "frame") N times, 1000 frames per write (S5c-1);
 - {"forever": FRAME}: FRAME (as for "frame") over and over from a thread, as fast as
   the pipe takes it, until the next `interrupt`, `end_session` or `shutdown` (S5c-1).
+It answers every `open_session` with "on_open" ITEMs, "$SESSION" being the new session;
+without them, with `session_opened` for it, as the real helper does once its CLI is up (S5d,
+RoseCat 6296: the app writes a session's first prompt only after it). With "on_opens":
+[[ITEM, ...], ...], the n-th open gets the n-th list, or the last one.
 With "on_prompts": [[ITEM, ...], ...] in place of "on_prompt", the n-th prompt of the
 run gets the n-th list, or the last one (S5c-1).
 It answers every `end_session` with its "on_end" ITEMs, "$SESSION" being the ended
@@ -109,6 +113,8 @@ class Forever:
 
 streams = []
 prompts = 0
+opens = 0
+OPENED = [{"frame": {"type": "session_opened", "session": "$SESSION"}}]
 
 
 active = {}  # session -> the prompt_id of its prompt still running (S5d)
@@ -139,9 +145,14 @@ for line in sys.stdin:
         break
     if frame.get("type") == "prompt":
         active[frame.get("session")] = frame.get("prompt_id")
-    kind = {"prompt": "on_prompt", "end_session": "on_end", "interrupt": "on_interrupt"}.get(frame.get("type"))
+    kind = {"prompt": "on_prompt", "end_session": "on_end", "interrupt": "on_interrupt",
+            "open_session": "on_open"}.get(frame.get("type"))
     if kind is not None:
-        items = script.get(kind, [])
+        items = script.get(kind, OPENED if kind == "on_open" else [])
+        if kind == "on_open" and "on_opens" in script:
+            items = script["on_opens"][min(opens, len(script["on_opens"]) - 1)]
+        if kind == "on_open":
+            opens += 1
         if kind == "on_prompt" and "on_prompts" in script:
             items = script["on_prompts"][min(prompts, len(script["on_prompts"]) - 1)]
             prompts += 1
