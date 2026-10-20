@@ -302,6 +302,12 @@ pub fn build(b: *std.Build) void {
     const windows_transport_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_transport_test.py" });
     b.step("windows-transport-live", "Live Windows WS2.0 transport: owner-only socket, token and directory on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_transport_live.step);
 
+    // j76 / WS3.2: a refused backend flag reaches the user's stderr on the Windows GUI exe (exactly the
+    // refusal line, exit 1, open and --screenshot), and `--renderer=shm` stays a parse error. Skips without
+    // ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
+    const windows_refusal_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/refusal_stderr_live_test.py" });
+    b.step("windows-refusal-live", "Live Windows: a refused flag's message reaches stderr on the GUI exe (skips without ZB_WIN11_HOST)").dependOn(&windows_refusal_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1950,6 +1956,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_wincontain_job_live.step);
     test_step.dependOn(&windows_screenshot_live.step);
     test_step.dependOn(&windows_transport_live.step);
+    test_step.dependOn(&windows_refusal_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
