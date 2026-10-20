@@ -6,9 +6,12 @@
 #   bash tests/guest/build-in-guest.sh ipc-test-win    # run a specific build step
 set -euo pipefail
 
+# Never let a refused key open a graphical SSH password prompt on the user's DISPLAY :0.
+export SSH_ASKPASS_REQUIRE=never
+
 KEY="${ZB_GUEST_KEY:-/home/maceo/vms/win11-m8/zb_guest_key}"
 HOST="${ZB_GUEST_HOST:-maceo@100.103.8.90}"
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no)
+SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o BatchMode=yes)
 
 # Windows-side SDK paths (discovered on the provisioned guest).
 INC='C:\Users\maceo\AppData\Local\zigBrowser-tools\nuget\Microsoft.Web.WebView2.1.0.3967.48\build\native\include'

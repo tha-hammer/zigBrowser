@@ -14,6 +14,9 @@ from pathlib import Path
 
 from slice2_common import SKIP_EXIT, eprint
 
+# Never let a refused key open a graphical SSH password prompt on the user's DISPLAY :0.
+os.environ.setdefault("SSH_ASKPASS_REQUIRE", "never")
+
 
 DEFAULT_KEY = Path("/home/maceo/vms/win11-m8/zb_guest_key")
 DEFAULT_HOST = "maceo@100.103.8.90"
@@ -61,11 +64,13 @@ def make_tarball(root: Path) -> Path:
 
 
 def ssh_base(key: Path) -> list[str]:
-    return ["ssh", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
+    return ["ssh", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes"]
 
 
 def scp_base(key: Path) -> list[str]:
-    return ["scp", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
+    return ["scp", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes"]
 
 
 def sync_to_guest(root: Path, host: str, key: Path) -> bool:
