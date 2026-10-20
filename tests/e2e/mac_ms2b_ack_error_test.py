@@ -78,7 +78,8 @@ def main() -> int:
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         env["ZB_DEBUG_ACK_FAIL"] = "1"  # the native-click FIFO ack eval throws
         proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/", "--automation-api"],
+            # --e2e-protocol gates the ZB_DEBUG_ACK_FAIL hook on; without it the env is inert.
+            [str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
@@ -100,14 +101,15 @@ def main() -> int:
 
             rpc.call("page.url", {"timeout_ms": 10000})  # warm up: wait for readiness
 
-            clicked_ok = False
-            try:
-                res = rpc.call("dom.click", {"selector": "css=#btn", "options": {"input": "native", "timeout_ms": 10000}})
-                clicked_ok = (res == {"ok": True})
-            except AssertionError:
-                pass  # a failure is the expected outcome when the ack errors
-            if clicked_ok:
-                failures.append("dom.click (native) returned {'ok': True} despite the ack eval erroring")
+            # The ack error must surface as an EXACT evaluation failure (-32603 / "Evaluation failed"),
+            # not OK and not an unrelated error that a broad except would false-green.
+            resp = rpc.raw("dom.click", {"selector": "css=#btn", "options": {"input": "native", "timeout_ms": 10000}})
+            if "error" not in resp:
+                failures.append(f"dom.click (native) did not error despite the ack eval failing: {resp.get('result')!r}")
+            else:
+                err = resp["error"]
+                if err.get("code") != -32603 or err.get("message") != "Evaluation failed":
+                    failures.append(f"dom.click (native) ack error was not Evaluation failed(-32603): {err}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

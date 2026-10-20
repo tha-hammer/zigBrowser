@@ -901,7 +901,15 @@ void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_w
 // main thread for that long, between zb_job_claim_dispatch and the WebKit submission, so a red can
 // expire the waiter exactly in that window and prove the ABI still cannot return until the submission
 // linearizes (RoseCat 6298 race red). No-op in normal runs (one getenv while unset).
+// All ZB_DEBUG_* test hooks below are honored ONLY under --e2e-protocol (the app's e2e/dev flag), so an
+// ambient environment variable alone cannot change production behavior (RoseCat: hooks must be inert
+// without the e2e flag). Read on the main thread, where g_active_app is stable.
+static int zb_auto_test_hooks_enabled(void) {
+  return g_active_app != nil && g_active_app.e2eProtocol;
+}
+
 static void zb_auto_test_dispatch_hold(void) {
+  if (!zb_auto_test_hooks_enabled()) return;
   const char *h = getenv("ZB_DEBUG_DISPATCH_HOLD_MS");
   if (h == NULL) return;
   int ms = atoi(h);
@@ -912,6 +920,7 @@ static void zb_auto_test_dispatch_hold(void) {
 // refused (as if loadRequest returned nil), so a red can exercise the refused-start branch (RoseCat
 // 38d121a #3: a refused start must leave the old document settled and not suppress later failures).
 static int zb_auto_test_refuse_next_nav(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
   static atomic_int consumed = 0;
   if (atomic_load(&consumed)) return 0;
   const char *v = getenv("ZB_DEBUG_REFUSE_NEXT_NAV");
@@ -922,6 +931,7 @@ static int zb_auto_test_refuse_next_nav(void) {
 // Test-only (ZB_DEBUG_ACK_FAIL): the native-click FIFO ack eval throws, so its completion returns an
 // error, letting a red prove an ack error maps to a failure and not OK (RoseCat 6253.3).
 static int zb_auto_test_ack_fail(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
   const char *v = getenv("ZB_DEBUG_ACK_FAIL");
   return v != NULL && v[0] != '0' && v[0] != '\0';
 }

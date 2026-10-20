@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MS2a RED (unregistered->gate) — a page-initiated nav failure is NOT suppressed after a routed nav.
+"""MS2a RED (registered) — a page-initiated nav failure is NOT suppressed after a routed nav.
 
 RoseCat 38d121a #4: failure suppression must be scoped to the ROUTED navigation's identity, not to the
 window. So in a window that has already run a routed navigation, an UNtagged (page-initiated / user)

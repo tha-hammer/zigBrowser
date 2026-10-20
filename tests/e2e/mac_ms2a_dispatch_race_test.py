@@ -88,7 +88,8 @@ def main() -> int:
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # pause between the dispatch claim and submission
         proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/", "--automation-api"],
+            # --e2e-protocol gates the ZB_DEBUG_* test hooks on; without it the hold env is inert.
+            [str(browser), f"{fixture.base_url}/", "--automation-api", "--e2e-protocol"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )

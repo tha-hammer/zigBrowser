@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MS2a RED (unregistered->gate) — a refused routed navigation leaves the old document settled.
+"""MS2a RED (registered) — a refused routed navigation leaves the old document settled.
 
 RoseCat 38d121a #3: when a routed navigation's start yields nil (refused), the bridge must return
 navigation_failed WITHOUT clearing the window's settled state, so a later url/title/eval does not wait
@@ -78,7 +78,8 @@ def main() -> int:
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
         env["ZB_DEBUG_REFUSE_NEXT_NAV"] = "1"  # the next routed navigation's start is refused
         proc = subprocess.Popen(
-            [str(browser), f"{fixture.base_url}/a", "--automation-api"],
+            # --e2e-protocol gates the ZB_DEBUG_REFUSE_NEXT_NAV hook on; without it the env is inert.
+            [str(browser), f"{fixture.base_url}/a", "--automation-api", "--e2e-protocol"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
@@ -100,15 +101,15 @@ def main() -> int:
 
             start_url = rpc.call("page.url", {"timeout_ms": 10000})["url"]  # waits for readiness
 
-            # The refused navigation must report navigation_failed, not succeed.
-            refused_ok = False
-            try:
-                res = rpc.call("page.navigate", {"url": f"{fixture.base_url}/b", "timeout_ms": 5000})
-                refused_ok = (res == {"ok": True})
-            except AssertionError:
-                pass  # navigation_failed is the expected outcome
-            if refused_ok:
-                failures.append("a refused page.navigate returned {'ok': True}")
+            # The refused navigation must report EXACTLY navigation_failed (-32008), not succeed and not
+            # some unrelated error (auth/schema/timeout), which a broad except would false-green.
+            resp = rpc.raw("page.navigate", {"url": f"{fixture.base_url}/b", "timeout_ms": 5000})
+            if "error" not in resp:
+                failures.append(f"a refused page.navigate did not error: {resp.get('result')!r}")
+            else:
+                err = resp["error"]
+                if err.get("code") != -32008 or err.get("message") != "navigation_failed":
+                    failures.append(f"refused page.navigate error was not navigation_failed(-32008): {err}")
 
             # The old document must still be SETTLED: these must answer promptly (short timeout), not hang.
             t0 = time.monotonic()

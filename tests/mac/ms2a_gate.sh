@@ -40,6 +40,7 @@ python3 tests/e2e/mac_ms2a_dispatch_race_test.py --browser zig-out/bin/zigBrowse
 python3 tests/e2e/mac_ms2a_teardown_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_refused_start_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_user_nav_failure_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2a_hook_inert_test.py --browser zig-out/bin/zigBrowser
 REMOTE
   printf 'PASS\tms2a-leg\t%s\t%s\n' "$host" "$label"
 }
