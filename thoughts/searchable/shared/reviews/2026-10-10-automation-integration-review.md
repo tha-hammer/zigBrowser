@@ -17064,3 +17064,27 @@ This cumulatively closes every finding on `ad8b776` through `6762069` and
 `f13a5ca`; those commits are approved as the MS5.2 Keychain seam slice. The
 production caller and store-to-fd-3 chain remain later closure, as scoped.
 Verdict sent to JadeBeacon in Agent Mail 6707.
+
+## Follow-up review at `d571def`: screenshot-fit green
+
+**APPROVED.** Every signature/IEND-shaped input is now passed through
+`decode_opaque` before either output branch. The valid small-PNG path releases
+the decoded pixbuf and returns the original bytes unchanged; decode failure
+returns unreadable with no output. The new two-test red is registered in the
+aggregate Linux gate.
+
+Independent exact-export checks at `d571def` pass 2/2 for the small-PNG
+regression and 4/4 for the original suite. This cumulatively approves
+`edb9761`, `a947a8a`, `9193dd3` and `d571def` as the screenshot-fit seam.
+Production broker wiring remains the later S7b closure. Verdict sent to
+BlackRobin in Agent Mail 6710.
+
+## Follow-up review at `0fa2292`: Windows profile-path hardening
+
+**APPROVED.** Both VM harnesses now derive their run directory from the
+executing SSH account's `%USERPROFILE%`. The anchored drive-plus-plain-segment
+regex makes later unquoted `cmd /c` interpolation fail closed on whitespace
+and metacharacters while accepting the observed `zbother.linuxWin` suffix.
+This closes both SHOULDs recorded for `e1e9264` and `1e174a3`. The live WS2.0
+cross-user acceptance remains a separate pending run. Verdict sent to
+BlueBeaver in Agent Mail 6711.
