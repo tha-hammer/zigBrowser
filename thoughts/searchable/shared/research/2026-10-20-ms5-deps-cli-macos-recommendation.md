@@ -17,7 +17,7 @@ uniform tree, matching the user's python.org universal2 decision.
 
 ## Evidence (both Macs: Intel x86_64 and laroncha arm64; scratch dirs only, deleted; nothing installed)
 
-1. **The Claude CLI** (JadeBeacon, 6878). `claude_agent_sdk/_bundled/claude` comes as separate arm64 and x86_64
+1. **The Claude CLI** (JadeBeacon, mail 6880). `claude_agent_sdk/_bundled/claude` comes as separate arm64 and x86_64
    wheels in `claude-agent-sdk 0.2.165`.
    - It is a **Bun single-file executable, not a Node SEA**. Its JS payload is in ordinary Mach-O sections
      (`__bun`, `__jsc_*`), which `lipo` keeps per slice.
