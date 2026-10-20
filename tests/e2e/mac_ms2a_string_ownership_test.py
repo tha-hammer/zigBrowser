@@ -9,8 +9,11 @@ drains (so nothing leaks and nothing is double-freed):
     the abandon path (never returned).
 
 The balance is read from the e2e-gated `zb-str-live=N` stderr line emitted by zb_auto_dup_tracked/
-zb_auto_free_tracked (atomic, off-main safe). An exact oracle (RoseCat): final count must equal the baseline
-(0); a leak leaves it >0, a double-free underflows it <0.
+zb_auto_free_tracked (atomic, off-main safe). An exact oracle, asserted after EACH path drains, not only in
+the final aggregate (RoseCat 6798 #1 — a +1 leak in one path and a -1 underflow in another cancel to the
+baseline): the balance must equal the baseline (0) after success, after JS-error, and after abandoned-late.
+A leak leaves it >0, a double/unmatched free underflows it <0. Mutants (each reds its own path): drop the
+free on the success result, on the JS-error string, or on the abandoned-late result.
 
 Runs ON a Mac (console user, no xvfb), own process group, killpg teardown.
 """
@@ -119,27 +122,32 @@ def main() -> int:
             elif baseline != 0:
                 failures.append(f"string balance not 0 at baseline (a returned string outlived its call?): {baseline}")
 
-            # SUCCESS: a string result, freed by the port.
+            def assert_drained(label):
+                # RoseCat 6798 #1: the balance must return EXACTLY to baseline after THIS path drains — not only
+                # in the final aggregate, where a +1 leak in one path and a -1 underflow in another cancel out.
+                time.sleep(0.4)  # let the port's zb_automation_free run after the response is read
+                bal = last_str_live(err)
+                if bal is None or bal != baseline:
+                    failures.append(f"{label}: string balance did not return to baseline={baseline}: {bal} "
+                                    f"(>baseline=leak, <baseline=double/unmatched free)")
+
+            # SUCCESS: a string result, freed by the port. The balance must be back to baseline right after.
             r = rpc.raw("page.evaluate", {"expression": "'OK-STRING-' + (1+1)"})
             if "error" in r:
                 failures.append(f"success eval errored: {r['error']}")
+            assert_drained("success")
 
-            # JS-ERROR: an error string, freed by the port.
+            # JS-ERROR: an error string, freed by the port. The balance must be back to baseline right after.
             e = rpc.raw("page.evaluate", {"expression": "(function(){ throw new Error('boom'); })()"})
             if "error" not in e:
                 failures.append(f"JS-error eval did not error: {e.get('result')!r}")
+            assert_drained("js-error")
 
-            # ABANDONED-LATE: the late result is freed on the abandon path (not returned).
+            # ABANDONED-LATE: the late result is freed on the abandon path (not returned). The balance must be
+            # back to baseline AFTER the 2 s Promise resolves (so the late completion's free has run).
             rpc.raw("page.evaluate", {"expression": LATE_EVAL, "options": {"timeout_ms": 300}})
-            time.sleep(2.7)  # past the 2 s Promise so the late completion's free runs
-
-            # A final op + drain, then the balance must be EXACTLY back to baseline (0).
-            rpc.call("page.url", {"timeout_ms": 10000})
-            time.sleep(0.3)
-            final = last_str_live(err)
-            if final is None or final != baseline:
-                failures.append(f"string balance did not return EXACTLY to baseline: baseline={baseline} final={final} "
-                                f"(>baseline=leak, <baseline=double-free)")
+            time.sleep(2.5)  # past the 2 s Promise so the late completion's free runs
+            assert_drained("abandoned-late")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

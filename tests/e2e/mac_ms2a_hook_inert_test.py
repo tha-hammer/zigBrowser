@@ -3,15 +3,17 @@
 
 RoseCat: a test hook read from the ambient environment must not change production behavior. Every
 ZB_DEBUG_* hook is gated on the app's e2e flag (zb_auto_test_hooks_enabled -> g_active_app.e2eProtocol).
-This launches WITHOUT --e2e-protocol but with ALL THREE hook envs set, and proves each production call
+This launches WITHOUT --e2e-protocol but with ALL FOUR hook envs set, and proves each production call
 site ignores them:
   1. ZB_DEBUG_DISPATCH_HOLD_MS → a routed eval returns promptly (not held).
   2. ZB_DEBUG_REFUSE_NEXT_NAV  → a routed navigation SUCCEEDS (not refused with navigation_failed).
   3. ZB_DEBUG_ACK_FAIL         → a native click SUCCEEDS (not returning Evaluation failed).
+  4. ZB_DEBUG_QUIT_AFTER_MS    → the app does NOT quit early; it is still responsive well past the delay
+                                 (RoseCat 41c683a #4 — the immediate-quit hook must honor the e2e gate too).
 
 Each is a distinct call site, so removing the gate from any one is caught here. (The dispatch-race,
-refused-start and ack-error tests prove the SAME hooks DO fire WITH --e2e-protocol, so together they
-pin the gate both ways.)
+refused-start, ack-error and immediate-quit tests prove the SAME hooks DO fire WITH --e2e-protocol, so
+together they pin the gate both ways.)
 """
 import argparse
 import http.server
@@ -28,6 +30,7 @@ from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # 
 
 SKIP_EXIT = 77
 HOLD_MS = 1500
+QUIT_INERT_MS = 1500  # ZB_DEBUG_QUIT_AFTER_MS: without --e2e-protocol the app must NOT quit after this
 BTN = b"<button id='btn' style='width:240px;height:90px'>b</button>"
 PAGES = {
     b"/a": b"<!doctype html><html><head><meta charset='utf-8'><title>A</title></head><body><h1 id='h'>A</h1>" + BTN + b"</body></html>",
@@ -85,15 +88,17 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
-        env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # all three hook envs set in the ambient env...
+        env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # all four hook envs set in the ambient env...
         env["ZB_DEBUG_REFUSE_NEXT_NAV"] = "1"
         env["ZB_DEBUG_ACK_FAIL"] = "1"
+        env["ZB_DEBUG_QUIT_AFTER_MS"] = str(QUIT_INERT_MS)
         proc = subprocess.Popen(
             # ...but NO --e2e-protocol, so every hook must stay inert.
             [str(browser), f"{fixture.base_url}/a", "--automation-api"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
+        t_launch = time.monotonic()
         proc_holder.append(proc)
         out: list[str] = []
         err: list[str] = []
@@ -131,6 +136,23 @@ def main() -> int:
             resp = rpc.raw("dom.click", {"selector": "css=#btn", "options": {"input": "native", "timeout_ms": 10000}})
             if resp.get("result") != {"ok": True}:
                 failures.append(f"dom.click (native) did not succeed with hooks inert (ack-fail hook fired?): {resp.get('error') or resp}")
+
+            # 4. quit-after inert: wait past ZB_DEBUG_QUIT_AFTER_MS (from launch), then the app must still be
+            #    alive and responsive. If the quit hook fired without --e2e-protocol, the process would have
+            #    exited and this probe would error / drop (RoseCat 41c683a #4).
+            remain = (QUIT_INERT_MS / 1000.0 + 1.5) - (time.monotonic() - t_launch)
+            if remain > 0:
+                time.sleep(remain)
+            if proc.poll() is not None:
+                failures.append(f"the app EXITED (rc={proc.returncode}) ~{QUIT_INERT_MS} ms in — the quit hook "
+                                "fired without --e2e-protocol")
+            else:
+                try:
+                    url = rpc.call("page.url", {"timeout_ms": 10000}).get("url", "")
+                    if not url.startswith("http://127.0.0.1"):
+                        failures.append(f"page.url after the quit delay looks wrong: {url!r}")
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(f"app unresponsive after the quit delay (quit hook fired without --e2e-protocol?): {exc}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

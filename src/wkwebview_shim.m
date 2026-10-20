@@ -1269,9 +1269,14 @@ static atomic_int zb_auto_strings_live = 0;
 // finishes its queued job with NO_LOOP and unrefs, so a block the stopped loop can no longer run is drained
 // (zb_auto_on_loop_ended) and its ref released — live jobs reach 0 instead of leaking.
 static atomic_int zb_auto_loop_ended = 0;
+// Count of readiness-poll jobs the app-ended drain cancelled via the no-loop (no-work) path (RoseCat 41c683a #3).
+static atomic_int zb_auto_loop_cancels = 0;
 
 int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs); }
 void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
+// Part B direct oracle (RoseCat 6798 #2): the live count of accounted caller-returned C strings. A plain
+// accessor (not gated) so a unit/ctypes oracle can assert the balance is 0 at rest and after each free.
+int zb_automation_debug_strings_live(void) { return atomic_load(&zb_auto_strings_live); }
 
 // strdup + account the string as a live caller-returned allocation (part B). Emits the balance under
 // --e2e-protocol (atomic, off-main safe) so a socket e2e can assert it returns to 0.
@@ -1650,7 +1655,14 @@ static int zb_auto_run_when_ready(uint32_t win, unsigned int timeout_ms, char **
   poll = ^{
     if (atomic_load(&zb_auto_loop_ended)) {  // app loop ending: finish this queued job NOW (no late dispatch)
       poll = nil;
-      if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_LOOP, NULL, NULL);
+      if (zb_job_claim_dispatch(job)) {
+        zb_job_complete(job, ZB_AUTO_ERR_NO_LOOP, NULL, NULL);  // cancel path: NO work() runs here
+        // Observable (RoseCat 41c683a #3): the drain ran this queued block and cancelled it via the no-loop
+        // path, so no WebKit work executed after quit. e2e-gated stderr (atomic, off-main safe) so the
+        // immediate-quit test can assert the drain cancelled a live job (not that it timed out or ran work).
+        int n = atomic_fetch_add(&zb_auto_loop_cancels, 1) + 1;
+        if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-loop-cancel=%d\n", n); fflush(stderr); }
+      }
       zb_job_unref(job);
       return;
     }
@@ -2782,7 +2794,10 @@ int zb_app_set_profile_dir(const char *dir, char **out_err) {
   if (dir == NULL || dir[0] == '\0') return ZB_AUTO_OK;
   NSString *path = [NSString stringWithUTF8String:dir];
   if (path == nil) {  // not valid UTF-8: FAIL CLOSED (never silently fall back to the shared store — RoseCat 6608 #1)
-    if (out_err != NULL) *out_err = strdup("--profile-dir is not valid UTF-8");
+    // This error is a caller-returned C string freed via zb_automation_free (app.zig applyProfileDir), so it
+    // MUST be accounted like every other returned string — a plain strdup would decrement the balance on free
+    // with no matching increment, driving the ownership counter negative (RoseCat 6798 #2).
+    if (out_err != NULL) *out_err = zb_auto_dup_tracked("--profile-dir is not valid UTF-8");
     return ZB_AUTO_ERR_INTERNAL;
   }
   // RoseCat 6625: bind a RELATIVE --profile-dir to the STARTUP CWD before the digest. The CLI accepts a
@@ -2837,12 +2852,15 @@ static void zb_auto_on_loop_ended(void) {
 
 // Test-only (ZB_DEBUG_QUIT_AFTER_MS, inert without --e2e-protocol): after N ms end the run loop with work in
 // flight, so the immediate-quit test can prove the waiter wakes (NO_LOOP), no post-quit dispatch, live jobs 0.
+// The hook ONLY stops and wakes the loop — it does NOT drain. Draining is the PRODUCTION path's job
+// (zb_auto_on_loop_ended after [application run] returns), so a test that would pass only because the hook
+// drained is impossible: delete the production drain and the waiter never wakes -> the test reds (RoseCat
+// 41c683a #1).
 static void *zb_auto_test_quit_thread(void *arg) {
   unsigned int ms = (unsigned int)(uintptr_t)arg;
   usleep((useconds_t)ms * 1000);
   dispatch_async(dispatch_get_main_queue(), ^{
-    zb_auto_on_loop_ended();  // drain queued blocks + wake waiters (NO_LOOP), before stopping the loop
-    [NSApp stop:nil];
+    [NSApp stop:nil];  // end [application run]; the post-run production drain cancels + wakes the queued job
     NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
                                   modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
     [NSApp postEvent:wake atStart:YES];  // force [NSApp run] to notice the stop promptly

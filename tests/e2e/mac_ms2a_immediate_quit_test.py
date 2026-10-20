@@ -28,18 +28,32 @@ from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
 
 SKIP_EXIT = 77
-QUIT_AFTER_MS = 3000
+QUIT_AFTER_MS = 4500
 OP_TIMEOUT_MS = 15000
+SETTLE_SEC = 1.2  # let startup finish (the e2e mirror is set in -initWithURI) before the job is created
+ACTION_TIMEOUT = -32009  # downstreamCode(.action_timeout): the waiter's deadline expired (NOT woken)
+CANCELLED = -32012       # downstreamCode(.cancelled): NO_LOOP -> error.Cancelled (the app-ended drain woke it)
 
 
 def eprint(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
-def last_live_jobs(err_lines):
-    val = None
+def live_jobs_seq(err_lines):
+    """Every zb-live-jobs value in order, so a test can see the 0 -> positive -> 0 lifecycle, not just the end."""
+    out = []
     for ln in err_lines:
         m = re.search(r"zb-live-jobs=(-?\d+)", ln)
+        if m:
+            out.append(int(m.group(1)))
+    return out
+
+
+def loop_cancel_count(err_lines):
+    """The last zb-loop-cancel value (the app-ended drain cancelled a live readiness job via the no-work path)."""
+    val = 0
+    for ln in err_lines:
+        m = re.search(r"zb-loop-cancel=(\d+)", ln)
         if m:
             val = int(m.group(1))
     return val
@@ -105,30 +119,66 @@ def main() -> int:
                 eprint(f"error={exc}; stderr={err[-10:]}")
                 return 1
 
+            # Let startup settle so the e2e stderr mirror is set before the job is created (else the creation's
+            # zb-live-jobs=1 is not emitted and the positive-transition oracle cannot see it).
+            time.sleep(SETTLE_SEC)
+
+            # Baseline the stderr-observable state BEFORE issuing (RoseCat 41c683a #2): at rest the live count
+            # is 0, so the positive transition and the cancel below are THIS request's, not a startup artifact.
+            pre_seq = live_jobs_seq(err)
+            if pre_seq and pre_seq[-1] != 0:
+                failures.append(f"live jobs not at rest before issuing: {pre_seq}")
+            base_cancels = loop_cancel_count(err)
+
             # A routed op on the still-loading (hanging) page -> a live PREFLIGHT job with a long deadline.
+            # rpc.raw (not .call) so we can inspect the terminal error code rather than have it raised away.
             t0 = time.monotonic()
-            returned_value = None
+            resp = None
+            dropped = False
             try:
-                returned_value = rpc.call("page.url", {"timeout_ms": OP_TIMEOUT_MS})
+                resp = rpc.raw("page.url", {"timeout_ms": OP_TIMEOUT_MS})
             except Exception:
-                pass  # expected at quit: a cancelled/no-loop error, or the connection closing as the loop ends
+                dropped = True  # the process may close the socket as it exits right after waking the waiter
             elapsed = time.monotonic() - t0
 
-            if returned_value is not None:
-                failures.append(f"page.url unexpectedly SUCCEEDED despite the quit: {returned_value!r}")
             # Prompt wake: ~the quit time, NOT the 15 s deadline. (Quit is armed from launch, so allow for startup.)
             if elapsed > (QUIT_AFTER_MS / 1000.0) + 6.0:
                 failures.append(f"op did not return promptly on quit: {elapsed:.1f}s (waiter left to time out, not woken)")
             if elapsed < 0.3:
                 failures.append(f"op returned too fast ({elapsed:.1f}s) — was it actually a live polling job?")
 
-            # Give the drain's stderr a moment, then require live jobs reached 0 (the queued block's ref released).
+            # DEFECT 3 — the terminal, through the dispatch result: the op must NOT have produced a successful
+            # read (work ran) and must NOT be action_timeout (the waiter timed out instead of being woken).
+            if resp is not None and "result" in resp:
+                failures.append(f"page.url SUCCEEDED despite the quit (work ran after quit): {resp['result']!r}")
+            if resp is not None and isinstance(resp.get("error"), dict):
+                code = resp["error"].get("code")
+                if code == ACTION_TIMEOUT:
+                    failures.append(f"op returned action_timeout ({code}): the waiter TIMED OUT, the drain did not wake it")
+                elif code != CANCELLED:
+                    failures.append(f"op error code is {code}, expected cancelled ({CANCELLED}) from the app-ended drain")
+
+            # Give the drain's stderr a moment to flush.
             time.sleep(0.6)
-            final = last_live_jobs(err)
-            if final is None:
-                failures.append("no zb-live-jobs line seen (is --e2e-protocol active? did the op run?)")
-            elif final != 0:
-                failures.append(f"live jobs did not reach 0 after the loop ended: {final} (a queued block's ref leaked)")
+
+            # DEFECT 2 — this request created a LIVE PREFLIGHT job (a positive transition from the at-rest
+            # baseline), then it returned to EXACTLY zero. The test issues exactly one blocking op, so any
+            # positive value in the sequence is this request's; a test that only checked the final 0 would
+            # pass even if the job was never created.
+            seq = live_jobs_seq(err)
+            if not any(v >= 1 for v in seq):
+                failures.append(f"no positive zb-live-jobs transition: {seq} "
+                                "(this request never created a live PREFLIGHT job — assertion would be vacuous)")
+            if not seq or seq[-1] != 0:
+                failures.append(f"live jobs did not return to EXACTLY 0 after the loop ended: {seq} "
+                                "(a queued block's ref leaked)")
+
+            # DEFECT 3 — the observable that the drain CANCELLED the live job via the no-work path: the
+            # app-ended drain ran the queued readiness block, which took the loop-ended branch (NO work()), not
+            # a timeout and not a WebKit submission. Deleting the production post-run drain never reaches this.
+            if loop_cancel_count(err) <= base_cancels:
+                failures.append("no zb-loop-cancel after quit: the app-ended drain did not cancel the live "
+                                "readiness job via the no-work path (is the PRODUCTION post-run drain present?)")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

@@ -43,6 +43,7 @@ python3 tests/e2e/mac_ms2a_private_world_test.py --browser zig-out/bin/zigBrowse
 python3 tests/e2e/mac_ms2a_abi_census_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_late_completion_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_string_ownership_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2a_str_accounting_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_timeout_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_nav_failure_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2a_dispatch_race_test.py --browser zig-out/bin/zigBrowser

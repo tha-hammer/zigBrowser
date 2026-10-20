@@ -362,6 +362,9 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc,
 
 /* Diagnostics: bridge jobs currently allocated (0 once all work is released). */
 int zb_automation_debug_live_jobs(void);
+/* Diagnostics (macOS part B): accounted caller-returned C strings currently live
+ * (0 at rest; a leak leaves it > 0, a double/unmatched free drives it < 0). */
+int zb_automation_debug_strings_live(void);
 /* Test hook: hold every started cookie operation for `ms` before it reaches
  * WebKit, so a test can make a job time out while in flight (0 = off). */
 void zb_automation_debug_cookie_delay(unsigned int ms);
