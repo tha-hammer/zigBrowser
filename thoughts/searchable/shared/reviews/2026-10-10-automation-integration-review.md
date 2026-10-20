@@ -18933,3 +18933,52 @@ Require every entry to be a declared regular file or an implied directory;
 refuse all symlinks and special files via `lstat`, with at least outside-link
 and FIFO mutants. No other finding from Agent Mail 6865 remains open. Verdict
 sent to BlueBeaver in Agent Mail 6871.
+
+## MS2a final coverage fix-forward (`60c4648`)
+
+Reviewed at `60c4648` on 2026-10-20. **Verdict: BLOCKED-for-tests on one
+remaining part-C oracle. `26fdfff` is not closed, so the approved
+push-through remains `703b3de`.**
+
+Five of the six findings are closed:
+
+- the quit hook now only stops and wakes AppKit; the real post-`run`
+  `zb_auto_on_loop_ended` path performs the drain, and the owner's deletion
+  mutant leaves one live job and makes the test red;
+- the immediate-quit case observes a positive live-job transition and exact
+  return to zero. This test issues no earlier bridge command, so its positive
+  transition belongs to the named `page.url` request;
+- the fourth ambient hook is now included in the no-`--e2e-protocol`
+  inertness test and the missing-gate mutant exits the app and fails;
+- success, JavaScript-error and abandoned-late string paths each have their
+  own exact return-to-baseline assertion, so cross-case leak/underflow
+  cancellation cannot hide a defect;
+- invalid UTF-8 from `zb_app_set_profile_dir` now uses the tracked allocator.
+  The registered compiled-C oracle calls the real exported setter and
+  `zb_automation_free` and requires `0 -> 1 -> 0`; restoring plain `strdup`
+  produces `0 -> 0 -> -1` and fails.
+
+The remaining blocker is the stated **no dispatch after quit** property.
+`wkwebview_shim.m:1656-1664` increments `zb-loop-cancel` inside the no-loop
+branch, but this diagnostic proves only that the branch was entered. The test
+at `mac_ms2a_immediate_quit_test.py:150-181` accepts a dropped socket response
+and has no DOM, network or independent dispatch counter. A mutant which calls
+`work(host, &result)` before completing `NO_LOOP`, discards that result, then
+emits the same cancel count still satisfies the live-job, cancel-count and
+terminal assertions when the exiting app drops the connection. That is the
+specific mutant the original finding required the observable to kill; the
+reported mutants cover the production-drain call, hook gate and ownership
+paths, not this dispatch mutant.
+
+Add an e2e-gated dispatch/work counter incremented only at the actual
+`work(host, &result)` call (or an equivalent DOM/network observation tied to
+this request), baseline it immediately before the command, and require it to
+remain unchanged after the drain. Prove the mutant above red on a Mac. Keep
+the current `zb-loop-cancel`, terminal-code and live-job checks because they
+prove the complementary cancel/wake/ref-release facts.
+
+JadeBeacon reports the exact commit **16/16 on x86_64 and 16/16 on arm64**;
+that evidence is accepted for the five closed findings and the current
+implementation. Local display-free `py_compile` of all four changed Python
+files, `bash -n tests/mac/ms2a_gate.sh`, and `git diff --check` pass. No Mac,
+browser, socket or display was used locally.
