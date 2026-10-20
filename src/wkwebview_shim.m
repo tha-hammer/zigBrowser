@@ -898,6 +898,7 @@ typedef struct ZBAutoJob {
   int state;     // guarded by mu
   int refcount;  // guarded by mu
   int code;      // valid once state == DONE
+  int progress;  // guarded by mu: code points (keyDown/keyUp pairs) fully dispatched so far
   char *result;  // owned; moved out by the waiter on DONE
   char *err;     // owned; freed with the job
 } ZBAutoJob;
@@ -920,6 +921,17 @@ static int zb_auto_test_hooks_enabled(void) {
   return g_active_app != nil && g_active_app.e2eProtocol;
 }
 
+// Bounded non-negative integer parse (strtol with a full-string + range check, like
+// snapshot_settle_ms_from_env); -1 on any malformed/negative input. Used by the test hooks instead of
+// atoi, which silently accepts trailing garbage and cannot report failure (RoseCat 6433 parser nit).
+static long zb_parse_nonneg(const char *s) {
+  if (s == NULL || s[0] == '\0') return -1;
+  char *end = NULL;
+  long v = strtol(s, &end, 10);
+  if (end == s || *end != '\0' || v < 0) return -1;
+  return v;
+}
+
 static void zb_auto_test_dispatch_hold(void) {
   if (!zb_auto_test_hooks_enabled()) return;
   const char *h = getenv("ZB_DEBUG_DISPATCH_HOLD_MS");
@@ -927,6 +939,21 @@ static void zb_auto_test_dispatch_hold(void) {
   long ms = strtol(h, NULL, 10);
   if (ms <= 0) return;
   if (ms > 60000) ms = 60000;  // clamp: bound the test hold so (ms * 1000) us cannot overflow
+  usleep((useconds_t)(ms * 1000));
+}
+
+// Test-only (ZB_DEBUG_PAIR_HOLD_MS): during native typing, pause on the main thread AFTER the per-pair
+// ownership transition (reclaim: INFLIGHT -> DISPATCHING) and BEFORE the next pair's keyDown is sent, so
+// a red can let the command deadline fall exactly inside that window. Because the transition is atomic
+// and the job is DISPATCHING during the hold, zb_job_wait blocks past the deadline and the command still
+// completes — proving the ABI cannot return (or deliver a late event) in the check->send gap. A
+// check-then-act mutant leaves the job INFLIGHT during the hold, so the waiter abandons and a late event
+// lands after give-up: the red then fails (RoseCat 6397.1 held-interleaving). Gated on --e2e-protocol.
+static void zb_auto_test_pair_hold(void) {
+  if (!zb_auto_test_hooks_enabled()) return;
+  long ms = zb_parse_nonneg(getenv("ZB_DEBUG_PAIR_HOLD_MS"));
+  if (ms <= 0) return;
+  if (ms > 60000) ms = 60000;  // clamp, like the dispatch-hold hook
   usleep((useconds_t)(ms * 1000));
 }
 
@@ -955,10 +982,10 @@ static int zb_auto_test_ack_fail(void) {
 // (sent_chars = code points dispatched). 0/unset = no delay. Gated on --e2e-protocol.
 static unsigned int zb_auto_test_type_delay_ms(void) {
   if (!zb_auto_test_hooks_enabled()) return 0;
-  const char *v = getenv("ZB_DEBUG_TYPE_DELAY_MS");
-  if (v == NULL) return 0;
-  int ms = atoi(v);
-  return ms > 0 ? (unsigned int)ms : 0;
+  long ms = zb_parse_nonneg(getenv("ZB_DEBUG_TYPE_DELAY_MS"));
+  if (ms <= 0) return 0;
+  if (ms > 60000) ms = 60000;  // clamp, like the dispatch-hold hook
+  return (unsigned int)ms;
 }
 
 // Test-only (ZB_DEBUG_SYNTH_STALE = "finish"|"fail"): one-shot — on the first routed navigation that
@@ -987,7 +1014,7 @@ static int zb_auto_test_stale_token(void) {
   int n = atomic_fetch_add(&reads, 1) + 1;  // 1-based index of this documentToken read
   // "after:N" -> stale only after N reads, so the PREFLIGHT guard passes and a later per-character
   // RECHECK fails (isolates the per-char recheck, 6361.1). Any other truthy value -> always stale.
-  if (strncmp(v, "after:", 6) == 0) return n > atoi(v + 6);
+  if (strncmp(v, "after:", 6) == 0) { long k = zb_parse_nonneg(v + 6); return k >= 0 && n > k; }
   return 1;
 }
 
@@ -1041,16 +1068,6 @@ static int zb_job_in_preflight(ZBAutoJob *job) {
   return ok;
 }
 
-// Still INFLIGHT (not yet DONE and not ABANDONED by a timed-out waiter)? A multi-step async side effect
-// (e.g. per-character typing) checks this before each further step, so it stops delivering once the
-// caller has abandoned.
-static int zb_job_is_inflight(ZBAutoJob *job) {
-  pthread_mutex_lock(&job->mu);
-  int ok = (job->state == ZB_JOB_INFLIGHT);
-  pthread_mutex_unlock(&job->mu);
-  return ok;
-}
-
 // Claim the job for submission: PENDING/PREFLIGHT -> DISPATCHING. Returns 0 if the waiter abandoned.
 // The caller MUST then either submit and call zb_job_inflight()/zb_job_complete(), so the waiter that
 // is forced to wait during DISPATCHING is released.
@@ -1068,6 +1085,37 @@ static void zb_job_inflight(ZBAutoJob *job) {
   if (job->state == ZB_JOB_DISPATCHING) job->state = ZB_JOB_INFLIGHT;
   pthread_cond_broadcast(&job->cv);
   pthread_mutex_unlock(&job->mu);
+}
+
+// Re-own the job for the NEXT side-effect step of a multi-step op: INFLIGHT -> DISPATCHING. Returns 0 if
+// the waiter already abandoned (timed out while INFLIGHT). A caller that gets 1 holds the job through
+// DISPATCHING, where zb_job_wait blocks WITHOUT a deadline, so the step's side effect (e.g. a keyDown/
+// keyUp pair) cannot be interrupted by a concurrent timeout — the check-then-act race is closed because
+// ownership transfers atomically under the mutex, not by a check followed by an unguarded send
+// (RoseCat 6397.1 / 6433.1). No broadcast: a waiter mid-timedwait sees DISPATCHING on its next check and
+// re-waits without a deadline, exactly as after zb_job_claim_dispatch.
+static int zb_job_reclaim_dispatch(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  int ok = (job->state == ZB_JOB_INFLIGHT);
+  if (ok) job->state = ZB_JOB_DISPATCHING;
+  pthread_mutex_unlock(&job->mu);
+  return ok;
+}
+
+// Record progress (fully-dispatched code points) in the heap job under the mutex, so a timed-out waiter
+// reads a value published under the same lock rather than a stack slot written concurrently off-lock
+// (RoseCat 6397 C memory-model note). Written only while the job is owned (DISPATCHING).
+static void zb_job_set_progress(ZBAutoJob *job, int n) {
+  pthread_mutex_lock(&job->mu);
+  job->progress = n;
+  pthread_mutex_unlock(&job->mu);
+}
+
+static int zb_job_progress(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  int n = job->progress;
+  pthread_mutex_unlock(&job->mu);
+  return n;
 }
 
 // Record the outcome once, only while the job is still owned (DISPATCHING or INFLIGHT), and wake the
@@ -1610,57 +1658,73 @@ static void zb_build_key_events(NSWindow *window, ZBKeyKind kind, unsigned short
                                  timestamp:ts + 0.01 windowNumber:wn context:nil characters:chars charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc]];
 }
 
-// Deliver `events` one at a time, each FIFO-acked by a round-trip, so a synthetic event is processed
-// (and its keydown/keyup/input dispatched) before the next is sent — rapid back-to-back synthetic keys
-// otherwise drop/coalesce through the input method. When `expected` is non-nil, the ack doubles as a
-// per-event documentToken RECHECK (RoseCat 6361.1): if an event navigated the page, the next event is
-// NOT sent into the replacement document — the sequence stops with DOC_CHANGED. Called in DISPATCHING;
-// goes INFLIGHT after the first send; a waiter that abandons mid-sequence stops delivery (onProgress
-// reports events dispatched). Owns the chain ref: completes + unrefs exactly once.
+// Deliver `events` as consecutive keyDown/keyUp PAIRS (two events each; a modifier key is a
+// flagsChanged press/release pair). Each pair is ONE indivisible side-effect step: both of its events
+// are sent while the job is DISPATCHING — a window in which zb_job_wait blocks without a deadline — so a
+// concurrent timeout can never split a keyDown from its keyUp (no stuck-down key) nor deliver an event
+// after the waiter gave up (RoseCat 6397.1/6397.2). After the pair's input is processed it is FIFO-acked
+// by a round trip (synthetic keys otherwise drop/coalesce through the input method); when `expected` is
+// non-nil the ack doubles as a per-code-point documentToken RECHECK (RoseCat 6361.1) — a pair that
+// navigated the page stops the sequence with DOC_CHANGED before the next pair enters the replacement
+// document. Progress is the count of pairs fully dispatched (= code points), published in the heap job
+// under the mutex. Called in DISPATCHING (claim already done); owns the chain ref: completes + unrefs
+// exactly once. Precondition: events.count is even (whole pairs).
 static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob *job, NSString *expected,
-                                    NSArray<NSEvent *> *events, void (^onProgress)(NSUInteger delivered)) {
-  if (events.count == 0) {
+                                    NSArray<NSEvent *> *events) {
+  NSUInteger nPairs = events.count / 2;
+  if (nPairs == 0) {
     [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); }];
     zb_job_inflight(job);
     return;
   }
   WKContentWorld *autoWorld = (expected != nil) ? [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD] : nil;
-  __block void (^step)(NSUInteger) = nil;
-  step = ^(NSUInteger idx) {
-    [window sendEvent:events[idx]];
-    if (onProgress != nil) onProgress(idx + 1);
-    void (^onAck)(NSString *, NSError *) = ^(NSString *tok, NSError *e) {
-      if (e != nil) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
-      if (expected != nil) {  // per-event documentToken recheck
+  // Precondition on entry to deliverPair(p): the job is DISPATCHING (p == 0 from the deliver block's
+  // claim; p > 0 from the reclaim in `advance`). The whole pair runs while DISPATCHING, where zb_job_wait
+  // blocks WITHOUT a deadline, so a concurrent timeout can never split the keyDown from its keyUp (no
+  // stuck-down key) nor land an event after the waiter gave up. A FIFO round trip sits BETWEEN the down
+  // and the up: a keyUp delivered in the same run-loop turn as its keyDown is coalesced/dropped by the
+  // input method, so each event needs its own acknowledged turn. The job returns to INFLIGHT only
+  // BETWEEN pairs — the one window where the deadline may abandon it (RoseCat 6397.1/6397.2).
+  __block void (^deliverPair)(NSUInteger) = nil;
+  deliverPair = ^(NSUInteger p) {
+    NSUInteger base = p * 2;
+    void (^afterUp)(NSString *, NSError *) = ^(NSString *tok, NSError *e) {
+      if (e != nil) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+      if (expected != nil) {  // per-code-point documentToken recheck (after the pair's input is processed)
         NSString *t = tok;
         if (zb_auto_test_stale_token()) t = @"zb-debug-stale-token";
-        if (t == nil || ![t isEqualToString:expected]) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL); zb_job_unref(job); return; }
+        if (t == nil || ![t isEqualToString:expected]) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL); zb_job_unref(job); return; }
       }
-      if (idx + 1 >= events.count) { step = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
-      if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // waiter abandoned: stop
-      unsigned int delay = zb_auto_test_type_delay_ms();  // test-only inter-character delay
-      if (delay > 0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-          if (step == nil) return;
-          if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // abandoned during the delay
-          step(idx + 1);
-        });
+      if (p + 1 >= nPairs) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
+      zb_job_inflight(job);  // between pairs: DISPATCHING -> INFLIGHT, so a deadline can abandon here
+      unsigned int delay = zb_auto_test_type_delay_ms();  // test-only inter-pair delay
+      void (^advance)(void) = ^{
+        if (deliverPair == nil) return;
+        // Re-own atomically before the next pair's first send: if the waiter abandoned (timed out while
+        // INFLIGHT, possibly during the delay) this returns 0 and we stop WITHOUT sending — no late event.
+        if (!zb_job_reclaim_dispatch(job)) { deliverPair = nil; zb_job_unref(job); return; }
+        zb_auto_test_pair_hold();  // e2e: hold INSIDE the owned (DISPATCHING) window; the waiter must not abandon here
+        deliverPair(p + 1);
+      };
+      if (delay > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_MSEC), dispatch_get_main_queue(), advance);
+      else advance();
+    };
+    void (^afterDown)(NSError *) = ^(NSError *e) {
+      if (e != nil) { deliverPair = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+      [window sendEvent:events[base + 1]];     // keyUp / flags-release, after the keyDown's own turn
+      zb_job_set_progress(job, (int)(p + 1));  // this code point is fully dispatched (down + up both sent)
+      if (expected != nil) {
+        [view callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
+                        arguments:@{} inFrame:nil inContentWorld:autoWorld
+                completionHandler:^(id v, NSError *e2) { afterUp([v isKindOfClass:[NSString class]] ? (NSString *)v : nil, e2); }];
       } else {
-        step(idx + 1);
+        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e2) { (void)v; afterUp(nil, e2); }];
       }
     };
-    if (expected != nil) {
-      [view callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
-                      arguments:@{}
-                        inFrame:nil
-                 inContentWorld:autoWorld
-              completionHandler:^(id v, NSError *e) { onAck([v isKindOfClass:[NSString class]] ? (NSString *)v : nil, e); }];
-    } else {
-      [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; onAck(nil, e); }];
-    }
+    [window sendEvent:events[base]];           // keyDown / flags-press
+    [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; afterDown(e); }];
   };
-  step(0);
-  zb_job_inflight(job);
+  deliverPair(0);
 }
 
 // Shared phase-model driver: run the readiness poll + (optional) documentToken guard in PREFLIGHT, then
@@ -1668,7 +1732,8 @@ static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob
 // (it must zb_job_claim_dispatch, do the side effect, zb_job_inflight, FIFO-ack -> zb_job_complete, and
 // zb_job_unref). The driver handles every non-deliver terminal itself. Mirrors zb_native_click.
 static int zb_auto_native_input(uint32_t win, NSString *expected, unsigned int timeout_ms,
-                                void (^deliver)(ZBWindowHost *host, ZBAutoJob *job)) {
+                                int *out_progress, void (^deliver)(ZBWindowHost *host, ZBAutoJob *job)) {
+  if (out_progress != NULL) *out_progress = 0;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
   ZBAutoJob *job = zb_job_new();
   if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
@@ -1711,6 +1776,9 @@ static int zb_auto_native_input(uint32_t win, NSString *expected, unsigned int t
   };
   dispatch_async(dispatch_get_main_queue(), poll);
   int rc = zb_job_wait(job, timeout_ms);
+  // Published under job->mu by zb_job_set_progress; read here under the same lock, after the waiter has
+  // settled (DONE or ABANDONED), so a partial-timeout reports exactly the code points fully dispatched.
+  if (out_progress != NULL) *out_progress = zb_job_progress(job);
   zb_job_unref(job);
   return rc;
 }
@@ -1729,17 +1797,17 @@ int zb_native_key(uint32_t win, const char *key, int modifiers, const char *expe
     if (name == nil || !zb_dom_key_to_ns(name, &kind, &kc, &chars, &modFlag)) return ZB_AUTO_ERR_INTERNAL;  // unknown key
     NSEventModifierFlags flags = zb_ns_mod_flags(modifiers);
     NSString *expected = expected_doc != NULL ? [NSString stringWithUTF8String:expected_doc] : nil;
-    __block int releases = 0;
-    int rc = zb_auto_native_input(win, expected, timeout_ms, ^(ZBWindowHost *host, ZBAutoJob *job) {
+    int releases = 0;
+    int rc = zb_auto_native_input(win, expected, timeout_ms, &releases, ^(ZBWindowHost *host, ZBAutoJob *job) {
       if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
       NSWindow *window = host.window;
       WKWebView *view = host.webView;
       if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
       NSMutableArray<NSEvent *> *events = [NSMutableArray array];
       zb_build_key_events(window, kind, kc, chars, modFlag, flags, events);
-      zb_deliver_events_paced(window, view, job, nil, events, ^(NSUInteger d) { releases = (int)(d / 2); });  // no per-key recheck (a single key may intentionally navigate, e.g. Enter)
+      zb_deliver_events_paced(window, view, job, nil, events);  // no per-key recheck (a single key may intentionally navigate, e.g. Enter)
     });
-    if (out_releases != NULL) *out_releases = releases;
+    if (out_releases != NULL) *out_releases = releases;  // keyDown/keyUp pairs acknowledged (= 1 for a key)
     return rc;
   }
 }
@@ -1766,17 +1834,18 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
       [cps addObject:[cp isEqualToString:@"\n"] ? @"\r" : cp];  // newline -> Return
       i += len;
     }
-    __block int sent = 0;
-    int rc = zb_auto_native_input(win, expected, timeout_ms, ^(ZBWindowHost *host, ZBAutoJob *job) {
+    int sent = 0;
+    int rc = zb_auto_native_input(win, expected, timeout_ms, &sent, ^(ZBWindowHost *host, ZBAutoJob *job) {
       if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
       NSWindow *window = host.window;
       WKWebView *view = host.webView;
       if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
       NSMutableArray<NSEvent *> *events = [NSMutableArray array];
       for (NSString *cp in cps) zb_build_key_events(window, ZB_KEY_CHAR, 0, cp, 0, 0, events);
-      // Each code point is one keyDown/keyUp pair -> every completed pair (an even delivered count) is a
-      // typed code point; a mid-text abandon leaves `sent` at the code points fully dispatched.
-      zb_deliver_events_paced(window, view, job, expected, events, ^(NSUInteger d) { sent = (int)(d / 2); });  // per-char documentToken recheck (6361.1)
+      // Each code point is one keyDown/keyUp pair; deliver_events_paced publishes the count of pairs
+      // fully dispatched, so a mid-text timeout or document change leaves `sent` at exactly the code
+      // points that landed before it stopped (never a half pair).
+      zb_deliver_events_paced(window, view, job, expected, events);  // per-char documentToken recheck (6361.1)
     });
     if (out_chars != NULL) *out_chars = sent;
     if (out_releases != NULL) *out_releases = sent;
