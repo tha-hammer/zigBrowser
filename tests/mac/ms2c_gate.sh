@@ -41,6 +41,7 @@ python3 tests/e2e/mac_ms2c_loading_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_process_group_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_oob_during_stuck_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_snapshot_oob_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_dialog_snapshot_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_script_close_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_health_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2c_close_window_test.py --browser zig-out/bin/zigBrowser

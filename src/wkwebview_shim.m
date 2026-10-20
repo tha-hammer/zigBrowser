@@ -934,6 +934,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.pendingDialogMessage = message ?: @"";
   self.pendingDialogDefault = nil;
   self.pendingAlertCompletion = completionHandler;
+  zb_publish_window_snapshot();  // RoseCat 6556: dialog_open reflects at once, not on the next 500ms tick
 }
 
 - (void)webView:(WKWebView *)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message
@@ -944,6 +945,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.pendingDialogMessage = message ?: @"";
   self.pendingDialogDefault = nil;
   self.pendingConfirmCompletion = completionHandler;
+  zb_publish_window_snapshot();  // RoseCat 6556: dialog_open reflects at once, not on the next 500ms tick
 }
 
 - (void)webView:(WKWebView *)webView runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
@@ -955,6 +957,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   self.pendingDialogMessage = prompt ?: @"";
   self.pendingDialogDefault = defaultText ?: @"";
   self.pendingPromptCompletion = completionHandler;
+  zb_publish_window_snapshot();  // RoseCat 6556: dialog_open reflects at once, not on the next 500ms tick
 }
 
 // Answer this window's open dialog on the main thread: alert -> resume; confirm -> accept bool; prompt ->
@@ -974,6 +977,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
     void (^c)(NSString *) = self.pendingPromptCompletion; self.pendingPromptCompletion = nil;
     if (c) c(accept ? (text != nil ? text : (def != nil ? def : @"")) : nil);
   }
+  zb_publish_window_snapshot();  // RoseCat 6556: dialog_open clears at once, not on the next 500ms tick
   return YES;
 }
 
@@ -2772,6 +2776,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     ZbWindow *window = zb_window_new(&c_app, NULL);
     if (window == NULL) {
       g_active_app = nil;
+      zb_publish_window_snapshot();  // RoseCat 6556: a read after the app clears gets [], never a stale live snapshot
       return ZB_EXIT_WEBVIEW_INIT_FAILED;
     }
     ZBWindowHost *window_host = (__bridge ZBWindowHost *)window->host;
@@ -2783,6 +2788,7 @@ int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
     signal(SIGTERM, SIG_DFL);
     signal(SIGHUP, SIG_DFL);
     g_active_app = nil;
+    zb_publish_window_snapshot();  // RoseCat 6556: a read after the app clears gets [], never a stale live snapshot
     application.delegate = nil;
     return host.exitCode;
   }
