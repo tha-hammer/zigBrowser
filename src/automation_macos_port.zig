@@ -67,6 +67,8 @@ const vtable: PagePort.VTable = .{
     // MS2b.2 page dialogs: capture alert/confirm/prompt via WKUIDelegate; list + answer them.
     .listDialogs = listDialogs,
     .respondDialog = respondDialog,
+    // MS2c: enumerate open windows (page.list).
+    .listWindows = listWindows,
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -230,6 +232,79 @@ fn respondDialog(_: *anyopaque, id: page_port.WindowId, accept: bool, text: ?[]c
     }
     const rc = c.zb_automation_respond_dialog(@intCast(id), @intFromBool(accept), if (text_z) |z| z.ptr else null, clampMs(timeout_ms));
     return mapCode(rc);
+}
+
+/// MS2c: every open window (the shim lists them as JSON). `url`/`title` owned by `gpa` (freeWindows).
+fn listWindows(_: *anyopaque, gpa: std.mem.Allocator, timeout_ms: u64) PortError![]page_port.WindowInfo {
+    var out: [*c]u8 = null;
+    const rc = c.zb_automation_list_windows(clampMs(timeout_ms), &out);
+    defer c.zb_automation_free(out);
+    try mapCode(rc);
+    if (out == null) return error.EvalFailed;
+    return parseWindows(gpa, std.mem.span(out));
+}
+
+/// Shim window JSON [{id,url,title,primary,opener,crashed?,health...}] -> WindowInfo (mirrors the GTK port).
+fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.WindowInfo {
+    const Wire = struct {
+        id: u32,
+        url: []const u8,
+        title: []const u8,
+        primary: bool,
+        opener: u32,
+        crashed: ?[]const u8 = null,
+        responsive: bool = true,
+        unresponsive_ms: u64 = 0,
+        loading: bool = false,
+        dialog_open: bool = false,
+        incident: u32 = 0,
+        process_group: u32 = 0,
+    };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EvalFailed,
+    };
+    defer parsed.deinit();
+    const windows = try gpa.alloc(page_port.WindowInfo, parsed.value.len);
+    var filled: usize = 0;
+    errdefer {
+        for (windows[0..filled]) |w| {
+            gpa.free(w.url);
+            gpa.free(w.title);
+        }
+        gpa.free(windows);
+    }
+    for (parsed.value, windows) |wire, *info| {
+        const url_copy = try gpa.dupe(u8, wire.url);
+        const title_copy = gpa.dupe(u8, wire.title) catch |e| {
+            gpa.free(url_copy);
+            return e;
+        };
+        const terminated: ?page_port.Termination = if (wire.crashed) |reason|
+            std.meta.stringToEnum(page_port.Termination, reason) orelse {
+                gpa.free(url_copy);
+                gpa.free(title_copy);
+                return error.EvalFailed;
+            }
+        else
+            null;
+        info.* = .{
+            .id = wire.id,
+            .url = url_copy,
+            .title = title_copy,
+            .primary = wire.primary,
+            .opener = if (wire.opener == 0) null else wire.opener,
+            .terminated = terminated,
+            .web_process_responsive = wire.responsive,
+            .unresponsive_ms = wire.unresponsive_ms,
+            .loading = wire.loading,
+            .dialog_open = wire.dialog_open,
+            .incident = wire.incident,
+            .process_group = wire.process_group,
+        };
+        filled += 1;
+    }
+    return windows;
 }
 
 fn mapCode(rc: c_int) PortError!void {

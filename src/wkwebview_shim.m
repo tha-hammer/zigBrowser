@@ -1436,6 +1436,52 @@ int zb_automation_respond_dialog(uint32_t win, int accept, const char *text, uns
   return rc;
 }
 
+// MS2c: every open window as JSON [{id,url,title,primary,opener,dialog_open}], the primary first — the
+// shape automation_macos_port.parseWindows expects (health fields default when omitted). Window id = the
+// 1-based index into the window registry (mirrors zb_auto_window_for_id). Heap-job claim/cancel model, so
+// a timed-out caller builds/leaks nothing (RoseCat 6469 shape). No page script: works with a dialog open.
+int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
+  if (out_json != NULL) *out_json = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
+    char *result = NULL;
+    @autoreleasepool {
+      NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
+      ZBAppHost *app = g_active_app;
+      if (app != nil) {
+        NSArray<ZBWindowHost *> *hosts = app.windows != nil ? app.windows
+                                       : (app.mainWindow != nil ? @[ app.mainWindow ] : @[]);
+        [hosts enumerateObjectsUsingBlock:^(ZBWindowHost *h, NSUInteger idx, BOOL *stop) {
+          (void)stop;
+          if (h == nil) return;
+          NSString *url = h.webView.URL.absoluteString ?: @"";
+          NSString *title = h.webView.title ?: @"";
+          [arr addObject:@{ @"id": @(idx + 1),
+                            @"url": url,
+                            @"title": title,
+                            @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)
+                            @"opener": @0,
+                            @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO }];
+        }];
+      }
+      NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
+      NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
+      const char *utf8 = s.UTF8String;
+      result = strdup(utf8 != NULL ? utf8 : "[]");
+    }
+    zb_job_complete(job, ZB_AUTO_OK, result, NULL);
+    zb_job_unref(job);
+  });
+  int rc = zb_job_wait(job, timeout_ms);
+  if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
+  zb_job_unref(job);
+  return rc;
+}
+
 // Start a routed navigation on the main thread and wait for ITS outcome. `start(host)` performs the
 // loadRequest/reload and returns the WKNavigation it created (nil = refused). Phase model: PENDING ->
 // DISPATCHING (claim + submit) -> INFLIGHT (poll the per-navigation outcome) -> DONE. The submission
