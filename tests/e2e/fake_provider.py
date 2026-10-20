@@ -12,6 +12,9 @@ reaches through ZIGBROWSER_AGENT_AUTH_TEST, and nothing else.
     request's redirect_uri and state: `ok` (the exact callback), `wrong-state`,
     `missing-state`, `other-port` (:8443), `http`, `lookalike` (platform.claude.com.evil.example)
     or `no-code`.
+  - `/report?c=<cookie>&z=<0|1>` (claude.com): the sign-in page reports, as soon as it runs,
+    the `document.cookie` it sees and whether a `zbHost` message handler exists (S6.3,
+    rev 16.18.20; the auth window has no automation to read it with); kept in `reports`.
   - `/oauth/code/callback` (platform.claude.com): the code page. A request for it is recorded
     in `callback_loads`; the window must never load it (the callback is captured).
 - A recording loopback proxy (`seam_value()` names it): CONNECT to claude.com:443 or
@@ -66,6 +69,7 @@ class FakeProvider:
         self.callback_loads: list[str] = []   # requests for the code page (must stay empty)
         self.connects: list[str] = []         # every CONNECT target the proxy saw
         self.refused: list[str] = []          # CONNECT targets or plain-HTTP URLs it refused
+        self.reports: list[dict] = []         # what each sign-in page saw: {"cookie", "zbhost"}
         self.cert, self.key = make_provider_cert(Path(tmp) / "provider")
         self._https = self._start_https()
         self._proxy = self._start_proxy()
@@ -131,6 +135,10 @@ class FakeProvider:
                     action = provider.action_html(query.get("redirect_uri", ""), query.get("state", ""))
                     body = PAGE.format(action=action).encode()
                     return self._send(200, body, "text/html; charset=utf-8", cookie=True)
+                if host == "claude.com" and split.path == "/report":
+                    with provider.lock:
+                        provider.reports.append({"cookie": query.get("c", ""), "zbhost": query.get("z", "")})
+                    return self._send(204, b"", "text/plain")
                 if host == "platform.claude.com" and split.path == "/oauth/code/callback":
                     with provider.lock:
                         provider.callback_loads.append(self.path)
@@ -220,7 +228,7 @@ class FakeProvider:
     def report(self) -> str:
         with self.lock:
             return json.dumps({"requests": self.requests, "callback_loads": self.callback_loads,
-                               "connects": self.connects, "refused": self.refused})
+                               "connects": self.connects, "refused": self.refused, "reports": self.reports})
 
 
 PAGE = """<!doctype html>
@@ -233,8 +241,11 @@ html, body {{ margin: 0; height: 100%; }}
 <body>
 {action}
 <p id="cookies"></p>
-<script>document.getElementById('cookies').textContent = document.cookie;</script>
+<script>
+document.getElementById('cookies').textContent = document.cookie;
+var zb = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.zbHost);
+new Image().src = '/report?c=' + encodeURIComponent(document.cookie) + '&z=' + (zb ? 1 : 0);
+</script>
 </body></html>
 """
 ACTION = '<a id="action" href="{href}"{onclick}>{label}</a>'
-

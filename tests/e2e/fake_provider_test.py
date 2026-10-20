@@ -101,6 +101,14 @@ class FakeProviderTest(unittest.TestCase):
                 opens = b"window.open('https://claude.ai/'" in body
                 self.assertEqual(opens, variant == "popup", variant)
 
+    def test_the_page_reports_what_it_sees(self):
+        with fp.FakeProvider(self.tmp) as p:
+            _, body, _ = via_proxy(p, "claude.com", AUTHORIZE)
+            self.assertIn(b"new Image().src = '/report?c='", body)
+            status, _, _ = via_proxy(p, "claude.com", "/report?c=zbprovider%3D1&z=0")
+            self.assertEqual(status, 204)
+            self.assertEqual(p.reports, [{"cookie": "zbprovider=1", "zbhost": "0"}])
+
     def test_a_code_page_request_is_recorded(self):
         with fp.FakeProvider(self.tmp) as p:
             status, body, _ = via_proxy(p, "platform.claude.com", "/oauth/code/callback?code=x&state=y")
