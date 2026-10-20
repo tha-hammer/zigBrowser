@@ -71,6 +71,8 @@ const vtable: PagePort.VTable = .{
     .listWindows = listWindows,
     .forWindow = forWindow,
     .closeWindow = closeWindow,
+    // MS2c: view-replacement recovery (public API) — recover phase 2 is now supported on macOS.
+    .recoverWindows = recoverWindows,
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -320,6 +322,39 @@ fn forWindow(_: *anyopaque, id: page_port.WindowId) PortError!PagePort {
 fn closeWindow(_: *anyopaque, id: page_port.WindowId, timeout_ms: u64) PortError!void {
     if (id == 0) return error.NoPage;
     return mapCode(c.zb_automation_close_window(@intCast(id), clampMs(timeout_ms)));
+}
+
+/// MS2c view-replacement recovery (public API; no process kill, no SPI): the shim swaps a fresh WKWebView
+/// into each window, keeping its stable id, and reloads the committed URL. Returns one RecoveredWindow per
+/// id (ended = the window was crashed; reloaded = a committed URL was restored).
+fn recoverWindows(_: *anyopaque, gpa: std.mem.Allocator, ids: []const page_port.WindowId, timeout_ms: u64) PortError![]page_port.RecoveredWindow {
+    if (ids.len == 0) return error.NoPage;
+    var out: [*c]u8 = null;
+    const rc = c.zb_automation_recover_windows(ids.ptr, @intCast(ids.len), clampMs(timeout_ms), &out);
+    defer c.zb_automation_free(out);
+    try mapCode(rc);
+    if (out == null) return error.EvalFailed;
+    return parseRecovered(gpa, std.mem.span(out));
+}
+
+fn parseRecovered(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.RecoveredWindow {
+    const Wire = struct { id: u32, url: []const u8, ended: bool, reloaded: bool };
+    const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.EvalFailed,
+    };
+    defer parsed.deinit();
+    const windows = try gpa.alloc(page_port.RecoveredWindow, parsed.value.len);
+    var filled: usize = 0;
+    errdefer {
+        for (windows[0..filled]) |w| gpa.free(w.url);
+        gpa.free(windows);
+    }
+    for (parsed.value, windows) |wire, *w| {
+        w.* = .{ .id = wire.id, .url = try gpa.dupe(u8, wire.url), .ended = wire.ended, .reloaded = wire.reloaded };
+        filled += 1;
+    }
+    return windows;
 }
 
 fn mapCode(rc: c_int) PortError!void {

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""MS2c SPIKE pin — page.recover on macOS: consent works; the actual recovery is unsupported (fail-closed).
+"""MS2c — page.recover on macOS: consent + VIEW-REPLACEMENT recovery through the public API.
 
-page.recover is a two-phase watchdog flow. Phase 1 (consent) is server-side and works on macOS: for a
-frozen window it returns an incident, the at-risk windows and an expiry. Phase 2 (acknowledge) must END
-the window's hung web process and reload it — and macOS WKWebView has no public API to terminate a web
-process (only private SPI, ruled out by the 2026-10-20 user decision), so the port's recoverWindows is
-unsupported. This pins that honest, FAIL-CLOSED outcome (a -32011 unsupported, never a silent/false
-success), and proves the responsiveness watchdog feeds the consent gate.
+page.recover is a two-phase watchdog flow. Phase 1 (consent): for a frozen window it returns an incident,
+the at-risk windows and an expiry. Phase 2 (acknowledge) recovers the window — and because macOS WKWebView
+has no public API to terminate a web process (private SPI is ruled out by the 2026-10-20 decision), recovery
+is done by VIEW REPLACEMENT: the shim swaps a fresh WKWebView into the SAME window (keeping its stable id)
+and reloads the committed URL. A frozen window's old (hung) process is abandoned, not killed, so `ended` is
+false; `reloaded` is true. After phase 2 the window is responsive again on its original URL.
 
 The window is frozen with a setTimeout infinite loop; the watchdog then reports it unresponsive, which is
 what lets page.recover offer consent at all.
@@ -124,15 +124,27 @@ def main() -> int:
                 if not offer.get("at_risk"):
                     failures.append(f"consent offer missing at_risk: {offer!r}")
 
-            # Phase 2: acknowledge -> actually end + reload. Unsupported on macOS (no public web-process
-            # terminate). Must be a fail-closed error, never a silent/false success.
+            # Phase 2: acknowledge -> VIEW-REPLACEMENT recovery. The window is recovered (fresh WKWebView,
+            # same id, committed URL reloaded) and becomes responsive again.
             if incident is not None:
                 r2 = rpc.raw("page.recover", {"window_id": "window-1", "incident": incident, "acknowledge": ["window-1"]})
-                e = r2.get("error")
-                if not e:
-                    failures.append(f"recover phase 2 did not fail-closed (silent success?): {r2.get('result')!r}")
-                elif e.get("code") != -32011 or (e.get("data") or {}).get("reason") != "unsupported":
-                    failures.append(f"recover phase 2 error was not session_invalid/unsupported: {e}")
+                if "error" in r2:
+                    failures.append(f"recover phase 2 (view-replacement) errored: {r2['error']}")
+                else:
+                    rec = (r2.get("result") or {}).get("recovered") or []
+                    w1 = next((r for r in rec if r.get("window_id") == "window-1"), None)
+                    if w1 is None:
+                        failures.append(f"phase 2 did not report window-1 recovered: {r2.get('result')!r}")
+                    elif not w1.get("reloaded"):
+                        failures.append(f"phase 2 did not reload window-1: {w1!r}")
+                    elif w1.get("ended"):
+                        failures.append(f"a frozen (not crashed) window reported ended=true: {w1!r}")
+                    # The replaced view is a fresh web process: the window answers again.
+                    end2 = time.monotonic() + 8.0
+                    while time.monotonic() < end2 and responsive() is not True:
+                        time.sleep(0.1)
+                    if responsive() is not True:
+                        failures.append("window did not become responsive after view-replacement recovery")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

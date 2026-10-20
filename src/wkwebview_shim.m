@@ -627,6 +627,46 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
                   baseURL:base];  // baseURL keeps the committed URL; no reload of the live page
 }
 
+// MS2c view-replacement recovery (PUBLIC API only — no process kill, no SPI): swap in a FRESH WKWebView,
+// keeping this window's stable id / opener / process group, re-wire the delegates and the automation
+// script handler, restart the health watchdog, and reload the committed URL. For a crashed window the dead
+// web process is already gone; for a frozen one the old (hung) process is abandoned, not killed — the
+// window still comes back usable. Returns the reloaded URL, or nil if there was no committed URL to
+// restore. Main thread only.
+- (NSString *)recoverByReplacingWebView {
+  NSString *committed = self.webView.URL.absoluteString;
+  if (committed.length == 0) committed = self.requestedURI;
+  if (committed.length == 0) return nil;
+
+  WKWebView *fresh = [ZBWindowHost newConfiguredWebView];
+  if (fresh == nil) return nil;
+
+  // Detach the old (dead/hung) webView so ARC can free it once the window stops referencing it.
+  [self.healthTimer invalidate];
+  self.healthTimer = nil;
+  WKWebView *old = self.webView;
+  [old.configuration.userContentController removeScriptMessageHandlerForName:@"zbHost"];
+  old.navigationDelegate = nil;
+  old.UIDelegate = nil;
+
+  // Attach the fresh webView to the SAME window.
+  fresh.navigationDelegate = self;
+  fresh.UIDelegate = self;
+  [fresh.configuration.userContentController removeScriptMessageHandlerForName:@"zbHost"];
+  [fresh.configuration.userContentController addScriptMessageHandlerWithReply:self contentWorld:WKContentWorld.pageWorld name:@"zbHost"];
+  self.webView = fresh;
+  self.window.contentView = fresh;
+
+  // Clear crash/dialog state; startHealthWatchdog resets the ping/unresponsive/incident counters.
+  self.terminatedReason = nil;
+  self.showingCrashDoc = NO;
+  self.pendingDialogKind = 0;
+  [self startHealthWatchdog];
+
+  [self loadURI:committed];
+  return committed;
+}
+
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
   [self handleLoadFailureForWebView:webView navigation:navigation error:error];
 }
@@ -1654,6 +1694,53 @@ int zb_automation_close_window(uint32_t id, unsigned int timeout_ms) {
     zb_job_unref(job);
   });
   int rc = zb_job_wait(job, timeout_ms);
+  zb_job_unref(job);
+  return rc;
+}
+
+// MS2c view-replacement recovery: for each id, swap in a fresh WKWebView keeping the stable id and reload
+// the committed URL (public API; no process kill, no SPI). Emits [{id,url,ended,reloaded}, ...] in `ids`
+// order: `ended` = the window was crashed (its web process already gone); `reloaded` = a committed URL was
+// restored. Heap-job claim/cancel, so a timed-out caller leaves nothing dangling. Main-thread work.
+int zb_automation_recover_windows(const uint32_t *ids, int n, unsigned int timeout_ms, char **out_json) {
+  if (out_json != NULL) *out_json = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  if (ids == NULL || n <= 0) return ZB_AUTO_ERR_INTERNAL;
+  uint32_t *ids_copy = malloc((size_t)n * sizeof(uint32_t));  // the block owns this (freed inside it)
+  if (ids_copy == NULL) return ZB_AUTO_ERR_INTERNAL;
+  memcpy(ids_copy, ids, (size_t)n * sizeof(uint32_t));
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) { free(ids_copy); return ZB_AUTO_ERR_INTERNAL; }
+  zb_job_ref(job);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { free(ids_copy); zb_job_unref(job); return; }  // waiter abandoned
+    char *result = NULL;
+    @autoreleasepool {
+      NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
+      for (int i = 0; i < n; i++) {
+        uint32_t wid = ids_copy[i];
+        ZBWindowHost *host = zb_auto_window_for_id(wid);
+        NSString *url = @"";
+        BOOL ended = NO, reloaded = NO;
+        if (host != nil) {
+          ended = (host.terminatedReason != nil);  // a crashed window's process is already gone
+          NSString *u = [host recoverByReplacingWebView];
+          if (u != nil) { url = u; reloaded = YES; }
+        }
+        [arr addObject:@{ @"id": @(wid), @"url": url,
+                          @"ended": ended ? @YES : @NO, @"reloaded": reloaded ? @YES : @NO }];
+      }
+      NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
+      NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
+      const char *utf8 = s.UTF8String;
+      result = strdup(utf8 != NULL ? utf8 : "[]");
+    }
+    free(ids_copy);
+    zb_job_complete(job, ZB_AUTO_OK, result, NULL);
+    zb_job_unref(job);
+  });
+  int rc = zb_job_wait(job, timeout_ms);
+  if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
   zb_job_unref(job);
   return rc;
 }
