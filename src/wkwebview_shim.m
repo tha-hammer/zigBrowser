@@ -4,9 +4,12 @@
 #import <WebKit/WebKit.h>
 
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#import <os/lock.h>
 
 static const int ZB_DECISION_USE = 0;
 static const int ZB_DECISION_IGNORE = 1;
@@ -822,6 +825,121 @@ void zb_automation_set_script(const char *source, size_t len) {
   }
 }
 
+// --- Bridge job ownership (mirrors the GTK ZbAutoJob state machine, webkit_shim.c:1564-1769) --------
+// Each ABI call that runs WKWebView work on the main thread owns a heap job. The main-thread block runs
+// a side effect ONLY while the job is RUNNING; the waiter's deadline moves a not-yet-finished job to
+// CANCELLED (never started -> the queued block does nothing) or ABANDONED (async work in flight -> its
+// completion is discarded). Results live in the heap job, never the caller's stack, so a late completion
+// after the caller returned cannot write freed memory or turn a retired op into success. This is the
+// fix for RoseCat 6227.1 / 6244.1 / 6253.1 (late dispatch / late write / late success).
+enum { ZB_JOB_PENDING = 0, ZB_JOB_RUNNING, ZB_JOB_DONE, ZB_JOB_CANCELLED, ZB_JOB_ABANDONED };
+
+typedef struct ZBAutoJob {
+  int state;                 // guarded by zb_auto_lock
+  int refcount;              // guarded by zb_auto_lock
+  int code;                  // valid once state == DONE
+  char *result;              // owned; moved out by the waiter on DONE
+  char *err;                 // owned; freed with the job
+  dispatch_semaphore_t sem;  // signaled exactly once, on DONE
+} ZBAutoJob;
+
+static os_unfair_lock zb_auto_lock = OS_UNFAIR_LOCK_INIT;
+static atomic_int zb_auto_live_jobs = 0;
+static atomic_uint zb_auto_waiter_grace_ms = 0;  // test hook: waiter wakes late so a late completion wins
+
+int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs); }
+void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
+
+static ZBAutoJob *zb_job_new(void) {
+  atomic_fetch_add(&zb_auto_live_jobs, 1);
+  ZBAutoJob *job = calloc(1, sizeof(ZBAutoJob));
+  job->state = ZB_JOB_PENDING;
+  job->refcount = 1;
+  job->code = ZB_AUTO_ERR_TIMEOUT;
+  job->sem = dispatch_semaphore_create(0);
+  return job;
+}
+
+static ZBAutoJob *zb_job_ref(ZBAutoJob *job) {
+  os_unfair_lock_lock(&zb_auto_lock);
+  job->refcount++;
+  os_unfair_lock_unlock(&zb_auto_lock);
+  return job;
+}
+
+static void zb_job_unref(ZBAutoJob *job) {
+  if (job == NULL) return;
+  os_unfair_lock_lock(&zb_auto_lock);
+  int rc = --job->refcount;
+  os_unfair_lock_unlock(&zb_auto_lock);
+  if (rc != 0) return;
+  free(job->result);
+  free(job->err);
+  free(job);
+  atomic_fetch_sub(&zb_auto_live_jobs, 1);
+}
+
+// Main thread, before the first side effect: claim the job. Returns 1 (now RUNNING) only if the waiter
+// has not already abandoned it; 0 means do nothing (no dispatch after abandonment).
+static int zb_job_begin(ZBAutoJob *job) {
+  os_unfair_lock_lock(&zb_auto_lock);
+  int ok = (job->state == ZB_JOB_PENDING);
+  if (ok) job->state = ZB_JOB_RUNNING;
+  os_unfair_lock_unlock(&zb_auto_lock);
+  return ok;
+}
+
+// Still owned by the waiter? False once the waiter moved it to ABANDONED; a running poll checks this
+// before issuing a further side effect.
+static int zb_job_running(ZBAutoJob *job) {
+  os_unfair_lock_lock(&zb_auto_lock);
+  int running = (job->state == ZB_JOB_RUNNING);
+  os_unfair_lock_unlock(&zb_auto_lock);
+  return running;
+}
+
+// Record the outcome once and wake the waiter; takes ownership of result/err and frees them if the
+// waiter already abandoned (so a late completion neither writes freed memory nor reports success).
+static void zb_job_complete(ZBAutoJob *job, int code, char *result, char *err) {
+  os_unfair_lock_lock(&zb_auto_lock);
+  int recorded = (job->state == ZB_JOB_RUNNING);
+  if (recorded) {
+    job->code = code;
+    job->result = result;
+    job->err = err;
+    job->state = ZB_JOB_DONE;
+  }
+  os_unfair_lock_unlock(&zb_auto_lock);
+  if (recorded) {
+    dispatch_semaphore_signal(job->sem);
+  } else {
+    free(result);
+    free(err);
+  }
+}
+
+// Waiter (calling thread). Waits for DONE until the deadline; on expiry moves the job to CANCELLED
+// (never started) or ABANDONED (RUNNING). Returns the job code. On DONE the caller then reads/moves
+// job->result; it is the sole reader and no one writes result after DONE.
+static int zb_job_wait(ZBAutoJob *job, unsigned int timeout_ms) {
+  dispatch_semaphore_wait(job->sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC));
+  unsigned int grace = atomic_load(&zb_auto_waiter_grace_ms);
+  if (grace > 0 && zb_job_running(job)) {
+    // Test hook: wake late so an in-flight completion can win the race before we abandon.
+    dispatch_semaphore_wait(job->sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)grace * NSEC_PER_MSEC));
+  }
+  os_unfair_lock_lock(&zb_auto_lock);
+  int code;
+  if (job->state == ZB_JOB_DONE) {
+    code = job->code;
+  } else {
+    job->state = (job->state == ZB_JOB_PENDING) ? ZB_JOB_CANCELLED : ZB_JOB_ABANDONED;
+    code = ZB_AUTO_ERR_TIMEOUT;
+  }
+  os_unfair_lock_unlock(&zb_auto_lock);
+  return code;
+}
+
 // Poll finishedOrFailed on the main thread (non-blocking) until the current load completes or the
 // deadline; when it does, run onReady(host) on the main thread, then wake the caller. Deadlock
 // guard: a main-thread caller would dispatch+wait on itself forever, so return ZB_AUTO_ERR_INTERNAL.
@@ -965,21 +1083,28 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
     // thread — otherwise it races the main thread's startup webView creation and can win the init.
     NSString *world_name = (world != NULL && world[0] != '\0') ? [NSString stringWithUTF8String:world] : nil;
 
-    __block int rc = ZB_AUTO_ERR_TIMEOUT;
-    __block char *result = NULL;
-    __block char *errmsg = NULL;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    ZBAutoJob *job = zb_job_new();
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+    ZBAutoJob *jref = zb_job_ref(job);  // one ref for the whole main-queue work chain
+    __block BOOL began = NO;
     __block void (^poll)(void) = nil;
     poll = ^{
+      // First main-thread run: claim the job (PENDING->RUNNING). If the waiter already abandoned it,
+      // do nothing (no dispatch after abandonment). Re-dispatches only re-check we are still RUNNING.
+      if (!began) {
+        began = YES;
+        if (!zb_job_begin(jref)) { poll = nil; zb_job_unref(jref); return; }
+      } else if (!zb_job_running(jref)) {
+        poll = nil; zb_job_unref(jref); return;  // waiter abandoned mid-poll: stop
+      }
       ZBWindowHost *host = zb_auto_window_for_id(win);
-      if (host == nil) { rc = ZB_AUTO_ERR_NO_WINDOW; poll = nil; dispatch_semaphore_signal(sem); return; }
+      if (host == nil) { poll = nil; zb_job_complete(jref, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(jref); return; }
       if (!host.finishedOrFailed) {
-        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { rc = ZB_AUTO_ERR_TIMEOUT; poll = nil; dispatch_semaphore_signal(sem); return; }
+        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { poll = nil; zb_job_complete(jref, ZB_AUTO_ERR_TIMEOUT, NULL, NULL); zb_job_unref(jref); return; }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
         return;
       }
-      poll = nil;  // ready: run the async eval; its completion handler signals.
+      poll = nil;  // ready: run the async eval; its completion records the outcome into the heap job.
       // Resolve the content world on the main thread (first worldWithName can init WebKit2).
       WKContentWorld *content_world = world_name != nil
           ? [WKContentWorld worldWithName:world_name]
@@ -990,20 +1115,24 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
                          inContentWorld:content_world
                       completionHandler:^(id value, NSError *error) {
         if (error != nil) {
-          rc = ZB_AUTO_ERR_JS;
           const char *m = error.localizedDescription.UTF8String;
-          errmsg = strdup(m != NULL ? m : "evaluation failed");
+          zb_job_complete(jref, ZB_AUTO_ERR_JS, NULL, strdup(m != NULL ? m : "evaluation failed"));
         } else {
-          result = zb_auto_result_string(value);
-          rc = ZB_AUTO_OK;
+          zb_job_complete(jref, ZB_AUTO_OK, zb_auto_result_string(value), NULL);
         }
-        dispatch_semaphore_signal(sem);
+        zb_job_unref(jref);
       }];
     };
+    // Dispatch `poll` DIRECTLY (not wrapped): dispatch_async Block_copies it now, retaining the
+    // captured body/arg/world_name for the whole re-dispatch chain. A wrapper that merely calls poll()
+    // would leave poll an un-copied stack block whose captures are lost on the first re-dispatch.
     dispatch_async(dispatch_get_main_queue(), poll);
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
-    if (out_result != NULL) *out_result = result; else free(result);
-    if (out_err != NULL) *out_err = errmsg; else free(errmsg);
+    int rc = zb_job_wait(job, timeout_ms);
+    if (rc == ZB_AUTO_OK || rc == ZB_AUTO_ERR_JS) {
+      if (out_result != NULL) { *out_result = job->result; job->result = NULL; }
+      if (out_err != NULL) { *out_err = job->err; job->err = NULL; }
+    }
+    zb_job_unref(job);  // the caller's ref
     return rc;
   }
 }
