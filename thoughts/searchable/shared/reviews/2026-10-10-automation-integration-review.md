@@ -12407,3 +12407,71 @@ gate was run and this approval does not approve that pending implementation.
 Cumulatively, the S5c-1 failing-first chain `ac47497` / `e6327a5` / `7b44044`
 is now approved; production green, registration and a clean-export gate remain
 required. The newest approved and pushed linear boundary remains **`da3028f`**.
+
+## S5c-1 green and the descendant MS1 registration gate (`f9cb26a`, `305bbc5`)
+
+### `305bbc5` — APPROVED; the `5f35661` gate hold is CLOSED
+
+BlackRobin's clean-export gate at descendant `f9cb26a` is the missing evidence
+requested in `5f35661`: private Xvfb, `zig build test -j1 --summary all`, a
+16 GiB systemd scope, **163/163 steps succeeded and 920/920 tests passed**.
+Its output explicitly contains the registered `mac_census_unit` execution:
+**Ran 22 tests, OK**. Because the descendant contains `305bbc5` unchanged and
+the ordinary `test` step depends on that command object, this proves both the
+registration and the negative census/resource suite ran in the full Linux
+gate. The earlier code review, narrow 22/22 run and resource-phase mutant remain
+valid. The cumulative MS1 green/registration chain is now approved; this
+explicitly satisfies and closes the `5f35661` hold.
+
+### `f9cb26a` — BLOCKED
+
+The implementation has several strong properties. The real-binary e2e drives
+the production GTK/native/helper chain and covers flood responsiveness, exact
+Copy mapping, bounded RSS, close-during-flood, the native overflow interrupt
+and the real CLI/fake-API chain. The helper tests drive the actual helper and
+SDK client, while the Zig break/mapping oracle is independent. The three new
+suites are registered in the ordinary gate; `git diff --check` passes. The
+reported gate also ran `agent-flood-e2e` with **83/83 checks** and the helper
+flood suite with **6/6 tests**. I did not duplicate that full gate while the
+exclusive slot belonged to another owner.
+
+Two blockers remain:
+
+1. **BLOCKER — a UTF-8 character that does not fit at one timed flush is
+   skipped, after which later text is forwarded.** `Session.prompt.flush()` at
+   `agent/host/zb_agent_host/chat.py:128-143` tracks only the byte count. When
+   `utf8_prefix(piece, room)` is empty, it breaks that flush and then clears
+   `pending`, but does not make forwarding terminal. A later flush can put a
+   later one-byte character into the remaining byte. Driving the production
+   `Session.prompt` with timed stream events
+   `['a' * (MESSAGE_TEXT_MAX - 1), '界', 'x']` produced 262,144 bytes ending
+   in `aaax`; the required longest prefix is 262,143 bytes ending in `aaaa`,
+   and the source does not start with the emitted result. The existing over-cap
+   test's chunk/timing pattern misses this cross-flush boundary. Once no code
+   point fits, delta forwarding must stay ended for the reply; add the exact
+   timed-flush regression and a deletion/condition mutant.
+2. **BLOCKER — that same boundary can disable overflow termination.** The
+   native timer starts only after received deltas total at least 262,144 bytes
+   (`src/agent_helper.c:295-301`). A correct longest prefix may stop at 262,141,
+   262,142 or 262,143 bytes when the next code point does not fit. An endless
+   multibyte source can therefore cross the logical cap while the app never
+   arms its timer and never reports `Agent output overflow`. The regression
+   must drive this boundary through the native app: no later source text fills
+   the remainder, the running turn is interrupted after the bound, and the
+   next prompt succeeds. The cap-crossing signal/count must not depend on
+   violating the exact-prefix rule.
+
+**BLOCKER-for-tests — the committed real-screen case named by the approved
+plan is absent.** Rev 16.20.10 requires `tests/manual/real_screen_check.py`
+case `long-run` (`plan:2127-2137`; the general UI-slice rule is at `:1404`),
+but `f9cb26a` does not modify that file and HEAD's script has no such case or
+option. Before the orchestrator runs the user's long-run acceptance, commit the
+guarded case for both the 200 KiB unbroken and words replies, the fold-time
+check, and click/Ctrl+A/C clipboard equality with the exact original. Preserve
+the script's existing focus/server-grab safety and give the recipe non-live
+coverage; an external scratchpad recipe is not the plan's durable artifact.
+
+The production defects and missing case were sent to BlackRobin in Agent Mail
+6113, 6114 and 6117. S5c-1 still needs the planned user-run real-screen result
+after these are fixed. This verdict does not advance the approved linear
+push-through boundary beyond the already-pushed **`da3028f`**.
