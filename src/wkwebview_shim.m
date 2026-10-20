@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static const int ZB_DECISION_USE = 0;
 static const int ZB_DECISION_IGNORE = 1;
@@ -892,6 +893,18 @@ static atomic_uint zb_auto_waiter_grace_ms = 0;  // test hook: waiter wakes late
 int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs); }
 void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
 
+// Test-only, inert unless ZB_DEBUG_DISPATCH_HOLD_MS is set (an e2e test can set it at launch; the C
+// debug ABI is not reachable over the automation socket). When set, a DISPATCHING claim pauses on the
+// main thread for that long, between zb_job_claim_dispatch and the WebKit submission, so a red can
+// expire the waiter exactly in that window and prove the ABI still cannot return until the submission
+// linearizes (RoseCat 6298 race red). No-op in normal runs (one getenv while unset).
+static void zb_auto_test_dispatch_hold(void) {
+  const char *h = getenv("ZB_DEBUG_DISPATCH_HOLD_MS");
+  if (h == NULL) return;
+  int ms = atoi(h);
+  if (ms > 0) usleep((useconds_t)ms * 1000);
+}
+
 static ZBAutoJob *zb_job_new(void) {
   ZBAutoJob *job = calloc(1, sizeof(ZBAutoJob));
   if (job == NULL) return NULL;  // callers map NULL -> ZB_AUTO_ERR_INTERNAL
@@ -1257,6 +1270,7 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
       }
       poll = nil;  // ready: claim for submission (PREFLIGHT->DISPATCHING), then run the async eval.
       if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: no submission
+      zb_auto_test_dispatch_hold();  // test-only wedge: prove the waiter cannot return while DISPATCHING
       // Resolve the content world on the main thread (first worldWithName can init WebKit2).
       WKContentWorld *content_world = world_name != nil
           ? [WKContentWorld worldWithName:world_name]
