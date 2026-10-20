@@ -2816,7 +2816,7 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
 - **S7a, the in-process core and the broker (Zig, no helper change).** S7.1, S7.5's allowlist property, S7.3, and the broker's binding, redaction and worker-thread rules.
   - Code: `src/automation_server.zig` (`startCore`, `startSocket`, `dispatchParsed`, `callInProcess`), `src/app.zig`, `src/agent_broker.zig`.
   - Reds: new unregistered `tests/automation_inprocess_test.zig` and `tests/agent_broker_test.zig`. They reach the new API through `@hasDecl` guards, so they compile and fail before the green.
-  - The broker's per-call deadline is shorter than the helper's: it answers within `ready.tool_deadline_s` minus 5 s. So the helper never gives up on a call the app is still running.
+  - The broker's per-call deadline is shorter than the helper's: `ready.tool_deadline_s`, or the seam's value when the app set one, with a margin S7a names. So the helper never gives up on a call the app is still running.
 - **S7b, the read tools and the real chain.**
   - Code: the helper's six MCP tools (S7.5's exact list), and `agent_helper.c` handing each validated `tool_call` to `agent_broker.onToolCall` and writing its `tool_result`.
   - Behaviors: S7.2, S7.4, S7.6, S7.7, S7.8 and Closure Test S7.
@@ -2875,7 +2875,7 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
 - **Then** the handler returns `is_error` "The browser did not answer in time." and forgets the `id`.
 - **The deadline:**
   - it is `options.TOOL_DEADLINE_S` (120 s), or `hello.e2e.tool_deadline_s` (from `ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S`, section 7);
-  - `ready.tool_deadline_s` reports the one in force;
+  - `ready.tool_deadline_s` reports the default: `ready` comes before `hello`, so it can't carry the seam. Sessions opened after a `hello` with the seam use the seam's value, and the app, which set it, knows it;
   - a value outside 1 to 120, or one that is not an integer, is a `protocol` error, and the helper keeps the default.
 - **Files touched (S7.0):**
   - code: `agent/host/zb_agent_host/bridge.py`, `agent/host/zb_agent_host/chat.py`, and `agent/host/zb_agent_host/contract.py` (a fixed provider for P0's echo tool);
