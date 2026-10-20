@@ -289,6 +289,11 @@ static void handle_signal(int signo) {
 // per stretch), cleared when a ping replies. Touched only on the main thread (timer + the list ABI's
 // main-queue hop), monotonic microseconds via systemUptime.
 @property(nonatomic, assign) uint32_t openerId;  // MS2c: the window (id) whose page opened this popup; 0 = none
+// MS2c crash parity: the web process ended since the last page load ("crashed"); nil while alive. The
+// window shows a STATIC crash document and keeps its committed URL; it never auto-reloads. Cleared only
+// on a real commit (the next successful navigation), not by the crash document's own load.
+@property(nonatomic, copy) NSString *terminatedReason;
+@property(nonatomic, assign) BOOL showingCrashDoc;
 @property(nonatomic, strong) NSTimer *healthTimer;
 @property(nonatomic, assign) int64_t unresponsiveSinceUs;  // 0 while responsive
 @property(nonatomic, assign) uint32_t incident;            // count of unresponsive stretches (recover identity)
@@ -396,6 +401,8 @@ static void handle_signal(int signo) {
   [self.mainWindow reloadBypassingCache:bypassCache];
 }
 @end
+
+static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
 
 @implementation ZBWindowHost
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child {
@@ -561,6 +568,13 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
     return;  // stale: a superseded navigation's late finish must not touch the current state
   }
   self.finishedOrFailed = YES;
+  // MS2c crash parity: a real commit clears the crashed state; the crash document's own load keeps it
+  // (it is not a recovery — the window stays on the static crash page, never auto-reloaded).
+  if (self.showingCrashDoc) {
+    self.showingCrashDoc = NO;
+  } else {
+    self.terminatedReason = nil;
+  }
   if (navigation != nil && navigation == self.routedNav) {
     self.routedOutcome = 1;  // success for THIS routed navigation
   }
@@ -581,6 +595,29 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
     fflush(stdout);
   }
   emit_protocol2(self.app.e2eProtocol, "NAV", utf8_or_empty(uri), utf8_or_empty(title));
+
+  // e2e crash-presentation red: after a real (non-crash-doc) load, optionally synthesize the web
+  // process termination once (the production handler below is public and unchanged).
+  if (self.terminatedReason == nil && !self.child && zb_auto_test_synth_crash()) {
+    __weak ZBWindowHost *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ZBWindowHost *s = weakSelf;
+      if (s != nil) [s webViewWebContentProcessDidTerminate:s.webView];
+    });
+  }
+}
+
+// MS2c crash parity: the window's web process ended (crash / OOM / termination). Mark it crashed, keep
+// the committed URL, show a STATIC crash document, and NEVER auto-reload (parity with Linux). The crashed
+// flag clears only on a later real commit (didFinishNavigation above). Public WKNavigationDelegate method.
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+  self.terminatedReason = @"crashed";  // WKWebView's public callback gives no reason; report the generic one
+  NSString *committed = webView.URL.absoluteString;
+  NSURL *base = (committed.length > 0) ? [NSURL URLWithString:committed] : nil;
+  self.showingCrashDoc = YES;  // the next didFinish is the crash doc's own load, not a recovery
+  [webView loadHTMLString:@"<!doctype html><html><head><meta charset=\"utf-8\"><title>zb-crash</title></head>"
+                           @"<body>The web page stopped and its process ended.</body></html>"
+                  baseURL:base];  // baseURL keeps the committed URL; no reload of the live page
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
@@ -1151,6 +1188,19 @@ static int zb_auto_test_synth_stale(void) {
   return mode;
 }
 
+// Test-only (ZB_DEBUG_SYNTH_CRASH): one-shot — after the first real page load, synthesize the web
+// process termination callback (webViewWebContentProcessDidTerminate) for the primary window, so a red
+// can exercise the crash-presentation path without actually killing a WebContent process (which on a
+// shared host cannot be targeted safely with public API). The production handler is unchanged and public;
+// this only invokes it. Gated on --e2e-protocol.
+static int zb_auto_test_synth_crash(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
+  static atomic_int consumed = 0;
+  const char *v = getenv("ZB_DEBUG_SYNTH_CRASH");
+  if (v == NULL || v[0] == '0' || v[0] == '\0') return 0;
+  return atomic_exchange(&consumed, 1) == 0;  // one-shot: true exactly once
+}
+
 // Test-only (ZB_DEBUG_STALE_TOKEN): the native-click documentToken guard reads a fabricated stale token
 // (a real mismatch) WITHOUT reloading the page, so locate still succeeds and only the guard sees a
 // changed document — the production DOC_CHANGED path with no engine-reload masking (RoseCat option b).
@@ -1516,7 +1566,7 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
           NSString *title = h.webView.title ?: @"";
           BOOL responsive = (h.unresponsiveSinceUs == 0);
           int64_t unresp_ms = responsive ? 0 : (zb_now_us() - h.unresponsiveSinceUs) / 1000;
-          [arr addObject:@{ @"id": @(idx + 1),
+          NSMutableDictionary *w = [@{ @"id": @(idx + 1),
                             @"url": url,
                             @"title": title,
                             @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)
@@ -1524,7 +1574,9 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
                             @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO,
                             @"responsive": responsive ? @YES : @NO,       // MS2c page.health (watchdog)
                             @"unresponsive_ms": @(unresp_ms),
-                            @"incident": @(h.incident) }];
+                            @"incident": @(h.incident) } mutableCopy];
+          if (h.terminatedReason != nil) w[@"crashed"] = h.terminatedReason;  // MS2c crash parity
+          [arr addObject:w];
         }];
       }
       NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
