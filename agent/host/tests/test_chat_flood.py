@@ -5,6 +5,9 @@ text's UTF-8 bytes (a delta at most 16 KiB, a message at most 256 KiB).
 - A batch longer than 16 KiB goes out as several deltas, and nothing is lost.
 - Non-ASCII and escaped text are sized as encoded, so no frame is refused as oversize.
 - A message over its cap is cut at a character boundary and ends with "[output truncated]".
+  Rev 16.20.12 and 16.20.13: a streamed reply over CONTENT_MAX (256 KiB less the marker)
+  is capped instead: its deltas are its longest prefix that fits, and no message follows;
+  nor does one for a streamed message that its frame would have to cut.
 
 These drive `python -m zb_agent_host chat` (test_chat's Helper) and the real CLI against
 the fake Messages API; run the module alone, as the gate does."""
@@ -22,6 +25,7 @@ MAX_FRAME = 256 * 1024
 DELTA_MAX = 16 * 1024
 MESSAGE_MAX = 256 * 1024
 MARKER = "[output truncated]"
+CONTENT_MAX = MESSAGE_MAX - len(("\n" + MARKER).encode())  # rev 16.20.12: 262,125
 
 
 def utf8_prefix(text, limit):
@@ -90,27 +94,26 @@ class FloodTest(unittest.TestCase):
         self.assertEqual(streamed, text)
         self.assertEqual(messages, [text])
 
-    def test_a_message_over_its_cap_is_cut_and_ends_with_the_marker(self):
+    def test_a_reply_over_the_cap_is_capped_and_ends_with_no_message(self):
         # 350,000 bytes. The 3-byte character keeps 16 KiB pieces from adding up to exactly
-        # 256 KiB, so a helper that forwards whole pieces past the cap is caught.
+        # the bound, so a helper that forwards whole pieces past the cap is caught.
         text = "ab\u754c " * 58_334
         frames, raw = self.reply(text)
         streamed, messages = self.assert_within_caps(frames, raw)
-        # Rev 16.20.10: a reply's deltas are exactly its longest UTF-8 prefix that fits 256 KiB.
-        want = utf8_prefix(text, MESSAGE_MAX)
+        # Rev 16.20.12: a reply's deltas are exactly its longest UTF-8 prefix that fits
+        # CONTENT_MAX; rev 16.20.13: reply_capped, and no message shortens the bubble.
+        want = utf8_prefix(text, CONTENT_MAX)
         self.assertEqual(streamed, want, (len(streamed.encode()), len(want.encode())))
-        self.assertEqual(len(messages), 1)
-        self.assertTrue(messages[0].endswith(MARKER), messages[0][-60:])
-        kept = messages[0][:-len(MARKER)].rstrip("\n")
-        self.assertTrue(text.startswith(kept) and len(kept) > MESSAGE_MAX // 2, len(kept))
+        self.assertEqual(messages, [])
+        self.assertEqual([f["type"] for f in frames].count("reply_capped"), 1)
 
     def test_escaped_text_is_measured_as_encoded(self):
         text = '"\\' * 100_000  # 200,000 characters that each encode to two bytes
         frames, raw = self.reply(text)
         streamed, messages = self.assert_within_caps(frames, raw)
         self.assertEqual(streamed, text)
-        self.assertEqual(len(messages), 1)
-        self.assertTrue(messages[0].endswith(MARKER), messages[0][-60:])
+        # Rev 16.20.13: its frame would have to be cut, so the bubble keeps the deltas.
+        self.assertEqual(messages, [])
 
 
 def cli_pids(root):
@@ -182,8 +185,9 @@ class EndlessTest(unittest.TestCase):
         h = self.start({"endless": "x" * 1022 + " "})
         frames = self.frames_for(h, 9)
         forwarded = sum(len(f["text"].encode()) for f in frames if f["type"] == "assistant_delta")
-        # Exactly the longest prefix that fits 256 KiB (RoseCat 6071): the piece is ASCII.
-        self.assertEqual(forwarded, MESSAGE_MAX, "a reply's deltas stop at exactly 256 KiB")
+        # Exactly the longest prefix that fits CONTENT_MAX (RoseCat 6071; rev 16.20.12): the
+        # piece is ASCII.
+        self.assertEqual(forwarded, CONTENT_MAX, "a reply's deltas stop at exactly CONTENT_MAX")
         h.send("interrupt", session="s-1-1")
         self.ending(h, frames)
         self.answered_again(h)

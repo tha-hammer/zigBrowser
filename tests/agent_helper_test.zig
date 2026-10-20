@@ -127,8 +127,8 @@ test "the app's frames are exact NDJSON lines" {
         try helper.openSessionFrame(a, 3, 4, 1),
     );
     try std.testing.expectEqualStrings(
-        "{\"v\":1,\"seq\":4,\"type\":\"prompt\",\"session\":\"s-4-1\",\"text\":\"say \\\"hi\\\"\\n\"}\n",
-        (try helper.promptFrame(a, 4, "s-4-1", "say \"hi\"\n")).?,
+        "{\"v\":1,\"seq\":4,\"type\":\"prompt\",\"session\":\"s-4-1\",\"prompt_id\":2,\"text\":\"say \\\"hi\\\"\\n\"}\n",
+        (try helper.promptFrame(a, 4, "s-4-1", 2, "say \"hi\"\n")).?,
     );
     try std.testing.expectEqualStrings("{\"v\":1,\"seq\":5,\"type\":\"interrupt\",\"session\":\"s-4-1\"}\n", try helper.sessionFrame(a, 5, .interrupt, "s-4-1"));
     try std.testing.expectEqualStrings("{\"v\":1,\"seq\":6,\"type\":\"end_session\",\"session\":\"s-4-1\"}\n", try helper.sessionFrame(a, 6, .end_session, "s-4-1"));
@@ -140,8 +140,8 @@ test "a prompt over 64 KiB is not sent" {
     defer arena.deinit();
     const big = try arena.allocator().alloc(u8, 64 * 1024 + 1);
     @memset(big, 'x');
-    try std.testing.expect((try helper.promptFrame(arena.allocator(), 1, "s-1-1", big)) == null);
-    try std.testing.expect((try helper.promptFrame(arena.allocator(), 1, "s-1-1", big[0 .. 64 * 1024])) != null);
+    try std.testing.expect((try helper.promptFrame(arena.allocator(), 1, "s-1-1", 1, big)) == null);
+    try std.testing.expect((try helper.promptFrame(arena.allocator(), 1, "s-1-1", 1, big[0 .. 64 * 1024])) != null);
 }
 
 test "the runtime lock recorded by --agent-setup must match the installed runtime" {

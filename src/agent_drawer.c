@@ -38,13 +38,15 @@ size_t zb_drawer_row_text_len(const char *text, size_t len);
 char *zb_drawer_break_runs(const char *text, size_t len, size_t *out_len);
 size_t zb_drawer_original_offset(const char *text, size_t len, size_t shown);
 size_t zb_drawer_reply_text_max(void);
+size_t zb_drawer_reply_content_max(void);
 size_t zb_drawer_label_text_max(void);
 unsigned int zb_drawer_demo_messages(void);
 unsigned int zb_drawer_anim_ms(void);
 
 enum { ZB_GESTURE_DRAG = 1 };
 #define ZB_STOPPED_TEXT "(stopped)" /* S5.2 */
-#define ZB_TRUNCATED_TEXT "\n[output truncated]" /* S5.6 */
+#define ZB_TRUNCATED_TEXT "\n[output truncated]" /* S5.6; agent_drawer.zig's truncated_marker */
+_Static_assert(sizeof(ZB_TRUNCATED_TEXT) - 1 == 19, "the marker reply_content_max leaves room for");
 /* S5.6: a streaming bubble is laid out at most this often (its one pending refresh). */
 #define ZB_STREAM_REFRESH_MS 100
 /* A streaming text view (over label_text_max) is laid out at most this often. */
@@ -807,13 +809,22 @@ static gboolean on_stream_idle(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
-/* A delta's text joins the reply's, up to reply_text_max (cut on a character
- * boundary), after which the reply ends with the marker and later text is not shown. */
+/* The reply is capped: its text so far and the marker are final (rev 16.20.12 and
+ * 16.20.13): no later delta or message changes them. */
+static void stream_cap(ZbDrawer *d) {
+  if (!d->stream_full) {
+    g_string_append(d->stream_text, ZB_TRUNCATED_TEXT);
+    d->stream_full = 1;
+  }
+}
+
+/* A delta's text joins the reply's, up to reply_content_max (cut on a character
+ * boundary), after which the reply is capped and later text is not shown. */
 static void stream_append(ZbDrawer *d, const char *text, size_t len) {
   if (d->stream_full) {
     return;
   }
-  size_t room = zb_drawer_reply_text_max() - d->stream_text->len;
+  size_t room = zb_drawer_reply_content_max() - d->stream_text->len;
   if (len <= room) {
     g_string_append_len(d->stream_text, text, (gssize)len);
     return;
@@ -822,8 +833,23 @@ static void stream_append(ZbDrawer *d, const char *text, size_t len) {
     room -= 1;
   }
   g_string_append_len(d->stream_text, text, (gssize)room);
-  g_string_append(d->stream_text, ZB_TRUNCATED_TEXT);
-  d->stream_full = 1;
+  stream_cap(d);
+}
+
+/* The streaming bubble's text changed: its one pending refresh shows it. */
+static void stream_changed(ZbDrawer *d) {
+  if (d->stream_idle == 0) {
+    guint every = GTK_IS_TEXT_VIEW(d->streaming) ? ZB_STREAM_REFRESH_LARGE_MS : ZB_STREAM_REFRESH_MS;
+    d->stream_idle = g_timeout_add_full(G_PRIORITY_DEFAULT_IDLE, every, on_stream_idle, d, NULL);
+  }
+}
+
+/* The streaming bubble ends as it is (a capped reply's message, or a reply's ending
+ * frame that no message preceded). */
+static void end_stream_as_shown(ZbDrawer *d) {
+  char *shown = g_strdup(d->stream_text->str);
+  end_stream(d, shown);
+  g_free(shown);
 }
 
 /* --- the agent's reports (agent_helper.h; S3b) ------------------------------- */
@@ -861,7 +887,11 @@ void zb_drawer_agent_message(unsigned int win_id, const char *role, const char *
       continue;
     }
     if (d->streaming != NULL && strcmp(role, "assistant") == 0) {
-      end_stream(d, copy);
+      if (d->stream_full) { /* a capped bubble never shrinks (rev 16.20.13) */
+        end_stream_as_shown(d);
+      } else {
+        end_stream(d, copy);
+      }
       continue;
     }
     if (d->streaming != NULL) { /* an error mid-reply: the bubble keeps what it shows */
@@ -890,10 +920,32 @@ void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char 
       stream_append(d, text, len);
       if (d->streaming == NULL) {
         d->streaming = new_bubble(d, "assistant", d->stream_text->str);
-      } else if (d->stream_idle == 0 && d->stream_text->len != before) {
-        guint every = GTK_IS_TEXT_VIEW(d->streaming) ? ZB_STREAM_REFRESH_LARGE_MS : ZB_STREAM_REFRESH_MS;
-        d->stream_idle = g_timeout_add_full(G_PRIORITY_DEFAULT_IDLE, every, on_stream_idle, d, NULL);
+      } else if (d->stream_text->len != before) {
+        stream_changed(d);
       }
+    }
+  }
+}
+
+/* The helper capped window `win_id`'s reply (reply_capped): its bubble ends with the
+ * marker and shows no more of it. */
+void zb_drawer_agent_capped(unsigned int win_id) {
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (d->win_id == win_id && d->streaming != NULL && !d->stream_full) {
+      stream_cap(d);
+      stream_changed(d);
+    }
+  }
+}
+
+/* Window `win_id`'s reply ended (its result) without a message ending its bubble: the
+ * bubble keeps what it streamed, and the next reply starts its own (rev 16.20.13). */
+void zb_drawer_agent_end(unsigned int win_id) {
+  for (GList *l = zb_drawers; l != NULL; l = l->next) {
+    ZbDrawer *d = l->data;
+    if (d->win_id == win_id && d->streaming != NULL) {
+      end_stream_as_shown(d);
     }
   }
 }

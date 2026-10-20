@@ -35,6 +35,9 @@ DELTA_TEXT_MAX = 16 * 1024
 MESSAGE_TEXT_MAX = 256 * 1024
 FRAME_MAX = 256 * 1024
 TRUNCATED = "\n[output truncated]"
+# Rev 16.20.12: a bubble's text, the marker included, is at most MESSAGE_TEXT_MAX, so a
+# reply's streamed content is at most this.
+CONTENT_MAX = MESSAGE_TEXT_MAX - len(TRUNCATED.encode())
 TOOL_DEADLINE_S = int(options.TOOL_DEADLINE_S)
 APP_FRAMES = ("hello", "open_session", "prompt", "interrupt", "end_session", "shutdown", "tool_result")
 
@@ -119,27 +122,30 @@ class Session:
         # No SDK session id exists yet: the CLI's own one comes with each result (RoseCat 5632).
         self.chat.out.emit("session_opened", session=self.id)
 
-    async def prompt(self, text):
+    async def prompt(self, text, prompt_id=None):
         pending, last = [], 0.0
-        forwarded = 0  # the reply's delta bytes sent: the app shows at most MESSAGE_TEXT_MAX
+        forwarded = 0  # the reply's delta bytes sent: the app shows at most CONTENT_MAX
+        capped = False  # some of the reply did not fit: nothing more of its text is sent
+        streamed = False  # deltas were sent since the last assistant message
         api_error = None
         loop = asyncio.get_running_loop()
 
         def flush():
-            nonlocal pending, last, forwarded
+            nonlocal pending, last, forwarded, capped, streamed
             if pending:
-                # Nothing is dropped below the cap (S5.6); past it the app shows no more, so the
-                # rest of an endless reply is not sent (rev 16.20.9).
-                for piece in utf8_pieces("".join(pending), DELTA_TEXT_MAX):
-                    room = MESSAGE_TEXT_MAX - forwarded
-                    if room <= 0:
+                # Nothing is dropped below the cap (S5.6). The deltas are exactly the reply's
+                # longest prefix that fits CONTENT_MAX: the first code point that does not fit
+                # ends them for the reply, and reply_capped says so (rev 16.20.11 to 16.20.13).
+                for piece in [] if capped else utf8_pieces("".join(pending), DELTA_TEXT_MAX):
+                    fit = utf8_prefix(piece, CONTENT_MAX - forwarded)
+                    if fit:
+                        self.chat.out.emit("assistant_delta", session=self.id, text=fit)
+                        forwarded += len(fit.encode("utf-8"))
+                        streamed = True
+                    if fit != piece:
+                        capped = True
+                        self.chat.out.emit("reply_capped", session=self.id, prompt_id=prompt_id)
                         break
-                    if len(piece.encode("utf-8", "replace")) > room:  # the longest prefix that fits
-                        piece = utf8_prefix(piece, room)
-                        if not piece:
-                            break
-                    self.chat.out.emit("assistant_delta", session=self.id, text=piece)
-                    forwarded += len(piece.encode("utf-8", "replace"))
                 pending, last = [], loop.time()
 
         await self.client.query(text)
@@ -156,8 +162,13 @@ class Session:
             elif isinstance(message, AssistantMessage):
                 flush()
                 text = "".join(b.text for b in message.content if isinstance(b, TextBlock))
-                if text:
-                    self.chat.out.emit("assistant_message", session=self.id, text=fit_message(self.id, text))
+                fitted = fit_message(self.id, text) if text and not capped else None
+                # Rev 16.20.13: a completed bubble never shrinks. After the cap nothing more of
+                # the reply is sent, and a streamed message that its frame would cut is left
+                # to its deltas.
+                if fitted is not None and (fitted == text or not streamed):
+                    self.chat.out.emit("assistant_message", session=self.id, text=fitted)
+                streamed = False
             elif isinstance(message, ResultMessage) and api_error is not None:
                 self.chat.error(API_ERROR_CODES.get(api_error, "sdk"), f"the API refused the request ({api_error})", self.id)
             elif isinstance(message, ResultMessage):
@@ -212,7 +223,7 @@ class Chat:
             if session.busy:
                 self.error("busy", "a prompt is already running in this session", sid)
             else:
-                session.task = asyncio.create_task(self._prompt(session, frame.get("text", "")))
+                session.task = asyncio.create_task(self._prompt(session, frame.get("text", ""), frame.get("prompt_id")))
         elif kind == "interrupt" and sid in self.sessions:
             await self.sessions[sid].client.interrupt()
         elif kind == "end_session" and sid in self.sessions:
@@ -242,9 +253,9 @@ class Chat:
             return
         self.sessions[sid] = session
 
-    async def _prompt(self, session, text):
+    async def _prompt(self, session, text, prompt_id=None):
         try:
-            await session.prompt(text)
+            await session.prompt(text, prompt_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - reported as a frame, never with the token

@@ -155,6 +155,10 @@ pub fn rowTextLen(text: []const u8) usize {
 /// The most of one reply a bubble shows: the helper's message cap (256 KiB of
 /// UTF-8). A streaming reply stops growing there and ends with the marker.
 pub const reply_text_max: usize = 256 * 1024;
+/// Rev 16.20.12: the marker counts inside reply_text_max, so a capped bubble shows at
+/// most reply_content_max bytes of the reply and then the marker.
+pub const truncated_marker = "\n[output truncated]";
+pub const reply_content_max: usize = reply_text_max - truncated_marker.len;
 /// A bubble over this many bytes is a read-only text view, not a label: a label's
 /// first layout of 200 KB takes 6-7 s, a text view's under 1 s (rev 16.20.6).
 pub const label_text_max: usize = 32 * 1024;
@@ -353,6 +357,7 @@ comptime {
         @export(&zb_drawer_break_runs, .{ .name = "zb_drawer_break_runs" });
         @export(&zb_drawer_original_offset, .{ .name = "zb_drawer_original_offset" });
         @export(&zb_drawer_reply_text_max, .{ .name = "zb_drawer_reply_text_max" });
+        @export(&zb_drawer_reply_content_max, .{ .name = "zb_drawer_reply_content_max" });
         @export(&zb_drawer_label_text_max, .{ .name = "zb_drawer_label_text_max" });
         @export(&zb_drawer_demo_messages, .{ .name = "zb_drawer_demo_messages" });
         @export(&zb_drawer_anim_ms, .{ .name = "zb_drawer_anim_ms" });
@@ -426,6 +431,10 @@ fn zb_drawer_label_text_max() callconv(.c) usize {
 
 fn zb_drawer_reply_text_max() callconv(.c) usize {
     return reply_text_max;
+}
+
+fn zb_drawer_reply_content_max() callconv(.c) usize {
+    return reply_content_max;
 }
 
 fn zb_drawer_original_offset(text: [*]const u8, len: usize, shown: usize) callconv(.c) usize {

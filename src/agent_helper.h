@@ -52,12 +52,18 @@ void zb_agent_helper_token_removed(void);
 /* Implemented by agent_drawer.c (the drawer's seam; JadeBeacon 5867 for a Cocoa drawer).
  * `win_id` 0 means every drawer. Every zb_drawer_agent_* call arrives on the UI thread
  * (here the GTK main thread). A drawer keeps the streamed text it shows: a later message
- * replaces it, an error or system bubble ends it as it is, and Stop ends it with
- * " (stopped)". */
+ * replaces it unless the reply was capped, an error or system bubble ends it as it is, and
+ * Stop ends it with " (stopped)". */
 void zb_drawer_agent_status(unsigned int win_id, const char *state, const char *reason);
 void zb_drawer_agent_message(unsigned int win_id, const char *role, const char *text, size_t len);
 void zb_drawer_agent_delta(unsigned int win_id, const char *session, const char *text, size_t len);
 /* Window `win_id`'s reply was stopped: its bubble ends with "(stopped)" (S5.2). */
 void zb_drawer_agent_stopped(unsigned int win_id);
+/* S5.6 (rev 16.20.11 to 16.20.13): the helper capped window `win_id`'s reply; its bubble
+ * ends with "[output truncated]", and no later delta or message changes it. */
+void zb_drawer_agent_capped(unsigned int win_id);
+/* Window `win_id`'s reply ended with no message ending its bubble: the bubble keeps the
+ * text it streamed. */
+void zb_drawer_agent_end(unsigned int win_id);
 
 #endif

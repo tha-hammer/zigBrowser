@@ -81,9 +81,11 @@ the flag, and its window has no drawer.
   text, without those line breaks. A middle-click paste of such a run (X11's
   primary selection) still carries them. A triple-click selects one of those
   lines; Ctrl+A selects the whole reply.
-- A reply that goes past 256 KiB ends with "[output truncated]". If it is still
-  running 10 s later, the drawer stops it with "Agent output overflow", and the
-  next message works as usual.
+- A reply that goes past 256 KiB shows as much of it as fits in 256 KiB together
+  with a closing "[output truncated]" line, and no more of it. That text stays as
+  it is when the reply ends. If the reply is still running 10 s after it was cut,
+  the drawer stops it with "Agent output overflow", and the next message works as
+  usual.
 
 ## What pages can and cannot do
 

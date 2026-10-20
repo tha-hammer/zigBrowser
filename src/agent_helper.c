@@ -35,7 +35,7 @@ typedef struct {
   int is_error;
 } ZbAgentFrame;
 enum { ZB_FRAME_READY, ZB_FRAME_SESSION_OPENED, ZB_FRAME_DELTA, ZB_FRAME_MESSAGE, ZB_FRAME_TOOL_CALL,
-       ZB_FRAME_RESULT, ZB_FRAME_ERROR, ZB_FRAME_SESSION_ENDED };
+       ZB_FRAME_RESULT, ZB_FRAME_ERROR, ZB_FRAME_SESSION_ENDED, ZB_FRAME_REPLY_CAPPED };
 void zb_agent_frames_reset(void);
 int zb_agent_frames_open_session(const char *session, unsigned int window);
 void zb_agent_frames_close_session(const char *session);
@@ -68,7 +68,7 @@ int zb_agent_config_changed(const char *home);
 /* S5.6 (rev 16.20.2): a reply still running this long after its text passed the
  * drawer's reply_text_max is interrupted with ZB_TEXT_OVERFLOW. */
 #define ZB_OVERFLOW_S 10
-size_t zb_drawer_reply_text_max(void);
+size_t zb_drawer_reply_content_max(void);
 #define ZB_TEXT_AGENT_ERROR "Agent error"
 
 enum { H_IDLE, H_WAIT_NET, H_WAIT_TOKEN, H_STARTING, H_READY, H_CRASHED, H_UNAVAILABLE, H_STOPPING };
@@ -228,6 +228,14 @@ static gboolean on_overflow(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
+/* The reply passed the cap: 10 s later it is interrupted (S5.6). A second arm keeps the
+ * first deadline. */
+static void overflow_arm(ZbWin *w) {
+  if (w->overflow_timer == 0) {
+    w->overflow_timer = g_timeout_add_seconds(ZB_OVERFLOW_S, on_overflow, GUINT_TO_POINTER(w->win));
+  }
+}
+
 /* A ready helper: open the window's session if needed, then send its next
  * prompt. One prompt runs per session (the helper answers a second one with
  * `busy`): the rest wait here until the running one's `result`. */
@@ -296,9 +304,15 @@ static void on_frame(const ZbAgentFrame *f) {
     if (w != NULL && !w->stopping) {
       zb_drawer_agent_delta(win, w->session, f->text, f->text_len);
       w->reply_bytes += f->text_len;
-      if (w->reply_bytes >= zb_drawer_reply_text_max() && w->overflow_timer == 0) {
-        w->overflow_timer = g_timeout_add_seconds(ZB_OVERFLOW_S, on_overflow, GUINT_TO_POINTER(w->win));
+      if (w->reply_bytes > zb_drawer_reply_content_max()) { /* more than the bubble shows */
+        overflow_arm(w);
       }
+    }
+    break;
+  case ZB_FRAME_REPLY_CAPPED: /* rev 16.20.11 to 16.20.13: the cap, not a byte count, arms */
+    if (w != NULL && w->busy && !w->stopping) {
+      zb_drawer_agent_capped(win);
+      overflow_arm(w);
     }
     break;
   case ZB_FRAME_MESSAGE:
@@ -315,6 +329,8 @@ static void on_frame(const ZbAgentFrame *f) {
       } else if (w->stopping) { /* the interrupted prompt's end */
         w->stopping = 0;
         zb_drawer_agent_stopped(win);
+      } else { /* a reply that no message ended keeps what it streamed (rev 16.20.13) */
+        zb_drawer_agent_end(win);
       }
       overflow_reset(w);
       w->busy = 0;

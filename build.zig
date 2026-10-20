@@ -348,6 +348,15 @@ pub fn build(b: *std.Build) void {
     });
     agent_protocol_tests_module.addImport("agent_protocol", agent_protocol_module);
     const run_agent_protocol_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_tests_module }));
+    // Chat drawer S5c-1 (S5.6, rev 16.20.11 to 16.20.16): reply_capped, for the session's
+    // active prompt only, once, after a delta of it.
+    const agent_protocol_capped_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_protocol_capped_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_protocol_capped_tests_module.addImport("agent_protocol", agent_protocol_module);
+    const run_agent_protocol_capped_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_capped_tests_module }));
     run_agent_protocol_tests.skip_foreign_checks = true;
     // Chat drawer S6 (rev 16.18): the one-shot login helper's frames.
     const agent_login_protocol_tests_module = b.createModule(.{
@@ -890,6 +899,15 @@ pub fn build(b: *std.Build) void {
         "agent-flood-e2e",
     });
     agent_flood_e2e.addArtifactArg(exe);
+    // Chat drawer S5c-1 (S5.6, rev 16.20.11 to 16.20.16): the cap is signalled, not counted,
+    // and a completed bubble never shrinks.
+    const agent_cap_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_cap_test.py --binary \"$1\"",
+        "agent-cap-e2e",
+    });
+    agent_cap_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.5, user answer 1): the drawer is on by default; with no agent
     // home Send says the runtime is not set up; stop_browser fails a test a helper ran in.
     const agent_default_on_e2e = b.addSystemCommand(&.{
@@ -983,6 +1001,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_flood",
+    });
+    // Chat drawer S5c-1 (S5.6, rev 16.20.11 to 16.20.13): forwarding ends at the first code
+    // point that does not fit, reply_capped says so, and no message shortens a bubble.
+    const agent_host_chat_cap = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_chat_cap",
     });
     // Chat drawer S6 (rev 16.18): the one-shot sign-in helper drives the
     // setup-token fake on a pty; the token reaches fd 4 only.
@@ -1085,6 +1110,15 @@ pub fn build(b: *std.Build) void {
         "-c",
         "cd tests/manual && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY python3 ../e2e/xsession.py --xvfb -- env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_input",
     });
+    // Chat drawer S5c-1 (S5.6, rev 16.20.11): the long-run real-screen case, run as the
+    // orchestrator runs it on the user's screen, but on a private Xvfb.
+    const real_screen_longrun_xvfb = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "bin=$(realpath \"$1\") && cd tests/manual && env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ZB_LONGRUN_BIN=\"$bin\" python3 ../e2e/xsession.py --xvfb -- env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_real_screen_longrun",
+        "real-screen-longrun",
+    });
+    real_screen_longrun_xvfb.addArtifactArg(exe);
     // The X input harness survives an X error about a window that just went away
     // (BlackRobin 5773), on its own private Xvfb.
     const xinput_errors_xvfb = b.addSystemCommand(&.{
@@ -1402,6 +1436,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
     test_step.dependOn(&run_agent_protocol_tests.step);
+    test_step.dependOn(&run_agent_protocol_capped_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);
@@ -1443,6 +1478,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_window_sessions_e2e.step);
     test_step.dependOn(&agent_flood_e2e.step);
+    test_step.dependOn(&agent_cap_e2e.step);
     test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);
@@ -1456,6 +1492,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_host_chat.step);
     test_step.dependOn(&agent_host_chat_errors.step);
     test_step.dependOn(&agent_host_chat_flood.step);
+    test_step.dependOn(&agent_host_chat_cap.step);
     test_step.dependOn(&agent_host_netd.step);
     test_step.dependOn(&agent_host_relay.step);
     test_step.dependOn(&agent_host_netd_manifest.step);
@@ -1471,6 +1508,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_secrets_e2e.step);
     test_step.dependOn(&real_screen_check_unit.step);
     test_step.dependOn(&real_screen_input_xvfb.step);
+    test_step.dependOn(&real_screen_longrun_xvfb.step);
     test_step.dependOn(&xinput_errors_xvfb.step);
     test_step.dependOn(&automation_dialogs_e2e.step);
     test_step.dependOn(&ipc_windows_compile.step);

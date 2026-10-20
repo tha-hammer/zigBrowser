@@ -1,7 +1,8 @@
 //! The helper → app NDJSON frames (chat-drawer plan D7, D7b; S3.3): every
 //! line is validated natively before anything acts on it. Exact schema per
 //! type (unknown fields reject), a session the app opened, `seq` strictly
-//! increasing, a tool-call id that is a UUID used once, and the size caps.
+//! increasing, a tool-call id that is a UUID used once, the size caps, and a
+//! `reply_capped` only for the session's current prompt, once (S5c-1).
 //! A rejected frame is never shown and never acted on; its content is never
 //! logged, only the reason.
 
@@ -9,8 +10,10 @@ const std = @import("std");
 
 pub const max_frame: usize = 256 * 1024;
 pub const tool_deadline_s: i64 = 120;
+/// A prompt id is 1 to 2^53 - 1, so it is exact as a JSON number anywhere (rev 16.20.16).
+pub const max_prompt_id: i64 = (1 << 53) - 1;
 
-pub const Reason = enum { oversize, json, envelope, seq, type, schema, session, tool_id };
+pub const Reason = enum { oversize, json, envelope, seq, type, schema, session, tool_id, capped };
 
 pub const SelfCheck = struct { ok: bool, failures: []const []const u8 };
 pub const Ready = struct { version: []const u8, route: []const u8, selfcheck: SelfCheck, tool_deadline_s: i64 };
@@ -22,6 +25,9 @@ pub const ToolCall = struct { session: []const u8, id: []const u8, tool: []const
 pub const Result = struct { session: []const u8, sdk_session_id: []const u8, subtype: []const u8, is_error: bool, num_turns: i64, cost_usd: ?f64 };
 pub const Failure = struct { session: ?[]const u8, code: []const u8, message: []const u8 };
 pub const SessionEnded = struct { session: []const u8, reason: []const u8 };
+/// S5c-1 (rev 16.20.11 to 16.20.13): the reply to prompt `prompt_id` has text past its
+/// longest prefix that fits the content bound; no more of its text follows.
+pub const ReplyCapped = struct { session: []const u8, prompt_id: i64 };
 
 pub const Frame = union(enum) {
     ready: Ready,
@@ -32,6 +38,7 @@ pub const Frame = union(enum) {
     result: Result,
     @"error": Failure,
     session_ended: SessionEnded,
+    reply_capped: ReplyCapped,
 };
 
 pub const Outcome = union(enum) { ok: Frame, rejected: Reason };
@@ -53,6 +60,12 @@ pub const Validator = struct {
     sessions: std.StringHashMapUnmanaged(u32) = .empty,
     /// Every tool-call id accepted so far.
     tool_ids: std.StringHashMapUnmanaged(void) = .empty,
+    /// session id -> the last prompt the app wrote to it; it is active until its result,
+    /// its session error or session_ended. While active: whether its reply streamed a
+    /// delta yet, and whether it is capped.
+    prompts: std.StringHashMapUnmanaged(Prompt) = .empty,
+
+    const Prompt = struct { id: i64, active: bool = true, streamed: bool = false, capped: bool = false };
 
     pub fn init(gpa: std.mem.Allocator) Validator {
         return .{ .gpa = gpa };
@@ -61,6 +74,7 @@ pub const Validator = struct {
     pub fn deinit(self: *Validator) void {
         freeKeys(self.gpa, &self.sessions);
         freeKeys(self.gpa, &self.tool_ids);
+        freeKeys(self.gpa, &self.prompts);
     }
 
     /// The app opened `session` for `window` (open_session). An id is opened
@@ -78,6 +92,43 @@ pub const Validator = struct {
     /// session_ended does (RoseCat 5681).
     pub fn closeSession(self: *Validator, session: []const u8) void {
         if (self.sessions.fetchRemove(session)) |entry| self.gpa.free(entry.key);
+        if (self.prompts.fetchRemove(session)) |entry| self.gpa.free(entry.key);
+    }
+
+    /// The app wrote prompt `id` to `session` (S5c-1, rev 16.20.13): it is the session's
+    /// current prompt, not capped.
+    pub fn promptSent(self: *Validator, session: []const u8, id: i64) !void {
+        if (!self.sessions.contains(session)) return error.UnknownSession;
+        const slot = try self.prompts.getOrPut(self.gpa, session);
+        if (!slot.found_existing) {
+            slot.key_ptr.* = self.gpa.dupe(u8, session) catch |err| {
+                self.prompts.removeByPtr(slot.key_ptr);
+                return err;
+            };
+        }
+        slot.value_ptr.* = .{ .id = id };
+    }
+
+    fn endPrompt(self: *Validator, session: []const u8) void {
+        if (self.prompts.getPtr(session)) |prompt| prompt.* = .{ .id = prompt.id, .active = false };
+    }
+
+    /// The id of `session`'s active prompt, if any.
+    pub fn currentPrompt(self: *const Validator, session: []const u8) ?i64 {
+        const prompt = self.prompts.get(session) orelse return null;
+        return if (prompt.active) prompt.id else null;
+    }
+
+    /// The id the app gives `session`'s next prompt: 1, then one more per prompt written.
+    pub fn nextPromptId(self: *const Validator, session: []const u8) i64 {
+        return if (self.prompts.get(session)) |prompt| prompt.id + 1 else 1;
+    }
+
+    /// The prompt a valid cap caps: the session's current one, which streamed a delta and
+    /// is not capped yet (rev 16.20.13 and RoseCat 6d812b4).
+    fn capped(self: *Validator, f: ReplyCapped) ?*Prompt {
+        const prompt = self.prompts.getPtr(f.session) orelse return null;
+        return if (prompt.active and prompt.id == f.prompt_id and prompt.streamed and !prompt.capped) prompt else null;
     }
 
     /// One line from the helper's stdout. `arena` owns the frame's strings.
@@ -97,6 +148,11 @@ pub const Validator = struct {
         const frame = parse(arena, tag, obj) catch return .{ .rejected = .schema };
         if (!self.knownSessions(frame)) return .{ .rejected = .session };
         if (seq.integer <= self.last_seq) return .{ .rejected = .seq };
+        // Nothing of a capped reply's text streams after its cap (rev 16.20.13).
+        const capping: ?*Prompt = if (frame == .reply_capped) self.capped(frame.reply_capped) orelse return .{ .rejected = .capped } else null;
+        if (frame == .assistant_delta) {
+            if (self.prompts.get(frame.assistant_delta.session)) |prompt| if (prompt.capped) return .{ .rejected = .capped };
+        }
         if (frame == .tool_call and self.tool_ids.contains(frame.tool_call.id)) return .{ .rejected = .tool_id };
         if (frame == .tool_call) {
             const key = self.gpa.dupe(u8, frame.tool_call.id) catch return .{ .rejected = .tool_id };
@@ -106,6 +162,16 @@ pub const Validator = struct {
             };
         }
         self.last_seq = seq.integer;
+        if (capping) |prompt| prompt.capped = true;
+        switch (frame) {
+            .assistant_delta => |f| if (self.prompts.getPtr(f.session)) |prompt| {
+                prompt.streamed = true;
+            },
+            // The prompt's ending frame ends it (rev 16.20.16, RoseCat 6135).
+            .result => |f| self.endPrompt(f.session),
+            .@"error" => |f| if (f.session) |session| self.endPrompt(session),
+            else => {},
+        }
         if (frame == .session_ended) self.closeSession(frame.session_ended.session);
         return .{ .ok = frame };
     }
@@ -187,6 +253,12 @@ fn parse(arena: std.mem.Allocator, tag: std.meta.Tag(Frame), obj: Object) (Bad |
         .session_ended => blk: {
             try exact(obj, &.{ "session", "reason" });
             break :blk .{ .session_ended = .{ .session = try string(obj, "session", 64), .reason = try oneOf(obj, "reason", &end_reasons) } };
+        },
+        .reply_capped => blk: {
+            try exact(obj, &.{ "session", "prompt_id" });
+            const id = try integer(obj, "prompt_id");
+            if (id < 1 or id > max_prompt_id) return error.Schema;
+            break :blk .{ .reply_capped = .{ .session = try string(obj, "session", 64), .prompt_id = id } };
         },
     };
 }

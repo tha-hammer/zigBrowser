@@ -22,7 +22,7 @@ pub fn setHello(home: []const u8, e2e: ?helper.HelloE2e) !void {
     if (e2e) |value| hello_e2e = .{ .test_base_url = if (value.test_base_url) |url| try gpa.dupe(u8, url) else null };
 }
 
-pub const Kind = enum(c_int) { ready, session_opened, assistant_delta, assistant_message, tool_call, result, @"error", session_ended };
+pub const Kind = enum(c_int) { ready, session_opened, assistant_delta, assistant_message, tool_call, result, @"error", session_ended, reply_capped };
 
 pub const CFrame = extern struct {
     kind: c_int = 0,
@@ -92,6 +92,7 @@ export fn zb_agent_frames_validate(line: [*]const u8, len: usize, out: *CFrame) 
             setSession(out, f.session);
             setText(out, f.reason);
         },
+        .reply_capped => |f| setSession(out, f.session),
     }
     return 0;
 }
@@ -135,10 +136,21 @@ export fn zb_agent_out_open_session(window: u32, k: u32) ?[*:0]u8 {
     return owned(helper.openSessionFrame(gpa, nextSeq(), window, k));
 }
 
+/// The prompt gets the session's next prompt_id, which becomes its active prompt
+/// (rev 16.20.13 and 16.20.16): its reply_capped must carry that id.
 export fn zb_agent_out_prompt(session: [*:0]const u8, text: [*]const u8, len: usize) ?[*:0]u8 {
-    const built = (helper.promptFrame(gpa, out_seq + 1, std.mem.span(session), text[0..len]) catch return null) orelse return null;
+    const v = if (validator) |*v| v else return null;
+    const id = std.mem.span(session);
+    const prompt_id = v.nextPromptId(id);
+    if (prompt_id > protocol.max_prompt_id) return null;
+    const built = (helper.promptFrame(gpa, out_seq + 1, id, prompt_id, text[0..len]) catch return null) orelse return null;
+    const frame = owned(built) orelse return null;
+    v.promptSent(id, prompt_id) catch {
+        zb_agent_out_free(frame);
+        return null;
+    };
     out_seq += 1;
-    return owned(built);
+    return frame;
 }
 
 /// kind: 0 interrupt, 1 end_session.

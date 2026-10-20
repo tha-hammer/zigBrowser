@@ -137,9 +137,9 @@ pub fn openSessionFrame(a: std.mem.Allocator, seq: u64, window: u32, k: u32) ![]
 }
 
 /// Null when `text` is over 64 KiB (D7b): it is not sent.
-pub fn promptFrame(a: std.mem.Allocator, seq: u64, session: []const u8, text: []const u8) !?[]u8 {
+pub fn promptFrame(a: std.mem.Allocator, seq: u64, session: []const u8, prompt_id: i64, text: []const u8) !?[]u8 {
     if (text.len > max_prompt) return null;
-    return try frame(a, .{ .v = 1, .seq = seq, .type = "prompt", .session = session, .text = text });
+    return try frame(a, .{ .v = 1, .seq = seq, .type = "prompt", .session = session, .prompt_id = prompt_id, .text = text });
 }
 
 pub const SessionFrame = enum { interrupt, end_session };
