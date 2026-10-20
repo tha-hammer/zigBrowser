@@ -15079,3 +15079,46 @@ still mutate `finishedOrFailed` and invalidate the current timer before the
 identity check in `wkwebview_shim.m:488-537`. The same-window stale-success
 and stale-failure reds, production ordering fix, and remote gate outer timeout
 remain open. Verdict sent in Agent Mail 6338.
+
+### macOS test-hook isolation follow-up (`9571482`)
+
+**BLOCKED-for-tests.** The production change correctly centralizes all three
+debug seams behind `g_active_app != nil && g_active_app.e2eProtocol`, and the
+two new error-path reds now use exact raw JSON-RPC assertions: refused start is
+`-32008 navigation_failed`, while the acknowledgement failure is `-32603
+Evaluation failed`. The dedicated hook tests opt in with `--e2e-protocol`.
+
+The new inertness regression, however, sets and exercises only
+`ZB_DEBUG_DISPATCH_HOLD_MS`. A mutant removing the guard from either
+`zb_auto_test_refuse_next_nav` or `zb_auto_test_ack_fail` survives because
+their dedicated tests run with e2e mode enabled. Extend the non-e2e case to set
+all three variables together and prove that DOM evaluation remains prompt, a
+routed navigation succeeds instead of being refused, and native click succeeds
+instead of returning the injected evaluation failure. The older dispatch-hold
+parser/overflow and remote-gate outer-timeout findings also remain open, as
+does the stale tagged-navigation ordering issue until its newly landed green
+is reviewed. Verdict sent to JadeBeacon in Agent Mail 6344.
+
+### Windows WS7.5 entry-point red (`1f03e76`)
+
+**APPROVED as an unregistered failing-first red.** The test imports the real
+`zb_agent_host.__main__`, requires the Windows capability set to be empty,
+injects a future command to prove the refusal is capability-driven rather than
+an enumerated special case, and requires exact exit-2/stderr behavior before
+the selected command module is imported. Its standalone-seam matrix covers
+launch, netd, relay, hook execution, both probe paths and the token wrapper,
+with an exact named fail-closed exception at each boundary.
+
+I ran the red directly with the repository-selected host Python, display
+variables removed, a private temporary directory and an outer timeout. All
+three cases failed for their intended missing Windows refusals (exit 1), so the
+commit is genuinely red. NIT for the green: replace the child's bare
+`tempfile.mkdtemp` with cleanup-owning temporary-directory lifetime so mutant
+or failure paths do not leak `zb-win-seam-*`. The green must register this
+entry suite together with the already-approved deep-import suite, preserve the
+Linux host unit tests, and eventually pass the authoritative Windows gate.
+Verdict sent to BlueBeaver in Agent Mail 6343.
+
+The linear push-through boundary remains the already-pushed **`70317c0`**.
+Neither review changes the pending S6b1 Part-B user acceptance or the earlier
+linear blockers.
