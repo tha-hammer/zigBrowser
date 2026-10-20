@@ -13946,3 +13946,81 @@ Win32 settings slices; package third-party notices; repin dependency status;
 and make the cleanup rules require guard clauses, no side-effectful conditions,
 and named timing/sample constants. The current WiX directory is
 `INSTALLFOLDER`, not the plan's `<INSTALLDIR>`.
+
+## WKWebView routed-command port and WS0.7 fix-forward at `2b3b242`
+
+### macOS MS2a.1 green (`dbf74b5`)
+
+**`dbf74b5` is BLOCKED.** The two-host success route crosses the authenticated
+socket, engine, macOS PagePort, named `WKContentWorld`, and live DOM; returned
+C strings are paired with `zb_automation_free`. The production bridge does not
+yet satisfy the PagePort's deadline and navigation contracts:
+
+- `src/wkwebview_shim.m:901-903` ignores the kick wait result and can dispatch
+  `loadRequest` after the waiter has returned. `:999-1002` similarly allows a
+  late async-JavaScript completion to write and allocate after return, while
+  `zb_auto_await` ignores its backstop result at `:850-851`. These are exposed
+  production paths, so the no-dispatch/no-write guard cannot safely wait for a
+  later ownership slice.
+- `navigate_guarded` treats the shared `finishedOrFailed` bit as success for
+  both outcomes and the delegate exits the whole app on failure. It therefore
+  cannot produce the required `NavigationFailed`, and an old load completion
+  can satisfy a newer navigation. Each load needs owned generation/result
+  state.
+- the vtable advertises `navigateWithPolicy`, but the shim discards
+  `before_unload` at `:878-884`, contrary to the current MS2a.1 inventory.
+- the timeout test exercises only startup `page.title` and permits an 800 ms
+  request to take almost 6 seconds. It does not cover a blocked main queue,
+  never-settling eval, late effects, failed/stale navigation, or the author's
+  observed never-responding `page.navigate` hang.
+- the registered gate reuses the still-blocked `stop_browser_macos`: it returns
+  when the leader has exited without signaling a surviving saved process group.
+
+Static shell, Zig-format and diff checks pass. The Linux gate was not run
+because another owner held the slot. Findings were sent to JadeBeacon in Agent
+Mail 6227. The partial gate should be named MS2a.1 (or remain unregistered)
+until MS2a.2/3 close the plan's single MS2a gate.
+
+### WS0.7 fail-closed validator (`9a203eb`)
+
+**`9a203eb` is APPROVED as the narrow validator fix.** It removes the high-port
+range exemption, requires the complete Win10 probe schema before comparison,
+validates the Win10 nonce, rejects boolean/noninteger/out-of-range listeners,
+and compares the complete listener set and nonempty firewall hashes. The
+registered hermetic suite passes **17/17**. Independently combining the new
+tests with the parent `gate.sh` produces the expected three reds for a new
+port 50000 listener, `listeners:null`, and a missing firewall hash; the
+throwaway tree was deleted immediately.
+
+This closes findings 1 and 2 on `fb77e25` and the missing Win10-marker check.
+It does **not** approve `ae8b270` as a usable live two-host gate or close
+`9a6973b`: the live probe still cannot produce all required file-server fields,
+and its sshd read failure is still represented as a valid empty value.
+
+### WS0.7 field-source design (`2b3b242`)
+
+**`2b3b242` is NOT APPROVED — needs revision before implementation.** Its
+strict-current-policy and PID-aware direction are preferable to a port-range
+bypass, but four boundary contracts are incomplete:
+
+1. The scheduled-task `console_user` JSON has no exact path, owner/ACL,
+   atomic-publish, freshness or per-run challenge contract. A stale or
+   test-user-writable file can falsely attest that the console is safe.
+2. Effective write access is not “Allow minus Deny” over `Get-Acl`; it combines
+   ordered/inherited NTFS ACEs, token groups and share permissions. Require a
+   Windows `AccessCheck`-equivalent result or an explicitly proven read-only
+   baseline whose share list, share ACL and NTFS ACL fingerprints are all
+   revalidated without modifying served data.
+3. The firewall digest omits security-relevant fields such as Enabled,
+   RemoteAddress, Interface/Profile details, Program/Service and edge traversal,
+   and does not define locale/encoding/parser refusal. Specify a canonical
+   schema and hash the entire relevant policy; parsing failure must be an
+   unavailable value that the gate rejects.
+4. PID alone is reusable and “owned a listener before” lets any pre-existing
+   process open a new persistent high port. Bind ownership to process creation
+   identity/path/service and a reviewed allowlist, and version the listener
+   schema when changing from integers to objects so producer and validator
+   cannot silently disagree.
+
+The proposed production-box provisioning remains correctly deferred until the
+user/orchestrator is awake and explicitly authorizes it.
