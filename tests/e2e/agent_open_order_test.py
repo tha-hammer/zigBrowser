@@ -110,10 +110,16 @@ def case_close_before_open(binary: Path, tmp: Path, check) -> None:
         if not check(b.open_popup() and b.wait(lambda: b.rows("icon", 2) != [], 20), "the popup has its drawer", b):
             return
         life.send(b, "popup", win=2)
-        time.sleep(0.5)  # its open_session is out; session_opened is 3 s away
+
+        def popup_opening():
+            return [f for f in flood.app_frames(w) if f.get("type") == "open_session" and f.get("session", "").startswith("s-2-")]
+        # RoseCat 6351: the scripted helper must have the popup's open_session before the close,
+        # or a slow app could close first and the case would prove nothing.
+        if not check(b.wait(lambda: popup_opening() != [], 15), "the helper received the popup's open_session", b):
+            return
         b.zb.call("page.close", {"window_id": "window-2"})
         check(b.wait(lambda: len(b.zb.page.list()["pages"]) == 1, 15), "the popup closed before its session opened", b)
-        time.sleep(4.0)  # the late session_opened arrives
+        time.sleep(4.0)  # the late session_opened arrives (3 s after the open)
         popup = [p for p in prompts(w) if p.get("session", "").startswith("s-2-")]
         check(popup == [], f"close-before-open: no prompt was written to the closed popup's session ({popup})")
         check(b.proc.poll() is None, "the browser still runs", b)
