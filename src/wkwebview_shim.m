@@ -1271,6 +1271,8 @@ static atomic_int zb_auto_strings_live = 0;
 static atomic_int zb_auto_loop_ended = 0;
 // Count of readiness-poll jobs the app-ended drain cancelled via the no-loop (no-work) path (RoseCat 41c683a #3).
 static atomic_int zb_auto_loop_cancels = 0;
+// Count of ACTUAL readiness work executions (RoseCat da7ae1c): proves the drain cancels without running work.
+static atomic_int zb_auto_work_runs = 0;
 
 int zb_automation_debug_live_jobs(void) { return atomic_load(&zb_auto_live_jobs); }
 void zb_automation_debug_waiter_grace(unsigned int ms) { atomic_store(&zb_auto_waiter_grace_ms, ms); }
@@ -1709,6 +1711,13 @@ static int zb_auto_run_when_ready(uint32_t win, unsigned int timeout_ms, char **
 static int zb_auto_get_string(uint32_t win, unsigned int timeout_ms, char **out, BOOL want_title) {
   @autoreleasepool {
     return zb_auto_run_when_ready(win, timeout_ms, out, ^int(ZBWindowHost *host, char **result) {
+      // Count every ACTUAL execution of this readiness work, at the block's entry (RoseCat da7ae1c): the
+      // app-ended drain must cancel a queued job via the no-loop path WITHOUT running work. zb-loop-cancel
+      // only proves the branch was entered; this proves no work ran. A mutant that calls work() in the
+      // loop-ended branch (then discards the result) still invokes THIS block, so it increments here and the
+      // immediate-quit test's "work count unchanged across quit" oracle reds. e2e-gated, atomic, off-main safe.
+      int w = atomic_fetch_add(&zb_auto_work_runs, 1) + 1;
+      if (atomic_load(&zb_auto_e2e_enabled)) { fprintf(stderr, "zb-work-runs=%d\n", w); fflush(stderr); }
       // title reads the page's live document (blocked by an open dialog); url reads no page script.
       if (want_title && [host zbHasOpenDialog]) return ZB_AUTO_ERR_DIALOG_OPEN;
       NSString *value = want_title ? (host.webView.title ?: @"")

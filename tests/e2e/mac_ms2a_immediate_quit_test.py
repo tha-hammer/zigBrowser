@@ -59,6 +59,16 @@ def loop_cancel_count(err_lines):
     return val
 
 
+def work_runs_seq(err_lines):
+    """Every zb-work-runs value (emitted at the entry of the readiness WORK block — one per actual execution)."""
+    out = []
+    for ln in err_lines:
+        m = re.search(r"zb-work-runs=(\d+)", ln)
+        if m:
+            out.append(int(m.group(1)))
+    return out
+
+
 class _HangingServer:
     """GET hangs (never responds) so the page never finishes loading -> a routed op stays PREFLIGHT-live."""
     def __init__(self):
@@ -129,6 +139,7 @@ def main() -> int:
             if pre_seq and pre_seq[-1] != 0:
                 failures.append(f"live jobs not at rest before issuing: {pre_seq}")
             base_cancels = loop_cancel_count(err)
+            base_work_len = len(work_runs_seq(err))  # hanging page -> the readiness work never executes
 
             # A routed op on the still-loading (hanging) page -> a live PREFLIGHT job with a long deadline.
             # rpc.raw (not .call) so we can inspect the terminal error code rather than have it raised away.
@@ -179,6 +190,16 @@ def main() -> int:
             if loop_cancel_count(err) <= base_cancels:
                 failures.append("no zb-loop-cancel after quit: the app-ended drain did not cancel the live "
                                 "readiness job via the no-work path (is the PRODUCTION post-run drain present?)")
+
+            # DEFECT (RoseCat da7ae1c) — NO WORK runs after quit. The readiness WORK block emits zb-work-runs at
+            # its entry, so ANY execution is counted regardless of call site. On this hanging page the work
+            # never runs (PREFLIGHT), and the drain cancels via the no-work path — so the count must be UNCHANGED
+            # across the quit. A mutant that calls work(host,&result) in the loop-ended branch (even discarding
+            # the result) still enters the block, emits zb-work-runs, and reds here.
+            new_work = work_runs_seq(err)[base_work_len:]
+            if new_work:
+                failures.append(f"work ran after quit: {len(new_work)} readiness-work execution(s) {new_work} "
+                                "(the drain must cancel via the no-work path, not dispatch work)")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:
