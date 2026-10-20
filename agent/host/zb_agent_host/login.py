@@ -58,12 +58,18 @@ EXCHANGE_S = 60  # after a typed code: the token, or the prompt again (rev 16.18
 # The Enter after a typed code is its own write (rev 16.20.27, Part B's second finding): the
 # real CLI 2.1.294 reads its terminal raw, and one read holding the Enter and more than about
 # 64 other bytes is a paste whose Enter does not submit (a real code with its 43-character
-# state always is). The Enter goes once the CLI's masked echo shows it took the code in and
-# its output has been quiet for QUIET_S (it may take a code in several reads, and the Enter
-# must never share a read with the code's remainder; rev 16.20.28, RoseCat 6493), or after
-# ENTER_FALLBACK_S when no echo comes (a code too short for ECHO). Never after an ending.
-ENTER_FALLBACK_S = 1.0
-QUIET_S = 0.15
+# state always is). So the code is typed in pieces of at most CHUNK bytes, and each next piece,
+# and at last the Enter, is written only once the masked echo accounts for all that was typed
+# but at most CHUNK bytes: the CLI echoes a '*' only for a character it has read, so the stars
+# on the screen since the code was typed never exceed what it read, and the bytes it has not
+# read are at most (typed - stars). The Enter's read then holds at most CHUNK other bytes,
+# however the CLI stalls (rev 16.20.29, RoseCat 6499: quiet time was no proof). The real CLI
+# 2.1.294 (probed offline) shows the last six characters in clear and a '*' for each one before
+# them, so its stars are the typed count less six, inside CHUNK. A step whose echo does not
+# account for it within STEP_S fails closed, with no Enter. Never a step after an ending (rev
+# 16.20.28).
+CHUNK = 16
+STEP_S = 5.0
 COLUMNS = 4096
 MAX_CODE = 512
 MAX_URL = 4096
@@ -160,8 +166,9 @@ class Login:
         self.exchange_s = exchange_s
         self.exchange_by = None  # set when a code is typed; cleared when the CLI asks again
         self.typed_at = 0  # the screen offset when the code was written
-        self.enter_by = None  # a code was typed and its Enter is still to be written, by then
-        self.last_out = 0.0  # when the CLI last printed something
+        self.enter_by = None  # a step of typing the code is pending; the echo must account for it by then
+        self.typing = b""  # the code's bytes still to be typed, before its Enter
+        self.typed = 0  # the code's bytes written so far
         self.echo_at = None  # the end of the CLI's masked echo of it: its answer starts here
         self.screen = bytearray()  # the pty output, escapes removed; zeroed at the end
         self.prompts = 0  # prompts seen
@@ -209,16 +216,17 @@ class Login:
                 wait = min(left, 0.5)
                 if self.enter_by is not None:
                     with self.lock:
-                        enter_by, echoed, quiet_at = self.enter_by, self.echo_at is not None, self.last_out + QUIET_S
-                        # The echo came and the CLI is quiet: it took all of the code in. Or no
-                        # echo came in time: the Enter anyway. Either way, its own write.
-                        due = enter_by is not None and (now >= enter_by or (echoed and now >= quiet_at))
-                        if due:
+                        enter_by = self.enter_by
+                        # The echo accounts for all but at most CHUNK of the typed bytes: the next step.
+                        grew = enter_by is not None and self.screen[self.typed_at:].count(b"*") >= self.typed - CHUNK
+                        if grew:
                             self.enter()
-                    if due:
+                    if grew:
                         continue
+                    if enter_by is not None and now >= enter_by:
+                        return self.end("error", code="cli", message="the Claude CLI did not take the code in")
                     if enter_by is not None:
-                        wait = max(0.0, min(wait, enter_by - now, quiet_at - now if echoed else wait))
+                        wait = max(0.0, min(wait, enter_by - now))
                 if not select.select([self.master], [], [], wait)[0]:
                     continue
                 try:
@@ -232,7 +240,6 @@ class Login:
                         return self.end("error", code="shape", message="the Claude CLI printed no setup token")
                     return self.end("error", code="cli", message="the Claude CLI ended before the token")
                 with self.lock:
-                    self.last_out = time.monotonic()
                     self.screen += CONTROL.sub(b"", ESCAPE.sub(b"", bytes(memoryview(chunk)[:n])).replace(b"\r", b""))
                     if len(self.screen) > MAX_SCREEN:
                         return self.end("error", code="cli", message="the Claude CLI printed too much")
@@ -279,20 +286,31 @@ class Login:
             self.typed_at = len(self.screen)
             self.echo_at = None
             self.exchange_by = time.monotonic() + self.exchange_s
-            self.enter_by = time.monotonic() + ENTER_FALLBACK_S
-            os.write(self.master, code.encode("ascii"))
+            self.typing = code.encode("ascii")
+            self.typed = 0
+            self.enter_by = time.monotonic() + STEP_S
+            self.enter()  # its first piece
 
     def enter(self):
-        """The typed code's Enter, as its own write (called with the lock held). One
-        linearization with every ending (RoseCat 6493): under end_lock, which claim() holds to
-        end the sign-in, so once an ending is claimed no Enter reaches the CLI (it could submit
-        a code the user cancelled), and an Enter already written came before the ending."""
+        """The next step of typing the code: its next piece, or, when all of it is typed, its
+        Enter, alone (called with the lock held). One linearization with every ending (RoseCat
+        6493): under end_lock, which claim() holds to end the sign-in, so once an ending is
+        claimed no step reaches the CLI (an Enter could submit a code the user cancelled), and
+        a step already written came before the ending."""
         with self.end_lock:
             if self.enter_by is None:
                 return
-            self.enter_by = None
-            if not self.ended.is_set():
-                os.write(self.master, b"\r")
+            if self.ended.is_set():
+                self.enter_by, self.typing = None, b""
+                return
+            if self.typing:
+                piece, self.typing = self.typing[:CHUNK], self.typing[CHUNK:]
+            else:
+                piece = b"\r"
+            if piece != b"\r":
+                self.typed += len(piece)
+            self.enter_by = time.monotonic() + STEP_S if piece != b"\r" else None
+            os.write(self.master, piece)
 
     def claim(self):
         """True for exactly one caller: the one whose ending is the sign-in's."""

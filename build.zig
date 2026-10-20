@@ -1320,6 +1320,12 @@ pub fn build(b: *std.Build) void {
         "-c",
         "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_enter",
     });
+    // Rev 16.20.29 (RoseCat 6499): the code typed in pieces paced by the echo; fail closed.
+    const agent_host_login_typing = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_login_typing",
+    });
     // Rev 16.18.9 (S6b1 part B): the CLI's relay proxy; an OAuth error or silence
     // after a code ends the sign-in (error exchange, the 60 s exchange clock).
     const agent_host_login_exchange = b.addSystemCommand(&.{
@@ -1805,6 +1811,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_reap.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_paste.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_enter.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_typing.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login_exchange.step);
     test_step.dependOn(&run_agent_auth_authorize_tests.step);
     test_step.dependOn(&run_agent_login_authorize_tests.step);
@@ -1821,6 +1828,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_reap.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_paste.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_enter.step);
+    if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_typing.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_exchange.step);
     agent_auth_step.dependOn(&run_agent_auth_authorize_tests.step);
     agent_auth_step.dependOn(&run_agent_login_authorize_tests.step);

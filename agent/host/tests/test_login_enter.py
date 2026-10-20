@@ -52,6 +52,7 @@ class NoEnterAfterTheEnding(unittest.TestCase):
         self.addCleanup(os.close, w)
         run.master = w
         run.enter_by = time.monotonic() + 30
+        self.addCleanup(lambda: run.token_fd >= 0 and os.close(run.token_fd))  # RoseCat 6499 SHOULD
         return run, r
 
     @staticmethod
@@ -161,17 +162,19 @@ class TheEnterAfterAllOfTheCode(unittest.TestCase):
         self.assertEqual(sum(n for n, _ in reads), len(code), reads)
 
     def test_the_app_going_away_with_an_enter_pending_sends_no_enter(self):
-        """A code too short to echo, so its Enter waits for the 1 s fallback; the app's EOF
-        (its cancel, or the window closed) comes first: the CLI never gets an Enter."""
+        """A CLI that does not echo, so the Enter waits (rev 16.20.29: for the echo, up to
+        STEP_S); the app's EOF (its cancel, or the window closed) comes first: the CLI never
+        gets an Enter."""
+        (self.home / ".zb-fake-setup-token" / "no-echo").write_text("", encoding="ascii")
         h = self.start()
         h.frame()
         self.assertEqual(h.frame(), {"type": "need_code"})
-        h.send("code", code="a#b")
+        h.send("code", code=f"{REAL_LENGTH}#s")
         time.sleep(0.2)
         h.proc.stdin.close()
         self.assertEqual(h.frame(timeout=10)["code"], "cancelled")
         h.proc.wait(10)
-        time.sleep(1.5)  # past the fallback
+        time.sleep(1.5)
         self.assertEqual([n for n in self.reads() if n[1]], [], f"no read with an Enter ({self.reads()})")
 
 

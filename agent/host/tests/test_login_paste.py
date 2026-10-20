@@ -59,8 +59,8 @@ class PasteTest(unittest.TestCase):
         self.sign_in("c0de")
 
     def test_a_code_too_short_to_echo_still_gets_its_enter(self):
-        """No run of 8 stars to wait for: the Enter still goes, alone, on the fallback clock,
-        and the CLI answers it (here: not this sign-in's code, so it asks again)."""
+        """No run of 8 stars: the Enter still goes, alone, once the echo grew (rev 16.20.29), and
+        the CLI answers it (here: not this sign-in's code, so it asks again)."""
         h = self.start()
         h.frame()
         self.assertEqual(h.frame(), {"type": "need_code"})
@@ -71,13 +71,14 @@ class PasteTest(unittest.TestCase):
 
 
 class EchoTest(unittest.TestCase):
-    """In process, so the fallback clock can be pushed out of reach: then only the CLI's
-    masked echo can send the Enter, and a real-length code still finishes at once."""
+    """In process, with the step bound pushed out of reach (rev 16.20.29: STEP_S): the CLI's
+    masked echo alone paces the pieces and the Enter, and a real-length code still finishes at
+    once."""
 
     def test_the_enter_follows_the_echo_not_the_fallback_clock(self):
         from zb_agent_host import login
-        self.addCleanup(setattr, login, "ENTER_FALLBACK_S", login.ENTER_FALLBACK_S)
-        login.ENTER_FALLBACK_S = 30.0
+        self.addCleanup(setattr, login, "STEP_S", login.STEP_S)
+        login.STEP_S = 30.0
         home = Path(tempfile.mkdtemp(prefix="zb-login-unit-"))
         self.addCleanup(shutil.rmtree, home, ignore_errors=True)
         (home / ".claude").mkdir()
@@ -114,7 +115,7 @@ class EchoTest(unittest.TestCase):
         os.write(write, (json.dumps(frame) + "\n").encode())
         self.assertTrue(wait(lambda: out[-1]["type"] in ("done", "error"), 10), out)
         self.assertEqual(out[-1], {"type": "done"})
-        self.assertLess(time.monotonic() - started, 5, "the Enter waited for the fallback clock, not the echo")
+        self.assertLess(time.monotonic() - started, 5, "the steps waited for the bound, not the echo")
 
 
 del LoginTest  # PasteTest borrows its home and helpers; its own cases run in test_login
