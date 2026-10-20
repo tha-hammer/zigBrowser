@@ -134,6 +134,65 @@ selftest_stage() {
   return 0
 }
 
+# ---- WS0.6 + WS0.7 two-host --probe-only -------------------------------------------------
+probe_host() { # $1=user $2=host $3=port -> prints the host's host_probe.ps1 JSON (display-scrubbed)
+  local key="${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}"
+  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key")
+  run_remote "${SSH[@]}" -p "$3" "$1@$2" \
+    "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File zb\\host_probe.ps1"
+}
+
+validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
+  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" <<'PY'
+import sys, json
+vm, fs_pre, fs_post, win11_marker, win10_user = sys.argv[1:6]
+def load(s, who):
+    try:
+        return json.loads(s)
+    except Exception:
+        sys.stderr.write("FAIL: probe (%s) returned bad JSON\n" % who); sys.exit(1)
+v = load(vm, "win11"); a = load(fs_pre, "win10 pre"); b = load(fs_post, "win10 post")
+# WS0.6: the VM's identity marker must match the pinned nonce (missing/empty/wrong => wrong host).
+m = v.get("identity_marker")
+if not m or m != win11_marker:
+    sys.stderr.write("wrong host: Win11 identity_marker does not match ZB_WIN11_MARKER\n"); sys.exit(1)
+# WS0.7: the file server must be undisturbed.
+FORBIDDEN = {"administrators", "backup operators", "remote desktop users", "remote management users"}
+names = {str(g.get("name", "")).split("\\")[-1].strip().lower() for g in a.get("groups", [])}
+bad = sorted(names & FORBIDDEN)
+if bad:
+    sys.stderr.write("file-server: zbtest is in a forbidden group: %s\n" % bad); sys.exit(1)
+wp = a.get("zbtest_write_paths") or []
+if wp:
+    sys.stderr.write("file-server: zbtest can write to %s\n" % wp[0]); sys.exit(1)
+cu = str(a.get("console_user", "")).split("\\")[-1].lower()
+if cu != win10_user.lower():
+    sys.stderr.write("file-server: console user is %r, not %s\n" % (a.get("console_user"), win10_user)); sys.exit(1)
+if a.get("listeners") != b.get("listeners"):
+    sys.stderr.write("file-server: listeners changed %s -> %s\n" % (a.get("listeners"), b.get("listeners"))); sys.exit(1)
+if a.get("fw_rules_hash") != b.get("fw_rules_hash"):
+    sys.stderr.write("file-server: firewall rules changed between pre and post\n"); sys.exit(1)
+print("ALLOW")
+PY
+}
+
+probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hosts
+  local domain="${ZB_WIN11_DOMAIN:-win11-m8}"
+  local state; state=$(virsh domstate "$domain" 2>/dev/null)
+  if [ "$state" != "running" ]; then
+    echo "NOT RUN: Win11 VM $domain is ${state:-unknown}" >&2
+    return 1
+  fi
+  local vm_json fs_pre fs_post
+  vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}")
+  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}")
+  # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).
+  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}")
+  validate_probes "$vm_json" "$fs_pre" "$fs_post" >/dev/null || return 1
+  printf 'WIN11 %s\nWIN10 %s\n' "$vm_json" "$fs_post"
+  return 0
+}
+
 # ---- orchestration -----------------------------------------------------------------------
 # Sub-commands that do NOT need the full two-host set:
 case "${1:-}" in
@@ -170,10 +229,10 @@ fi
 
 case "${1:-}" in
   --probe-only)
-    # [W] step: probe each host and print its JSON (host_probe.ps1 + the console-session helper).
-    # The two-host orchestration (WS0.4/0.6/0.7 + the Win10 side) lands once the Win10 host exists.
-    echo "gate: --probe-only two-host orchestration not implemented yet (needs the Win10 host)" >&2
-    exit 2
+    # WS0.6 (VM identity) + WS0.7 (file-server fence), both hosts. Live run needs the real probe +
+    # the .gate-identity nonce; hermetically it runs against the selftest's fake ssh/virsh.
+    probe_only
+    exit $?
     ;;
   "")
     echo "gate: two-host run not implemented yet (needs the Win10 host); WS0 foundation only" >&2

@@ -202,6 +202,12 @@ pub fn build(b: *std.Build) void {
     const windows_resolve_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/resolve_live_test.py" });
     b.step("windows-resolve-live", "Live Windows resolver regression on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_resolve_live.step);
 
+    // WS0.6/WS0.7 two-host gate selftest: drives gate.sh --probe-only against fake ssh/virsh (VM
+    // identity marker + file-server fence). Hermetic — no Windows host. The live --probe-only run
+    // against both real hosts is separate (needs the slot + the .gate-identity nonce).
+    const windows_twohost_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/gate_twohost_selftest.py" });
+    b.step("windows-twohost-selftest", "Run the Windows two-host gate selftest (WS0.6/WS0.7, fake ssh/virsh)").dependOn(&windows_twohost_selftest.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1363,6 +1369,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&windows_gate_selftest.step);
     test_step.dependOn(&windows_resolve_live.step);
+    test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
