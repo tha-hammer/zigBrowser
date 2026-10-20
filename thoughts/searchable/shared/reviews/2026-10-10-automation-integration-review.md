@@ -19291,3 +19291,44 @@ to 120 arbitrary bytes from a rejected file in its error string
 (`mac_ms5_census.py:18-21`). `runtime.json` is not a credential store, so this
 does not block this slice, but the Mac gate should report length/digest rather
 than echo file content before consuming real staged artifacts.
+
+## MS5 staging red and MS6.1 token-isolation profile gate (`142abbe`, `35abc08`)
+
+Reviewed on 2026-10-20 against macOS plan rev 17 Behavior MS5.1c and the
+blocking MS6.1 token-isolation contract. Explicit verdicts:
+
+- **`142abbe` is BLOCKED-for-tests.** It is genuinely red on the absent
+  `stage_agent_runtime.sh`, and the per-host tampered-package, fat-Mach-O,
+  exact-package and `runtime.json` assertions are useful. It does not yet
+  encode the whole staging-red contract, however. `ms5_stage_gate.sh:41-89`
+  runs and deletes the two staged trees independently. Its direct
+  `package_problems`/`runtime_json_problem` calls at lines 69-80 verify each
+  tree in isolation, so a stager that writes different bytes for a listed
+  `zb_agent_host` resource on x86_64 and arm64 survives. The script also never
+  invokes the mandated production entry point
+  `mac_resource_compat.py --milestone MS5`; the shell Mach-O loop and direct
+  helper calls bypass that connector. Return sufficient staged resource trees
+  from both legs, run the production two-tree oracle, and prove an
+  architecture-dependent-resource mutant red. **SHOULD:** line 58's “stages
+  nothing” check inspects only `bad-prefix/Frameworks/agent-host`; require the
+  entire bad prefix absent or empty.
+- **`35abc08` is APPROVED for the profile-level MS6.1 hard gate.** It does not
+  close the full production Workflow Closure, which still requires
+  `MacSeatbeltBackend` and the app-side hook spawn. The gate is non-vacuous:
+  `ms6_1_token_isolation_test.sh:38-45` runs the exact compiled probe
+  unsandboxed against the same target and requires both the procargs canary and
+  `RESULT: BREACH`. The Seatbelt leg at lines 47-59 instead requires
+  `RESULT: CONTAINED`; removing `sandbox-exec` therefore takes the already
+  proven breach path and fails at lines 50-53. The reported broad-sysctl and
+  missing-`process-info*` mutants establish that both profile restrictions are
+  load-bearing, and `ms6_gate.sh:37-51` registers the check on both architecture
+  legs. **SHOULD:** correct the contradictory profile comment at line 5, which
+  says deny-default blocks `proc_pidinfo`, versus the measured explicit-deny
+  requirement at lines 43-46. **NIT:** kill and wait/reap the target in the
+  test cleanup rather than kill alone.
+
+`bash -n`/`sh -n` on the changed scripts and
+`git diff --check 142abbe^..35abc08` passed. The both-architecture and mutation
+results for `35abc08` came from JadeBeacon's evidence packet (Agent Mail 6904).
+No Mac, browser, live socket, credential or display was used. Findings were
+mailed to BlueBeaver in Agent Mail 6909 and JadeBeacon in Agent Mail 6910.
