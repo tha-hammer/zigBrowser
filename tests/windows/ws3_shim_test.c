@@ -10,6 +10,12 @@
  * name and domain, the user data folder in use (<dir>\WebView2\EBWebView), and after the
  * window closes, NO_LOOP.
  *
+ * The job marshal (RoseCat 6504), through the shim's test seams: a job the caller abandoned
+ * before the UI side committed to it never runs (its cookie never reaches the store); a job
+ * whose WebView2 callback is still pending when the window closes is answered NO_LOOP at once,
+ * and the late callback changes nothing. WebView2 caps a cookie's lifetime at 400 days (GTK does
+ * not): a far expiry reads back capped.
+ *
  * Exit 0 when every check passes, 1 otherwise; each check prints one line. */
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -25,6 +31,12 @@
 #include <time.h>
 
 #include "webkit_shim.h"
+
+/* The shim's WS3 test seams (src/webview2_shim.cpp; not in webkit_shim.h). */
+void zb_automation_debug_hold_dispatch_ms(unsigned int ms);
+void zb_automation_debug_park_callbacks(int on);
+int zb_automation_debug_parked_callbacks(void);
+int zb_automation_debug_run_parked_callbacks(void);
 
 /* The shim answers page IPC through the app's dispatcher; nothing here sends page IPC. */
 int zb_ipc_dispatch(const char *cmd, const char *args_json, const char **out_result,
@@ -136,6 +148,21 @@ static void cookies_without_loop(void) {
 
 static int run_rc = -1;
 
+struct pending_read {
+  int rc;
+  ULONGLONG returned_at;
+};
+
+static DWORD WINAPI read_all(LPVOID arg) {
+  struct pending_read *read = (struct pending_read *)arg;
+  char *json = NULL, *err = NULL;
+  read->rc = zb_cookies_get_all(0, NULL, 20000, &json, &err);
+  read->returned_at = GetTickCount64();
+  zb_automation_free(json);
+  zb_automation_free(err);
+  return 0;
+}
+
 static DWORD WINAPI loop_main(LPVOID unused) {
   (void)unused;
   run_rc = zb_app_run("about:blank", 0, 0);
@@ -189,12 +216,57 @@ static void with_loop(void) {
   snprintf(ebwebview, sizeof(ebwebview), "%s\\WebView2\\EBWebView", dir);
   check(is_dir(ebwebview), "loop: WebView2 keeps its data in <dir>\\WebView2");
 
+  /* A far expiry: WebView2 keeps at most 400 days (RFC 6265bis); GTK keeps the given one. */
+  ZbCookie distant = cookie("zbfar", "v4", 4102444800LL); /* 2100-01-01 */
+  check(zb_cookies_add(0, &distant, 10000, &err) == ZB_AUTO_OK, "loop: a cookie expiring in 2100 is added");
+  rc = zb_cookies_get_all(0, "https://example.test/", 10000, &json, &err);
+  const char *at = json != NULL ? strstr(json, "\"name\":\"zbfar\"") : NULL;
+  const char *exp = at != NULL ? strstr(at, "\"expires\":") : NULL;
+  const long long capped = exp != NULL ? atoll(exp + strlen("\"expires\":")) : 0;
+  const long long now = (long long)time(NULL);
+  check(rc == ZB_AUTO_OK && capped >= now + 399LL * 86400 && capped <= now + 401LL * 86400,
+        "loop: WebView2 caps the 2100 expiry at about 400 days from now (GTK does not)");
+  zb_automation_free(json);
+  json = NULL;
+
+  /* Abandoned before it started: the UI side is held past the caller's deadline. */
+  zb_automation_debug_hold_dispatch_ms(1500);
+  ZbCookie held = cookie("zbheld", "v5", -1);
+  ULONGLONG start = GetTickCount64();
+  rc = zb_cookies_add(0, &held, 300, &err);
+  check(rc == ZB_AUTO_ERR_TIMEOUT && GetTickCount64() - start < 1200, "loop: a held job times out at its deadline");
+  zb_automation_free(err);
+  err = NULL;
+  Sleep(2000); /* the hold ends; the UI side finds the job abandoned */
+  zb_automation_debug_hold_dispatch_ms(0);
+  rc = zb_cookies_get_all(0, NULL, 10000, &json, &err);
+  check(rc == ZB_AUTO_OK && !contains(json, "\"name\":\"zbheld\""),
+        "loop: a job abandoned before it started never runs (its cookie is not in the store)");
+  zb_automation_free(json);
+  json = NULL;
+
+  /* In flight at loop end: the read's WebView2 completion is parked, then the window closes. */
+  zb_automation_debug_park_callbacks(1);
+  struct pending_read read = {-1, 0};
+  HANDLE reader = CreateThread(NULL, 0, read_all, &read, 0, NULL);
+  for (int i = 0; i < 200 && zb_automation_debug_parked_callbacks() == 0; ++i) {
+    Sleep(50);
+  }
+  check(zb_automation_debug_parked_callbacks() == 1, "loop: the cookie read is in flight (its completion parked)");
   HWND hwnd = FindWindowA("zigBrowserWebView2Host", NULL);
   check(hwnd != NULL, "loop: the host window exists");
+  const ULONGLONG closed_at = GetTickCount64();
   if (hwnd != NULL) {
     PostMessageA(hwnd, WM_CLOSE, 0, 0);
   }
   check(WaitForSingleObject(thread, 30000) == WAIT_OBJECT_0, "loop: closing the window ends zb_app_run");
+  check(WaitForSingleObject(reader, 5000) == WAIT_OBJECT_0 && read.rc == ZB_AUTO_ERR_NO_LOOP &&
+            read.returned_at - closed_at < 5000,
+        "loop: the in-flight read is answered NO_LOOP at loop end, not at its deadline");
+  CloseHandle(reader);
+  check(zb_automation_debug_run_parked_callbacks() == 1 && read.rc == ZB_AUTO_ERR_NO_LOOP,
+        "loop: the late WebView2 completion changes nothing (answered once)");
+  zb_automation_debug_park_callbacks(0);
   check(run_rc == ZB_EXIT_SUCCESS, "loop: zb_app_run returns success");
   CloseHandle(thread);
   rc = zb_cookies_get_all(0, NULL, 1000, &json, &err);
