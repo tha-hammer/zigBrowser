@@ -18393,3 +18393,69 @@ rev-14 item 6 and this call-site commit remain open even though the underlying
 pure decision remains approved through `890d52e`.
 
 No full gate, Mac host, live browser, live socket or display was used locally.
+
+## WS0 nonce trigger and field hardening (`6fa72c8`)
+
+Reviewed at `6fa72c8` on 2026-10-20.
+
+**Verdict: BLOCKED.** This fix-forward does close several concrete parts of
+the `f766655` review: `sshd_listen` is now pinned to the configured address,
+share identities are compared after Windows normalization and duplicates are
+refused, `free_gb` must be finite, and the previously demonstrated
+explicit-Allow-before-inherited-Deny case no longer gets flattened into
+allow-minus-deny. The VM session path also now creates a per-run nonce,
+triggers the console task and waits with a default 60-second deadline. In an
+exact clean export the hostless suite is **75/75**, `bash -n` passes and the
+diff is whitespace-clean. AzureRidge additionally reports a successful live
+unlocked-VM trigger and four ad-hoc DACL cases.
+
+The remaining blockers are:
+
+1. `tests/windows/gate.sh:208-210` makes the plan's fixed file-server baseline
+   `{22,135,139,445,3389}` replaceable through the ordinary ambient
+   `ZB_WIN10_BASELINE_PORTS`. A focused invocation of the real
+   `gate.sh --probe-only` validator with both probes reporting only port 22 and
+   `ZB_WIN10_BASELINE_PORTS=22` exits **0**. This is not a fail-closed fixed
+   baseline. Remove the production override, or confine any override to an
+   unmistakable selftest-only seam whose inertness is tested.
+2. `host_probe.ps1:166-204` is still not Windows AccessCheck. It treats every
+   matching `FileSystemAccessRule` as effective and never inspects
+   `PropagationFlags.InheritOnly`; Windows skips an inherit-only ACE on the
+   object itself. It also does not account for the object owner's implicit
+   `WRITE_DAC` right. Either omission can let an early non-effective Deny hide
+   a later effective Allow, or can miss that the test user owns the served
+   root and can grant itself write access, producing the unsafe empty
+   `zbtest_write_paths`. Microsoft documents both rules in
+   [ACE inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)
+   and the
+   [AccessCheck algorithm](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/4f1bbcbb-814a-4c70-a11e-2a5b8779a6f9).
+   Use the platform access-check primitive (or implement all of its applicable
+   rules and fail closed on unsupported ACEs/null DACLs), and report/refuse an
+   owned served root with mutable security.
+3. No committed test executes that PowerShell ACL evaluator. The 75 hostless
+   tests feed already-computed `zbtest_write_paths`; the reported live DACL
+   cases are not a repeatable oracle. Add a Windows test over actual temporary
+   DACLs which covers ACE order, an inherit-only ACE, ownership/implicit
+   `WRITE_DAC`, each mutating right and an unreadable/unsupported descriptor.
+   The old aggregate implementation and the current two unsafe mutants must
+   turn it red.
+4. The nonce tests at `gate_twohost_selftest.py:685-713` only find the strings
+   `schtasks` and `nonce.txt`; their SSH stub emits a canned `RESULT=OK` and
+   never runs `session_probe.ps1` or the nonce/freshness logic in
+   `host_probe.ps1`. Thus deleting either nonce comparison survives. Moreover,
+   `host_probe.ps1:141-143` checks only `ts > now-15m`: despite lines 131-132
+   claiming otherwise, an arbitrarily future timestamp is accepted. Add a
+   production-path Windows oracle for matching, mismatched, stale and future
+   results, plus locked and unlocked desktops. The source still says
+   `LIVE-VERIFY PENDING` for those latter states at
+   `session_probe.ps1:13-14`.
+
+**Contract/documentation gap:** `session_probe.ps1:5-7` says the gate installs
+the helper/task, while the repository contains no task registration or script
+staging path; `gate.sh:172` only triggers a pre-registered task. If this is an
+external VM provisioning prerequisite, pin and verify the task name, action,
+principal and script hash in the plan/gate. Otherwise a clean host cannot be
+reproduced from committed artifacts and the gate only times out.
+
+No full gate, Windows host, live browser, live socket or display was used
+locally.
