@@ -17564,3 +17564,17 @@ x86_64 Rosetta launcher and must be excluded from the bundled copy/census.
 The plan must also pin, or explicitly defer before implementation, the fat
 runtime interpreter path and no-venv relocatability rule. Verdict sent to
 JadeBeacon and BlueBeaver in Agent Mail 6770.
+
+### MS5 parent-death fix-forward (`7d06792`)
+
+**BLOCKED on one remaining check/register race.** Making setup the process
+group leader, forbidding its macOS descendants from changing group, having its
+own watcher `killpg(..., SIGKILL)`, and censusing every group member and
+descendant after SIGKILLing the browser correctly address the ordinary
+unhandled-death hole. But the plan checks `getppid()` once and only then
+registers `EVFILT_PROC/NOTE_EXIT`. A browser death between those operations can
+be missed. The contract must treat registration/kevent failure as parent death
+and re-check the expected parent immediately after successful registration;
+the e2e needs a barrier/mutant for that exact window followed by the same
+zero-group census. Item 4 and the bundled-Python addendum remain separate
+holds. Finding sent in Agent Mail 6773.
