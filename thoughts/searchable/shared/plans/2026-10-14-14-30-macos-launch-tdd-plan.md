@@ -341,9 +341,13 @@ UNCLOSED).
   `WKUIDelegate` method — with OR without a trusted-click user gesture, a navigation away from a page
   with an active `beforeunload` handler raises no panel (there is no public `runBeforeUnloadConfirmPanel`;
   WebKit handles it internally). Surfacing it needs private WebKit SPI, which the 2026-10-20 user decision
-  rules out. So `navigateWithPolicy` keeps **rejecting non-`.fail`** (accept/dismiss) as `error.Unsupported`;
-  only `.fail` (the no-prompt engine default) is exact. alert/confirm/prompt dialogs ARE captured and
-  answerable (36d3065). Revisit with scroll/move if the private-API stance changes.
+  rules out. So `navigateWithPolicy` keeps **rejecting accept/dismiss** as `error.Unsupported`, AND `.fail`
+  **cannot honor the shared contract either**: `page_port.zig:161-165` / `router.zig:29-31` /
+  `webkit_shim.h:204-213` require `.fail` to return **DialogOpen and leave the prompt open**, but on macOS
+  the prompt is never raised, so a navigate away from a page with a `beforeunload` handler simply **loads**
+  (no DialogOpen). This is a real cross-platform **divergence**, not an "exact `.fail`" — stated honestly
+  until the prompt is surfaceable. alert/confirm/prompt dialogs ARE captured and answerable (36d3065).
+  Revisit with scroll/move if the private-API stance changes.
 - Native input on Linux is toolkit-path (`gdk_event_new` + `gtk_main_do_event`
   webkit_shim.c:3373), not XTEST; the macOS NSEvent path is a **spike** (MS2b), not an assumed
   equivalent.
@@ -729,7 +733,7 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_app_set_agent_drawer` / `zb_app_get_agent_drawer` | void / int | MS7 | impl — drawer on/off | mac drawer e2e |
 | `zb_automation_set_script` | void | MS2a | impl — private `WKContentWorld`, before first load | MS2a.2 |
 | `zb_automation_eval_json` | int+out | MS2a | impl | Closure A / MS2a.1 |
-| `zb_automation_navigate` / `_navigate_guarded` / `_reload` | int | MS2a | impl — `.fail` navigation + per-WKNavigation success/failure (navigation_failed, no app-exit); `beforeunload` accept/dismiss **deferred to MS2b.2** (no prompt without the `WKUIDelegate`; the port rejects non-`.fail` as unsupported until then) | MS2a.1 |
+| `zb_automation_navigate` / `_navigate_guarded` / `_reload` | int | MS2a | impl — navigation + per-WKNavigation success/failure (navigation_failed, no app-exit). **beforeunload is UNSUPPORTED on macOS** (MS2b.2 probe: WKWebView surfaces no beforeunload prompt to any public API): the port rejects accept/dismiss as `error.Unsupported`, and `.fail` **cannot** honor the shared DialogOpen-and-leave-prompt-open contract — a navigate away from a page with a `beforeunload` handler simply loads. A documented cross-platform divergence, pending the private-API decision | MS2a.1 |
 | `zb_automation_get_url` / `_get_title` | int+out | MS2a | impl | MS2a.1 |
 | `zb_automation_free` | void | MS2a | impl — allocator paired with every returned C string | allocator-pairing test (MS2a) |
 | `zb_automation_loop_mark` | void | MS2a | impl — ENDED + queued-job cancel + waiter wake on quit | immediate-quit-cancellation test (MS2a) |
@@ -794,8 +798,17 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
     If such a need is documented, its real-screen runner obtains permission and verifies its app
     is frontmost before emitting — never a silent default, and never conflated with the in-process
     paths above.
-- **MS2b.2** dialogs (alert/confirm/prompt/beforeunload) captured by the `WKUIDelegate` and
-  answered via the ABI (analog of webkit_shim.c:4523-4625).
+- **MS2b.2** dialogs: **alert/confirm/prompt** captured by the `WKUIDelegate` and answered via the ABI
+  (analog of webkit_shim.c:4523-4625) — shipped (36d3065), held until answered, with the dialog_open
+  fast-fail and the eval dialog-watch. **beforeunload is NOT captured on macOS**: WKWebView surfaces no
+  beforeunload prompt to any public `WKUIDelegate` method (probed with and without a user gesture), so it
+  needs private WebKit SPI — ruled out by the 2026-10-20 user decision. Consequence (a real cross-platform
+  DIVERGENCE, stated honestly): a routed `page.navigate` away from a page with a `beforeunload` handler
+  **proceeds and loads** on macOS; it does NOT raise the shared contract's DialogOpen-and-leave-the-prompt-open
+  for `.fail`, and accept/dismiss are `error.Unsupported`. On Linux/the shared contract
+  (`page_port.zig:161-165`, `router.zig:29-31`, `webkit_shim.h:204-213`) `.fail` returns DialogOpen and
+  leaves the prompt open. macOS cannot honor that until the prompt is surfaceable; revisit with the
+  scroll/move private-API decision.
 
 ### MS2c behaviors (multi-window / freeze / recovery) — blocker 2
 - **MS2c.1** a **two-hop related-popup chain**: `window.open` twice; the popups use **WebKit's

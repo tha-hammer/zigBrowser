@@ -1037,10 +1037,12 @@ static int zb_auto_test_ack_hang(void) {
 // Test-only (ZB_DEBUG_PAIR_HOLD_MS): during native typing, pause on the main thread AFTER the per-pair
 // ownership transition (reclaim: INFLIGHT -> DISPATCHING) and BEFORE the next pair's keyDown is sent, so
 // a red can let the command deadline fall exactly inside that window. Because the transition is atomic
-// and the job is DISPATCHING during the hold, zb_job_wait blocks past the deadline and the command still
-// completes — proving the ABI cannot return (or deliver a late event) in the check->send gap. A
-// check-then-act mutant leaves the job INFLIGHT during the hold, so the waiter abandons and a late event
-// lands after give-up: the red then fails (RoseCat 6397.1 held-interleaving). Gated on --e2e-protocol.
+// and the job is DISPATCHING during the hold, zb_job_wait blocks past the deadline, so BOTH pairs are
+// delivered within the owned window before the waiter can return — the command then ends in
+// action_timeout (the deadline passed during the owned hold) but with data.sent_chars == every pair,
+// proving no pair is abandoned and no late event lands in the check->send gap. A check-then-act mutant
+// leaves the job INFLIGHT during the hold, so the waiter abandons mid-hold (sent_chars == 1) and the
+// next pair lands after give-up: the red then fails (RoseCat 6397.1/6481). Gated on --e2e-protocol.
 static void zb_auto_test_pair_hold(void) {
   if (!zb_auto_test_hooks_enabled()) return;
   long ms = zb_parse_nonneg(getenv("ZB_DEBUG_PAIR_HOLD_MS"));
@@ -1499,12 +1501,12 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
 
 int zb_automation_navigate_guarded(uint32_t win, const char *url, int before_unload,
                                    unsigned int timeout_ms, char **out_err) {
-  // before_unload (accept/dismiss/fail) governs how a beforeunload PROMPT is answered. WKWebView does
-  // not surface beforeunload prompts without a dialog (WKUIDelegate) handler; that handler — and the
-  // enforcement of this policy through it — lands with the dialog slice (MS2b.2). FAIL (the engine
-  // default) is the no-prompt path and is exact here; accept/dismiss become distinguishable only once
-  // the dialog handler exists. A documented split of the contract (RoseCat 6227.3), not a silent
-  // conflation: a routed navigate that would raise a beforeunload prompt is not yet exercised.
+  // before_unload is UNSUPPORTED on macOS and cannot be honored through public API (MS2b.2 probe,
+  // 2026-10-20): WKWebView surfaces NO beforeunload prompt to any WKUIDelegate method (even with a user
+  // gesture), so there is no prompt to accept/dismiss and no way to return the shared contract's
+  // DialogOpen-and-leave-prompt-open for FAIL — a navigate away from a page with a beforeunload handler
+  // just loads here. The Zig port rejects accept/dismiss as error.Unsupported; FAIL reaches here and
+  // proceeds. A documented cross-platform divergence (plan :339/:732), pending the private-API decision.
   (void)before_unload;
   if (out_err != NULL) *out_err = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;

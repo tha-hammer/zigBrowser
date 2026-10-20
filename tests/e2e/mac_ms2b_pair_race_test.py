@@ -116,11 +116,14 @@ def main() -> int:
             # during the hold, so the waiter abandons at the deadline with sent_chars == 1 and the second
             # pair lands LATE (after give-up) — the red.
             resp = rpc.raw("dom.type", {"selector": "css=#inp", "text": TEXT, "options": {"input": "native", "timeout_ms": TIMEOUT_MS}})
+            # The hold (3000ms) is guaranteed to outlast the deadline (1500ms), so the ONLY correct
+            # outcome is action_timeout with BOTH pairs delivered within the owned window before the
+            # waiter returned: data.sent_chars == len(TEXT). A success response is impossible here and is
+            # NOT accepted (that would let an inerted hold survive — RoseCat 6481); a check-then-act
+            # reclaim gives sent_chars == 1 (abandoned mid-hold, late pair).
             err_obj = resp.get("error")
             if not err_obj:
-                # A straight success is also fine (both pairs owned-and-delivered inside the deadline).
-                if resp.get("result") not in ({"ok": True}, None):
-                    failures.append(f"dom.type unexpected result: {resp.get('result')!r}")
+                failures.append(f"dom.type did not time out despite a hold ({HOLD_MS}ms) past the deadline ({TIMEOUT_MS}ms): {resp.get('result')!r}")
             else:
                 sent = (err_obj.get("data") or {}).get("sent_chars")
                 if err_obj.get("code") != -32009:

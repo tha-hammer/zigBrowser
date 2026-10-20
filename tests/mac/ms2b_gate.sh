@@ -41,6 +41,7 @@ python3 tests/e2e/mac_ms2b_key_text_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_key_coverage_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_ack_error_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_doc_changed_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2b_text_doc_changed_test.py --selftest
 python3 tests/e2e/mac_ms2b_text_doc_changed_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_partial_type_test.py --browser zig-out/bin/zigBrowser
 python3 tests/e2e/mac_ms2b_pair_race_test.py --browser zig-out/bin/zigBrowser

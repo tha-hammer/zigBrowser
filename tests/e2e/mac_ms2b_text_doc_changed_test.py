@@ -124,11 +124,69 @@ def run_case(browser: Path, timeout_sec: float, after_n: int, want_sent: int, fa
             proc_holder.clear()
 
 
+def selftest() -> int:
+    """Non-live harness pin (RoseCat 6455/6481): without launching a browser, prove run_case places its
+    spawned process in the signal-cleanup holder BEFORE the first blocking operation (the RpcClient
+    connect) and clears it only AFTER stop. Stubs Popen/RpcClient/stop_browser_macos so nothing real
+    runs; the RpcClient stub captures the holder state at the first blocking op, the stop stub captures it
+    at teardown, and the post-run holder must be empty."""
+    import io
+    mod = sys.modules[__name__]
+    holder: list = []
+    observed: dict = {}
+
+    class FakeProc:
+        pid = 424242
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def poll(self):
+            return None
+
+    class FakeRpc:
+        def __init__(self, sock, timeout):
+            observed["holder_at_first_blocking"] = list(holder)  # must already hold the proc
+            raise RuntimeError("selftest: stop run_case at the first blocking op")
+
+    def fake_stop(proc):
+        observed["holder_at_stop"] = list(holder)  # still held when we stop
+
+    orig = (subprocess.Popen, mod.RpcClient, mod.stop_browser_macos)
+    subprocess.Popen = lambda *a, **k: FakeProc()
+    mod.RpcClient = FakeRpc
+    mod.stop_browser_macos = fake_stop
+    try:
+        run_case(Path("/nonexistent"), 1.0, 1, 1, [], holder)
+    finally:
+        subprocess.Popen, mod.RpcClient, mod.stop_browser_macos = orig
+
+    bad = []
+    if not observed.get("holder_at_first_blocking"):
+        bad.append("the proc was NOT in the cleanup holder before the first blocking op")
+    if not observed.get("holder_at_stop"):
+        bad.append("the proc was NOT in the holder at stop time")
+    if holder:
+        bad.append(f"the holder was not cleared after stop: {holder!r}")
+    if bad:
+        print("FAIL\tms2b-text-doc-changed-selftest")
+        for b in bad:
+            eprint(f"  {b}")
+        return 1
+    print("PASS\tms2b-text-doc-changed-selftest")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", default="zig-out/bin/zigBrowser")
     ap.add_argument("--timeout-sec", type=float, default=25.0)
+    ap.add_argument("--selftest", action="store_true", help="non-live harness pin for the cleanup holder")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
     browser = Path(args.browser)
     if not browser.is_file():
         eprint(f"SKIP: binary not found: {browser}")
