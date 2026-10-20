@@ -18576,3 +18576,77 @@ separate S7b status: the user's `tools` real-screen run and the prior
 `527485f` acceptance follow-ups remain pending. No full gate or browser was
 run; all local commands had `DISPLAY` and `WAYLAND_DISPLAY` removed, and the
 clean red export was deleted immediately.
+
+## WS0 real-file-server reconciliation and access oracle (`b620b51`)
+
+Reviewed at `b620b51` on 2026-10-20 against the four open findings in
+`50a4c5b` and the orchestrator's read-only observation of the real Windows 10
+file server.
+
+**Verdict: BLOCKED. Do not treat this as clearing WS0 for the first live
+two-host `--probe-only` acceptance run.** The display-free hostless suite is
+green **71/71**, `gate.sh` passes `bash -n`, the new Python compiles, and the
+diff is whitespace-clean. Several real improvements land: the ambient
+listener-baseline override is gone; pre/post listener equality remains; the
+file-server root/free-space assumptions are correctly removed from code after
+the orchestrator's observation; future-dated session evidence is refused;
+and the committed test now executes the extracted production ACL and nonce
+logic on the VM. Those close finding 1 and a material part of findings 3/4.
+
+The remaining blockers are:
+
+1. **The advertised Windows `AccessCheck` is still a hand-written
+   approximation.** `host_probe.ps1:43-68` never calls `AccessCheck` and
+   reduces the current token to `WindowsIdentity.User` plus the bare SIDs in
+   `WindowsIdentity.Groups`. Windows access checking also consumes each
+   token SID's attributes: disabled SIDs are ignored, while deny-only SIDs
+   participate only in deny ACEs. An early deny ACE for a disabled group can
+   therefore make this loop stop before a later effective allow and report a
+   writable served path as read-only. It also cannot account for restricted
+   token and privilege behavior. Microsoft's `AccessCheck` contract takes
+   the security descriptor, client token, generic mapping and privilege set
+   precisely for these semantics; a SID list is not equivalent. Use the real
+   platform access check (a zero-disk Reflection.Emit P/Invoke is compatible
+   with this probe) and fail closed if it cannot be performed.
+2. **The committed ACL oracle is materially narrower than its claim and the
+   required red.** `host_live_test.py:56-80` constructs in-memory
+   `DirectorySecurity` objects, not actual temporary on-disk DACLs. Its
+   scenarios exercise only `WriteData` and `Delete`; they do not independently
+   cover `AppendData`, `DeleteSubdirectoriesAndFiles`, `ChangePermissions` or
+   `TakeOwnership`, an unreadable/unsupported ACE, or enabled/disabled/
+   deny-only token groups. The file is not registered by `build.zig`,
+   `gate.sh`, or any Windows gate (`git grep` finds only comments), so the
+   reported manual 5/5 is not repeatable gate evidence. Register it in the
+   live Windows gate and make the old/manual evaluator and the missing token-
+   attribute cases red.
+3. **The externally provisioned task is not pin-verified as documented.** At
+   `gate.sh:169-178`, `schtasks /FO LIST /V` is accepted if its localized free-
+   form output contains `session_probe.ps1` anywhere and the current user's
+   leaf name anywhere. That does not prove the exact action path, the run-as
+   principal, `InteractiveToken`/“only when logged on,” or even which field
+   supplied either substring. The hostless tests at
+   `gate_twohost_selftest.py:647-690` only assert source substrings or inject
+   a canned `RESULT`; the reported live 5/5 does not exercise a task mismatch.
+   Query the task as XML and compare its action command/arguments, principal,
+   logon type and enabled state field-by-field, with hostile-action, wrong-
+   principal and noninteractive reds.
+4. **The lock-state half of finding 4 remains explicitly unverified.** The
+   new nonce cases plant `session.json` themselves; they prove that the real
+   host probe accepts a matching/fresh record and drops mismatch, stale and
+   far-future records, but they do not execute `session_probe.ps1`'s desktop
+   detection. `session_probe.ps1:18-20` still records only an unlocked live
+   observation and says the locked case is pending. A real locked-desktop
+   run must produce `locked=true` before this signal is accepted.
+
+The plan also contradicts the new decision in its authoritative text. The
+new note at lines 523-529 says file-server `root`/`free_gb` and a fixed
+listener baseline are not applicable, but lines 471-473 still require 20 GB
+on that server, lines 713-714 still say its `free_gb` and `root` are gate-
+enforced, and WS0.7 lines 748-754 still requires `free_gb` and the fixed
+`22,135,139,445,3389` listener list. Reconcile the normative clauses rather
+than leaving a later exception beside conflicting requirements.
+
+No Windows host, file server, full gate, browser, live socket or display was
+used locally. The official semantics checked during review are Microsoft's
+`AccessCheck` documentation, “How AccessCheck Works,” and “SID Attributes in
+an Access Token.”
