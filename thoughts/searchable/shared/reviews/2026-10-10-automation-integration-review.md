@@ -13829,6 +13829,54 @@ Also define whether `sshd_allowusers` contains directive lines or individual
 tokens; the current parser returns one unsplit string per directive. Verdict
 sent to AzureRidge in Agent Mail 6221.
 
+## S6b1 Part-B production green (`b499cd7`)
+
+### `b499cd7` — APPROVED for code; user-screen Part B remains pending
+
+The production change closes the red chain `e53d931` + `72eaaef` without
+bypassing it:
+
+- the one-shot helper derives `HTTPS_PROXY` and `HTTP_PROXY` from the
+  `SandboxBackend` egress endpoint used by chat, keeps only loopback in
+  `NO_PROXY`, and the real-binary proxy case crosses the login sandbox, login
+  netd, outer relay, native login supervisor, Secrets window and token store;
+- the exchange clock begins only when the helper writes a code to the CLI,
+  is cleared when the CLI presents a new code prompt, and is subordinate to
+  the existing ten-minute whole-login deadline. Post-code OAuth/retry output
+  becomes the fixed `exchange` ending, while pre-code copies remain inert;
+- `exchange` is admitted by the exact native login-frame validator. The C
+  layer sees only its code, maps every ending to a fixed sentence, and never
+  renders or logs the helper's message or PTY output; and
+- the error path remains exactly-once, stops/reaps the helper, stores no token,
+  and a retry hides the old reason before beginning a new sign-in.
+
+Independent checks at exact `b499cd7`:
+
+- clean-export, display-free `test_login_exchange.py`: **9/9 passed**;
+- clean-export private-Xvfb `agent_login_exchange_test.py` through the real
+  binary: **52/52 checks passed**. The silence case ended `error-timeout` at
+  **59.7 s**; the canary was absent from every scanned surface; the refused
+  proxy probe was censused; and success/retry stored the expected fake token.
+
+BlueBeaver's clean-export full gate reports **174/174 steps, 929/929 tests**.
+The independent targeted export and its cache were deleted immediately.
+
+**SHOULD:** `typed_at` is the current sanitized screen-buffer offset, so PTY
+output written before the code but still unread at that instant can be
+classified as post-code under extreme scheduling. The committed pre-code
+fixtures deliberately wait until their output is consumed and therefore do
+not pin this receive-order edge. A future hardening test should queue the
+pre-code OAuth text at the PTY boundary and prove it cannot end the sign-in.
+The real CLI does not normally emit an exchange failure before receiving a
+code, so this does not block the current fix. Also refresh the stale error-code
+comment in `src/agent_login.h` to include `exchange` (NIT).
+
+Final S6b1 acceptance still requires the orchestrator's morning Part-B run
+with the user and a census allowing only the documented Claude endpoints.
+Because `b499cd7` is after other still-blocked linear commits, this approval
+does not by itself advance the push-through boundary past the already-pushed
+`70317c0`.
+
 ## Voice-plan review at `9a6973b`
 
 The plan-review and cleanup-contract audits were documentation-only. No live
