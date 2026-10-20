@@ -59,8 +59,14 @@ try { $freeGb = [math]::Round([System.IO.DriveInfo]::new('C').AvailableFreeSpace
 $mySess = 0;  try { [void][Zb.Native]::ProcessIdToSessionId([Zb.Native]::GetCurrentProcessId(), [ref]$mySess) } catch {}
 $console = $null; try { $console = [int][Zb.Native]::WTSGetActiveConsoleSessionId() } catch {}
 
+# WS0.6 identity marker (rev 2.2): the provisioning nonce the gate pins as ZB_WIN11_MARKER. Read-only;
+# empty/absent when not provisioned (the gate then fails "wrong host"). Replaces the unreadable SMBIOS UUID.
+$identityMarker = $null
+try { $identityMarker = (Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'zb\.gate-identity') -Raw -ErrorAction Stop).Trim() } catch {}
+
 $o = [ordered]@{
   schema              = 1
+  identity_marker     = $identityMarker
   test_user           = $id.Name
   os_build            = (Get-Reg $cv 'CurrentBuildNumber')
   display_version     = (Get-Reg $cv 'DisplayVersion')
