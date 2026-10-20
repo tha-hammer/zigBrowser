@@ -220,6 +220,11 @@ pub fn build(b: *std.Build) void {
     const windows_build_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/build_on_windows_selftest.py" });
     b.step("windows-build-selftest", "Run the Windows build-driver selftest (fake git/ssh/scp/timeout)").dependOn(&windows_build_selftest.step);
 
+    // WS item b (live): join_argv round-trips through the real CommandLineToArgvW on the Win11 VM — the
+    // independent argv oracle the Linux reference parser cannot be. Skips cleanly without ZB_WIN11_HOST.
+    const windows_wincontain_argv_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/wincontain_argv_live_test.py" });
+    b.step("windows-wincontain-argv-live", "Live Windows argv oracle on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_wincontain_argv_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1440,6 +1445,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_resolve_live.step);
     test_step.dependOn(&windows_twohost_selftest.step);
     test_step.dependOn(&windows_build_selftest.step);
+    test_step.dependOn(&windows_wincontain_argv_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
