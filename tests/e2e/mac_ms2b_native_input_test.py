@@ -17,7 +17,6 @@ stub (isTrusted false) or a no-op that returns {"ok": true} without delivering t
 import argparse
 import http.server
 import os
-import socket
 import subprocess
 import sys
 import tempfile
@@ -25,7 +24,7 @@ import threading
 from pathlib import Path
 
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
-from mac_ms2a_routed_test import stop_browser_macos  # noqa: E402
+from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # noqa: E402
 
 SKIP_EXIT = 77
 
@@ -83,6 +82,9 @@ def main() -> int:
         eprint(f"SKIP: binary not found: {browser}")
         return SKIP_EXIT
 
+    proc_holder: list[subprocess.Popen] = []
+    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
+
     failures: list[str] = []
 
     def expect_eq(label, actual, expected):
@@ -93,10 +95,13 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
+        # Own process group (orphan-safe killpg teardown via stop_browser_macos).
         proc = subprocess.Popen(
             [str(browser), f"{fixture.base_url}/", "--automation-api"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            start_new_session=True,
         )
+        proc_holder.append(proc)
         assert proc.stdout is not None and proc.stderr is not None
         out: list[str] = []
         err: list[str] = []

@@ -1,56 +1,88 @@
 #!/usr/bin/env python3
-"""MS2a RED (unregistered) — routed automation commands on the macOS WKWebView backend.
+"""MS2a.1 RED (unregistered) — routed automation commands on the macOS WKWebView backend.
 
-MS2a.1: `page.navigate` + `page.url`/`page.title` over the automation socket must drive the real
-WKWebView and report the real page state. The macOS shim does not implement the `zb_automation_*`
-routed-command ABI yet (wkwebview_shim.m defines only zb_app_run/run_open/run_screenshot/
-version_line/reload/window_new; N12: a build without that platform port answers SDK requests
-cleanly with a capability error), so this FAILS today — that is the MS2a red. MS1 proved the
-UNSIGNED universal runs; this runs the UNSIGNED build (MS2a may proceed in parallel with MS1b).
+MS2a.1: `page.navigate` + `page.url`/`page.title` + a DOM-change read (`dom.getText css=#heading`)
+over the automation socket must drive the real WKWebView and report the real page state. The macOS
+shim implements only the 6 lifecycle fns (no `zb_automation_*` routed-command port; N12: a build
+without that platform port answers SDK requests cleanly with a capability error), so this FAILS
+today — the MS2a.1 red. MS1 proved the UNSIGNED universal runs; this runs the UNSIGNED build (MS2a
+may proceed in parallel with MS1b).
+
+Scope note: this is the MS2a.1 red (navigate/url/title + the Closure-A eval/DOM boundary). The
+private-world spoof/metamorphic property (MS2a.2) and ownership/readiness/late-completion (MS2a.3)
+are separate later red commits.
 
 Runs ON a Mac (WKWebView needs the WindowServer); the Mac channel is logged in as the console user,
 so launch directly (no xvfb prefix, like tests/mac/gate.sh). Unregistered in build.zig
 (red-commits-outside-the-gate); the MS2a green registers the macOS routed-command gate.
 
-Mutation-resistant: it asserts the url and title ACTUALLY become the navigated page's, so a stub
-that returns {"ok": true} without navigating, or a page.url that echoes the request, still fails.
+Process hygiene: the browser is launched in its OWN process group (start_new_session) and torn down
+by killpg (SIGTERM -> SIGKILL, reaped, bounded), including on SIGTERM/SIGINT, so a timed-out or
+killed gate cannot orphan the Mac browser.
+
+Mutation-resistant: it asserts the url, title AND the navigated page's DOM heading ACTUALLY become
+the new page's, so a stub that returns {"ok": true} without navigating, or a page.url that echoes
+the request, still fails; the dom.getText read also crosses the eval/script boundary (Closure A).
 """
 import argparse
 import os
 import signal
-import socket
-import struct
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 
-# Reuse the Linux harness pieces (shipped to the Mac by build-on-mac.sh under tests/e2e). NOT
-# automation_core_test.terminate — it reads Linux /proc (slice2_common), which macOS lacks.
+# Reuse the Linux harness pieces (shipped to the Mac by build-on-mac.sh under tests/e2e).
 from automation_core_test import RpcClient, _read_lines  # noqa: E402
 from automation_fixture_server import AutomationFixtureServer  # noqa: E402
 
 SKIP_EXIT = 77
 
 
-def stop_browser_macos(proc: subprocess.Popen) -> None:
-    """macOS-safe teardown: no /proc scan. Terminate, then kill if it lingers."""
-    if proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-
-
 def eprint(*a):
     print(*a, file=sys.stderr, flush=True)
+
+
+def stop_browser_macos(proc: subprocess.Popen) -> None:
+    """macOS-safe, orphan-safe teardown: kill the browser's whole process GROUP (no Linux /proc).
+
+    The process is its own session/group leader (start_new_session), so killpg reaches any helper
+    it spawned. SIGTERM then SIGKILL, each bounded, and reap. Safe to call more than once."""
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, OSError):
+            break
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _install_signal_cleanup(get_proc):
+    """On SIGTERM/SIGINT (e.g. an outer gate timeout), tear the browser group down, then re-raise."""
+    def handler(signum, _frame):
+        proc = get_proc()
+        if proc is not None:
+            stop_browser_macos(proc)
+        # Restore default and re-raise so the exit status reflects the signal.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for s in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, handler)
 
 
 def main() -> int:
@@ -65,6 +97,9 @@ def main() -> int:
         eprint(f"SKIP: binary not found: {browser}")
         return SKIP_EXIT
 
+    proc_holder: list[subprocess.Popen] = []
+    _install_signal_cleanup(lambda: proc_holder[0] if proc_holder else None)
+
     failures: list[str] = []
 
     def expect_eq(label, actual, expected):
@@ -76,11 +111,13 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
-        # Console-user launch (no prefix); the Mac session owns the WindowServer.
+        # Console-user launch (no prefix) in its OWN process group (orphan-safe teardown).
         proc = subprocess.Popen(
             [str(browser), f"{fixture.base_url}/core", "--automation-api"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            start_new_session=True,
         )
+        proc_holder.append(proc)
         assert proc.stdout is not None and proc.stderr is not None
         out: list[str] = []
         err: list[str] = []
@@ -89,8 +126,6 @@ def main() -> int:
 
         rpc = None
         try:
-            # If the socket never comes up, that is a HARNESS failure (the server must start even
-            # without the WKWebView port); surface it distinctly from the routed-command red.
             try:
                 rpc = RpcClient(socket_path, args.timeout_sec)
             except Exception as exc:
@@ -101,7 +136,7 @@ def main() -> int:
                 return 1
 
             base = fixture.base_url
-            # Readiness + MS2a.1: these all return a capability error on macOS today (-> AssertionError
+            # Readiness + MS2a.1. These all return a capability error on macOS today (-> AssertionError
             # from rpc.call), which is the red. The green makes them drive the real WKWebView.
             expect_eq("page.url (initial)", rpc.call("page.url")["url"], f"{base}/core")
             expect_eq("page.title (initial)", rpc.call("page.title")["title"], "zigBrowser Core Fixture")
@@ -109,6 +144,10 @@ def main() -> int:
             # Mutation-resistant: assert the REAL post-navigation page state, not just ok.
             expect_eq("page.url (after navigate)", rpc.call("page.url")["url"], f"{base}/nav-b")
             expect_eq("page.title (after navigate)", rpc.call("page.title")["title"], "Nav B")
+            # Closure A: cross the eval/script boundary — the navigated page's DOM heading, so
+            # navigation cannot pass through a cached url/title alone (matches the Linux source test).
+            expect_eq("dom.getText #heading (after navigate)",
+                      rpc.call("dom.getText", {"selector": "css=#heading"})["text"], "Nav B")
         except AssertionError as exc:
             failures.append(f"routed command rejected (expected on macOS today): {exc}")
         except Exception as exc:  # noqa: BLE001
