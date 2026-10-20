@@ -741,7 +741,8 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_automation_window_id_at` | uint32 | **MS2a** | impl — window-registry enumeration (backs `list`/`alive`) | MS2a window-registry test |
 | `zb_automation_run_generation` | uint32 | **MS2a** | impl — the generation counter the no-dispatch-after-abandon guard reads (macOS analog of the GTK generation guard) | MS2a.3 late-completion test |
 | `zb_automation_list_dialogs` / `_respond_dialog` | int | MS2b | impl — `WKUIDelegate` captures **alert/confirm/prompt**, held until answered; cancel-aware list/respond + dialog_open fast-fail + eval dialog-watch (36d3065, mutant-proven both arches). **beforeunload is NOT surfaced** — see below | MS2b.2 |
-| `zb_automation_list_windows` / `_close_window` / `_recover_windows` | int | MS2c | impl | MS2c.1 / MS2c.3, Closure B / C |
+| `zb_automation_list_windows` / `_close_window` | int | MS2c | impl — page.list + health watchdog (list_windows), page.close a popup (primary refused) + forWindow (d82da2e/03a6523/9870693) | MS2c.1 |
+| `zb_automation_recover_windows` | int | MS2c | **NOT implemented — spike.** Consent (phase 1) works server-side; the actual end+reload is fail-closed `unsupported` (no public web-process terminate; the public path is view-replacement, a future increment). Pinned by `mac_ms2c_recover_test.py` | MS2c.3 |
 | `zb_cookies_get_all` / `_add` / `_delete` | int | **MS3** (moved from MS2c) | impl over `WKHTTPCookieStore` (the MS3 data-store owner); MS4.4 login gate consumes | `mac_cookie_test` (MS3) |
 | `zb_set_input_files` | int | MS2b | impl — incl. regular-file refusal | MS2b input-files test |
 | `zb_screenshot_png` | int | MS2b | impl — full-page | MS2b screenshot test |
@@ -828,6 +829,16 @@ the mechanism**, and each slice's gate records exactly which seams it promoted.
   id, re-mount its drawer per MS2c.5) rather than private SPI. **If no public WKWebView API can
   recover a hung content process, MS2c stops at a documented spike** and the plan does not assume
   a reload recovers it.
+  - **SPIKE FINDING (2026-10-20, a769442 chain):** phase 1 (consent) **works** on macOS — the
+    responsiveness watchdog (MS2c.2) reports the frozen window, and page.recover returns the incident,
+    at-risk set and expiry server-side. Phase 2 (acknowledge → the actual end+reload via the port's
+    `recoverWindows`) is currently **UNSUPPORTED and FAIL-CLOSED** (`-32011 session_invalid` reason
+    `unsupported`), pinned by `mac_ms2c_recover_test.py`: WKWebView has **no public web-process
+    terminate** (only private SPI, ruled out by the 2026-10-20 user decision). The identified public path
+    is **WKWebView view-replacement** (swap in a fresh view/web process keeping the `window_id`,
+    re-wire delegates/health/script, reload, forget native input) — a substantial future increment, NOT
+    an automatic kill and NOT private SPI. Until it lands, recovery stays fail-closed unsupported; the
+    consent flow and the crash-presentation handler (MS2c.4) are shipped.
 - **MS2c.4 (crash-presentation parity — blocker 6):** on `webViewWebContentProcessDidTerminate:`,
   the macOS shim **reports per-window termination**, shows a **static crash document** via a
   **public simulated-request** load (not a private reload), **keeps the committed URL**,
