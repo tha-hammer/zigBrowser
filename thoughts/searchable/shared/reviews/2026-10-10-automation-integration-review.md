@@ -17578,3 +17578,59 @@ and re-check the expected parent immediately after successful registration;
 the e2e needs a barrier/mutant for that exact window followed by the same
 zero-group census. Item 4 and the bundled-Python addendum remain separate
 holds. Finding sent in Agent Mail 6773.
+
+### MS5 parent-death plan closure (`7d06792`, `9d299bd`)
+
+**`7d06792` is cumulatively APPROVED by `9d299bd`; `9d299bd` is APPROVED.**
+The final plan now makes setup the process-group leader, installs a Darwin
+`EVFILT_PROC`/`NOTE_EXIT` watch before setup does other work, treats every
+registration and wait error as parent death, and rechecks the captured parent
+PID after successful registration. That closes both ordinary SIGKILL cleanup
+and the check-to-register/reused-PID race. Every death path kills setup's own
+group, while ordinary browser shutdown also kills and reaps it.
+
+The test contract is appropriately split: a real both-architecture e2e holds
+between the first parent check and registration, SIGKILLs the browser and
+requires a zero-member/zero-descendant census within two seconds; an injected
+Linux unit test covers the otherwise impractical reused-PID interleaving and
+registration-error mutants. Item 4's file-owner approval and the separate
+bundled-Python corrections remain independent MS5 holds; they do not reopen
+this item-5 verdict. No executable code changed in these two plan commits.
+
+### WS0-completion probe green (`fb5470d`)
+
+**BLOCKED.** The targeted hostless test passes 28/28 under a display-scrubbed
+environment, and the schema-2 probe adds useful direct WTS console identity,
+registry share discovery and fail-closed nulls. It does not yet close the
+prior WS0 findings or satisfy the authoritative Windows plan:
+
+1. `gate.sh:206-208` newly declares `interactive_session` and `locked`
+   inapplicable on the physical host, contradicting the plan's two-host goal
+   and fail-closed rules at plan lines 662-680. That contract change has no
+   user decision or plan amendment. A console username proves identity, not
+   that the session is active and unlocked.
+2. `host_probe.ps1:103-115` reads a fixed `session.json` with no run nonce or
+   freshness bound, while `gate.sh --probe-only` never launches or awaits the
+   in-console helper. A stale file written while the VM was unlocked can
+   therefore make a currently locked VM green. The probe must consume a fresh,
+   run-correlated helper result, or fail closed.
+3. `host_probe.ps1:123-129` discards each SMB share name and returns only root
+   paths, although WS0.7 requires names plus roots. `gate.sh:204-205` accepts
+   any list and never compares `shares` pre/post; adding or removing a share
+   can survive because port 445 was already listening. Add a typed schema and
+   exact pre/post comparison with missing/malformed/changed negatives.
+4. The claimed complete readiness validator still omits configured
+   `test_user`, minimum OS build, nonempty WebView2, expected root/free-space,
+   and host-specific tool checks. The new test changes the physical-host
+   negative from inactive-session to wrong-user rather than adding coverage,
+   so deleting these absent checks still survives.
+5. The ACL oracle at `host_probe.ps1:133-141` looks only for Allow ACE strings
+   containing `Write`, `Modify` or `FullControl`; it does not compute effective
+   access or cover other mutating rights such as CreateFiles/AppendData/Delete,
+   and it does not account for the SMB share permission. This can omit a path
+   that the test user can mutate. Pin the access algorithm with representative
+   allow/deny and individual-right cases, failing safe on uncertainty.
+
+The exact expected-snapshot/name/date issue from `69e9935` also remains open.
+The 28/28 hostless pass proves the current relaxed fake schema, not the real
+probe-to-gate chain. No full gate was run for this review.
