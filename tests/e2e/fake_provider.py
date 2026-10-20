@@ -4,12 +4,14 @@ reaches through ZIGBROWSER_AGENT_AUTH_TEST, and nothing else.
 - A throwaway certificate for claude.com and platform.claude.com (one day, P-256). The seam's
   `ca=` names it, and the auth window allows exactly this certificate for those two hosts.
 - An HTTPS server on 127.0.0.1 that plays both hosts and records every request:
-  - `/cai/oauth/authorize?...` (claude.com): the sign-in page. It sets the cookie `zbprovider=1`,
-    shows `document.cookie` in `#cookies` (S6.3: no profile cookie may appear), has a popup
-    button (`#popup`, window.open, which the window must refuse), and an Authorize link
-    (`#authorize`) to the callback the current `variant` builds from the request's
-    redirect_uri and state: `ok` (the exact callback), `wrong-state`, `missing-state`,
-    `other-port` (:8443), `http`, `lookalike` (platform.claude.com.evil.example) or `no-code`.
+  - `/cai/oauth/authorize?...` (claude.com): the sign-in page. It sets the cookie `zbprovider=1`
+    and shows `document.cookie` in `#cookies` (S6.3), as text that takes no pointer events. Its
+    one action, `#action`, fills the page (plan rev 16.18.20, RoseCat 6402: the test clicks the
+    window's centre): in the `popup` variant a link that calls window.open (which the window
+    must refuse); otherwise the Authorize link to the callback the `variant` builds from the
+    request's redirect_uri and state: `ok` (the exact callback), `wrong-state`,
+    `missing-state`, `other-port` (:8443), `http`, `lookalike` (platform.claude.com.evil.example)
+    or `no-code`.
   - `/oauth/code/callback` (platform.claude.com): the code page. A request for it is recorded
     in `callback_loads`; the window must never load it (the callback is captured).
 - A recording loopback proxy (`seam_value()` names it): CONNECT to claude.com:443 or
@@ -30,7 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 HOSTS = ("claude.com", "platform.claude.com")
-VARIANTS = ("ok", "wrong-state", "missing-state", "other-port", "http", "lookalike", "no-code")
+VARIANTS = ("ok", "wrong-state", "missing-state", "other-port", "http", "lookalike", "no-code", "popup")
 CODE = "zbFakeAuthCode-0123"
 
 
@@ -100,7 +102,16 @@ class FakeProvider:
             "http": f"http://{host}{path}?{code}&state={state}",
             "lookalike": f"https://{host}.evil.example{path}?{code}&state={state}",
             "no-code": f"https://{host}{path}?state={state}",
+            "popup": f"https://{host}{path}?{code}&state={state}",  # not the page's action
         }[self.variant]
+
+    def action_html(self, redirect_uri: str, state: str) -> str:
+        """The page's one action, filling it."""
+        if self.variant == "popup":
+            return ACTION.format(href="#", onclick=' onclick="window.open(\'https://claude.ai/\', \'_blank\'); return false;"',
+                                 label="Open a popup")
+        target = html.escape(self.callback_for(redirect_uri, state), quote=True)
+        return ACTION.format(href=target, onclick="", label="Authorize")
 
     # --- the HTTPS server -----------------------------------------------------------------
     def _start_https(self):
@@ -117,8 +128,8 @@ class FakeProvider:
                 with provider.lock:
                     provider.requests.append({"host": host, "path": split.path, "query": query})
                 if host == "claude.com" and split.path == "/cai/oauth/authorize":
-                    target = provider.callback_for(query.get("redirect_uri", ""), query.get("state", ""))
-                    body = PAGE.format(target=html.escape(target, quote=True)).encode()
+                    action = provider.action_html(query.get("redirect_uri", ""), query.get("state", ""))
+                    body = PAGE.format(action=action).encode()
                     return self._send(200, body, "text/html; charset=utf-8", cookie=True)
                 if host == "platform.claude.com" and split.path == "/oauth/code/callback":
                     with provider.lock:
@@ -213,12 +224,17 @@ class FakeProvider:
 
 
 PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Fake sign-in</title></head>
+<html><head><meta charset="utf-8"><title>Fake sign-in</title>
+<style>
+html, body {{ margin: 0; height: 100%; }}
+#action {{ position: fixed; inset: 0; display: block; background: #e8eefc; font: 32px sans-serif; }}
+#cookies {{ position: fixed; left: 8px; bottom: 8px; pointer-events: none; font: 14px monospace; }}
+</style></head>
 <body>
-<h1>Fake provider</h1>
-<p>Cookies this page sees: <span id="cookies"></span></p>
-<p><a id="authorize" href="{target}">Authorize</a></p>
-<p><button id="popup" onclick="window.open('https://claude.ai/', '_blank')">Open a popup</button></p>
+{action}
+<p id="cookies"></p>
 <script>document.getElementById('cookies').textContent = document.cookie;</script>
 </body></html>
 """
+ACTION = '<a id="action" href="{href}"{onclick}>{label}</a>'
+

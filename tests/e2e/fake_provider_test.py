@@ -70,9 +70,12 @@ class FakeProviderTest(unittest.TestCase):
             status, body, cookie = via_proxy(p, "claude.com", AUTHORIZE)
             self.assertEqual(status, 200)
             self.assertEqual(cookie, b"zbprovider=1; Secure; Path=/")
-            for needle in (b'id="cookies"', b'id="popup"', b'id="authorize"'):
-                self.assertIn(needle, body)
-            link = re.search(rb'id="authorize" href="([^"]+)"', body).group(1).decode().replace("&amp;", "&")
+            # exactly one action, filling the page; the cookie text takes no pointer events
+            self.assertEqual(body.count(b"<a "), 1)
+            self.assertNotIn(b"<button", body)
+            self.assertIn(b"#action { position: fixed; inset: 0;", body)
+            self.assertIn(b"pointer-events: none", body)
+            link = re.search(rb'id="action" href="([^"]+)"', body).group(1).decode().replace("&amp;", "&")
             self.assertEqual(link, f"https://platform.claude.com/oauth/code/callback?code={fp.CODE}&state=zbState-0123")
             self.assertEqual(p.connects, ["claude.com:443"])
             self.assertEqual(p.requests[0]["path"], "/cai/oauth/authorize")
@@ -86,13 +89,17 @@ class FakeProviderTest(unittest.TestCase):
             "http": "http://platform.claude.com/oauth/code/callback?code={c}&state=zbState-0123",
             "lookalike": "https://platform.claude.com.evil.example/oauth/code/callback?code={c}&state=zbState-0123",
             "no-code": "https://platform.claude.com/oauth/code/callback?state=zbState-0123",
+            "popup": "#",
         }
         self.assertEqual(sorted(want), sorted(fp.VARIANTS))
         for variant, url in want.items():
             with fp.FakeProvider(self.tmp / variant, variant=variant) as p:
                 _, body, _ = via_proxy(p, "claude.com", AUTHORIZE)
-                link = re.search(rb'id="authorize" href="([^"]+)"', body).group(1).decode().replace("&amp;", "&")
+                self.assertEqual(body.count(b"<a "), 1, variant)
+                link = re.search(rb'id="action" href="([^"]+)"', body).group(1).decode().replace("&amp;", "&")
                 self.assertEqual(link, url.format(c=fp.CODE), variant)
+                opens = b"window.open('https://claude.ai/'" in body
+                self.assertEqual(opens, variant == "popup", variant)
 
     def test_a_code_page_request_is_recorded(self):
         with fp.FakeProvider(self.tmp) as p:
