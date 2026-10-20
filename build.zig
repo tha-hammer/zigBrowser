@@ -1050,6 +1050,18 @@ pub fn build(b: *std.Build) void {
         s7a_run.skip_foreign_checks = true;
         s7a_runs[i] = &s7a_run.step;
     }
+    // S7b (rev 16.20.35): the screenshot fit seam, src/agent_image.c (GdkPixbuf; Linux only).
+    const agent_image_fit_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_image_fit_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    agent_image_fit_module.addIncludePath(b.path("src"));
+    agent_image_fit_module.addCSourceFile(.{ .file = b.path("src/agent_image.c"), .flags = &.{"-std=gnu11"} });
+    agent_image_fit_module.linkSystemLibrary("gdk-pixbuf-2.0", .{ .use_pkg_config = .force });
+    const run_agent_image_fit_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_image_fit_module }));
+    run_agent_image_fit_tests.skip_foreign_checks = true;
 
     const automation_api_e2e = b.addSystemCommand(&.{
         "sh",
@@ -1948,6 +1960,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_secrets_shape_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_dlopen_test.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_secrets_clear_fetch_test.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_image_fit_tests.step);
     const agent_secrets_step = b.step("test-agent-secrets", "Run the Claude Agent token store's unit tests");
     agent_secrets_step.dependOn(&run_agent_secrets_tests.step);
     agent_secrets_step.dependOn(&run_agent_secrets_shape_tests.step);
@@ -2296,6 +2309,11 @@ fn configureGtkBackend(module: *std.Build.Module, b: *std.Build) void {
     // S6b2 (chat-drawer plan rev 16.18.15-16.18.20): the auth window's GTK body.
     module.addCSourceFile(.{
         .file = b.path("src/agent_auth_window.c"),
+        .flags = &.{"-std=gnu11"},
+    });
+    // S7b (rev 16.20.35): the screenshot fit seam a drawer's broker hands page.screenshot to.
+    module.addCSourceFile(.{
+        .file = b.path("src/agent_image.c"),
         .flags = &.{"-std=gnu11"},
     });
 

@@ -2862,6 +2862,7 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
   - if the PNG's base64 is at most `max_b64` (1 MiB − 4096, leaving room for the frame), it goes as is, `image/png`;
   - else the PNG is decoded and re-encoded as JPEG at scale 1, 0.75, 0.5, 0.35, 0.25 (each at quality 85, 70, 50, in that order). The first whose base64 is at most `max_b64` is sent, `image/jpeg`;
   - else, or if the PNG cannot be decoded, the call is `ok:false` "result too large" or "the screenshot could not be read".
+  - **As built (edb9761 and its green):** bytes without the PNG signature or without the closing IEND chunk are "the screenshot could not be read", whatever their size. GdkPixbuf decodes a PNG cut short as a full-size image with the rest blank, so a truncated capture would otherwise reach the model. The seam returns `ZB_IMAGE_FIT_OK`, `ZB_IMAGE_FIT_TOO_LARGE` or `ZB_IMAGE_FIT_UNREADABLE` (`src/agent_image.h`); `out_b64` is freed with `zb_agent_image_free`.
   - The image block is `{type:"image", mime, data_b64}`; `width` and `height` are dropped. Every other result is one text block holding the method's result JSON.
 
 **The helper's side** (`bridge.py`, `chat.py`):
