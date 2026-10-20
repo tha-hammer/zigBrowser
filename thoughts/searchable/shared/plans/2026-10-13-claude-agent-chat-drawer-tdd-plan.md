@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Rev 16.20.29 (RoseCat 6499): the code is typed in 16-byte pieces, each next piece and the Enter only once the masked echo accounts for all but 16 typed bytes (the real CLI's echo is the typed count less six), each step bounded by 5 s and failing closed; quiet time is no longer used. Rev 16.20.28 (RoseCat 6493): the pending Enter is dropped once any ending is claimed (one linearization under end_lock), and waits for the echo plus 0.15 s of quiet so it never shares a read with the code's remainder. Rev 16.20.27 (Part B's second finding): the helper typed the code and its Enter in one write, and the real CLI takes a long read as a paste whose Enter does not submit; the Enter is now its own write, after the CLI's masked echo (fallback 1 s). Rev 16.20.26 (the user's decision on ca1a7b7): the auth window's allowlist gains exactly `accounts.google.com` and `appleid.apple.com` (https, port 443, main frame, the same decideNavigation); capture stays only on Claude's exact callback; further hosts the Google and Apple flows may need are an open question for the real-screen check. Rev 16.20.25 (docs; RoseCat 6440, 6442): the start sweep is a request to the scrub owner, awaited before `ready`; the CLI's stderr is drained, never reprinted. Rev 16.20.24 (RoseCat 6368, 6372, 6374, 6379, 6381, 6410, 6414, 6423 on the uncommitted S5c-2 scrubber): the scrubber walks the CLI's config directory as the sandboxed helper sees it, `realpath(.claude)/projects` (the host's `state` is not mounted there); masking is chunked; revalidation compares full keys; a failure has one bounded terminal path (owner hand-over before waking, a sealed output, the prompt's `error sdk` best effort, a fixed stderr line, exit 3). S5d's real-chain exhaustion red and seam green landed (`aabadf1`, `24f9b00`, build fix-forward `a031491`). Previous: rev 16.18.20 (the auth-window e2e's isolation canary, RoseCat 6402).
+status: plan for review. Rev 16.20.30 (S7 split, owner BlackRobin): S7 lands in three parts, S7.0 (the Bridge's prompt binding and tool_result routing, Python plus one Zig producer test), S7a (the in-process core and the broker, Zig) and S7b (the helper's read tools and the real chain); a `tool_result` is tied to its call by `id` alone; the tool deadline gets one helper-carried e2e seam, `ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S`. Rev 16.20.29 (RoseCat 6499): the code is typed in 16-byte pieces, each next piece and the Enter only once the masked echo accounts for all but 16 typed bytes (the real CLI's echo is the typed count less six), each step bounded by 5 s and failing closed; quiet time is no longer used. Rev 16.20.28 (RoseCat 6493): the pending Enter is dropped once any ending is claimed (one linearization under end_lock), and waits for the echo plus 0.15 s of quiet so it never shares a read with the code's remainder. Rev 16.20.27 (Part B's second finding): the helper typed the code and its Enter in one write, and the real CLI takes a long read as a paste whose Enter does not submit; the Enter is now its own write, after the CLI's masked echo (fallback 1 s). Rev 16.20.26 (the user's decision on ca1a7b7): the auth window's allowlist gains exactly `accounts.google.com` and `appleid.apple.com` (https, port 443, main frame, the same decideNavigation); capture stays only on Claude's exact callback; further hosts the Google and Apple flows may need are an open question for the real-screen check. Rev 16.20.25 (docs; RoseCat 6440, 6442): the start sweep is a request to the scrub owner, awaited before `ready`; the CLI's stderr is drained, never reprinted. Rev 16.20.24 (RoseCat 6368, 6372, 6374, 6379, 6381, 6410, 6414, 6423 on the uncommitted S5c-2 scrubber): the scrubber walks the CLI's config directory as the sandboxed helper sees it, `realpath(.claude)/projects` (the host's `state` is not mounted there); masking is chunked; revalidation compares full keys; a failure has one bounded terminal path (owner hand-over before waking, a sealed output, the prompt's `error sdk` best effort, a fixed stderr line, exit 3). S5d's real-chain exhaustion red and seam green landed (`aabadf1`, `24f9b00`, build fix-forward `a031491`). Previous: rev 16.18.20 (the auth-window e2e's isolation canary, RoseCat 6402).
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -1231,6 +1231,7 @@ These are the only non-production inputs. Each is honored **only when `--e2e-pro
 |---|---|---|
 | `ZIGBROWSER_AGENT_TEST_BASE_URL` | the fake Messages API; the helper sets `ANTHROPIC_BASE_URL` for the CLI | exactly `https://fake.zb.invalid` (rev 16.5: reached through relay → netd, §3c.4) |
 | `ZIGBROWSER_AGENT_FS_TRACE` | sets `hello.e2e.fs_trace`, so the helper emits `fs_trace` (S10.4; rev 10) | `1` only |
+| `ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S` | sets `hello.e2e.tool_deadline_s`: the helper answers a browser tool call that gets no `tool_result` after that many seconds, not after `options.TOOL_DEADLINE_S` (S7.0.6, rev 16.20.30) | an integer from 1 to `options.TOOL_DEADLINE_S`; the app refuses any other value (S7b), and the helper checks it too (S7.0.6) |
 
 **Social fixture.** The existing `ZIGBROWSER_SOCIAL_FIXTURE_ORIGIN` server shape from `tests/e2e/social_flows_test.py` gains a commit log (POST count per action).
 
@@ -2803,6 +2804,84 @@ A correct helper never sends one.
 **Binding (rev 16.20.18, RoseCat 6282).** Since S5d, the validator requires `prompt_id` on `tool_call`. `agent/host/zb_agent_host/bridge.py` still emits `tool_call` with only `session`, `id`, `tool` and `args`; today nothing installs the Bridge. Before S7 enables it:
 - the Bridge takes the id from an explicit current-prompt provider (the `Session`'s running prompt);
 - a producer test drives a real `tool_call` through the validator with that id, and a mutant with no id is rejected as `schema`.
+
+#### S7 lands in three parts (rev 16.20.30; owner BlackRobin)
+
+Each part has its own red (in unregistered files), green, gate and review, as S5 and S6 did.
+
+- **S7.0, the Bridge's binding (no browser change).** Behaviors S7.0.1 to S7.0.6 below.
+  - Code: `bridge.py`, `chat.py`.
+  - Reds: `agent/host/tests/test_bridge.py` (pure Python; the Bridge and a `Chat` driven in-process) and `tests/agent_bridge_frame_test.zig` (the producer test).
+  - Nothing installs the Bridge's MCP server for the CLI yet. A session gets a Bridge, but the CLI sees no browser tool until S7b.
+- **S7a, the in-process core and the broker (Zig, no helper change).** S7.1, S7.5's allowlist property, S7.3, and the broker's binding, redaction and worker-thread rules.
+  - Code: `src/automation_server.zig` (`startCore`, `startSocket`, `dispatchParsed`, `callInProcess`), `src/app.zig`, `src/agent_broker.zig`.
+  - Reds: new unregistered `tests/automation_inprocess_test.zig` and `tests/agent_broker_test.zig`. They reach the new API through `@hasDecl` guards, so they compile and fail before the green.
+  - The broker's per-call deadline is shorter than the helper's: it answers within `ready.tool_deadline_s` minus 5 s. So the helper never gives up on a call the app is still running.
+- **S7b, the read tools and the real chain.**
+  - Code: the helper's six MCP tools (S7.5's exact list), and `agent_helper.c` handing each validated `tool_call` to `agent_broker.onToolCall` and writing its `tool_result`.
+  - Behaviors: S7.2, S7.4, S7.6, S7.7, S7.8 and Closure Test S7.
+  - Reds: `agent/host/tests/test_tools.py`, `tests/e2e/agent_tools_test.py` and `tests/e2e/agent_socket_separation_test.py`.
+
+**A `tool_result` is tied to its call by `id` alone (rev 16.20.30).**
+- The `tool_result` schema (app → helper) is unchanged: it has no `prompt_id`.
+- The `id` is a fresh UUID the helper made for that call. It is pending in exactly one session's Bridge, so it already names the prompt.
+- A `tool_result` whose `id` is not pending in its `session` changes nothing and sends nothing. That covers an `id` that is unknown, already answered, timed out, from an ended prompt, or from another session.
+
+#### Behavior S7.0.1: `tool_call` carries the running prompt's id
+- **Given** a `Session` whose prompt 7 is running,
+- **When** its Bridge's handler calls the browser,
+- **Then** exactly one `tool_call` is emitted, with `session`, `prompt_id` 7, `id` (a UUID), `tool` (`mcp__zigbrowser__<name>`) and `args`.
+- **Where the id comes from:** an explicit provider, the `Session`'s running prompt. It is set when the prompt task starts, and cleared when that task ends (after its ending frame).
+- **Why that is the right prompt:**
+  - a session runs one prompt at a time;
+  - its next prompt starts only after the last one's ending frame (S5.2, rev 16.17);
+  - the CLI makes no tool call for a turn whose result it has already sent.
+  - So a call is always labelled with the prompt whose turn made it.
+- **Property:** Invariant (seeded `random.Random`, 200 ids in [1, 2^53 - 1], both ends included). For every running id, the emitted `prompt_id` equals it.
+
+#### Behavior S7.0.2: no prompt running, no frame
+- **Given** a session with no running prompt,
+- **When** the Bridge's handler is called,
+- **Then** no frame is emitted (the app would reject it as `prompt`), and the handler returns `is_error` "no prompt is running".
+
+#### Behavior S7.0.3: the producer test, through the real validator
+- **Given** the real `Bridge` with a provider at prompt 7, and its frames written by the real `frames.Emitter`,
+- **When** `tests/agent_bridge_frame_test.zig` feeds them to `agent_protocol.Validator`, with `s-1-1` open and prompt 7 sent,
+- **Then:**
+  - the Bridge's `tool_call` is accepted;
+  - the same line with `prompt_id` removed is rejected as `schema`;
+  - the same line with `prompt_id` 6 (the previous prompt) is rejected as `prompt`.
+- The Python side, `agent/host/tests/bridge_producer.py`, runs as a build step, and the Zig test reads its output. So the frame under test is the Bridge's own, never one written in Zig.
+
+#### Behavior S7.0.4: the app's `tool_result` reaches the waiting call
+- **Given** a call pending in session `s-1-1`,
+- **When** the app's `tool_result` with that `id` arrives on the helper's stdin,
+- **Then** `Chat` hands it to that session's Bridge. The handler returns the result's `content` when `ok`, or its `error` as `is_error`.
+- **Edge cases:** each of these changes nothing and emits nothing:
+  - an unknown `id`;
+  - a repeated `id`;
+  - an `id` pending in another session;
+  - a `tool_result` for a session that is not open.
+- **One stdin reader:** in `chat` mode the Bridge reads no stdin of its own; only `Chat`'s pump reads it. The P0 `contract` command keeps its own reader.
+
+#### Behavior S7.0.5: a prompt's end ends its calls
+- **Given** a call pending in prompt 7,
+- **When** prompt 7 ends (its `result`, an error, or Stop's ending),
+- **Then** the handler returns `is_error` "the prompt ended", its `id` is forgotten, and a later `tool_result` for it changes nothing.
+
+#### Behavior S7.0.6: the tool deadline, and its e2e seam
+- **Given** no `tool_result` comes,
+- **When** `tool_deadline_s` passes,
+- **Then** the handler returns `is_error` "The browser did not answer in time." and forgets the `id`.
+- **The deadline:**
+  - it is `options.TOOL_DEADLINE_S` (120 s), or `hello.e2e.tool_deadline_s` (from `ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S`, section 7);
+  - `ready.tool_deadline_s` reports the one in force;
+  - a value outside 1 to 120, or one that is not an integer, is a `protocol` error, and the helper keeps the default.
+- **Files touched (S7.0):**
+  - code: `agent/host/zb_agent_host/bridge.py`, `agent/host/zb_agent_host/chat.py`, and `agent/host/zb_agent_host/contract.py` (a fixed provider for P0's echo tool);
+  - tests: `agent/host/tests/test_bridge.py`, `agent/host/tests/bridge_producer.py`, `tests/agent_bridge_frame_test.zig`;
+  - in the green, `build.zig` registers both tests.
+  - The app's side of the seam (reading the variable into `hello.e2e`) lands with S7b, the first slice that needs it end to end.
 
 ---
 
