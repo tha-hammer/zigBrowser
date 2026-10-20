@@ -1285,6 +1285,8 @@ static void zb_auto_test_dispatch_hold(void) {
   long ms = strtol(h, NULL, 10);
   if (ms <= 0) return;
   if (ms > 60000) ms = 60000;  // clamp: bound the test hold so (ms * 1000) us cannot overflow
+  fprintf(stderr, "zb-dispatch-hold-active\n");  // observed hold-start barrier (RoseCat 6556): the main queue is now wedged
+  fflush(stderr);
   usleep((useconds_t)(ms * 1000));
 }
 

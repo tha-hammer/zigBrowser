@@ -118,7 +118,13 @@ def main() -> int:
 
             th = threading.Thread(target=hold_main, daemon=True)
             th.start()
-            time.sleep(0.4)  # let the hold take the main thread before we time the OOB reads
+            # Observed hold-start barrier (not a fixed sleep): wait until the browser reports the main queue
+            # is actually wedged, so the OOB timing below can't race ahead of the hold on a slow host.
+            bend = time.monotonic() + 10.0
+            while time.monotonic() < bend and not any("zb-dispatch-hold-active" in ln for ln in err):
+                time.sleep(0.02)
+            if not any("zb-dispatch-hold-active" in ln for ln in err):
+                failures.append("main-queue hold never activated (no barrier signal)")
 
             # conn A: both OOB reads must answer promptly for all windows while the main queue is wedged.
             t0 = time.monotonic()

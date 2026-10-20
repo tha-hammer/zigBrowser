@@ -126,7 +126,19 @@ def main() -> int:
 
             th = threading.Thread(target=hit_popup, daemon=True)
             th.start()
-            time.sleep(0.3)  # ensure the stuck command owns the popup's FIFO before we time anything
+            # Observed queue-entry barrier (not a fixed sleep): a quick probe on the popup's FIFO succeeds
+            # while the line is free and TIMES OUT once the stuck command owns it — so the timing below can't
+            # race ahead of the stuck command taking the line.
+            bend = time.monotonic() + 8.0
+            held = False
+            while time.monotonic() < bend:
+                probe = ca.raw("dom.getText", {"selector": "css=#t", "window_id": popup_id, "options": {"timeout_ms": 300}})
+                if "error" in probe:  # queued behind the stuck command and timed out -> its FIFO is held
+                    held = True
+                    break
+                time.sleep(0.03)
+            if not held:
+                failures.append("stuck command never took the popup FIFO (queue-entry barrier never tripped)")
 
             # conn A, while the popup FIFO is stuck: both OOB methods answer for all windows, promptly.
             t0 = time.monotonic()
