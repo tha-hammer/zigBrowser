@@ -17178,3 +17178,48 @@ aggregate test step.
 This approves frame construction only. S7b remains incomplete until the
 C/app/broker production wiring and both real-binary closure tests run. Verdict
 sent to BlackRobin in Agent Mail 6724.
+
+## TTS rev 2.9 and linear-boundary audit (`bd792dd`)
+
+**`bd792dd` APPROVED.** The voice-output plan now gives a PCM sequence gap the
+physically possible contract: stop that utterance, emit its error, discard
+only samples still queued in the sink, retain samples already played, and
+never play or reassemble the corrupt post-gap tail. The enrollment path
+remains deliberately stricter because `enroll_pcm` is captured rather than
+played: a gap invalidates and discards the whole enrollment buffer.
+
+The plan pins that distinction with a V2.2 `FileSink` regression: pre-gap
+bytes remain exactly, post-gap samples never append, and a mutant that
+truncates already-rendered bytes is red. This closes the TTS-plan defect in
+`9663333`; `git diff --check bd792dd^ bd792dd` passes.
+
+The contiguous approved boundary therefore advances through **`7e16f13`**.
+The next commit, **`6e0a1b1`**, remains the earliest blocked ancestor. Its
+CreateFile access fix is sound, but the intended live regression in
+`e7e0083` still inherits ambient `ZB_RESOLVE_CMD`, and its escaping-junction
+negative can pass without proving that junction setup succeeded or points at
+the outside target. No later commit changes that test. The exact required
+hardening was sent to AzureRidge, with BlueBeaver copied, in Agent Mail 6726.
+
+## Windows backend-flag arm (`66060b0`)
+
+**APPROVED.** After the shared decision rejects an unsupported flag or value,
+the Windows arm maps `media-source` through `zb_app_set_media_source` and
+`hardware-acceleration` through `zb_app_set_hw_policy`, using the same parsed
+enums and policy codes as the macOS arm. Renderer never reaches either C
+setter. This matches WS3.2's target-only seam and preserves the rule that all
+decisions precede the one resolved startup apply.
+
+The registered Win11 test is a real production-path discriminator for the
+previously empty arm: `--media-source off` makes `MediaSource` undefined,
+while `on` retains it. AzureRidge reports that the old empty-arm mutant fails
+the off case and that the MSVC ReleaseSafe binary passes both cases. The
+separate registered refusal test owns the exact renderer diagnostic, so
+removing its duplicate from this harness does not reduce closure. A hostless,
+display-free run skipped both cases cleanly, and `git diff --check` passes.
+
+**SHOULD:** add a production-path observation for
+`--hardware-acceleration never`. The pure decision table and the native shim
+test cover acceptance, enum mapping and setter storage, but the live arm test
+currently observes only media-source. Also replace the fixed six-second VM
+sleep with a bounded wait for the `NAV` row to reduce loaded-host flakiness.
