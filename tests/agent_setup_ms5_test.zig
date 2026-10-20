@@ -1,7 +1,7 @@
 //! MS5 (macOS plan rev 12, BlueBeaver's half), the Linux-provable reds:
-//! - item 3: `agent_setup.runtimeFor(os, exe)`. Linux unchanged; a macOS app bundle maps
-//!   `<X>.app/Contents/MacOS/zigBrowser` to `<X>.app/Contents/Frameworks/agent-host` (nested code is
-//!   signed there, JadeBeacon 6756); a macOS dev tree keeps the Linux rule.
+//! - item 3: `agent_setup.runtimeFor(os, exe)`. Linux unchanged; on macOS `<exe dir>/../Frameworks/agent-host`
+//!   (nested code is signed there, JadeBeacon 6756): an app's Contents/Frameworks, a dev tree's
+//!   zig-out/Frameworks (rev 16 item 1, superseding "a macOS dev tree keeps the Linux rule").
 //! - item 6: `agent_setup.platformGate(os, seatbelt_ready)`. macOS setup never runs unsandboxed: until
 //!   MS6's Seatbelt backend is accepted it refuses with one fixed line; Linux runs; any other OS keeps
 //!   the Linux-only refusal.
@@ -38,10 +38,9 @@ test "item 3: a macOS app bundle keeps its runtime in Contents/Frameworks/agent-
         "/Users/u/Apps/Z B.app/Contents/Frameworks/agent-host");
 }
 
-test "item 3: a macOS dev tree (not inside an .app) keeps the Linux rule" {
-    try expectPackageDir(.macos, "/Users/u/zb/zig-out/bin/zigBrowser", "/Users/u/zb/zig-out/lib/zigbrowser/agent-host");
-    // `Contents/MacOS` outside an `.app` is not a bundle.
-    try expectPackageDir(.macos, "/tmp/Contents/MacOS/zigBrowser", "/tmp/Contents/lib/zigbrowser/agent-host");
+test "item 3 (rev 16): a macOS dev tree uses <prefix>/Frameworks/agent-host too, like the bundle" {
+    try expectPackageDir(.macos, "/Users/u/zb/zig-out/bin/zigBrowser", "/Users/u/zb/zig-out/Frameworks/agent-host");
+    try expectPackageDir(.macos, "/tmp/Contents/MacOS/zigBrowser", "/tmp/Contents/Frameworks/agent-host");
 }
 
 test "item 3: never the Resources directory (code there fails codesign --strict)" {

@@ -35,14 +35,15 @@ pub fn defaultRuntime(gpa: std.mem.Allocator, exe_path: []const u8) !Runtime {
     return runtimeFor(gpa, .linux, exe_path);
 }
 
-/// macOS plan rev 14 item 3: inside an app bundle the runtime is nested code, signed where code is
-/// signed (JadeBeacon 6756), so `<X>.app/Contents/MacOS/zigBrowser` keeps it in
-/// `<X>.app/Contents/Frameworks/agent-host`, never under Resources. Anything else, a macOS dev tree
-/// included, keeps `<prefix>/lib/zigbrowser/agent-host` and its venv.
+/// macOS plan rev 14 item 3 / rev 16 item 1: on macOS the runtime is nested code, signed where code is
+/// signed (JadeBeacon 6756), so it is always `<exe dir>/../Frameworks/agent-host`, never under Resources:
+/// `<X>.app/Contents/MacOS` -> `Contents/Frameworks`, and a dev or staging tree `zig-out/bin` ->
+/// `zig-out/Frameworks`, like the shim and the tree the census scans. Linux keeps
+/// `<prefix>/lib/zigbrowser/agent-host` and its venv.
 pub fn runtimeFor(gpa: std.mem.Allocator, os: std.Target.Os.Tag, exe_path: []const u8) !Runtime {
     const bin = std.fs.path.dirname(exe_path) orelse "/";
     const prefix = std.fs.path.dirname(bin) orelse "/";
-    if (os == .macos and isAppContents(bin, prefix)) {
+    if (os == .macos) {
         const package_dir = try std.fs.path.join(gpa, &.{ prefix, mac_runtime_subpath });
         return .{ .python = try std.fs.path.join(gpa, &.{ package_dir, mac_python_subpath }), .package_dir = package_dir };
     }
@@ -50,19 +51,11 @@ pub fn runtimeFor(gpa: std.mem.Allocator, os: std.Target.Os.Tag, exe_path: []con
     return .{ .python = try std.fs.path.join(gpa, &.{ package_dir, "venv/bin/python" }), .package_dir = package_dir };
 }
 
-/// Inside `<X>.app/Contents`, relative to Contents.
+/// Relative to `<exe dir>/..` on macOS (an app's Contents, or a dev tree's prefix).
 pub const mac_runtime_subpath = "Frameworks/agent-host";
 /// The python.org CPython 3.12 universal2 framework's fat launcher, inside agent-host (the user's decision,
 /// 6ea1064). No venv on macOS: a venv records an absolute home, and the app moves.
 pub const mac_python_subpath = "Python.framework/Versions/3.12/bin/python3.12";
-
-/// `bin` is `<X>.app/Contents/MacOS` and `prefix` its `Contents`.
-fn isAppContents(bin: []const u8, prefix: []const u8) bool {
-    if (!std.mem.eql(u8, std.fs.path.basename(bin), "MacOS")) return false;
-    if (!std.mem.eql(u8, std.fs.path.basename(prefix), "Contents")) return false;
-    const app = std.fs.path.dirname(prefix) orelse return false;
-    return std.mem.endsWith(u8, std.fs.path.basename(app), ".app");
-}
 
 /// Whether `--agent-setup` may run on this OS (macOS plan rev 14 item 6): Linux runs; macOS refuses
 /// until MS6's Seatbelt backend is accepted, so setup never runs unsandboxed; anything else keeps

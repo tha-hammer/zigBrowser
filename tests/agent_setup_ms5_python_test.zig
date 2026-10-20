@@ -1,6 +1,6 @@
 //! macOS plan rev 14 item 3, the interpreter (RoseCat 6797): `runtimeFor` must name the python.org universal2
-//! framework's launcher inside an app bundle, with no venv, and assert BOTH fields. A macOS dev tree and Linux
-//! keep `venv/bin/python`. Unregistered until the green (run: zig test --dep agent_setup
+//! framework's launcher on macOS (an app bundle, and since rev 16 item 1 a dev tree too), with no venv, and assert
+//! BOTH fields. Linux keeps `venv/bin/python`. Unregistered until the green (run: zig test --dep agent_setup
 //! -Mroot=tests/agent_setup_ms5_python_test.zig -Magent_setup=src/agent_setup.zig).
 const std = @import("std");
 const agent_setup = @import("agent_setup");
@@ -22,8 +22,6 @@ test "an app bundle runs the framework's fat launcher, never a venv" {
         "/Users/u/Apps/Z B.app/Contents/Frameworks/agent-host/Python.framework/Versions/3.12/bin/python3.12");
 }
 
-test "a macOS dev tree and Linux keep the installer's venv" {
-    try expectRuntime(.macos, "/Users/u/zb/zig-out/bin/zigBrowser",
-        "/Users/u/zb/zig-out/lib/zigbrowser/agent-host", "/Users/u/zb/zig-out/lib/zigbrowser/agent-host/venv/bin/python");
+test "Linux keeps the installer's venv (a macOS dev tree: tests/agent_setup_ms5_devtree_test.zig)" {
     try expectRuntime(.linux, "/usr/bin/zigBrowser", "/usr/lib/zigbrowser/agent-host", "/usr/lib/zigbrowser/agent-host/venv/bin/python");
 }
