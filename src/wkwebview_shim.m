@@ -47,6 +47,15 @@ static void zb_publish_window_snapshot(void);  // defined below; called from the
 // MS3.2 backend-flag config (set at startup by webkit.applyBackendFlag, before any window is created).
 static int g_media_source_enabled = 1;        // 0 = disable window.MediaSource (MSE off) in every new webView
 static int g_hw_policy = ZB_HW_POLICY_WEBKIT;  // stored for read-back; macOS WKWebView manages HW accel itself
+// MS3.1 profile persistence (set by zb_app_set_profile_dir at startup). On macOS 14+ a profile dir maps to an
+// isolated persistent WKWebsiteDataStore (dataStoreForIdentifier, keyed by a UUID derived from the path); on
+// macOS 13 it falls back to the default (shared) store (user decision 2026-10-20). The store is resolved
+// LAZILY at the first webView (so the e2e availability seam can read g_active_app's e2e flag, which is unset
+// at profile-dir time). g_profile_data_store nil = default store.
+static NSString *g_profile_dir = nil;
+static WKWebsiteDataStore *g_profile_data_store = nil;
+static BOOL g_profile_resolved = NO;
+static void zb_resolve_profile_store(void);  // defined below; called lazily from newConfiguredWebView
 // Associated-object tag marking a WKNavigation that a routed (automation) navigation started. A load
 // failure is suppressed (no app-exit) ONLY for a tagged navigation — scoped by navigation IDENTITY,
 // so a superseded routed nav's late failure is swallowed while an unrelated user/page-initiated
@@ -491,6 +500,8 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
                                             forMainFrameOnly:NO];
     [configuration.userContentController addUserScript:noMSE];
   }
+  zb_resolve_profile_store();  // MS3.1: resolve the profile store once, now that g_active_app/e2e is set
+  if (g_profile_data_store != nil) configuration.websiteDataStore = g_profile_data_store;  // MS3.1 profile-scoped store
   return [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) configuration:configuration];
 }
 
@@ -2656,6 +2667,60 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
     if (out_chars != NULL) *out_chars = sent;
     if (out_releases != NULL) *out_releases = sent;
     return rc;
+  }
+}
+
+// MS3.1: a deterministic UUID from the profile path (two FNV-1a 64-bit hashes -> 16 bytes, RFC4122 v4
+// version/variant bits set so dataStoreForIdentifier accepts it). Same path -> same UUID -> same store.
+static NSUUID *zb_uuid_from_path(NSString *path) {
+  const char *s = path.UTF8String ?: "";
+  uint64_t h1 = 14695981039346656037ULL, h2 = 1099511628211ULL;
+  for (const char *p = s; *p != '\0'; p++) {
+    h1 = (h1 ^ (uint64_t)(unsigned char)*p) * 1099511628211ULL;
+    h2 = (h2 ^ (uint64_t)(unsigned char)*p) * 14695981039346656037ULL;
+  }
+  uuid_t b;
+  memcpy(b, &h1, 8);
+  memcpy(b + 8, &h2, 8);
+  b[6] = (b[6] & 0x0F) | 0x40;
+  b[8] = (b[8] & 0x3F) | 0x80;
+  return [[NSUUID alloc] initWithUUIDBytes:b];
+}
+
+// MS3.1: whether per-profile isolated persistence (dataStoreForIdentifier) is available. macOS 14+, minus
+// the e2e-only ZB_DEBUG_FORCE_PRE_MACOS14 seam that forces the macOS-13 fallback on a newer host for test.
+static BOOL zb_profile_identifier_available(void) {
+  if (zb_auto_test_hooks_enabled()) {
+    const char *v = getenv("ZB_DEBUG_FORCE_PRE_MACOS14");
+    if (v != NULL && v[0] == '1') return NO;
+  }
+  if (@available(macOS 14.0, *)) return YES;
+  return NO;
+}
+
+// MS3.1: record the profile path (the identity seed). The actual store is resolved lazily (see
+// zb_resolve_profile_store, called from newConfiguredWebView). dir NULL/empty = default store. No directory
+// is created (the store lives in WebKit's managed location). Always OK on macOS.
+int zb_app_set_profile_dir(const char *dir, char **out_err) {
+  if (out_err != NULL) *out_err = NULL;
+  g_profile_data_store = nil;
+  g_profile_resolved = NO;
+  g_profile_dir = (dir != NULL && dir[0] != '\0') ? [NSString stringWithUTF8String:dir] : nil;
+  return ZB_AUTO_OK;
+}
+
+// MS3.1: resolve the profile store once, at the first webView — macOS 14+ -> an isolated persistent store
+// keyed by the path; macOS 13 (or the forced seam) -> the default (shared) store, with one stderr line that
+// isolation needs macOS 14. Runs with g_active_app set, so the e2e availability seam is readable.
+static void zb_resolve_profile_store(void) {
+  if (g_profile_dir == nil || g_profile_resolved) return;
+  g_profile_resolved = YES;
+  if (zb_profile_identifier_available()) {
+    if (@available(macOS 14.0, *)) {
+      g_profile_data_store = [WKWebsiteDataStore dataStoreForIdentifier:zb_uuid_from_path(g_profile_dir)];
+    }
+  } else {
+    fprintf(stderr, "zigBrowser: per-profile isolation needs macOS 14; --profile-dir uses the shared default store on this macOS\n");
   }
 }
 

@@ -995,6 +995,23 @@ and cookies do not fall into an implicit global store and the flags are not sile
 default global store), isolated per profile, surviving restart — the macOS analog of the Linux
 persistent context (verified by a login→restart→still-logged-in e2e over the socket).
 
+- **USER DECISION (2026-10-20) — profile isolation mechanism + minimum.** The minimum stays **macOS 13**.
+  WKWebView has **no public API** to persist a data store at an arbitrary `--profile-dir` filesystem path
+  (the `WKWebsiteDataStoreConfiguration` directory properties are `_`-prefixed SPI, ruled out). So on
+  **macOS 14+** `--profile-dir` maps to `+[WKWebsiteDataStore dataStoreForIdentifier:]` with a **UUID
+  derived deterministically from the path** — isolated and persistent per profile (the path is the
+  identity seed; the store lives in WebKit's managed location, not literally at the path). On **macOS 13**
+  it **falls back to the default persistent store, shared by all profiles**, printing **one clear stderr
+  line** that profile isolation needs macOS 14 and recorded in the capability table (below). Both paths are
+  tested on the macOS-15 hosts via an **injectable availability seam** (`ZB_DEBUG_FORCE_PRE_MACOS14`,
+  e2e-gated) so the 13 fallback is reachable, and mutant-proven. Implemented in `ddf29eb`'s successor:
+  `zb_app_set_profile_dir` (wkwebview_shim.m) + `app.zig applyProfileDir` macOS branch;
+  `mac_profile_persist_test.py`.
+
+| Capability | macOS support |
+|---|---|
+| `--profile-dir` per-profile **isolated** persistence | macOS **14+** (dataStoreForIdentifier). On macOS **13**, `--profile-dir` is accepted but **shares the default store** (no isolation); a stderr line says so. |
+
 ### Behavior MS3.2: decided macOS semantics via a fallible Zig validate/apply seam (rev 5 — RoseCat 5501)
 **Given** the Linux-only flag apply path (`webkit.zig:47-72`) and that the C setters are **`void`**
 (`zb_app_set_hw_policy`/`zb_app_set_media_source`), their getters bare `int`, and `--renderer` has
