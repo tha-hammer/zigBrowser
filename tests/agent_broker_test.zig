@@ -209,9 +209,11 @@ test "S7.3 / S7.8: a tool outside the S7 set is not available, with no engine ca
 }
 
 test "S7.7: an engine error's data never reaches the tool result" {
+    // The engine keeps an exception's `name` in its error data (engine.exceptionData), so the
+    // canary rides there; only the broker's own redaction keeps it out of the result.
     const bench = try Bench.create("redact", 1, 30_000);
     defer bench.destroy();
-    bench.f.pages.windows[0].reply = "{\"ok\":false,\"error\":\"script_exception\",\"retryable\":false,\"data\":{\"reason\":\"script_exception\",\"name\":\"TypeError\",\"message\":\"" ++ canary ++ "\"}}";
+    bench.f.pages.windows[0].reply = "{\"ok\":false,\"error\":\"script_exception\",\"retryable\":false,\"data\":{\"reason\":\"script_exception\",\"name\":\"" ++ canary ++ "\",\"message\":\"" ++ canary ++ "\"}}";
     bench.submit("c-1", prefix ++ "get_text", "{\"selector\":\"css=#" ++ canary ++ "\"}");
     try bench.answers.await(1, 10_000);
     const a = bench.answers.list.items[0];
@@ -251,4 +253,125 @@ test "timeout ownership: one result at B, a late engine completion discarded, no
     }
     try testing.expectEqual(@as(u32, 1), bench.f.pages.windows[0].evals.load(.acquire));
     try testing.expectEqual(@as(usize, 1), bench.answers.count());
+}
+
+/// Waits up to `ms` until `counter` reaches `n`.
+fn waitFor(counter: *std.atomic.Value(u32), n: u32, ms: i64) !void {
+    const until = fake.nowMs() + ms;
+    while (counter.load(.acquire) < n) {
+        if (fake.nowMs() > until) return error.TestNotReached;
+        testing.io.sleep(.fromMilliseconds(2), .awake) catch {};
+    }
+}
+
+fn sleepMs(ms: u64) void {
+    testing.io.sleep(.fromMilliseconds(@intCast(ms)), .awake) catch {};
+}
+
+test "D8 (RoseCat 6566): one call in flight per session; B waits while A runs; answers keep their ids" {
+    const bench = try Bench.create("serial", 1, 30_000);
+    defer bench.destroy();
+    const w = &bench.f.pages.windows[0];
+    w.hold.store(true, .release);
+    bench.submit("c-A", prefix ++ "get_text", "{\"selector\":\"css=#a\"}");
+    try waitFor(&w.in_flight, 1, 5_000); // A is in the engine
+    bench.submit("c-B", prefix ++ "get_attribute", "{\"selector\":\"css=#b\",\"name\":\"href\"}");
+    sleepMs(300);
+    try testing.expectEqual(@as(u32, 1), w.in_flight.load(.acquire));
+    try testing.expectEqual(@as(usize, 0), bench.answers.count());
+    w.hold.store(false, .release);
+    try bench.answers.await(2, 10_000);
+    try testing.expectEqual(@as(u32, 1), w.max_in_flight.load(.acquire));
+    try testing.expectEqual(@as(u32, 2), w.evals.load(.acquire));
+    try testing.expectEqualStrings("c-A", bench.answers.list.items[0].id);
+    try testing.expectEqualStrings("c-B", bench.answers.list.items[1].id);
+    for (bench.answers.list.items) |a| try testing.expect(a.ok);
+}
+
+test "D8: another drawer's broker makes progress while this one's call is held" {
+    if (!has_broker) return error.TestNoBroker;
+    const bench = try Bench.create("independent", 1, 30_000);
+    defer bench.destroy();
+    const w = &bench.f.pages.windows[0];
+    w.hold.store(true, .release);
+    defer w.hold.store(false, .release);
+    bench.submit("c-1", prefix ++ "get_text", "{\"selector\":\"css=#greeting\"}");
+    try waitFor(&w.in_flight, 1, 5_000);
+    var other_answers: Answers = .{};
+    defer other_answers.deinit();
+    var other = broker.Broker.init(gpa, &bench.f.server, 2, 30_000);
+    defer other.deinit();
+    other.submit("c-2", prefix ++ "get_text", "{\"selector\":\"css=#greeting\"}", .{ .ctx = &other_answers, .done = Answers.done });
+    try other_answers.await(1, 5_000);
+    try testing.expect(other_answers.list.items[0].ok);
+    try testing.expect(std.mem.indexOf(u8, other_answers.list.items[0].text, "Hello from page 2") != null);
+    try testing.expectEqual(@as(usize, 0), bench.answers.count()); // c-1 is still held
+    w.hold.store(false, .release);
+    try bench.answers.await(1, 10_000);
+}
+
+test "D8: a call queued past its deadline is answered then and never runs" {
+    const b_ms = try deadlineMs(1); // 750 ms
+    const bench = try Bench.create("queued", 1, b_ms);
+    defer bench.destroy();
+    const w = &bench.f.pages.windows[0];
+    w.hold.store(true, .release);
+    bench.submit("c-A", prefix ++ "get_text", "{\"selector\":\"css=#a\"}");
+    try waitFor(&w.in_flight, 1, 5_000);
+    const queued_at = fake.nowMs();
+    bench.submit("c-B", prefix ++ "get_text", "{\"selector\":\"css=#b\"}");
+    try bench.answers.await(2, 5_000); // both at their deadlines
+    for (bench.answers.list.items) |a| {
+        try testing.expect(!a.ok);
+        try testing.expectEqualStrings("The browser did not answer in time.", a.text);
+    }
+    try testing.expect(bench.answers.list.items[1].at_ms - queued_at < 1500);
+    w.hold.store(false, .release);
+    const until = fake.nowMs() + 5_000;
+    while (bench.inFlight() > 0) {
+        if (fake.nowMs() > until) return error.TestJobLeft;
+        sleepMs(20);
+    }
+    sleepMs(200);
+    try testing.expectEqual(@as(u32, 1), w.evals.load(.acquire)); // B never entered the engine
+    try testing.expectEqual(@as(usize, 2), bench.answers.count());
+}
+
+/// This process's threads now (Linux: /proc/self/task).
+fn threadCount() !usize {
+    var dir = try std.Io.Dir.cwd().openDir(testing.io, "/proc/self/task", .{ .iterate = true });
+    defer dir.close(testing.io);
+    var it = dir.iterate();
+    var n: usize = 0;
+    while (try it.next(testing.io)) |_| n += 1;
+    return n;
+}
+
+test "D8: a session's queued calls take no thread of their own (one worker per session)" {
+    const bench = try Bench.create("threads", 1, 30_000);
+    defer bench.destroy();
+    const w = &bench.f.pages.windows[0];
+    w.hold.store(true, .release);
+    defer w.hold.store(false, .release);
+    bench.submit("c-0", prefix ++ "get_text", "{\"selector\":\"css=#a\"}");
+    try waitFor(&w.in_flight, 1, 5_000);
+    const before = try threadCount();
+    var i: usize = 1;
+    while (i <= 20) : (i += 1) {
+        var id: [8]u8 = undefined;
+        bench.submit(try std.fmt.bufPrint(&id, "c-{d}", .{i}), prefix ++ "get_text", "{\"selector\":\"css=#a\"}");
+    }
+    sleepMs(200);
+    const after = try threadCount();
+    if (after > before + 2) {
+        std.debug.print("20 queued calls took {d} more threads\n", .{after - before});
+        return error.TestUnexpectedResult;
+    }
+    try testing.expectEqual(@as(u32, 1), w.max_in_flight.load(.acquire));
+    w.hold.store(false, .release);
+    try bench.answers.await(21, 20_000);
+    for (bench.answers.list.items, 0..) |a, k| {
+        var id: [8]u8 = undefined;
+        try testing.expectEqualStrings(try std.fmt.bufPrint(&id, "c-{d}", .{k}), a.id); // in order
+    }
 }

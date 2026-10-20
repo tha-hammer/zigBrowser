@@ -143,3 +143,41 @@ test "S7.1 oracle: every SDK wire case, and telemetry.query, answers in process 
         }
     }
 }
+
+test "S7.1 parity (RoseCat 6566): an unknown method and bad params answer in process as through the socket" {
+    if (!net.has_unix_sockets) return error.AddressFamilyUnsupported;
+    const by_socket = try fake.Fixture.create("parity-socket", token);
+    defer by_socket.destroy();
+    try by_socket.server.start();
+    const in_process = try fake.Fixture.create("parity-core", token);
+    defer in_process.destroy();
+    try startCore(&in_process.server);
+    var stream = try by_socket.connect();
+    defer stream.close(testing.io);
+    const cases = [_]struct { method: []const u8, params: []const u8, code: []const u8 }{
+        .{ .method = "page.nope", .params = "{}", .code = "-32601" },
+        .{ .method = "agent.tools", .params = "{}", .code = "-32601" },
+        .{ .method = "page.url", .params = "[1]", .code = "-32602" },
+        .{ .method = "page.url", .params = "\"x\"", .code = "-32602" },
+        .{ .method = "dom.getText", .params = "{\"selector\":5}", .code = "-32602" },
+        .{ .method = "page.url", .params = "{\"window_id\":\"window-0\"}", .code = "-32602" },
+    };
+    for (cases) |case| {
+        const request = try std.fmt.allocPrint(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":{s},\"auth\":\"{s}\",\"id\":7}}", .{ case.method, case.params, token });
+        defer gpa.free(request);
+        const socket_reply = try fake.roundTrip(stream, request);
+        defer gpa.free(socket_reply);
+        const core_reply = try callInProcess(&in_process.server, case.method, case.params);
+        defer gpa.free(core_reply);
+        try testing.expect(std.mem.indexOf(u8, socket_reply, case.code) != null);
+        const want = try normalized(socket_reply);
+        defer gpa.free(want);
+        const got = try normalized(core_reply);
+        defer gpa.free(got);
+        try testing.expectEqualStrings(want, got);
+    }
+    // A malformed params text cannot reach the socket as JSON at all; in process it is -32602.
+    const malformed = try callInProcess(&in_process.server, "page.url", "{");
+    defer gpa.free(malformed);
+    try testing.expect(std.mem.indexOf(u8, malformed, "-32602") != null);
+}

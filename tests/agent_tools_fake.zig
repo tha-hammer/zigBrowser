@@ -20,6 +20,10 @@ pub const Window = struct {
     evals: std.atomic.Value(u32) = .init(0),
     /// The thread the last eval ran on.
     eval_thread: std.atomic.Value(std.Thread.Id) = .init(0),
+    /// While set, an eval waits (after counting itself in `in_flight`) until it is cleared.
+    hold: std.atomic.Value(bool) = .init(false),
+    in_flight: std.atomic.Value(u32) = .init(0),
+    max_in_flight: std.atomic.Value(u32) = .init(0),
 
     pub fn port(self: *Window) page_port.PagePort {
         return .{ .ptr = self, .vtable = &vtable };
@@ -37,6 +41,13 @@ pub const Window = struct {
     fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, _: page_port.World, _: []const u8, _: []const u8, _: u64) page_port.PortError![]u8 {
         const self: *Window = @ptrCast(@alignCast(ptr));
         self.eval_thread.store(std.Thread.getCurrentId(), .release);
+        const now_in_flight = self.pages.in_flight.fetchAdd(1, .acq_rel) + 1;
+        defer _ = self.pages.in_flight.fetchSub(1, .acq_rel);
+        _ = self.pages.max_in_flight.fetchMax(now_in_flight, .acq_rel);
+        _ = self.in_flight.fetchAdd(1, .acq_rel);
+        defer _ = self.in_flight.fetchSub(1, .acq_rel);
+        _ = self.max_in_flight.fetchMax(self.in_flight.load(.acquire), .acq_rel);
+        while (self.hold.load(.acquire)) testing.io.sleep(.fromMilliseconds(2), .awake) catch {};
         if (self.delay_ms > 0) testing.io.sleep(.fromMilliseconds(@intCast(self.delay_ms)), .awake) catch {};
         _ = self.evals.fetchAdd(1, .acq_rel);
         if (self.reply) |reply| return gpa.dupe(u8, reply);
@@ -62,9 +73,12 @@ pub const Window = struct {
 /// Windows 1 and 2; window 1 is the primary port.
 pub const Pages = struct {
     windows: [2]Window,
+    /// Evals running in either window, now and at most.
+    in_flight: std.atomic.Value(u32) = .init(0),
+    max_in_flight: std.atomic.Value(u32) = .init(0),
 
     pub fn init(self: *Pages) void {
-        self.windows = .{ .{ .pages = self, .id = 1 }, .{ .pages = self, .id = 2 } };
+        self.* = .{ .windows = .{ .{ .pages = self, .id = 1 }, .{ .pages = self, .id = 2 } } };
     }
 
     pub fn evals(self: *Pages) u32 {
