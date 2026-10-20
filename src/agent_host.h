@@ -6,6 +6,13 @@
 
 #include <sys/types.h>
 
+#if defined(_WIN32)
+/* This subsystem is Linux-only (fork/prctl/flock/netd) and is never called on Windows (app.zig guards
+ * every use with builtin.os.tag == .linux), but the header must still TRANSLATE for the Windows build's
+ * unconditional @cImport, where MSVC's <sys/types.h> has no pid_t. */
+typedef int pid_t;
+#endif
+
 /* Takes the agent home's owner lock (plan D12, S3.12): creates `home`
  * (0700) if needed, then flock(home/.zb-owner.lock, LOCK_EX|LOCK_NB). The
  * lock is held until the process exits. Returns 0 when held, -2 when another
