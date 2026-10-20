@@ -156,7 +156,8 @@ primary_research: thoughts/searchable/shared/research/2026-10-14-14-19-macos-lau
   Item 3, item 8's opening and Behavior MS5.1c are rewritten in place, and the rev 8 and rev 16 notes are marked
   history. `zb_agent_host/` is an exact generated file manifest (missing, extra or mismatched are each red).
   `runtime.json` is pinned. The staging tool takes the driver-verified `.pkg`. The final MS5 green stays blocked
-  on the dependency and CLI layout decision.
+  on the dependency and CLI layout decision. (Fix, RoseCat 6871: every symlink or special entry under
+  `zb_agent_host/` is refused, with reds for a symlink to an outside canary and a FIFO.)
 
 ## Rev 9 — MS1 empty-resource state made an executable, fail-closed phase contract (RoseCat 5995)
 
@@ -1481,9 +1482,12 @@ inventory holds:
     `Frameworks/agent-host/zb_agent_host/`, each by its exact path. The list is generated from
     `agent/host/zb_agent_host/` (`__pycache__` excluded) by `packaging/macos/ms5_inventory.py`, and a Linux test
     fails when the committed list differs from the generated one. On each tree the census requires:
-    - every listed file present (a missing one is red);
-    - no unlisted regular file under `zb_agent_host/` (an extra one is red); this is a new check, since the
-      existing oracle checks exact paths only;
+    - every listed file present, as a regular file (a missing one is red);
+    - **every entry below `zb_agent_host/` is either a listed regular file or a directory implied by a listed
+      file's path** (RoseCat 6871). Anything else is red: an unlisted regular file, an extra directory, and **any
+      symlink or special file** (FIFO, socket, device), listed or not. The check walks with `lstat` and never
+      opens or follows such an entry. This is new: the existing oracle checks exact paths only and skips
+      symlinks;
     - each listed file byte-identical across the two trees (a mismatched one is red).
   - **Not resources:** `zb-claude`, `zb-hook-run`, `zb-net-relay` and `runtime/*.json` are written by `setup.py`
     into each user's agent home (`setup.py:481-504`), never into the bundle. The MS5 setup e2e proves them, once
@@ -1516,6 +1520,8 @@ inventory holds:
     - copying the `-intel64` launcher (the scan finds a thin Mach-O);
     - a `.pkg` whose SHA-256 differs (the tool refuses);
     - a `zb_agent_host` file missing, extra, or different between the two trees;
+    - an extra symlink under `zb_agent_host/` to an outside canary file (red without following it);
+    - an extra FIFO under `zb_agent_host/` (red without opening it);
     - a `runtime.json` with a different `lock_sha256`.
   - Both Macs; `mac_resource_compat.py --milestone MS5` runs on the two per-arch trees before `lipo`.
 
