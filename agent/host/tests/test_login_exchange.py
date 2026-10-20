@@ -176,6 +176,7 @@ sleep 5
 printf '%s\\n' "{tl.URL.format(state='retry')}"
 printf 'Paste\\033[1Ccode\\033[1Chere\\033[1Cif\\033[1Cprompted\\033[1C> '
 read line
+printf '%s\\n' "$(printf '%s' "$line" | tr -c '\\n' '*')"
 printf 'Press\\033[1CEnter\\033[1Cto\\033[1Cretry.\\n'
 sleep 30
 """)

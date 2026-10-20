@@ -28,6 +28,14 @@ class BoundaryTest(unittest.TestCase):
         (self.home / ".claude").mkdir()
 
     def test_lines_the_cli_printed_before_reading_the_code_do_not_end_it(self):
+        self.late_noise(pause_after_echo=0)
+
+    def test_and_not_while_the_cli_works_after_its_echo(self):
+        # The echo, then a pause (the real exchange takes a moment) before the token: a
+        # boundary taken anywhere before the echo would count the early lines here.
+        self.late_noise(pause_after_echo=1.0)
+
+    def late_noise(self, pause_after_echo):
         cli = self.home / "late-noise-cli"
         cli.write_text(f"""#!/bin/sh
 stty -echo
@@ -37,6 +45,7 @@ sleep 0.5
 printf 'OAuth\\033[1Cerror:\\033[1Cnot\\033[1Cyet\\nPress\\033[1CEnter\\033[1Cto\\033[1Cretry.\\n'
 read line
 printf '%s\\n' "$(printf '%s' "$line" | tr -c '\\n' '*')"
+sleep {pause_after_echo}
 printf '\\342\\234\\223 Long-lived authentication token created successfully!\\n'
 printf 'Your OAuth token (valid for 1 year):\\n{tl.CANARY}\\n'
 sleep 5

@@ -79,6 +79,10 @@ SUCCESS = b"Long-livedauthenticationtokencreatedsuccessfully"
 # The real CLI after a failed exchange (2.1.294, probed offline): "OAuth error: <why>",
 # then "Press Enter to retry." while it waits. Matched with spaces removed.
 EXCHANGE_FAILED = (b"OAutherror", b"PressEntertoretry")
+# The CLI's masked echo of the typed code: it prints a '*' per character as it reads it
+# (2.1.294 probed offline: the stars, then the code's last characters). What follows the
+# first such run after the code was written is the CLI's answer to it (rev 16.18.13).
+ECHO = re.compile(rb"\*{8,}")
 TOKEN = re.compile(rb"(?<![A-Za-z0-9_-])sk-ant-oat01-[A-Za-z0-9_-]{22,499}(?=\n)")
 CODE = re.compile(r"[\x21-\x22\x24-\x7e]+#[\x21-\x22\x24-\x7e]+")
 
@@ -144,7 +148,8 @@ class Login:
         self.deadline = time.monotonic() + timeout_s
         self.exchange_s = exchange_s
         self.exchange_by = None  # set when a code is typed; cleared when the CLI asks again
-        self.typed_at = 0  # the screen offset where the CLI's answer to the typed code begins
+        self.typed_at = 0  # the screen offset when the code was written
+        self.echo_at = None  # the end of the CLI's masked echo of it: its answer starts here
         self.screen = bytearray()  # the pty output, escapes removed; zeroed at the end
         self.prompts = 0  # prompts seen
         self.answered = 0  # prompts a code was written to
@@ -231,8 +236,12 @@ class Login:
             m = TOKEN.search(self.screen, at)
             if m:
                 return self.hand_off(*m.span())
-        if self.exchange_by is not None:
-            reply = bytes(self.screen[self.typed_at:]).replace(b" ", b"")
+        if self.exchange_by is not None and self.echo_at is None:
+            echo = ECHO.search(self.screen, self.typed_at)
+            if echo:
+                self.echo_at = echo.end()
+        if self.exchange_by is not None and self.echo_at is not None:
+            reply = bytes(self.screen[self.echo_at:]).replace(b" ", b"")
             if any(word in reply for word in EXCHANGE_FAILED):
                 return self.end("error", code="exchange", message="the Claude CLI could not exchange the code")
 
@@ -241,6 +250,7 @@ class Login:
             code, self.code = self.code, None
             self.answered = self.prompts
             self.typed_at = len(self.screen)
+            self.echo_at = None
             self.exchange_by = time.monotonic() + self.exchange_s
             os.write(self.master, code.encode("ascii") + b"\r")
 
