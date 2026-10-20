@@ -744,6 +744,22 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   return child.webView;
 }
 
+// MS2c: a page called window.close(). Honor it for a POPUP with the same teardown as an automation
+// page.close (so the opener survives, DOM intact); never for the primary (browsers ignore window.close()
+// on the main window). Deferred to the main queue so we never tear the webView down inside its own
+// UI-delegate callback; the registry check drops a double-close.
+- (void)webViewDidClose:(WKWebView *)webView {
+  (void)webView;
+  ZBAppHost *app = self.app;
+  if (app == nil || self == app.mainWindow) return;
+  ZBWindowHost *host = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (![app.windows containsObject:host]) return;  // already removed
+    [host close];
+    [app removeWindow:host];
+  });
+}
+
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message
                  replyHandler:(void (^)(id _Nullable reply, NSString *_Nullable errorMessage))replyHandler {
