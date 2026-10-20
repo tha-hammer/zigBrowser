@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MS3.1 RED (unregistered) — a relative --profile-dir binds to the STARTUP CWD before the digest (RoseCat 6625).
+"""MS3.1 RED — a relative --profile-dir binds to the STARTUP CWD before the digest (RoseCat 6625).
 
 The profile identity is a digest of the normalized path. A relative --profile-dir (the CLI deliberately
 accepts `rel/profile`, cli.zig) must be resolved against the process's startup working directory BEFORE the
@@ -21,6 +21,7 @@ per run; the profile CWDs are fresh temp dirs so the test does not collide with 
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -80,6 +81,7 @@ def main() -> int:
             if rpc is not None:
                 rpc.close()
             stop_browser_macos(p)
+            shutil.rmtree(tmp, ignore_errors=True)  # don't leave the socket dir behind (RoseCat 6643 SHOULD)
 
     def cookies(rpc):
         return (rpc.raw("cookies.getAll", {}).get("result") or {}).get("cookies") or []
