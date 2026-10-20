@@ -211,6 +211,17 @@ static void login_row(const char *state) { secrets_row("login", state, NULL); }
  * file choice; a manual operation in flight locks Sign in. */
 static int signing_in(void) { return secrets.signin_active || secrets.signin_store; }
 
+/* `SECRETS sensitive <control> <0|1>` (e2e only): a complete census of the
+ * credential controls' sensitivity as GTK holds it, all five in a fixed order,
+ * at every recomputation (rev 16.18.8; RoseCat 6055, 6122). */
+static void report_sensitivity(void) {
+  static const char *const names[] = {"entry", "save", "remove", "file", "signin"};
+  GtkWidget *widgets[] = {secrets.entry, secrets.save, secrets.remove, secrets.file_button, secrets.signin};
+  for (int i = 0; i < 5; ++i) {
+    secrets_row("sensitive", names[i], gtk_widget_get_sensitive(widgets[i]) ? "1" : "0");
+  }
+}
+
 static void update_sensitivity(void) {
   if (secrets.window == NULL) {
     return;
@@ -221,6 +232,7 @@ static void update_sensitivity(void) {
   gtk_widget_set_sensitive(secrets.file_button, !locked);
   gtk_widget_set_sensitive(secrets.remove, secrets.can_remove && !locked);
   gtk_widget_set_sensitive(secrets.signin, !locked && zb_login_configured());
+  report_sensitivity();
 }
 
 static void set_busy(int busy) {

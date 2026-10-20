@@ -116,6 +116,8 @@ def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
          (kind == "fetch" and fields in tuple((w,) for w in FETCH_WORDS)) or \
          (kind == "remove" and fields == ("click",)) or \
          (kind == "login" and len(fields) == 1 and fields[0] in LOGIN_STATES) or \
+         (kind == "sensitive" and len(fields) == 2 and fields[0] in ("entry", "save", "remove", "file", "signin")
+          and fields[1] in ("0", "1")) or \
          (kind == "rect" and len(fields) == 2 and fields[0] in SECRETS_CONTROLS
           and re.fullmatch(r"-?\d+,-?\d+,\d+,\d+", fields[1]))
     if not ok:

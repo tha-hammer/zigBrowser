@@ -1039,6 +1039,15 @@ pub fn build(b: *std.Build) void {
         "agent-login-races-e2e",
     });
     agent_login_races_e2e.addArtifactArg(exe);
+    // RoseCat 6055 (rev 16.18.7): every credential control's lock, observed through
+    // `SECRETS sensitive`, including during the signed-in token's own store.
+    const agent_login_locks_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_login_locks_test.py --binary \"$1\"",
+        "agent-login-locks-e2e",
+    });
+    agent_login_locks_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -1355,6 +1364,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_login_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_locks_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
