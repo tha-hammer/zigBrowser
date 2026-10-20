@@ -15609,3 +15609,69 @@ KiB unbroken text and words, fold responsiveness, and click/Ctrl+A/C copy of
 the exact original). Until that user-visible acceptance is recorded, the
 production/UI green cannot join an approved linear prefix. Later approvals do
 not permit a push to leap over it.
+
+## Review queue at `5efa5dd`: S7.0, macOS MS2c follow-ups and Windows Job Object
+
+The following verdicts come from exact commit-blob review. `git diff-tree
+--check` is clean for every reviewed SHA. I did not run a full gate: BlueBeaver
+held the shared gate slot, and the supplied descendant-gate evidence already
+identified the two relevant red steps.
+
+### S7.0 (`b804f9a`, `c28dc26`, `ecbc246`)
+
+- **`b804f9a` remains APPROVED as the first failing-first increment.**
+- **`c28dc26` is BLOCKED-for-tests.** Its normal `tool_result` fixtures omit
+  the shared D7b envelope, so the suite rewards a protocol violation. It tests
+  bad values only when the fields happen to be present and never rejects a
+  missing `v`, missing `seq` or both missing.
+- **`ecbc246` is BLOCKED.** `bridge.py:_envelope` at lines 62-69 makes both
+  fields optional (`if "v" in frame`, `if "seq" in frame`) and then strips
+  whichever fields exist. D7b and rev 16.20.32 require every frame to share
+  `{"v":1,"seq":n,"type":...}`. Consequently a result with neither field,
+  or only one, reaches the model even though it is outside the exact grammar.
+  Make both keys mandatory, put the envelope on every valid fixture, and add
+  the three missing-field reds.
+
+The rest of this increment is directionally correct: the one-MiB bound uses
+the line size as read; ordered PNG/JPEG blocks are retained; prompt/session
+endings forget ids before the terminal session frame; and the strengthened
+stdin test spies on both `sys.stdin` and event-loop reader registration. The
+reported gate was not green overall: 974/974 tests passed but 5/227 steps
+failed, including the foreign Windows controlled-import failure recorded
+below. Agent Mail 6538.
+
+### macOS MS2c follow-ups
+
+| Commit | Verdict | Review |
+|---|---|---|
+| `de74e3c` | **APPROVED** | Emits real per-window `WKWebView.loading` and a conservative creation-time process-family root. Related popups inherit the root, so closing an intermediate opener cannot understate phase-1 `at_risk`. The slow-load and popup-family tests drive the production list/health/recover path on both Mac architectures. |
+| `cc9d0f1` | **APPROVED** | Cumulatively closes `f136b35`'s ordering-test hold. Its global-route mutant makes the sibling command wait about 4.7 seconds and is killed by the new two-client test, while `page.list` and `page.health` use the OOB path. SHOULD, if touched: replace the 300 ms scheduling sleep with an observed queue-entry barrier. |
+| `76249c2` | **Production APPROVED; BLOCKED-for-tests** | `webViewDidClose:` is popup-only, deferred off the delegate callback and registry-guarded; it leaves the primary alone. But `mac_ms2c_script_close_test.py:29-30,140-142` makes the **opener** execute `P.close()`. It does not make the popup execute `window.close()` itself, despite later assertions calling it self-close. Add a popup-addressed `page.evaluate` (or popup fixture self-close), then re-check the opener DOM and URL. Pin primary self-close ignored if that production claim is retained. |
+| `cccca7d` | **APPROVED with SHOULD** | The test holds without socket input beyond the named auto-reload mutant, recovers through `page.reload` rather than navigate, and verifies the stderr window id. The plan honestly records the accepted synthetic-termination substitute. At `mac_ms2c_crash_recovery_controls_test.py:147-156`, require `p3 is not None`; the current conditional can false-green if the primary disappears for the whole recovery poll. |
+
+Agent Mail 6541 carries the macOS verdicts and the exact fix requested for
+`76249c2`.
+
+### Windows Job Object primitive (`337b937`)
+
+**BLOCKED.** The narrow Win32 sequence itself is sound: create suspended,
+assign to the fresh Job Object, resume only after assignment, and terminate an
+unassigned suspended child on failure. The live flag/no-flag control is useful.
+This remains groundwork rather than production containment closure: no caller
+uses `launch_in_job`, and the later WS8 launcher still owns the sandbox user,
+desktop and `CreateProcessWithLogonW` path.
+
+The immediate blocker is a registered-gate regression. The new
+`wincontain_win32.py:13-16` evaluates `ctypes.WinDLL("kernel32", ...)` at module
+import. `test_windows_import_deep` deliberately imports every helper module in
+its controlled Windows-shaped process; the preloaded Linux `ctypes` has no
+`WinDLL`, so this commit raises `AttributeError` and makes the full Linux gate
+red. BlackRobin's descendant clean-export gate observed that exact failure.
+Fix forward with an import-safe, fail-closed platform boundary that preserves
+real-Windows behavior, exercise this module through the existing controlled
+import test, and run the registered step plus the full gate.
+
+SHOULD: the live oracle proves only that the direct `cmd.exe` PID exits, while
+the command spawns `ping.exe` and the module claims every process in the job is
+terminated. Record the descendant PID and verify it is gone after job close,
+or narrow the claim until WS8's descendant/no-breakaway test. Agent Mail 6544.
