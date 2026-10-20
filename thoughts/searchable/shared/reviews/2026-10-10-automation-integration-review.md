@@ -16942,3 +16942,65 @@ run directory. The glob can remove another concurrent run's live keychain.
 This is a seam slice, not full MS5.2 closure: token-shape validation, the
 production caller and store-to-fd-3 chain remain later work. Findings sent to
 JadeBeacon in Agent Mail 6685.
+
+## Review at `0ec38f2`: Windows backend-flag red
+
+**APPROVED (red, unregistered).** The new live-VM test drives the real staged
+Windows executable. It observes `--media-source off` at document start through
+the NAV title, retains the `on` control, and requires both nonzero exit and the
+exact renderer-refusal text. That is the named WS3.2 red. The recorded old-arm
+failure (`MSE=function` under `off`) is a genuine behavioral discriminator,
+not a source assertion. SSH/SCP are noninteractive and bounded, and all local
+display variables are scrubbed.
+
+The test also exposed a separate green requirement: a Windows GUI-subsystem
+binary loses the existing `std.debug.print` refusal. The green must preserve
+the exact stderr line through a Windows-safe writer. I did not rerun the live
+VM test; AzureRidge owns the current gate/VM run. Verdict sent in Agent Mail
+6695.
+
+## Review at `edb9761` and `a947a8a`: S7b screenshot-fit seam
+
+**`edb9761` BLOCKED-for-tests; `a947a8a` BLOCKED.** The production fast path at
+`src/agent_image.c:49-58` treats the PNG signature plus a trailing IEND as
+sufficient validation. If its base64 fits, it returns the bytes as
+`image/png` before `decode_opaque` runs. That violates the plan and header's
+rule that a PNG which cannot be decoded is `ZB_IMAGE_FIT_UNREADABLE`.
+
+The test's forged signature/junk/IEND input is deliberately over 2 MiB
+(`tests/agent_image_fit_test.zig:164-176`), so it goes through the decode path
+and does not cover the small-PNG fast path. An independent 20-byte
+`signature || IEND` probe at the normal bound produced
+`rc=0 mime=image/png output=set`; its expected-unreadable oracle exited 7.
+The committed display-free suite passes 4/4, confirming that the defect
+survives it.
+
+Fix forward test-first with a small signature/junk/IEND case (and preferably a
+second small structurally corrupt PNG), and require a successful decode before
+the as-is result. The original encoded bytes can still be returned unchanged
+after that validation. The seam's scale/quality order and output bound
+otherwise match rev 16.20.35. Findings sent to BlackRobin in Agent Mail 6696.
+
+## Follow-up review at `6762069`: macOS Keychain seam
+
+**Production fix APPROVED; commit BLOCKED-for-tests.** Resolving a null path
+with `SecKeychainCopyDefault` supplies a retained concrete keychain reference,
+and store, lookup and clear consume that reference through `kSecUseKeychain`
+or `kSecMatchSearchList`. This closes `ad8b776` finding 1 in production. The
+target-neighbor/other-keychain cases close finding 2, the `uname -m` checks
+close finding 3, and JadeBeacon supplied the requested old-code behavioral
+red, closing finding 4.
+
+One fail-open remains at `tests/mac/keychain_seam_test.m:134-136`: the test
+ignores both `SecKeychainSetSearchList` return values. If installing the bait
+list fails, the old search-list bug can pass because the bait was never made
+searchable. If restoration fails, the test silently leaves global Keychain
+state changed. Both calls must be checked; setup failure must prevent the
+discriminator from passing, while restoration failure must fail the test and
+still reach exact cleanup.
+
+**SHOULD:** `tests/mac/ms5_gate.sh:37-39` installs the remote cleanup trap only
+after SCP. An SCP failure leaves the nonce staging directory behind; add
+best-effort exact-path cleanup to that failure path. Findings sent to
+JadeBeacon in Agent Mail 6697. No full gate was run while AzureRidge held the
+slot.
