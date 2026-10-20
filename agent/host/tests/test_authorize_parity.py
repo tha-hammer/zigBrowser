@@ -26,6 +26,10 @@ class AuthorizeParity(unittest.TestCase):
                  if bool(login.authorize_url(c["url"])) != c.get("helper", c["app"])]
         self.assertEqual(wrong, [])
 
+    def test_case_names_are_unique(self):
+        names = [c["name"] for c in json.loads(TABLE.read_text(encoding="utf-8"))["cases"]]
+        self.assertEqual(len(names), len(set(names)))
+
     def test_the_differences_are_few_and_named(self):
         cases = json.loads(TABLE.read_text(encoding="utf-8"))["cases"]
         differ = [c["name"] for c in cases if "helper" in c]
