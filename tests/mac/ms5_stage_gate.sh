@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# MS5.1c-a, the staging half (macOS plan rev 17, Behavior MS5.1c): packaging/macos/stage_agent_runtime.sh on BOTH
+# Macs. The Linux driver downloads python-3.12.10-macos11.pkg and its .sigstore, checks the SHA-256 against rev 15's
+# pin and the Sigstore identity (thomas@python.org, https://accounts.google.com), then hands THAT pkg to each Mac.
+# Each leg (a per-run ~/zb-stage-<nonce>, deleted on exit; nothing installed, never the installer):
+#   * a tampered copy of the pkg (one byte appended) is refused: exit nonzero, nothing staged;
+#   * the real pkg stages into <prefix>/Frameworks/agent-host; then
+#     - the python-runtime components (bin/python3.12, Python) are fat (x86_64 arm64);
+#     - no Versions/3.12/bin/*-intel64 and no other thin Mach-O anywhere under agent-host (whole-tree scan);
+#     - zb_agent_host/ is exact (tests/e2e/mac_ms5_census.py package_problems: no missing/extra/symlink/special);
+#     - runtime.json is exactly the installer's bytes for agent/host/uv.lock.
+# Usage: bash tests/mac/ms5_stage_gate.sh [commit]   (default HEAD)
+# MS5.1c-a is PARTIAL: dependencies and the Claude CLI are not staged (rev 17). BatchMode, strict host keys.
+set -euo pipefail
+
+KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
+INTEL_HOST="${ZB_MAC_HOST:-maceojourdan@100.92.212.47}"
+ARM_HOST="${ZB_MAC_ARM_HOST:-jj@100.119.156.28}"
+LEG_TIMEOUT="${ZB_MAC_LEG_TIMEOUT:-900}"
+PIN=8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
+URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+export SSH_ASKPASS_REQUIRE=never
+
+cd "$(git rev-parse --show-toplevel)"
+SSH=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
+     -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=10)
+SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes
+     -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
+
+L=$(mktemp -d "${TMPDIR:-/tmp}/zb-stage-drv-XXXXXX"); trap 'rm -rf -- "${L:?}"' EXIT
+# --- driver: provenance (SHA-256 pin + Sigstore), then the exact bytes go to the Macs ---
+curl -fsSL --proto '=https' -o "$L/py.pkg" "$URL"
+curl -fsSL --proto '=https' -o "$L/py.pkg.sigstore" "$URL.sigstore"
+[ "$(sha256sum "$L/py.pkg" | cut -c1-64)" = "$PIN" ] || { echo "FAIL: pkg SHA-256 is not rev 15's pin" >&2; exit 1; }
+python3 -m venv "$L/venv" >/dev/null && "$L/venv/bin/pip" -q install sigstore >/dev/null 2>&1
+"$L/venv/bin/python" -m sigstore verify identity --bundle "$L/py.pkg.sigstore" --cert-identity thomas@python.org \
+  --cert-oidc-issuer https://accounts.google.com "$L/py.pkg" || { echo "FAIL: Sigstore" >&2; exit 1; }
+SHA=$(git rev-parse --verify "${1:-HEAD}^{commit}"); echo "== commit $SHA" >&2
+git archive --format=tar -o "$L/src.tar" "$SHA" packaging/macos tests/e2e/mac_ms5_census.py agent/host/zb_agent_host agent/host/uv.lock
+
+leg() { # $1=host $2=expected uname -m
+  local host="$1" arch="$2" rdir="zb-stage-$(date +%s)-$$-$RANDOM"
+  "${SSH[@]}" "$host" "mkdir \"\$HOME/${rdir:?}\"" || { echo "FAIL: mkdir on $host" >&2; return 1; }
+  if ! "${SCP[@]}" "$L/py.pkg" "$L/src.tar" "$host:${rdir}/" >/dev/null; then
+    "${SSH[@]}" "$host" "rm -rf \"\$HOME/${rdir:?}\"" || true; echo "FAIL: scp to $host" >&2; return 1
+  fi
+  timeout "$LEG_TIMEOUT" "${SSH[@]}" "$host" "ZB_RDIR='${rdir}' ZB_ARCH='${arch}' ZB_PIN='${PIN}' /bin/bash -s" <<'REMOTE'
+set -euo pipefail
+d="$HOME/${ZB_RDIR:?}"; trap 'rm -rf "$HOME/${ZB_RDIR:?}"' EXIT
+[ "$(uname -m)" = "$ZB_ARCH" ] || { echo "FAIL: leg is $(uname -m), expected $ZB_ARCH" >&2; exit 1; }
+cd "$d" && mkdir repo && tar -xf src.tar -C repo
+STAGE=repo/packaging/macos/stage_agent_runtime.sh
+[ -f "$STAGE" ] || { printf 'FAIL\tms5-stage\t%s\tpackaging/macos/stage_agent_runtime.sh is missing (rev 17)\n' "$ZB_ARCH"; exit 1; }
+fails=0
+# 1. a tampered pkg is refused and stages nothing
+cp py.pkg bad.pkg && printf 'x' >> bad.pkg
+if bash "$STAGE" "$d/bad.pkg" "$ZB_PIN" "$d/bad-prefix" >/dev/null 2>&1; then echo "  FAIL a tampered pkg was accepted"; fails=$((fails+1)); fi
+[ ! -e "$d/bad-prefix/Frameworks/agent-host" ] || { echo "  FAIL a tampered pkg staged something"; fails=$((fails+1)); }
+# 2. the real pkg stages
+bash "$STAGE" "$d/py.pkg" "$ZB_PIN" "$d/prefix" > stage.log 2>&1 || { tail -5 stage.log; echo "  FAIL staging the real pkg"; exit 1; }
+A="$d/prefix/Frameworks/agent-host"
+for c in Python.framework/Versions/3.12/bin/python3.12 Python.framework/Versions/3.12/Python; do
+  [ "$(lipo -archs "$A/$c" 2>/dev/null)" = "x86_64 arm64" ] || { echo "  FAIL $c is not fat"; fails=$((fails+1)); }
+done
+ls "$A/Python.framework/Versions/3.12/bin/" | grep -q intel64 && { echo "  FAIL an -intel64 launcher was staged"; fails=$((fails+1)); }
+thin=0; while IFS= read -r f; do file -b "$f" | grep -q Mach-O || continue
+  case "$(lipo -archs "$f" 2>/dev/null)" in "x86_64 arm64"|"arm64 x86_64") ;; *) thin=$((thin+1)); echo "  thin: ${f#$A/}";; esac
+done < <(find "$A" -type f); [ "$thin" = 0 ] || { echo "  FAIL $thin thin Mach-O staged"; fails=$((fails+1)); }
+/usr/bin/python3 - "$d/repo" "$A" <<'PY' || fails=$((fails+1))
+import json, sys
+from pathlib import Path
+repo, agent = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(repo / "tests/e2e")); sys.path.insert(0, str(repo / "packaging/macos"))
+import mac_ms5_census as c, ms5_inventory as inv
+listed = [r["path"].split("Frameworks/agent-host/", 1)[1] for r in inv.generate(repo)["resources"]
+          if r["role"] == "agent-host-package"]
+probs = c.package_problems(agent, listed)
+rj = c.runtime_json_problem((agent / "runtime.json").read_bytes(), (repo / "agent/host/uv.lock").read_bytes())
+for p in probs + ([rj] if rj else []): print("  FAIL", p)
+sys.exit(1 if probs or rj else 0)
+PY
+if [ "$fails" -eq 0 ]; then printf 'PASS\tms5-stage\t%s\t(MS5.1c-a, partial: dependencies and CLI not staged)\n' "$ZB_ARCH"; else printf 'FAIL\tms5-stage\t%s\t%d\n' "$ZB_ARCH" "$fails"; exit 1; fi
+REMOTE
+}
+
+overall=0
+leg "$INTEL_HOST" x86_64 || { echo "FAIL: x86_64 leg" >&2; overall=1; }
+leg "$ARM_HOST" arm64 || { echo "FAIL: arm64 leg" >&2; overall=1; }
+[ "$overall" -eq 0 ] && printf 'PASS\tms5-stage-gate\tboth-arches\t(MS5.1c-a, partial)\n'
+exit "$overall"
