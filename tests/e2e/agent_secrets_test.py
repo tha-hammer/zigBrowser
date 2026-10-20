@@ -59,7 +59,13 @@ SECRETS_STATES = ("empty", "connected-secret-service", "connected-file", "no-key
 SECRETS_CONTROLS = ("entry", "save", "remove", "file", "signin", "code", "send-code", "cancel", "copy-link")
 # `SECRETS login <state>` (S6b1, rev 16.18.3): the sign-in's state; agent_login_test.py drives it.
 LOGIN_STATES = ("starting", "need-code", "done", "cancelled") + tuple(
-    f"error-{w}" for w in ("cli", "timeout", "cancelled", "shape", "protocol", "network", "store"))
+    f"error-{w}" for w in ("cli", "timeout", "cancelled", "shape", "protocol", "exchange", "network", "store"))
+# `SECRETS reason <sentence>|-` (rev 16.18.9): the fixed reason line under "Sign-in failed.".
+LOGIN_REASONS = ("Claude.ai could not be reached, or it did not accept the code. Try again.",
+                 "The sign-in took too long. Try again.",
+                 "The Claude CLI stopped before it gave a token. Try again.",
+                 "The sign-in's network could not start. Try again.",
+                 "Something unexpected happened during sign-in. Try again.", "-")
 # `SECRETS fetch <word>` (a token fetch began, or answered) and `SECRETS remove click`: e2e-only
 # rows that make the order of a Remove and a fetch observable (RoseCat 5821).
 FETCH_WORDS = ("begin", "ok", "absent", "unavailable", "refused")
@@ -105,7 +111,7 @@ class SecretsRowError(AssertionError):
 def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
     """`SECRETS status <state>`, `SECRETS text <sentence>`, `SECRETS tree <types>`,
     `SECRETS rect <control> <x,y,w,h>`, the e2e-only `fetch` and `remove` rows, or
-    `SECRETS login <state>`; anything else raises SecretsRowError."""
+    `SECRETS login <state>`, `SECRETS reason <sentence>|-`; anything else raises SecretsRowError."""
     parts = line.split("\t")
     if parts[0] != "SECRETS" or len(parts) < 3:
         raise SecretsRowError(f"not a SECRETS row: {line!r}")
@@ -116,6 +122,7 @@ def parse_secrets_row(line: str) -> tuple[str, tuple[str, ...]]:
          (kind == "fetch" and fields in tuple((w,) for w in FETCH_WORDS)) or \
          (kind == "remove" and fields == ("click",)) or \
          (kind == "login" and len(fields) == 1 and fields[0] in LOGIN_STATES) or \
+         (kind == "reason" and len(fields) == 1 and fields[0] in LOGIN_REASONS) or \
          (kind == "sensitive" and len(fields) == 2 and fields[0] in ("entry", "save", "remove", "file", "signin")
           and fields[1] in ("0", "1")) or \
          (kind == "rect" and len(fields) == 2 and fields[0] in SECRETS_CONTROLS

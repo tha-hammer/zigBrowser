@@ -23,14 +23,27 @@ plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
 - `codes.log`: every line it reads at the prompt (the "received-code log" the S6
   tests read);
 - `state`: this run's state, written before the prompt (the S6b1 e2e pastes it);
-- `token`: when it exists, the token it prints, else CANARY.
+- `token`: when it exists, the token it prints, else CANARY;
+- `mode` (rev 16.18.9, S6b1 part B's finding): when it exists, what follows a right
+  code, as the real CLI behaves (an offline probe of 2.1.294; the helper strips the
+  CLI's environment, so this is a file, not a variable):
+  - `oauth-error`: the real CLI's "OAuth error: getaddrinfo EAI_AGAIN
+    platform.claude.com" and "Press Enter to retry.", then it waits; each line it reads
+    prints them again;
+  - `silent`: nothing; it waits;
+  - `needs-proxy`: without HTTPS_PROXY, as `oauth-error` (the real CLI resolves the
+    host itself, and the sandbox has no network); with it, one
+    `CONNECT zb-proxy-probe.invalid:443` through that proxy (the login netd refuses
+    and censuses it: nothing goes further), then success.
 Standard library only: it runs inside the helper's sandbox, which has /usr only.
 """
 
 import os
 import secrets
+import socket
 import sys
 import termios
+from urllib.parse import urlsplit
 
 CANARY = "sk-ant-oat01-ZBCANARY-login-0123456789abcdef"
 CLIENT_ID = "00000000-0000-4000-8000-00000000fa6e"
@@ -41,6 +54,10 @@ INTRO = "<intro>(1-year)<subscription>.Claudesubscriptionrequired."
 
 INVALID = "Invalid code. Please make sure the full code was copied."
 FOREIGN = "That code is not from this sign-in. Paste the code shown after opening the address above."
+# The real CLI's lines after a failed exchange (2.1.294, probed offline; rev 16.18.9).
+OAUTH_ERROR = "OAuth error: getaddrinfo EAI_AGAIN platform.claude.com"
+RETRY = "Press Enter to retry."
+PROBE = "zb-proxy-probe.invalid:443"
 
 
 def b64url(n):
@@ -79,6 +96,37 @@ def log_code(line):
     os.makedirs(fake_dir(), mode=0o700, exist_ok=True)
     with open(os.path.join(fake_dir(), "codes.log"), "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def mode():
+    try:
+        with open(os.path.join(fake_dir(), "mode"), encoding="ascii") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def through_proxy():
+    """One CONNECT to PROBE through $HTTPS_PROXY; True when the proxy answered at all."""
+    proxy = os.environ.get("HTTPS_PROXY")
+    if not proxy:
+        return False
+    url = urlsplit(proxy)
+    try:
+        with socket.create_connection((url.hostname, url.port or 80), timeout=10) as s:
+            s.sendall(f"CONNECT {PROBE} HTTP/1.1\r\nHost: {PROBE}\r\n\r\n".encode("ascii"))
+            return s.recv(64).startswith(b"HTTP/1.")
+    except OSError:
+        return False
+
+
+def fail_and_wait():
+    """The real CLI after a failed exchange: two lines, then each Enter retries and fails again."""
+    while True:
+        out(OAUTH_ERROR)
+        out(RETRY)
+        if sys.stdin.readline() == "":
+            return 1
 
 
 def out(text=""):
@@ -143,6 +191,13 @@ def main(argv):
             prompt()
             continue
         break
+    how = mode()
+    if how == "oauth-error" or (how == "needs-proxy" and not through_proxy()):
+        return fail_and_wait()
+    if how == "silent":
+        while sys.stdin.readline() != "":
+            pass
+        return 1
     out("✓ Long-lived authentication token created successfully!")
     out("Your OAuth token (valid for 1 year):")
     out(token())

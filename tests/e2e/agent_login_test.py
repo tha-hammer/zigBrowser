@@ -62,7 +62,7 @@ from agent_common import run_main  # noqa: E402
 
 FAKE = HERE / "fake_claude_setup_token.py"
 LOGIN_STATES = ("starting", "need-code", "done", "cancelled")
-LOGIN_ERRORS = ("cli", "timeout", "cancelled", "shape", "protocol", "network", "store")
+LOGIN_ERRORS = ("cli", "timeout", "cancelled", "shape", "protocol", "exchange", "network", "store")
 TEXT_SIGNING = "Signing in..."
 TEXT_NEED_CODE = "Paste the code from the sign-in page."
 TEXT_SIGNED_SERVICE = "Signed in. The token is stored in the system keyring."
