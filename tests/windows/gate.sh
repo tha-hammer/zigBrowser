@@ -143,9 +143,12 @@ probe_host() { # $1=user $2=host $3=port -> prints the host's host_probe.ps1 JSO
 }
 
 validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
-  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" <<'PY'
+  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" "${ZB_WIN11_USER:-zbtext}" <<'PY'
 import sys, json
-vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker = sys.argv[1:7]
+vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker, win11_user = sys.argv[1:8]
+def _build_int(x):
+    try: return int(str(x or "0").strip())
+    except ValueError: return 0
 def load(s, who):
     try:
         return json.loads(s)
@@ -172,6 +175,14 @@ if v.get("locked") is not False:
 cu11 = v.get("console_user")
 if not isinstance(cu11, str) or not cu11.strip():
     sys.stderr.write("win11: console_user missing or empty\n"); sys.exit(1)
+if str(v.get("test_user", "")).split("\\")[-1].lower() != win11_user.lower():
+    sys.stderr.write("win11: test_user %r is not %s\n" % (v.get("test_user"), win11_user)); sys.exit(1)
+if _build_int(v.get("os_build")) < 22621:
+    sys.stderr.write("win11: os_build %r is below the Windows 11 22H2 floor (22621)\n" % v.get("os_build")); sys.exit(1)
+if not isinstance(v.get("webview2_pv"), str) or not v.get("webview2_pv").strip():
+    sys.stderr.write("win11: webview2_pv missing or empty\n"); sys.exit(1)
+if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb"), bool) or v.get("free_gb") < 20:
+    sys.stderr.write("win11: free_gb %r is below 20\n" % v.get("free_gb")); sys.exit(1)
 # snapshot_marker is NOT an in-VM probe field — a file inside the VM proves only that someone wrote a
 # file, not that a rollback snapshot exists. The gate proves it host-side with read-only virsh (see
 # probe_only); the physical file server has no VM snapshot and is explicitly not_applicable.
@@ -203,6 +214,12 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): probe schema is %r, expected 2\n" % (who, probe.get("schema"))); sys.exit(1)
     if not isinstance(probe.get("shares"), list):
         sys.stderr.write("file-server (%s): shares missing or not a list\n" % who); sys.exit(1)
+    if str(probe.get("test_user", "")).split("\\")[-1].lower() != win10_user.lower():
+        sys.stderr.write("file-server (%s): test_user %r is not %s\n" % (who, probe.get("test_user"), win10_user)); sys.exit(1)
+    if probe.get("native_arch") != "x64":
+        sys.stderr.write("file-server (%s): native_arch %r, expected x64\n" % (who, probe.get("native_arch"))); sys.exit(1)
+    if _build_int(probe.get("os_build")) < 19045:
+        sys.stderr.write("file-server (%s): os_build %r is below the Windows 10 22H2 floor (19045)\n" % (who, probe.get("os_build"))); sys.exit(1)
     # interactive_session / locked are not_applicable on the physical file server: it runs no GUI and no
     # in-console helper under the read-only rule. console_user (network-safe, checked above) proves the
     # test user owns its console; an active unlocked interactive session is the VM's requirement, not the FS's.
@@ -229,6 +246,9 @@ if pre_ports != post_ports:
     sys.stderr.write("file-server: listening ports changed %s -> %s\n" % (pre_ports, post_ports)); sys.exit(1)
 if a.get("fw_rules_hash") != b.get("fw_rules_hash"):
     sys.stderr.write("file-server: firewall rules changed between pre and post\n"); sys.exit(1)
+# WS0.7: the served shares themselves must be undisturbed pre/post (names/root paths), not just writable.
+if sorted(a.get("shares")) != sorted(b.get("shares")):
+    sys.stderr.write("file-server: served shares changed %s -> %s\n" % (sorted(a.get("shares")), sorted(b.get("shares")))); sys.exit(1)
 print("ALLOW")
 PY
 }

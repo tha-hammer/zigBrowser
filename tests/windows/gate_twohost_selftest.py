@@ -85,7 +85,8 @@ def _fakes(bindir):
 
 def _vm_probe(**over):
     p = {"schema": 2, "test_user": "linuxwin\\zbtext", "identity_marker": VM_MARKER,
-         "native_arch": "x64", "webview2_pv": "155.0.4283.62", "interactive_session": True,
+         "native_arch": "x64", "os_build": "26200", "free_gb": 50.0,
+         "webview2_pv": "155.0.4283.62", "interactive_session": True,
          "locked": False, "console_user": "zbtext"}
     p.update(over)
     return json.dumps(p)
@@ -93,7 +94,7 @@ def _vm_probe(**over):
 
 def _fs_probe(**over):
     p = {"schema": 2, "test_user": "file_server_win\\zbtest", "identity_marker": FS_MARKER,
-         "native_arch": "x64", "webview2_pv": "155.0.4283.62",
+         "native_arch": "x64", "os_build": "19045", "webview2_pv": "155.0.4283.62",
          "groups": [{"sid": "S-1-5-32-545", "name": "BUILTIN\\Users"}],
          "zbtest_write_paths": [], "console_user": "zbtest",
          "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123", "shares": []}
@@ -283,6 +284,64 @@ class WS0CompletionReadiness(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t),
                                         {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
             self._assert_fail_closed(proc, "console user")
+
+    def test_vm_wrong_native_arch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(native_arch="arm64")})
+            self._assert_fail_closed(proc, "native_arch")
+
+    def test_vm_missing_console_user_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(console_user="")})
+            self._assert_fail_closed(proc, "console_user")
+
+    def test_vm_wrong_test_user_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(test_user="linuxwin\\someoneelse")})
+            self._assert_fail_closed(proc, "test_user")
+
+    def test_vm_old_os_build_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(os_build="19045")})
+            self._assert_fail_closed(proc, "os_build")
+
+    def test_vm_missing_webview2_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(webview2_pv="")})
+            self._assert_fail_closed(proc, "webview2_pv")
+
+    def test_vm_low_free_gb_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(free_gb=3.0)})
+            self._assert_fail_closed(proc, "free_gb")
+
+    def test_fs_old_schema_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(schema=1)
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "schema")
+
+    def test_fs_wrong_test_user_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(test_user="file_server_win\\someoneelse")
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "test_user")
+
+    def test_fs_old_os_build_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(os_build="18000")
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "os_build")
+
+    def test_fs_shares_changed_pre_post_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(shares=["C:\\Served"]),
+                 "ZB_SELFTEST_PROBE_WIN10_POST": _fs_probe(shares=["C:\\Served", "C:\\NewHole"])})
+            self._assert_fail_closed(proc, "shares changed")
 
 
 # --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------
