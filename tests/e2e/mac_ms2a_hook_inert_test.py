@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""MS2a RED (unregistered->gate) — the ZB_DEBUG_* test hooks are INERT without --e2e-protocol.
+"""MS2a RED (registered) — ALL ZB_DEBUG_* test hooks are INERT without --e2e-protocol.
 
-RoseCat: a test hook read from the ambient environment must not change production behavior. All
-ZB_DEBUG_* hooks are gated on the app's e2e flag (zb_auto_test_hooks_enabled -> g_active_app.e2eProtocol).
-This launches WITHOUT --e2e-protocol but WITH ZB_DEBUG_DISPATCH_HOLD_MS set, and proves the dispatch
-hold does not fire: a routed eval returns promptly, not after the hold.
+RoseCat: a test hook read from the ambient environment must not change production behavior. Every
+ZB_DEBUG_* hook is gated on the app's e2e flag (zb_auto_test_hooks_enabled -> g_active_app.e2eProtocol).
+This launches WITHOUT --e2e-protocol but with ALL THREE hook envs set, and proves each production call
+site ignores them:
+  1. ZB_DEBUG_DISPATCH_HOLD_MS → a routed eval returns promptly (not held).
+  2. ZB_DEBUG_REFUSE_NEXT_NAV  → a routed navigation SUCCEEDS (not refused with navigation_failed).
+  3. ZB_DEBUG_ACK_FAIL         → a native click SUCCEEDS (not returning Evaluation failed).
 
-Oracle: with the env set but no --e2e-protocol, dom.getText returns in well under the hold. A build that
-honored the env regardless of the flag would block for ~the hold — the red. (The dispatch-race test
-proves the SAME hook DOES fire with --e2e-protocol, so together they pin the gate.)
+Each is a distinct call site, so removing the gate from any one is caught here. (The dispatch-race,
+refused-start and ack-error tests prove the SAME hooks DO fire WITH --e2e-protocol, so together they
+pin the gate both ways.)
 """
 import argparse
 import http.server
@@ -25,7 +28,11 @@ from mac_ms2a_routed_test import stop_browser_macos, _install_signal_cleanup  # 
 
 SKIP_EXIT = 77
 HOLD_MS = 1500
-PAGE = b"<!doctype html><html><head><meta charset='utf-8'><title>Inert</title></head><body><h1 id='h'>Inert</h1></body></html>"
+BTN = b"<button id='btn' style='width:240px;height:90px'>b</button>"
+PAGES = {
+    b"/a": b"<!doctype html><html><head><meta charset='utf-8'><title>A</title></head><body><h1 id='h'>A</h1>" + BTN + b"</body></html>",
+    b"/b": b"<!doctype html><html><head><meta charset='utf-8'><title>B</title></head><body><h1 id='h'>B</h1>" + BTN + b"</body></html>",
+}
 
 
 def eprint(*a):
@@ -34,15 +41,16 @@ def eprint(*a):
 
 class _FixtureServer:
     def __init__(self):
-        page = PAGE
+        pages = PAGES
 
         class H(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
+                body = pages.get(self.path.encode(), b"<title>x</title>")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(page)))
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(page)
+                self.wfile.write(body)
 
             def log_message(self, *a):
                 pass
@@ -77,10 +85,12 @@ def main() -> int:
         socket_path = Path(tmp) / "automation.sock"
         env = dict(os.environ)
         env["ZIGBROWSER_SOCKET"] = str(socket_path)
-        env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # set in the ambient env...
+        env["ZB_DEBUG_DISPATCH_HOLD_MS"] = str(HOLD_MS)  # all three hook envs set in the ambient env...
+        env["ZB_DEBUG_REFUSE_NEXT_NAV"] = "1"
+        env["ZB_DEBUG_ACK_FAIL"] = "1"
         proc = subprocess.Popen(
-            # ...but NO --e2e-protocol, so the hook must stay inert.
-            [str(browser), f"{fixture.base_url}/", "--automation-api"],
+            # ...but NO --e2e-protocol, so every hook must stay inert.
+            [str(browser), f"{fixture.base_url}/a", "--automation-api"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             start_new_session=True,
         )
@@ -101,14 +111,26 @@ def main() -> int:
                 return 1
 
             rpc.call("page.url", {"timeout_ms": 10000})  # warm up readiness
+
+            # 1. dispatch-hold inert: a routed eval returns promptly and succeeds.
             t0 = time.monotonic()
-            rpc.call("dom.getText", {"selector": "css=#h", "timeout_ms": 10000})
+            try:
+                rpc.call("dom.getText", {"selector": "css=#h", "timeout_ms": 10000})
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"dom.getText errored with hooks inert: {exc}")
             elapsed = time.monotonic() - t0
-            ceiling = (HOLD_MS - 700) / 1000.0  # must be far below the hold
-            if elapsed >= ceiling:
-                failures.append(
-                    f"dom.getText took {elapsed:.3f}s (>= {ceiling:.3f}s): the dispatch-hold hook fired "
-                    f"from the ambient env WITHOUT --e2e-protocol (hook not gated)")
+            if elapsed >= (HOLD_MS - 700) / 1000.0:
+                failures.append(f"dom.getText took {elapsed:.3f}s — the dispatch-hold hook fired without --e2e-protocol")
+
+            # 2. refuse-next-nav inert: a routed navigation SUCCEEDS (not navigation_failed).
+            resp = rpc.raw("page.navigate", {"url": f"{fixture.base_url}/b", "timeout_ms": 10000})
+            if resp.get("result") != {"ok": True}:
+                failures.append(f"page.navigate did not succeed with hooks inert (refuse hook fired?): {resp.get('error') or resp}")
+
+            # 3. ack-fail inert: a native click SUCCEEDS (not Evaluation failed).
+            resp = rpc.raw("dom.click", {"selector": "css=#btn", "options": {"input": "native", "timeout_ms": 10000}})
+            if resp.get("result") != {"ok": True}:
+                failures.append(f"dom.click (native) did not succeed with hooks inert (ack-fail hook fired?): {resp.get('error') or resp}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"unexpected error: {exc}")
         finally:

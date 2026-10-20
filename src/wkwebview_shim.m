@@ -928,8 +928,10 @@ static void zb_auto_test_dispatch_hold(void) {
   if (!zb_auto_test_hooks_enabled()) return;
   const char *h = getenv("ZB_DEBUG_DISPATCH_HOLD_MS");
   if (h == NULL) return;
-  int ms = atoi(h);
-  if (ms > 0) usleep((useconds_t)ms * 1000);
+  long ms = strtol(h, NULL, 10);
+  if (ms <= 0) return;
+  if (ms > 60000) ms = 60000;  // clamp: bound the test hold so (ms * 1000) us cannot overflow
+  usleep((useconds_t)(ms * 1000));
 }
 
 // Test-only (ZB_DEBUG_REFUSE_NEXT_NAV): one-shot — the next routed navigation's start is treated as
