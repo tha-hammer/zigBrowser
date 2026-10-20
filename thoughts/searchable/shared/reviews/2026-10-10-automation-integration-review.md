@@ -14475,3 +14475,108 @@ enforceable launch design remain binding for the later backend slice. Verdict
 sent to AzureRidge in Agent Mail 6299.
 
 The linear push-through boundary remains the already-pushed **`70317c0`**.
+
+## S5d, Windows drawer export, plan 16.20.18 and macOS phase-model review
+
+### S5d production green (`d62e36d`)
+
+**BLOCKED.** The prompt-correlation core is useful and its evidence is real:
+the production validator and helper now put `prompt_id` on the prompt-scoped
+frames, the stale/future/no-active reds cross the scripted helper, native
+validator and drawer, and BlackRobin's clean private-Xvfb gate passed
+**181/181 steps and 937/937 tests**. Four boundaries remain:
+
+1. `src/agent_helper.c:246-265` sends `open_session` and immediately installs
+   and sends prompt 1. If opening fails, the helper can only emit an error with
+   `prompt_id:null`; `src/agent_protocol.zig:186-195` rejects it because prompt
+   1 is already active. The first prompt must wait for `session_opened`, with a
+   production-chain red for open failure, two queued prompts and a window that
+   closes while opening.
+2. `reply_capped` is excluded from `ofActivePrompt` at
+   `src/agent_protocol.zig:186-193`, so a cap with no active prompt or a
+   stale/future id is reported as `capped` instead of `prompt`. Schema, session,
+   active-id and cap-order checks need the plan's exact precedence.
+3. `agent/host/zb_agent_host/chat.py:75-80` sizes an
+   `assistant_message` without `prompt_id`, but `:165-170` emits the fitted
+   message with it. Near `FRAME_MAX`, the sizing oracle therefore admits a
+   line which the native reader rejects as oversized. The size check must use
+   the exact production envelope and actual prompt id, with a boundary red.
+4. The earlier max-id hold on `2258d71` is still open: pin acceptance of
+   `2^53-1`, then refusal without wrap or sequence advance and with the fixed
+   Agent-error state; `Validator.promptSent` must not accept an invalid id
+   directly.
+
+The clean gate does not cover these absent regressions. Findings were sent to
+BlackRobin in Agent Mail 6307.
+
+### Windows WS5 drawer-export seam (`f1e5aa7`)
+
+**APPROVED as the orchestrator-authorized export-widening seam.** The `.windows`
+condition activates the same complete `@export` block as Linux; the new COFF
+parser distinguishes external definitions from imports; the checked object is
+the production-root `src/main.zig` Windows compile; and the step is registered
+under both `cross-check` and aggregate `test`. The reported unwidened red,
+green and un-widen mutant isolate the one condition. `git diff --check` and
+Python bytecode compilation also pass.
+
+The Windows `atomic_file` branch is accepted only at this pre-consumer stage.
+It preserves the POSIX path and makes the Windows compile honest, but the
+missing directory-flush equivalent still needs the tracked NTFS replacement /
+recovery verification (`zigBrowser-x8o`) before WS5 persistence closes. The
+final WS5 link/census should require every drawer symbol its Win32 glue uses;
+the current eight-symbol sample proves this gate widened, not the future
+glue's complete ABI. BlueBeaver's running aggregate gate, not this review,
+will provide the integration result. Verdict sent in Agent Mail 6309.
+
+### Chat-drawer plan rev 16.20.18 (`e24378f`)
+
+**BLOCKED as a status claim; the added contracts are APPROVED.** The open
+handshake, cap-reason precedence, stale-result ending wording and S7 Bridge
+producer binding correctly answer findings 6296, 6286, 6290 and 6282. However,
+plan `:2475` labels the section **As built** and `:2477` says the app now waits
+for `session_opened`, while this docs-only commit's parent still has the old
+production order and the two named tests are uncommitted reds. It must say
+planned fix-forward until a green lands, or the green's plan follow-up must
+change it to As built. The files list at `:2512` should then name both new red
+suites. `git diff --check` passes. Verdict sent in Agent Mail 6310.
+
+### macOS phase model and routed navigation (`33d16b5`)
+
+**BLOCKED.** The new PENDING -> PREFLIGHT -> DISPATCHING -> INFLIGHT model
+structurally closes the prior check-to-submit race; heap-owned results close
+late caller-stack writes; `calloc` is checked; replacing the malloc-backed ARC
+strong dispatch object with explicitly destroyed pthread primitives closes the
+ARC-lifetime finding; and `WKNavigation` identity is the right per-navigation
+success/failure key. The reported failure test passed on both Macs and kills a
+failure-as-success mutant. The following remain:
+
+1. The exact claim-to-submit race still has no deterministic wedge red. The
+   owner explicitly reports that test as outstanding, so finding 6298 remains
+   **BLOCKER-for-tests**.
+2. `src/automation_macos_port.zig:54-58,92-104` advertises
+   `navigateWithPolicy`, while `src/wkwebview_shim.m:1150-1158` discards all
+   three policies. `accept` and `dismiss` therefore look honored although no
+   dialog delegate exists. Leave the optional vtable entry null / reject the
+   unsupported policies until MS2b, and align the Mac plan's contradictory
+   MS2a “incl. beforeunload” inventory.
+3. `wkwebview_shim.m:1127-1132` clears `finishedOrFailed` before calling the
+   start block, then leaves it false when the start returns nil. A refused
+   navigation returns `navigation_failed`, but the next URL/title/eval waits
+   to timeout even though the previous document remains. Restore the settled
+   state and add the refused-start red.
+4. `g_automation_active` becomes globally and permanently true at `:1115`,
+   and `:530-532` then discards every later non-current navigation failure in
+   every window. A routed navigation in one popup must not suppress an
+   unrelated window's later user-navigation failure. Scope ownership to the
+   routed/superseded navigation identities and test both cases.
+5. `mac_ms2a_nav_failure_test.py` remains unregistered. It may stay outside
+   the Linux aggregate, but it must join the bounded both-Mac MS2a driver.
+
+The native-click rewire, orphan-safe process-group teardown, outer remote-gate
+bound and full MS2a gate remain separately open. Findings were sent to
+JadeBeacon in Agent Mail 6308. BlueBeaver owns the only running full gate, so
+this review started no competing GUI run.
+
+The linear push-through boundary remains the already-pushed **`70317c0`**:
+S6b1 still awaits the user's required Part-B rerun, and this batch adds blocked
+commits rather than closing that earlier acceptance condition.
