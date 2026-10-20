@@ -577,6 +577,21 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_auth_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_tests_module }));
     run_agent_auth_tests.skip_foreign_checks = true;
+    // Windows plan WS3 coordination (RoseCat 6389, 6405): the shared all-OS backend-flag decision,
+    // literal from production's own parsing (src/backend_flag.zig).
+    const backend_flag_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/backend_flag_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    backend_flag_tests_module.addImport("backend_flag", b.createModule(.{
+        .root_source_file = b.path("src/backend_flag.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_backend_flag_tests = b.addRunArtifact(b.addTest(.{ .root_module = backend_flag_tests_module }));
+    run_backend_flag_tests.skip_foreign_checks = true;
+    b.step("test-backend-flag", "Run the shared backend-flag decision's tests (WS3 coordination)").dependOn(&run_backend_flag_tests.step);
     // Rev 16.18.16-16.18.17: S6b2's navigation decision (agent_auth.decideNavigation), the A2
     // cases among its unit cases, before any auth window exists.
     const agent_auth_navigation_tests_module = b.createModule(.{
@@ -1642,6 +1657,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
+    test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_agent_auth_navigation_tests.step);
     test_step.dependOn(&agent_host_win_import.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_auth_seam_tests.step);
