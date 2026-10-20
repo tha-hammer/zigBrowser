@@ -18147,3 +18147,50 @@ actual `$input | Out-String | iex` command rather than `powershell -Command -`.
 
 No full gate, Windows host, live browser or real display was used for this
 review. Findings were mailed to BlueBeaver (6817) and AzureRidge (6816).
+
+## WS0 zero-write Win10 probe fix-forward (`0353dfb`)
+
+Reviewed at `0353dfb` on 2026-10-20 17:56 EDT.
+
+**Verdict: APPROVED.** This closes the `7e0a9bf` blocker recorded in review
+commit `9875e1b`; the watched first live two-host `--probe-only` run may
+proceed.
+
+The Win10 route still consists only of the SSH process reading the exact
+`host_probe.ps1` bytes from stdin and returning JSON on stdout. Both pre and
+post calls use the Win10 key argument and its own known-hosts file. No staging,
+`scp`, remote file redirection, result file, mkdir or cleanup command is in
+that call graph.
+
+The execution path is now genuinely different from the blocked version:
+
+- `host_probe.ps1:16-36` creates an assembly with
+  `AssemblyBuilderAccess.Run`. Microsoft defines that access as executable but
+  **not savable**.
+- It calls the one-argument `DefineDynamicModule(String)` overload, which
+  Microsoft defines as a **transient** module. It supplies no output filename,
+  never selects `RunAndSave`, and never calls `Save`.
+- There is no `Add-Type`, CodeDOM, `csc`, source compilation or compiler temp
+  path. The three P/Invoke signatures are metadata emitted into that transient
+  module. Native architecture and the SSH process's session id now use managed
+  runtime properties.
+- A command-by-command audit of the remainder found only registry/file/ACL
+  reads, DriveInfo, WTS reads, `netstat`/`netsh` queries, in-memory hashing and
+  JSON stdout. There is no filesystem or registry mutation primitive.
+
+The exact-commit clean-export run is green: **55/55** two-host selftests,
+`bash -n`, and an independent assertion of the `Run` plus transient-module
+shape. The prior `Add-Type` source necessarily fails the new scanner. The
+corrected shared-private-key default plus distinct known-hosts default matches
+the configured hosts.
+
+**SHOULD, not a live-run blocker:** broaden the source regression so future
+mutants using `RunAndSave`, `.Save`, the filename-bearing
+`DefineDynamicModule` overload, `FileStream`/`File.Create`, directory
+creation, Copy/Move/Remove/Rename, `Start-Transcript` or `Tee-Object` also
+fail. The current source is clean, but the present deny list does not name all
+of those spellings. Also update `gate.sh:145-149`, whose comment still
+describes the removed Add-Type here-string.
+
+No Windows host, full gate, live browser or real display was used locally.
+Approval and the follow-up SHOULD were mailed to AzureRidge (6821).
