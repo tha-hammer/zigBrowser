@@ -33,6 +33,13 @@ typedef struct {
   const char *code;
   size_t code_len;
   int is_error;
+  /* a tool_call's call (S7b): its id, its tool, its args as compact JSON */
+  const char *tool_id;
+  size_t tool_id_len;
+  const char *tool;
+  size_t tool_len;
+  const char *args;
+  size_t args_len;
 } ZbAgentFrame;
 enum { ZB_FRAME_READY, ZB_FRAME_SESSION_OPENED, ZB_FRAME_DELTA, ZB_FRAME_MESSAGE, ZB_FRAME_TOOL_CALL,
        ZB_FRAME_RESULT, ZB_FRAME_ERROR, ZB_FRAME_SESSION_ENDED, ZB_FRAME_REPLY_CAPPED };

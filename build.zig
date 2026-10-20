@@ -563,6 +563,10 @@ pub fn build(b: *std.Build) void {
     agent_frames_tool_module.addImport("agent_frames", agent_frames_test_module);
     const run_agent_frames_tool_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_frames_tool_module }));
     run_agent_frames_tool_tests.skip_foreign_checks = true;
+    const agent_frames_tool_call_module = b.createModule(.{ .root_source_file = b.path("tests/agent_frames_tool_call_test.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    agent_frames_tool_call_module.addImport("agent_frames", agent_frames_test_module);
+    const run_agent_frames_tool_call_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_frames_tool_call_module }));
+    run_agent_frames_tool_call_tests.skip_foreign_checks = true;
     for ([_][]const u8{ "tests/agent_protocol_cap_reason_test.zig", "tests/agent_prompt_id_limit_test.zig", "tests/agent_frames_prompt_test.zig", "tests/agent_frames_out_test.zig", "tests/agent_prompt_base_test.zig" }, 0..) |path, i| {
         const m = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize, .link_libc = true });
         if (i < 2) m.addImport("agent_protocol", agent_protocol_module) else m.addImport("agent_frames", agent_frames_test_module);
@@ -1053,8 +1057,8 @@ pub fn build(b: *std.Build) void {
     owner_only_step.dependOn(&run_transport_ws20_tests.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
-    var s7a_runs: [6]*std.Build.Step = undefined;
-    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig" }, 0..) |path, i| {
+    var s7a_runs: [7]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig", "tests/agent_broker_detach_oom_test.zig", "tests/agent_broker_screenshot_test.zig" }, 0..) |path, i| {
         const s7a_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -2054,6 +2058,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_bridge_frame_tests.step);
     for (s5d_fix_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&run_agent_frames_tool_tests.step);
+    test_step.dependOn(&run_agent_frames_tool_call_tests.step);
     test_step.dependOn(&run_agent_helper_tests.step);
     test_step.dependOn(&run_agent_config_check_tests.step);
     test_step.dependOn(&run_config_schema_tests.step);

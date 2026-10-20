@@ -77,6 +77,16 @@ pub const Engine = struct {
     call: *const fn (ctx: *anyopaque, gpa: std.mem.Allocator, method: []const u8, params: []const u8) error{OutOfMemory}![]u8,
 };
 
+/// The screenshot fit (rev 16.20.35): in the GTK app `zb_agent_image_fit` and
+/// `zb_agent_image_free` (src/agent_image.c), so this file stays platform-free.
+pub const Fit = struct {
+    fit: *const fn (png: [*]const u8, len: usize, max_b64: usize, out_b64: *?[*:0]u8, out_mime: *?[*:0]const u8) callconv(.c) c_int,
+    free: *const fn (b64: ?*anyopaque) callconv(.c) void,
+};
+
+/// An image block's base64 at most, leaving room for its tool_result frame (1 MiB a line).
+pub const image_max_b64: usize = (1 << 20) - 4096;
+
 /// Test seam (rev 16.20.36): called on the worker after the engine's answer and before its
 /// locked publication. Production sets none.
 pub const Hook = struct {
@@ -105,6 +115,8 @@ pub const Broker = struct {
     timer: ?std.Thread = null,
     engine: ?Engine = null,
     before_publish: ?Hook = null,
+    /// A screenshot's fit; with none, a screenshot is "the screenshot could not be read".
+    fit: ?Fit = null,
     /// The next broker in its Reaper's list: adopting a broker allocates nothing (RoseCat 6650).
     reap_next: ?*Broker = null,
 
@@ -374,7 +386,7 @@ const Job = struct {
 
     /// On the worker: the call's answer, published unless the deadline answered first.
     fn run(self: *Job, broker: *Broker) void {
-        const outcome = if (std.mem.eql(u8, self.method, "page.health")) self.windowInfo(broker) else blk: {
+        const outcome = if (std.mem.eql(u8, self.method, "page.health")) self.windowInfo(broker) else if (std.mem.eql(u8, self.method, "page.screenshot")) self.screenshot(broker) else blk: {
             const reply = broker.call(self.method, self.params) catch break :blk Outcome.fail("out of memory");
             defer self.gpa.free(reply);
             break :blk answer(self.gpa, reply);
@@ -440,6 +452,40 @@ const Job = struct {
         };
         for (entries) |e| if (e[1]) |v| info.put(gpa, e[0], v) catch return Outcome.fail("out of memory");
         return textBlock(gpa, .{ .object = info });
+    }
+
+    /// screenshot (rev 16.20.35): `page.screenshot`'s base64 PNG, decoded and fitted into one
+    /// image block of at most `image_max_b64` base64 (Broker.fit).
+    fn screenshot(self: *Job, broker: *Broker) Outcome {
+        const gpa = self.gpa;
+        const unreadable = "the screenshot could not be read";
+        const reply = broker.call(self.method, self.params) catch return Outcome.fail("out of memory");
+        defer gpa.free(reply);
+        var parsed = parse(gpa, reply) catch return Outcome.fail("out of memory");
+        defer if (parsed) |*p| p.deinit();
+        const result = switch (replyOf(gpa, if (parsed) |p| p.value else null)) {
+            .result => |r| r,
+            .failure => |f| return f,
+        };
+        const data = field(result, "data", .string) orelse return Outcome.fail(bad_answer);
+        const fit = broker.fit orelse return Outcome.fail(unreadable);
+        const decoder = std.base64.standard.Decoder;
+        const size = decoder.calcSizeForSlice(data.string) catch return Outcome.fail(unreadable);
+        const png = gpa.alloc(u8, size) catch return Outcome.fail("out of memory");
+        defer gpa.free(png);
+        decoder.decode(png, data.string) catch return Outcome.fail(unreadable);
+        var b64: ?[*:0]u8 = null;
+        var mime: ?[*:0]const u8 = null;
+        const rc = fit.fit(png.ptr, png.len, image_max_b64, &b64, &mime);
+        defer if (b64) |p| fit.free(p);
+        if (rc == 1) return Outcome.fail("result too large");
+        if (rc != 0 or b64 == null or mime == null) return Outcome.fail(unreadable);
+        const content = std.json.Stringify.valueAlloc(gpa, [_]struct { type: []const u8, mime: []const u8, data_b64: []const u8 }{.{
+            .type = "image",
+            .mime = std.mem.span(mime.?),
+            .data_b64 = std.mem.span(b64.?),
+        }}, .{}) catch return Outcome.fail("out of memory");
+        return .{ .result = .{ .content = content }, .owned = content };
     }
 
     fn destroy(self: *Job) void {

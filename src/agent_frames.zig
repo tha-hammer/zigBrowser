@@ -35,6 +35,13 @@ pub const CFrame = extern struct {
     code: ?[*]const u8 = null,
     code_len: usize = 0,
     is_error: c_int = 0,
+    /// A tool_call's call (S7b): its id, its tool, and its args object as compact JSON.
+    tool_id: ?[*]const u8 = null,
+    tool_id_len: usize = 0,
+    tool: ?[*]const u8 = null,
+    tool_len: usize = 0,
+    args: ?[*]const u8 = null,
+    args_len: usize = 0,
 };
 
 /// A new helper process: a fresh validator (its seq and sessions) and out seq.
@@ -61,7 +68,7 @@ export fn zb_agent_frames_close_session(session: [*:0]const u8) void {
 
 /// 0 and `out` filled when the line is a valid frame; otherwise 1 + the
 /// protocol.Reason (zb_agent_frames_reason names it). Never logs content.
-export fn zb_agent_frames_validate(line: [*]const u8, len: usize, out: *CFrame) c_int {
+pub export fn zb_agent_frames_validate(line: [*]const u8, len: usize, out: *CFrame) c_int {
     const v = if (validator) |*v| v else return 1 + @as(c_int, @intFromEnum(protocol.Reason.envelope));
     _ = frame_arena.reset(.retain_capacity);
     const outcome = v.validate(frame_arena.allocator(), line[0..len]);
@@ -77,7 +84,12 @@ export fn zb_agent_frames_validate(line: [*]const u8, len: usize, out: *CFrame) 
             setSession(out, f.session);
             setText(out, f.text);
         },
-        .tool_call => |f| setSession(out, f.session),
+        .tool_call => |f| {
+            setSession(out, f.session);
+            out.tool_id, out.tool_id_len = .{ f.id.ptr, f.id.len };
+            out.tool, out.tool_len = .{ f.tool.ptr, f.tool.len };
+            out.args, out.args_len = .{ f.args_json.ptr, f.args_json.len };
+        },
         .result => |f| {
             setSession(out, f.session);
             out.is_error = @intFromBool(f.is_error);
