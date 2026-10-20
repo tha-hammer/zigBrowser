@@ -1261,9 +1261,20 @@ The native shim files are **BlackRobin's alone**; the per-OS **apply** lives in 
   (the seam exists). Mutant: accept an unknown/empty value ⇒ red. This supersedes AzureRidge's earlier
   standalone `src/ws3_backend_flag_table_test.zig` (`.windows`-only, 88e16cd), which is **removed** to
   keep a single literal oracle (no duplicated table to drift).
-- **Windows cookie-port cross-check** (reuses the `cross-check` object + `--require-defined`): the
-  `x86_64-windows-gnu` object compiles and references `automation_wv2_cookie_port.zig`'s `getAll`/`set`/
-  `delete` impl + the `zb_cookies_*` setters once they exist; **red today** (file/decl absent).
+- **Windows cookie-port cross-check** (`cross-check-ws3-win`, unregistered — a dedicated
+  `x86_64-windows-gnu` object from `src/ws3_win_cross_root.zig`): the object compiles and references
+  `automation_wv2_cookie_port.zig`'s `getAll`/`set`/`delete` and `webview2_config.zig`'s
+  `applyWindowsFlag`/`applyProfileDir`, so `check_cross_symbols.py` must find every `zb_*` they need
+  defined by `src/webview2_shim.cpp`. The step `--require`s **all seven** symbols explicitly —
+  `zb_cookies_get_all`, `zb_cookies_add`, `zb_cookies_delete`, `zb_app_set_media_source`,
+  `zb_app_set_hw_policy`, `zb_app_set_profile_dir`, `zb_automation_free` (RoseCat 6429: requiring only a
+  subset lets a mutant that drops an unrequired symbol from the Zig side still pass, because the symbol
+  then vanishes from the object's `needed` set). **Red today** — the shim defines none yet; the check
+  reports all seven MISSING. Mutants (each flips the step red once the shim exists): drop
+  `zb_cookies_add` from the Zig cookie path (a cookie op) ⇒ `--require zb_cookies_add` fails; drop
+  `zb_automation_free` from the port's teardown (a config/ownership op) ⇒ `--require zb_automation_free`
+  fails. Green when BlackRobin's `webview2_shim.cpp` defines all seven; then wire the step into
+  `cross-check` and `test`.
 
 ---
 

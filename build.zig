@@ -366,8 +366,17 @@ pub fn build(b: *std.Build) void {
     });
     ws3_win_module.addIncludePath(b.path("src"));
     const ws3_win_obj = b.addObject(.{ .name = "zigBrowser-ws3-win", .root_module = ws3_win_module });
+    // Require all seven zb_* the WS3 Windows path needs, so a mutant that drops any one from the Zig
+    // side (making it vanish from the object's `needed` set) turns this red (RoseCat 6429).
     const cross_check_ws3_win = b.addSystemCommand(&.{
-        "python3", "tools/check_cross_symbols.py", "--require", "zb_cookies_get_all", "--require", "zb_app_set_media_source",
+        "python3",            "tools/check_cross_symbols.py",
+        "--require",          "zb_cookies_get_all",
+        "--require",          "zb_cookies_add",
+        "--require",          "zb_cookies_delete",
+        "--require",          "zb_app_set_media_source",
+        "--require",          "zb_app_set_hw_policy",
+        "--require",          "zb_app_set_profile_dir",
+        "--require",          "zb_automation_free",
     });
     cross_check_ws3_win.addFileInput(b.path("tools/check_cross_symbols.py"));
     cross_check_ws3_win.addFileArg(ws3_win_obj.getEmittedBin());
