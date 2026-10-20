@@ -507,14 +507,14 @@ def window_ready(x11, wid: int) -> str | None:
 
 
 def current_rect(windows: str, named: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
-    """Where a control the drawer named in a row (`minus`, `open`, ...) is drawn now, from the
-    latest `windows` row (Type:input|output:viewable|hidden:depth:x:y:w:h, comma-separated):
-    the one viewable input widget with the same x, width and height. The drawer writes its
-    open-time rows once, at the panel's first allocation; on the user's GNOME screen
-    (2026-10-20) the window was then placed again and the panel moved up 69 px, so the rows
-    were stale and the '-' click landed in the reply list. None when not exactly one matches:
-    then nothing is clicked."""
-    x, _y, w, h = named
+    """Where a control the drawer named in a row (`minus`, `open`, `icon`) is drawn now, in the
+    window's own coordinates, from a `windows` row (Type:input|output:viewable|hidden:depth:
+    x:y:w:h, comma-separated): the one viewable input widget of the same width and height.
+    The drawer's rows are in screen coordinates once the window has its place (and in the
+    window's before it), while `windows` rows are always in the window's; on the user's GNOME
+    screen (2026-10-20) the window's top-left was at 0,69, so a row's place, plus the window's
+    again, clicked 69 px low. None when not exactly one matches: then nothing is clicked."""
+    _x, _y, w, h = named
     hits = []
     for item in windows.split(","):
         parts = item.split(":")
@@ -524,9 +524,50 @@ def current_rect(windows: str, named: tuple[int, int, int, int]) -> tuple[int, i
             at = tuple(int(v) for v in parts[4:8])
         except ValueError:
             continue
-        if (at[0], at[2], at[3]) == (x, w, h):
+        if (at[2], at[3]) == (w, h):
             hits.append(at)
     return hits[0] if len(hits) == 1 else None
+
+
+DRAWN_WAIT_S = 5.0
+
+
+def drawn_now(b, kind: str, timeout: float = DRAWN_WAIT_S) -> tuple[int, int, int, int] | None:
+    """The drawer's `kind` where the newest `windows` row draws it (current_rect), waiting up
+    to `timeout` for that row: the census is written when the window is drawn, which can be
+    a few rows after the row that says the control is shown. None if it never is."""
+    found = []
+
+    def match() -> bool:
+        named, windows = b.of(kind), b.of("windows")
+        now = current_rect(windows[-1].fields[0], named[-1].rect()) if named and windows else None
+        found[:] = [now] if now else []
+        return now is not None
+    b.wait(match, timeout)
+    return found[0] if found else None
+
+
+def window_rect(rect: tuple[int, int, int, int], origin: tuple[int, int]) -> tuple[int, int, int, int]:
+    """A drawer row's screen rect in the window's coordinates (`origin`: the window's top-left
+    on the screen)."""
+    return rect[0] - origin[0], rect[1] - origin[1], rect[2], rect[3]
+
+
+def screen_point(rect: tuple[int, int, int, int], origin: tuple[int, int]) -> tuple[int, int]:
+    """The screen point at the centre of a rect in the window's coordinates."""
+    return origin[0] + rect[0] + rect[2] // 2, origin[1] + rect[1] + rect[3] // 2
+
+
+def reply_point(text: tuple[int, int, int, int], opened: tuple[int, int, int, int],
+                origin: tuple[int, int]) -> tuple[int, int] | None:
+    """Where to click the reply, in the window's coordinates: on its text (`text`, the
+    `textrect` row, in screen coordinates) and inside the panel's list (`opened`, as drawn,
+    without its 48 px header and 64 px input). None if less than 8 px of text is there."""
+    x, y, w, h = window_rect(text, origin)
+    top, bottom = max(y, opened[1] + 48), min(y + h, opened[1] + opened[3] - 64)
+    if bottom - top < 8:
+        return None
+    return x + min(w // 2, 200), (top + bottom) // 2
 
 
 ASK_FOCUS = "click once on the zigBrowser window title bar to focus it"
@@ -883,7 +924,6 @@ def describe(text: str | None) -> str:
 def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, str]]:
     """(PASS | FAIL | INVALID, case, detail) for each LONG_RUN reply. Every click and key
     goes through safe_click or safe_key; a refused one stops the run (INVALID)."""
-    from agent_common import centre
     from agent_drawer_copy_test import CLIPBOARD_OWNER, DECOY
 
     work = Path(tempfile.mkdtemp(prefix="zb-real-screen-long-run-"))
@@ -903,17 +943,19 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                 return [(INVALID, "long-run", "the window stayed covered or inactive: nothing judged, no input sent")]
             time.sleep(settle)
 
-            def root(rect: tuple[int, int, int, int]) -> tuple[int, int]:
+            def origin() -> tuple[int, int]:
                 gx, gy, _w, _h = geometry(wid)
-                cx, cy = centre(rect)
-                return gx + cx, gy + cy
+                return gx, gy
 
             def click(rect: tuple[int, int, int, int], what: str) -> None:
+                """`rect` in the window's coordinates."""
                 if not ensure_active(x11, wid):
                     raise Refused(f"click on {what} refused: our window did not become active; no input sent")
-                refused = safe_click(x11, wid, *root(rect))
+                at = origin()
+                point = screen_point(rect, at)
+                refused = safe_click(x11, wid, *point)
                 if refused:
-                    raise Refused(f"click on {what} refused: {refused}")
+                    raise Refused(f"click on {what} at {point} (window at {at}) refused: {refused}")
 
             def key(keysym: int, modifiers: tuple[int, ...] = (), what: str = "a key") -> None:
                 if not ensure_active(x11, wid):
@@ -923,20 +965,16 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                     raise Refused(f"{what} refused: {refused}")
 
             def control(kind: str) -> tuple[int, int, int, int]:
-                """The drawer's `kind` where it is drawn now (current_rect); never a stale row."""
-                named = b.of(kind)[-1].rect()
-                windows = b.of("windows")
-                now = current_rect(windows[-1].fields[0] if windows else "", named)
+                """The drawer's `kind` where it is drawn now (drawn_now); never a row's place."""
+                now = drawn_now(b, kind)
                 if now is None:
-                    raise Refused(f"the drawer's {kind} {named} is not drawn where its row says: no input sent")
+                    named = b.of(kind)[-1].rect() if b.of(kind) else None
+                    raise Refused(f"the drawer's {kind} {named} is not drawn in the windows rows: no input sent")
                 return now
-
-            def icon_rect() -> tuple[int, int, int, int]:
-                return tuple(int(v) for v in b.of("icon")[-1].fields[0].split(","))
 
             def reopen() -> bool:
                 opened = len(b.of("open"))
-                click(icon_rect(), "the icon")
+                click(control("icon"), "the icon")
                 return b.wait(lambda: len(b.of("open")) > opened, 10)
 
             if not b.wait(lambda: b.of("icon") != [], 30):
@@ -979,11 +1017,10 @@ def run_long_run(binary: str, out: Path, settle: float) -> list[tuple[str, str, 
                 text_rows = [r for r in b.of("textrect") if r.fields[0] == "assistant"]
                 opened = control("open")
                 rect = tuple(int(v) for v in text_rows[-1].fields[1].split(",")) if text_rows else None
-                top, bottom = (max(rect[1], opened[1] + 48), min(rect[1] + rect[3], opened[1] + opened[3] - 64)) if rect else (0, 0)
-                if rect is None or bottom - top < 8:
+                point = reply_point(rect, opened, origin()) if rect else None
+                if point is None:
                     results.append((FAIL, case, f"the reply's text is not visible in the drawer ({rect}, {opened})"))
                     continue
-                point = (rect[0] + min(rect[2] // 2, 200), (top + bottom) // 2)
                 owner = subprocess.Popen(["/usr/bin/python3", "-c", CLIPBOARD_OWNER, DECOY],
                                          env=clipboard_env(b.world.home), stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL, text=True)

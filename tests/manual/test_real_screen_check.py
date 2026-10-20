@@ -295,9 +295,10 @@ class ActivationTest(unittest.TestCase):
 
 
 # The user's real-screen long-run on d3c998d (2026-10-20, /tmp/zb-long-run-2): the drawer's
-# open-time rows said open 0,530,1024,307 and minus 982,537,34,34; the next `windows` row, the
-# panel as drawn, has it 69 px higher (GNOME placed the window again after the first
-# allocation). The script clicked the stale '-', inside the reply list, and nothing folded.
+# rows said open 0,530,1024,307 and minus 982,537,34,34, in screen coordinates (the window's
+# top-left is at 0,69 on the user's screen); the `windows` rows are in the window's own
+# coordinates, so the panel there is at 0,461. The script added the window's place to the
+# screen rect again and clicked 69 px low, inside the reply list, and nothing folded.
 USERS_WINDOWS = ("GtkButton:input:viewable:1:953:728:63:34,GtkButton:input:viewable:1:881:728:66:34,"
                  "GtkScrolledWindow:output:viewable:1:8:716:867:46,GtkListBox:output:viewable:5:0:509:1024:200,"
                  "GtkButton:input:viewable:1:982:468:34:34,GtkButton:input:viewable:1:888:468:86:34,"
@@ -313,7 +314,7 @@ class CurrentRectTest(unittest.TestCase):
 
     def test_a_widget_not_drawn_now_is_none(self):
         self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (944, 688, 56, 56)), "hidden: never a click target")
-        self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (500, 100, 34, 34)))
+        self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (500, 100, 40, 40)), "no widget of that size")
         self.assertIsNone(rsc.current_rect("", (982, 537, 34, 34)))
 
     def test_two_candidates_are_none(self):
@@ -322,6 +323,82 @@ class CurrentRectTest(unittest.TestCase):
 
     def test_output_only_widgets_are_never_click_targets(self):
         self.assertIsNone(rsc.current_rect(USERS_WINDOWS, (0, 600, 1024, 200)), "the reply list itself")
+
+
+# The user's long-run on 4b50ff6 (2026-10-20, /tmp/zb-long-run-3): after the fold the drawer's
+# icon row said 944,757,56,56 (screen; the window is at 0,69) and this `windows` row came
+# three rows after it, with the icon drawn at 944,688. The script clicked the icon row plus
+# the window's place, 69 px below the window: refused, "the click point is outside our window".
+USERS_FOLDED = ("GtkButton:input:viewable:1:944:688:56:56,GtkButton:input:hidden:1:953:728:63:34,"
+                "GtkButton:input:hidden:1:881:728:66:34,GtkListBox:output:hidden:5:0:-60150:1024:60859,"
+                "GtkButton:input:hidden:1:982:468:34:34,GtkButton:input:hidden:1:888:468:86:34,"
+                "GtkEventBox:input:hidden:1:0:461:1024:307,WebKitWebView:output:viewable:1:0:0:1024:768")
+USERS_ORIGIN = (0, 69)
+
+
+class Row:
+    """A `DRAWER\t1\t<kind>\t<fields>` row, as agent_common.Row reads it."""
+
+    def __init__(self, line: str) -> None:
+        _drawer, win, self.kind, *fields = line.split("\t")
+        self.win, self.fields = int(win), tuple(fields)
+
+    def rect(self, index: int = 0) -> tuple[int, int, int, int]:
+        x, y, w, h = (int(v) for v in self.fields[index].split(","))
+        return x, y, w, h
+
+
+class FakeBrowser:
+    """LongRunBrowser's `of` and `wait` over rows given ahead of time: each wait lets the
+    next pending row arrive, as the reader thread does while the script waits."""
+
+    def __init__(self, rows: list[str], pending: list[str]) -> None:
+        self.rows = [Row(line) for line in rows]
+        self.pending = [Row(line) for line in pending]
+
+    def of(self, kind: str) -> list:
+        return [r for r in self.rows if r.kind == kind and r.win == 1]
+
+    def wait(self, predicate, timeout: float) -> bool:
+        while not predicate():
+            if not self.pending:
+                return False
+            self.rows.append(self.pending.pop(0))
+        return True
+
+
+class ScreenOriginTest(unittest.TestCase):
+    def test_a_control_is_found_by_its_size_wherever_the_window_is(self):
+        self.assertEqual(rsc.current_rect(USERS_FOLDED, (944, 757, 56, 56)), (944, 688, 56, 56))
+        self.assertEqual(rsc.current_rect(USERS_FOLDED, (1144, 757, 56, 56)), (944, 688, 56, 56),
+                         "a window 200 px from the screen's left edge")
+        self.assertEqual(rsc.current_rect(USERS_WINDOWS, (1182, 537, 34, 34)), (982, 468, 34, 34))
+
+    def test_a_screen_rect_in_the_windows_coordinates(self):
+        self.assertEqual(rsc.window_rect((2, -60036, 1020, 60812), USERS_ORIGIN), (2, -60105, 1020, 60812))
+        self.assertEqual(rsc.window_rect((944, 757, 56, 56), (200, 69)), (744, 688, 56, 56))
+
+    def test_the_reply_click_is_on_the_reply_text_inside_the_panel(self):
+        opened = (0, 461, 1024, 307)  # the panel, from the windows row
+        x, y = rsc.reply_point((2, -60036, 1020, 60812), opened, USERS_ORIGIN)  # the user's reply
+        self.assertTrue(461 + 48 <= y <= 461 + 307 - 64 and 2 <= x < 1022, (x, y))
+        x, y = rsc.reply_point((2, 600, 1020, 40), opened, USERS_ORIGIN)  # a short one: 531..571 drawn
+        self.assertTrue(531 <= y < 571, (x, y))
+        self.assertIsNone(rsc.reply_point((2, 900, 1020, 40), opened, USERS_ORIGIN), "below the panel")
+
+    def test_the_click_waits_for_the_windows_row_that_shows_the_control(self):
+        open_row = "DRAWER\t1\twindows\t" + USERS_WINDOWS
+        folded = ["DRAWER\t1\tminimized\t944,757,56,56", "DRAWER\t1\ticon\t944,757,56,56"]
+        b = FakeBrowser([open_row, *folded], ["DRAWER\t1\tfocus\ticon", "DRAWER\t1\twindows\t" + USERS_FOLDED])
+        self.assertEqual(rsc.drawn_now(b, "icon", 1.0), (944, 688, 56, 56))
+        never = FakeBrowser([open_row, *folded], [])
+        self.assertIsNone(rsc.drawn_now(never, "icon", 1.0), "not drawn yet: nothing to click")
+
+    def test_the_click_point_is_inside_the_window_on_the_screen(self):
+        b = FakeBrowser(["DRAWER\t1\ticon\t944,757,56,56", "DRAWER\t1\twindows\t" + USERS_FOLDED], [])
+        px, py = rsc.screen_point(rsc.drawn_now(b, "icon", 1.0), USERS_ORIGIN)
+        self.assertEqual((px, py), (972, 785))
+        self.assertTrue(69 + 688 <= py < 69 + 688 + 56 and py < 69 + 768)
 
 
 class AnyPageTest(unittest.TestCase):
