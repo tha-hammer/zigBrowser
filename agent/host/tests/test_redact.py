@@ -254,6 +254,10 @@ class ChangeKeyTest(Base):
         path, s = self.scanned_clean(data)
         st = os.stat(path)
         regrown = record(OTHER + " pad")
+        # ctime has the kernel's coarse clock (a jiffy); a rewrite inside the scan's own tick
+        # is a residual the plan states, so this one comes a tick later.
+        import time
+        time.sleep(0.05)
         with open(path, "r+b") as f:
             f.write(regrown)
         os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))  # the ctime still moved
@@ -296,8 +300,9 @@ class IdentityTest(Base):
         self.assertEqual(canary.read_bytes(), record(TOKEN))
         (self.home.ws / "link.jsonl").unlink()
         os.mkfifo(self.home.ws / "pipe.jsonl")
-        with self.assertRaises(self.r.ScrubFailed):  # and never blocks on the FIFO
+        with self.assertRaises(self.r.ScrubFailed) as failed:  # and never blocks on the FIFO
             self.scrubber().scan("start")
+        self.assertIn("not a regular file", str(failed.exception), "the fstat check, before any read")
 
     def test_a_symlink_at_any_component_of_the_path_fails_closed(self):
         for component in ("state", "projects", "-workspace"):
@@ -365,25 +370,29 @@ class FaultTest(Base):
                 return got[: len(got) // 2] if calls["n"] == 1 else got
         s = self.scrubber(Short())
         s.poll()  # no failure
+        after_first = calls["n"]
         self.clock.sleep(r.SCRUB_POLL_S)
         s.poll()
+        self.assertGreater(calls["n"], after_first, "no key was committed after the short read: read again")
         self.assert_masked(path, data, self.spans(data, TOKEN))
 
     def test_a_short_pread_makes_a_lifecycle_scan_start_again_never_succeed_on_that_pass(self):
         r = self.r
         data = record("leak " + TOKEN)
         path = self.home.write("a.jsonl", data)
-        passes = {"short": 0}
+        passes = {"short": 0, "from_zero": 0}
 
         class ShortOnce(r.Files):
             def pread(self_, fd, n, offset):
                 got = super().pread(fd, n, offset)
+                passes["from_zero"] += offset == 0
                 if passes["short"] == 0 and len(got) > 4:
                     passes["short"] += 1
                     return got[:4]
                 return got
         self.scrubber(ShortOnce()).scan("prompt_end")
         self.assertEqual(passes["short"], 1)
+        self.assertEqual(passes["from_zero"], 2, "the short read started a second pass from byte 0")
         self.assert_masked(path, data, self.spans(data, TOKEN))
 
 
@@ -412,14 +421,24 @@ class RevalidationTest(Base):
         self.home.write("a.jsonl", record("clean"))
         passes = {"n": 0}
 
+        names, first_reads = {}, []
+
         class Churn(r.Files):
+            def openat(self_, dirfd, name, flags):
+                fd = super().openat(dirfd, name, flags)
+                names[fd] = name
+                return fd
+
             def pread(self_, fd, n, offset):
                 passes["n"] += 1
+                if names.get(fd) == "a.jsonl" and offset == 0:
+                    first_reads.append(fd)  # one per pass: each pass reads a.jsonl from byte 0
                 (ws / f"churn-{passes['n']}.jsonl").write_bytes(record("x"))
                 return super().pread(fd, n, offset)
         with self.assertRaises(r.ScrubFailed):
             self.scrubber(Churn()).scan("close")
         self.assertEqual(r.SCRUB_LIFECYCLE_TRIES, 3)
+        self.assertEqual(len(first_reads), r.SCRUB_LIFECYCLE_TRIES, "exactly the named number of passes")
 
 
 class PaceTest(Base):
@@ -464,6 +483,211 @@ class PaceTest(Base):
         nxt = files.reads[posted["at"]]
         self.assertEqual(nxt[3], 0, "the read after the posting is the lifecycle scan's first, from offset 0")
         self.assertNotIn(TOKEN.encode(), (self.home.ws / "small.jsonl").read_bytes())
+
+
+class ReviewTest(Base):
+    """RoseCat 6249, 6269, 6280, 6289, 6292 on the first scrubber."""
+
+    def test_a_missing_state_directory_fails_closed(self):
+        shutil.rmtree(self.home.root / "state")  # setup always makes it: its absence is not "no transcripts"
+        s = self.scrubber()
+        with self.assertRaises(self.r.ScrubFailed):
+            s.scan("start")
+        with self.assertRaises(self.r.ScrubFailed):
+            s.poll()
+
+    def test_workspaces_named_state_and_projects_are_scanned_like_any_other(self):
+        projects = self.home.root / "state" / "projects"
+        for ws in ("state", "projects"):
+            (projects / ws).mkdir()
+            (projects / ws / "t.jsonl").write_bytes(record(TOKEN))
+        s = self.scrubber()
+        s.poll()
+        st = os.stat(projects)
+        self.assertEqual(s.projects_id, (st.st_dev, st.st_ino), "the identity kept is projects', not a workspace's")
+        self.clock.sleep(self.r.SCRUB_POLL_S)
+        s.poll()
+        s.scan("close")
+        for ws in ("state", "projects"):
+            self.assertNotIn(TOKEN.encode(), (projects / ws / "t.jsonl").read_bytes(), ws)
+
+    def test_open_root_and_scandir_faults_fail_closed(self):
+        r = self.r
+
+        class NoRoot(r.Files):
+            def open_root(self_, path):
+                raise OSError(5, "injected open_root failure")
+        with self.assertRaises(r.ScrubFailed):
+            r.Scrubber(str(self.home.root), TOKEN, files=NoRoot(), clock=self.clock)
+
+        class NoList(r.Files):
+            def scandir(self_, fd):
+                raise OSError(5, "injected scandir failure")
+        self.home.write("a.jsonl", record("x"))
+        with self.assertRaises(r.ScrubFailed):
+            self.scrubber(NoList()).scan("close")
+        with self.assertRaises(r.ScrubFailed):
+            self.scrubber(NoList()).poll()
+
+    def test_an_unexpected_exception_fails_closed_and_answers_a_posted_request(self):
+        r = self.r
+        self.home.write("a.jsonl", record("x"))
+
+        class Broken(r.Files):
+            def pread(self_, fd, n, offset):
+                raise ValueError("an unexpected error")
+        with self.assertRaises(r.ScrubFailed):
+            self.scrubber(Broken()).scan("close")
+        s = self.scrubber(Broken())
+        request = s.post("close")
+        with self.assertRaises(r.ScrubFailed):
+            s.poll()
+        self.assertTrue(request.done and request.event.is_set(), "the waiter is woken")
+        self.assertIsInstance(request.error, r.ScrubFailed)
+
+    def test_a_lifecycle_scan_of_a_file_that_keeps_growing_ends_within_its_passes(self):
+        r = self.r
+        path = self.home.write("grow.jsonl", b"x" * (2 * r.SCRUB_CHUNK))
+        reads = {"n": 0}
+
+        class Grows(r.Files):
+            def pread(self_, fd, n, offset):
+                reads["n"] += 1
+                if reads["n"] > 200:
+                    raise AssertionError("the scan chased the growth")
+                with open(path, "ab") as f:
+                    f.write(b"y" * r.SCRUB_CHUNK)
+                return super().pread(fd, n, offset)
+        with self.assertRaises(r.ScrubFailed):  # it changed during every pass
+            self.scrubber(Grows()).scan("close")
+        self.assertLessEqual(reads["n"], r.SCRUB_LIFECYCLE_TRIES * 3, "each pass ends at its snapshot size")
+
+    def test_a_symlinked_home_is_refused_before_anything_is_read(self):
+        outside = Path(tempfile.mkdtemp(prefix="zb-redact-outside-"))
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "state" / "projects" / "-w").mkdir(parents=True)
+        canary = outside / "state" / "projects" / "-w" / "c.jsonl"
+        canary.write_bytes(record(TOKEN))
+        link = self.home.root.parent / (self.home.root.name + "-link")
+        link.symlink_to(outside)
+        self.addCleanup(link.unlink)
+        with self.assertRaises(self.r.ScrubFailed):
+            self.r.Scrubber(str(link), TOKEN, files=self.r.Files(), clock=self.clock).scan("start")
+        self.assertEqual(canary.read_bytes(), record(TOKEN))
+
+    def test_a_request_racing_the_owners_failure_gets_it_and_never_waits(self):
+        """The interleaving of RoseCat 6280: the requester has looked at `failed` (none yet);
+        the owner then fails, answers what is queued and exits; then the requester queues.
+        It must get the failure. The owner's census is held until the requester looks."""
+        import threading
+        r = self.r
+        looked, owner_done = threading.Event(), threading.Event()
+
+        class Held(r.Files):
+            def openat(self_, dirfd, name, flags):
+                looked.wait(5)  # the owner fails only once the requester has looked
+                raise OSError(5, "injected census failure")
+
+        class Racy(r.Scrubber):
+            @property
+            def failed(self_):
+                seen = self_.__dict__.get("_failed")  # what the requester observes
+                if threading.current_thread().name == "asker" and not looked.is_set():
+                    looked.set()
+                    owner_done.wait(1)  # with a check-then-enqueue gap, the owner finishes here
+                return seen
+
+            @failed.setter
+            def failed(self_, value):
+                self_.__dict__["_failed"] = value
+        s = Racy(str(self.home.root), TOKEN, files=Held(), clock=self.clock)
+
+        def own():
+            s.run(lambda exc: None)
+            owner_done.set()
+        owner = threading.Thread(target=own, daemon=True)
+        owner.start()
+        result = []
+
+        def ask():
+            try:
+                s.request("close")
+                result.append("clean")
+            except r.ScrubFailed:
+                result.append("failed")
+        asker = threading.Thread(target=ask, name="asker", daemon=True)
+        asker.start()
+        asker.join(5)
+        self.assertFalse(asker.is_alive(), "the request was stranded")
+        self.assertEqual(result, ["failed"])
+
+    def test_projects_replaced_during_a_lifecycle_scan_is_scanned_before_it_answers(self):
+        r = self.r
+        projects = self.home.root / "state" / "projects"
+        self.home.write("a.jsonl", record("clean"))
+        swapped = {"done": False}
+
+        class Swap(r.Files):
+            def pread(self_, fd, n, offset):
+                got = super().pread(fd, n, offset)
+                if not swapped["done"]:
+                    swapped["done"] = True
+                    projects.rename(projects.parent / "projects.old")
+                    (projects / "-w").mkdir(parents=True)
+                    (projects / "-w" / "new.jsonl").write_bytes(record("late " + TOKEN))
+                return got
+        self.scrubber(Swap()).scan("close")
+        self.assertNotIn(TOKEN.encode(), (projects / "-w" / "new.jsonl").read_bytes())
+
+    def test_a_listed_transcript_that_vanishes_before_its_open_is_not_a_failure(self):
+        r = self.r
+        self.home.write("gone.jsonl", record("x"))
+        kept = self.home.write("kept.jsonl", record("leak " + TOKEN))
+        ws = self.home.ws
+
+        class Vanish(r.Files):
+            def openat(self_, dirfd, name, flags):
+                if name == "gone.jsonl" and (ws / name).exists():
+                    (ws / name).unlink()
+                return super().openat(dirfd, name, flags)
+        self.scrubber(Vanish()).scan("close")
+        self.assertNotIn(TOKEN.encode(), kept.read_bytes())
+
+    def test_a_same_size_write_into_the_read_region_during_a_scan_is_found_by_the_next_census(self):
+        r = self.r
+        path = self.home.write("big.jsonl", b"z" * (3 * r.SCRUB_CHUNK) + b"\n")
+        writes = {"done": False}
+
+        class Writer(r.Files):
+            def pread(self_, fd, n, offset):
+                if offset >= r.SCRUB_CHUNK and not writes["done"]:
+                    writes["done"] = True
+                    with open(path, "r+b") as f:  # same size, into bytes already read
+                        f.write(b'{"x":"' + TOKEN.encode() + b'"}')
+                return super().pread(fd, n, offset)
+        s = self.scrubber(Writer())
+        s.poll()
+        self.assertTrue(writes["done"])
+        self.clock.sleep(r.SCRUB_POLL_S)
+        s.poll()
+        self.assertNotIn(TOKEN.encode(), path.read_bytes(), "the changed file's key was not committed")
+
+    def test_the_monitor_reads_at_most_exactly_the_named_rate_in_any_one_second(self):
+        r = self.r
+        path = self.home.ws / "huge.jsonl"
+        with open(path, "wb") as f:
+            f.truncate(100 * MIB)
+        files = counting_files(r, self.clock)
+        s = self.scrubber(files)
+        for _ in range(6):
+            with open(path, "r+b") as f:
+                f.seek(0)
+                f.write(os.urandom(8))
+            s.poll()
+            self.clock.sleep(r.SCRUB_POLL_S)
+        for i, (start, _fd, _n, _o) in enumerate(files.reads):
+            window = sum(n for t, _fd, n, _o in files.reads[i:] if t < start + 1.0)
+            self.assertLessEqual(window, r.SCRUB_RATE_BYTES_PER_S, f"the window from {start:.3f}")
 
 
 if __name__ == "__main__":
