@@ -17317,3 +17317,62 @@ newest approved push-through SHA is therefore **`e7e0083`**. The next blocked
 commit is **`2cc125c`**, whose WS13.4 red still omits the promised profile
 folder, WFP provider and WFP sublayer survival censuses described in the
 provisional audit above.
+
+## WS13.4 uninstall-census fix (`028c938`)
+
+**APPROVED.** Windows-plan rev 2.8 makes the WS13.4 red census and require an
+empty result for all six survivor classes in the uninstall normative: sandbox
+users, profile folders, WFP filters, WFP providers, WFP sublayers and scheduled
+tasks. It also forbids reported success while any of those lists is nonempty
+and gives each newly missing class—profile folder, provider and sublayer—its
+own surviving-success mutant. This cumulatively closes `2cc125c`; the stale
+WS0 status remains a non-blocking documentation SHOULD.
+
+The fresh linear audit advances the approved push-through through
+**`703b3de`**. The intervening Part-B plan/reds and Windows/macOS plan repairs
+are cumulatively closed by their already-reviewed fix-forwards. The immediate
+next commit, **`26fdfff`**, remains blocked: its MS2a production-chain red and
+the later routed-navigation lifetime/readiness closure are not yet completely
+approved. The docs-only diff is whitespace-clean. Verdict sent to AzureRidge
+in Agent Mail 6744.
+
+## macOS containment-spike fix (`ca6a2f4`)
+
+**APPROVED as the partial containment spike, cumulatively closing the three
+`b34b088` findings.** The corrected authority model allows writes only beneath
+the scratchpad and proves the helper and its child cannot write the readable
+workspace. Renaming the broad-read/sysctl/mach artifact to
+`agent_sandbox_containment_spike.sb`, adding the `ZB_SPIKE_PARTIAL` marker and
+requiring the future backend to refuse it prevent this intermediate profile
+from claiming production MS6 status. The network negative now targets a live
+forbidden loopback listener, while positive connects on 51091 and 31337 kill a
+mutation that removes the bridge rule.
+
+`sh -n`, `bash -n` and `git diff --check` pass; the owner's both-architecture
+gate and permissive/bridge-rule mutant evidence are accepted. This is not
+approval of the eventual production Seatbelt profile. Before reuse, the
+harness SHOULD make the protected-canary setup failure terminal, exclude the
+allowed 51091 port from the random forbidden-port range, and use `${VAR:?}`
+guards in its local destructive cleanup. Verdict sent to JadeBeacon in Agent
+Mail 6745.
+
+## S7b screenshot/CFrame unit slice (`d1cbbf8`, `bb15d4e`)
+
+**Both commits APPROVED as an incremental unit red/green slice.** The reds
+compile before the seams exist and the owner's pre-green run fails all four
+screenshot cases and both frame cases. The green decodes the engine's base64
+before fitting, passes the exact 1 MiB minus 4096 bound, frees the fit's owned
+answer on every return, distinguishes too-large from unreadable, emits one
+image block, and registers the tests. The validator exposes compact tool id,
+name and arguments in a Zig `extern` frame, and the C duplicate has the same
+field order. The reported bound/raw-input/free/error/args mutants each fail.
+
+This does **not** approve S7b. Its next reds must traverse `agent_helper.c` and
+the app, so a mismatched C ABI or an unwired fit cannot survive, followed by
+the two real-binary closure tests. The screenshot follow-up SHOULD either
+reject missing or wrongly typed `width`/`height`, matching the documented
+`{data,width,height}` result shape, or narrow the plan/comment explicitly;
+the current unit and implementation validate only `data`. The C consumer/ABI
+also needs production-chain coverage rather than relying only on the
+Zig-facing `CFrame` unit. No full gate ran because BlueBeaver held the shared
+slot. Verdict sent to BlackRobin in Agent Mail 6743.
