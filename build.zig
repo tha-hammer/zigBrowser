@@ -1069,7 +1069,21 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_setup_ms5_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_setup_ms5_module }));
     run_agent_setup_ms5_tests.skip_foreign_checks = true;
-    b.step("test-agent-setup-ms5", "Run MS5's agent runtime location and setup-gate tests").dependOn(&run_agent_setup_ms5_tests.step);
+    const agent_setup_ms5_python_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_setup_ms5_python_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_setup_ms5_python_module.addImport("agent_setup", b.createModule(.{
+        .root_source_file = b.path("src/agent_setup.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_setup_ms5_python_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_setup_ms5_python_module }));
+    run_agent_setup_ms5_python_tests.skip_foreign_checks = true;
+    const agent_setup_ms5_step = b.step("test-agent-setup-ms5", "Run MS5's agent runtime location and setup-gate tests");
+    agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_tests.step);
+    agent_setup_ms5_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
     // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
     var s7a_runs: [7]*std.Build.Step = undefined;
@@ -2114,6 +2128,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_automation_server_tests.step);
     test_step.dependOn(&run_owner_only_tests.step);
     test_step.dependOn(&run_agent_setup_ms5_tests.step);
+    test_step.dependOn(&run_agent_setup_ms5_python_tests.step);
     test_step.dependOn(&run_transport_ws20_tests.step);
     for (s7a_runs) |run| test_step.dependOn(run);
     test_step.dependOn(&automation_api_e2e.step);

@@ -38,20 +38,23 @@ pub fn defaultRuntime(gpa: std.mem.Allocator, exe_path: []const u8) !Runtime {
 /// macOS plan rev 14 item 3: inside an app bundle the runtime is nested code, signed where code is
 /// signed (JadeBeacon 6756), so `<X>.app/Contents/MacOS/zigBrowser` keeps it in
 /// `<X>.app/Contents/Frameworks/agent-host`, never under Resources. Anything else, a macOS dev tree
-/// included, keeps `<prefix>/lib/zigbrowser/agent-host`. The interpreter's path inside it on macOS
-/// waits on the universal2-Python decision (rev 14 item 8); until then it is the installer's venv.
+/// included, keeps `<prefix>/lib/zigbrowser/agent-host` and its venv.
 pub fn runtimeFor(gpa: std.mem.Allocator, os: std.Target.Os.Tag, exe_path: []const u8) !Runtime {
     const bin = std.fs.path.dirname(exe_path) orelse "/";
     const prefix = std.fs.path.dirname(bin) orelse "/";
-    const package_dir = if (os == .macos and isAppContents(bin, prefix))
-        try std.fs.path.join(gpa, &.{ prefix, mac_runtime_subpath })
-    else
-        try std.fs.path.join(gpa, &.{ prefix, runtime_subpath });
+    if (os == .macos and isAppContents(bin, prefix)) {
+        const package_dir = try std.fs.path.join(gpa, &.{ prefix, mac_runtime_subpath });
+        return .{ .python = try std.fs.path.join(gpa, &.{ package_dir, mac_python_subpath }), .package_dir = package_dir };
+    }
+    const package_dir = try std.fs.path.join(gpa, &.{ prefix, runtime_subpath });
     return .{ .python = try std.fs.path.join(gpa, &.{ package_dir, "venv/bin/python" }), .package_dir = package_dir };
 }
 
 /// Inside `<X>.app/Contents`, relative to Contents.
 pub const mac_runtime_subpath = "Frameworks/agent-host";
+/// The python.org CPython 3.12 universal2 framework's fat launcher, inside agent-host (the user's decision,
+/// 6ea1064). No venv on macOS: a venv records an absolute home, and the app moves.
+pub const mac_python_subpath = "Python.framework/Versions/3.12/bin/python3.12";
 
 /// `bin` is `<X>.app/Contents/MacOS` and `prefix` its `Contents`.
 fn isAppContents(bin: []const u8, prefix: []const u8) bool {
