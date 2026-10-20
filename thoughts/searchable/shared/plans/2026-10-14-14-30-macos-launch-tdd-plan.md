@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "macOS launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, macos, wkwebview, appkit, seatbelt, universal-build, automation, drawer, sandbox, launch-critical]
-status: plan for review (rev 14)
-rev: 14
+status: plan for review (rev 15)
+rev: 15
 last_updated: 2026-10-20
 last_updated_by: cc_3 / JadeBeacon
 last_updated_note: "Rev 11 records MS1b GREEN (commit 3421428, option d): the WKWebView ObjC shim is built by the Apple toolchain as a chained-fixups dylib (xcrun clang -dynamiclib, -Wl,-fixup_chains + -undefined dynamic_lookup; -install_name @executable_path/../Frameworks; exe sets rdynamic macOS-only to export the two back-refs zb_ipc_dispatch/zb_policy_decide), so the SIGNED x86_64 binary runs (was SIGSEGV at [ZBAppHost init]; cause = zig 0.16 classic LC_DYLD_INFO_ONLY into signed __DATA_CONST). The MS1 bundle is now {browser + webview-shim dylib}; resource_phase accepts the empty-resources set only for that exact 2-component shape (6002 bypass protection kept). MS1.3 gains release_least_privilege (disable-library-validation forbidden in a release manifest/binary; ad-hoc dev/test only). ms1b_signed_gate.sh is registered as `zig build ms1b-gate`; validated rc 0 on both Macs (x86_64+arm64, ad-hoc+hardened). Linux/Windows build unchanged. (Frontmatter rev was stale at 6 while body sections advanced to rev 10; bumped to 11.) Shim surface confirmed by BlackRobin (6125)."
@@ -1321,7 +1321,12 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    two-tree `resource_compat`/Mach-O census can pass with ONE runtime at one path). 3.12.10 is the newest
    3.12.x with a macOS binary installer — 3.12.11+ are security-only (source-only, no `.pkg`).
    - **Source:** `https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg` (43.6 MB, macOS 10.13+).
-     **MD5** `8f4989592c9412e51fcad70273442c22` (python.org release page).
+     **MD5** `8f4989592c9412e51fcad70273442c22` and **SHA-256**
+     `8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4` (python.org release page; rev 15 pins
+     the SHA-256 — MD5 alone is not collision-resistant). The python.org release artifacts are additionally
+     **Sigstore**-signed under the 3.12 release manager identity **`thomas@python.org`** (OIDC issuer
+     `https://accounts.google.com`); the `.pkg` installer itself is Developer-ID-signed + Apple-notarized
+     (verified below).
    - **Acquire (build step, not at runtime):** fetch that exact `.pkg`; **verify** both its **signature**
      (`pkgutil --check-signature` — the `.pkg` is Developer-ID-signed by the Python Software Foundation) and
      the **MD5 checksum** above; then unpack its framework files with **`pkgutil --expand-full`**. **NEVER
@@ -1340,6 +1345,12 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
      `…/Versions/3.12/lib/python3.12/lib-dynload/*.so` (C extensions). MS5.1c (BlueBeaver's half) pins the
      exact leaf `path_glob`s from the unpack; this decision fixes the version, source, verification and
      destination they resolve against.
+   - **EXCLUDE the Intel-only launcher (rev 15):** the framework ships `…/Versions/3.12/bin/python3.12-intel64`
+     (with a `…/bin/python3-intel64` symlink) — an **x86_64-only** Mach-O, **not** universal2. It must be
+     **excluded from the bundle and from the census `path_glob`s**: an x86_64-only binary among universal2
+     peers would fail the two-tree `resource_compat`/fat-Mach-O oracle on the arm64 tree. The bundled, pinned
+     interpreter (MS5.1 §"interpreter, pinned") is the **fat** `…/bin/python3.12` (`x86_64 arm64`), launched
+     directly with **no venv** on macOS — never the `-intel64` variant.
 
 ### Behavior MS5.1: macOS `runAgentSetup` builds the immutable home
 **Given** a macOS build,
