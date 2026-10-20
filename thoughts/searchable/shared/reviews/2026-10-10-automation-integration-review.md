@@ -19192,3 +19192,60 @@ Verdicts and these plan gates were mailed to BlueBeaver in Agent Mail 6892;
 the help verdict was mailed to BlackRobin in Agent Mail 6893. All reviewed
 diffs pass `git diff --check`. No Mac, Windows host, browser, live socket or
 display was used.
+
+## WS0 push-gate fix-forward (`613ac26`, `5a89ac8`)
+
+Reviewed exact commit `613ac26` on 2026-10-20 against the consolidated WS0
+checklist in Agent Mail 6882 and the open findings at `5e48424`, `b1d817a`
+and Agent Mail 6889. **Verdict: `613ac26` is BLOCKED-for-tests and WS0
+acceptance; `5a89ac8` is APPROVED as a cumulative test fix. `7d85cd5`
+therefore remains OPEN, and the linear push-through remains `26fdfff`.**
+
+The production changes themselves close the previously identified fail-open
+logic. `gate.sh:435-445` now preserves and checks each `probe_host` transport
+status before accepting output. The registered hostless cases at
+`gate_twohost_selftest.py:778-818` cover VM/file-server transport failure,
+host-key-refusal status, a changed nonempty firewall hash, and a planted
+display-variable census across the fake `ssh` and `virsh` children. The exact
+task verifier at `verify_task.ps1:21-57` no longer strips quotes from the
+command, rejects any WorkingDirectory node, requires nonempty matching
+Principal id/Actions Context, and distinguishes an absent RunLevel from a
+present empty one. The live matrix covers the other pinned fields and invokes
+the real provisioner under a disposable task name. The locked-console case at
+`host_live_test.py:381-425` now self-verifies the real task and script, uses a
+fresh nonce, bounds and freshness-checks the result, proves console-session
+identity plus the locked/noninteractive state, requires a concrete
+non-Default desktop result, and cleans its planted files.
+
+An independent clean export of exact `613ac26`, with all display, Windows-host
+and locked-console variables removed, ran
+`python3 -I tests/windows/gate_twohost_selftest.py -v`: **93/93 passed, with
+16 expected live skips**. The export was deleted immediately. `git diff
+--check 613ac26^..613ac26` also passed.
+
+Three closure items remain:
+
+1. **BLOCKER-for-tests — the provisioner failure branch survives.**
+   `provision_session_task.ps1:15-18` now exits nonzero when `schtasks /Create`
+   fails, but `host_live_test.py:291-307` exercises only the successful
+   disposable-task path. No test makes the production provisioner fail and
+   asserts its process status, so deleting `if ($rc -ne 0) { exit 1 }` is
+   undetected. Add a live negative using the real provisioner seam and prove
+   that exact mutant red.
+2. **The task empty-equality oracle was incomplete in `613ac26`.** Separate
+   `missing_id` and `missing_context` cases each kept the other value nonempty,
+   so a mutant that merely restored `ctx != principal_id` still rejected both.
+   Follow-up `5a89ac8` adds the combined missing-id-and-context case and reports
+   that mutant red; this focused follow-up is approved.
+3. **The owner/live acceptance evidence has not landed.** The commit reports
+   the normal live suite as 15/15 with the owner-locked case skipped. Closure
+   still needs the owner-watched locked-console PASS followed by unlock, the
+   watched real two-host `--probe-only` PASS with the exact rows/invariants
+   from Agent Mail 6882, and a clean-export aggregate Linux gate at the final
+   fix-forward SHA. A skipped locked case is not evidence for this contract.
+
+**SHOULD (plan metadata):** the plan adds a `rev_2_11_note`, but its front
+matter still says `status: plan for review (rev 2.10)` and `rev: 2.10` at
+lines 9-10. Make the authoritative revision fields agree with the new note in
+the follow-up; the commit message's “plan rev 2.11” claim is otherwise
+internally inconsistent.
