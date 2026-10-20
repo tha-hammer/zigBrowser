@@ -32,6 +32,21 @@ def eprint(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
+def _queued_timeout(resp):
+    """True ONLY for the exact queue-only outcome (RoseCat 6634): a command that waited in a window's FIFO
+    past its own deadline — action_timeout (-32009) with data.reason == "queued_past_deadline"
+    (src/automation/engine.zig:402). Any OTHER error — an immediate selector/window/eval failure, or a
+    retry-exhausted action_timeout with a different reason — is NOT proof of queue ownership and must not
+    trip the barrier."""
+    err = resp.get("error")
+    if not err:
+        return False
+    data = err.get("data") or {}
+    return (err.get("code") == -32009
+            and err.get("message") == "action_timeout"
+            and data.get("reason") == "queued_past_deadline")
+
+
 class _FixtureServer:
     def __init__(self):
         html = FIXTURE
@@ -124,21 +139,34 @@ def main() -> int:
                     stuck["exc"] = repr(exc)
                 stuck["elapsed"] = time.monotonic() - t0
 
+            # Pre-stuck: prove #t RESOLVES on the free popup FIFO (so a later timeout is queue ownership, not
+            # a bad selector) and that an immediate window failure is NOT misread as queue ownership — the
+            # discriminator that keeps the barrier honest (RoseCat 6634: a bare "any error" false-greens here).
+            pre = ca.raw("dom.getText", {"selector": "css=#t", "window_id": popup_id, "options": {"timeout_ms": 2000}})
+            if "error" in pre or (pre.get("result") or {}).get("text") != "content":
+                failures.append(f"popup #t did not resolve while its FIFO was free (pre-stuck): {pre!r}")
+            imm = ca.raw("dom.getText", {"selector": "css=#t", "window_id": "window-999999", "options": {"timeout_ms": 300}})
+            if "error" not in imm:
+                failures.append(f"an unknown window_id unexpectedly succeeded: {imm!r}")
+            elif _queued_timeout(imm):
+                failures.append(f"discriminator false-green: an immediate window error was read as queue ownership: {imm.get('error')!r}")
+
             th = threading.Thread(target=hit_popup, daemon=True)
             th.start()
-            # Observed queue-entry barrier (not a fixed sleep): a quick probe on the popup's FIFO succeeds
-            # while the line is free and TIMES OUT once the stuck command owns it — so the timing below can't
-            # race ahead of the stuck command taking the line.
+            # Observed queue-entry barrier (not a fixed sleep): a quick #t probe on the popup's FIFO RESOLVES
+            # while the line is free and, once the stuck command owns the line, returns the EXACT queue-only
+            # outcome (action_timeout / queued_past_deadline). Only that exact outcome trips the barrier, so
+            # the timing below can neither race ahead of the stuck command nor be fooled by an unrelated error.
             bend = time.monotonic() + 8.0
             held = False
             while time.monotonic() < bend:
                 probe = ca.raw("dom.getText", {"selector": "css=#t", "window_id": popup_id, "options": {"timeout_ms": 300}})
-                if "error" in probe:  # queued behind the stuck command and timed out -> its FIFO is held
+                if _queued_timeout(probe):  # queued behind the stuck command past its deadline -> FIFO is held
                     held = True
                     break
                 time.sleep(0.03)
             if not held:
-                failures.append("stuck command never took the popup FIFO (queue-entry barrier never tripped)")
+                failures.append("stuck command never took the popup FIFO (no action_timeout/queued_past_deadline on #t)")
 
             # conn A, while the popup FIFO is stuck: both OOB methods answer for all windows, promptly.
             t0 = time.monotonic()
