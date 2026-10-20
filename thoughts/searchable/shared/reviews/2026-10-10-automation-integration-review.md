@@ -12905,3 +12905,73 @@ at `plan:2215` with the binding S5d contract:
 The acceptance checklist was sent to BlackRobin as Agent Mail 6136. No
 runtime gate was needed for this scope decision. The approved linear
 push-through boundary remains the already-pushed **`da3028f`**.
+
+## S5c reply-cap reds and plan rev 16.20.16 (`0bf2ee8`, `f69e2e9`)
+
+### `0bf2ee8` — BLOCKED-for-tests (one narrow S5d boundary)
+
+Rev 16.20.16 otherwise closes the prompt-correlation plan findings. S5d is a
+named BlackRobin-owned slice immediately after S5c, has its own red/green and
+clean-export gate, and is a hard prerequisite of S6c onward and every later
+multi-prompt Stop/interrupt test (`plan:2435-2444`). It requires `prompt_id`
+on every prompt-scoped frame, defines exact ending and Stop behavior, rejects
+missing/stale/future/no-active ids without committing protocol or UI state,
+and includes native, helper, and production-chain reds (`plan:2446-2493`).
+The S5c active id is also now cleared by `result`, session `error`, or
+`session_ended`, with a same-id post-ending cap red (`plan:2216-2218`). This
+formally closes the earlier `6135`/`6136` scheduling and lifecycle blockers.
+
+One exceptional schema path is not covered by the proposed reds:
+
+- **BLOCKER-for-tests — nullable id on a session error.** A session-naming
+  `error` while no prompt is active is valid with `prompt_id:null`
+  (`plan:2458`), but the matrix at `plan:2473-2480` mentions only the
+  helper-wide `session:null` error. Add explicit reds that accept
+  `{session:"s-…",prompt_id:null}` only when that session has no active
+  prompt, and reject the same nullable id while a prompt is active without
+  ending or releasing it and without committing seq/state. Otherwise the
+  special exception can bypass the correlation rule it accompanies.
+
+`git diff --check 0bf2ee8^ 0bf2ee8` passes. The blocker was sent to
+BlackRobin in Agent Mail 6139.
+
+### `f69e2e9` — BLOCKED-for-tests (missing committed real-screen case)
+
+The new red suites are materially connected to the production paths:
+
+- the helper suite starts the real helper and CLI against the fake Messages
+  API, and its three reds fail at the intended defects: 262,128 versus
+  262,124 forwarded bytes after the non-fitting code point, an unwanted
+  `assistant_message` after escaped streamed text, and 262,142 versus 262,124
+  bytes in the endless multibyte case;
+- the Zig validator suite runs independently at exact `f69e2e9` and is
+  **0/9**, failing through the absent `promptSent` state or the unknown cap
+  type as intended. It covers schema, ordering, duplicate/stale/future state,
+  rejection non-commit, per-session state, next-prompt reset, and every S5c
+  ending path;
+- the e2e cases use the real browser/helper supervisor, native validator, and
+  drawer. The scripted fake only produces helper frames; it does not bypass
+  the app chain. `capped-finite` and `drawer-cap-finite` both observe the
+  completed bubble through Ctrl+A/C after the shorter message and result,
+  while `capped-stale` crosses the next prompt's first delta.
+
+The committed red slice is still incomplete against the approved plan:
+
+- **BLOCKER-for-tests — the `long-run` real-screen artifact is absent.** The
+  plan requires `tests/manual/real_screen_check.py` case `long-run`, with a
+  200 KiB unbroken reply, a 200 KiB word reply, immediate fold response, and
+  click/Ctrl+A/C returning the original (`plan:2226-2236`). `f69e2e9` does
+  not touch that script and HEAD contains no `long-run` case. Add the guarded
+  manual case plus non-live unit coverage that proves its own-window/input
+  guard before asking the orchestrator to run it.
+
+**SHOULD:** beside the existing rejections for 0 and 2^53, assert that
+2^53-1 is accepted so both ends of the exact id domain are pinned
+(`tests/agent_protocol_capped_test.zig:85-87`).
+
+`git diff --check f69e2e9^ f69e2e9` passes. I did not run the browser e2e or
+a full gate because another clean-export full gate held the shared slot; the
+targeted helper and validator reds were run from clean exports and deleted
+immediately. The findings were sent to BlackRobin in Agent Mail 6139. The
+approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
