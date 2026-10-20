@@ -1009,6 +1009,16 @@ static int zb_job_in_preflight(ZBAutoJob *job) {
   return ok;
 }
 
+// Still INFLIGHT (not yet DONE and not ABANDONED by a timed-out waiter)? A multi-step async side effect
+// (e.g. per-character typing) checks this before each further step, so it stops delivering once the
+// caller has abandoned.
+static int zb_job_is_inflight(ZBAutoJob *job) {
+  pthread_mutex_lock(&job->mu);
+  int ok = (job->state == ZB_JOB_INFLIGHT);
+  pthread_mutex_unlock(&job->mu);
+  return ok;
+}
+
 // Claim the job for submission: PENDING/PREFLIGHT -> DISPATCHING. Returns 0 if the waiter abandoned.
 // The caller MUST then either submit and call zb_job_inflight()/zb_job_complete(), so the waiter that
 // is forced to wait during DISPATCHING is released.
@@ -1464,6 +1474,195 @@ int zb_native_click(uint32_t win, double x, double y, int button,
     dispatch_async(dispatch_get_main_queue(), poll);
     int rc = zb_job_wait(job, timeout_ms);
     zb_job_unref(job);
+    return rc;
+  }
+}
+
+// MS2b.1b native key + text. zb_native_key / zb_native_text synthesize TRUSTED NSEvent key events
+// (NSEventTypeKeyDown/Up) and deliver them in-process via -[NSWindow sendEvent:] — proven to produce
+// isTrusted keydown + character insertion in a focused field (scratchpad/ms2/spike_nskey.m). They run
+// on the same phase model + documentToken guard as nativeClick (shared driver zb_auto_native_input).
+
+// DOM-key modifier bits (page_port: bit0 Shift, bit1 Control, bit2 Alt/Option, bit3 Meta/Command).
+static NSEventModifierFlags zb_ns_mod_flags(int modifiers) {
+  NSEventModifierFlags f = 0;
+  if (modifiers & 0x01) f |= NSEventModifierFlagShift;
+  if (modifiers & 0x02) f |= NSEventModifierFlagControl;
+  if (modifiers & 0x04) f |= NSEventModifierFlagOption;
+  if (modifiers & 0x08) f |= NSEventModifierFlagCommand;
+  return f;
+}
+
+// Map a DOM key name to the characters it produces + a macOS keyCode. For a printable single character
+// the characters drive insertion and e.key (the spike confirms characters is authoritative; keyCode is
+// best-effort 0). Named keys use their function-key unicode + the standard US keyCode. Returns NO for an
+// unknown multi-character name.
+static BOOL zb_dom_key_to_ns(NSString *name, unsigned short *kc, NSString **chars) {
+  static NSDictionary<NSString *, NSArray *> *named = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    named = @{
+      @"Enter": @[@36, @"\r"], @"Tab": @[@48, @"\t"], @"Backspace": @[@51, @"\x08"],
+      @"Delete": @[@51, @"\x08"], @"Escape": @[@53, @"\x1b"], @"Space": @[@49, @" "],
+      @"ArrowLeft": @[@123, [NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey]],
+      @"ArrowRight": @[@124, [NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey]],
+      @"ArrowDown": @[@125, [NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey]],
+      @"ArrowUp": @[@126, [NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey]],
+    };
+  });
+  NSArray *e = named[name];
+  if (e != nil) { *kc = (unsigned short)[e[0] intValue]; *chars = e[1]; return YES; }
+  if (name.length == 1) { *kc = 0; *chars = name; return YES; }  // printable single character
+  return NO;
+}
+
+static void zb_send_key(NSWindow *window, NSString *chars, unsigned short kc, NSEventModifierFlags flags) {
+  NSInteger wn = window.windowNumber;
+  NSTimeInterval ts = [[NSProcessInfo processInfo] systemUptime];
+  NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
+                                  timestamp:ts windowNumber:wn context:nil characters:chars
+                charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc];
+  NSEvent *up = [NSEvent keyEventWithType:NSEventTypeKeyUp location:NSZeroPoint modifierFlags:flags
+                                timestamp:ts windowNumber:wn context:nil characters:chars
+              charactersIgnoringModifiers:chars isARepeat:NO keyCode:kc];
+  [window sendEvent:down];
+  [window sendEvent:up];
+}
+
+// Shared phase-model driver: run the readiness poll + (optional) documentToken guard in PREFLIGHT, then
+// call deliver(host, job) once ready and the guard passes. `deliver` OWNS the chain ref from that point
+// (it must zb_job_claim_dispatch, do the side effect, zb_job_inflight, FIFO-ack -> zb_job_complete, and
+// zb_job_unref). The driver handles every non-deliver terminal itself. Mirrors zb_native_click.
+static int zb_auto_native_input(uint32_t win, NSString *expected, unsigned int timeout_ms,
+                                void (^deliver)(ZBWindowHost *host, ZBAutoJob *job)) {
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
+  zb_job_ref(job);
+  __block BOOL entered = NO;
+  __block void (^dlv)(ZBWindowHost *, ZBAutoJob *) = [deliver copy];
+  __block void (^poll)(void) = nil;
+  poll = ^{
+    if (!entered) {
+      entered = YES;
+      if (!zb_job_enter_preflight(job)) { poll = nil; dlv = nil; zb_job_unref(job); return; }
+    } else if (!zb_job_in_preflight(job)) {
+      poll = nil; dlv = nil; zb_job_unref(job); return;
+    }
+    ZBWindowHost *host = zb_auto_window_for_id(win);
+    if (host == nil) { poll = nil; dlv = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+    if (!host.finishedOrFailed) {
+      if ([[NSDate date] compare:deadline] != NSOrderedAscending) { poll = nil; dlv = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, NULL); zb_job_unref(job); return; }
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+      return;
+    }
+    poll = nil;  // ready
+    if (expected == nil) { void (^d)(ZBWindowHost *, ZBAutoJob *) = dlv; dlv = nil; d(host, job); return; }
+    WKContentWorld *autoWorld = [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD];
+    [host.webView callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
+                            arguments:@{}
+                              inFrame:nil
+                       inContentWorld:autoWorld
+                    completionHandler:^(id value, NSError *error) {
+      if (!zb_job_in_preflight(job)) { dlv = nil; zb_job_unref(job); return; }
+      if (error != nil) { dlv = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+      NSString *token = [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
+      if (zb_auto_test_stale_token()) token = @"zb-debug-stale-token";
+      if (token == nil || ![token isEqualToString:expected]) { dlv = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL); zb_job_unref(job); return; }
+      ZBWindowHost *h2 = zb_auto_window_for_id(win);
+      if (h2 == nil) { dlv = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      void (^d)(ZBWindowHost *, ZBAutoJob *) = dlv; dlv = nil; d(h2, job);
+    }];
+  };
+  dispatch_async(dispatch_get_main_queue(), poll);
+  int rc = zb_job_wait(job, timeout_ms);
+  zb_job_unref(job);
+  return rc;
+}
+
+int zb_native_key(uint32_t win, const char *key, int modifiers, const char *expected_doc,
+                  unsigned int timeout_ms, int *out_releases, char **out_err) {
+  if (out_releases != NULL) *out_releases = 0;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  @autoreleasepool {
+    NSString *name = key != NULL ? [NSString stringWithUTF8String:key] : nil;
+    unsigned short kc = 0;
+    NSString *chars = nil;
+    if (name == nil || !zb_dom_key_to_ns(name, &kc, &chars)) return ZB_AUTO_ERR_INTERNAL;  // unknown key
+    NSEventModifierFlags flags = zb_ns_mod_flags(modifiers);
+    NSString *expected = expected_doc != NULL ? [NSString stringWithUTF8String:expected_doc] : nil;
+    __block int releases = 0;
+    int rc = zb_auto_native_input(win, expected, timeout_ms, ^(ZBWindowHost *host, ZBAutoJob *job) {
+      if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
+      NSWindow *window = host.window;
+      WKWebView *view = host.webView;
+      if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      zb_send_key(window, chars, kc, flags);
+      releases = 1;
+      [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
+        (void)v;
+        zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL);
+        zb_job_unref(job);
+      }];
+      zb_job_inflight(job);
+    });
+    if (out_releases != NULL) *out_releases = releases;
+    return rc;
+  }
+}
+
+int zb_native_text(uint32_t win, const char *text, const char *expected_doc, unsigned int timeout_ms,
+                   int *out_releases, int *out_chars, char **out_err) {
+  if (out_releases != NULL) *out_releases = 0;
+  if (out_chars != NULL) *out_chars = 0;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  if (text == NULL) return ZB_AUTO_ERR_INTERNAL;
+  @autoreleasepool {
+    NSString *str = [NSString stringWithUTF8String:text];
+    if (str == nil) return ZB_AUTO_ERR_INTERNAL;
+    NSString *expected = expected_doc != NULL ? [NSString stringWithUTF8String:expected_doc] : nil;
+    NSMutableArray<NSString *> *chars = [NSMutableArray array];
+    [str enumerateSubstringsInRange:NSMakeRange(0, str.length)
+                            options:NSStringEnumerationByComposedCharacterSequences
+                         usingBlock:^(NSString *sub, NSRange r, NSRange er, BOOL *stop) {
+      (void)r; (void)er; (void)stop;
+      [chars addObject:[sub isEqualToString:@"\n"] ? @"\r" : sub];  // newline -> Return
+    }];
+    __block int sent = 0;
+    int rc = zb_auto_native_input(win, expected, timeout_ms, ^(ZBWindowHost *host, ZBAutoJob *job) {
+      if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
+      NSWindow *window = host.window;
+      WKWebView *view = host.webView;
+      if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      if (chars.count == 0) {  // empty text: just ack
+        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) { (void)v; zb_job_complete(job, e != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); }];
+        zb_job_inflight(job);
+        return;
+      }
+      // Type one character per FIFO-acked round trip: the ack for char N is processed by the web process
+      // only after char N's key events on the same ordered IPC connection, so char N+1 is never sent
+      // before char N landed (rapid back-to-back synthetic keys otherwise drop/coalesce). A waiter that
+      // abandons mid-text stops further delivery (partial typing; sent counts the characters dispatched).
+      __block void (^step)(NSUInteger) = nil;
+      step = ^(NSUInteger idx) {
+        zb_send_key(window, chars[idx], 0, 0);
+        sent = (int)(idx + 1);
+        [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
+          (void)v;
+          if (e != nil) { step = nil; zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+          if (idx + 1 >= chars.count) { step = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
+          if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // waiter abandoned: stop
+          step(idx + 1);
+        }];
+      };
+      step(0);
+      zb_job_inflight(job);  // the first char's eval is the submission; INFLIGHT after issuing it
+    });
+    if (out_chars != NULL) *out_chars = sent;
+    if (out_releases != NULL) *out_releases = sent;
     return rc;
   }
 }

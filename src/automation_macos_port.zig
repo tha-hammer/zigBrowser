@@ -61,6 +61,9 @@ const vtable: PagePort.VTable = .{
     // nativeClick is wired now that its invariants are in the shim (RoseCat 6253/6244): the phase-model
     // ownership/no-late-dispatch guard, the documentToken DOC_CHANGED guard, and ack-error mapping.
     .nativeClick = nativeClick,
+    // MS2b.1b: native key + text, same phase model/guard, via trusted NSEvent key events.
+    .nativeKey = nativeKey,
+    .nativeText = nativeText,
 };
 
 fn evalJson(ptr: *anyopaque, gpa: std.mem.Allocator, world: page_port.World, function_body: []const u8, arg_json: []const u8, timeout_ms: u64) PortError![]u8 {
@@ -141,6 +144,40 @@ fn nativeClick(ptr: *anyopaque, x: f64, y: f64, document: ?[]const u8, timeout_m
     var err: [*c]u8 = null;
     const rc = c.zb_native_click(windowOf(ptr), x, y, 1, expected, clampMs(timeout_ms), &err);
     c.zb_automation_free(err);
+    return mapCode(rc);
+}
+
+/// MS2b.1b: one real key press (DOM key name + modifier bits), guarded by `document` like nativeClick.
+fn nativeKey(ptr: *anyopaque, key: []const u8, modifiers: u8, document: ?[]const u8, timeout_ms: u64) PortError!void {
+    const key_z = try std.heap.c_allocator.dupeZ(u8, key);
+    defer std.heap.c_allocator.free(key_z);
+    const doc_z: ?[:0]u8 = if (document) |token| try std.heap.c_allocator.dupeZ(u8, token) else null;
+    defer if (doc_z) |b| std.heap.c_allocator.free(b);
+    const expected: [*c]const u8 = if (doc_z) |b| b.ptr else null;
+
+    var releases: c_int = 0;
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_key(windowOf(ptr), key_z.ptr, @intCast(modifiers & 0x0f), expected, clampMs(timeout_ms), &releases, &err);
+    c.zb_automation_free(err);
+    return mapCode(rc);
+}
+
+/// MS2b.1b: real typing — one trusted key event per code point. `sent_chars` is the code points
+/// dispatched (set even on error, for partial-typing reporting). Guarded by `document` like nativeClick.
+fn nativeText(ptr: *anyopaque, text: []const u8, document: ?[]const u8, timeout_ms: u64, sent_chars: *usize) PortError!void {
+    sent_chars.* = 0;
+    const text_z = try std.heap.c_allocator.dupeZ(u8, text);
+    defer std.heap.c_allocator.free(text_z);
+    const doc_z: ?[:0]u8 = if (document) |token| try std.heap.c_allocator.dupeZ(u8, token) else null;
+    defer if (doc_z) |b| std.heap.c_allocator.free(b);
+    const expected: [*c]const u8 = if (doc_z) |b| b.ptr else null;
+
+    var releases: c_int = 0;
+    var chars: c_int = 0;
+    var err: [*c]u8 = null;
+    const rc = c.zb_native_text(windowOf(ptr), text_z.ptr, expected, clampMs(timeout_ms), &releases, &chars, &err);
+    c.zb_automation_free(err);
+    if (chars > 0) sent_chars.* = @intCast(chars);
     return mapCode(rc);
 }
 
