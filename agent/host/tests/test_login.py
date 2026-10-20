@@ -108,9 +108,21 @@ class Login:
         return code, err, bytes(self.token)
 
     def kill(self):
+        """End the helper the way the app's going away does: end of stdin, so the helper's own
+        ending kills the CLI's session. A SIGKILL alone would orphan the CLI, which runs in its
+        own session (test_login_reap). A helper that ignores the end of stdin is a failure."""
+        wedged = False
         if self.proc.poll() is None:
-            self.proc.kill()
-            self.proc.wait()
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                wedged = True
+                self.proc.kill()
+                self.proc.wait()
         for f in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
             try:
                 f.close()
@@ -118,6 +130,8 @@ class Login:
                 pass
         self.reader.join(5)
         self.token_reader.join(5)
+        if wedged:
+            self.tc.fail("the helper did not end within 10 s of the end of its stdin")
 
 
 class LoginTest(unittest.TestCase):
