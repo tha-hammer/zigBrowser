@@ -308,6 +308,7 @@ static void handle_signal(int signo) {
 // per stretch), cleared when a ping replies. Touched only on the main thread (timer + the list ABI's
 // main-queue hop), monotonic microseconds via systemUptime.
 @property(nonatomic, assign) uint32_t windowId;  // MS2c: this window's STABLE id (assigned once, never reused)
+@property(nonatomic, assign) uint64_t loadSerial;  // MS4.1a: increments on each load-commit (approval-grant revalidation)
 @property(nonatomic, assign) uint32_t openerId;  // MS2c: the window (id) whose page opened this popup; 0 = none
 @property(nonatomic, assign) uint32_t processGroup;  // MS2c: conservative WebContent-process family (= root opener's id); inherited at creation so it survives a middle window closing
 // MS2c crash parity: the web process ended since the last page load ("crashed"); nil while alive. The
@@ -620,6 +621,15 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
   (void)webView;
   self.currentNav = navigation;  // the latest-started navigation is the current one
+}
+
+// MS4.1a: a page committed a load (the macOS analog of WEBKIT_LOAD_COMMITTED). Bump the per-window
+// load_serial so a grant minted before this navigation is revoked at revalidation, and refresh the snapshot.
+- (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
+  (void)webView;
+  if (navigation != nil && navigation != self.currentNav) return;  // ignore a superseded navigation's late commit
+  self.loadSerial += 1;
+  zb_publish_window_snapshot();
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
@@ -1747,6 +1757,7 @@ static void zb_publish_window_snapshot(void) {
                           @"unresponsive_ms": @(unresp_ms),
                           @"loading": (h.webView != nil && h.webView.loading) ? @YES : @NO,  // MS2c: real per-window load state (page.health)
                           @"process_group": @(h.processGroup),           // MS2c: crash blast-radius family (recover at_risk)
+                          @"load_serial": @(h.loadSerial),               // MS4.1a: per-window load-commit counter (grant revalidation)
                           @"incident": @(h.incident) } mutableCopy];
         if (h.terminatedReason != nil) w[@"crashed"] = h.terminatedReason;  // MS2c crash parity
         [arr addObject:w];

@@ -799,6 +799,7 @@ fn handleWindows(
                     window.id, std.json.fmt(window.url, .{}), std.json.fmt(window.title, .{}), window.primary,
                 }) catch return error.OutOfMemory;
                 if (window.opener) |opener| w.print(",\"opener_window_id\":\"" ++ window_prefix ++ "{d}\"", .{opener}) catch return error.OutOfMemory;
+                w.print(",\"load_serial\":{d}", .{window.load_serial}) catch return error.OutOfMemory;  // MS4.1a: approval-grant revalidation
                 if (window.terminated) |reason| w.print(",\"crashed\":\"{s}\"", .{@tagName(reason)}) catch return error.OutOfMemory;
                 w.writeAll("}") catch return error.OutOfMemory;
             }

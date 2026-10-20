@@ -263,6 +263,7 @@ fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
         dialog_open: bool = false,
         incident: u32 = 0,
         process_group: u32 = 0,
+        load_serial: u64 = 0,
     };
     const parsed = std.json.parseFromSlice([]const Wire, gpa, json, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -305,6 +306,7 @@ fn parseWindows(gpa: std.mem.Allocator, json: []const u8) PortError![]page_port.
             .dialog_open = wire.dialog_open,
             .incident = wire.incident,
             .process_group = wire.process_group,
+            .load_serial = wire.load_serial,
         };
         filled += 1;
     }

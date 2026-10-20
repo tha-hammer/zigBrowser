@@ -116,6 +116,10 @@ pub const WindowInfo = struct {
     /// share a web process (0: unknown, the window is on its own).
     incident: u32 = 0,
     process_group: WindowId = 0,
+    /// MS4.1a (approval grants): a per-window counter that increments on each load-commit. The grant
+    /// binds it and the broker revalidates it, so a navigation between approve and commit revokes the
+    /// grant. Published additively in the list JSON. 0 until the backend reports one.
+    load_serial: u64 = 0,
 };
 
 /// Watchdog: what recoverWindows did to one window. `url` (owned by the
