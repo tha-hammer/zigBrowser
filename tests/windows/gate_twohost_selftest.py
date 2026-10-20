@@ -756,6 +756,15 @@ class WS0ZeroWrite(unittest.TestCase):
         self.assertIn("AccessCheck", block, "Get-ZbWritable must use the real Win32 AccessCheck")
         self.assertRegex(src, r"Get-ZbWritable \$acl \$ZbAcCtx", "host_probe.ps1 must call Get-ZbWritable with the AccessCheck context")
 
+    def test_verify_task_fn_extractable_and_used(self):
+        # host_live_test.py extracts Test-ZbTaskXml verbatim; the markers must wrap it and verify_task must call it.
+        import re
+        src = (REPO / "tests" / "windows" / "verify_task.ps1").read_text()
+        m = re.search(r"# >>> ZB_TASKXML_FN.*?\n(.*?)\n# <<< ZB_TASKXML_FN", src, re.S)
+        self.assertIsNotNone(m, "verify_task.ps1 is missing the ZB_TASKXML_FN extraction markers")
+        self.assertIn("function Test-ZbTaskXml", m.group(1), "the marked block must define Test-ZbTaskXml")
+        self.assertRegex(src, r"Test-ZbTaskXml \$xmlText \$staged", "verify_task.ps1 must call Test-ZbTaskXml")
+
 
 def load_tests(loader, tests, pattern):
     # Register the live VM suite (host_live_test.py) alongside the hostless cases so one run covers both.

@@ -506,22 +506,34 @@ stops the gate before any product test runs.
 **Session/lock detection constraint (feeds WS0.1 green).** As a standard user over SSH, WMI/CIM is
 access-denied (`0x80041003`), `tasklist /v` for other sessions is denied, and `query`/`qwinsta`/`quser`
 are **not present** on this image; the SSH logon is `NT AUTHORITY\NETWORK`, not the console session.
-So `host_probe.ps1` cannot read `interactive_session`/`locked` from any CLI here — WS0.1 must get them
-from a small WTS-API helper (`WTSGetActiveConsoleSessionId` + `WTSQuerySessionInformation` for
-`WTSConnectState`, plus LogonUI detection in that session), which also serves WS0.4's console check.
-`whoami /groups` does work as a standard user and is the source for WS0.7's `groups`/SID checks.
+So `host_probe.ps1` cannot read `interactive_session`/`locked` from any CLI here — WS0.1 gets them from the
+in-console `session_probe.ps1`, which determines the lock state from the **input desktop** (`OpenInputDesktop`
++ `GetUserObjectInformation` name): an unlocked interactive console has input desktop `Default`; a locked
+console shows a non-`Default`/secure desktop or denies `OpenInputDesktop`. `interactive_session = in_console
+AND NOT locked`. (It also reports `console_session_id`/`in_console` via `WTSGetActiveConsoleSessionId` +
+`ProcessIdToSessionId`.) `console_user` is read network-safe by `host_probe.ps1` directly (WTSUserName).
+`whoami /groups` works as a standard user and is the source for WS0.7's `groups`/SID checks.
 
 **Session helper = externally-provisioned console task, gate pin-verifies + triggers (VM only).**
 `session_probe.ps1` runs in the console session as a scheduled task provisioned EXTERNALLY on the VM (as
-the test user, post-snapshot) — the gate does NOT create it. Pinned task spec: name `zb-session-probe`,
-action runs `%USERPROFILE%\zb\session_probe.ps1` (a byte copy of the committed script), principal = the
-test user, "only when logged on" (interactive). Before triggering, `gate.sh` verifies the staged script's
-SHA-256 against the committed `session_probe.ps1`, the task's action path, and its principal, and fails
-closed on any mismatch (`RESULT=TASK_*`). It then writes a per-run nonce to
-`%USERPROFILE%\zb\runs\session\nonce.txt`, runs the task, and awaits a `session.json` whose `nonce`
+the test user, post-snapshot, by `tests/windows/provision_session_task.ps1`) — the gate does NOT create it.
+**EXACT pinned task contract** (enforced by `tests/windows/verify_task.ps1`, the single source of truth the
+gate prepends to its trigger; `host_live_test.py` tests it against crafted XML + real registered tasks):
+- name `zb-session-probe`;
+- exactly ONE action, an `Exec`, whose `Command` is the canonical `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
+  (no bare name, no attacker path, no leaf trick) with NO `WorkingDirectory`, and whose `Arguments` are the
+  exact tuple `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File <staged session_probe.ps1>`;
+- exactly ONE `Principal`; `Actions Context` equals its `id`; its `UserId` resolves to the test user's EXACT
+  SID (no leaf/username fallback); `LogonType` is `InteractiveToken`; `RunLevel` is LeastPrivilege (absent =
+  the Task Scheduler default, or explicit `LeastPrivilege`; `HighestAvailable` is rejected);
+- `Settings/Enabled` absent (the enabled default — Task Scheduler omits it) or exactly `true`; explicit
+  `false` or any malformed value is rejected;
+- the staged `session_probe.ps1` SHA-256 equals the committed script's.
+Any mismatch fails closed (`VERIFY=TASK_*` / `RESULT=TASK_*`). After a clean verify the gate writes a per-run
+nonce to `%USERPROFILE%\zb\runs\session\nonce.txt`, runs the task, and awaits a `session.json` whose `nonce`
 matches and whose `ts` is within the last 15 min and NOT in the future; `host_probe.ps1` trusts
-`interactive_session`/`locked` only under that same nonce+freshness correlation. The physical file server
-runs no helper (not_applicable).
+`interactive_session`/`locked` only under that nonce+freshness correlation. The physical file server runs no
+helper (not_applicable).
 
 **File server not_applicable fields (orchestrator real-FS check, 2026-10-20).** On the read-only Win10
 file server, verified as `zbtest`: `root` (`C:\Users\zbtest\zb` is never created — no writes) and

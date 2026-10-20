@@ -53,6 +53,16 @@ def _extract_acl_fn():
     return m.group(1)
 
 
+VERIFY_TASK_FILE = REPO / "tests" / "windows" / "verify_task.ps1"
+
+
+def _extract_taskxml_fn():
+    m = re.search(r"# >>> ZB_TASKXML_FN.*?\n(.*?)\n# <<< ZB_TASKXML_FN", VERIFY_TASK_FILE.read_text(), re.S)
+    if not m:
+        raise AssertionError("ZB_TASKXML_FN markers not found in verify_task.ps1")
+    return m.group(1)
+
+
 # In-memory DACLs via SDDL: precise control of owner, inherited (ID) and inherit-only (IO) flags, and null
 # DACLs, with NO files and NO ownership privilege needed. Owner is SYSTEM (SY) for the non-owner cases (so
 # owner-implicit WRITE_DAC does not fire), and the current user (injected as __MYSID__) for the owner case.
@@ -109,6 +119,38 @@ class AclLive(unittest.TestCase):
 
 
 # The ts is computed on the VM (now + ZB_SJ_OFFSET minutes) so the test is immune to host/VM clock skew.
+_TASKXML_SCENARIOS = r'''
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$ps  = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+$staged = (Join-Path $env:USERPROFILE 'zb\session_probe.ps1')
+$argsLine = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $staged)
+# A base XML that Test-ZbTaskXml accepts; each case mutates exactly one pinned field.
+$base = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Principals><Principal id="Author"><UserId>$sid</UserId><LogonType>InteractiveToken</LogonType></Principal></Principals>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy></Settings>
+  <Actions Context="Author"><Exec><Command>$ps</Command><Arguments>$argsLine</Arguments></Exec></Actions>
+</Task>
+"@
+function Chk($name, $xml) { Write-Output ("R " + $name + " " + (Test-ZbTaskXml $xml $staged $sid)) }
+Chk 'ok'            $base
+Chk 'extra_action'  ($base -replace '</Exec></Actions>', ('</Exec><Exec><Command>'+$ps+'</Command></Exec></Actions>'))
+Chk 'comhandler'    ($base -replace '<Exec>.*?</Exec>', '<ComHandler><ClassId>{00000000-0000-0000-0000-000000000000}</ClassId></ComHandler>')
+Chk 'attacker_cmd'  ($base -replace [regex]::Escape('<Command>'+$ps+'</Command>'), '<Command>C:\Temp\powershell.exe</Command>')
+Chk 'workingdir'    ($base -replace '<Arguments>', '<WorkingDirectory>C:\Temp</WorkingDirectory><Arguments>')
+Chk 'extra_arg'     ($base -replace [regex]::Escape($argsLine), ($argsLine + ' ; calc.exe'))
+Chk 'wrong_sid'     ($base -replace [regex]::Escape($sid), 'S-1-5-21-1-2-3-4444')
+Chk 'name_sid'      ($base -replace [regex]::Escape('<UserId>'+$sid+'</UserId>'), '<UserId>NOPEDOMAIN\nobody</UserId>')
+Chk 'two_principal' ($base -replace '</Principals>', ('<Principal id="P2"><UserId>'+$sid+'</UserId><LogonType>InteractiveToken</LogonType></Principal></Principals>'))
+Chk 'bad_context'   ($base -replace 'Context="Author"', 'Context="Other"')
+Chk 'non_interactive' ($base -replace '<LogonType>InteractiveToken</LogonType>', '<LogonType>Password</LogonType>')
+Chk 'highestavail'  ($base -replace '</LogonType>', '</LogonType><RunLevel>HighestAvailable</RunLevel>')
+Chk 'disabled_false' ($base -replace '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>', '<Enabled>false</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>')
+Chk 'enabled_garbage' ($base -replace '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>', '<Enabled>garbage</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>')
+'''
+
+
 _ONDISK_SCENARIOS = r'''
 $ctx = Initialize-ZbAccessCheck
 if ($null -eq $ctx) { throw "Initialize-ZbAccessCheck returned null" }
@@ -238,6 +280,22 @@ class TaskPinLive(unittest.TestCase):
                      % (self.TASK, tr))
         self.assertIn("SUCCESS", p.stdout, "task create failed:\n" + p.stdout + p.stderr)
 
+    def _create_canonical_task(self):
+        # A task identical to the real provisioned one (canonical powershell + exact args) so a later mutation
+        # (e.g. /DISABLE) is the ONLY difference the verifier should trip on. Built in PowerShell (Join-Path)
+        # to avoid shell backslash mangling.
+        env = _vm_env()
+        ps = (
+            "$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'\n"
+            "$script = Join-Path $env:USERPROFILE 'zb\\session_probe.ps1'\n"
+            "$tr = '\"' + $ps + '\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $script + '\"'\n"
+            "schtasks /Delete /TN %s /F 2>&1 | Out-Null\n"
+            "$o = schtasks /Create /TN %s /TR $tr /SC ONCE /ST 23:59 /IT /RL LIMITED /F 2>&1\n"
+            "Write-Output ('CREATE_RC=' + $LASTEXITCODE + ' ' + ($o -join ' '))\n"
+        ) % (self.TASK, self.TASK)
+        p = _ssh_run(env, ps)
+        self.assertIn("CREATE_RC=0", p.stdout, "canonical task create failed:\n" + p.stdout + p.stderr)
+
     def test_real_task_verifies_ok(self):
         env = _vm_env()
         self.assertEqual(self._verify("zb-session-probe", _staged_path(env), _sess_sha()), "OK")
@@ -262,9 +320,44 @@ class TaskPinLive(unittest.TestCase):
 
     def test_disabled_task_rejected(self):
         env = _vm_env()
-        self._create_task("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + _staged_path(env))
+        self._create_canonical_task()   # canonical command+args, so only the disabled state should trip
         _ssh_run(env, "schtasks /Change /TN %s /DISABLE 2>&1 | Out-Null; Write-Output DONE" % self.TASK)
         self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "TASK_DISABLED")
+
+
+@unittest.skipUnless(_vm_env(), "VM env (ZB_WIN11_HOST...) not set; live host test skipped")
+class CraftedTaskXmlLive(unittest.TestCase):
+    """Exercise the EXTRACTED Test-ZbTaskXml (the exact verifier gate.sh uses) against crafted task XML for
+    every pinned field — including cases a standard user cannot register (wrong principal SID, non-Interactive
+    logon, extra principal). Registered-task coverage is in TaskPinLive; this covers the full field matrix."""
+    def test_every_pinned_field(self):
+        env = _vm_env()
+        proc = _ssh_run(env, _extract_taskxml_fn() + "\n" + _TASKXML_SCENARIOS)
+        self.assertEqual(proc.returncode, 0, "ssh/powershell failed:\n" + proc.stderr + "\n" + proc.stdout)
+        got = {}
+        for line in proc.stdout.splitlines():
+            m = re.match(r"R (\S+) (\S+)", line.strip())
+            if m:
+                got[m.group(1)] = m.group(2)
+        expect = {
+            "ok": "OK",
+            "extra_action": "TASK_ACTION_COUNT",
+            "comhandler": "TASK_ACTION_COUNT",
+            "attacker_cmd": "TASK_ACTION_MISMATCH",
+            "workingdir": "TASK_ACTION_MISMATCH",
+            "extra_arg": "TASK_ACTION_MISMATCH",
+            "wrong_sid": "TASK_PRINCIPAL_MISMATCH",
+            "name_sid": "TASK_PRINCIPAL_MISMATCH",
+            "two_principal": "TASK_PRINCIPAL_MISMATCH",
+            "bad_context": "TASK_PRINCIPAL_MISMATCH",
+            "non_interactive": "TASK_NOT_INTERACTIVE",
+            "highestavail": "TASK_RUNLEVEL",
+            "disabled_false": "TASK_DISABLED",
+            "enabled_garbage": "TASK_DISABLED",
+        }
+        for k, v in expect.items():
+            self.assertIn(k, got, "case %r missing from output:\n%s" % (k, proc.stdout))
+            self.assertEqual(got[k], v, "case %r: expected %s got %s\n%s" % (k, v, got[k], proc.stdout))
 
 
 @unittest.skipUnless(os.environ.get("ZB_EXPECT_LOCKED"), "locked-desktop check needs an owner-locked console (set ZB_EXPECT_LOCKED=1)")
@@ -273,17 +366,30 @@ class LockedDesktopLive(unittest.TestCase):
     """Owner-gated: lock the VM console, then run with ZB_EXPECT_LOCKED=1. session_probe must report locked=true.
     Cannot be automated over SSH (a network logon cannot lock the console), so it is skipped by default."""
     def test_locked_console_reports_locked(self):
-        env = _vm_env()
-        # Trigger the console task (console is locked by the owner) and read what session_probe wrote.
-        _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; New-Item -ItemType Directory -Force -Path $d|Out-Null; "
-                      r"Set-Content -LiteralPath (Join-Path $d 'nonce.txt') -Value 'LOCKCHK' -NoNewline -Encoding ascii; "
-                      r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; "
-                      r"schtasks /Run /TN 'zb-session-probe' | Out-Null; Start-Sleep -Seconds 6; "
-                      r"Get-Content -LiteralPath (Join-Path $d 'session.json') -Raw")
-        p = _ssh_run(env, r"Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'zb\runs\session\session.json') -Raw")
         import json
-        d = json.loads(p.stdout.strip())
+        env = _vm_env()
+        # Fresh nonce, remove any stale session.json, trigger the task, then BOUNDED-poll (not a fixed sleep)
+        # for a session.json carrying THIS nonce. Both SSH calls must succeed; the result must show an
+        # in-console, non-interactive (locked) session on a non-Default/secure input desktop.
+        prep = _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; New-Item -ItemType Directory -Force -Path $d|Out-Null; "
+                             r"Set-Content -LiteralPath (Join-Path $d 'nonce.txt') -Value 'LOCKCHK' -NoNewline -Encoding ascii; "
+                             r"Remove-Item -LiteralPath (Join-Path $d 'session.json') -EA SilentlyContinue; Write-Output PREPPED")
+        self.assertEqual(prep.returncode, 0, "prep ssh failed:\n" + prep.stderr)
+        self.assertIn("PREPPED", prep.stdout)
+        poll = _ssh_run(env, r"$d=Join-Path $env:USERPROFILE 'zb\runs\session'; schtasks /Run /TN 'zb-session-probe' | Out-Null; "
+                             r"$deadline=(Get-Date).AddSeconds(30); $sj=Join-Path $d 'session.json'; "
+                             r"while((Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 1000; "
+                             r"  if(Test-Path -LiteralPath $sj){ try{ $s=Get-Content -LiteralPath $sj -Raw|ConvertFrom-Json; "
+                             r"    if(\"$($s.nonce)\" -eq 'LOCKCHK'){ Write-Output ($s|ConvertTo-Json -Compress); break } }catch{} } } ")
+        self.assertEqual(poll.returncode, 0, "poll ssh failed:\n" + poll.stderr)
+        out = poll.stdout.strip()
+        self.assertTrue(out, "no nonce-matching session.json appeared within the timeout")
+        d = json.loads(out.splitlines()[-1])
+        self.assertEqual(d.get("nonce"), "LOCKCHK", "session.json must carry this run's nonce")
+        self.assertEqual(d.get("in_console"), True, "the helper must run in the console session")
+        self.assertEqual(d.get("interactive_session"), False, "a locked console is not an active interactive session")
         self.assertEqual(d.get("locked"), True, "a locked console must report locked=true")
+        self.assertNotEqual(d.get("input_desktop"), "Default", "a locked console's input desktop must not be Default")
 
 
 if __name__ == "__main__":
