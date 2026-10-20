@@ -14789,3 +14789,96 @@ S6b1's final acceptance still waits for the user's required `signin-paste`
 Part B rerun. `0f60910` opens S6b2 with a reviewed decision seam only; it is
 not S6b2 completion. The linear push-through boundary therefore remains the
 already-pushed **`70317c0`** until the user-only Part B condition is met.
+
+## WS7.5 and ownership-race review
+
+### Windows guarded imports (`bb0b4b3`)
+
+**BLOCKED.** Moving `fcntl` behind the non-Windows branch in `hook_run.py`
+and `seccomp.py`, and moving `fcntl`, `pty` and `termios` behind the same
+branch in `login.py`, is directionally correct. The registered oracle does
+not prove the WS7.5 contract, however:
+
+1. `agent/host/tests/test_windows_import.py:33-45` examines only
+   `tree.body`. Import-time nested statements are invisible. Mutants using
+   `if True: import fcntl`, `while True: import pty`, or a `try` containing
+   `import termios` all return an empty violation list. Recursively inspect
+   import-time bodies and exempt only a proved non-Windows guard or the
+   specifically accepted ImportError form.
+2. `agent/host/tests/test_windows_import.py:51-53` scans only top-level
+   `*.py` and skips both `__init__.py` and `__main__.py`, while the Windows
+   plan requires every `zb_agent_host` module. Pin the complete recursive
+   inventory and import it under the Windows-shaped environment.
+3. The broad “POSIX-only module” contract is not represented by the current
+   five-name set; for example `tty`, `posix`, `spwd`, and `syslog` are
+   omitted. Either bind the exact intended set in the plan and test or cover
+   the complete platform-only inventory.
+
+An exact clean-export run of `zig build agent-host-win-import` at this SHA
+passed **3/3 steps**, but the mutations above prove that this is a weak
+oracle rather than closure. The throwaway tree was deleted. Findings were
+sent to BlueBeaver in Agent Mail 6324.
+
+### Claim-to-submit race red (`729c12c`)
+
+**BLOCKED-for-tests.** The red reaches the intended claim/submit interval,
+but three issues keep it from being an acceptable production-boundary red:
+
+1. `ZB_DEBUG_DISPATCH_HOLD_MS` is an ambient production-active environment
+   seam. Any process environment can stall the GTK main thread, and `atoi`
+   plus `ms * 1000` is unbounded. Gate it behind `--e2e-protocol`, pass that
+   flag from the test, and accept only a strictly bounded decimal value.
+2. The test discards the held evaluation's result and proves only elapsed
+   time plus a later `page.url`. A mutant that claims the work, sleeps, marks
+   it in-flight and never calls `callAsyncJavaScript` still passes. Make the
+   held evaluation produce a harmless observable effect and verify that
+   effect after the RPC timeout, proving that submit actually linearized.
+3. The registered two-host MS2a driver still has no outer deadline: its
+   local build, SSH command and Python runner are bare. A wedged race test can
+   therefore wedge the gate. This is the remaining outer-timeout finding
+   from the earlier MS2a review.
+
+The test's “unregistered” header is also stale because this commit registers
+it. JadeBeacon reported a passing two-host gate for the red commit; that does
+not cure the seam or mutation gaps. Findings were sent in Agent Mail 6325.
+
+### WKNavigation-scoped failure suppression (`33b0827`)
+
+**BLOCKED.** Associating routed/superseded state with each `WKNavigation`
+identity is the right primitive, but the delegate updates global window
+state before checking that identity. In
+`src/wkwebview_shim.m:520-537`, a late failure from superseded navigation A
+sets `finishedOrFailed` and invalidates the current timer before deciding
+whether A is the current routed navigation. If routed B is still pending, A
+therefore makes the window appear settled; if B later times out, the FIFO can
+advance on content that is still loading. `didFinishNavigation` has the same
+stale-success ordering at `src/wkwebview_shim.m:488-494`.
+
+Superseded tagged finish and failure callbacks must be no-ops for readiness,
+timer and outcome state. Add same-window stale-success and stale-failure reds,
+plus the promised untagged user-failure and refused-start-then-user-failure
+reds. This SHA adds no tests, and its commit evidence covers Intel only rather
+than the two-host Mac gate. Findings were sent in Agent Mail 6325.
+
+### S5d open-handshake red (`c6e343f`)
+
+**BLOCKED-for-tests.** The failed-open and two-queued cases are useful. They
+pin one fixed Agent error, no prompt to the failed session, a fresh session
+and prompt id on retry, and exactly-once release of a queued second prompt.
+The close-before-open case is vacuous, however:
+
+- `tests/e2e/agent_open_order_test.py:108-118` sleeps for 0.5 seconds and
+  assumes that window 2's `open_session` was sent, but never observes it. A
+  mutant that drops only window 2's open and prompt frames passes the late
+  `session_opened`/no-prompt assertions. Wait for and assert exactly one
+  window-2 `open_session` for `s-2-1`, assert no popup prompt, then close and
+  retain the late-opened/no-prompt checks.
+
+The fake helper's default now emits `session_opened` for every scripted test,
+so the eventual green full gate must also cover the existing scripted-helper
+suite. Diff checks and Python compilation passed. Findings were sent to
+BlackRobin in Agent Mail 6326.
+
+No GUI or full gate was started for this review. The linear push-through
+boundary remains the already-pushed **`70317c0`**: all four commits above
+remain blocked, and S6b1 still awaits the user's Part-B rerun.
