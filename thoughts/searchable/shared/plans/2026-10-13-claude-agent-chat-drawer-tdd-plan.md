@@ -5,7 +5,7 @@ reviewer: cod_1 (RoseCat)
 git_commit: 38e30e56d3c5e100282d7a1c3b66491662c0f5d2
 baseline_before_drawer: b4c23a1a56deced7b3ab7c8a34a660b22ffca622
 branch: zb-automation-integration-2026-10-10-11-59
-status: plan for review. Rev 16.20.30 (S7 split, owner BlackRobin): S7 lands in three parts, S7.0 (the Bridge's prompt binding and tool_result routing, Python plus one Zig producer test), S7a (the in-process core and the broker, Zig) and S7b (the helper's read tools and the real chain); a `tool_result` is tied to its call by `id` alone; the tool deadline gets one helper-carried e2e seam, `ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S`. Rev 16.20.29 (RoseCat 6499): the code is typed in 16-byte pieces, each next piece and the Enter only once the masked echo accounts for all but 16 typed bytes (the real CLI's echo is the typed count less six), each step bounded by 5 s and failing closed; quiet time is no longer used. Rev 16.20.28 (RoseCat 6493): the pending Enter is dropped once any ending is claimed (one linearization under end_lock), and waits for the echo plus 0.15 s of quiet so it never shares a read with the code's remainder. Rev 16.20.27 (Part B's second finding): the helper typed the code and its Enter in one write, and the real CLI takes a long read as a paste whose Enter does not submit; the Enter is now its own write, after the CLI's masked echo (fallback 1 s). Rev 16.20.26 (the user's decision on ca1a7b7): the auth window's allowlist gains exactly `accounts.google.com` and `appleid.apple.com` (https, port 443, main frame, the same decideNavigation); capture stays only on Claude's exact callback; further hosts the Google and Apple flows may need are an open question for the real-screen check. Rev 16.20.25 (docs; RoseCat 6440, 6442): the start sweep is a request to the scrub owner, awaited before `ready`; the CLI's stderr is drained, never reprinted. Rev 16.20.24 (RoseCat 6368, 6372, 6374, 6379, 6381, 6410, 6414, 6423 on the uncommitted S5c-2 scrubber): the scrubber walks the CLI's config directory as the sandboxed helper sees it, `realpath(.claude)/projects` (the host's `state` is not mounted there); masking is chunked; revalidation compares full keys; a failure has one bounded terminal path (owner hand-over before waking, a sealed output, the prompt's `error sdk` best effort, a fixed stderr line, exit 3). S5d's real-chain exhaustion red and seam green landed (`aabadf1`, `24f9b00`, build fix-forward `a031491`). Previous: rev 16.18.20 (the auth-window e2e's isolation canary, RoseCat 6402).
+status: plan for review. Rev 16.20.32 (RoseCat 6513 on rev 16.20.30): the exact `tool_result` grammar, image blocks kept (S7.0.7); the broker's deadline is the helper's less min(5 s, a quarter) (S7a); every prompt and session ending ends its calls, with forced orderings (S7.0.5); the frame tables carry `prompt_id` (S5d); S7.0 and S7a are increments, and S7 is accepted only with S7b's real-binary closure. Rev 16.20.30 (S7 split, owner BlackRobin): S7 lands in three parts, S7.0 (the Bridge's prompt binding and tool_result routing, Python plus one Zig producer test), S7a (the in-process core and the broker, Zig) and S7b (the helper's read tools and the real chain); a `tool_result` is tied to its call by `id` alone; the tool deadline gets one helper-carried e2e seam, `ZIGBROWSER_AGENT_TEST_TOOL_DEADLINE_S`. Rev 16.20.29 (RoseCat 6499): the code is typed in 16-byte pieces, each next piece and the Enter only once the masked echo accounts for all but 16 typed bytes (the real CLI's echo is the typed count less six), each step bounded by 5 s and failing closed; quiet time is no longer used. Rev 16.20.28 (RoseCat 6493): the pending Enter is dropped once any ending is claimed (one linearization under end_lock), and waits for the echo plus 0.15 s of quiet so it never shares a read with the code's remainder. Rev 16.20.27 (Part B's second finding): the helper typed the code and its Enter in one write, and the real CLI takes a long read as a paste whose Enter does not submit; the Enter is now its own write, after the CLI's masked echo (fallback 1 s). Rev 16.20.26 (the user's decision on ca1a7b7): the auth window's allowlist gains exactly `accounts.google.com` and `appleid.apple.com` (https, port 443, main frame, the same decideNavigation); capture stays only on Claude's exact callback; further hosts the Google and Apple flows may need are an open question for the real-screen check. Rev 16.20.25 (docs; RoseCat 6440, 6442): the start sweep is a request to the scrub owner, awaited before `ready`; the CLI's stderr is drained, never reprinted. Rev 16.20.24 (RoseCat 6368, 6372, 6374, 6379, 6381, 6410, 6414, 6423 on the uncommitted S5c-2 scrubber): the scrubber walks the CLI's config directory as the sandboxed helper sees it, `realpath(.claude)/projects` (the host's `state` is not mounted there); masking is chunked; revalidation compares full keys; a failure has one bounded terminal path (owner hand-over before waking, a sealed output, the prompt's `error sdk` best effort, a fixed stderr line, exit 3). S5d's real-chain exhaustion red and seam green landed (`aabadf1`, `24f9b00`, build fix-forward `a031491`). Previous: rev 16.18.20 (the auth-window e2e's isolation canary, RoseCat 6402).
 inputs:
   - /home/maceo/ntm_Dev/zigBrowser/thoughts/searchable/shared/research/2026-10-11-03-16-claude-agent-sdk-chat-drawer.md (+ 2 sibling closure-adapter.py files, pin d9ad717)
   - thoughts/searchable/shared/reviews/2026-10-11-chat-drawer-research-check.md (05c3c17)
@@ -405,7 +405,7 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 | `open_session` | `session` (`s-<win>-<k>`), `window_id` (`window-<n>`) |
 | `prompt` | `session`, `prompt_id` (an integer from 1 to 2^53 - 1: 1 for a session's first prompt, then one more per prompt the app writes to it; never wrapped), `text` (≤ 64 KiB UTF-8) |
 | `interrupt` | `session` |
-| `tool_result` | `session`, `id` (as received), `ok` (bool), `content` (array of `{type:"text",text}` or `{type:"image",mime,data_b64}`; ≤ 1 MiB total), `error` (string ≤ 4 KiB, only when `ok` is false; redacted) |
+| `tool_result` | `session`, `id` (as received), `ok` (bool). With `ok` true, exactly `content` too: an array of `{type:"text",text}` and `{type:"image",mime,data_b64}` blocks (`mime` `image/png` or `image/jpeg`, `data_b64` valid base64), and no `error`. With `ok` false, exactly `error` too: a non-empty string ≤ 4 KiB, redacted, and no `content`. The line is ≤ 1 MiB. Rev 16.20.32: the helper checks all of it (S7.0.7) |
 | `end_session` | `session` |
 | `shutdown` | none |
 
@@ -415,12 +415,12 @@ agent-home/                  0700, held by the browser's .zb-owner.lock (rev 15.
 |---|---|
 | `ready` | `version`, `route`, `selfcheck` (`{ok, failures[]}`; D12 hook-isolation self-check), `tool_deadline_s` (rev 12: always 120) |
 | `session_opened` | `session` (rev 16.5, RoseCat 5632: no SDK session id exists yet when a session opens) |
-| `assistant_delta` | `session`, `text` (≤ 16 KiB; coalesced every 50 ms or more) |
-| `assistant_message` | `session`, `text` (≤ 256 KiB) |
+| `assistant_delta` | `session`, `prompt_id` (S5d: the session's active prompt), `text` (≤ 16 KiB; coalesced every 50 ms or more) |
+| `assistant_message` | `session`, `prompt_id`, `text` (≤ 256 KiB) |
 | `reply_capped` | `session`, `prompt_id`: the reply to that prompt has text past its longest prefix that fits `CONTENT_MAX` (262,125 bytes), and no more of its text follows. Accepted only for the session's active prompt (written by the app and not yet ended by its `result`, `error` or `session_ended`), after at least one `assistant_delta` of it, and once; otherwise rejected with reason `capped`. An `assistant_delta` while the active prompt is capped is rejected too (rev 16.20.11 to 16.20.16) |
-| `tool_call` | `session`, `id` (a UUID, never reused), `tool` (an `mcp__zigbrowser__*` name), `args` (object ≤ 64 KiB) |
-| `result` | `session`, `sdk_session_id` (rev 16.5: the CLI's own session id, from the SDK's `ResultMessage.session_id`; ≤ 64 characters), `subtype`, `is_error`, `num_turns`, `cost_usd` (number or null) |
-| `error` | `session` (or null), `code` (`auth`\|`busy`\|`overloaded`\|`protocol`\|`overflow`\|`sdk`\|`sandbox`; rev 16.14: `overloaded` is the API's rate limit or server error, `busy` stays "a prompt already runs in this session"), `message` (≤ 1 KiB, redacted) |
+| `tool_call` | `session`, `prompt_id` (the running prompt, S7.0.1), `id` (a UUID, never reused), `tool` (an `mcp__zigbrowser__*` name), `args` (object ≤ 64 KiB) |
+| `result` | `session`, `prompt_id` (the prompt it ends), `sdk_session_id` (rev 16.5: the CLI's own session id, from the SDK's `ResultMessage.session_id`; ≤ 64 characters), `subtype`, `is_error`, `num_turns`, `cost_usd` (number or null) |
+| `error` | `session` (or null), `prompt_id` (S5d: a session's error names the prompt it ends, or null while the session has none running; a helper-wide error, session null, has none), `code` (`auth`\|`busy`\|`overloaded`\|`protocol`\|`overflow`\|`sdk`\|`sandbox`; rev 16.14: `overloaded` is the API's rate limit or server error, `busy` stays "a prompt already runs in this session"), `message` (≤ 1 KiB, redacted) |
 | `session_ended` | `session`, `reason` (`end`\|`interrupt`\|`crash`\|`token_removed`) |
 | `fs_trace` | **e2e-only** (sent only when `hello.e2e.fs_trace` is true; rev 10): `session`, `op` (`create`\|`write`\|`rename`\|`read`), `dev`, `ino`, `path` (relative to its root). It is emitted by `fs_tools.py` from the same call that performs the operation, using `fstat` of the descriptor it just used. |
 
@@ -2807,7 +2807,7 @@ A correct helper never sends one.
 
 #### S7 lands in three parts (rev 16.20.30; owner BlackRobin)
 
-Each part has its own red (in unregistered files), green, gate and review, as S5 and S6 did.
+Each part has its own red (in unregistered files), green, gate and review, as S5 and S6 did. S7.0 and S7a are increments, not S7's acceptance (rev 16.20.32, RoseCat 6513): S7 is accepted only when S7b's real-binary closure, `agent_tools_test.py` and `agent_socket_separation_test.py`, has been observed to run (section 10's order, and Closure Test S7).
 
 - **S7.0, the Bridge's binding (no browser change).** Behaviors S7.0.1 to S7.0.6 below.
   - Code: `bridge.py`, `chat.py`.
@@ -2816,7 +2816,8 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
 - **S7a, the in-process core and the broker (Zig, no helper change).** S7.1, S7.5's allowlist property, S7.3, and the broker's binding, redaction and worker-thread rules.
   - Code: `src/automation_server.zig` (`startCore`, `startSocket`, `dispatchParsed`, `callInProcess`), `src/app.zig`, `src/agent_broker.zig`.
   - Reds: new unregistered `tests/automation_inprocess_test.zig` and `tests/agent_broker_test.zig`. They reach the new API through `@hasDecl` guards, so they compile and fail before the green.
-  - The broker's per-call deadline is shorter than the helper's: `ready.tool_deadline_s`, or the seam's value when the app set one, with a margin S7a names. So the helper never gives up on a call the app is still running.
+  - **The broker's deadline (rev 16.20.32).** With the helper's deadline H seconds (`ready.tool_deadline_s`, or the seam's value when the app set one; H is 1 to 120), the broker's is B = H − min(5, H/4) seconds: 0.75 s at H = 1, 115 s at H = 120, and 0 < B < H for every H in that range. So the helper never gives up on a call the app is still running.
+  - **Timeout ownership.** Each `tool_call` gets exactly one `tool_result`. At B the broker sends `ok:false` "The browser did not answer in time."; an engine completion after that is discarded, never sent, and the worker's job is drained (no job outlives its call). Reds in `tests/agent_broker_test.zig`: B at H = 1 and H = 120 (the formula, and B at 1 s on the clock with a FakePort that never answers), one terminal result for a call whose engine completes after B, and no job left after it.
 - **S7b, the read tools and the real chain.**
   - Code: the helper's six MCP tools (S7.5's exact list), and `agent_helper.c` handing each validated `tool_call` to `agent_broker.onToolCall` and writing its `tool_result`.
   - Behaviors: S7.2, S7.4, S7.6, S7.7, S7.8 and Closure Test S7.
@@ -2856,7 +2857,7 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
 #### Behavior S7.0.4: the app's `tool_result` reaches the waiting call
 - **Given** a call pending in session `s-1-1`,
 - **When** the app's `tool_result` with that `id` arrives on the helper's stdin,
-- **Then** `Chat` hands it to that session's Bridge. The handler returns the result's `content` when `ok`, or its `error` as `is_error`.
+- **Then** `Chat` hands it to that session's Bridge. The handler returns the result's `content` when `ok` (text and image blocks, S7.0.7), or its `error` as `is_error`.
 - **Edge cases:** each of these changes nothing and emits nothing:
   - an unknown `id`;
   - a repeated `id`;
@@ -2864,10 +2865,17 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
   - a `tool_result` for a session that is not open.
 - **One stdin reader:** in `chat` mode the Bridge reads no stdin of its own; only `Chat`'s pump reads it. The P0 `contract` command keeps its own reader.
 
-#### Behavior S7.0.5: a prompt's end ends its calls
+#### Behavior S7.0.5: every ending ends its calls (rev 16.20.32, RoseCat 6513)
 - **Given** a call pending in prompt 7,
-- **When** prompt 7 ends (its `result`, an error, or Stop's ending),
-- **Then** the handler returns `is_error` "the prompt ended", its `id` is forgotten, and a later `tool_result` for it changes nothing.
+- **When** prompt 7 ends, by any of these:
+  - its `result`, a session `error` (an API error, or a session failure that renews the client), or Stop's ending;
+  - `end_session` (the app sends it when the window closes);
+  - `shutdown`, or the end of the helper's stdin (each session closes with `end`);
+- **Then** the handler returns `is_error` "the prompt ended" exactly once, and its `id` is forgotten **before** `session_ended` is emitted. A later `tool_result` for it changes nothing.
+- **Forced orderings** (deterministic, in `test_bridge.py`):
+  - result versus end: the turn's `ResultMessage` and an `end_session` both arrive while the call waits, in each order; the call ends once, and no frame of that prompt follows `session_ended`;
+  - timeout versus result: a `tool_result` handed over before the deadline is the answer; one handed over after it changes nothing; never both;
+  - the next prompt: after prompt 7 ends with a call pending, prompt 8's call is unaffected by a late `tool_result` for prompt 7's `id`, and is answered by its own.
 
 #### Behavior S7.0.6: the tool deadline, and its e2e seam
 - **Given** no `tool_result` comes,
@@ -2882,6 +2890,15 @@ Each part has its own red (in unregistered files), green, gate and review, as S5
   - tests: `agent/host/tests/test_bridge.py`, `agent/host/tests/bridge_producer.py`, `tests/agent_bridge_frame_test.zig`;
   - in the green, `build.zig` registers both tests.
   - The app's side of the seam (reading the variable into `hello.e2e`) lands with S7b, the first slice that needs it end to end.
+
+#### Behavior S7.0.7: the `tool_result` grammar, and images kept (rev 16.20.32, RoseCat 6513)
+- **Given** a call pending,
+- **When** its `tool_result` arrives,
+- **Then** the Bridge checks it against section 3's grammar exactly (the `tool_result` row):
+  - `ok` true with a `content` array and no `error`: each text block is `{type:"text", text}`; each image block is `{type:"image", mime, data_b64}`, with `mime` `image/png` or `image/jpeg` and valid base64. The handler returns them in order, an image as the MCP image block `{type:"image", data, mimeType}`. (Before rev 16.20.32 the Bridge dropped every image, so `screenshot` would have returned nothing.)
+  - `ok` false with a non-empty `error` of at most 4 KiB and no `content`: the handler returns that error as `is_error`.
+  - Anything else is malformed: an unknown field, a missing one, a wrong type, an unknown block type or `mime`, bad base64, an `error` with `ok` true, `content` with `ok` false, or a line over 1 MiB. The call ends `is_error` "the browser sent a bad result", its `id` is forgotten, and the helper emits one helper-wide `error protocol` ("bad tool_result"). The bad frame's content never reaches the model.
+- **Reds** (`test_bridge.py`): a text and an image block come back in order with the image converted; each malformed shape above, one case each; a result of exactly 1 MiB is accepted, and 1 MiB + 1 byte is malformed.
 
 ---
 
