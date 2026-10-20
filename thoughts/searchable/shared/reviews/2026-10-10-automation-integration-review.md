@@ -14072,3 +14072,69 @@ bypass, but four boundary contracts are incomplete:
 
 The proposed production-box provisioning remains correctly deferred until the
 user/orchestrator is awake and explicitly authorizes it.
+
+### WS1 build driver fix-forward (`b32f285`)
+
+**`b32f285` is BLOCKED.** The rewrite improves the boundary substantially: it
+archives a verified commit rather than the worktree, validates the remote
+build mode and step, encodes PowerShell input, bounds all three transport
+phases, validates the fetched PE before publishing it, scrubs display
+variables, and registers a hermetic suite in the aggregate gate. The exact-SHA
+standalone selftest passes **13/13**. It does not yet prove the claimed
+fail-closed cuts:
+
+1. `tests/windows/build-on-windows.sh:81-86` joins remote removal, directory
+   creation and extraction with bare `&`. A failed removal or mkdir can be
+   followed by a successful tar, making ssh return zero and staging into stale
+   state. The test only searches the argv for `rmdir`; it never fails either
+   preparation command or proves that the build is not invoked afterward.
+2. `:90-98` does not check construction of `build_ps` or the
+   `iconv | base64` assignment. Because the script deliberately has no
+   `set -e`, an encoder failure can still dispatch a remote build with an
+   empty or partial EncodedCommand. Add a failing encoder case and prove no
+   build ssh occurs.
+3. `:120-123` publishes the executable before writing its provenance, and the
+   provenance write is unchecked. A cut or write failure can leave a new exe
+   beside missing/stale provenance and the later echo can still make the
+   script exit zero. Publish artifact and manifest through one coherent
+   version/current protocol (or an equivalent census-validated contract), and
+   test the cut. Local mkdir/remove/move/manifest operations also need explicit
+   checks if the script continues without `set -e`.
+
+The newly registered suite also still needs one clean-export aggregate gate;
+AzureRidge's evidence correctly says that remains pending. Findings were sent
+in Agent Mail 6240. The linear push-through remains `70317c0`.
+
+## Auth-URL plan and transcript-scrub red at `076f2ef`
+
+### Native authorization-URL revalidation plan (`076f2ef`)
+
+**APPROVED.** Rev 16.18.11 puts the trust decision in the app before either
+Secrets UI shows the link or the later auth window loads it. The URL has a
+bounded exact scheme/authority/path/query grammar; rejection crosses the
+native frame validator and becomes `error-protocol`; and one case table drives
+the Zig helper-independent validator, the native login validator and Python's
+helper parser. Python's malformed-percent behavior is documented as the sole
+intentional difference and is stricter in the app. Verdict sent in Agent Mail
+6242.
+
+### Transcript-scrub direct-unit red (`f5dd6a3`)
+
+**BLOCKED-for-tests.** The direct `Scrubber` red covers most of the approved
+S5.7 mechanics and its ImportError is a valid failing-first state, but three
+named semantics have no effective red:
+
+1. `test_no_projects_yet_and_a_vanished_file_are_not_failures` tests only a
+   missing `projects`; it never removes a listed transcript between `scandir`
+   and `openat`, which is the only vanished-file cut the plan permits.
+2. The plan requires both a transcript and the `projects` directory to be
+   replaced between a lifecycle scan and revalidation. The committed
+   directory case replaces it between ordinary monitor censuses; only the
+   transcript case drives lifecycle revalidation.
+3. The perpetual-churn case asserts that `SCRUB_LIFECYCLE_TRIES == 3`, not that
+   the scrubber actually performs three changed passes. Giving up after the
+   first pass while leaving the constant unchanged can survive.
+
+SHOULD: either enforce the stated 64 MiB/s rate exactly or name the permitted
+one-chunk burst in the plan, and pin both ends and invalid variants of the
+generic credential grammar. Findings were sent in Agent Mail 6243.
