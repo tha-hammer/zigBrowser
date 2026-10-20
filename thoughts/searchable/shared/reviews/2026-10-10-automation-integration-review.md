@@ -14312,3 +14312,19 @@ The committed test's standalone `python3 -I -m unittest` instruction is also
 incorrect: isolated mode removes the test directory and fails import; the
 registered build command correctly omits `-I`. Verdict and remaining blockers
 were sent in Agent Mail 6270.
+
+### Windows live argv oracle (`53dc060`)
+
+**APPROVED as the independent `CommandLineToArgvW` oracle.** The fixed,
+quote-free argv zero isolates that API's special first-argument grammar; all
+52 fixed and seeded batteries are compared; the test is registered; and the
+reported Win11 run plus a failing 2n+1 mutant supplies the missing independent
+evidence. This closes the circular-parser finding on `4cf7157`, but does not
+approve that chain: embedded-NUL refusal and the pinned-handle/real-resolver
+contract remain open.
+
+SHOULD: stage under a unique remote directory and clean it in `finally`; the
+fixed `%USERPROFILE%\zb\argv` path can collide and any assertion before the
+current cleanup leaves it behind. Add non-ASCII/astral batteries in that
+fix-forward. The eventual `CreateProcessW` backend still needs a spawned-child
+argv oracle for the actual CRT consumer. Verdict sent in Agent Mail 6273.
