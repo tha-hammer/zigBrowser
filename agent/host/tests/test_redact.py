@@ -3,8 +3,9 @@ scrub, driven directly. No CLI, no thread: the test calls the scrubber's census 
 lifecycle scans itself, with an injectable file layer and an injected clock.
 
 The API this pins (agent/host/zb_agent_host/redact.py):
-- `Scrubber(home, token, files=Files(), clock=Clock())`, where `home` is the agent home
-  (transcripts are `state/projects/<ws>/<id>.jsonl` under it) and `token` the fd-3 token.
+- `Scrubber(config, token, files=Files(), clock=Clock())`, where `config` is the CLI's
+  config directory as the helper sees it (transcripts are `projects/<ws>/<id>.jsonl` under
+  it; in the sandbox `.claude`, on the host `state`) and `token` the fd-3 token.
 - `poll()`: one monitor census, paced, serving any posted lifecycle request at a chunk
   boundary. `scan(kind)`: a lifecycle scan (`"prompt_end"`, `"close"` or `"start"`), run
   now. `post(kind)`: a lifecycle request for the next quantum boundary; its `.done` and
@@ -37,6 +38,13 @@ MIB = 1 << 20
 def redact():
     from zb_agent_host import redact as module  # red: the module does not exist yet
     return module
+
+
+def settle():
+    """Past the scrubber's SETTLE_NS: a key is committed only for a file whose ctime is
+    older, so a test that needs one committed waits this long after writing."""
+    import time
+    time.sleep(0.08)
 
 
 def record(text: str) -> bytes:
@@ -76,7 +84,8 @@ class Home:
         box = tempfile.TemporaryDirectory(prefix="zb-redact-")
         tc.addCleanup(box.cleanup)
         self.root = Path(box.name)
-        self.ws = self.root / "state" / "projects" / "-workspace"
+        self.config = self.root / "state"  # the host's view of the sandbox's .claude
+        self.ws = self.config / "projects" / "-workspace"
         self.ws.mkdir(parents=True)
 
     def write(self, name: str, data: bytes) -> Path:
@@ -96,7 +105,7 @@ class Base(unittest.TestCase):
         self.clock = FakeClock()
 
     def scrubber(self, files=None, token=TOKEN):
-        return self.r.Scrubber(str(self.home.root), token, files=files or self.r.Files(), clock=self.clock)
+        return self.r.Scrubber(str(self.home.config), token, files=files or self.r.Files(), clock=self.clock)
 
     def assert_masked(self, path: Path, before: bytes, spans: list[tuple[int, int]]) -> None:
         """Exactly `spans` became `*` (same length); every other byte is unchanged."""
@@ -160,6 +169,35 @@ class ChunkTest(Base):
         self.assert_masked(path, data, [(len(head), len(head) + len(OTHER))])
 
 
+class BoundTest(Base):
+    """RoseCat 6381: a generic match's tail has no length limit; masking it must not take
+    its whole length at once. Every mask write is at most one SCRUB_CHUNK, and a short
+    write is finished, never left half-masked."""
+
+    def writes(self, short=False):
+        r, sizes = self.r, []
+
+        class Recording(r.Files):
+            def pwrite(self_, fd, data, offset):
+                sizes.append(len(data))
+                if short and len(data) > 1:
+                    data = data[: len(data) // 2]  # the kernel may write less than asked
+                return super().pwrite(fd, data, offset)
+        return Recording(), sizes
+
+    def test_a_generic_tail_longer_than_a_chunk_is_masked_in_chunk_sized_writes(self):
+        chunk = self.r.SCRUB_CHUNK
+        needle = b"sk-ant-api03-" + b"A1_-" * ((3 * chunk + 123) // 4)
+        data = b'{"m":"' + needle + b'"}\n'
+        for short in (False, True):
+            with self.subTest(short=short):
+                path = self.home.write("long.jsonl", data)
+                files, sizes = self.writes(short)
+                self.scrubber(files=files).scan("prompt_end")
+                self.assert_masked(path, data, [(6, 6 + len(needle))])
+                self.assertTrue(sizes, "it wrote")
+                self.assertLessEqual(max(sizes), chunk, "no write larger than one chunk")
+
 class StarTest(Base):
     def test_ordinary_star_runs_stay_byte_identical_at_every_scan_point(self):
         for tail in (b"\n", b""):
@@ -209,6 +247,7 @@ class TailTest(Base):
     def test_a_file_whose_scan_left_a_candidate_is_scanned_again_by_the_next_census(self):
         files = counting_files(self.r, self.clock)
         self.home.write("tail.jsonl", record("ok") + b'{"t":"' + OTHER.encode())
+        settle()  # only the open candidate may keep its key uncommitted
         s = self.scrubber(files)
         s.poll()
         first = len(files.reads)
@@ -231,8 +270,10 @@ class TailTest(Base):
 class ChangeKeyTest(Base):
     def scanned_clean(self, data: bytes) -> tuple[Path, object]:
         path = self.home.write("a.jsonl", data)
+        settle()
         s = self.scrubber()
         s.poll()
+        self.assertIn(("-workspace", "a.jsonl"), s.keys, "the clean, settled file's key is committed")
         return path, s
 
     def test_truncate_and_regrow_to_exactly_the_prior_size_is_rescanned(self):
@@ -319,9 +360,8 @@ class IdentityTest(Base):
                          "-workspace": home.ws}[component]
                 shutil.rmtree(where)
                 where.symlink_to(target)
-                s = self.r.Scrubber(str(home.root), TOKEN, files=self.r.Files(), clock=self.clock)
                 with self.assertRaises(self.r.ScrubFailed):
-                    s.scan("start")
+                    self.r.Scrubber(str(home.config), TOKEN, files=self.r.Files(), clock=self.clock).scan("start")
                 self.assertEqual((outside / "projects" / "-workspace" / "c.jsonl").read_bytes(), canary_bytes)
 
     def test_no_projects_yet_and_a_vanished_file_are_not_failures(self):
@@ -397,6 +437,26 @@ class FaultTest(Base):
 
 
 class RevalidationTest(Base):
+    def test_a_same_inode_append_during_the_revalidation_walk_is_scanned_before_it_answers(self):
+        """RoseCat 6414: the file grows after the scanned fd's own check but while the
+        revalidation walk reopens it (same inode, same listing): the walk's full key, not
+        only its identity, must send the scan round again."""
+        r = self.r
+        path = self.home.write("a.jsonl", record("clean"))
+        opens = {"n": 0}
+
+        class Grow(r.Files):
+            def openat(self_, dirfd, name, flags):
+                if name == "a.jsonl":
+                    opens["n"] += 1
+                    if opens["n"] == 2:  # pass 1's revalidation walk
+                        with open(path, "ab") as f:
+                            f.write(record("late " + TOKEN))
+                return super().openat(dirfd, name, flags)
+        self.scrubber(Grow()).scan("prompt_end")
+        self.assertGreaterEqual(opens["n"], 3, "the scan went round again")
+        self.assertNotIn(TOKEN.encode(), path.read_bytes(), "masked before scan() returned")
+
     def test_a_transcript_swapped_during_a_lifecycle_scan_is_masked_before_it_answers(self):
         r = self.r
         ws = self.home.ws
@@ -488,13 +548,10 @@ class PaceTest(Base):
 class ReviewTest(Base):
     """RoseCat 6249, 6269, 6280, 6289, 6292 on the first scrubber."""
 
-    def test_a_missing_state_directory_fails_closed(self):
-        shutil.rmtree(self.home.root / "state")  # setup always makes it: its absence is not "no transcripts"
-        s = self.scrubber()
+    def test_a_missing_config_directory_fails_closed(self):
+        shutil.rmtree(self.home.config)  # setup always makes it: its absence is not "no transcripts"
         with self.assertRaises(self.r.ScrubFailed):
-            s.scan("start")
-        with self.assertRaises(self.r.ScrubFailed):
-            s.poll()
+            self.scrubber()
 
     def test_workspaces_named_state_and_projects_are_scanned_like_any_other(self):
         projects = self.home.root / "state" / "projects"
@@ -518,7 +575,7 @@ class ReviewTest(Base):
             def open_root(self_, path):
                 raise OSError(5, "injected open_root failure")
         with self.assertRaises(r.ScrubFailed):
-            r.Scrubber(str(self.home.root), TOKEN, files=NoRoot(), clock=self.clock)
+            r.Scrubber(str(self.home.config), TOKEN, files=NoRoot(), clock=self.clock)
 
         class NoList(r.Files):
             def scandir(self_, fd):
@@ -542,17 +599,19 @@ class ReviewTest(Base):
         request = s.post("close")
         with self.assertRaises(r.ScrubFailed):
             s.poll()
+        s.run(lambda exc, failed: None)  # the owner: its terminal path answers it (RoseCat 6379)
         self.assertTrue(request.done and request.event.is_set(), "the waiter is woken")
         self.assertIsInstance(request.error, r.ScrubFailed)
 
     def test_a_lifecycle_scan_of_a_file_that_keeps_growing_ends_within_its_passes(self):
         r = self.r
         path = self.home.write("grow.jsonl", b"x" * (2 * r.SCRUB_CHUNK))
-        reads = {"n": 0}
+        reads = {"n": 0, "passes": 0}
 
         class Grows(r.Files):
             def pread(self_, fd, n, offset):
                 reads["n"] += 1
+                reads["passes"] += offset == 0
                 if reads["n"] > 200:
                     raise AssertionError("the scan chased the growth")
                 with open(path, "ab") as f:
@@ -560,15 +619,15 @@ class ReviewTest(Base):
                 return super().pread(fd, n, offset)
         with self.assertRaises(r.ScrubFailed):  # it changed during every pass
             self.scrubber(Grows()).scan("close")
-        self.assertLessEqual(reads["n"], r.SCRUB_LIFECYCLE_TRIES * 3, "each pass ends at its snapshot size")
+        self.assertEqual(reads["passes"], r.SCRUB_LIFECYCLE_TRIES, "each pass ends at its snapshot size")
 
     def test_a_symlinked_home_is_refused_before_anything_is_read(self):
         outside = Path(tempfile.mkdtemp(prefix="zb-redact-outside-"))
         self.addCleanup(shutil.rmtree, outside)
-        (outside / "state" / "projects" / "-w").mkdir(parents=True)
-        canary = outside / "state" / "projects" / "-w" / "c.jsonl"
+        (outside / "projects" / "-w").mkdir(parents=True)
+        canary = outside / "projects" / "-w" / "c.jsonl"
         canary.write_bytes(record(TOKEN))
-        link = self.home.root.parent / (self.home.root.name + "-link")
+        link = self.home.root / "config-link"
         link.symlink_to(outside)
         self.addCleanup(link.unlink)
         with self.assertRaises(self.r.ScrubFailed):
@@ -600,10 +659,10 @@ class ReviewTest(Base):
             @failed.setter
             def failed(self_, value):
                 self_.__dict__["_failed"] = value
-        s = Racy(str(self.home.root), TOKEN, files=Held(), clock=self.clock)
+        s = Racy(str(self.home.config), TOKEN, files=Held(), clock=self.clock)
 
         def own():
-            s.run(lambda exc: None)
+            s.run(lambda exc, failed: None)
             owner_done.set()
         owner = threading.Thread(target=own, daemon=True)
         owner.start()
@@ -653,9 +712,11 @@ class ReviewTest(Base):
         self.scrubber(Vanish()).scan("close")
         self.assertNotIn(TOKEN.encode(), kept.read_bytes())
 
-    def test_a_same_size_write_into_the_read_region_during_a_scan_is_found_by_the_next_census(self):
+    def same_size_write_during_scan(self, name, wait):
         r = self.r
-        path = self.home.write("big.jsonl", b"z" * (3 * r.SCRUB_CHUNK) + b"\n")
+        path = self.home.write(name, b"z" * (3 * r.SCRUB_CHUNK) + b"\n")
+        if wait:
+            settle()
         writes = {"done": False}
 
         class Writer(r.Files):
@@ -670,7 +731,20 @@ class ReviewTest(Base):
         self.assertTrue(writes["done"])
         self.clock.sleep(r.SCRUB_POLL_S)
         s.poll()
+        return path
+
+    def test_a_same_size_write_into_the_read_region_during_a_scan_is_found_by_the_next_census(self):
+        """RoseCat 6292: the key after such a scan is the writer's, never committed."""
+        path = self.same_size_write_during_scan("big.jsonl", wait=True)
         self.assertNotIn(TOKEN.encode(), path.read_bytes(), "the changed file's key was not committed")
+
+    def test_a_same_size_write_inside_one_clock_tick_is_found_too(self):
+        """The coarse kernel clock: a write in the same tick as the file's last change leaves
+        its key as it was, so an unsettled file's key is never committed. Repeated, since a
+        tick cannot be forced."""
+        for i in range(10):
+            path = self.same_size_write_during_scan(f"tick-{i}.jsonl", wait=False)
+            self.assertNotIn(TOKEN.encode(), path.read_bytes(), f"run {i}")
 
     def test_the_monitor_reads_at_most_exactly_the_named_rate_in_any_one_second(self):
         r = self.r
@@ -689,6 +763,169 @@ class ReviewTest(Base):
             window = sum(n for t, _fd, n, _o in files.reads[i:] if t < start + 1.0)
             self.assertLessEqual(window, r.SCRUB_RATE_BYTES_PER_S, f"the window from {start:.3f}")
 
+
+class TerminalTest(Base):
+    """RoseCat 6368: the owner's first lifecycle failure is terminal."""
+
+    def own(self, s):
+        """Runs the owner thread until it ends (it must, after a failure)."""
+        import threading
+        failures = []
+        owner = threading.Thread(target=s.run, args=(lambda exc, failed: failures.append((exc, failed)),), daemon=True)
+        owner.start()
+        owner.join(5)
+        self.assertFalse(owner.is_alive(), "the owner went on after a lifecycle failure")
+        return failures
+
+    def failing_once(self):
+        r = self.r
+        state = {"failed": False}
+
+        class FailOnce(r.Files):
+            def pread(self_, fd, n, offset):
+                if not state["failed"]:
+                    state["failed"] = True
+                    raise OSError(5, "injected transient failure")
+                return super().pread(fd, n, offset)
+        return FailOnce()
+
+    def test_after_a_lifecycle_failure_a_queued_request_never_gets_a_clean_answer(self):
+        r = self.r
+        self.home.write("a.jsonl", record("x"))
+        s = self.scrubber(self.failing_once())
+        first, second = s.post("prompt_end"), s.post("close")
+        failures = self.own(s)
+        self.assertIsInstance(first.error, r.ScrubFailed)
+        self.assertTrue(second.done, "the queued request is answered")
+        self.assertIsInstance(second.error, r.ScrubFailed, "never clean after a failure")
+        self.assertEqual(len(failures), 1, "on_failure exactly once")
+        with self.assertRaises(r.ScrubFailed):
+            s.post("start")  # and nothing later is served
+
+    def test_a_failure_nobody_waits_for_still_ends_the_owner(self):
+        """A prompt cancelled while its prompt-end scan runs drops its wait; the scan's
+        failure must still reach on_failure (the helper's exit), not vanish."""
+        self.home.write("a.jsonl", record("x"))
+        s = self.scrubber(self.failing_once())
+        s.post("prompt_end")  # nobody waits on it
+        failures = self.own(s)
+        self.assertEqual(len(failures), 1)
+
+    def test_the_owner_hands_its_failure_and_the_failed_requests_over_before_waking_anyone(self):
+        """RoseCat 6379: one terminal path. on_failure gets the failure and every request it
+        failed (with its tag, e.g. a prompt's session and id, so that path alone can send
+        the prompt's error frame), and it runs before any requester is woken."""
+        r = self.r
+        self.home.write("a.jsonl", record("x"))
+        s = self.scrubber(self.failing_once())
+        first, second = s.post("prompt_end", tag=("s-1-1", 7)), s.post("close")
+        seen = []
+
+        def on_failure(exc, failed):
+            seen.append((exc, [(q.kind, q.tag) for q in failed], [q.event.is_set() for q in failed]))
+        import threading
+        owner = threading.Thread(target=s.run, args=(on_failure,), daemon=True)
+        owner.start()
+        owner.join(5)
+        self.assertFalse(owner.is_alive())
+        self.assertEqual(len(seen), 1, "on_failure exactly once")
+        exc, failed, woken = seen[0]
+        self.assertIsInstance(exc, r.ScrubFailed)
+        self.assertEqual(failed, [("prompt_end", ("s-1-1", 7)), ("close", None)])
+        self.assertEqual(woken, [False, False], "nobody is woken before the terminal path ran")
+        self.assertIs(first.error, exc)
+        self.assertIs(second.error, exc)
+
+
+
+class TerminalLineTest(Base):
+    """RoseCat 6410: names in the transcript tree are the agent's to choose. A failure's
+    detail stays in the exception; the helper's terminal stderr line is fixed text."""
+
+    def test_a_hostile_file_name_never_reaches_the_terminal_line(self):
+        import subprocess
+        sentinel = "\x1b[31m\nzigBrowser: agent: forged line"
+        name = TOKEN + sentinel + ".jsonl"
+        os.mkfifo(self.home.ws / name)  # not a regular file: the scan fails naming it
+        with self.assertRaises(self.r.ScrubFailed) as failed:
+            self.scrubber().scan("start")
+        self.assertIn(TOKEN, str(failed.exception), "the detail is in the exception")
+        # chat's real fail-closed path, in a process of its own (it ends with exit 3).
+        done = subprocess.run(
+            [sys.executable, "-c", "import sys; from zb_agent_host import chat; chat.fail_closed(sys.argv[1])",
+             str(failed.exception)], cwd=str(Path(__file__).resolve().parents[1]), capture_output=True, timeout=60)
+        self.assertEqual(done.returncode, 3, done.stderr[-500:])
+        self.assertEqual(done.stderr, b"zigBrowser: agent: transcript scrub failed\n")
+        self.assertEqual(done.stdout, b"")
+
+    def test_a_stuck_output_pipe_never_holds_the_helper_up(self):
+        """RoseCat 6423: the app stopped reading, and a frame write blocks holding the
+        emitter's lock. The terminal path still ends within its bound: its descendants are
+        killed and it exits 3, the prompt's frame given up."""
+        import subprocess
+        import time
+        pidfile = self.home.root / "child.pid"
+        script = """
+import os, subprocess, sys, threading, time
+from zb_agent_host import chat
+from zb_agent_host.frames import Emitter
+r, w = os.pipe()  # nobody reads r
+out = Emitter(stream=os.fdopen(w, "w"))
+child = subprocess.Popen(["sleep", "600"])
+open(sys.argv[1], "w").write(str(child.pid))
+def flood():
+    while True:
+        out.emit("assistant_delta", session="s-1-1", prompt_id=1, text="x" * 1000)
+threading.Thread(target=flood, daemon=True).start()
+time.sleep(0.5)  # the pipe is full: flood blocks inside emit, holding its lock
+chat.fail_closed("stuck", out, [("error", {"session": "s-1-1", "prompt_id": 1, "code": "sdk",
+                                          "message": "transcript scrub failed"})])
+"""
+        started = time.monotonic()
+        try:
+            done = subprocess.run([sys.executable, "-c", script, str(pidfile)], cwd=str(Path(__file__).resolve().parents[1]),
+                                  capture_output=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            done = None
+        child = int(pidfile.read_text()) if pidfile.exists() else None
+        if child is not None:
+            self.addCleanup(lambda: os.path.exists(f"/proc/{child}") and os.kill(child, 9))
+        self.assertIsNotNone(done, "the helper never ended: its terminal path waited for the output")
+        self.assertEqual(done.returncode, 3, done.stderr[-300:])
+        self.assertLess(time.monotonic() - started, 6.0)
+        self.assertIsNotNone(child)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.running(child):
+            time.sleep(0.05)
+        self.assertFalse(self.running(child), "the descendant was killed")
+
+    def test_a_readable_pipe_gets_exactly_the_last_frame_and_nothing_after(self):
+        import json
+        import threading
+        from zb_agent_host.frames import Emitter
+        r, w = os.pipe()
+        out = Emitter(stream=os.fdopen(w, "w"))
+        out.emit("assistant_delta", session="s-1-1", prompt_id=1, text="before")
+        self.assertTrue(out.seal([("error", {"session": "s-1-1", "prompt_id": 1, "code": "sdk",
+                                              "message": "transcript scrub failed"})]))
+        late = threading.Thread(target=out.emit, args=("result",), kwargs={"session": "s-1-1"}, daemon=True)
+        late.start()
+        late.join(0.3)
+        self.assertTrue(late.is_alive(), "a later emit waits forever")
+        os.set_blocking(r, False)
+        lines = os.read(r, 65536).decode().splitlines()
+        os.close(r)
+        frames = [json.loads(line) for line in lines]
+        self.assertEqual([(f["seq"], f["type"]) for f in frames], [(1, "assistant_delta"), (2, "error")])
+        self.assertEqual(frames[1]["code"], "sdk")
+
+    @staticmethod
+    def running(pid):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return False
 
 if __name__ == "__main__":
     unittest.main()

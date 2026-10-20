@@ -32,9 +32,10 @@ CANARY = "zb-canary-" + "c" * 32
 
 
 class Helper:
-    """`python -m zb_agent_host chat` with the D7 environment and fd 3."""
+    """`python -m zb_agent_host chat` with the D7 environment and fd 3. `prelude`: Python
+    run in the helper first (a test's fault injection), then the module as `-m` runs it."""
 
-    def __init__(self, tc, home, token=CANARY):
+    def __init__(self, tc, home, token=CANARY, prelude=None):
         read, write = os.pipe()
         os.write(write, token.encode() + b"\n")
         os.close(write)
@@ -42,8 +43,10 @@ class Helper:
                **options.home_env(home)}
         # The token's pipe becomes fd 3, as the app hands it over.
         move = "" if read == 3 else f"exec 3<&{read} {read}<&-; "
+        module = ["-m", "zb_agent_host"] if prelude is None else [
+            "-c", prelude + "\nimport runpy\nrunpy.run_module('zb_agent_host', run_name='__main__', alter_sys=True)"]
         self.proc = subprocess.Popen(["/bin/sh", "-c", move + 'exec "$0" "$@"',
-                                      sys.executable, "-m", "zb_agent_host", "chat", "--home", str(home.root),
+                                      sys.executable, *module, "chat", "--home", str(home.root),
                                       "--fifo-dir", str(home.scratchpad / "tmp" / "zb-token")],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      env=env, pass_fds=(read,), text=True, start_new_session=True)

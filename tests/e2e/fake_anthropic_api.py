@@ -15,6 +15,8 @@ and an optional "gap_ms": the stream holds that long after each delta but the la
 (S5c-1 rev 16.20.11: each delta reaches the helper in a flush of its own);
 or {"status": int, "body": {...}}: that HTTP status with a JSON error body (the
 default body names the status), streamed request or not (chat-drawer plan S5a);
+or {"sse_error": {"type": str, "message": str}}: a stream that starts, then ends with
+an SSE `error` event carrying that error (S5c-2: the CLI saves its message too);
 or {"endless": str}: one text block streamed as that piece over and over, "every_ms"
 apart (default ENDLESS_EVERY_MS), until the client goes away, the fake is stopped,
 ENDLESS_MAX_S passes or ENDLESS_MAX_BYTES are sent (S5c-1, plan S5.6; paced and
@@ -89,6 +91,9 @@ def _sse_events(turn, index, stopped=None):
     start = _message(turn, index, content=[])
     start["stop_reason"] = None
     yield "message_start", {"type": "message_start", "message": start}
+    if turn.get("sse_error") is not None:
+        yield "error", {"type": "error", "error": turn["sse_error"]}
+        return
     for i, block in enumerate(_content(turn, index)):
         if block["type"] == "text":
             yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}
