@@ -444,6 +444,7 @@ const render_config = @import("render_config.zig");
 test {
     _ = gtk_port;
     _ = @import("automation_gtk_cookie_port.zig");
+    _ = @import("automation_macos_cookie_port.zig");  // MS3: compiles everywhere; its tests skip off-macOS
     _ = @import("app.zig");
 }
 

@@ -10,6 +10,7 @@ const agent_frames = @import("agent_frames.zig");
 const agent_login = @import("agent_login.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
+const automation_macos_cookie_port = @import("automation_macos_cookie_port.zig");
 const automation_macos_port = @import("automation_macos_port.zig");
 const automation_server = @import("automation_server.zig");
 const automation_transport = @import("automation_transport.zig");
@@ -448,7 +449,7 @@ fn buildAutomationConfig(
         .token = credentials.token,
         .token_file_path = credentials.token_file_path,
         .page_port = if (builtin.os.tag == .macos) automation_macos_port.pagePort() else automation_gtk_port.pagePort(),
-        .cookie_port = automation_gtk_cookie_port.cookiePort(),
+        .cookie_port = if (builtin.os.tag == .macos) automation_macos_cookie_port.cookiePort() else automation_gtk_cookie_port.cookiePort(),
     };
 }
 

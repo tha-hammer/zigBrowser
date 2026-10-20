@@ -1803,6 +1803,182 @@ int zb_automation_recover_windows(const uint32_t *ids, int n, unsigned int timeo
   return rc;
 }
 
+// ---- MS3 cookies (WKHTTPCookieStore) ----
+// The cookie store is the primary window's WKWebView data store (the profile's). All ops run on the main
+// thread via the heap-job model; the WKHTTPCookieStore callbacks are async, so the job holds one extra ref
+// across the callback (released at its single terminal). Cookie VALUES never appear in error text or logs.
+
+static WKHTTPCookieStore *zb_cookie_store(void) {
+  ZBAppHost *app = g_active_app;
+  ZBWindowHost *w = (app != nil) ? app.mainWindow : nil;
+  if (w == nil || w.webView == nil) return nil;
+  return w.webView.configuration.websiteDataStore.httpCookieStore;
+}
+
+static NSDictionary *zb_cookie_to_dict(NSHTTPCookie *ck) {
+  long long expires = -1;  // session cookie
+  if (ck.expiresDate != nil) expires = (long long)llround(ck.expiresDate.timeIntervalSince1970);
+  NSMutableDictionary *d = [@{ @"name": ck.name ?: @"",
+                               @"value": ck.value ?: @"",
+                               @"domain": ck.domain ?: @"",
+                               @"path": ck.path ?: @"/",
+                               @"expires": @(expires),
+                               @"httpOnly": ck.HTTPOnly ? @YES : @NO,
+                               @"secure": ck.secure ? @YES : @NO } mutableCopy];
+  if (@available(macOS 10.15, *)) {
+    NSString *p = ck.sameSitePolicy;
+    if ([p isEqualToString:NSHTTPCookieSameSiteLax]) d[@"sameSite"] = @"Lax";
+    else if ([p isEqualToString:NSHTTPCookieSameSiteStrict]) d[@"sameSite"] = @"Strict";
+  }
+  return d;
+}
+
+// Would `ck` be sent to `url`? Domain (leading dot = domain cookie), path prefix, and the secure flag.
+static BOOL zb_cookie_matches_url(NSHTTPCookie *ck, NSURL *url) {
+  NSString *host = url.host ?: @"";
+  NSString *cd = ck.domain ?: @"";
+  BOOL domain_ok;
+  if ([cd hasPrefix:@"."]) {
+    NSString *bare = [cd substringFromIndex:1];
+    domain_ok = [host caseInsensitiveCompare:bare] == NSOrderedSame ||
+                [host hasSuffix:[@"." stringByAppendingString:bare]];
+  } else {
+    domain_ok = [host caseInsensitiveCompare:cd] == NSOrderedSame;
+  }
+  if (!domain_ok) return NO;
+  NSString *path = url.path.length > 0 ? url.path : @"/";
+  if (![path hasPrefix:(ck.path ?: @"/")]) return NO;
+  if (ck.secure && ![url.scheme isEqualToString:@"https"]) return NO;
+  return YES;
+}
+
+int zb_cookies_get_all(uint32_t win, const char *url, unsigned int timeout_ms, char **out_json, char **out_err) {
+  (void)win;  // always the primary window's (profile's) store
+  if (out_json != NULL) *out_json = NULL;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  NSString *url_str = (url != NULL && url[0] != '\0') ? [NSString stringWithUTF8String:url] : nil;
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned
+    WKHTTPCookieStore *store = zb_cookie_store();
+    if (store == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+    NSURL *filter = (url_str != nil) ? [NSURL URLWithString:url_str] : nil;
+    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+      char *result = NULL;
+      @autoreleasepool {
+        NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
+        for (NSHTTPCookie *ck in cookies) {
+          if (filter != nil && !zb_cookie_matches_url(ck, filter)) continue;
+          [arr addObject:zb_cookie_to_dict(ck)];
+        }
+        NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
+        NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
+        result = strdup(s.UTF8String != NULL ? s.UTF8String : "[]");
+      }
+      zb_job_complete(job, ZB_AUTO_OK, result, NULL);
+      zb_job_unref(job);
+    }];
+  });
+  int rc = zb_job_wait(job, timeout_ms);
+  if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
+  zb_job_unref(job);
+  return rc;
+}
+
+int zb_cookies_add(uint32_t win, const ZbCookie *cookie, unsigned int timeout_ms, char **out_err) {
+  (void)win;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  if (cookie == NULL) return ZB_AUTO_ERR_INTERNAL;
+  if (cookie->expires < -1 || cookie->expires > ZB_COOKIE_MAX_EXPIRES) return ZB_AUTO_ERR_INTERNAL;
+  // Copy every field before queuing (the caller's ZbCookie is borrowed).
+  NSString *name = [NSString stringWithUTF8String:(cookie->name ?: "")];
+  NSString *value = [NSString stringWithUTF8String:(cookie->value ?: "")];
+  NSString *domain = [NSString stringWithUTF8String:(cookie->domain ?: "")];
+  NSString *path = [NSString stringWithUTF8String:(cookie->path ?: "/")];
+  long long expires = cookie->expires;
+  BOOL http_only = cookie->http_only != 0;
+  BOOL secure = cookie->secure != 0;
+  int same_site = cookie->same_site;
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
+    WKHTTPCookieStore *store = zb_cookie_store();
+    if (store == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+    NSMutableDictionary *props = [@{ NSHTTPCookieName: name,
+                                     NSHTTPCookieValue: value,
+                                     NSHTTPCookieDomain: domain,
+                                     NSHTTPCookiePath: path } mutableCopy];
+    if (expires >= 0) props[NSHTTPCookieExpires] = [NSDate dateWithTimeIntervalSince1970:(double)expires];
+    if (secure) props[NSHTTPCookieSecure] = @"TRUE";
+    if (http_only) props[@"HttpOnly"] = @"YES";  // not a public key, but honored by NSHTTPCookie
+    if (@available(macOS 10.15, *)) {
+      if (same_site == ZB_COOKIE_SAME_SITE_LAX) props[NSHTTPCookieSameSitePolicy] = NSHTTPCookieSameSiteLax;
+      else if (same_site == ZB_COOKIE_SAME_SITE_STRICT) props[NSHTTPCookieSameSitePolicy] = NSHTTPCookieSameSiteStrict;
+    }
+    NSHTTPCookie *ck = [NSHTTPCookie cookieWithProperties:props];
+    if (ck == nil) { zb_job_complete(job, ZB_AUTO_ERR_INTERNAL, NULL, NULL); zb_job_unref(job); return; }
+    [store setCookie:ck completionHandler:^{
+      zb_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+      zb_job_unref(job);
+    }];
+  });
+  int rc = zb_job_wait(job, timeout_ms);
+  zb_job_unref(job);
+  return rc;
+}
+
+int zb_cookies_delete(uint32_t win, const char *name, const char *domain, unsigned int timeout_ms, char **out_err) {
+  (void)win;
+  if (out_err != NULL) *out_err = NULL;
+  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
+  if (name == NULL) return ZB_AUTO_ERR_INTERNAL;
+  NSString *want_name = [NSString stringWithUTF8String:name];
+  NSString *want_domain = (domain != NULL && domain[0] != '\0') ? [NSString stringWithUTF8String:domain] : nil;
+  ZBAutoJob *job = zb_job_new();
+  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
+  zb_job_ref(job);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
+    WKHTTPCookieStore *store = zb_cookie_store();
+    if (store == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+      NSMutableArray<NSHTTPCookie *> *doomed = [NSMutableArray array];
+      for (NSHTTPCookie *ck in cookies) {
+        if (![ck.name isEqualToString:want_name]) continue;
+        if (want_domain != nil) {
+          NSString *a = [want_domain hasPrefix:@"."] ? [want_domain substringFromIndex:1] : want_domain;
+          NSString *b = [ck.domain hasPrefix:@"."] ? [ck.domain substringFromIndex:1] : (ck.domain ?: @"");
+          if ([a caseInsensitiveCompare:b] != NSOrderedSame) continue;
+        }
+        [doomed addObject:ck];
+      }
+      if (doomed.count == 0) {  // deleting nothing is not an error
+        zb_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+        zb_job_unref(job);
+        return;
+      }
+      __block NSUInteger remaining = doomed.count;  // decremented only on the (serial) main queue
+      for (NSHTTPCookie *ck in doomed) {
+        [store deleteCookie:ck completionHandler:^{
+          if (--remaining == 0) {
+            zb_job_complete(job, ZB_AUTO_OK, NULL, NULL);
+            zb_job_unref(job);
+          }
+        }];
+      }
+    }];
+  });
+  int rc = zb_job_wait(job, timeout_ms);
+  zb_job_unref(job);
+  return rc;
+}
+
 // Start a routed navigation on the main thread and wait for ITS outcome. `start(host)` performs the
 // loadRequest/reload and returns the WKNavigation it created (nil = refused). Phase model: PENDING ->
 // DISPATCHING (claim + submit) -> INFLIGHT (poll the per-navigation outcome) -> DONE. The submission
