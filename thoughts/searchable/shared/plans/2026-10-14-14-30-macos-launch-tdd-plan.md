@@ -336,6 +336,14 @@ UNCLOSED).
   while `dom.scroll` and `dom.hover` keep working through the engine's synthetic path (no trusted wheel,
   no real `:hover`). `nativeClick`, `nativeKey`, `nativeText` are unaffected (trusted, shipped). The
   Windows WebView2 shim will face the analogous question.
+- **beforeunload accept/dismiss — UNSUPPORTED on macOS, same no-private-API class (2026-10-20).** The
+  MS2b.2 probe showed WKWebView does NOT surface the beforeunload "Leave site?" prompt to any public
+  `WKUIDelegate` method — with OR without a trusted-click user gesture, a navigation away from a page
+  with an active `beforeunload` handler raises no panel (there is no public `runBeforeUnloadConfirmPanel`;
+  WebKit handles it internally). Surfacing it needs private WebKit SPI, which the 2026-10-20 user decision
+  rules out. So `navigateWithPolicy` keeps **rejecting non-`.fail`** (accept/dismiss) as `error.Unsupported`;
+  only `.fail` (the no-prompt engine default) is exact. alert/confirm/prompt dialogs ARE captured and
+  answerable (36d3065). Revisit with scroll/move if the private-API stance changes.
 - Native input on Linux is toolkit-path (`gdk_event_new` + `gtk_main_do_event`
   webkit_shim.c:3373), not XTEST; the macOS NSEvent path is a **spike** (MS2b), not an assumed
   equivalent.
@@ -728,7 +736,7 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_automation_window_alive` | int | MS2a | impl | MS2a window test |
 | `zb_automation_window_id_at` | uint32 | **MS2a** | impl — window-registry enumeration (backs `list`/`alive`) | MS2a window-registry test |
 | `zb_automation_run_generation` | uint32 | **MS2a** | impl — the generation counter the no-dispatch-after-abandon guard reads (macOS analog of the GTK generation guard) | MS2a.3 late-completion test |
-| `zb_automation_list_dialogs` / `_respond_dialog` | int | MS2b | impl — `WKUIDelegate` (incl. beforeunload) | MS2b.2 |
+| `zb_automation_list_dialogs` / `_respond_dialog` | int | MS2b | impl — `WKUIDelegate` captures **alert/confirm/prompt**, held until answered; cancel-aware list/respond + dialog_open fast-fail + eval dialog-watch (36d3065, mutant-proven both arches). **beforeunload is NOT surfaced** — see below | MS2b.2 |
 | `zb_automation_list_windows` / `_close_window` / `_recover_windows` | int | MS2c | impl | MS2c.1 / MS2c.3, Closure B / C |
 | `zb_cookies_get_all` / `_add` / `_delete` | int | **MS3** (moved from MS2c) | impl over `WKHTTPCookieStore` (the MS3 data-store owner); MS4.4 login gate consumes | `mac_cookie_test` (MS3) |
 | `zb_set_input_files` | int | MS2b | impl — incl. regular-file refusal | MS2b input-files test |
