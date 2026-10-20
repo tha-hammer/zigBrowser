@@ -46,9 +46,10 @@ goes through the same server-grab checks as the other cases.
 `--case tools` (S7b) checks the agent's read tools on this screen: the same throwaway agent
 home and fake API, which, for the prompt "tools", has the model call get_text on the
 fixture's header and then screenshot, then answer. It passes when the model got the
-header's text, when the screenshot it got decodes, is not one colour, and shows the
-fixture's blue (an accelerated page captured blank or black fails), and when the drawer
-shows the final answer on the screen. The screenshot the model saw is saved in --out.
+header's text, when the screenshot it got decodes and is the page drawn, not fill-only (at
+least 20% the fixture's blue and 0.5% its white text and lines: an accelerated page captured
+blank, black or as its fill alone fails), and when the drawer shows the final answer on the
+screen. The screenshot the model saw is saved in --out.
 
     python3 tests/manual/real_screen_check.py --confirm-user-permission --case tools \\
         --bin zig-out/bin/zigBrowser --out /tmp/zb-tools
