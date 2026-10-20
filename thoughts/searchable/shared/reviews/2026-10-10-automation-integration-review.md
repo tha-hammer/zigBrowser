@@ -13648,3 +13648,85 @@ Add a repeated/mutant proof for both corrections. This red stays outside the
 gate and lands before the Part-B-dependent green. The findings were sent in
 Agent Mail 6188. The approved linear push-through boundary remains the
 already-pushed **`da3028f`**.
+
+## Overnight platform queue at `08bd75a`
+
+### Windows rev-2.2 plan (`6aa0b62`, `172c511`, `703b3de`)
+
+`6aa0b62` is **BLOCKED standing alone but cumulatively APPROVED by
+`172c511` and `703b3de`**. The fix-forward revisions remove the stale SMBIOS
+UUID red, enumerate missing/empty/wrong `identity_marker` cases with a healthy
+control and mutant, add the provisioning nonce for each Windows host, and
+refresh the plan date. Explicit verdicts: **`172c511` APPROVED** and
+**`703b3de` APPROVED**.
+
+### Two-host gate and live marker (`ae8b270`, `efefb52`)
+
+**`ae8b270` is BLOCKED.** Its hermetic suite is green 9/9, but it does not
+close the earlier `7d85cd5` test gaps: there is no TCP-unreachable case, pinned
+host-key refusal, firewall-hash-only pre/post change, or hostile display-env
+observation on the new probe path. More importantly, the production live path
+cannot pass: `host_probe.ps1:67-85` does not emit `console_user`,
+`zbtest_write_paths`, `listeners`, or `fw_rules_hash`, while
+`gate.sh:159-174` consumes them; an absent `console_user` fails closed on every
+real file-server probe. The plan also provisions `ZB_WIN10_MARKER`, and the
+selftest supplies it, but `validate_probes` ignores it. The plan must drop
+that physical-host contract or the gate must validate it explicitly.
+
+**`efefb52` is APPROVED as the narrow identity-marker producer only.** Its
+read-only, trimmed marker field correctly supports WS0.6, but does not close
+the live file-server contract or `ae8b270`.
+
+### WS1 reds (`1794148`, `2cdcb7a`, `08bd75a`)
+
+- **`1794148` BLOCKED-for-tests:** the red fails only because the release exe
+  is absent. It lacks the plan's independent clean-PE/vcruntime fixture and
+  mutant, and it does not pin or record the WebView2 SDK version. Therefore an
+  allowlist/parser bug can remain hidden behind the missing-artifact failure.
+- **`2cdcb7a` BLOCKED-for-tests:** it opens a caller-supplied `ZB_WIN_SHOT`
+  but never launches the real binary, checks the screenshot exit code, or
+  proves the PNG came from that run. A planted non-uniform PNG passes. Its
+  oracle tests also expose an unclosed-file `ResourceWarning`.
+- **`08bd75a` BLOCKED-for-tests:** the missing-runtime case invents
+  `WEBVIEW2_RUNTIME_DISABLED` instead of the planned empty-runtime-folder
+  spike/guarded e2e seam and accepts any one of three generic words instead of
+  the exact diagnostic. The version regex accepts today's old version line
+  and omits the OS build, executing architecture, and PE-architecture
+  agreement, so it false-greens as soon as any old exe is staged.
+
+These findings were sent to AzureRidge in Agent Mail 6204.
+
+### macOS routed/native reds and plan (`dd0b456`, `d0df844`, `11387b1`)
+
+**`11387b1` is APPROVED.** It points to the live dylib-based macOS backend,
+makes the old beads limitation historical, and records the MS1b reproducer,
+fixup inspection, architecture/signature split, and validated fix durably in
+the plan.
+
+**`d0df844` is APPROVED for the prior native-input and scope findings.** The
+red now selects `options.input="native"`, labels itself the click-only
+MS2b.1a feasibility slice, and cannot register or flip capabilities before the
+remaining matrix lands.
+
+**`dd0b456` is BLOCKED-for-tests.** Its real DOM assertion is correct, but
+`stop_browser_macos()` returns immediately when `proc.poll()` says the group
+leader exited and otherwise discovers the PGID from that leader only at
+teardown. A crashed/exited browser can therefore leave a live WebKit/helper
+child in the process group—the exact leak this commit claims to close. Retain
+the launch-time PGID, signal that saved group even after the leader exits,
+and add a non-GUI leader-exits/child-survives regression plus the signal-handler
+case. Findings were sent to JadeBeacon in Agent Mail 6206.
+
+### Secrets teardown red fix-forward (`6b50712`)
+
+**`6b50712` is APPROVED.** It selects both browser identities without mutating
+the source sets, watches the full quiet interval, and separately verifies
+survivor map state. This closes both `789b4f1` harness blockers; the delayed
+hide mutant demonstrates the new assertions' teeth. Before green registration,
+the read-only `XGetWindowAttributes` call SHOULD trap BadWindow and return
+`false` rather than letting Xlib's default handler terminate the runner.
+Verdict sent in Agent Mail 6207.
+
+The current approved linear push-through boundary is the now-pushed
+**`70317c0`**. The earliest unapproved commit remains `2713c20`, pending the
+S6b1 Part-B production green and required user-screen rerun.
