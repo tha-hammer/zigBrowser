@@ -34,6 +34,7 @@ verify_host() { # $1=host $2=key $3=label
 set -euo pipefail
 cd "$HOME/zigBrowser"
 python3 tests/e2e/mac_ms2c_list_windows_test.py --browser zig-out/bin/zigBrowser
+python3 tests/e2e/mac_ms2c_health_test.py --browser zig-out/bin/zigBrowser
 REMOTE
   printf 'PASS\tms2c-leg\t%s\t%s\n' "$host" "$label"
 }

@@ -283,7 +283,19 @@ static void handle_signal(int signo) {
 @property(nonatomic, copy) void (^pendingAlertCompletion)(void);
 @property(nonatomic, copy) void (^pendingConfirmCompletion)(BOOL);
 @property(nonatomic, copy) void (^pendingPromptCompletion)(NSString *);
+// MS2c page.health: a JS-ping responsiveness watchdog (WKWebView exposes no public is-responsive signal,
+// and the private SPI is ruled out). A repeating main-thread timer pings the web process; a ping left
+// unanswered across a tick marks the window unresponsive (unresponsiveSinceUs != 0, incident bumped once
+// per stretch), cleared when a ping replies. Touched only on the main thread (timer + the list ABI's
+// main-queue hop), monotonic microseconds via systemUptime.
+@property(nonatomic, strong) NSTimer *healthTimer;
+@property(nonatomic, assign) int64_t unresponsiveSinceUs;  // 0 while responsive
+@property(nonatomic, assign) uint32_t incident;            // count of unresponsive stretches (recover identity)
+@property(nonatomic, assign) BOOL pingOutstanding;
+@property(nonatomic, assign) int64_t pingSentUs;
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child;
+- (void)startHealthWatchdog;
+- (void)healthTick;
 - (void)loadURI:(NSString *)uri;
 - (void)reloadBypassingCache:(BOOL)bypassCache;
 - (NSString *)failingURIForWebView:(WKWebView *)webView error:(NSError *)error;
@@ -335,6 +347,7 @@ static void handle_signal(int signo) {
   [host.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 
+  [host startHealthWatchdog];  // MS2c page.health responsiveness ping
   if (uri.length > 0) {
     [host loadURI:uri];
   }
@@ -468,7 +481,45 @@ static void handle_signal(int signo) {
   self.currentNav = bypassCache ? [self.webView reloadFromOrigin] : [self.webView reload];  // pin synchronously
 }
 
+// MS2c page.health: monotonic microseconds (systemUptime is monotonic since boot).
+static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] systemUptime] * 1e6); }
+
+- (void)startHealthWatchdog {
+  self.pingOutstanding = NO;
+  self.unresponsiveSinceUs = 0;
+  self.incident = 0;
+  __weak ZBWindowHost *weakSelf = self;
+  self.healthTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+    (void)t;
+    ZBWindowHost *s = weakSelf;
+    if (s == nil) return;
+    [s healthTick];
+  }];
+}
+
+- (void)healthTick {
+  if (self.pingOutstanding) {
+    // The ping issued last tick has not replied within a full interval: the web process is unresponsive.
+    if (self.unresponsiveSinceUs == 0) { self.unresponsiveSinceUs = self.pingSentUs; self.incident += 1; }
+    return;  // leave the ping outstanding; don't pile on
+  }
+  WKWebView *view = self.webView;
+  if (view == nil) return;
+  self.pingOutstanding = YES;
+  self.pingSentUs = zb_now_us();
+  __weak ZBWindowHost *weakSelf = self;
+  [view evaluateJavaScript:@"0" completionHandler:^(id v, NSError *e) {
+    (void)v; (void)e;  // any reply (even an error) means the web process answered -> responsive
+    ZBWindowHost *s = weakSelf;
+    if (s == nil) return;
+    s.pingOutstanding = NO;
+    s.unresponsiveSinceUs = 0;
+  }];
+}
+
 - (void)close {
+  [self.healthTimer invalidate];
+  self.healthTimer = nil;
   // Never release a held WKWebView dialog completion uncalled (WebKit raises NSException): answer any
   // open dialog with its default (confirm->Cancel, prompt->null, alert->resume) as closing the window does.
   if (self.pendingDialogKind != 0) [self zbRespondDialogAccept:NO text:nil];
@@ -1460,12 +1511,17 @@ int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
           if (h == nil) return;
           NSString *url = h.webView.URL.absoluteString ?: @"";
           NSString *title = h.webView.title ?: @"";
+          BOOL responsive = (h.unresponsiveSinceUs == 0);
+          int64_t unresp_ms = responsive ? 0 : (zb_now_us() - h.unresponsiveSinceUs) / 1000;
           [arr addObject:@{ @"id": @(idx + 1),
                             @"url": url,
                             @"title": title,
                             @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)
                             @"opener": @0,
-                            @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO }];
+                            @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO,
+                            @"responsive": responsive ? @YES : @NO,       // MS2c page.health (watchdog)
+                            @"unresponsive_ms": @(unresp_ms),
+                            @"incident": @(h.incident) }];
         }];
       }
       NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
