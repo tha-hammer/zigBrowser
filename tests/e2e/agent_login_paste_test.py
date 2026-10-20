@@ -9,7 +9,8 @@ Rows: `SECRETS login`, `SECRETS status` as in agent_login_test.py.
 Cases (run alone or with --only):
 - real-length: a 100-character code with the fake's 43-character state: within 20 s of Send
   code the one ending is `done`, the fake received exactly that code, its Enter was a read
-  of its own, and the token is stored (`connected-secret-service`).
+  holding at most 16 code bytes (rev 16.20.29's pacing), and the token is stored
+  (`connected-secret-service`).
 - short: a short code, the same (the control: before the fix it ended `done` too, but
   its Enter came in the same read as the code)."""
 
@@ -24,6 +25,7 @@ import agent_login_test as lt  # noqa: E402
 from agent_common import run_main  # noqa: E402
 
 REAL_LENGTH = ("zbRealLengthCode-" * 8)[:100]
+CHUNK = 16  # agent/host/zb_agent_host/login.py's CHUNK (rev 16.20.29): the Enter's read holds at most this many code bytes
 
 
 def reads(si) -> list[tuple[int, int]]:
@@ -47,7 +49,9 @@ def paste_case(code_part: str, label: str):
             check(b.wait(lambda: lt.endings(b) != [], 20) and lt.endings(b) == ["done"],
                   f"{label}: the one ending is done within 20 s ({lt.login_states(b)}, {time.monotonic() - started:.1f} s)", b)
             check(si.codes() == [code], f"{label}: the fake received exactly the code ({len(si.codes())} lines)")
-            check(reads(si)[-1:] == [(0, 1)], f"{label}: its Enter was a read of its own ({reads(si)})")
+            last = reads(si)[-1:]
+            check(last != [] and last[0][1] == 1 and last[0][0] <= CHUNK,
+                  f"{label}: its Enter's read held at most {CHUNK} code bytes (rev 16.20.29; {reads(si)})")
             check(b.wait(lambda: lt.statuses(b)[-1:] == ["connected-secret-service"], 20), f"{label}: the token is stored", b)
         finally:
             si.close()

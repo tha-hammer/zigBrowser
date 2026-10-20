@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_login import CANARY, FAKE, LoginTest, state_of  # noqa: E402
+from zb_agent_host import login  # noqa: E402
 
 REAL_LENGTH = ("zbRealLengthCode-" * 8)[:100]  # a 100-character code
 
@@ -48,10 +49,13 @@ class PasteTest(unittest.TestCase):
     def test_a_real_length_code_is_exchanged(self):
         self.sign_in(REAL_LENGTH)
 
-    def test_the_enter_is_its_own_write(self):
+    def test_the_enter_shares_a_read_with_at_most_chunk_code_bytes(self):
         code = self.sign_in(REAL_LENGTH)
         reads = self.reads()
-        self.assertEqual(reads[-1], (0, 1), f"the last read is the Enter alone ({reads})")
+        # Rev 16.20.29: the Enter's read holds at most CHUNK code bytes (BlackRobin 6535: never
+        # "alone" under that pacing, which keeps the paste rule out of reach, not the Enter apart).
+        self.assertEqual(reads[-1][1], 1, f"the last read holds the Enter ({reads})")
+        self.assertLessEqual(reads[-1][0], login.CHUNK, f"with at most CHUNK code bytes ({reads})")
         self.assertEqual(sum(n for n, _ in reads), len(code), f"the code arrived, without its Enter ({reads})")
         self.assertTrue(all(ends == 0 for _, ends in reads[:-1]), f"no Enter came with the code ({reads})")
 
@@ -67,7 +71,8 @@ class PasteTest(unittest.TestCase):
         h.send("code", code="a#b")
         self.assertEqual(h.frame(timeout=10), {"type": "need_code"})
         self.assertEqual(self.codes(), ["a#b"])
-        self.assertEqual(self.reads()[-1], (0, 1), self.reads())
+        self.assertEqual(self.reads()[-1][1], 1, self.reads())
+        self.assertLessEqual(self.reads()[-1][0], login.CHUNK, self.reads())
 
 
 class EchoTest(unittest.TestCase):

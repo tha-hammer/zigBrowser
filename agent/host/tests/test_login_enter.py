@@ -5,7 +5,8 @@
    reaches the CLI: it could submit a code the user has already cancelled.
 2. The Enter comes after all of the code: a CLI may take a code in several reads (a pty write
    is no read boundary), so the Enter waits until the CLI's masked echo has appeared AND its
-   output has been quiet; it is never a read of its own remainder plus the Enter.
+   output has been quiet (rev 16.20.29: the Enter goes once the echo accounts for all but CHUNK
+   typed bytes, so its read holds at most CHUNK code bytes, never a paste).
 Run the module alone, as the gate does."""
 
 import json
@@ -21,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_login import CANARY, FAKE, LoginTest, state_of  # noqa: E402
 from test_login_paste import REAL_LENGTH  # noqa: E402
+from zb_agent_host.login import CHUNK  # noqa: E402
 
 
 def helper(home):
@@ -158,7 +160,8 @@ class TheEnterAfterAllOfTheCode(unittest.TestCase):
         self.assertEqual(self.codes(), [code])
         reads = self.reads()
         self.assertGreater(len(reads), 2, f"the fake took the code in pieces ({reads})")
-        self.assertEqual(reads[-1], (0, 1), f"the Enter is a read of its own ({reads})")
+        self.assertEqual(reads[-1][1], 1, f"the last read holds the Enter ({reads})")
+        self.assertLessEqual(reads[-1][0], CHUNK, f"with at most CHUNK code bytes (rev 16.20.29; {reads})")
         self.assertEqual(sum(n for n, _ in reads), len(code), reads)
 
     def test_the_app_going_away_with_an_enter_pending_sends_no_enter(self):
