@@ -245,8 +245,10 @@ No main-thread caller may synchronously wait on a main-queue marshal (MS2); dial
 completion handlers** rather than running a modal loop (MS2b); health/list snapshots are
 **lock/atomic-backed** and never `dispatch_sync` to a hung main queue (MS2c.2); the public
 recover spike **tries replacing the WKWebView while retaining its window id** rather than
-private SPI (MS2c.3); scroll events may be built from a CGEvent and delivered **in-process**
-with `-[NSWindow sendEvent:]` **without** posting to the system or asking for TCC (MS2b);
+private SPI (MS2c.3); scroll events were expected to be built from a CGEvent and delivered
+**in-process** with `-[NSWindow sendEvent:]` without TCC — **but the MS2b spike disproved this for
+scroll and repeated hover (see the 2026-10-20 user decision above): both need private API, so they are
+synthetic-only on macOS for now** (MS2b);
 icon/fold views **intentionally overlap** the page and need **exact hit-testing** even though
 the dock does not (MS7); keyboard/fold-row and Secrets-exclusion parity need **named tests**
 (MS7); the real-screen runner **fails closed** when Screen-Recording/window-order evidence is
@@ -323,6 +325,17 @@ UNCLOSED).
 - Capability table models macOS: `.wkwebview = { js_synthetic, network unsupported
   (no_platform_api) }` (automation_platform.zig:90-95). **Rev 2:** this entry is changed only
   after MS2b's trusted-event matrix passes.
+- **USER DECISION (2026-10-20) — native scroll + pointer move are SYNTHETIC-ONLY on macOS, no private
+  API; revisit later.** The MS2b spike proved that an in-process trusted wheel and repeated hover cannot
+  be delivered to WKWebView with public API: a `CGEventCreateScrollWheelEvent2`→`eventWithCGEvent:` wheel
+  carries no window number and WKWebView drops it (WebKit's own WebDriver uses the private
+  `-[NSEvent _eventRelativeToWindow:]`), and only the FIRST synthetic `NSEventTypeMouseMoved` per session
+  reaches the page (WebKit dedups later synthetic moves against the real cursor). Rather than adopt a
+  private selector (App Store risk), the user chose: **`nativeScroll` and `nativeMove` stay UNSUPPORTED
+  on macOS** — the capability table keeps them unset and the port returns a clear `unsupported` error —
+  while `dom.scroll` and `dom.hover` keep working through the engine's synthetic path (no trusted wheel,
+  no real `:hover`). `nativeClick`, `nativeKey`, `nativeText` are unaffected (trusted, shipped). The
+  Windows WebView2 shim will face the analogous question.
 - Native input on Linux is toolkit-path (`gdk_event_new` + `gtk_main_do_event`
   webkit_shim.c:3373), not XTEST; the macOS NSEvent path is a **spike** (MS2b), not an assumed
   equivalent.
@@ -720,7 +733,8 @@ No seam silently returns zero and no config export fakes an error channel it doe
 | `zb_cookies_get_all` / `_add` / `_delete` | int | **MS3** (moved from MS2c) | impl over `WKHTTPCookieStore` (the MS3 data-store owner); MS4.4 login gate consumes | `mac_cookie_test` (MS3) |
 | `zb_set_input_files` | int | MS2b | impl — incl. regular-file refusal | MS2b input-files test |
 | `zb_screenshot_png` | int | MS2b | impl — full-page | MS2b screenshot test |
-| `zb_native_scroll` / `_move` / `_pointer` / `_click` / `_key` / `_text` | int | MS2b | impl — in-process NSEvent / CGEvent→NSEvent via `-[NSWindow sendEvent:]` (no post, no TCC) + pointer cache | MS2b.1 |
+| `zb_native_click` / `_key` / `_text` | int | MS2b | impl — trusted in-process NSEvent via `-[NSWindow sendEvent:]` (no post, no TCC); key/text per-pair atomic ownership + documentToken recheck (shipped) | MS2b.1 |
+| `zb_native_scroll` / `_move` / `_pointer` | int | MS2b | **NOT IMPLEMENTED on macOS — synthetic-only (user decision 2026-10-20).** A CGEvent-sourced wheel has no window (WKWebView drops it) and only the first synthetic move per session reaches the page; both need the private `-[NSEvent _eventRelativeToWindow:]`. The macOS port leaves `nativeScroll`/`nativeMove` unsupported (clear error); `dom.scroll`/`dom.hover` work synthetically. Revisit later | MS2b.1 (deferred) |
 
 > **`zb_cookies_*` moved from MS2c to MS3 (rev 4 blocker 2):** the cookie ABI is implemented by
 > the slice that owns the `WKWebsiteDataStore`/`WKHTTPCookieStore` (MS3), so the inventory no
