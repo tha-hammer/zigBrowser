@@ -1075,10 +1075,18 @@ def case_stale_store(binary: Path, tmp: Path, check) -> None:
             check(b.wait(lambda: (secrets_rect(b, "file") or (0, 0, 0, 0))[2] > 0, 15),
                   "after A's stale answer, B still gets the file choice (B's own answer lands last)", b)
             if (secrets_rect(b, "file") or (0, 0, 0, 0))[2] > 0:
-                click_rect(b, secrets_rect(b, "file"))
-                b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 15)
+                clicked_at = secrets_rect(b, "file")
+                click_rect(b, clicked_at)
+                # Checked, with what the window said and where the button was: under full gate load this
+                # failed once (2026-10-20, f8c1631) with no detail, and passes solo.
+                check(b.wait(lambda: secrets_status(b)[-1:] == ["connected-file"], 15),
+                      f"the file choice stores B (clicked {clicked_at}, file rects now "
+                      f"{[f[1] for k, f in secrets_lines(b) if k == 'rect' and f[0] == 'file'][-4:]}, "
+                      f"statuses {secrets_status(b)})", b)
             store = world.agent / "secrets" / "claude-token"
-            check(store.is_file() and store.read_text() == token_b, "the file holds B, not A and not nothing")
+            held = store.read_text() if store.is_file() else None
+            what = "nothing" if held is None else "B" if held == token_b else "A" if held == token_a else "something else"
+            check(held == token_b, f"the file holds B, not A and not nothing (it holds {what})", b)
         finally:
             b.stop()
 
