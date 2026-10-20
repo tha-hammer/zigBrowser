@@ -96,8 +96,7 @@ def _fs_probe(**over):
          "native_arch": "x64", "webview2_pv": "155.0.4283.62",
          "groups": [{"sid": "S-1-5-32-545", "name": "BUILTIN\\Users"}],
          "zbtest_write_paths": [], "console_user": "zbtest",
-         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123",
-         "shares": [], "interactive_session": True, "locked": False}
+         "listeners": [22, 135, 139, 445, 3389], "fw_rules_hash": "abc123", "shares": []}
     p.update(over)
     return json.dumps(p)
 
@@ -276,12 +275,14 @@ class WS0CompletionReadiness(_TwoHostCase):
                                         {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
             self._assert_fail_closed(proc, "shares")
 
-    def test_fs_inactive_session_fails_closed(self):
+    def test_fs_wrong_console_user_fails_closed(self):
+        # The file server's own fence: console_user must be the test user (zbtest), proving no real
+        # operator is mid-session. interactive_session/locked are not_applicable on the physical FS.
         with tempfile.TemporaryDirectory() as t:
-            bad = _fs_probe(interactive_session=False)
+            bad = _fs_probe(console_user="BOSS\\realperson")
             proc = self._run_probe_only(pathlib.Path(t),
                                         {"ZB_SELFTEST_PROBE_WIN10": bad, "ZB_SELFTEST_PROBE_WIN10_POST": bad})
-            self._assert_fail_closed(proc, "no active interactive session")
+            self._assert_fail_closed(proc, "console user")
 
 
 # --- BatchMode oracle: every ssh/scp invocation must have EFFECTIVE BatchMode=yes ----------

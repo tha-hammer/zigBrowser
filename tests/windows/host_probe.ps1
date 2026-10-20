@@ -15,6 +15,8 @@ public static extern bool IsWow64Process2(IntPtr hProcess, out ushort pProcessMa
 [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
 [DllImport("kernel32.dll", SetLastError=true)] public static extern bool ProcessIdToSessionId(uint dwProcessId, out uint pSessionId);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentProcessId();
+[DllImport("wtsapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool WTSQuerySessionInformationW(IntPtr hServer, uint sessionId, int infoClass, out IntPtr ppBuffer, out uint pBytesReturned);
+[DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr pMemory);
 '@
 
 function Get-NativeArch {
@@ -86,8 +88,80 @@ $console = $null; try { $console = [int][Zb.Native]::WTSGetActiveConsoleSessionI
 $identityMarker = $null
 try { $identityMarker = (Get-Content -LiteralPath (Join-Path $env:USERPROFILE 'zb\.gate-identity') -Raw -ErrorAction Stop).Trim() } catch {}
 
+# WS0.1: console_user (WTSUserName of the console session) is network-safe — a read-only SSH logon can
+# read it directly, so the probe gets it with no in-console helper and no write (works on the file server
+# under the read-only rule). Empty/absent => $null, and the gate fails closed.
+$consoleUser = $null
+try {
+  $ptr = [IntPtr]::Zero; $nb = 0
+  if ($console -ne $null -and [Zb.Native]::WTSQuerySessionInformationW([IntPtr]::Zero, [uint32]$console, 5, [ref]$ptr, [ref]$nb)) {
+    try { $consoleUser = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr) } finally { [Zb.Native]::WTSFreeMemory($ptr) }
+  }
+  if ($consoleUser) { $consoleUser = $consoleUser.Trim() }
+} catch {}
+
+# interactive_session / locked need the console's INPUT DESKTOP lock state, which a network logon cannot
+# read, so they come from the in-console session helper's session.json. Absent => $null. The VM readiness
+# requires them (GUI host, helper registered post-snapshot); the physical file server runs no GUI and no
+# helper under the read-only rule, so there they are not_applicable (the FS schema does not require them).
+$interactive = $null; $locked = $null
+try {
+  $sj = Join-Path $env:USERPROFILE 'zb\runs\session\session.json'
+  if (Test-Path -LiteralPath $sj) {
+    $sess = Get-Content -LiteralPath $sj -Raw -ErrorAction Stop | ConvertFrom-Json
+    $interactive = $sess.interactive_session
+    $locked      = $sess.locked
+  }
+} catch {}
+
+# WS0.7: the SMB shares this box serves (from the standard-user-readable LanmanServer\Shares registry;
+# `net share` / Get-SmbShare need elevation and fail as a standard user), and which of them the test
+# user can WRITE (must be []). Owner rule (b): pure read-only as the test user. If the shares cannot be
+# enumerated at all (registry unreadable), BOTH stay $null so the gate fails closed — never a silent [].
+$shares = $null; $writePaths = $null
+try {
+  $sp = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Shares' -ErrorAction Stop
+  $paths = @()
+  foreach ($prop in $sp.PSObject.Properties) {
+    if ($prop.Name -like 'PS*') { continue }
+    foreach ($elem in @($prop.Value)) { if ($elem -match '^(?i)\s*Path=(.+)$') { $paths += $matches[1].Trim() } }
+  }
+  $shares = @($paths | Sort-Object -Unique)
+  $me = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $mySids = @($me.User.Value) + @($me.Groups | ForEach-Object { $_.Value })
+  $w = @()
+  foreach ($p in $shares) {
+    try {
+      $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
+      foreach ($ace in $acl.Access) {
+        $sid = $null; try { $sid = $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch {}
+        if ($sid -and ($mySids -contains $sid) -and $ace.AccessControlType -eq 'Allow' -and
+            ($ace.FileSystemRights.ToString() -match 'Write|Modify|FullControl')) { $w += $p; break }
+      }
+    } catch { $w += $p }   # cannot read the ACL => treat as possibly writable (fail-safe, never hide)
+  }
+  $writePaths = @($w | Sort-Object -Unique)
+} catch {}
+
+# WS0.7: a fingerprint of the firewall rule set so a run that opens a hole is caught (pre vs post).
+# netsh is standard-user-safe (Get-NetFirewallRule is CIM/denied). Cannot read => $null (fail closed).
+$fwHash = $null
+try {
+  $fwRaw = & netsh advfirewall firewall show rule name=all 2>$null
+  if ($LASTEXITCODE -eq 0 -and $fwRaw) {
+    $norm = @($fwRaw | Where-Object { $_ -match '^(Rule Name|Direction|Action|Protocol|LocalPort|Profiles):' } |
+             ForEach-Object { ($_ -replace '\s+', ' ').Trim() })
+    if ($norm.Count -gt 0) {
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes(($norm -join "`n"))
+      $sha = [System.Security.Cryptography.SHA256]::Create()
+      try { $fwHash = ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLower() }
+      finally { $sha.Dispose() }
+    }
+  }
+} catch {}
+
 $o = [ordered]@{
-  schema              = 1
+  schema              = 2
   identity_marker     = $identityMarker
   test_user           = $id.Name
   os_build            = (Get-Reg $cv 'CurrentBuildNumber')
@@ -101,12 +175,16 @@ $o = [ordered]@{
   free_gb             = $freeGb
   root                = $root
   groups              = $groups
+  shares              = $shares
+  zbtest_write_paths  = $writePaths
   listeners           = $listeners
+  fw_rules_hash       = $fwHash
   sshd_listen         = $sshdListen
   sshd_allowusers     = $sshdAllowUsers
   console_session_id  = $console
   my_session_id       = $mySess
-  interactive_session = $null   # filled by the in-console session helper (snapshot-gated)
-  locked              = $null   # filled by the in-console session helper (snapshot-gated)
+  console_user        = $consoleUser   # from the in-console session helper (session.json); $null => fail closed
+  interactive_session = $interactive   # from the in-console session helper (session.json); $null => fail closed
+  locked              = $locked        # from the in-console session helper (session.json); $null => fail closed
 }
 $o | ConvertTo-Json -Compress -Depth 5

@@ -203,10 +203,9 @@ def require_schema(probe, who):
         sys.stderr.write("file-server (%s): probe schema is %r, expected 2\n" % (who, probe.get("schema"))); sys.exit(1)
     if not isinstance(probe.get("shares"), list):
         sys.stderr.write("file-server (%s): shares missing or not a list\n" % who); sys.exit(1)
-    if probe.get("interactive_session") is not True:
-        sys.stderr.write("file-server (%s): no active interactive session (interactive_session=%r)\n" % (who, probe.get("interactive_session"))); sys.exit(1)
-    if probe.get("locked") is not False:
-        sys.stderr.write("file-server (%s): session locked or its lock state unknown (locked=%r)\n" % (who, probe.get("locked"))); sys.exit(1)
+    # interactive_session / locked are not_applicable on the physical file server: it runs no GUI and no
+    # in-console helper under the read-only rule. console_user (network-safe, checked above) proves the
+    # test user owns its console; an active unlocked interactive session is the VM's requirement, not the FS's.
 require_schema(a, "pre"); require_schema(b, "post")
 
 # WS0.7: the file server must be undisturbed.

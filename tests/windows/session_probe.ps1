@@ -20,6 +20,8 @@ Add-Type -Namespace Zb -Name Sess -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
 [DllImport("kernel32.dll")] public static extern uint GetCurrentProcessId();
 [DllImport("kernel32.dll", SetLastError=true)] public static extern bool ProcessIdToSessionId(uint pid, out uint sid);
+[DllImport("wtsapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool WTSQuerySessionInformationW(IntPtr hServer, uint sessionId, int infoClass, out IntPtr ppBuffer, out uint pBytesReturned);
+[DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr pMemory);
 [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
 [DllImport("user32.dll", SetLastError=true)] public static extern bool GetUserObjectInformation(IntPtr h, int index, System.Text.StringBuilder pv, int n, out int len);
 [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr h);
@@ -31,6 +33,17 @@ $UOI_NAME = 2
 $console = [int][Zb.Sess]::WTSGetActiveConsoleSessionId()
 $mine = 0; [void][Zb.Sess]::ProcessIdToSessionId([Zb.Sess]::GetCurrentProcessId(), [ref]$mine)
 $inConsole = ($mine -eq $console -and $console -ge 0)
+
+# WS0.1/0.7: who is logged on at the physical console (WTSUserName=5). Empty => nobody at the console,
+# so the gate must not run on top of a real operator's session. Read-only, standard-user-safe.
+$consoleUser = $null
+try {
+  $ptr = [IntPtr]::Zero; $nb = 0
+  if ([Zb.Sess]::WTSQuerySessionInformationW([IntPtr]::Zero, [uint32]$console, 5, [ref]$ptr, [ref]$nb)) {
+    try { $consoleUser = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr) } finally { [Zb.Sess]::WTSFreeMemory($ptr) }
+  }
+} catch {}
+if ($consoleUser) { $consoleUser = $consoleUser.Trim() }
 
 $deskName = $null
 $locked = $true
@@ -55,6 +68,7 @@ $o = [ordered]@{
   input_desktop       = $deskName
   locked              = $locked
   interactive_session = ($inConsole -and -not $locked)
+  console_user        = $consoleUser
   ts                  = (Get-Date).ToString('o')
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
