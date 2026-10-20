@@ -16336,3 +16336,56 @@ open: the later reviews still require the complete two-host Windows contract
 and its live, fail-closed evidence rather than only the registered Linux
 selftest/foundation. No later approval may advance the linear boundary across
 that open commit.
+
+## Exact closure routes for the WS0 claim at `1b58f85`
+
+The standard is not relaxed, but the old commit subject need not force a false
+milestone claim forever. Either of these fix-forward routes is acceptable.
+
+### Route A: prove full WS0 green
+
+1. On Linux, from a clean export with no real display, the production gate
+   selftest must exit zero with `Ran 15 tests ... OK`, and the two-host
+   selftest must exit zero with `Ran 17 tests ... OK`. A bounded private-Xvfb
+   full gate must then report an all-green literal `Build Summary`; both named
+   Windows selftest steps must actually run.
+2. Against the real Win11 VM through the Linux driver,
+   `tests/windows/resolve_live_test.py` must not skip and must exit zero with
+   exact output `PASS live resolver regression ASSERTS 2`.
+3. Against both pinned Windows hosts, the production probe/gate must first be
+   completed so every WS0.1–WS0.8 field is produced and validated fail closed.
+   Today that condition does not hold: `interactive_session` and `locked` are
+   null; the probe omits `console_user`, `shares`, `zbtest_write_paths`,
+   `fw_rules_hash`, and `snapshot_marker`; and the gate does not validate the
+   complete readiness schema. A bounded `gate.sh --probe-only` must then exit
+   zero with empty stderr and exactly one `WIN11 <JSON>` plus one
+   `WIN10 <JSON>` stdout line. Both objects must satisfy the plan, the Win10
+   pre/post listener and firewall values must be unchanged, and the
+   orchestrator must watch the first run and confirm the reported interactive
+   session is the one on the monitor.
+
+For reference, the two current Linux suites independently produced **15/15**
+and **17/17**, both `OK`, with all display variables removed. That is necessary
+foundation evidence, not the missing Windows evidence.
+
+### Route B: narrow the delivered scope to the Linux foundation
+
+This route **is acceptable** under the review rules. A new authoritative docs
+fix-forward may explicitly supersede the old subject and classify `1b58f85`,
+`b8dcd21`, and `3097d78` as **WS0 Linux foundation only**, provided it:
+
+- marks the `[W]` part of WS0 incomplete and forbids any dependency from citing
+  WS0 complete;
+- moves Route A's full two-host acceptance to a named later WS0-completion
+  slice/commit;
+- states that the no-argument two-host/product gate is still unimplemented and
+  never treats its refusal/skip as success; and
+- cites the 15-test Linux result plus an all-green clean-export/private-Xvfb
+  full gate after `3097d78`, with the literal Build Summary recorded.
+
+No Windows-host run is required to accept that deliberately narrow foundation.
+This makes the delivered scope truthful while retaining every full-WS0 check as
+an unmet prerequisite. Once the note and Linux evidence are reviewed,
+`1b58f85` can close cumulatively and the linear audit can advance to the next
+commit. Checklist sent to AzureRidge with BlueBeaver copied in Agent Mail
+6631.
