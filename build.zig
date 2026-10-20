@@ -104,8 +104,19 @@ const CheckMacosBackendStep = struct {
     }
 };
 
+/// WS2.0: std.Io.net turns AF_UNIX on for Windows only when the target's minimum is Windows 10 1803
+/// (`win10_rs4`) or later. A plain `-Dtarget=x86_64-windows-msvc` starts its range lower, so
+/// `has_unix_sockets` was false and `--automation-api` exited 7 (AddressFamilyUnsupported) before it
+/// wrote a token or bound a socket. A Windows target without an explicit minimum gets that floor.
+fn windowsAfUnixFloor(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .windows or target.query.os_version_min != null) return target;
+    var query = target.query;
+    query.os_version_min = .{ .windows = .win10_rs4 };
+    return b.resolveTargetQuery(query);
+}
+
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = windowsAfUnixFloor(b, b.standardTargetOptions(.{}));
     const optimize = b.standardOptimizeOption(.{});
     const backend = resolveBackend(target);
     const webview2_include = b.option(
@@ -285,6 +296,12 @@ pub fn build(b: *std.Build) void {
     const windows_screenshot_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/screenshot_live_test.py" });
     b.step("windows-screenshot-live", "Live Windows --screenshot PNG capture on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_screenshot_live.step);
 
+    // WS2.0: the PRODUCTION transport on the VM — the real browser's directory, AF_UNIX socket and token
+    // are owner-only (protected DACLs read back), no TCP listener, and zbother can neither connect nor
+    // read the token. Skips cleanly without ZB_WIN11_HOST/ZB_WIN_EXE; needs no slot.
+    const windows_transport_live = b.addSystemCommand(&.{ "python3", "-I", "tests/e2e/win_transport_test.py" });
+    b.step("windows-transport-live", "Live Windows WS2.0 transport: owner-only socket, token and directory on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_transport_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -352,7 +369,8 @@ pub fn build(b: *std.Build) void {
     const cross_self_test = b.addSystemCommand(&.{ "python3", "tools/check_cross_symbols.py", "--require", "zb_app_run", "--expect-missing", "zb_cross_fixture_probe" });
     cross_self_test.addFileInput(b.path("tools/check_cross_symbols.py"));
     const cross_targets = [_]struct { query: std.Target.Query, shim: []const u8 }{
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .shim = "src/webview2_shim.cpp" },
+        // The shipped floor (windowsAfUnixFloor), so the object reaches the automation server's start.
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .os_version_min = .{ .windows = .win10_rs4 } }, .shim = "src/webview2_shim.cpp" },
         .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
         .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .shim = "src/wkwebview_shim.m" },
     };
@@ -1919,6 +1937,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&windows_wincontain_resolve_live.step);
     test_step.dependOn(&windows_wincontain_job_live.step);
     test_step.dependOn(&windows_screenshot_live.step);
+    test_step.dependOn(&windows_transport_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);

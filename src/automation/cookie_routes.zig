@@ -327,6 +327,9 @@ fn importFile(gpa: std.mem.Allocator, io: std.Io, store: cookie_port_mod.CookieP
 /// opened handle (no stat-then-open race), so FIFOs, devices and directories
 /// are refused before any read that could wait forever.
 fn readRegularFile(gpa: std.mem.Allocator, path: []const u8) error{ OutOfMemory, TooLarge, NotRegularFile, Unreadable }![]u8 {
+    // WS2.0 makes the server start on Windows; a Windows cookie-file import is WS3's, and until it
+    // lands the file is refused as unreadable rather than read through the POSIX calls below.
+    if (comptime @import("builtin").os.tag == .windows) return error.Unreadable;
     const path_z = try gpa.dupeZ(u8, path);
     defer gpa.free(path_z);
     const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY, .NONBLOCK = true, .CLOEXEC = true });

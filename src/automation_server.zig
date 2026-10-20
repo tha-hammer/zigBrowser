@@ -1509,6 +1509,11 @@ fn handleSocial(
 
 /// Wall-clock ms for the RateLimiter's UTC day rollover.
 fn wallClockMs() i64 {
+    // Windows has no clock_gettime: the system time, in 100 ns ticks since 1601, made Unix ms.
+    if (comptime @import("builtin").os.tag == .windows) {
+        const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
+        return @divTrunc(ticks, 10_000) - 11_644_473_600_000;
+    }
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.REALTIME, &ts) != 0) return 0;
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
@@ -1545,11 +1550,11 @@ pub const testing_hooks = struct {
 /// between, the exclusive create fails and so does startup.
 fn writeTokenFile(io: std.Io, path: []const u8, token: []const u8) !void {
     try cleanupSocketPath(io, path);
-    var file = try std.Io.Dir.cwd().createFile(io, path, .{
-        .exclusive = true,
-        .truncate = false,
-        .permissions = .fromMode(0o600),
-    });
+    // `.fromMode` is a POSIX mode; Windows' Permissions enum has none (the DACL is set below).
+    var file = try std.Io.Dir.cwd().createFile(io, path, if (comptime @import("builtin").os.tag == .windows)
+        .{ .exclusive = true, .truncate = false }
+    else
+        .{ .exclusive = true, .truncate = false, .permissions = .fromMode(0o600) });
     defer file.close(io);
     // Created: from here on any failure removes the partial file.
     errdefer cleanupSocketPath(io, path) catch {};
