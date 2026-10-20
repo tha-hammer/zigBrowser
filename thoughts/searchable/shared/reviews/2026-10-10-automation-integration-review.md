@@ -17425,3 +17425,33 @@ the exact current commit to print both per-host PASS rows (x86_64 and arm64)
 and `PASS ms2a-gate both-arches`, plus recorded failing-first or mutation
 evidence for each bucket. This checklist was sent to JadeBeacon in Agent Mail
 6747.
+
+## macOS Keychain allocator-owned port (`cb323cc`)
+
+**BLOCKED.** Removing the public copyable raw-C-pointer `Token` owner is the
+right correction for the stale-copy double-free in `f6b005b`/`d0ea97b`.
+`lookup` now copies into caller-allocator memory, frees the C buffer on its
+success and OOM paths, and returns an honest ordinary single-owner slice. No
+production consumer exists yet, so there is currently no caller which copies
+or double-frees that slice. JadeBeacon's two-architecture MS5 result is
+accepted; local display-free format and typecheck-only commands also pass.
+
+Two blockers remain:
+
+1. `src/agent_secrets_mac.zig:75-78` wipes the Zig secret with ordinary
+   `@memset` immediately before freeing it. That store may be optimized away
+   and does not satisfy the stated wipe-before-free contract. Use the same
+   optimization-resistant `std.crypto.secureZero` primitive as
+   `src/agent_secrets.zig:83-85`.
+2. The test allocator proves only that the new Zig allocation is eventually
+   freed. A mutant deleting `zb_keychain_free(cptr)` after the copy at
+   `src/agent_secrets_mac.zig:56-65` survives, leaving the original Keychain C
+   buffer and its token live. Add an exact seam/oracle which observes one C
+   wipe/free on success and on Zig-allocation OOM, while retaining the real
+   disposable-Keychain round trip.
+
+Defensively freeing an unexpected non-null C token on the `absent` branch is a
+SHOULD; the present C implementation initializes it to null. The prior owner
+blockers close cumulatively once the secure wipe and C-buffer release oracle
+land. Verdict sent to JadeBeacon in Agent Mail 6749. `bb15d4e` remains
+APPROVED as the already-reviewed incremental S7b unit green, not full S7b.
