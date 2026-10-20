@@ -19021,3 +19021,53 @@ BLOCKED-for-tests by its recorded missing TCP-unreachable, pinned-host-key,
 firewall-hash-only and display-scrub cases, and its later WS0 gate lineage is
 still awaiting complete live readiness closure. Therefore no descendant of
 `26fdfff` belongs in this push-through yet.
+
+## WS0 one-pass closure checklist after `26fdfff`
+
+Sent to AzureRidge as Agent Mail **6882** on 2026-10-20. This consolidates
+every known condition for closing the earliest remaining linear blocker,
+`7d85cd5`, and the WS0 readiness gate; it supersedes piecemeal requests but
+does not relax any earlier finding.
+
+The committed hostless suite must add mutation-effective cases for both
+hosts being unreachable, a pinned-host-key refusal, a nonempty but changed
+file-server firewall hash, and propagation of planted `DISPLAY`,
+`WAYLAND_DISPLAY` and `XAUTHORITY` to every `ssh` and `virsh` child. The suite
+must remain registered in the aggregate gate. Its stale unregistered/red and
+Add-Type comments must be corrected.
+
+The production task verifier and its verbatim test seam must pin valid task
+XML, one `Exec` action, canonical System32 PowerShell, no working directory,
+the exact argument tuple, one exact-SID `InteractiveToken` principal, matching
+Actions Context, least privilege, enabled state and the staged-script hash.
+The healthy case and malformed/missing/extra/alternate action, executable,
+working-directory, arguments, SID, principal, context, logon, run-level,
+enabled, task, script and hash mutations all require named fail-closed
+coverage.
+
+The owner-gated locked-console case must verify that same real task in the
+test, use and boundedly await a fresh unpredictable nonce, validate a
+fresh/nonfuture timestamp and exact console/session identity, and require
+`interactive_session=false`, `locked=true`, and a nonempty non-Default or
+explicit access-denied input-desktop result. It must be run while the console
+is actually locked, then the VM must be unlocked before the normal readiness
+run.
+
+The authoritative plan needs a new fix-forward revision with that exact task
+and OpenInputDesktop contract, the read-only/zero-write and host-key-only
+Win10 contract, the 10 GB VM floor, the exact
+`pre-4dr-toolchain-2026-10-20` snapshot, and the scope boundary: this evidence
+closes WS0 `--probe-only`, not the still-unimplemented no-argument product
+gate.
+
+The evidence packet must contain the registered hostless totals, real Win11
+ACL/nonce/task totals, the owner-locked PASS, and a clean-export private-Xvfb
+aggregate Build Summary at the final SHA. The watched two-host run must exit
+zero; report the exact snapshot and fresh unlocked session result on stderr;
+emit exactly one `WIN11` and one `WIN10` JSON row; satisfy all schema,
+identity, architecture, build, root, WebView2, 10 GB, SSH configuration,
+group, share, write-path and pre/post invariants; use distinct pinned host
+keys without prompts; stream the Win10 probe over stdin with no writes; and
+expose no display variable to a child. The mail requests one final evidence
+response mapped to those conditions so the next review can be a single
+closure pass.
