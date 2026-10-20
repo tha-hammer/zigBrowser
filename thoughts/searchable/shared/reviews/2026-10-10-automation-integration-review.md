@@ -18514,3 +18514,65 @@ other two-host Mac gates do. These do not affect the reported call-site red or
 both-architecture green.
 
 No local Mac, full gate, browser, live socket or display was used.
+
+## S7b tool-deadline seam, app side (`169f664`, `83c9d96`)
+
+Reviewed at `83c9d96` on 2026-10-20 against plan rev 16.20.36 section 7,
+S7a's timeout ownership, and S7b's app-side seam.
+
+### `169f664` — APPROVED as the failing-first red
+
+The red is genuine and narrow. In an exact clean export, the helper suite
+fails **0/3** with `TestNoDeadlineSeam` and the frame suite fails **0/1** with
+`TestNoToolDeadline`. The cases pin accepted boundaries 1 and 120, a normal
+value, eleven malformed/out-of-range strings, omission of unset `e2e` keys,
+coexistence with the base-URL seam, and inert behavior without
+`--e2e-protocol`.
+
+### `83c9d96` — BLOCKED-for-tests
+
+The production implementation is internally consistent. `agent_helper.zig`
+accepts decimal digits only in 1..120, emits only present `hello.e2e` keys,
+drops the helper-carried seam without the e2e flag, and returns a fixed
+refusal for every other value. `agent_frames.setHello` copies and resets the
+value before any broker is created. `agent_tools.zig` computes each new
+broker's B from that H through the already-tested formula, preserving
+`0 < B < H`; the global is written during startup before the broker threads
+exist. The seam is process environment only, so this change exposes no page-
+world or automation-socket entry point. The focused green suites pass **3/3**
+and **1/1**, and the diff is whitespace-clean.
+
+The committed tests nevertheless bypass both production edges named by the
+commit:
+
+1. `tests/agent_helper_deadline_test.zig:18-22` constructs
+   `agent_helper.Inputs` and calls `launch` directly. It never executes
+   `app.zig:232`, so deleting the app's `getenvOwned(...tool_deadline_env)`
+   handoff leaves every committed deadline test green. There is no committed
+   real-binary assertion that a valid environment value reaches the actual
+   hello, that an invalid value produces the one fixed stderr line and starts
+   no helper, or that the same hostile value is inert without
+   `--e2e-protocol`.
+2. `tests/agent_frames_deadline_test.zig:10-19` calls `setHello` and
+   `toolDeadlineS` directly. It never constructs the production broker at
+   `agent_tools.zig:81`; replacing that line with the old constant 120 leaves
+   the new suites green. The existing broker tests prove `deadlineMs(H)` and
+   timeout/late-result ownership for an H supplied directly, not that the
+   configured seam is the H used by the app's broker.
+
+`git grep` at exact `83c9d96` confirms that no other committed test names the
+new environment variable or calls `toolDeadlineS`; BlackRobin's
+`agent_tools_acceptance2_test.py` is still uncommitted working-tree material.
+Commit and register the promised real-chain case so a valid short deadline is
+observed in the real hello and the app's broker times out at B before the
+helper's H, with exactly one terminal result and the late completion dropped.
+It must also cover the invalid and no-e2e process-env cases above, or pair the
+real chain with a production-call oracle that makes mutations to both
+`app.zig:232` and `agent_tools.zig:81` fail.
+
+This is a **BLOCKER-for-tests for the app-side deadline increment**, not a
+claim that the implementation is presently wrong. It does not change the
+separate S7b status: the user's `tools` real-screen run and the prior
+`527485f` acceptance follow-ups remain pending. No full gate or browser was
+run; all local commands had `DISPLAY` and `WAYLAND_DISPLAY` removed, and the
+clean red export was deleted immediately.
