@@ -19,7 +19,7 @@ SCP=(env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY scp -i "$KEY" -o Identities
      -o StrictHostKeyChecking=yes -o ConnectTimeout=15)
 
 FILES=(src/agent_secrets_mac.h src/agent_secrets_mac.m tests/mac/token_fd_test.m)
-[ -f src/agent_token_fd_mac.c ] && FILES+=(src/agent_token_fd_mac.c)
+[ -f src/agent_token_fd_mac.c ] && FILES+=(src/agent_token_fd_mac.c src/agent_token_fd_mac.h)
 
 leg() { # $1=host $2=expected uname -m
   local host="$1" arch="$2"

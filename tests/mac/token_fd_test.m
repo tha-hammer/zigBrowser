@@ -7,7 +7,9 @@
  * Proves:
  *  - a stored canary arrives byte-for-byte at the reader of `fd` (a pipe, as the helper's fd 3 will be),
  *    and the call returns ZB_KC_OK with no error text;
- *  - a token larger than the pipe buffer arrives whole (the writer loops over short writes);
+ *  - a token larger than the pipe buffer arrives whole while a timer signal (no SA_RESTART) keeps
+ *    interrupting the write and the reader is slow, so write() returns short counts and EINTR: only a writer
+ *    that loops delivers it all (a single write() is the mutant this catches);
  *  - ABSENT: nothing is written, ZB_KC_ABSENT, and the error names no token;
  *  - a closed reader: the write fails, the call returns ZB_MAC_FD_WRITE_FAILED with fixed error text
  *    that names no token, and no SIGPIPE kills the process;
@@ -23,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -35,6 +38,8 @@ extern int zb_mac_token_to_fd(int fd, const char *keychain_path, const char *unl
 #ifndef ZB_MAC_FD_WRITE_FAILED
 #define ZB_MAC_FD_WRITE_FAILED 3
 #endif
+
+static void on_alarm(int sig) { (void)sig; }
 
 static int failures = 0;
 static void fail(const char *msg) { fprintf(stdout, "  FAIL %s\n", msg); failures++; }
@@ -111,12 +116,28 @@ int main(int argc, char **argv) {
   pid_t child = fork();
   if (child == 0) {
     close(p[1]);
-    size_t n = 0;
-    char *all = read_all(p[0], &n);
+    size_t n = 0, cap = sizeof big;
+    char *all = malloc(cap);
+    for (;;) { /* a slow reader: small reads with pauses, so the writer blocks again and again */
+      ssize_t k = read(p[0], all + n, n + 1024 <= cap ? 1024 : cap - n);
+      if (k < 0 && errno == EINTR) continue;
+      if (k <= 0) break;
+      n += (size_t)k;
+      usleep(200);
+    }
     _exit(n == strlen(big) && memcmp(all, big, n) == 0 ? 0 : 1);
   }
   close(p[0]);
+  /* Interrupt the writer every 1 ms; without SA_RESTART a blocked write returns a short count or EINTR. */
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = on_alarm;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGALRM, &sa, NULL);
+  struct itimerval tick = {{0, 1000}, {0, 1000}}, off = {{0, 0}, {0, 0}};
+  setitimer(ITIMER_REAL, &tick, NULL);
   r = zb_mac_token_to_fd(p[1], kc, pw, svc, acct, &err);
+  setitimer(ITIMER_REAL, &off, NULL);
   close(p[1]);
   int st = 0;
   waitpid(child, &st, 0);
