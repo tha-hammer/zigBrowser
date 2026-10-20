@@ -443,7 +443,7 @@ static void handle_signal(int signo) {
     [self.app requestExit:ZB_EXIT_LOAD_FAILED];
     return;
   }
-  [self.webView loadRequest:[NSURLRequest requestWithURL:url]];
+  self.currentNav = [self.webView loadRequest:[NSURLRequest requestWithURL:url]];  // pin synchronously
 }
 
 - (void)reloadBypassingCache:(BOOL)bypassCache {
@@ -455,11 +455,7 @@ static void handle_signal(int signo) {
                                                      selector:@selector(onNavigationTimeout:)
                                                      userInfo:nil
                                                       repeats:NO];
-  if (bypassCache) {
-    [self.webView reloadFromOrigin:nil];
-  } else {
-    [self.webView reload:nil];
-  }
+  self.currentNav = bypassCache ? [self.webView reloadFromOrigin] : [self.webView reload];  // pin synchronously
 }
 
 - (void)close {
@@ -1198,6 +1194,9 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
       host.finishedOrFailed = NO;
       host.routedOutcome = 0;
       host.routedNav = nav;
+      host.currentNav = nav;  // pin SYNCHRONOUSLY with the submit: before WebKit delivers this nav's
+                              // didStart, an old-nav callback must already fail the identity guard
+                              // (closes the submit->didStart stale-callback race, RoseCat 6348)
       started = YES;
       zb_job_inflight(job);  // submission issued: DISPATCHING -> INFLIGHT, release the waiter
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
