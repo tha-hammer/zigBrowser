@@ -98,6 +98,7 @@ typedef struct {
   GtkWidget *link_box;
   GtkWidget *link;
   GtkWidget *copy_link;
+  GtkWindow *parent; /* the transient parent whose delete-event we watch (weak) */
   char *link_url;
   /* The token being stored came from a sign-in: its row and sentences. */
   int signin_store;
@@ -809,6 +810,17 @@ static GtkWidget *build(void) {
   return window;
 }
 
+/* The parent's close button: take this window down before GTK unmaps the parent. */
+static gboolean on_parent_delete(GtkWidget *parent, GdkEvent *event, gpointer unused) {
+  (void)parent;
+  (void)event;
+  (void)unused;
+  if (secrets.window != NULL) {
+    gtk_widget_destroy(secrets.window);
+  }
+  return FALSE; /* the parent's own close goes on */
+}
+
 void zb_secrets_window_present(GtkWindow *transient_for) {
   if (secrets.window == NULL) {
     secrets.window = build();
@@ -818,6 +830,20 @@ void zb_secrets_window_present(GtkWindow *transient_for) {
   }
   if (transient_for != NULL) {
     gtk_window_set_transient_for(GTK_WINDOW(secrets.window), transient_for);
+    /* Never outlive the parent. Its close button (delete-event, before GTK unmaps it): this
+     * window goes first, so no window manager sees a mapped transient whose parent is
+     * already gone. Any other destroy of the parent (the app's quit): right after it, not
+     * at process exit. Either way on_destroy cancels a running sign-in. */
+    gtk_window_set_destroy_with_parent(GTK_WINDOW(secrets.window), TRUE);
+    if (secrets.parent != transient_for) {
+      if (secrets.parent != NULL) {
+        g_signal_handlers_disconnect_by_func(secrets.parent, G_CALLBACK(on_parent_delete), NULL);
+        g_object_remove_weak_pointer(G_OBJECT(secrets.parent), (gpointer *)&secrets.parent);
+      }
+      secrets.parent = transient_for;
+      g_object_add_weak_pointer(G_OBJECT(secrets.parent), (gpointer *)&secrets.parent);
+      g_signal_connect(secrets.parent, "delete-event", G_CALLBACK(on_parent_delete), NULL);
+    }
   }
   gtk_window_present(GTK_WINDOW(secrets.window));
   gtk_widget_grab_focus(secrets.entry);

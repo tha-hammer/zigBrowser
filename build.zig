@@ -1187,6 +1187,16 @@ pub fn build(b: *std.Build) void {
         "agent-login-exchange-e2e",
     });
     agent_login_exchange_e2e.addArtifactArg(exe);
+    // Rev 16.18.10 (RoseCat 6184): the Secrets window never outlives its parent, and a
+    // running sign-in is cancelled exactly once (defence in depth; the gnome-shell crash
+    // at the user's part A quit stays open).
+    const agent_secrets_shutdown_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_secrets_shutdown_test.py --binary \"$1\"",
+        "agent-secrets-shutdown-e2e",
+    });
+    agent_secrets_shutdown_e2e.addArtifactArg(exe);
     // Plan §7.1: the real-screen check's verdict and environment, with fake
     // captures (no display, no browser). The check itself runs only on the
     // user's screen, by the orchestrator.
@@ -1519,6 +1529,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_races_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_locks_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_exchange_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_shutdown_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
