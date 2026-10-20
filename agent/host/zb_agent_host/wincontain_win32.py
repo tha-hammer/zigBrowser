@@ -13,7 +13,13 @@ Windows-only (ctypes + kernel32); import it only on win32. The pure decision of 
 import ctypes
 from ctypes import wintypes
 
-_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# kernel32 and the Win32 prototypes are bound LAZILY (see `_bind`), not at import. `ctypes.WinDLL` exists
+# only on Windows, so eager binding here would crash the import on any non-Windows host — including the
+# registered controlled Windows-shaped import test, which loads every package module afresh under Linux
+# ctypes with sys.platform forced to "win32". Import must always succeed; using the backend without a real
+# kernel32 fails closed in `_bind` (ContainmentError), never an unconfined child.
+_k32 = None
+_bound = False
 
 # --- flags / constants ----------------------------------------------------------------------------------
 CREATE_SUSPENDED = 0x00000004
@@ -59,42 +65,63 @@ class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
                 ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
 
-_CreateJobObjectW = _k32.CreateJobObjectW
-_CreateJobObjectW.restype = wintypes.HANDLE
-_CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-_SetInformationJobObject = _k32.SetInformationJobObject
-_SetInformationJobObject.restype = wintypes.BOOL
-_SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-_AssignProcessToJobObject = _k32.AssignProcessToJobObject
-_AssignProcessToJobObject.restype = wintypes.BOOL
-_AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-_CreateProcessW = _k32.CreateProcessW
-_CreateProcessW.restype = wintypes.BOOL
-_CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
-                            wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
-                            ctypes.c_void_p, ctypes.c_void_p]
-_ResumeThread = _k32.ResumeThread
-_ResumeThread.restype = wintypes.DWORD
-_ResumeThread.argtypes = [wintypes.HANDLE]
-_IsProcessInJob = _k32.IsProcessInJob
-_IsProcessInJob.restype = wintypes.BOOL
-_IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
-_CloseHandle = _k32.CloseHandle
-_CloseHandle.restype = wintypes.BOOL
-_CloseHandle.argtypes = [wintypes.HANDLE]
-_WaitForSingleObject = _k32.WaitForSingleObject
-_WaitForSingleObject.restype = wintypes.DWORD
-_WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-_GetExitCodeProcess = _k32.GetExitCodeProcess
-_GetExitCodeProcess.restype = wintypes.BOOL
-_GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-_TerminateProcess = _k32.TerminateProcess
-_TerminateProcess.restype = wintypes.BOOL
-_TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+# Bound by `_bind()` on first use; None until then so the module imports without a real kernel32.
+_CreateJobObjectW = _SetInformationJobObject = _AssignProcessToJobObject = _CreateProcessW = None
+_ResumeThread = _IsProcessInJob = _CloseHandle = _WaitForSingleObject = None
+_GetExitCodeProcess = _TerminateProcess = None
 
 
 class ContainmentError(Exception):
     """A Win32 call in the launch sequence failed — fail closed, never an unconfined child."""
+
+
+def _bind():
+    """Resolve kernel32 and the Win32 prototypes once, lazily. Fails CLOSED where the real kernel32 is
+    unavailable (no `ctypes.WinDLL` off Windows), so the backend never silently no-ops into an unconfined
+    child. Safe to call repeatedly; binds the module globals on the first successful call."""
+    global _k32, _bound
+    global _CreateJobObjectW, _SetInformationJobObject, _AssignProcessToJobObject, _CreateProcessW
+    global _ResumeThread, _IsProcessInJob, _CloseHandle, _WaitForSingleObject
+    global _GetExitCodeProcess, _TerminateProcess
+    if _bound:
+        return
+    if not hasattr(ctypes, "WinDLL"):
+        raise ContainmentError("Windows containment backend unavailable: ctypes has no WinDLL "
+                               "(not a Windows host) — refusing to launch an unconfined child")
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _CreateJobObjectW = _k32.CreateJobObjectW
+    _CreateJobObjectW.restype = wintypes.HANDLE
+    _CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    _SetInformationJobObject = _k32.SetInformationJobObject
+    _SetInformationJobObject.restype = wintypes.BOOL
+    _SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    _AssignProcessToJobObject = _k32.AssignProcessToJobObject
+    _AssignProcessToJobObject.restype = wintypes.BOOL
+    _AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _CreateProcessW = _k32.CreateProcessW
+    _CreateProcessW.restype = wintypes.BOOL
+    _CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+                                wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+                                ctypes.c_void_p, ctypes.c_void_p]
+    _ResumeThread = _k32.ResumeThread
+    _ResumeThread.restype = wintypes.DWORD
+    _ResumeThread.argtypes = [wintypes.HANDLE]
+    _IsProcessInJob = _k32.IsProcessInJob
+    _IsProcessInJob.restype = wintypes.BOOL
+    _IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    _CloseHandle = _k32.CloseHandle
+    _CloseHandle.restype = wintypes.BOOL
+    _CloseHandle.argtypes = [wintypes.HANDLE]
+    _WaitForSingleObject = _k32.WaitForSingleObject
+    _WaitForSingleObject.restype = wintypes.DWORD
+    _WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _GetExitCodeProcess = _k32.GetExitCodeProcess
+    _GetExitCodeProcess.restype = wintypes.BOOL
+    _GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _TerminateProcess = _k32.TerminateProcess
+    _TerminateProcess.restype = wintypes.BOOL
+    _TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _bound = True
 
 
 class ContainedChild:
@@ -142,6 +169,7 @@ def launch_in_job(command_line, kill_on_close=True):
     `kill_on_close` sets JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so dropping the job handle kills the child (the
     production backend always wants this). Fails closed on any Win32 error (and never leaves a resumed-but-
     unassigned child: if assignment fails the suspended child is terminated before it can run)."""
+    _bind()  # resolve kernel32 lazily; raises ContainmentError (fail closed) off a real Windows host
     job = _CreateJobObjectW(None, None)
     if not job or ctypes.cast(job, ctypes.c_void_p).value == _INVALID_HANDLE:
         raise ContainmentError(f"CreateJobObjectW failed (GetLastError={ctypes.get_last_error()})")

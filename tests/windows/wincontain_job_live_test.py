@@ -78,10 +78,21 @@ class JobLiveOracle(unittest.TestCase):
         self.assertTrue(correct["running_before_close"], f"child not running before close: {correct!r}")
         self.assertTrue(correct["killed_on_close"], f"child NOT killed when the job handle closed: {correct!r}")
 
+        # The real contract is "every process in the job dies", not only the direct child. cmd.exe spawns
+        # ping.exe as a descendant inside the same job; it must be found running before close and gone after.
+        self.assertTrue(correct["descendant_found"], f"descendant (ping.exe) not found: {correct!r}")
+        self.assertTrue(correct["descendant_running_before_close"],
+                        f"descendant not running before close: {correct!r}")
+        self.assertTrue(correct["descendant_killed_on_close"],
+                        f"descendant NOT killed when the job handle closed: {correct!r}")
+
         # Negative control: without KILL_ON_JOB_CLOSE the child is still in the job but survives the close —
-        # proving the flag (not timing) is what terminates it.
+        # proving the flag (not timing) is what terminates it. The descendant survives too.
         self.assertTrue(noflag["in_job"], f"noflag child not in the job: {noflag!r}")
         self.assertFalse(noflag["killed_on_close"], f"noflag child was killed without the flag: {noflag!r}")
+        self.assertTrue(noflag["descendant_found"], f"noflag descendant not found: {noflag!r}")
+        self.assertFalse(noflag["descendant_killed_on_close"],
+                         f"noflag descendant was killed without the flag: {noflag!r}")
 
 
 if __name__ == "__main__":

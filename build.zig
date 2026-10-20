@@ -1248,10 +1248,12 @@ pub fn build(b: *std.Build) void {
     });
     // WS item b: the pure Windows helper branches — path containment, argv quoting
     // (CommandLineToArgvW), and the fail-closed job-object containment choice. Stdlib-only, platform-neutral.
+    // test_wincontain_win32_import_safe pins that the live Job Object backend module imports on a non-Windows
+    // host (lazy kernel32 binding) and fails closed when a real kernel32 is absent (RoseCat 6544).
     const agent_host_wincontain = b.addSystemCommand(&.{
         "sh",
         "-c",
-        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_wincontain",
+        "py=$(tools/agent_host_env.sh --check) || exit 1; cd agent/host/tests && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 ZB_AGENT_HOST_PYTHON=\"$py\" \"$py\" -m unittest -v test_wincontain test_wincontain_win32_import_safe",
     });
     // Chat drawer S3.1: --agent-setup's provisioning (unit and property
     // tests of the helper's setup command); fails closed without the venv.
