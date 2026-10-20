@@ -14138,3 +14138,73 @@ named semantics have no effective red:
 SHOULD: either enforce the stated 64 MiB/s rate exactly or name the permitted
 one-chunk burst in the plan, and pin both ends and invalid variants of the
 generic credential grammar. Findings were sent in Agent Mail 6243.
+
+### S6 exchange boundary follow-ups (`7023f0d`, `b850544`)
+
+**`7023f0d` is APPROVED.** It closes the stale header-comment NIT and changes no
+behavior.
+
+**`b850544` is APPROVED as a failing-first red.** Its private fake CLI makes the
+receive-order ambiguity deterministic: the app queues the code, the CLI prints
+OAuth-looking output after showing its prompt but before consuming that code,
+then marks consumption with its masked echo and succeeds. The current helper
+returns `error exchange` three times out of three; the contract requires
+`done`. The green must use a bounded, unambiguous CLI-consumption boundary,
+register the red, and kill the helper-read-offset mutant. Verdicts were sent in
+Agent Mail 6246-6247.
+
+### Native authorization-URL reds (`ed2a2cd`)
+
+**BLOCKED-for-tests.** The single fixture table and separate direct/native
+validators are the correct structure, and the existing cases cover most URL
+shape and query-value rules. Two explicit contracts remain mutation-survivable:
+
+1. the 4 KiB cap has no exact 4096-byte accept and 4097-byte refusal through
+   both Zig paths, so an off-by-one cap can pass; and
+2. query-name decoding is not exercised. Python's `parse_qsl` decodes names,
+   but no case pins a sole encoded `st%61te`, the semantic duplicate
+   `state=x&st%61te=x`, or an encoded unknown name. An implementation that
+   counts raw names before decoding can drift or admit a duplicate.
+
+SHOULD: require unique case names and directly reject embedded NUL/control
+bytes at the Zig/C-string boundary. Findings went to the owner in Agent Mail
+6252.
+
+## macOS native-click spike at `a0c4a80`
+
+**BLOCKED.** The two-host real-socket proof establishes the useful core fact:
+an in-process `NSEvent` reaches WKWebView as a trusted click on both Mac
+architectures. Moving the first `WKContentWorld` lookup onto the main queue also
+fixes a credible off-main WebKit initialization trap. The commit nevertheless
+wires `nativeClick` into the production PagePort while knowingly omitting the
+PagePort/ABI safety contract:
+
+1. `src/wkwebview_shim.m:1029-1067` ignores the backstop semaphore result. If
+   the main queue stays blocked through the caller's timeout, the caller returns
+   while the queued block remains able to dispatch down/up later. Timeout must
+   revoke an atomic waiter claim that the main-thread job must win before its
+   first event.
+2. `:1027-1030` discards `expected_doc`, even though the shared ABI requires a
+   same-callback token comparison and zero events on mismatch. A navigation can
+   therefore redirect a click to replacement content.
+3. `:1057-1062` reports success regardless of the evaluate-JavaScript ack's
+   error. A terminated or unresponsive WebProcess can be reported as a
+   successfully acknowledged click.
+4. The partial click test is unregistered and covers trusted delivery only. It
+   does not drive timeout abandonment, document replacement, per-window
+   routing, failed readiness or ack failure through the production chain.
+
+The capability must remain unwired until these invariants are red/green, or
+land with them in a fix-forward. The earlier `dbf74b5` lifetime/navigation
+blockers remain open. Formal findings were sent in Agent Mail 6253.
+
+### Authorization-URL plan rev 16.18.12 (`aaf76c0`)
+
+**APPROVED.** The revision closes the contract ambiguities found in
+`ed2a2cd`: the complete URL has exact byte edges (4096 accepted, 4097
+refused); query parameter names are deliberately a raw/plain grammar in both
+the app and helper, so `%` and `+` cannot create encoded aliases or semantic
+duplicates; NUL and control bytes are refused; and fixture case names must be
+unique. This is a plan verdict only. `ed2a2cd` remains BLOCKED-for-tests until
+its implementation follow-up enforces this table through both Zig paths and
+the Python parity test. Verdict sent in Agent Mail 6254.
