@@ -111,6 +111,78 @@ fn s256Challenge(s: []const u8) bool {
     return true;
 }
 
+/// Why decideNavigation refused a navigation (the `AUTH blocked <reason>` word).
+pub const Block = enum { scheme, origin, path, state, code, replay };
+
+/// What the auth window does with one main-frame navigation (rev 16.18.16).
+pub const Decision = union(enum) {
+    /// Load it; the text is the `AUTH allowed` row's `https://<host>:443`.
+    allow: []const u8,
+    /// Do not load it; send `<code>#<state>` to the login helper (`AUTH captured`).
+    capture: []const u8,
+    block: Block,
+};
+
+/// The auth window's one decision per main-frame navigation (rev 16.18.16), before any window
+/// exists: the callback is captured once (callbackCode decides it), anything else must be https
+/// to an allowlisted origin on port 443. `out` holds the decision's text.
+pub fn decideNavigation(authorize_url: []const u8, nav_url: []const u8, captured: bool, out: []u8) Decision {
+    if (!authorizeUrl(authorize_url)) return .{ .block = .origin };
+    if (isCallback(authorize_url, nav_url)) {
+        if (captured) return .{ .block = .replay };
+        const code = callbackCode(authorize_url, nav_url, out) catch |err| return .{ .block = switch (err) {
+            error.Scheme => .scheme,
+            error.Origin => .origin,
+            error.Path => .path,
+            error.State => .state,
+            error.Code => .code,
+        } };
+        return .{ .capture = code };
+    }
+    const nav = Uri.parse(nav_url) catch return .{ .block = .scheme };
+    if (!std.ascii.eqlIgnoreCase(nav.scheme, "https")) return .{ .block = .scheme };
+    if (nav.user != null or nav.password != null) return .{ .block = .origin };
+    if ((nav.port orelse 443) != 443) return .{ .block = .origin };
+    const raw = text(nav.host orelse return .{ .block = .origin });
+    var host_buf: [253]u8 = undefined;
+    if (raw.len == 0 or raw.len > host_buf.len) return .{ .block = .origin };
+    const host = std.ascii.lowerString(&host_buf, raw);
+    if (!allowedHost(host)) return .{ .block = .origin };
+    const origin = std.fmt.bufPrint(out, "https://{s}:443", .{host}) catch return .{ .block = .origin };
+    return .{ .allow = origin };
+}
+
+/// The navigation goes to the authorize URL's redirect_uri: its scheme, host and port (ASCII
+/// case aside, an absent port the scheme's default, no user info) and its path, byte for byte.
+fn isCallback(authorize_url: []const u8, nav_url: []const u8) bool {
+    const authorize = Uri.parse(authorize_url) catch return false;
+    var redirect_buf: [max_url_len]u8 = undefined;
+    const redirect_text = param(authorize.query, "redirect_uri", &redirect_buf) orelse return false;
+    const redirect = Uri.parse(redirect_text) catch return false;
+    const nav = Uri.parse(nav_url) catch return false;
+    if (!std.ascii.eqlIgnoreCase(nav.scheme, redirect.scheme)) return false;
+    if (nav.user != null or nav.password != null) return false;
+    const nav_host = text(nav.host orelse return false);
+    const redirect_host = text(redirect.host orelse return false);
+    if (!std.ascii.eqlIgnoreCase(nav_host, redirect_host)) return false;
+    if (port(nav) != port(redirect)) return false;
+    return std.mem.eql(u8, text(nav.path), text(redirect.path));
+}
+
+/// claude.ai, platform.claude.com, claude.com (the authorize URL's own host), or one or more
+/// labels under anthropic.com (not anthropic.com itself); `host` already ASCII lowercase.
+fn allowedHost(host: []const u8) bool {
+    for (host) |c| if (!(std.ascii.isLower(c) or std.ascii.isDigit(c) or c == '-' or c == '.')) return false;
+    for ([_][]const u8{ "claude.ai", "platform.claude.com", "claude.com" }) |h| {
+        if (std.mem.eql(u8, host, h)) return true;
+    }
+    const suffix = ".anthropic.com";
+    if (!std.mem.endsWith(u8, host, suffix) or host.len == suffix.len) return false;
+    var labels = std.mem.splitScalar(u8, host[0 .. host.len - suffix.len], '.');
+    while (labels.next()) |label| if (label.len == 0) return false;
+    return true;
+}
+
 pub fn rejectWord(err: Reject) []const u8 {
     return switch (err) {
         error.Scheme => "scheme",
