@@ -12475,3 +12475,65 @@ The production defects and missing case were sent to BlackRobin in Agent Mail
 6113, 6114 and 6117. S5c-1 still needs the planned user-run real-screen result
 after these are fixed. This verdict does not advance the approved linear
 push-through boundary beyond the already-pushed **`da3028f`**.
+
+## Windows WS0 green claim (`1b58f85`)
+
+### `1b58f85` — BLOCKED
+
+The accepted Linux-side red subset is genuinely green. An independent run with
+`DISPLAY` and `WAYLAND_DISPLAY` removed produced **9/9 tests, OK** in 3.36 s;
+`bash -n` on both shell scripts, Python compilation and `git diff --check`
+also pass. The named `windows-gate-selftest` build step exists. Its tests give
+useful coverage for the absent-host banner, lexical/reparse path fence,
+stage-child display scrubbing, pinned SSH options and tar error propagation.
+AzureRidge also reports mutation checks for those cases, and the live
+`host_probe.ps1` run on `win11-m8` produced the expected architecture,
+WebView2, OS-build and free-space values.
+
+That is a sound **Linux WS0 foundation**, not the full `WS0 green` named by the
+commit. The cited Windows plan rev 2 is still an uncommitted draft and therefore
+is not yet an approved contract artifact; even read against that draft, the
+commit is materially incomplete:
+
+1. **BLOCKER — remote PowerShell injection in the path resolver.**
+   `tests/windows/resolve_path.sh:25-36` interpolates the caller's Windows path
+   directly into the PowerShell source as `CreateFile('$p', ...)`, then encodes
+   that already-interpolated program. A valid path component containing a
+   single quote closes the literal and can execute injected PowerShell on the
+   Windows host. Pass the path as separately encoded data instead of source.
+   The resolver must also reject `GetFinalPathNameByHandle` returning zero or a
+   required length at least as large as its buffer; printing a potentially
+   truncated/undefined target cannot be a security fence. Add adversarial
+   quote/backtick/newline cases and a buffer-too-small failure.
+2. **BLOCKER-for-contract/tests — WS0.3's “every child” guarantee is false.**
+   `tests/windows/gate.sh:41-56` starts the lexical-fence `python3` directly,
+   inheriting any `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY`. The display
+   test exercises only `--selftest-stage` and observes fake tar/ssh; it does not
+   observe Python, or virsh despite its header. Scrub at the whole-gate boundary
+   or every spawn, then observe each child class in the red.
+3. **BLOCKER — the claimed two-host gate is not implemented.** `--probe-only`
+   always exits 2 at `tests/windows/gate.sh:145-150`, and the no-argument path
+   always exits 2 at `:151-155`. The probe omits much of draft WS0.1, while
+   WS0.4/WS0.6/WS0.7 and the Windows 10 side do not run. The owner's evidence
+   explicitly leaves the console unlocked reading and on-host junction resolver
+   pending. Draft rev 2 says WS0 closes only after `--probe-only` is green on
+   both hosts, including the pre/post file-server probe. Rename/scope this as a
+   partial foundation or complete those edges after the plan is submitted and
+   approved; it cannot presently be called WS0 green.
+4. **BLOCKER-for-tests — the two-host missing-variable rule is unpinned.** The
+   script prints the required `NOT RUN` banner only if **both** host variables
+   are absent, and the red tests only that case. Draft WS0.2 requires failure
+   when either host is absent. Add Win10-only and Win11-only cases before the
+   two-host path lands.
+5. **BLOCKER-for-gate evidence — no post-registration full Linux gate ran.**
+   Agent Mail 6118 reports the direct 9/9 suite and
+   `zig build windows-gate-selftest`; it does not report
+   `zig build test`. BlackRobin's 163/163, 920/920 gate is at parent
+   `f9cb26a`, before this commit and its registration, so it cannot qualify
+   `1b58f85`. Run the required clean-export full gate after the code blockers
+   are fixed. The named step is not a dependency of the ordinary `test` step,
+   so report both results explicitly rather than treating one as the other.
+
+These findings were sent to AzureRidge as Agent Mail 6119. No Windows 10 host,
+user display, live browser or live socket was touched. The approved linear
+push-through boundary remains the already-pushed **`da3028f`**.
