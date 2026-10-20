@@ -33,6 +33,9 @@ plan rev 16.18.3), else in $HOME/.zb-fake-setup-token/:
   (lengths only, never the text), so a test sees how the code and its Enter arrived;
 - `read-max` (RoseCat 6493): when it exists, the most bytes one read takes, so a test can
   model a reader that takes a code in several reads (a pty write is no read boundary);
+- `read-delay` (RoseCat 6499): when it exists, the seconds it stalls after each read at the
+  prompt (after echoing it), as a busy CLI might;
+- `no-echo`: when it exists, it echoes nothing at the prompt (a CLI whose echo never comes);
 - `state`: this run's state, written before the prompt (the S6b1 e2e pastes it);
 - `token`: when it exists, the token it prints, else CANARY;
 - `mode` (rev 16.18.9, S6b1 part B's finding): when it exists, what follows a right
@@ -58,6 +61,7 @@ import secrets
 import socket
 import sys
 import termios
+import time
 from urllib.parse import urlsplit
 
 CANARY = "sk-ant-oat01-ZBCANARY-login-0123456789abcdef"
@@ -198,6 +202,7 @@ class Terminal:
 
     def __init__(self):
         self.pending = b""  # bytes read after a line end, for the next line
+        self.stall_after = False  # this read's text came in at the prompt: stall after echoing it
 
     def line(self, masked=False):
         """One submitted line, or None at EOF. `masked`: a '*' per character as it arrives,
@@ -221,7 +226,10 @@ class Terminal:
                     text += pasted
                     if masked:
                         echo("*" * len(pasted))
+                        stall()
                     continue
+                if masked:
+                    self.stall_after = True
             for i, byte in enumerate(data):
                 if byte in (0x0D, 0x0A):
                     self.pending = data[i + 1:].lstrip(b"\r\n")
@@ -231,14 +239,28 @@ class Terminal:
                 text.append(byte)
                 if masked:
                     echo("*")
+            if masked and self.stall_after:
+                self.stall_after = False
+                stall()
 
 
 TERM = Terminal()
 
 
 def echo(text):
+    if os.path.exists(os.path.join(fake_dir(), "no-echo")):
+        return
     sys.stdout.write(text)
     sys.stdout.flush()
+
+
+def stall():
+    try:
+        with open(os.path.join(fake_dir(), "read-delay"), encoding="ascii") as f:
+            seconds = float(f.read().strip())
+    except (OSError, ValueError):
+        return
+    time.sleep(min(max(seconds, 0.0), 5.0))
 
 
 def read_masked():
