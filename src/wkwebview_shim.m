@@ -950,6 +950,17 @@ static int zb_auto_test_ack_fail(void) {
   return v != NULL && v[0] != '0' && v[0] != '\0';
 }
 
+// Test-only (ZB_DEBUG_TYPE_DELAY_MS): delay between per-character key events during native typing, so a
+// red with a short command timeout deterministically ABANDONS mid-text and proves partial typing
+// (sent_chars = code points dispatched). 0/unset = no delay. Gated on --e2e-protocol.
+static unsigned int zb_auto_test_type_delay_ms(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
+  const char *v = getenv("ZB_DEBUG_TYPE_DELAY_MS");
+  if (v == NULL) return 0;
+  int ms = atoi(v);
+  return ms > 0 ? (unsigned int)ms : 0;
+}
+
 // Test-only (ZB_DEBUG_SYNTH_STALE = "finish"|"fail"): one-shot — on the first routed navigation that
 // SUPERSEDES a previous one, synthesize a stale delegate callback (didFinish / didFailProvisional) for
 // the OLD navigation, in the submit->didStart window of the new one. The currentNav identity guard must
@@ -1627,7 +1638,16 @@ static void zb_deliver_events_paced(NSWindow *window, WKWebView *view, ZBAutoJob
       }
       if (idx + 1 >= events.count) { step = nil; zb_job_complete(job, ZB_AUTO_OK, NULL, NULL); zb_job_unref(job); return; }
       if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // waiter abandoned: stop
-      step(idx + 1);
+      unsigned int delay = zb_auto_test_type_delay_ms();  // test-only inter-character delay
+      if (delay > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delay * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+          if (step == nil) return;
+          if (!zb_job_is_inflight(job)) { step = nil; zb_job_unref(job); return; }  // abandoned during the delay
+          step(idx + 1);
+        });
+      } else {
+        step(idx + 1);
+      }
     };
     if (expected != nil) {
       [view callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
