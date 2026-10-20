@@ -196,6 +196,12 @@ pub fn build(b: *std.Build) void {
     const windows_gate_selftest = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/gate_selftest.py" });
     b.step("windows-gate-selftest", "Run the Windows gate's Linux-side selftest (fake ssh/virsh/tar)").dependOn(&windows_gate_selftest.step);
 
+    // WS0 live resolver regression: the real resolve_path.sh over SSH to the Win11 VM — the seam the
+    // hermetic selftest cannot cover (it fakes SSH/PInvoke, which is why the uint32 bug survived).
+    // Skips cleanly (exit 0) when ZB_WIN11_HOST is unset, so it is safe in a hostless Linux gate.
+    const windows_resolve_live = b.addSystemCommand(&.{ "python3", "-I", "tests/windows/resolve_live_test.py" });
+    b.step("windows-resolve-live", "Live Windows resolver regression on the VM (skips without ZB_WIN11_HOST)").dependOn(&windows_resolve_live.step);
+
     const run_step = b.step("run", "Run zigBrowser");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1355,6 +1361,8 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&windows_gate_selftest.step);
+    test_step.dependOn(&windows_resolve_live.step);
     test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_nav_policy_tests.step);
     test_step.dependOn(&run_agent_drawer_tests.step);
