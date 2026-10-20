@@ -13273,3 +13273,378 @@ targeted helper and validator reds were run from clean exports and deleted
 immediately. The findings were sent to BlackRobin in Agent Mail 6139. The
 approved linear push-through boundary remains the already-pushed
 **`da3028f`**.
+
+## S5c long-run manual artifact follow-up (`4717559`)
+
+### `4717559` — APPROVED
+
+This closes the `4f41929` test-hygiene blockers and supplies the manual
+artifact required by plan rev 16.20.10/11:
+
+- `real_screen_check.py --case long-run` provisions a real throwaway agent
+  home, uses only the local fake TLS Messages API and hook decoys, and tests
+  both required 204,800-byte reply shapes. Each case requires a fold within
+  one second, reopens the drawer, and checks the exact original clipboard
+  through click, Ctrl+A and Ctrl+C. Every injected click/key still passes the
+  existing server-grab ownership checks.
+- The non-live runner becomes a child subreaper, starts the wrapper in its own
+  session, and on normal exit or timeout kills and reaps every descendant and
+  descendant process group. Every test-owned `--out` path is now a
+  `TemporaryDirectory` with cleanup, including the deliberately nonempty
+  output case.
+- The reported private-Xvfb evidence is **3/3** long-run cases in 23.9 s
+  (folds 0.20/0.28 s, exact copies), **18/18** manual-script cases, and the
+  input suite green. The S5c green remains responsible for default-gate
+  registration.
+
+The user's actual real-screen `long-run` run remains a morning acceptance
+condition, not a code-review blocker. The verdict was sent to BlackRobin in
+Agent Mail 6166.
+
+## Windows live-resolver regression and plan rev 2.1 (`e7e0083`, `2cc125c`)
+
+### `e7e0083` — BLOCKED-for-tests
+
+The new test reaches the production `gate.sh --allowed-path` path and its
+real SSH/PowerShell resolver, and the reported old-red/new-green ordinary
+in-root case covers the `CreateFile` access-width regression. Two false-green
+paths remain in the committed test:
+
+- **BLOCKER-for-tests — the “no override” claim is not enforced.**
+  `_gate_verdict()` inherits the caller environment
+  (`tests/windows/resolve_live_test.py:41-45`), including
+  `ZB_RESOLVE_CMD`. An ambient override can therefore replace the production
+  resolver while the test still calls itself a production-path check. Build a
+  sanitized environment that removes every resolver seam before invoking
+  `gate.sh`.
+- **BLOCKER-for-tests — the escaping-junction negative can pass without a
+  junction.** `_remote()` discards return status and output
+  (`tests/windows/resolve_live_test.py:37-38`), so a failed `mklink` leaves a
+  nonexistent path which the resolver correctly denies and the test reports
+  green. Require setup rc 0 and independently verify that the reparse point
+  exists and resolves to `C:\\Windows`; require the ordinary directory setup
+  too. Cleanup may remain best effort. Add a setup-failure mutant/fake so this
+  cannot regress.
+
+The live-host restriction to `C:\\Users\\zbtest\\zb`, strict host-key options,
+and absence of browser/UI activity are otherwise appropriate.
+
+### `2cc125c` — BLOCKED-for-tests
+
+Rev 2.1 correctly moves WS8.7 into WS8's own gate, reconciles WS12 with the
+committed TTS/STT Windows contracts, and makes WS13 depend on the complete
+release inventory. WS13.4's normative prose also correctly says success is
+forbidden while any sandbox user, WFP filter/provider/sublayer, profile
+folder or task survives (`plan:1695-1698`). Its named red, however, observes
+only `users_after`, `wfp_filters_after`, and `tasks_after`
+(`plan:1711-1712`). Add explicit profile-folder, WFP-provider and WFP-sublayer
+censuses to the assertion and a surviving-success mutant for each. Otherwise
+three of the states the contract names can survive without failing the gate.
+
+The stale WS0 status/build ledger remains a SHOULD before WS1 treats this as
+the authoritative current-state plan. The findings were sent to AzureRidge
+in Agent Mail 6163. Neither commit advances the push-through boundary.
+
+## S6b1 Part-B exchange plan and reds (`b2d6cf9`, `e53d931`)
+
+### `b2d6cf9` — BLOCKED-for-tests
+
+### `e53d931` — BLOCKED-for-tests
+
+The relay-proxy environment, bounded 60-second post-code exchange clock,
+fixed UI reasons, refused-host census, successful fake-token path, and retry
+UI reset are well targeted to the real-screen failure. The red slice also
+separates the ten-minute whole-login deadline from the exchange deadline.
+Two boundaries promised by the plan are not pinned yet:
+
+- **BLOCKER-for-tests — raw CLI text confinement is not proved.** The helper
+  unit discards `_err` and checks only four selected words are absent from the
+  outbound message (`test_login_exchange.py:107-120`); the real-binary e2e
+  checks neither helper/browser stderr nor all protocol/log rows. Give the
+  fake OAuth failure a distinctive output canary, require the exact fixed
+  `error exchange` helper frame, and prove that canary appears nowhere in the
+  frame, helper stderr, browser stderr, protocol rows, or logs.
+- **BLOCKER-for-tests — the exchange patterns must become terminal only after
+  this sign-in's code is typed.** No red emits an OAuth/retry-looking line
+  before the auth prompt/code. Add that fixture, then continue through a
+  normal prompt and successful code. A pre-code occurrence must not end or
+  poison the sign-in.
+
+The findings were sent to BlueBeaver in Agent Mail 6165. Part B remains a
+morning-only user-screen rerun after the green. The approved linear
+push-through boundary remains the already-pushed **`da3028f`**.
+
+## Windows 10 host configuration (`a1afe2c`)
+
+### `a1afe2c` — APPROVED
+
+The example contains no private-key material, token, or account credential. It
+adds separate pinned key/known-hosts variables for the Windows 11 VM and the
+physical Windows 10 host while preserving the single-host compatibility
+variables the present scripts read. The safety boundary is explicit: install
+nothing, never touch the file shares or run `setup.ps1`, and keep all work
+under `C:\\Users\\zbtest\\zb\\`. The committed public host-key fingerprint,
+tailnet endpoint, usernames, and local key/known-hosts paths are connection
+metadata rather than secrets. This docs/config-only commit needs no runtime
+gate. The verdict was sent to AzureRidge in Agent Mail 6169.
+
+## macOS plan rev 11 (`eeb1b8d`)
+
+### `eeb1b8d` — BLOCKED (current-state contradiction)
+
+The new MS1b section accurately describes the intended landed design: an
+Apple-toolchain chained-fixups shim dylib, an `@executable_path` install name,
+macOS-only exported Zig callbacks, the `{browser, webview-shim}` MS1 census,
+and a release rule forbidding `disable-library-validation`. Its root-cause
+claim is supported by the available minimal-repro and Mach-O inspection
+evidence (signed/unsigned x86_64, arm64 control, classic versus chained
+fixups), although that evidence currently lives only in JadeBeacon's
+scratchpad.
+
+One authoritative paragraph still describes the superseded build:
+
+- **BLOCKER (docs accuracy):** Current State says
+  `configureMacosBackend` compiles `wkwebview_shim.m -fobjc-arc` into the
+  executable and points to `build.zig:1174-1184` (`plan:306-310`). At HEAD,
+  `configureMacosBackend` is at `build.zig:1695+` and builds/links the separate
+  dylib. Rewrite that row and refresh the matching stale build anchor at
+  `plan:1410`; the plan cannot simultaneously call both topologies current.
+
+**SHOULD:** `plan:1416-1421` still says beads cannot be filed because the DB is
+migration-locked, but the team has now filed the gate-flake beads. Mark that
+process note historical/resolved. Also make the root-cause evidence durable by
+summarizing the minimal-repro/fixup observations in the plan or linking a
+committed research artifact instead of only ephemeral `scratchpad/ms1/*.md`.
+
+This docs blocker does not prejudge the separate `3421428` code verdict. The
+findings were sent to JadeBeacon in Agent Mail 6168.
+
+## S6b1 Part-B red fix-forward (`72eaaef`)
+
+### `72eaaef` — APPROVED
+
+This closes both Agent Mail 6165 test blockers:
+
+- The helper unit now requires the exact fixed `error exchange` frame, plants
+  a unique canary in the CLI's OAuth-error text, and proves the canary is absent
+  from raw helper stdout and captured helper stderr. The real-binary e2e
+  validates every `SECRETS` row against the fixed-row parser and applies the
+  existing broad `scan_for` oracle to process environ/cmdline, browser
+  stdout/stderr/rows, agent-home/profile files, request bodies, and page
+  DOM/storage, after removing only the test-owned canary input file.
+- `noise-first` emits OAuth/retry-looking text before the prompt; a separate
+  script emits it after the prompt but before the code. Both must then accept
+  the real code and finish `done`, pinning the transition at which those
+  patterns may become terminal.
+- Moving terminal echo-off before the first prompt is a sound deterministic
+  fake fix. The reported reproduction is **7/10 failures before** under load
+  and **0/10 after**; it does not weaken the match assertions.
+
+Owner evidence says the complete red has seven of nine unit cases failing at
+the intended missing production behavior; the two state-boundary cases pass
+today by design. Consequently `b2d6cf9` is now **APPROVED** as the plan,
+and the cumulative red chain `e53d931 + 72eaaef` is **APPROVED**. S6b1 Part B
+itself remains red pending its production green and the morning-only user
+screen rerun. The verdict was sent in Agent Mail 6171.
+
+## In-progress S5d prompt-correlation pre-review
+
+The uncommitted native validator matrix and real-binary stale-frame cases
+cover the planned missing/stale/future id, exactly-once ending, Stop, nullable
+session-error, and queued-prompt boundaries. One helper-level red is presently
+incomplete:
+
+- **BLOCKER-for-tests (BlackRobin):**
+  `agent/host/tests/test_chat_prompt_id.py` lists `tool_call` in
+  `PROMPT_SCOPED`, but none of its fake-API turns emits a tool use. Therefore
+  deleting `prompt_id` only from the production helper's `tool_call` emission
+  would leave that test green. Add a turn through the real
+  `python -m zb_agent_host chat` path which emits a real `tool_call`, requires
+  its active prompt id, and then terminates the turn cleanly.
+
+This was mailed before the red commit in Agent Mail 6172.
+
+A second pre-review blocker was mailed in Agent Mail 6177:
+
+- **BLOCKER-for-tests (BlackRobin):** the plan includes `reply_capped` in
+  S5d's every-frame id matrix, but the new Zig red explicitly excludes it and
+  relies on the S5c suite. That older suite still expects `capped` for stale,
+  future and no-active ids, whereas S5d requires `prompt` for id mismatch and
+  reserves `capped` for same-active-prompt order violations. Add the cap to
+  the S5d matrix (after its required delta), update those expectations, and
+  pin 2^53-1 accepted plus the next prompt refused without wrap.
+
+## Windows launch plan rev 2.2 (`6aa0b62`)
+
+### `6aa0b62` — BLOCKED (test contract and provisioning are incomplete)
+
+Replacing the standard-user-inaccessible SMBIOS UUID with three independent
+facts is a sound design: libvirt says the named domain is running, SSH proves
+the pinned host key, and the remote standard-user probe returns a separately
+pinned random marker. The gate remains read-only with respect to libvirt and
+still refuses a wrong or absent host.
+
+Two plan surfaces were not updated with the new identity contract:
+
+- **BLOCKER (test contract):** the authoritative WS0.6 red still says the
+  gate tests “host-key and UUID cases” and mutates a UUID mismatch into a
+  warning (`plan:734-735`). Replace those with missing, empty and wrong
+  `identity_marker` / `ZB_WIN11_MARKER` cases, a matching healthy fake, and a
+  mutant that warns or skips on a marker mismatch.
+- **BLOCKER (provisioning closure):** the numbered VM-provisioning checklist
+  (`plan:498-523`) never creates
+  `C:\Users\<user>\zb\.gate-identity` or records the same random nonce as
+  `ZB_WIN11_MARKER` in private `hosts.env`. Add that explicit one-time step,
+  including restrictive ownership/ACL and the rule that neither value enters
+  the committed example/config.
+
+**SHOULD:** set `last_updated` to 2026-10-20 so the authoritative header
+matches rev 2.2. The blockers were sent to AzureRidge in Agent Mail 6174.
+
+### Follow-ups `172c511`, `703b3de`
+
+`172c511` is **APPROVED**: it removes the last superseded UUID red.
+`703b3de` closes the red-matrix and header-date findings, and adds the marker
+to the provisioning list, but is **BLOCKED (snapshot-order contradiction)**:
+
+- the marker is provisioning item 13, while item 10 and the later snapshot
+  paragraph still create `zb-clean-provisioned` after items 1–9. A revert to
+  that snapshot therefore removes `.gate-identity` and makes every gate fail
+  closed. Provision the marker before the clean snapshot, or explicitly move
+  the snapshot point after it, updating both places;
+- also make the expected private/inherited test-user profile ACL explicit.
+  Otherwise the plan leaves the local integrity of its identity fact implicit.
+
+This residual finding was sent in Agent Mail 6178.
+
+## macOS MS2a routed-command red (`26fdfff`)
+
+### `26fdfff` — BLOCKED-for-tests
+
+The test is a valid failing-first probe for the narrow page
+navigate/url/title behavior: the real socket connects and the first routed
+request reaches the intended absent-port seam as JSON-RPC `-32011`, rather
+than failing in harness startup. Its real post-navigation URL and title also
+kill a simple `{"ok":true}` navigation stub. As the named MS2a red, two gaps
+remain:
+
+- **BLOCKER-for-tests — Closure A is not driven.** The plan names
+  `zb_automation_eval_json` as its observable edge and requires the DOM-change
+  assertion (`macOS plan:798-805`). Add the Linux source test's
+  `dom.getText css=#heading == Nav B` assertion. Separate red-first tests must
+  still pin the MS2a.2 private-world spoof property and MS2a.3
+  readiness/late-completion/string ownership before production green; if
+  those intentionally land separately, call this the MS2a.1 red.
+- **BLOCKER-for-tests — the browser is not owned as a process group.** Normal
+  cleanup signals only one PID, and an outer timeout or killed test can orphan
+  the Mac browser. Start one owned group, handle bounded TERM/INT cleanup, then
+  terminate/kill/reap the group and fail if it survives.
+
+Unused `socket`, `struct`, and `time` imports are nits. `git diff --check
+26fdfff^ 26fdfff` passes. The findings were sent to JadeBeacon in Agent Mail
+6181.
+
+## Secrets-window teardown investigation (Agent Mail 6183)
+
+### Status: OPEN (GNOME Shell crash probable path not captured)
+
+BlueBeaver could not reproduce the user's GNOME Shell 48.7 `BadWindow`
+session loss in 57 private-Xvfb attempts, including idle, in-flight and
+code-entry Secrets states and WM close, SIGTERM and SIGKILL variants. The
+private shell did not exercise a real clipboard-manager handoff, however, and
+Copy link preceded the user's crash. Therefore neither root cause nor a fix
+for the GNOME Shell crash has been proved.
+
+The experiment did expose an independent lifecycle defect worth fixing as
+defense in depth: GTK removes `WM_TRANSIENT_FOR`, destroys the parent, then
+leaves the mapped Secrets window orphaned for roughly 80–150 ms; its destroy
+handler never runs, so an in-flight sign-in is not cancelled. I approved a
+follow-up plan/red/green after S6b1 Part B that destroys Secrets before its
+parent, cancels exactly once, leaves no window behind, and covers the case
+where another browser window survives. Approval of that change must not be
+reported as closure of the GNOME Shell crash unless a reproducer or equivalent
+mechanism evidence connects it. The ruling was sent in Agent Mail 6184.
+
+## macOS MS1b green (`3421428`)
+
+### `3421428` — APPROVED
+
+The option-d implementation matches the MS1b contract:
+
+- macOS alone builds `wkwebview_shim.m` as an Apple-toolchain dylib with
+  chained fixups and an `@executable_path` install name; Linux and Windows
+  executable export behavior is unchanged;
+- the executable exports the two Zig callbacks that the dylib resolves, and
+  the signed two-host workload exercises both the navigation-policy and IPC
+  callback paths;
+- both executable and dylib are lipo'd, signed, installed at the declared
+  paths and run natively on x86_64 and arm64, with the existing execution-arch
+  and Rosetta fail-closed checks;
+- the component/resource census accepts exactly `{browser, webview-shim}` for
+  the resource-empty MS1 phase, and negative tests reject a missing shim,
+  wrong path or extra component; and
+- release manifests and signed binaries independently reject
+  `disable-library-validation`.
+
+`git diff --check 3421428^ 3421428` passes. JadeBeacon's Mac evidence reports
+both signed legs green. I independently observed the clean-export Linux gate
+at exact `a1afe2c` under private Xvfb and `-j1` through completion:
+**166/166 steps succeeded; 920/920 tests passed**, rc 0. The gate emitted a
+test-owned `window ids exhausted`/`failed command` diagnostic during its
+negative-path coverage, but the owning test and complete build remained green.
+Future invocations still need the required outer timeout; this run lacked one.
+
+The separate `eeb1b8d` documentation verdict remains BLOCKED for its stale
+current-state topology and non-durable root-cause evidence. It does not change
+this code verdict. Approval was sent in Agent Mail 6186.
+
+## WS0.6/WS0.7 two-host reds (`7d85cd5`)
+
+### `7d85cd5` — BLOCKED-for-tests
+
+The unregistered red correctly drives the real `gate.sh --probe-only` entry
+point and pins VM state, all three marker failures, the healthy result, a
+forbidden file-server group, writable served path, wrong console user, and a
+listener change. Three promised security edges are still unobservable:
+
+- rev 2.2 explicitly names TCP-unreachable and pinned-host-key failures beside
+  `virsh domstate`; the red has neither a reachability seam/case nor a
+  host-key-refusal case, so the green could skip those checks;
+- WS0.7 compares both `listeners` and `fw_rules_hash`, but only the listener
+  list changes. A green that ignores the firewall hash survives; and
+- the new probe-only child path is not included in the whole-gate display
+  scrub oracle. Plant the three display variables and record each `virsh` and
+  `ssh` child's environment so dispatching this path before the scrub fails.
+
+All additions should remain hermetic and unregistered until the green. The
+findings were sent to AzureRidge in Agent Mail 6189.
+
+## Secrets teardown plan/red (`a55d854`, `789b4f1`)
+
+### `a55d854` — APPROVED
+
+The plan accurately scopes the work as defense in depth, keeps the GNOME Shell
+crash open, distinguishes parent close from another-window close and normal
+quit, requires exactly-once cancellation, and names the SIGTERM ordering gap.
+
+### `789b4f1` — BLOCKED-for-tests
+
+The X-event observer and five cases are the correct test shape, but two harness
+errors can misidentify or miss the very windows whose lifetime they claim to
+pin:
+
+- `two_windows()` returns `before.pop()` and then evaluates
+  `(after - before).pop()`. Evaluation is left-to-right, so the first operation
+  empties `before`; the second can select either browser window. Compute both
+  identities from unchanged sets, assert each is unique, then return them.
+- `other-closes` attempts a post-close drain with `until=set()`, but
+  `collect()` exits immediately because the empty set is already a subset of
+  `gone`. Thus a delayed parent/Secrets unmap or destroy is not observed.
+  `xinput.toplevels()` checks title/geometry, not map state, so its later query
+  does not close the gap. Add a real time-bounded/quiet-window drain and assert
+  the two windows remain mapped.
+
+Add a repeated/mutant proof for both corrections. This red stays outside the
+gate and lands before the Part-B-dependent green. The findings were sent in
+Agent Mail 6188. The approved linear push-through boundary remains the
+already-pushed **`da3028f`**.
