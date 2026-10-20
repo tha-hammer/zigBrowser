@@ -207,10 +207,16 @@ pub const Broker = struct {
         self.cond.broadcast(io);
     }
 
-    /// Under the mutex.
+    /// Under the mutex. Named, so a test can see that none is left behind.
     fn startThreads(self: *Broker) !void {
-        if (self.worker == null) self.worker = try std.Thread.spawn(.{}, work, .{self});
-        if (self.timer == null) self.timer = try std.Thread.spawn(.{}, time, .{self});
+        if (self.worker == null) {
+            self.worker = try std.Thread.spawn(.{}, work, .{self});
+            self.worker.?.setName(self.server.io, "zb-broker") catch {};
+        }
+        if (self.timer == null) {
+            self.timer = try std.Thread.spawn(.{}, time, .{self});
+            self.timer.?.setName(self.server.io, "zb-broker-time") catch {};
+        }
     }
 
     /// The model's args with this drawer's window added; a window of the model's own is refused.
@@ -334,7 +340,10 @@ pub const Reaper = struct {
         defer self.mutex.unlock(io);
         broker.reap_next = self.head;
         self.head = broker;
-        if (self.thread == null) self.thread = std.Thread.spawn(.{}, reapAll, .{ self, io }) catch null;
+        if (self.thread == null) {
+            self.thread = std.Thread.spawn(.{}, reapAll, .{ self, io }) catch null;
+            if (self.thread) |t| t.setName(io, "zb-reaper") catch {};
+        }
         self.cond.broadcast(io);
     }
 

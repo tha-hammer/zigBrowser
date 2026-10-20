@@ -57,6 +57,12 @@ const char *zb_agent_out_prompt_refusal(void); /* the sentence for that */
 char *zb_agent_out_session(int kind, const char *session);
 char *zb_agent_out_shutdown(void);
 void zb_agent_out_free(char *frame);
+char *zb_agent_out_tool_result(const char *session, const char *id, int ok, const char *body, size_t len);
+/* agent_tools.zig (S7b): a session's tool calls to its window's broker. */
+void zb_agent_tools_call(unsigned int win, const char *session, const char *id, size_t id_len, const char *tool,
+                         size_t tool_len, const char *args, size_t args_len);
+void zb_agent_tools_window_done(unsigned int win);
+void zb_agent_tools_detach_all(void);
 int zb_agent_config_changed(const char *home);
 
 #define ZB_MAX_FRAME (256 * 1024)
@@ -210,6 +216,54 @@ static void write_frame(char *frame) {
     g_output_stream_write_all(zb_helper.in, frame, strlen(frame), NULL, NULL, NULL);
   }
   zb_agent_out_free(frame);
+}
+
+/* --- tool results (S7b) ------------------------------------------------------ */
+
+/* A tool call's answer, from a broker thread to the GTK thread. */
+typedef struct {
+  unsigned int win;
+  char session[48];
+  char id[40];
+  int ok;
+  char *body;
+  size_t len;
+} ZbToolPost;
+
+static gboolean on_tool_result(gpointer data) {
+  ZbToolPost *p = data;
+  ZbWin *w = zb_helper.wins != NULL ? g_hash_table_lookup(zb_helper.wins, GUINT_TO_POINTER(p->win)) : NULL;
+  /* Written only to the session that asked: a window closed or a session ended since
+   * drops it (its broker was detached on the GTK thread, before this ran). */
+  if (w != NULL && w->open && strcmp(w->session, p->session) == 0) {
+    write_frame(zb_agent_out_tool_result(p->session, p->id, p->ok, p->body, p->len));
+  }
+  return G_SOURCE_REMOVE;
+}
+
+static void tool_post_free(gpointer data) {
+  ZbToolPost *p = data;
+  g_free(p->body);
+  g_free(p);
+}
+
+/* Any thread, never blocking: a broker's sink calls this under the broker's mutex. An
+ * explicit idle source on the default context, as auto_queue_on_gtk (webkit_shim.c):
+ * g_main_context_invoke would run it on the calling thread when no thread owns the context. */
+void zb_agent_helper_post_tool_result(unsigned int win, const char *session, const char *id, size_t id_len, int ok,
+                                      const char *body, size_t len) {
+  ZbToolPost *p = g_new0(ZbToolPost, 1);
+  p->win = win;
+  g_strlcpy(p->session, session, sizeof p->session);
+  memcpy(p->id, id, MIN(id_len, sizeof p->id - 1));
+  p->ok = ok;
+  p->body = g_malloc(len + 1);
+  memcpy(p->body, body, len);
+  p->len = len;
+  GSource *source = g_idle_source_new();
+  g_source_set_callback(source, on_tool_result, p, tool_post_free);
+  g_source_attach(source, g_main_context_default());
+  g_source_unref(source);
 }
 
 static void overflow_reset(ZbWin *w) {
@@ -392,6 +446,7 @@ static void on_frame(const ZbAgentFrame *f) {
     if (w != NULL) {
       w->open = 0;
       w->busy = 0;
+      zb_agent_tools_window_done(w->win); /* its calls end with it */
     }
     break;
   case ZB_FRAME_SESSION_OPENED:
@@ -400,7 +455,17 @@ static void on_frame(const ZbAgentFrame *f) {
       flush(w); /* its first prompt goes now (S5d) */
     }
     break;
-  default: /* tool_call: no tool exists before S7 */
+  case ZB_FRAME_TOOL_CALL: /* S7b: to the window's broker, off the GTK thread */
+    if (w != NULL) {
+      zb_agent_tools_call(w->win, w->session, f->tool_id, f->tool_id_len, f->tool, f->tool_len, f->args, f->args_len);
+    } else { /* a session with no window: answered here */
+      char session[72] = {0}, id[40] = {0};
+      memcpy(session, f->session, MIN(f->session_len, sizeof session - 1));
+      memcpy(id, f->tool_id, MIN(f->tool_id_len, sizeof id - 1));
+      write_frame(zb_agent_out_tool_result(session, id, 0, "tool not available", strlen("tool not available")));
+    }
+    break;
+  default:
     break;
   }
 }
@@ -519,6 +584,7 @@ static void forget_process(void) {
       w->busy = 0;
     }
   }
+  zb_agent_tools_detach_all(); /* and their tool calls */
 }
 
 /* A removed token's helper is gone: idle, and a prompt sent meanwhile starts afresh
@@ -932,6 +998,7 @@ void zb_agent_helper_window_closed(unsigned int win) {
   }
   overflow_reset(w);
   g_hash_table_remove(zb_helper.wins, GUINT_TO_POINTER(win));
+  zb_agent_tools_window_done(win); /* never a join here (S7b) */
   g_ptr_array_unref(w->pending);
   g_free(w);
 }

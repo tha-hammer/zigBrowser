@@ -7,6 +7,7 @@ const agent_config = @import("agent_config.zig");
 const agent_net = @import("agent_net.zig");
 const agent_helper = @import("agent_helper.zig");
 const agent_frames = @import("agent_frames.zig");
+const agent_tools = @import("agent_tools.zig");
 const agent_login = @import("agent_login.zig");
 const automation_gtk_cookie_port = @import("automation_gtk_cookie_port.zig");
 const automation_gtk_port = @import("automation_gtk_port.zig");
@@ -285,6 +286,8 @@ fn readSmall(arena: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8
 // agent_helper.c, which calls them, is built.
 comptime {
     if (builtin.os.tag == .linux) _ = agent_frames;
+    // A drawer's tool calls (src/agent_tools.zig), for agent_helper.c (S7b).
+    if (builtin.os.tag == .linux) _ = agent_tools;
     // The sign-in's frame exports (src/agent_login.zig), for agent_login.c.
     if (builtin.os.tag == .linux) _ = agent_login;
 }
@@ -343,7 +346,9 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
     defer if (comptime builtin.os.tag == .linux) c.zb_agent_helper_stop();
     // Before zb_app_run builds the first window; the icon's saved position
     // lives with the profile (agent-drawer.json), read only when it is on.
-    if (webkit.applyAgentDrawer(spec.agent_drawer)) {
+    // S7b: the drawer's tools need the automation core (Linux, like the drawer).
+    const drawer_on = webkit.applyAgentDrawer(spec.agent_drawer) and builtin.os.tag == .linux;
+    if (drawer_on) {
         agent_drawer.configure(io, arena, profile_dir, .{
             .demo = getenvOwned(arena, agent_drawer.demo_env_name),
             .anim_ms = getenvOwned(arena, agent_drawer.anim_env_name),
@@ -354,7 +359,7 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         if (net) |n| configureAgentLogin(arena, io, spec.e2e_protocol, n) catch return error.WriteFailed;
     }
 
-    if (spec.automation_api) {
+    if (spec.automation_api or drawer_on) {
         // automation.js must be registered before zb_app_run builds the window. macOS uses the
         // WKWebView port (MS2a); every other target uses the GTK port.
         if (builtin.os.tag == .macos) automation_macos_port.installScript() else automation_gtk_port.installScript();
@@ -364,8 +369,16 @@ fn runOpen(arena: std.mem.Allocator, io: std.Io, spec: OpenSpec) errors.BrowserE
         };
         var server = automation_server.AutomationApiServer.init(std.heap.smp_allocator, io, config) catch return error.WriteFailed;
         defer server.deinit();
-        server.start() catch return error.WriteFailed;
+        // S7.1: with the drawer alone the core runs in process, with no socket and no token
+        // sidecar; with --automation-api the socket starts as before.
+        if (spec.automation_api) server.start() catch return error.WriteFailed else server.startCore() catch return error.WriteFailed;
         defer server.stop();
+        // After the GTK loop and before the core stops: the drawers' brokers detached and
+        // their Reaper joined (a call still waiting for GTK then gives up, NO_LOOP).
+        if (comptime builtin.os.tag == .linux) {
+            if (drawer_on) agent_tools.start(&server);
+        }
+        defer if (comptime builtin.os.tag == .linux) agent_tools.stop();
 
         const code = c.zb_app_run(valid_uri.ptr, if (spec.print_title) 1 else 0,
             if (spec.e2e_protocol) 1 else 0);

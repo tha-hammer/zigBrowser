@@ -1284,6 +1284,22 @@ pub fn build(b: *std.Build) void {
         "agent-chat-e2e",
     });
     agent_chat_e2e.addArtifactArg(exe);
+    // Chat drawer S7b (rev 16.20.34-16.20.36): the agent's read tools through the real chain
+    // (Closure Test S7, S7.2, S7.4, S7.5, S7.8, the detach red) and S7.1's socket separation.
+    const agent_tools_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_tools_test.py --binary \"$1\"",
+        "agent-tools-e2e",
+    });
+    agent_tools_e2e.addArtifactArg(exe);
+    const agent_socket_separation_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_socket_separation_test.py --binary \"$1\"",
+        "agent-socket-separation-e2e",
+    });
+    agent_socket_separation_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.4): one session per window, transcripts in the agent's own home.
     const agent_window_sessions_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2101,6 +2117,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_drawer_e2e.step);
     test_step.dependOn(&agent_drawer_copy_e2e.step);
     test_step.dependOn(&agent_chat_e2e.step);
+    test_step.dependOn(&agent_tools_e2e.step);
+    test_step.dependOn(&agent_socket_separation_e2e.step);
     test_step.dependOn(&agent_window_sessions_e2e.step);
     test_step.dependOn(&agent_flood_e2e.step);
     test_step.dependOn(&agent_cap_e2e.step);

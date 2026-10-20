@@ -898,6 +898,9 @@ static void on_window_title_notify(WebKitWebView *view, GParamSpec *pspec,
   window_emit_main_success(win, win->pending_nav_uri, title);
 }
 
+/* agent_tools.zig (S7b): a window's drawer broker detaches, never a join here. */
+void zb_agent_tools_window_done(unsigned int win);
+
 static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
   (void)widget;
   ZbWindow *win = (ZbWindow *)user_data;
@@ -905,6 +908,11 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     return;
   }
 
+  /* S7b: first, the drawer's broker detaches, so a tool call the close aborts below is
+   * never answered to the helper (its answer would be this window's teardown). */
+  if (win->drawer != NULL) {
+    zb_agent_tools_window_done(win->auto_id);
+  }
   /* Automation calls in flight on this window end now, as Cancelled
    * ("window destroyed"), before the web process is terminated below
    * (which would otherwise fail them as script errors first). */
