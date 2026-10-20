@@ -164,6 +164,10 @@ pub fn build(b: *std.Build) void {
         .name = "zigBrowser",
         .root_module = root_module,
     });
+    // MS1b (option d): on macOS the ObjC shim is a separate dylib that calls back into the exe's
+    // zb_ipc_dispatch / zb_policy_decide. Export the exe's symbols so the dylib's flat-namespace
+    // dynamic_lookup resolves them at load. macOS-only — Linux/Windows exe exports are unchanged.
+    if (backend == .macos_backend) exe.rdynamic = true;
     exe.step.dependOn(pkg_guard);
     b.installArtifact(exe);
 
@@ -179,6 +183,12 @@ pub fn build(b: *std.Build) void {
     // closed (never a silent pass). Driven from Linux; does not affect the Linux build/gate.
     const mac_gate = b.addSystemCommand(&.{ "bash", "tests/mac/gate.sh" });
     b.step("mac-gate", "Run the macOS two-host universal/arch gate over Tailscale SSH").dependOn(&mac_gate.step);
+
+    // MS1b (plan rev 10): the signed-bundle gate — the SIGNED universal exe + shim dylib RUN the M9
+    // workload + exec-arch probe on BOTH Macs (option d: the ObjC shim is a chained-fixups dylib, so
+    // the signed x86_64 binary no longer crashes in [ZBAppHost init]). Driven from Linux over SSH.
+    const ms1b_gate = b.addSystemCommand(&.{ "bash", "tests/mac/ms1b_signed_gate.sh" });
+    b.step("ms1b-gate", "Run the macOS MS1b signed-bundle gate (the signed universal runs on both Macs)").dependOn(&ms1b_gate.step);
 
     // WS0: the Windows gate's Linux-side selftest drives tests/windows/gate.sh against fake
     // ssh/virsh/tar on PATH (fail-closed, path fence, display scrub, transport hygiene). Hermetic
@@ -1569,7 +1579,7 @@ pub fn build(b: *std.Build) void {
 fn guardDisplay(b: *std.Build) void {
     const guard = b.addSystemCommand(&.{ "python3", "tools/display_guard.py" });
     guard.has_side_effects = true; // the environment is read on every run, never cached
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate" };
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
@@ -1676,12 +1686,45 @@ fn configureWebView2Backend(module: *std.Build.Module, b: *std.Build, paths: Web
 
 fn configureMacosBackend(module: *std.Build.Module, b: *std.Build) void {
     module.addIncludePath(b.path("src"));
-    module.addCSourceFile(.{
-        .file = b.path("src/wkwebview_shim.m"),
-        .flags = &.{"-fobjc-arc"},
-    });
+
+    // MS1b (option d): build the Objective-C shim with the APPLE toolchain (xcrun clang -> ld64) as
+    // a separate dylib, NOT compiled into the zig exe. zig 0.16's self-hosted Mach-O linker emits
+    // only classic LC_DYLD_INFO_ONLY fixups; a code-signed x86_64 binary with ObjC metadata in a
+    // classic-rebased __DATA_CONST segfaults in -[ZBAppHost init] [super init]. ld64 emits
+    // LC_DYLD_CHAINED_FIXUPS, so the shim's ObjC metadata lives in a chained-fixups image and the
+    // signed binary runs. Built NATIVE for the host arch (no -arch); the two-host gate lipos the two
+    // per-arch dylibs into one fat dylib, exactly like the exe.
+    // The shim calls back into two zig-exported symbols (zb_ipc_dispatch in src/ipc.zig,
+    // zb_policy_decide in src/nav_policy.zig). As a separate dylib it resolves them at LOAD from the
+    // main executable via flat-namespace dynamic lookup; the exe exports them (rdynamic, set
+    // macOS-only at the exe below). This is the standard host-provides-symbols plugin pattern.
+    // -Wl,-fixup_chains is REQUIRED: -undefined dynamic_lookup otherwise makes ld64 fall back to the
+    // classic LC_DYLD_INFO_ONLY scheme, which is the very thing that crashes a signed x86_64 ObjC
+    // __DATA_CONST. Forcing chained fixups keeps dynamic_lookup for the two back-ref symbols AND puts
+    // the shim's ObjC metadata in a chained-fixups image, so the signed binary runs.
+    const shim = b.addSystemCommand(&.{ "xcrun", "clang", "-dynamiclib", "-fobjc-arc", "-Wl,-undefined,dynamic_lookup", "-Wl,-fixup_chains" });
+    shim.addArg("-I");
+    shim.addDirectoryArg(b.path("src"));
+    shim.addFileArg(b.path("src/wkwebview_shim.m"));
+    shim.addArgs(&.{ "-framework", "WebKit", "-framework", "Cocoa", "-framework", "Foundation" });
+    // install_name is @executable_path-anchored, NOT @rpath: a hardened-runtime process refuses a
+    // relative LC_RPATH ("relative path not allowed in hardened program"), and zig normalizes a
+    // `.cwd_relative` "@executable_path/.." rpath down to a bare relative "Frameworks". Anchoring the
+    // dylib's own install name to @executable_path/../Frameworks means dyld loads it directly from the
+    // bundle (zig-out/bin/.. -> zig-out/Frameworks) with no rpath search, under ad-hoc AND hardened.
+    shim.addArgs(&.{ "-install_name", "@executable_path/../Frameworks/libwkwebview_shim.dylib", "-o" });
+    const dylib = shim.addOutputFileArg("libwkwebview_shim.dylib");
+
+    // The exe links the dylib by name at build time (search path = the dylib's cache dir); at runtime
+    // it loads via the @executable_path install name above, so no LC_RPATH is needed.
+    module.addLibraryPath(dylib.dirname());
+    module.linkSystemLibrary("wkwebview_shim", .{});
 
     module.linkFramework("WebKit", .{});
     module.linkFramework("Cocoa", .{});
     module.linkFramework("Foundation", .{});
+
+    // Ship the dylib beside the binary, in the bundle's Frameworks/ (zig-out/Frameworks).
+    const install_dylib = b.addInstallFileWithDir(dylib, .{ .custom = "Frameworks" }, "libwkwebview_shim.dylib");
+    b.getInstallStep().dependOn(&install_dylib.step);
 }

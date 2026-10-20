@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# MS1b RED (unregistered) — "the signed x86_64 binary runs."
+# MS1b GATE — "the signed x86_64 binary runs."
 #
-# This is the signed-bundle mirror of tests/mac/gate.sh. Where the MS1 gate installs the
-# UNSIGNED universal binary and runs it (and signs only an out-of-bundle copy for the static
-# MS1.3 codesign -d check), THIS script installs the SIGNED universal binary as the runnable
-# bundle binary and actually RUNS the M9 workload + the exec-arch probe against it, on BOTH Macs.
+# This is the signed-bundle mirror of tests/mac/gate.sh. Where the MS1 gate installs the UNSIGNED
+# universal exe + shim dylib and runs them (signing only an out-of-bundle exe copy for the static
+# MS1.3 codesign -d check), THIS script SIGNS both the universal exe and the universal shim dylib
+# (ad-hoc + entitlements), installs them as the runnable bundle (exe in bin/, dylib in Frameworks/),
+# and RUNS the M9 workload + exec-arch probe against the signed pair, on BOTH Macs.
 #
-# TODAY this FAILS on the Intel/x86_64 leg: the ad-hoc-signed x86_64 slice segfaults in
-# -[ZBAppHost init] [super init] (classic LC_DYLD_INFO_ONLY rebases into signed __DATA_CONST
-# leave the ObjC class/superclass pointers as on-disk garbage ~0xf0000001). The arm64 leg runs.
-# Gate(MS1b) turns green only once option (d) (the ObjC shim built as an Apple-toolchain
-# chained-fixups dylib) lands. This file is NOT registered in build.zig while it is red
-# (red-commits-outside-the-gate discipline); the green registers the signed-bundle assertion.
+# Before MS1b's option-d fix the ad-hoc-signed x86_64 slice SIGSEGV'd in -[ZBAppHost init] [super
+# init] (zig 0.16's classic LC_DYLD_INFO_ONLY rebases into the signed ObjC __DATA_CONST left the
+# class/superclass pointers as on-disk garbage). The fix builds the ObjC shim as an Apple-toolchain
+# chained-fixups dylib (build.zig configureMacosBackend), so the signed binary now runs. m9_render
+# drives a navigation decision (zb_policy_decide) and m9_reply_channel an IPC call (zb_ipc_dispatch),
+# so both of the dylib's exe back-references are exercised through the signed build.
 #
 # Fail-closed like gate.sh: verify_host runs under `if !`, which disables `set -e` inside the
 # function, so every step is checked with an explicit `|| return 1`. A swallowed failure here
-# would false-green MS1b — the one thing this red must never do.
+# would false-green MS1b — the one thing this gate must never do.
 set -euo pipefail
 
 KEY="${ZB_MAC_KEY:-/home/maceo/vms/mac-m9/zb_mac_key}"
@@ -49,16 +50,21 @@ build_and_fetch() {
   ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" bash tests/mac/build-on-mac.sh
   "${SCP[@]}" "$host:zigBrowser/zig-out/bin/zigBrowser" "$STAGING/zigBrowser-$arch" >/dev/null
   test -s "$STAGING/zigBrowser-$arch"
+  # The exe links the WKWebView ObjC shim dylib (MS1b option d); fetch the per-arch dylib too.
+  "${SCP[@]}" "$host:zigBrowser/zig-out/Frameworks/libwkwebview_shim.dylib" "$STAGING/shim-$arch.dylib" >/dev/null
+  test -s "$STAGING/shim-$arch.dylib"
 }
 build_and_fetch "$INTEL_HOST" "$KEY" "x86_64"
 build_and_fetch "$ARM_HOST" "$ARM_KEY" "arm64"
 
-# --- Phase 2: lipo the universal and SIGN it (the binary we will RUN). ad-hoc + entitlements,
-#     the same signature MS1 applies to its out-of-bundle copy; this is what today crashes. ---
-echo "== assemble + SIGN universal on $INTEL_HOST (the RUNNABLE binary) ==" >&2
+# --- Phase 2: lipo the universal exe AND the universal shim dylib, then SIGN BOTH (ad-hoc +
+#     entitlements). Sign the dylib first, then the exe. Since MS1b's dylib fix (option d) the shim's
+#     ObjC metadata lives in a chained-fixups dylib, so the signed binary RUNS. ---
+echo "== assemble + SIGN universal exe + dylib on $INTEL_HOST (the RUNNABLE bundle) ==" >&2
 intel_ssh=(); mapfile -d '' intel_ssh < <(ssh_opts "$KEY")
 intel_scp=(); mapfile -d '' intel_scp < <(scp_opts "$KEY")
 "${intel_scp[@]}" "$STAGING/zigBrowser-x86_64" "$STAGING/zigBrowser-arm64" "$INTEL_HOST:" >/dev/null
+"${intel_scp[@]}" "$STAGING/shim-x86_64.dylib" "$STAGING/shim-arm64.dylib" "$INTEL_HOST:" >/dev/null
 "${intel_ssh[@]}" "$INTEL_HOST" /bin/bash -s <<'REMOTE'
 set -euo pipefail
 cd "$HOME/zigBrowser"
@@ -66,11 +72,19 @@ lipo -create "$HOME/zigBrowser-x86_64" "$HOME/zigBrowser-arm64" -output "$HOME/z
 archs="$(lipo -archs "$HOME/zigBrowser-universal-signed")"
 echo "universal archs: $archs"
 case "$archs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "universal binary is not fat with both slices" >&2; exit 1;; esac
+lipo -create "$HOME/shim-x86_64.dylib" "$HOME/shim-arm64.dylib" -output "$HOME/libwkwebview_shim-signed.dylib"
+darchs="$(lipo -archs "$HOME/libwkwebview_shim-signed.dylib")"
+echo "shim dylib archs: $darchs"
+case "$darchs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "shim dylib is not fat with both slices" >&2; exit 1;; esac
+# Sign the dylib first, then the exe (both ad-hoc + entitlements).
+codesign -s - --force "$HOME/libwkwebview_shim-signed.dylib"
 codesign -s - --entitlements packaging/macos/entitlements.plist --force "$HOME/zigBrowser-universal-signed"
+codesign --verify --verbose "$HOME/libwkwebview_shim-signed.dylib"
 codesign --verify --verbose "$HOME/zigBrowser-universal-signed"
 REMOTE
 "${intel_scp[@]}" "$INTEL_HOST:zigBrowser-universal-signed" "$STAGING/zigBrowser-universal-signed" >/dev/null
-test -s "$STAGING/zigBrowser-universal-signed"
+"${intel_scp[@]}" "$INTEL_HOST:libwkwebview_shim-signed.dylib" "$STAGING/libwkwebview_shim-signed.dylib" >/dev/null
+test -s "$STAGING/zigBrowser-universal-signed" && test -s "$STAGING/libwkwebview_shim-signed.dylib"
 
 # --- Phase 3: install the SIGNED universal as the RUNNABLE bundle binary on each host and RUN it. ---
 verify_host() {
@@ -78,12 +92,17 @@ verify_host() {
   local -a SSH SCP
   mapfile -d '' SSH < <(ssh_opts "$key")
   mapfile -d '' SCP < <(scp_opts "$key")
-  echo "== verify $expect on $host (SIGNED universal binary RUNS) ==" >&2
-  # The SIGNED binary becomes the bundle binary (MS1b runs THIS, unlike MS1 which runs unsigned).
+  echo "== verify $expect on $host (SIGNED universal bundle RUNS) ==" >&2
+  # The SIGNED exe + SIGNED shim dylib become the bundle (MS1b runs THIS signed pair, unlike MS1
+  # which runs the unsigned pair). The exe loads the dylib from @executable_path/../Frameworks.
   "${SCP[@]}" "$STAGING/zigBrowser-universal-signed" "$host:zigBrowser/zig-out/bin/zigBrowser" >/dev/null || return 1
+  "${SSH[@]}" "$host" 'mkdir -p "$HOME/zigBrowser/zig-out/Frameworks"' || return 1
+  "${SCP[@]}" "$STAGING/libwkwebview_shim-signed.dylib" "$host:zigBrowser/zig-out/Frameworks/libwkwebview_shim.dylib" >/dev/null || return 1
 
-  # M9 visible e2es + the exec-arch readback, against the SIGNED binary. On x86_64 today the
-  # first launch SIGSEGVs in [ZBAppHost init] [super init], so m9_render_test fails -> red.
+  # M9 visible e2es + the exec-arch readback, against the SIGNED bundle. m9_render drives a
+  # navigation decision (zb_policy_decide) and m9_reply_channel an IPC call (zb_ipc_dispatch) through
+  # the dylib's two exe back-references (BlackRobin 6125). Before the option-d fix the signed x86_64
+  # launch SIGSEGV'd in [ZBAppHost init]; it now runs (the shim's ObjC metadata is chained-fixups).
   # The expected arch "$expect" is passed as $1 so the (quoted) remote block can VERIFY the
   # signed binary runs AS this host's arch, not merely that it produced some output (RoseCat 6059).
   "${SSH[@]}" "$host" /bin/bash -s "$expect" <<'REMOTE' || return 1

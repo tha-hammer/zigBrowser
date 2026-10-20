@@ -1,19 +1,21 @@
 {
   "_comment": [
-    "MS1.1 required-component inventory (plan rev 6-9, macOS plan:396-401; RoseCat 5968/5974/5995/6002).",
-    "MS1 ships ONLY the browser (build.zig:168 installs zigBrowser; the agent runtime is a separate",
-    "non-default step), so the MS1 inventory is the browser alone and resources is empty. 'complete'",
-    "means every native Mach-O the bundle actually ships. The census (tests/e2e/mac_universal_test.py)",
+    "MS1.1 required-component inventory (plan rev 6-10, macOS plan:396-401; RoseCat 5968/5974/5995/6002).",
+    "The MS1 bundle ships the browser AND, since MS1b (option d), the WKWebView ObjC shim as a separate",
+    "dylib (build.zig configureMacosBackend builds it with the Apple toolchain so a code-signed x86_64",
+    "binary runs; the exe links it via @executable_path/../Frameworks). Both are native fat Mach-Os.",
+    "'complete' means every native Mach-O the bundle actually ships. The census (mac_universal_test.py)",
     "scans the whole bundle for every Mach-O and requires each fat (x86_64 + arm64) and every role",
     "present at its exact path_glob; the fail-closed probe rejects any file `file` cannot classify.",
     "The empty 'resources' list is accepted by the typed phase gate (mac_resource_compat.py",
-    "--milestone MS1) ONLY for this exact browser-only shape; see resource_phase. The agent-runtime",
+    "--milestone MS1) ONLY for this exact browser+shim shape; see resource_phase. The agent-runtime",
     "roles (python-runtime, claude-cli as fat Mach-O; the generated zb-claude launcher + runtime files",
     "as byte-compat resources) are added to THIS inventory in MS5's red, where macOS provisioning",
     "first installs them and the two-tree resource_compat oracle runs on the per-arch trees (MS5.1c)."
   ],
   "components": [
-    {"role": "browser", "path_glob": "bin/zigBrowser"}
+    {"role": "browser", "path_glob": "bin/zigBrowser"},
+    {"role": "webview-shim", "path_glob": "Frameworks/libwkwebview_shim.dylib"}
   ],
   "resources": []
 }

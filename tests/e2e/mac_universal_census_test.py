@@ -172,13 +172,15 @@ class ResourceCompatTest(unittest.TestCase):
 
 
 class ResourcePhaseTest(unittest.TestCase):
-    """5995/6002: the empty-resource exception is a typed, shape-checked, fail-closed phase gate.
-    Empty is accepted ONLY for the EXACT browser-only MS1 bundle (one component at the fixed
-    browser path, no resources); the MS1 label alone is not enough (RoseCat's bypass)."""
+    """5995/6002 (+MS1b): the empty-resource exception is a typed, shape-checked, fail-closed phase
+    gate. Empty is accepted ONLY for the EXACT browser+shim MS1 bundle (the browser at the fixed
+    browser path AND the WKWebView shim dylib at its fixed Frameworks path, no resources); the MS1
+    label alone is not enough (RoseCat's bypass), and neither browser-alone nor a wrong path passes."""
 
     PATH = "lib/zigbrowser/agent-host/runtime.json"
     RES = [{"role": "agent-runtime-manifest", "path": PATH}]
     BROWSER = {"role": "browser", "path_glob": "bin/zigBrowser"}
+    SHIM = {"role": "webview-shim", "path_glob": "Frameworks/libwkwebview_shim.dylib"}
     PY = {"role": "python-runtime", "path_glob": "lib/zigbrowser/agent-host/venv/bin/python3"}
     CLI = {"role": "claude-cli", "path_glob": "lib/.../_bundled/claude"}
 
@@ -190,23 +192,33 @@ class ResourcePhaseTest(unittest.TestCase):
     def inv(self, components, resources):
         return {"components": components, "resources": resources}
 
-    def test_ms1_browser_only_empty_passes(self):
-        c = self.phase("MS1", self.inv([self.BROWSER], []))
-        self.assertEqual(c.failures, [], "exact browser-only MS1 with no resource must pass")
+    def test_ms1_browser_plus_shim_empty_passes(self):
+        c = self.phase("MS1", self.inv([self.BROWSER, self.SHIM], []))
+        self.assertEqual(c.failures, [], "exact browser+shim MS1 with no resource must pass")
         self.assertGreater(c.ran, 0, "the gate must actually assert for MS1 (called, not skipped)")
 
+    def test_ms1_browser_alone_without_shim_fails(self):
+        # Since MS1b the shim dylib is a required MS1 component; the browser alone is NOT the shape.
+        c = self.phase("MS1", self.inv([self.BROWSER], []))
+        self.assertTrue(c.failures, "MS1 browser-only (missing the shim dylib) must fail closed")
+
+    def test_ms1_wrong_shim_path_fails(self):
+        wrong = {"role": "webview-shim", "path_glob": "bin/libwkwebview_shim.dylib"}
+        c = self.phase("MS1", self.inv([self.BROWSER, wrong], []))
+        self.assertTrue(c.failures, "the shim dylib at the wrong location must fail closed")
+
     def test_ms5_empty_resources_fails(self):
-        c = self.phase("MS5", self.inv([self.BROWSER], []))
+        c = self.phase("MS5", self.inv([self.BROWSER, self.SHIM], []))
         self.assertTrue(c.failures, "MS5 with no resource must fail closed")
 
     def test_unqualified_empty_fails(self):
         for milestone in ("", "unknown", "ms1"):
-            c = self.phase(milestone, self.inv([self.BROWSER], []))
+            c = self.phase(milestone, self.inv([self.BROWSER, self.SHIM], []))
             self.assertTrue(c.failures, f"unqualified empty ({milestone!r}) must fail closed")
 
     def test_ms1_extra_component_fails(self):
-        # Browser + an extra component is not the exact browser-only shape.
-        c = self.phase("MS1", self.inv([self.BROWSER, self.PY], []))
+        # Browser + shim + an extra component is not the exact browser+shim shape.
+        c = self.phase("MS1", self.inv([self.BROWSER, self.SHIM, self.PY], []))
         self.assertTrue(c.failures, "MS1 with an extra component must fail closed")
 
     def test_ms1_non_browser_component_fails(self):
@@ -229,6 +241,34 @@ class ResourcePhaseTest(unittest.TestCase):
         c = self.phase("MS5", self.inv([self.BROWSER, self.PY], self.RES),
                        {self.PATH: "aa"}, {self.PATH: "aa"})
         self.assertEqual(c.failures, [], "a nonempty MS5 match must pass the phase gate")
+
+
+class ReleaseLeastPrivilegeTest(unittest.TestCase):
+    """MS1.3 (MS1b): disable-library-validation is dev/test-only; a release manifest or signed
+    binary that carries it must fail closed."""
+
+    LV = mu.DISABLE_LIBVAL
+    NET = "com.apple.security.network.client"
+
+    def rlp(self, manifest, signed):
+        c = mu.Checks()
+        mu.release_least_privilege(set(manifest), set(signed), c)
+        return c
+
+    def test_clean_release_passes(self):
+        c = self.rlp({self.NET}, {self.NET})
+        self.assertEqual(c.failures, [], "a release without disable-library-validation must pass")
+        self.assertEqual(c.ran, 2, "both the manifest and the signed binary are checked")
+
+    def test_manifest_with_disable_libval_fails(self):
+        c = self.rlp({self.NET, self.LV}, {self.NET})
+        self.assertTrue(any("manifest must not contain" in f for f in c.failures),
+                        f"a release MANIFEST with disable-library-validation must fail; got {c.failures}")
+
+    def test_signed_binary_with_disable_libval_fails(self):
+        c = self.rlp({self.NET}, {self.NET, self.LV})
+        self.assertTrue(any("signed binary must not carry" in f for f in c.failures),
+                        f"a release BINARY carrying disable-library-validation must fail; got {c.failures}")
 
 
 if __name__ == "__main__":

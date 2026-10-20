@@ -58,6 +58,10 @@ build_and_fetch() { # $1=host  $2=key  $3=arch
   ZB_MAC_HOST="$host" ZB_MAC_KEY="$key" bash tests/mac/build-on-mac.sh
   "${SCP[@]}" "$host:zigBrowser/zig-out/bin/zigBrowser" "$STAGING/zigBrowser-$arch" >/dev/null
   test -s "$STAGING/zigBrowser-$arch"
+  # MS1b: the build also produces the WKWebView ObjC shim as a dylib the exe links
+  # (@executable_path/../Frameworks). Fetch the per-arch dylib to lipo alongside the exe.
+  "${SCP[@]}" "$host:zigBrowser/zig-out/Frameworks/libwkwebview_shim.dylib" "$STAGING/shim-$arch.dylib" >/dev/null
+  test -s "$STAGING/shim-$arch.dylib"
 }
 build_and_fetch "$INTEL_HOST" "$KEY" "x86_64"
 build_and_fetch "$ARM_HOST" "$ARM_KEY" "arm64"
@@ -70,6 +74,7 @@ echo "== assemble universal (lipo unsigned + sign a copy) on $INTEL_HOST ==" >&2
 intel_ssh=(); mapfile -d '' intel_ssh < <(ssh_opts "$KEY")
 intel_scp=(); mapfile -d '' intel_scp < <(scp_opts "$KEY")
 "${intel_scp[@]}" "$STAGING/zigBrowser-x86_64" "$STAGING/zigBrowser-arm64" "$INTEL_HOST:" >/dev/null
+"${intel_scp[@]}" "$STAGING/shim-x86_64.dylib" "$STAGING/shim-arm64.dylib" "$INTEL_HOST:" >/dev/null
 "${intel_ssh[@]}" "$INTEL_HOST" /bin/bash -s <<'REMOTE'
 set -euo pipefail
 cd "$HOME/zigBrowser"
@@ -77,14 +82,20 @@ lipo -create "$HOME/zigBrowser-x86_64" "$HOME/zigBrowser-arm64" -output "$HOME/z
 archs="$(lipo -archs "$HOME/zigBrowser-universal")"
 echo "universal archs: $archs"
 case "$archs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "universal binary is not fat with both slices" >&2; exit 1;; esac
-# Sign a COPY for the static MS1.3 entitlements check (never run — running it is MS1b).
+# The shim dylib is lipo'd into a fat dylib too (the exe links it; MS1 RUNS the unsigned pair).
+lipo -create "$HOME/shim-x86_64.dylib" "$HOME/shim-arm64.dylib" -output "$HOME/libwkwebview_shim-universal.dylib"
+darchs="$(lipo -archs "$HOME/libwkwebview_shim-universal.dylib")"
+echo "shim dylib archs: $darchs"
+case "$darchs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "shim dylib is not fat with both slices" >&2; exit 1;; esac
+# Sign a COPY of the exe for the static MS1.3 entitlements check (never run — running it is MS1b).
 cp "$HOME/zigBrowser-universal" "$HOME/zigBrowser-universal-signed"
 codesign -s - --entitlements packaging/macos/entitlements.plist --force "$HOME/zigBrowser-universal-signed"
 codesign --verify --verbose "$HOME/zigBrowser-universal-signed"
 REMOTE
 "${intel_scp[@]}" "$INTEL_HOST:zigBrowser-universal" "$STAGING/zigBrowser-universal" >/dev/null
+"${intel_scp[@]}" "$INTEL_HOST:libwkwebview_shim-universal.dylib" "$STAGING/libwkwebview_shim-universal.dylib" >/dev/null
 "${intel_scp[@]}" "$INTEL_HOST:zigBrowser-universal-signed" "$STAGING/zigBrowser-universal-signed" >/dev/null
-test -s "$STAGING/zigBrowser-universal" && test -s "$STAGING/zigBrowser-universal-signed"
+test -s "$STAGING/zigBrowser-universal" && test -s "$STAGING/libwkwebview_shim-universal.dylib" && test -s "$STAGING/zigBrowser-universal-signed"
 
 # --- MS1 resource phase gate (driver, pure python): the browser-only inventory is the only
 #     empty-resource shape the gate accepts for MS1 (RoseCat 6002). Called, not skipped. ---
@@ -102,8 +113,12 @@ verify_host() { # $1=host  $2=key  $3=expect_arch
   # (bash gotcha). So every step below is checked EXPLICITLY with `|| return 1` — a swallowed
   # failure here would false-green the universal gate, the one thing MS1 must never do.
 
-  # Install the UNSIGNED universal binary over this host's per-arch build (MS1 RUNS this one).
+  # Install the UNSIGNED universal binary over this host's per-arch build (MS1 RUNS this one), and
+  # the UNSIGNED universal shim dylib into the bundle's Frameworks/ (the exe loads it from
+  # @executable_path/../Frameworks). Both are universal; MS1 runs this unsigned pair.
   "${SCP[@]}" "$STAGING/zigBrowser-universal" "$host:zigBrowser/zig-out/bin/zigBrowser" >/dev/null || return 1
+  "${SSH[@]}" "$host" 'mkdir -p "$HOME/zigBrowser/zig-out/Frameworks"' || return 1
+  "${SCP[@]}" "$STAGING/libwkwebview_shim-universal.dylib" "$host:zigBrowser/zig-out/Frameworks/libwkwebview_shim.dylib" >/dev/null || return 1
   # The ad-hoc-signed COPY goes OUTSIDE the bundle (~/zigBrowser-universal-signed), so the component
   # census doesn't scan it; it is only read statically by `codesign -d` for MS1.3 (never run).
   "${SCP[@]}" "$STAGING/zigBrowser-universal-signed" "$host:zigBrowser-universal-signed" >/dev/null || return 1

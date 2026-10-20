@@ -192,24 +192,29 @@ def component_census(macho_archs: dict[str, set[str]], inventory: dict,
 # closed, so the empty-allowed exception cannot be confused with deleting the resource check.
 MS1_MILESTONE = "MS1"
 MS1_BROWSER_GLOB = "bin/zigBrowser"
+MS1_SHIM_GLOB = "Frameworks/libwkwebview_shim.dylib"
+# The exact MS1 component set with no resources (RoseCat 6002, extended for the MS1b shim dylib):
+# the browser exe plus the WKWebView ObjC shim dylib, nothing else.
+MS1_COMPONENT_GLOBS = {MS1_BROWSER_GLOB, MS1_SHIM_GLOB}
 
 
 def resource_phase(milestone: str, inventory: dict, tree_a: dict[str, str],
                    tree_b: dict[str, str], c: Checks) -> None:
     """The typed phase gate around `resource_compat`, taking the WHOLE inventory. With no
-    declared resources, pass ONLY for the exact browser-only MS1 bundle (milestone MS1 + one
-    component at the fixed browser path + no resources); otherwise fail closed. With resources,
-    run the two-tree oracle. The green invokes this at every milestone (MS1 included — CALLED,
-    not skipped), so the empty-allowed state is explicit, shape-checked and mutation-resistant."""
+    declared resources, pass ONLY for the exact browser+shim MS1 bundle (milestone MS1 + exactly the
+    two components {browser at bin/zigBrowser, shim dylib at Frameworks/libwkwebview_shim.dylib} + no
+    resources); otherwise fail closed. With resources, run the two-tree oracle. The green invokes
+    this at every milestone (MS1 included — CALLED, not skipped), so the empty-allowed state is
+    explicit, shape-checked and mutation-resistant."""
     required = inventory.get("resources") or []
     if not required:
         comps = inventory.get("components") or []
-        browser_only = len(comps) == 1 and comps[0].get("path_glob") == MS1_BROWSER_GLOB
-        c.ok(milestone == MS1_MILESTONE and browser_only,
-             f"an empty resource inventory is accepted only for the exact browser-only MS1 bundle "
-             f"(milestone {MS1_MILESTONE} + exactly one component at {MS1_BROWSER_GLOB!r} + no "
-             f"resources); got milestone={milestone!r}, components="
-             f"{[x.get('path_glob') for x in comps]}")
+        globs = [x.get("path_glob") for x in comps]
+        exact_ms1_set = len(comps) == len(MS1_COMPONENT_GLOBS) and set(globs) == MS1_COMPONENT_GLOBS
+        c.ok(milestone == MS1_MILESTONE and exact_ms1_set,
+             f"an empty resource inventory is accepted only for the exact browser+shim MS1 bundle "
+             f"(milestone {MS1_MILESTONE} + exactly the components {sorted(MS1_COMPONENT_GLOBS)} + no "
+             f"resources); got milestone={milestone!r}, components={globs}")
         return
     resource_compat(tree_a, tree_b, required, c)
 
@@ -247,6 +252,22 @@ def manifest_keys(entitlements: Path) -> set[str]:
     with entitlements.open("rb") as fh:
         data = plistlib.load(fh)
     return set(data.keys()) if isinstance(data, dict) else set()
+
+
+# MS1.3 least-privilege (MS1b plan, orchestrator): com.apple.security.cs.disable-library-validation
+# lets a hardened process load a dylib signed by a different team. It is allowed ONLY in ad-hoc
+# dev/test builds (a hardened dev exe loading the ad-hoc shim dylib); a RELEASE build must never
+# ship it (MS9's real Developer ID signs exe+dylib under one team, so library validation passes
+# without it). This rule fails a release manifest OR a release signed binary that contains it.
+DISABLE_LIBVAL = "com.apple.security.cs.disable-library-validation"
+
+
+def release_least_privilege(manifest_keys_set, signed_keys_set, c: Checks) -> None:
+    """MS1.3: the release entitlements must not disable library validation (dev/test only)."""
+    c.ok(DISABLE_LIBVAL not in manifest_keys_set,
+         f"release entitlements manifest must not contain {DISABLE_LIBVAL} (ad-hoc dev/test only)")
+    c.ok(DISABLE_LIBVAL not in signed_keys_set,
+         f"release signed binary must not carry {DISABLE_LIBVAL} (ad-hoc dev/test only)")
 
 
 def main() -> int:
@@ -310,6 +331,8 @@ def main() -> int:
         c.ok(bool(want), "entitlements manifest has no keys")
         got = codesign_entitlement_keys(signed)
         c.ok(got == want, f"signed entitlements {sorted(got)} != manifest {sorted(want)}")
+        # MS1.3 least-privilege: the release manifest/binary must not disable library validation.
+        release_least_privilege(want, got, c)
     except FailClosed as e:
         print(f"NOT RUN / FAIL CLOSED: {e}", file=sys.stderr)
         return 2
