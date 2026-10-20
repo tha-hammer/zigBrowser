@@ -12369,3 +12369,41 @@ cumulative MS1 green remain blocked only on the project-wide gate rule.
 
 `git diff --check` and `bash -n tests/mac/gate.sh` passed. The newest approved
 and pushed linear boundary remains **`da3028f`**.
+
+## S5c-1 red correction 2 (`7b44044`)
+
+### `7b44044` — APPROVED (failing-first red)
+
+This closes both remaining false-green findings on `e6327a5`. The RSS sampler
+now poisons the result on any missing periodic sample, requires its sampler
+thread to have stopped, and requires one final readable sample before reporting
+growth (`tests/e2e/agent_flood_test.py:65-100`). An independent stub probe
+confirmed that a missing mid-run sample and a missing final sample each return
+no measurement with `lost=true`, while steady samples still produce their
+measured growth. The PRIMARY readback also uses `ast.literal_eval`, so the
+earlier advisory is closed (`agent_flood_test.py:215-223`).
+
+The helper oracle now compares the complete delta stream with the independently
+computed longest UTF-8-safe prefix at exactly 256 KiB. Its `ab界 ` input ends
+the byte budget inside a three-byte character, making the required prefix
+262,142 bytes and preventing whole-delta rounding from passing
+(`agent/host/tests/test_chat_flood.py:27-29,93-105`). The endless case uses a
+1,023-byte ASCII source piece, for which 256 KiB is not a multiple, and demands
+exactly 262,144 forwarded bytes (`:179-189`). The fake API also slices its last
+piece to the remaining 8 MiB allowance (`tests/e2e/fake_anthropic_api.py:46-55`),
+so it cannot overshoot its own safety cap.
+
+A clean export of exact `7b44044`, with no display, ran the two corrected helper
+cases against the old helper. Both failed as intended: the capped-message case
+first exposed a 525,076-byte protocol line, and the endless case observed
+4,882,779 forwarded bytes rather than 262,144 (**2/2 red**, rc 1). BlackRobin's
+commit evidence additionally records that the exact-prefix checks reject the
+earlier whole-piece implementation at 278,510 versus 262,142 bytes and 262,911
+versus 262,144 bytes, while the pending green passes all six cases in three
+runs. Python parsing and `git diff --check` passed.
+
+The files remain deliberately unregistered until the S5c-1 green, so no full
+gate was run and this approval does not approve that pending implementation.
+Cumulatively, the S5c-1 failing-first chain `ac47497` / `e6327a5` / `7b44044`
+is now approved; production green, registration and a clean-export gate remain
+required. The newest approved and pushed linear boundary remains **`da3028f`**.
