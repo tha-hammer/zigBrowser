@@ -1329,16 +1329,29 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
    two-tree `resource_compat`/Mach-O census can pass with ONE runtime at one path). 3.12.10 is the newest
    3.12.x with a macOS binary installer — 3.12.11+ are security-only (source-only, no `.pkg`).
    - **Source:** `https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg` (43.6 MB, macOS 10.13+).
-     **MD5** `8f4989592c9412e51fcad70273442c22` and **SHA-256**
-     `8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4` (python.org release page; rev 15 pins
-     the SHA-256 — MD5 alone is not collision-resistant). The python.org release artifacts are additionally
-     **Sigstore**-signed under the 3.12 release manager identity **`thomas@python.org`** (OIDC issuer
-     `https://accounts.google.com`); the `.pkg` installer itself is Developer-ID-signed + Apple-notarized
-     (verified below).
-   - **Acquire (build step, not at runtime):** fetch that exact `.pkg`; **verify** both its **signature**
-     (`pkgutil --check-signature` — the `.pkg` is Developer-ID-signed by the Python Software Foundation) and
-     the **MD5 checksum** above; then unpack its framework files with **`pkgutil --expand-full`**. **NEVER
-     run the installer and NEVER install system-wide on either Mac** (laroncha gets no system install).
+     Release listing: `https://www.python.org/downloads/release/python-31210/`.
+     - **SHA-256** `8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4` — the **mandatory
+       byte-integrity check** (rev 15). This is **independently measured and pinned here** (`shasum -a 256`
+       of the downloaded `.pkg`), **not** taken from the release page: python.org publishes only the **MD5**
+       `8f4989592c9412e51fcad70273442c22` next to the file (MD5 is informational only — not collision-resistant).
+     - **Sigstore** — python.org signs each release artifact with a `.sigstore` bundle
+       (`<file>.sigstore` beside the `.pkg`). The bundle's certificate identity must be the 3.12 release
+       manager **`thomas@python.org`** with OIDC issuer **`https://accounts.google.com`**. This provenance
+       check is **mandatory** (rev 15).
+     - The `.pkg` installer is additionally **Developer-ID-signed + Apple-notarized** (the Apple package check).
+   - **Acquire (build step, not at runtime):** fetch that exact `.pkg` (and its `.sigstore` bundle); then
+     **verify, all mandatory and fail-closed:**
+     1. **byte integrity** — recompute `shasum -a 256` and require it equals the pinned SHA-256 above (MD5 is
+        logged for reference only, never the gate);
+     2. **Sigstore provenance** — verify the `.sigstore` bundle against the `.pkg` with the pinned
+        certificate identity `thomas@python.org` and issuer `https://accounts.google.com`
+        (`python -m sigstore verify identity --cert-identity thomas@python.org
+        --cert-oidc-issuer https://accounts.google.com python-3.12.10-macos11.pkg`, or an equivalent named
+        seam `verify_pkg_provenance`);
+     3. **Apple package signature** — `pkgutil --check-signature` (Developer-ID Python Software Foundation,
+        notarized).
+     Only then unpack its framework files with **`pkgutil --expand-full`**. **NEVER run the installer and
+     NEVER install system-wide on either Mac** (laroncha gets no system install).
    - **Destination:** the unpacked `Python.framework` goes in **`Contents/Frameworks/agent-host/`** (rev 14),
      where nested code is signed/notarized (Resources would fail hardened-runtime).
    - **VERIFIED 2026-10-20 (JadeBeacon):** MD5 matches the real download; `pkgutil --check-signature` →
@@ -1359,6 +1372,15 @@ The behaviours below stay as written; these are the per-OS contracts their reds 
      peers would fail the two-tree `resource_compat`/fat-Mach-O oracle on the arm64 tree. The bundled, pinned
      interpreter (MS5.1 §"interpreter, pinned") is the **fat** `…/bin/python3.12` (`x86_64 arm64`), launched
      directly with **no venv** on macOS — never the `-intel64` variant.
+   - **Acquire/census oracles, failing-first (rev 15, RoseCat 6770/6823):** the MS5.1c acquire+census step is
+     red-first against each of these, so a green proves every check actually runs:
+     1. **wrong SHA-256** — a `.pkg` (or fixture) whose bytes hash to anything but the pinned SHA-256 is
+        **rejected** (the step fails closed); a mutant that only checks MD5 passes the bad bytes → red.
+     2. **wrong/missing Sigstore** — a missing `.sigstore` bundle, or one whose identity ≠ `thomas@python.org`
+        or issuer ≠ `https://accounts.google.com`, is **rejected**; a mutant that skips provenance accepts it → red.
+     3. **excluded `*-intel64`** — if `…/bin/python3.12-intel64` (or its `python3-intel64` symlink) is present in
+        the bundled tree or matched by a census `path_glob`, the two-tree fat-Mach-O census **fails closed**
+        (an x86_64-only Mach-O among universal2 peers); a mutant that includes it, or that globs it, reds.
 
 ### Behavior MS5.1: macOS `runAgentSetup` builds the immutable home
 **Given** a macOS build,
