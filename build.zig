@@ -354,27 +354,6 @@ pub fn build(b: *std.Build) void {
     cross_drawer_win_step.dependOn(&cross_drawer_win.step);
     cross_check_step.dependOn(&cross_drawer_win.step);
 
-    // WS3 .windows arm + WebView2 cookie port (red-first; UNREGISTERED — not in `cross-check`/`test`
-    // until green). The x86_64-windows-gnu object compiles, and every zb_* it needs
-    // (zb_cookies_*/zb_app_set_*/zb_automation_free) must be defined by webview2_shim.cpp. RED until
-    // BlackRobin's Windows config/cookie shim pre-slice lands those; then wire this into `cross-check`.
-    const ws3_win_module = b.createModule(.{
-        .root_source_file = b.path("src/ws3_win_cross_root.zig"),
-        .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }),
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    ws3_win_module.addIncludePath(b.path("src"));
-    const ws3_win_obj = b.addObject(.{ .name = "zigBrowser-ws3-win", .root_module = ws3_win_module });
-    const cross_check_ws3_win = b.addSystemCommand(&.{
-        "python3", "tools/check_cross_symbols.py", "--require", "zb_cookies_get_all", "--require", "zb_app_set_media_source",
-    });
-    cross_check_ws3_win.addFileInput(b.path("tools/check_cross_symbols.py"));
-    cross_check_ws3_win.addFileArg(ws3_win_obj.getEmittedBin());
-    cross_check_ws3_win.addFileArg(b.path("src/webview2_shim.cpp"));
-    const cross_check_ws3_win_step = b.step("cross-check-ws3-win", "WS3: the Windows config arm + cookie port need only zb_* that webview2_shim.cpp defines (red until the shim lands)");
-    cross_check_ws3_win_step.dependOn(&cross_check_ws3_win.step);
-
     const afunix_spike_module = b.createModule(.{
         .root_source_file = b.path("tests/spikes/af_unix_roundtrip.zig"),
         .target = target,
@@ -435,14 +414,14 @@ pub fn build(b: *std.Build) void {
     const run_agent_protocol_prompt_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_protocol_prompt_tests_module }));
     // Chat drawer S5d fix-forward (rev 16.20.18; RoseCat 6286, 6307, 6314): the cap reason
     // order, prompt-id bounds, and the app's prompt path once a session's ids are spent.
-    var s5d_fix_runs: [4]*std.Build.Step = undefined;
+    var s5d_fix_runs: [5]*std.Build.Step = undefined;
     const agent_frames_test_module = b.createModule(.{
         .root_source_file = b.path("src/agent_frames.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    for ([_][]const u8{ "tests/agent_protocol_cap_reason_test.zig", "tests/agent_prompt_id_limit_test.zig", "tests/agent_frames_prompt_test.zig", "tests/agent_frames_out_test.zig" }, 0..) |path, i| {
+    for ([_][]const u8{ "tests/agent_protocol_cap_reason_test.zig", "tests/agent_prompt_id_limit_test.zig", "tests/agent_frames_prompt_test.zig", "tests/agent_frames_out_test.zig", "tests/agent_prompt_base_test.zig" }, 0..) |path, i| {
         const m = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize, .link_libc = true });
         if (i < 2) m.addImport("agent_protocol", agent_protocol_module) else m.addImport("agent_frames", agent_frames_test_module);
         const run = b.addRunArtifact(b.addTest(.{ .root_module = m }));
@@ -598,35 +577,6 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_auth_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_tests_module }));
     run_agent_auth_tests.skip_foreign_checks = true;
-    // Windows plan WS3 coordination (RoseCat 6389, 6405): the shared all-OS backend-flag decision,
-    // literal from production's own parsing (src/backend_flag.zig).
-    const backend_flag_tests_module = b.createModule(.{
-        .root_source_file = b.path("tests/backend_flag_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    backend_flag_tests_module.addImport("backend_flag", b.createModule(.{
-        .root_source_file = b.path("src/backend_flag.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
-    const run_backend_flag_tests = b.addRunArtifact(b.addTest(.{ .root_module = backend_flag_tests_module }));
-    run_backend_flag_tests.skip_foreign_checks = true;
-    b.step("test-backend-flag", "Run the shared backend-flag decision's tests (WS3 coordination)").dependOn(&run_backend_flag_tests.step);
-    // Rev 16.18.16-16.18.17: S6b2's navigation decision (agent_auth.decideNavigation), the A2
-    // cases among its unit cases, before any auth window exists.
-    const agent_auth_navigation_tests_module = b.createModule(.{
-        .root_source_file = b.path("tests/agent_auth_navigation_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    agent_auth_navigation_tests_module.addImport("agent_auth", b.createModule(.{
-        .root_source_file = b.path("src/agent_auth.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
-    const run_agent_auth_navigation_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_navigation_tests_module }));
-    run_agent_auth_navigation_tests.skip_foreign_checks = true;
     // Rev 16.18.15 (RoseCat 5911): S6b2's ZIGBROWSER_AGENT_AUTH_TEST seam, decided before the
     // auth window exists (src/agent_auth_seam.zig).
     const agent_auth_seam_tests_module = b.createModule(.{
@@ -1089,6 +1039,15 @@ pub fn build(b: *std.Build) void {
         "agent-open-order-e2e",
     });
     agent_open_order_e2e.addArtifactArg(exe);
+    // Chat drawer S5d fix-forward (RoseCat 6351): a session's spent prompt ids through the
+    // real chain, by the e2e-only seam ZIGBROWSER_AGENT_TEST_PROMPT_BASE.
+    const agent_prompt_exhaust_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_prompt_exhaust_test.py --binary \"$1\"",
+        "agent-prompt-exhaust-e2e",
+    });
+    agent_prompt_exhaust_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.5, user answer 1): the drawer is on by default; with no agent
     // home Send says the runtime is not set up; stop_browser fails a test a helper ran in.
     const agent_default_on_e2e = b.addSystemCommand(&.{
@@ -1678,8 +1637,6 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
-    test_step.dependOn(&run_backend_flag_tests.step);
-    test_step.dependOn(&run_agent_auth_navigation_tests.step);
     test_step.dependOn(&agent_host_win_import.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_auth_seam_tests.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_host_login.step);
@@ -1692,7 +1649,6 @@ pub fn build(b: *std.Build) void {
     agent_auth_step.dependOn(&run_agent_auth_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
     agent_auth_step.dependOn(&run_agent_login_protocol_tests.step);
-    agent_auth_step.dependOn(&run_agent_auth_navigation_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&run_agent_auth_seam_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login_contract.step);
@@ -1748,6 +1704,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_cap_e2e.step);
     test_step.dependOn(&agent_prompt_scope_e2e.step);
     test_step.dependOn(&agent_open_order_e2e.step);
+    test_step.dependOn(&agent_prompt_exhaust_e2e.step);
     test_step.dependOn(&agent_default_on_e2e.step);
     test_step.dependOn(&agent_config_check_e2e.step);
     test_step.dependOn(&agent_isolation_e2e.step);

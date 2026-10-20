@@ -45,6 +45,7 @@ char *zb_agent_out_hello(void);
 char *zb_agent_out_open_session(unsigned int window, unsigned int k);
 char *zb_agent_out_prompt(const char *session, const char *text, size_t len);
 int zb_agent_out_prompt_status(void); /* why the last one gave no frame: 1 too long, 2 ids spent */
+int zb_agent_frames_seed_prompts(const char *session, int e2e, const char *raw); /* e2e seam (S5d) */
 const char *zb_agent_out_prompt_refusal(void); /* the sentence for that */
 char *zb_agent_out_session(int kind, const char *session);
 char *zb_agent_out_shutdown(void);
@@ -252,6 +253,8 @@ static void flush(ZbWin *w) {
     }
     w->open = 1;
     w->confirmed = 0;
+    /* --e2e-protocol only: a session's prompt ids may start near 2^53 - 1 (RoseCat 6351). */
+    zb_agent_frames_seed_prompts(w->session, zb_helper.e2e, g_getenv("ZIGBROWSER_AGENT_TEST_PROMPT_BASE"));
     write_frame(zb_agent_out_open_session(w->win, w->k));
   }
   if (!w->confirmed) {

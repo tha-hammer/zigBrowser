@@ -179,6 +179,25 @@ pub export fn zb_agent_out_prompt_status() c_int {
     return last_prompt_status;
 }
 
+/// ZIGBROWSER_AGENT_TEST_PROMPT_BASE (--e2e-protocol only; RoseCat 6351): the last prompt
+/// id a new session starts from, so a real-chain test can spend a session's ids. Inert
+/// without e2e; only plain decimal digits from 0 to 2^53 - 1.
+pub fn promptBase(e2e: bool, raw: ?[]const u8) ?i64 {
+    const text = raw orelse return null;
+    if (!e2e or text.len == 0 or text.len > 16) return null;
+    for (text) |c| if (!std.ascii.isDigit(c)) return null;
+    const base = std.fmt.parseInt(i64, text, 10) catch return null;
+    return if (base <= protocol.max_prompt_id) base else null;
+}
+
+/// agent_helper.c, at a session's open: applies the seam (0 applied or inert, -1 failed).
+pub export fn zb_agent_frames_seed_prompts(session: [*:0]const u8, e2e: c_int, raw: ?[*:0]const u8) c_int {
+    const base = promptBase(e2e != 0, if (raw) |r| std.mem.span(r) else null) orelse return 0;
+    const v = if (validator) |*v| v else return -1;
+    v.startPromptsAt(std.mem.span(session), base) catch return -1;
+    return 0;
+}
+
 /// The sentence the app shows when the last zb_agent_out_prompt gave no frame (RoseCat
 /// 6314: spent ids are an agent error, not a long message).
 pub export fn zb_agent_out_prompt_refusal() [*:0]const u8 {

@@ -117,6 +117,15 @@ pub const Validator = struct {
         if (self.prompts.getPtr(session)) |prompt| prompt.* = .{ .id = prompt.id, .active = false };
     }
 
+    /// E2e only (ZIGBROWSER_AGENT_TEST_PROMPT_BASE, RoseCat 6351): `session`'s prompt ids
+    /// continue after `last`, as if that many prompts had ended.
+    pub fn startPromptsAt(self: *Validator, session: []const u8, last: i64) !void {
+        if (last < 0 or last > max_prompt_id) return error.InvalidPromptId;
+        if (last == 0) return;
+        try self.promptSent(session, last);
+        self.endPrompt(session);
+    }
+
     /// The id of `session`'s active prompt, if any.
     pub fn currentPrompt(self: *const Validator, session: []const u8) ?i64 {
         const prompt = self.prompts.get(session) orelse return null;
