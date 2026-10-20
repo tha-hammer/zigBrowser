@@ -6,8 +6,8 @@ branch: zb-automation-integration-2026-10-10-11-59
 repository: zigBrowser
 topic: "Windows 10 + Windows 11 launch support for zigBrowser — TDD implementation plan"
 tags: [plan, tdd, windows, win10, win11, webview2, win32, msvc, automation, drawer, credential-manager, sandbox, wfp, netd, msi, authenticode, launch-critical]
-status: plan for review (rev 2.5)
-rev: 2.5
+status: plan for review (rev 2.7)
+rev: 2.7
 rev_2_7_note: "Rev 2.7 (2026-10-20, WS2.0, BlueBeaver; RoseCat 6647, 6668): the Windows automation server never started — std.Io.net enables AF_UNIX on Windows only when the target minimum is win10_rs4 (Windows 10 1803) or later, and the default x86_64-windows-msvc range starts lower, so server.start returned AddressFamilyUnsupported (exit 7) and its whole start path was dead code. build.zig windowsAfUnixFloor now gives every Windows target without an explicit minimum the win10_rs4 floor (the cross-check object uses it too); the newly reachable start path got Windows fixes (wallClockMs via RtlGetSystemTimePrecise, the token file without .fromMode, cookies.import refused on Windows until WS3). The ADR-1 spike no longer compiles on Zig 0.16 and is superseded: the production e2e tests/e2e/win_transport_test.py (red 970969f, green f29e490) is the AF_UNIX proof. Rev 2.6's claim that .fromMode compiles for Windows is withdrawn: it compiled only because the path was unreachable."
 rev_2_6_note: "(fix, RoseCat 6607: the check and the apply name one object, a handle opened without following a link or reparse point; O_PATH + /proc/self/fd on Linux, O_NOFOLLOW + fchmod on macOS, FILE_FLAG_OPEN_REPARSE_POINT + SetSecurityInfo on Windows, the AF_UNIX reparse tag accepted; swap reds; the readback contract is P + only AI/AR + the one ACE) Rev 2.6 (2026-10-20): WS2.0 owned by BlueBeaver (orchestrator; AzureRidge 6591 keeps the VM, host tooling, wincontain and the Job Object). One owner-only seam src/owner_only.zig: restrictToOwner(path, file|dir) — POSIX 0600/0700 with symlinks refused; Windows a PROTECTED DACL with exactly one allow ACE for the current user SID (no SYSTEM/Administrators/Everyone/Users/Authenticated Users, nothing inherited; OICI on a directory), built as SDDL by the pure ownerOnlySddl and applied with SetNamedSecurityInfoW; C form zb_restrict_to_owner for WS3.1. socketBaseDir: Windows %LOCALAPPDATA% only (NoLocalAppData, never /tmp or XDG); planSocketPath returns SocketPathTooLong instead of a cut path. The compile check is not the red (MinGW chmod compiles and sets no DACL); the reds are Linux-provable (owner_only_test, automation_transport_ws20_test) plus the VM e2e win_transport_test.py (zbother negative control after the user creates zbother)."
 rev_2_5_note: "Rev 2.5 (2026-10-20): WS3 flag table made literal from production (RoseCat 6405, 6415). Exact present-flag rows from media_config.parse (on|off), render_config.parseHwPolicy (never|always|webkit — no auto), render_config.parseRenderer (default|shm|mesa-egl, Linux only; refused on macOS/Windows); empty value is an explicit invalid value and is refused. backendFlagDecision decides a PRESENT flag only; absence makes no call and no apply and is resolved by the config defaults (media-source=on, hardware-acceleration=webkit, Linux renderer=shm; no renderer decision on macOS/Windows) via a separate absent-default oracle at the config/app boundary, never value=''. WS3.2's flag-decision property is now the registered, all-OS, anti-drift tests/backend_flag_test.zig (step test-backend-flag, BlueBeaver); the standalone src/ws3_backend_flag_table_test.zig (88e16cd) is removed so one literal oracle cannot drift."
@@ -52,6 +52,10 @@ voice-input (STT) plans have Windows steps that wait on this plan (section **Voi
 | **[U]** | UI slice: needs a real-screen check run by the orchestrator with the user. |
 
 ## Current State Analysis
+
+> **Historical at the pin (`git_commit` 032a2c9, 2026-10-19).** This section records the code as it was when
+> the plan was written; later slices changed much of it (WS2.0: rev 2.6/2.7, f29e490). For current behaviour
+> read the WS sections and their rev notes, not these file:line facts.
 
 ### Key discoveries (research `2026-10-19-windows-launch-support-surface.md`, verified file:line)
 
@@ -891,10 +895,12 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   is false. **If AF_UNIX fails on a host, stop and update ADR-1**: no silent TCP fallback.
 - Replace the POSIX-only `restrictSocketMode` (`chmod`, automation_server.zig:1513-1517) and the
   `0o600` sidecar mode (:1496-1511) with one platform seam `restrictToOwner(path)`
-  (POSIX `chmod 0600`; Windows `SetNamedSecurityInfoW` with `PROTECTED_DACL_SECURITY_INFORMATION`);
+  (rev 2.6 fix: one handle, never the path twice; POSIX `0600`/`0700` through the opened descriptor;
+  Windows `SetSecurityInfo` on a `FILE_FLAG_OPEN_REPARSE_POINT` handle with a protected DACL, see below);
   `automationSocketPath` uses `%LOCALAPPDATA%` on Windows (app.zig:453-460).
-- 🔴 Red `tests/e2e/win_transport_test.py`: `assert acl_principals(sock_dir) == {current_sid}`
-  (today the server fails to start or `chmod` errors).
+- 🔴 Red `tests/e2e/win_transport_test.py` (970969f): the directory, socket and token each read back a protected
+  DACL with exactly the current user's ACE (rev 2.7: the pre-fix browser exited 7 before any token or socket,
+  because std's AF_UNIX was off below the `win10_rs4` floor).
 - Property: invariant — for generated nonces, `planSocketPath(.windows, base, n)` stays under
   `base\zigbrowser\` and below `UnixAddress.max_len` (extends automation_transport.zig:49-62) [L].
 - **Host difference (rev 2):** the cross-user negative (`zbother` cannot connect or read the token) runs on
@@ -903,11 +909,12 @@ directory, socket and `<socket>.token` have a **protected DACL granting only the
   no `Everyone`/`Users`/`Authenticated Users`) and that a connection from a *different-integrity* process of
   the same user is allowed (the socket is per-user, not per-process). Mutant (both hosts): leave the default
   inherited DACL from `%LOCALAPPDATA%` ⇒ the principals assertion is red (it contains `Administrators`/`SYSTEM`
-  inherited ACEs; the rule decides whether those are acceptable and the test pins that decision).
-- **Compile check first [L]:** `restrictSocketMode`'s `std.c.chmod` and `createFile(... .permissions = .fromMode(0o600))`
-  (automation_server.zig:1496-1517) may not compile for Windows (**unverified**; research §1.2). The first
-  step of WS2.0 is `zig build -Dtarget=x86_64-windows-gnu` of `src/automation_server.zig` under
-  `zig build test-compile`-style object output; a compile error is the legitimate red for the `restrictToOwner` seam.
+  inherited ACEs). Rev 2.6 decided those are **not** acceptable; on the VM the base is hostile (Everyone, inheritable),
+  and the unrestricted-directory and unrestricted-socket mutants both fail (f29e490).
+- **Compile coverage (rev 2.7; replaces the rev 2 "compile check first"):** the `cross-check` step's
+  x86_64-windows-gnu object is built at the shipped `win10_rs4` floor, so it compiles the automation server's
+  start path, token and socket included. It is a build guard, not the WS2.0 red: the red is the production e2e
+  `tests/e2e/win_transport_test.py` (970969f) plus the Linux-provable reds.
 
 - **Rev 2.6 (WS2.0 owner: BlueBeaver, the orchestrator 2026-10-20; VM, host tooling, wincontain and Job Object stay AzureRidge's).**
   - **The compile check is not the red.** ~~`restrictSocketMode`'s `std.c.chmod` and the token's `.fromMode(0o600)` compile for `x86_64-windows-gnu`~~ **Withdrawn in rev 2.7:** that "compile" proved nothing. Without the `win10_rs4` floor, `server.start` returns `AddressFamilyUnsupported` before `startSocket`, so the token and socket code was never analyzed for Windows. At the floor, `.fromMode` does not exist on Windows (fixed in f29e490). The red is behavioural (the VM e2e below), plus the Linux-provable reds; the cross-check object now uses the floor, so it reaches the server's start.
@@ -991,7 +998,7 @@ green commit is accepted.
 
 | Behavior | Red test (unregistered until green) | Exact failing assertion (today's reason) | Mutant that must flip it | Green files |
 |---|---|---|---|---|
-| WS2.0 transport | `tests/e2e/win_transport_test.py` | `assert acl_principals(sock_dir) == {current_sid}` (server fails to start or `chmod` errors) | default inherited DACL | `automation_server.zig` `restrictToOwner`, `app.zig` socket base |
+| WS2.0 transport | `tests/e2e/win_transport_test.py` | protected owner-only DACL on the directory, socket and token; zbother denied (pre-fix: exit 7, no socket below the `win10_rs4` floor) | default inherited DACL | `automation_server.zig` `restrictToOwner`, `app.zig` socket base |
 | WS2a.0 world spike | `tests/e2e/win_private_world_spike.py` | `assert page_eval("typeof window.__zbAutomation") == "undefined" and world_eval("typeof window.__zbAutomation") == "object"` (no CDP route exists) | run the script in the main world | `webview2_shim.cpp` CDP wrapper |
 | WS2a.1 routed | `tests/e2e/win_routed_test.py` | `assert rpc("page.evaluate", {"expression":"1+1"})["result"] == 2` (-32011: `pagePort()` null) | return `0` from the shim | `automation_wv2_port.zig`, `app.zig` |
 | WS2a.2 private world | `tests/e2e/win_private_world_test.py` | `assert rpc("dom.text", sel)["result"] == "real"` on a page that overrides `Element.prototype.click`, `document.querySelector`, defines `window.__zbAutomation` | evaluate in the main world | shim script install |
@@ -1976,8 +1983,9 @@ nonzero assertions on both hosts.
     `CreateProcessWithLogonW` (needs the Secondary Logon service, `seclogon`) and assign it to a job (WS8).
 14. Whether libvirt 11.3 can snapshot this UEFI + raw NVRAM + swtpm guest, and by which method (VM snapshots).
 15. Whether the `ich9` SPICE-audio device gives Windows a capture endpoint and `virt-viewer` forwards a microphone.
-16. Whether `std.c.chmod` and `.permissions = .fromMode(0o600)` in `automation_server.zig:1496-1517` compile for
-    Windows (WS2.0 compile check).
+16. ~~Whether `.fromMode`/`chmod` in `automation_server.zig` compile for Windows~~ **Resolved (rev 2.7):** at the
+    `win10_rs4` floor `.fromMode` does not exist on Windows and was replaced (f29e490); the floored cross-check
+    object compiles the whole start path.
 17. Whether emulated AVX2 (the STT baseline) runs under Prism on the Windows 11 on Arm builds users have (OD-W5 only).
 18. Whether Windows OpenSSH on the physical machine honors `from=`/`restrict` and `AllowUsers` as assumed (check
     when sshd is first enabled, by the owner).
