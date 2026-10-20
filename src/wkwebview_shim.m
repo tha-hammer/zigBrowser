@@ -950,6 +950,21 @@ static int zb_auto_test_ack_fail(void) {
   return v != NULL && v[0] != '0' && v[0] != '\0';
 }
 
+// Test-only (ZB_DEBUG_SYNTH_STALE = "finish"|"fail"): one-shot — on the first routed navigation that
+// SUPERSEDES a previous one, synthesize a stale delegate callback (didFinish / didFailProvisional) for
+// the OLD navigation, in the submit->didStart window of the new one. The currentNav identity guard must
+// ignore it (RoseCat 6358 stale-callback reds). 0 = off, 1 = finish, 2 = fail.
+static int zb_auto_test_synth_stale(void) {
+  if (!zb_auto_test_hooks_enabled()) return 0;
+  static atomic_int consumed = 0;
+  const char *v = getenv("ZB_DEBUG_SYNTH_STALE");
+  if (v == NULL || v[0] == '\0') return 0;
+  int mode = (strcmp(v, "fail") == 0) ? 2 : (strcmp(v, "finish") == 0 ? 1 : 0);
+  if (mode == 0) return 0;
+  if (atomic_exchange(&consumed, 1) != 0) return 0;  // one-shot
+  return mode;
+}
+
 // Test-only (ZB_DEBUG_STALE_TOKEN): the native-click documentToken guard reads a fabricated stale token
 // (a real mismatch) WITHOUT reloading the page, so locate still succeeds and only the guard sees a
 // changed document — the production DOC_CHANGED path with no engine-reload masking (RoseCat option b).
@@ -1204,6 +1219,7 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
       // Submit FIRST; only on a real (non-nil) navigation do we invalidate the watchdog and clear the
       // settled state. A refused start leaves the old document settled, so a later url/title/eval does
       // not wait to timeout (RoseCat 6227.2 #3).
+      WKNavigation *oldNav = host.currentNav;  // the superseded navigation (for the stale-callback red)
       WKNavigation *nav = zb_auto_test_refuse_next_nav() ? nil : start(host);
       if (nav == nil) { poll = nil; zb_job_complete(job, ZB_AUTO_ERR_NAV_FAILED, NULL, NULL); zb_job_unref(job); return; }
       objc_setAssociatedObject(nav, kZBRoutedNavKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);  // identity tag
@@ -1216,6 +1232,16 @@ static int zb_auto_routed_nav(uint32_t win, unsigned int timeout_ms, WKNavigatio
       host.currentNav = nav;  // pin SYNCHRONOUSLY with the submit: before WebKit delivers this nav's
                               // didStart, an old-nav callback must already fail the identity guard
                               // (closes the submit->didStart stale-callback race, RoseCat 6348)
+      // Test hook: now that currentNav is the new nav, synthesize a STALE callback for the superseded
+      // navigation in this exact window; the identity guard must ignore it (no spurious NAV row / no
+      // state mutation / no exit). Inert without --e2e-protocol.
+      int synth = (oldNav != nil) ? zb_auto_test_synth_stale() : 0;
+      if (synth == 1) {
+        [host webView:host.webView didFinishNavigation:oldNav];
+      } else if (synth == 2) {
+        [host webView:host.webView didFailProvisionalNavigation:oldNav
+                                                        withError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut userInfo:nil]];
+      }
       started = YES;
       zb_job_inflight(job);  // submission issued: DISPATCHING -> INFLIGHT, release the waiter
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
