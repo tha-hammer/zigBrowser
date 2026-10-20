@@ -14208,3 +14208,80 @@ duplicates; NUL and control bytes are refused; and fixture case names must be
 unique. This is a plan verdict only. `ed2a2cd` remains BLOCKED-for-tests until
 its implementation follow-up enforces this table through both Zig paths and
 the Python parity test. Verdict sent in Agent Mail 6254.
+
+### Authorization-URL red fix-forward (`4397030`)
+
+**BLOCKED-for-tests (corrected after a second direct probe; Mail 6256 is
+superseded by 6261).** The table's complete URLs really are exactly 4096 and
+4097 bytes, and the normal loops drive both Zig paths. The raw-name cases and
+case-name uniqueness are also sound. The helper parity remains incomplete,
+however: the new control-byte test drives only direct Zig and the native
+validator. `login.authorize_url` currently accepts NUL, tab, DEL and raw space
+inside `state`, but no Python red covers that drift. It also applies
+`len(text)`, which counts Python characters rather than UTF-8 bytes; the ASCII
+edge cases cannot kill that mutant if non-ASCII state remains legal. Add direct
+helper control-byte cases, reconcile the Zig-only space refusal with the plan,
+and pin byte-count semantics (or a shared visible-ASCII grammar) before the
+green. Independent Python parity was red only at `encoded-state-name`, proving
+the missing cases rather than closing them.
+
+### Exchange-boundary plan rev 16.18.13 (`f4c32f5`)
+
+**APPROVED.** The exchange timer may conservatively start when the helper
+writes the code, but OAuth/retry output becomes eligible only after the CLI's
+own masked-input echo proves it consumed that code. Late output produced before
+consumption therefore cannot cause a false exchange failure, while a missing
+echo still ends through the existing bounded timeout. This is the precise
+contract exposed by failing-first red `b850544`; its production green remains
+outstanding. Verdict sent in Agent Mail 6258.
+
+### Authorization-URL plan rev 16.18.14 (`199dcfd`)
+
+**APPROVED.** The complete URL now has one shared app/helper grammar: visible
+ASCII `0x21..0x7e`. It therefore excludes NUL, controls, space, DEL and
+non-ASCII everywhere, and makes bytes equal characters by construction, so the
+4096 boundary cannot drift between Zig bytes and Python characters. This
+resolves the contract side of Mail 6261. The red `4397030` remains
+BLOCKED-for-tests until Python directly exercises this same whole-URL rule.
+Verdict sent in Agent Mail 6262.
+
+### Authorization-URL red fix-forward 2 (`2d7ea89`)
+
+**APPROVED as a failing-first red.** It cumulatively closes the test blocker
+on `4397030`: the helper parity suite now calls `login.authorize_url` directly
+with NUL, controls, DEL, raw space and non-ASCII inserted at five positions in
+the complete URL; it also distinguishes a 4096-character non-ASCII URL from
+the greater-than-4096-byte encoding. Both Zig surfaces gain matching space and
+non-ASCII cases. An independent run of the Python module produced the intended
+**26 failures** against the missing production rule while all unaffected cases
+passed. The production green remains outstanding. Verdict sent in Agent Mail
+6266.
+
+### Windows pure containment helpers (`4cf7157`)
+
+**BLOCKED-for-tests.** The new module is not consumed by production, so this is
+not a present launch regression; its pure containment-choice and lexical path
+cases are useful foundations, and the registered Linux suite passes **24/24**.
+The boundary proof is not yet sufficient for a Windows launcher:
+
+1. `agent/host/tests/test_wincontain.py:17-50` calls a handwritten copy of the
+   same backslash/quote rules a reference `CommandLineToArgvW` parser. A shared
+   mistake passes both sides. The green needs a real Windows oracle (OS parser
+   or purpose-built child that reports the argv observed from the emitted raw
+   command line), including generated empty/whitespace/quote/backslash cases.
+2. `agent/host/zb_agent_host/wincontain.py:102-105,125-130` accepts an embedded
+   NUL in an argument and emits it into the command line. The Win32 wide-string
+   boundary terminates there, so the reviewed argv and launched argv can
+   differ. Reject and test it in both the hermetic and Windows suites.
+3. `normalize_within` is lexical only and therefore accepts a path whose
+   in-root component is a junction to an outside tree. It may be a prefilter,
+   never the authorization result. The backend still needs handle-based
+   canonical resolution and a Windows reparse-point escape test.
+4. SHOULD: reject and test Win32-invalid component characters and controls.
+   The eventual Job Object integration must also prove create-suspended,
+   assign to a no-breakaway kill-on-close job, then resume; no child may run
+   first.
+
+Findings were sent to AzureRidge in Agent Mail 6267. The in-progress shared
+tree already begins the prefilter documentation and malformed-character
+hardening, but uncommitted work does not change this verdict.
