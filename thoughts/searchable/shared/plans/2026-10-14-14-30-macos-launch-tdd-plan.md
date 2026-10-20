@@ -1132,6 +1132,54 @@ its test proves the gate opens only when the session cookie is present.
 sites), both arches. Not a UI slice (the card is MS7; the positive commit closure is MS8.3).
 Coordinate with **BlueBeaver** (flows/approval authority).
 
+### MS4 TDD plan revision (rev 6 — JadeBeacon 2026-10-20)
+
+**The grant contract is the drawer plan's, verbatim — not invented here.** MS4 reuses the schema in
+`thoughts/searchable/shared/plans/2026-10-13-claude-agent-chat-drawer-tdd-plan.md` :516–533: a single-use
+grant, 120 s expiry, bound to `sha256(tool, window_id, origin, account, target_fp, load_serial,
+normalized_args)`; pre-dispatch revalidation of `origin`/`load_serial`/`crashed`/`recovering` (any
+difference revokes, dispatches nothing); the commit carries `options.expect = {account, target_fp}` checked
+**atomically in the same FIFO ticket**, a mismatch returning **−32015 `expectation_mismatch`**; and **only
+the native Approve handler mints** — model/page text never approves. This plan does not restate or alter
+those fields; it only names where the macOS build plugs them in. The broker itself (`agent_broker.zig` per
+the drawer plan :1181/:1419) is **greenfield and shared** with the drawer plan — before building it,
+confirm with BlackRobin (drawer-plan owner) whether any broker part is already planned on that side, so it
+is not built twice.
+
+**IN SCOPE for MS4 (macOS):**
+- **MS4.1a — `load_serial` groundwork (prerequisite; self-contained, no broker).** A per-window counter
+  that increments on load-commit (the macOS analog of `WEBKIT_LOAD_COMMITTED` — `didCommitNavigation:` in
+  the shim), stored on `ZBWindowHost`, carried in `page_port.WindowInfo`, and published in the list JSON
+  (additive; also flows to page.list/page.health). This is the only MS4 field the shim owns; it is built
+  **now** (red-first, both arches, mutant: counter that never increments / resets). Nothing else in MS4
+  starts until RoseCat approves this revision.
+- **MS4.1b — the grant authority + revalidation + `options.expect` seam** (the broker; **gated on RoseCat
+  approval of this revision AND BlackRobin coordination**). Builds the grant data structure, minting entry
+  point, revalidation against `WindowInfo` (origin/`load_serial`/`crashed`/`recovering`), and the
+  commit-seam `options.expect` check (−32015), with the drawer T5 mutants (navigation bumps `load_serial`,
+  selector-retarget, wrong-account, one-field tuple tampering).
+- **MS4.2 — negative proofs:** page world, iframe, related popup, automation-socket client, model prompt,
+  hook each **cannot** approve (real-binary).
+- **MS4.3 — per-write confirmation + dry-run inert:** each `Send`/`Post`/`Follow`/`Connect`/`Like`/`Next`
+  gets a separate confirmation; a dry-run performs no committing click, no real-composer typing, no pacing.
+- **MS4.4 — consumer only:** the flow login gate reads the session cookie **through the MS3 cookie port**
+  (`automation_macos_cookie_port.zig`, already built in MS3/`befdbeb`); the gate opens only when the
+  session cookie is present.
+
+**OUT OF SCOPE for MS4 (explicit), with the seams they plug into:**
+- **MS7 — the native Approve minter.** MS4 builds the authority but mints **nothing** in production. The
+  seam: the broker exposes a single mint entry point (`agent_broker.mint`/`on_approve_clicked` per the
+  drawer plan :1419) that **only MS7's native Approve-button handler** calls; MS4 proves everything refuses
+  without a grant and a test-only mint would bypass the forbidden span, so MS4 never mints. MS7.8 proves
+  the native card mints/denies.
+- **MS8 — the positive `tool_use`→approve→commit chain.** The seam: the broker's dispatch path
+  (`dispatchParsed`) is driven in production by the real helper delivering `tool_use` off the in-process
+  socket (which exists only at MS8); MS4 exercises only preview/dry-run + refusal, never a real commit.
+  MS8.3 proves the one positive commit per approval.
+
+**Order:** MS4.1a now (groundwork); then, after RoseCat approves this revision, MS4.1b/4.2/4.3 (broker,
+coordinated with BlackRobin), then MS4.4.
+
 ---
 
 ## MS5: macOS setup & provisioning + Keychain onboarding (blocker 4 setup half, blocker 7 Keychain half)
