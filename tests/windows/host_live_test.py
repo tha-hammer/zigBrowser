@@ -307,6 +307,16 @@ class TaskPinLive(unittest.TestCase):
         self._provision_disposable()
         self.assertEqual(self._verify(self.TASK, _staged_path(env), _sess_sha()), "OK")
 
+    def test_production_provisioner_fails_hard_on_schtasks_error(self):
+        # An illegal task name makes schtasks /Create fail; the provisioner must exit NONZERO (its
+        # `if ($rc -ne 0) { exit 1 }` guard). Mutant: delete that guard -> process exits 0 -> this test reds.
+        env = _vm_env()
+        script = (REPO / "tests" / "windows" / "provision_session_task.ps1").read_text()
+        p = _ssh_run(env, "$env:ZB_TASK_NAME='zb-pintest-bad?name'\n" + script)
+        self.assertNotEqual(p.returncode, 0,
+                            "provisioner must exit nonzero when schtasks /Create fails:\n" + p.stdout + p.stderr)
+        self.assertNotIn("CREATE_RC=0", p.stdout, "schtasks must not have reported success")
+
     def test_missing_task_rejected(self):
         env = _vm_env()
         self.assertEqual(self._verify("zb-does-not-exist", _staged_path(env), _sess_sha()), "TASK_MISSING")

@@ -12,7 +12,10 @@ $ps     = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.
 $script = Join-Path $env:USERPROFILE 'zb\session_probe.ps1'
 if (-not (Test-Path -LiteralPath $script)) { throw "stage session_probe.ps1 to $script first" }
 $tr = '"' + $ps + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $script + '"'
+# Drop to Continue for the native schtasks call so a nonzero exit is handled by the rc guard below rather
+# than PowerShell throwing on its stderr (which would bypass the guard). We decide on $LASTEXITCODE.
+$ErrorActionPreference = 'Continue'
 $out = schtasks /Create /TN $taskName /TR $tr /SC ONCE /ST 23:59 /IT /RL LIMITED /F 2>&1
 $rc = $LASTEXITCODE
-Write-Output ('CREATE_RC=' + $rc + ' ' + ($out -join ' '))
+Write-Output ('CREATE_RC=' + $rc + ' ' + (($out | ForEach-Object { "$_" }) -join ' '))
 if ($rc -ne 0) { exit 1 }   # provisioning must fail hard when schtasks fails
