@@ -15357,3 +15357,220 @@ overlapped JadeBeacon's independently started slot gate after both were already
 in flight; the orchestrator directed both to finish. It showed no load failure,
 but it is recorded as corroborating rather than quiet-host evidence. Future
 full gates require an Agent Mail slot claim first.
+
+## Recovered review draft after the 2026-10-20 worktree-deletion incident
+
+At approximately 07:43 EDT, another agent's cleanup script expanded an unset
+path and executed a bare `find -delete` from the shared checkout. The checkout,
+its `.git` link and this uncommitted review draft were deleted. The orchestrator
+restored the index at `b804f9a`; the branch subsequently advanced as normal.
+This section reconstructs the lost review draft from the immutable Agent Mail
+verdicts. The cited mail bodies are the canonical detailed record if this
+condensed recovery and a mail ever differ.
+
+RoseCat's own cleanup audit found no persistent cleanup script to restore. All
+future throwaway cleanup commands must validate their target and spell it as,
+for example, `find "${D:?}" -delete`; a bare `find -delete` is prohibited.
+The first post-restore status check found implementer-owned S7 bridge work in
+progress. It was preserved untouched.
+
+### Recovered S5d and drawer-plan verdicts
+
+| Commit / evidence | Recovered verdict | Evidence and remaining contract |
+|---|---|---|
+| `d1ed5cd` | **APPROVED** | The one-line plan correction narrows the rev-16.20.21 exhaustion claim to the Zig export boundary. Together, `e9129a2` and `d1ed5cd` are cumulatively approved. Agent Mail 6363. |
+| deterministic scrub-lifecycle reproducer | **BLOCKER** | The observed sequence was `{'first_error':'ScrubFailed','second_error':None,'second_done':True,'latched_failure':None}`. A first lifecycle scrub failure was not terminal; the next request incorrectly reported clean. The red must require the second request to receive the same terminal failure and the failure callback to fire exactly once. Agent Mail 6372. |
+| S5c-2 WIP launch path | **BLOCKER** | `redact.py` opened `<home>/state/projects`, while the sandbox exposes it at `<home>/.claude/projects`. Direct tests bypassed bwrap and hid the production failure. The fix must use the pinned `.claude/projects` path, not widen the state mount. Agent Mail 6374. |
+| `ca1a7b7` | **APPROVED** | Plan correction accepted. Agent Mail 6387. |
+| `6a40d34` | **APPROVED failing-first red** | All six cases failed on the old code. The plan's callback signature should be narrowed to four arguments; the exact callback can fail only state/code validation. Agent Mail 6387. |
+| `6862919` | **APPROVED failing-first red** | Prompt-base seam and range grammar are pinned; the real C-helper/drawer chain remains required, as recorded above. |
+| `24f9b00` | **BLOCKED in isolation** | It accidentally restored an old `build.zig` and dropped registrations from roughly twenty earlier commits. A gate on this commit alone cannot validate the current branch. Agent Mail 6430. |
+| `a031491` | **APPROVED fix-forward** | Restores `build.zig` byte-for-byte from the intended predecessor and adds only the S5d registrations. The later current-HEAD Linux gate reported in Agent Mail 6447 closes the earlier gate hold. Agent Mails 6430 and 6437. |
+
+The lost draft also preserved a still-open S5c scrub-launch requirement: the
+real confined launch, not only direct unit invocation, must prove that the
+startup census scans the mounted transcript tree and fails closed.
+
+### Recovered TTS and STT plan verdicts
+
+| Commit | Recovered verdict | Findings |
+|---|---|---|
+| `fa16c86` | **BLOCKED** | The TTS plan lacked fragmented/coalesced framing with read-exact semantics; whole-channel PCM validation and a nonzero supported format; a length encoding capable of 64 KiB; and typed enrollment layouts plus golden vectors. Agent Mail 6375. |
+| `667645d` | **BLOCKED** | The proposed fd/HANDLE capability was forgeable and the `O_CLOEXEC` handoff was incomplete. Prefer a non-shipped live-capture probe or authenticated trusted-parent channel. Agent Mail 6375. |
+| `103bdee` | **BLOCKED** | Enrollment transport contradicted itself (shared pipe versus second sample pipe); type 10's layout/rate and error correlation were undefined. Agent Mail 6404. |
+| `b76b6f4` | **APPROVED** | STT rev 2.4 correctly separates the non-installed live-capture probe from the shipped WAV-only selftest. SHOULD: reject an unknown device argument with usage/exit 2. Agent Mail 6404. |
+| `991aeae` | **APPROVED** | STT rev 2.5. Agent Mail 6438. |
+| `245ab43` | **BLOCKED** | Earlier TTS wire gaps improved, but bidirectional traffic cannot use one anonymous pipe. Specify full duplex or two pipes and define enrollment sequence semantics. Agent Mail 6438. |
+| `0a7e0a8` | **APPROVED** | STT rev 2.6. Agent Mail 6451. |
+| `1b679d7` | **BLOCKED** | Samples already played cannot be discarded after a later sequence gap. The contract must stop the utterance, discard queued samples only, acknowledge irreversible output and add a sink regression. Agent Mail 6451. |
+
+### Recovered S6 navigation, isolation and provider verdicts
+
+| Commit | Recovered verdict | Findings |
+|---|---|---|
+| `bae50e4` | **APPROVED** | Agent Mail 6393. |
+| `8af56c9` | **APPROVED** | S6b2 navigation green; targeted gate: 19/19 steps and 36/36 tests. Agent Mail 6393. |
+| `b3031eb` | **BLOCKED-for-tests** | The fixture did not provide one full-page click target. Agent Mail 6402. |
+| `b0e97c1` | **BLOCKED** | Isolation was vacuous without a planted profile cookie and ephemeral positive control, and a seam-ignored GUI could contact live `claude.com` without a hard no-egress boundary. Agent Mail 6402. |
+| `7eaab97` | **APPROVED fix-forward** | Closes the relevant production issue from the preceding chain. Agent Mail 6402. |
+| `af4f1bf` | **APPROVED** | Plan fix. Agent Mail 6407. |
+| `ce2afb9` | **APPROVED** | Six display-free provider-fixture cases close the fixture and no-egress gaps on `b3031eb`/`b0e97c1`. NIT: missing final blank line. Agent Mails 6407/6408. |
+| `7cd96fb` | **APPROVED** | Isolation beacon, 7/7. Agent Mail 6412. |
+| `0be286f`, `4fd6e44` | **BLOCKED at that revision** | Subframes could capture the callback; the fixed stderr rejection was absent; inherited view policy and hand-close fallback were unproved; `auth_rows` validation was weak. The approved design uses RESPONSE policy decisions, revalidation, main-frame/main-resource scoping, stale mismatch rejection, one-shot acceptance and close-time clearing. Agent Mails 6457/6466. |
+| `195b3df`, `2ff9e59`, `9d81d2a` | **APPROVED** | Exact Google and Apple sign-in hosts. These commits did not by themselves close the callback-policy blockers. Agent Mail 6468. |
+| `c0e0ee9` | **APPROVED failing-first red** | Exact real-CLI paste/Enter regression. Agent Mail 6493. |
+| `7736972` | **BLOCKED at first review** | Delayed Enter could race cancellation. The user's Part A/B run passed on this build, but code acceptance correctly waited for the race and echo-length fixes. Agent Mails 6493/6495. |
+| `46b371e` | **BLOCKED artifact** | The census label cited the wrong source SHA and newline. Agent Mail 6499. |
+| `69e0b1d` | **APPROVED failing-first red** | Cancel-versus-Enter ordering. Agent Mail 6499. |
+| `b4d5b86` | **APPROVED fix-forward** | Enter and all terminal transitions are ordered under the end lock. Agent Mail 6499. |
+| `7bba4d9` | **APPROVED** | Corrected census artifact. Agent Mail 6499. |
+| `6b1c8b4`, `87342ef`, `eb5dff4` | **APPROVED** | The code is typed in bounded 16-byte chunks paced by masked echo; Enter is sent only with at most 16 unread bytes and every step is bounded. Independent old-code evidence failed exactly two cases; green passed 2/2. The earlier user Part B pass remains applicable because the production change strengthens only the input pacing. Agent Mail 6506. |
+
+**S6b1 final disposition:** **FINAL ACCEPTED through `eb5dff4`**, including
+the user's visual Part A and successful Part B protocol run. This acceptance
+does not leapfrog unrelated interleaved blockers in the linear history.
+
+### Recovered macOS verdicts
+
+| Commit | Recovered verdict | Findings |
+|---|---|---|
+| `b21a71c` + `f358299` + `148730d` | **Cumulatively APPROVED** | The stale-success/stale-failure callback red added by `148730d` closes the test hold recorded above. Agent Mail 6411. |
+| `dfca180` | **BLOCKED-for-tests** | Production document-token recheck was sound, but the red was unregistered, covered only one timing and used a weak partial oracle. Require later injection and the exact event prefix. Agent Mail 6424. |
+| `94f81ce` | **BLOCKED-for-tests** | Independent `any()` checks permitted wrong order/extras, only two of 31 key names were covered, the emoji path lacked trusted-event proof and the tests were unregistered. Agent Mail 6426. |
+| `148730d` | **APPROVED** | Explicit stale navigation callback regression. Agent Mail 6411. |
+| `3be8ccd` | **BLOCKED-for-tests** | Initial dialogs red incomplete. Agent Mail 6469. |
+| `075ec1b` | **BLOCKED** | Dialog completion still allowed a late action after timeout through a raw semaphore and unsafe list lifetime; eval watcher had no red; beforeunload remained required. Agent Mail 6469. |
+| `932f2b5` | **APPROVED** | User-selected synthetic-only scroll decision. Agent Mail 6469. |
+| `36d3065` | **APPROVED** | Dialog fix-forward. Agent Mail 6481. |
+| `3d296e4` | **BLOCKED-for-tests** | Pair-race oracle accepted an impossible success; require `-32009` with `sent_chars == 2`. Add non-live signal-cleanup proof. Agent Mail 6481. |
+| `bee3f13` | **BLOCKED plan** | Beforeunload/shared-dialog contracts remained contradictory. Agent Mail 6481. |
+| `16be923` | **BLOCKED** | The key job stayed DISPATCHING across asynchronous acknowledgement, allowing unbounded waits and half pairs. The red could not detect an absent callback, and cleanup/load coverage was incomplete. Agent Mail 6455. |
+| `af0cf09` | **APPROVED** | Exact ordered key events and table parity. Agent Mail 6455. |
+| `d82da2e` | **BLOCKED** | MS2c multi-window slice did not yet prove the required closure. Agent Mail 6508. |
+| `03a6523` | **BLOCKED-for-closure** | The production edge was not driven end-to-end. Agent Mail 6508. |
+| `9870693` | **BLOCKED** | Loading/process-group and crash/recovery semantics were incomplete. Agent Mail 6508. |
+| `a769442` | **BLOCKED-for-tests** | Missing two-hop close/FIFO/script-close coverage. Agent Mail 6508. |
+| `b7cb333` | **APPROVED only as an honest fail-closed spike** | It did not complete MS2c phase 1. Agent Mail 6508. |
+| `a455e30` | **Production APPROVED; BLOCKED-for-tests** | Stable ids were correct, but a true two-hop opener identity regression was missing and an index comment was stale. Agent Mail 6510. |
+
+Commits `f136b35` and `4b914ec` landed after the recovered verdicts. They are
+not implicitly reviewed by this reconstruction.
+
+### Recovered Windows verdicts
+
+| Commit | Recovered verdict | Findings |
+|---|---|---|
+| `3aa7ccf` | **Production approved; chain BLOCKED-for-tests** | Enumerate every platform tag other than Linux/macOS/Windows, fix the erroneous `auto` case and run the corrected full gate. Agent Mail 6419. |
+| `b1a9905` | **APPROVED** | Closes the code/test gaps above, while the plan and full-gate holds remained at that moment. Agent Mail 6422. |
+| `2ffe031` | **BLOCKED-for-tests** | The cross-symbol oracle required only two of seven symbols. Require all seven and mutants. Agent Mail 6429. |
+| `7b27d5d` | **BLOCKED** | Treating an absent backend flag as “no backend apply” is wrong: it should skip only the present-flag seam while applying effective defaults. Add the absent-default oracle. Agent Mail 6451. |
+| `a2a21de`, `bab2eec` | **APPROVED** | WS3 follow-ups. Agent Mail 6451. |
+| `ec75786` | **Source correction approved; chain still blocked then** | The authoritative Windows plan and absent-default oracle had not yet caught up. Agent Mail 6454. |
+| `3c9a92e` | **APPROVED** | `C:\\tools` defaults; live verification remained external evidence and the plan should record the choice. Agent Mail 6470. |
+| `bcf327b`, `7463139` | **APPROVED** | Windows build/link corrections. Agent Mail 6482. |
+| `14fc610` | **BLOCKED** | A `pid_t` typedef broke MinGW. Add GNU and MSVC compile reds. Agent Mail 6482. |
+| `cfd218b` | **BLOCKED-for-tests** | WS3 step-two red incomplete. Agent Mail 6504. |
+| `15fb6ee` | **BLOCKED** | Check/act timeout race could dispatch after abandonment; loop termination missed in-flight asynchronous jobs and completion ordering introduced a data race. Agent Mail 6504. |
+| `5fa91a4` | **BLOCKED plan** | Missing held-drain/in-flight regressions, owner-only DACL drift, stale docs and an unclear 400-day timeout cap. Agent Mail 6504. |
+
+### Recovered remaining protocol and plan findings
+
+| Commit / area | Recovered verdict | Findings |
+|---|---|---|
+| `7e76d56` | **BLOCKED** | Rev 16.20.30 still lacked the exact `tool_result` grammar including images, a complete deadline/timeout owner, all prompt/session terminal races and a synchronized helper-to-app prompt-id table. Agent Mail 6513. |
+| `4def620` | **APPROVED narrow correction** | Correct as far as it goes, but it did not clear the enclosing revision's blockers. Agent Mail 6513. |
+| `b804f9a` | **NOT YET REVIEWED here** | S7.0 red landed after Agent Mail 6513. |
+
+The required S7 plan corrections are: define the exact tool-result grammar
+including image payloads; use the broker deadline `B = H - min(5, H/4)` with
+one timeout owner and exactly-once completion; specify every prompt/session end
+and race; synchronize the prompt-id protocol tables; and distinguish partial
+increment milestones from S7 acceptance.
+
+### Recovered push-boundary statement
+
+At the last completed linear audit (Agent Mail 6506), the newest safe
+push-through SHA remained the already-pushed **`70317c0`**. S6b1's cumulative
+acceptance through `eb5dff4` did not permit skipping the unrelated open commits
+interleaved before it. This recovery does not silently advance that boundary.
+The post-incident commits `f136b35`, `b804f9a`, `3f923f2`, `337b937` and
+`4b914ec` require their own reviews before any newer boundary is named.
+
+### Post-recovery review: macOS MS2c FIFO and opener identity
+
+#### `f136b35` — per-window FIFO regression
+
+**BLOCKED-for-tests.** The scenario is directionally correct: two independent
+socket clients address different stable `window_id` lines, the popup's missing
+selector should occupy one line for four seconds, and the primary should remain
+usable. It also correctly avoids freezing a potentially shared WebProcess.
+
+The ordering premise is not observed, however. The test starts `hit_popup()` on
+a Python thread and sleeps 200 ms before issuing the primary request. Nothing
+proves the popup request has reached and entered its FIFO before the primary
+request is sent. A serialized implementation can therefore pass if the new
+thread is delayed and the primary wins the race; the later `elapsed >= 2`
+sanity check proves only that the popup request eventually waited, not that it
+was already ahead of the primary. Add an observable start barrier on the real
+queue/operation path (or a deterministic mutant which globally serializes page
+lines and is killed by this exact test) before using this test to close the
+per-window independence edge. The `FROZEN popup` comments are also inaccurate;
+the test deliberately uses a healthy popup with a retrying selector.
+
+#### `4b914ec` — stable two-hop opener identity
+
+**APPROVED.** This is the missing discriminator from the `a455e30` review. Two
+throwaway popups make registry position diverge from the monotonic stable id;
+the real two-hop primary → A → B chain then requires B's opener to equal A's
+stable id. Closing middle window A verifies that B's id and its frozen opener
+survive and that the dead opener id is not a surviving window. The URL-settle
+poll removes the page-list-before-commit race without weakening identity
+assertions. The reported index-derived-opener mutant fails only the new chain,
+which is the intended failing-first evidence. The only source change is the
+corrected API comment; no production behavior changes.
+
+### Post-recovery review: drawer plan rev 16.20.32 (`3f923f2`)
+
+**APPROVED.** This closes the four plan blockers recorded in Agent Mail 6513:
+
+- `tool_result` now has an exact success/error union, preserves ordered text
+  and PNG/JPEG image blocks, rejects unknown or cross-variant fields and bad
+  base64, bounds the line, forgets the call id on malformed input and prevents
+  malformed content from reaching the model;
+- S7a owns the bounded broker deadline `B = H - min(5, H/4)`, specifies one
+  terminal result, drains the worker after timeout and pins both endpoint
+  budgets plus the late-engine race;
+- result, session failure, Stop, window-close/end-session, shutdown and stdin
+  EOF all end pending calls exactly once, with ids forgotten before
+  `session_ended`, and the forced-order tests cover result/end, timeout/result
+  and a late old-prompt result against a new prompt;
+- the frame tables now carry `prompt_id` on every prompt-scoped frame and the
+  plan explicitly says S7.0/S7a are increments, while S7 acceptance still
+  requires S7b's real-binary closure tests.
+
+The implementation must still make the one-MiB rule's byte-count boundary
+match the framing reader exactly, but the plan's exact-boundary reds are the
+right place to enforce that; it is not a remaining plan blocker.
+
+### Post-recovery review: S7.0 binding red (`b804f9a`)
+
+**APPROVED as the first failing-first S7.0 increment; not the complete
+rev-16.20.32 red suite.** The tests use the real Bridge/Emitter and real Zig
+validator, pin the exact prompt-bound frame, cover the full safe integer prompt
+range with a seeded invariant, fail closed with no active prompt, route result
+ids only within the named session, end a pending call at prompt completion and
+at the deadline, and apply the e2e deadline only to subsequently opened
+sessions. The producer/consumer test is a legitimate cross-language contract,
+not a copied schema. The reported old-code failures are direct missing-API and
+schema failures.
+
+SHOULD strengthen `test_the_bridge_reads_no_stdin_of_its_own`: comparing the
+set of OS threads proves only that the Bridge did not start a threaded reader.
+An event-loop `add_reader`/async reader could still consume stdin and pass. A
+spy on the relevant input-registration/read seams would pin the actual
+single-reader property. This does not erase the red's other coverage, but the
+one-reader closure should be strengthened before final S7.0 acceptance.
+
+The exact result grammar/images and complete ending-order reds required by
+`3f923f2` are intentionally a later follow-up and are not credited to this
+commit.
