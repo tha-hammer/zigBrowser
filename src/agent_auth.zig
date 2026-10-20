@@ -111,8 +111,11 @@ fn s256Challenge(s: []const u8) bool {
     return true;
 }
 
-/// Why decideNavigation refused a navigation (the `AUTH blocked <reason>` word).
-pub const Block = enum { scheme, origin, path, state, code, replay };
+/// Why decideNavigation or decideResponse refused (the `AUTH blocked <reason>` word). Rev
+/// 16.20.33: `subframe`, a callback response in a subframe; `unexpected`, a main-frame callback
+/// response that is not the one pending record; `pending`, a second, different callback
+/// navigation while one is pending (the window's own rule; never overwritten).
+pub const Block = enum { scheme, origin, path, state, code, replay, subframe, unexpected, pending };
 
 /// What the auth window does with one main-frame navigation (rev 16.18.16).
 pub const Decision = union(enum) {
@@ -150,6 +153,36 @@ pub fn decideNavigation(authorize_url: []const u8, nav_url: []const u8, captured
     if (!allowedHost(host)) return .{ .block = .origin };
     const origin = std.fmt.bufPrint(out, "https://{s}:443", .{host}) catch return .{ .block = .origin };
     return .{ .allow = origin };
+}
+
+/// What the auth window does with one response (rev 16.20.33; RoseCat 6466, BlackRobin 6463).
+pub const Response = union(enum) {
+    /// Not the callback: WebKit's default.
+    pass,
+    /// The pending callback, in the main frame, still a capture: ignore the response (never
+    /// committed) and send `<code>#<state>` to the login helper.
+    capture: []const u8,
+    /// A callback response refused: ignore it, before commit.
+    block: Block,
+};
+
+/// The auth window's decision on a response (rev 16.20.33). WebKitGTK's navigation decision
+/// cannot tell a subframe from the main frame; its response decision can. A navigation that
+/// decideNavigation would capture only becomes the one `pending` record (its exact URI) and is
+/// let through; this decides its response: not the callback, pass; the callback in a subframe,
+/// `subframe`; in the main frame but not exactly `pending`, `unexpected` (pending alone is no
+/// authority, nor is a response alone); exactly `pending`, decideNavigation again, and only its
+/// capture captures. `out` holds the captured text.
+pub fn decideResponse(authorize_url: []const u8, pending: ?[]const u8, response_url: []const u8, main_frame: bool, captured: bool, out: []u8) Response {
+    if (!isCallback(authorize_url, response_url)) return .pass;
+    if (!main_frame) return .{ .block = .subframe };
+    const p = pending orelse return .{ .block = .unexpected };
+    if (!std.mem.eql(u8, p, response_url)) return .{ .block = .unexpected };
+    return switch (decideNavigation(authorize_url, response_url, captured, out)) {
+        .capture => |code| .{ .capture = code },
+        .block => |reason| .{ .block = reason },
+        .allow => .{ .block = .unexpected }, // not reachable for a callback; refused all the same
+    };
 }
 
 /// The navigation goes to the authorize URL's redirect_uri: its scheme, host and port (ASCII

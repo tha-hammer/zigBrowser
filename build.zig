@@ -688,6 +688,19 @@ pub fn build(b: *std.Build) void {
     }));
     const run_agent_auth_navigation_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_navigation_tests_module }));
     run_agent_auth_navigation_tests.skip_foreign_checks = true;
+    // Rev 16.20.33 (RoseCat 6457 #1, 6466): the capture at the main-frame response.
+    const agent_auth_response_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/agent_auth_response_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    agent_auth_response_tests_module.addImport("agent_auth", b.createModule(.{
+        .root_source_file = b.path("src/agent_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_agent_auth_response_tests = b.addRunArtifact(b.addTest(.{ .root_module = agent_auth_response_tests_module }));
+    run_agent_auth_response_tests.skip_foreign_checks = true;
     // Rev 16.20.26: the user's decision: Google's and Apple's sign-in hosts, exactly.
     const agent_auth_thirdparty_tests_module = b.createModule(.{
         .root_source_file = b.path("tests/agent_auth_thirdparty_test.zig"),
@@ -1481,6 +1494,15 @@ pub fn build(b: *std.Build) void {
         "agent-auth-window-e2e",
     });
     agent_auth_window_e2e.addArtifactArg(exe);
+    // Rev 16.20.33 (RoseCat 6457): the auth window's oracles: subframe capture refused, the
+    // rejection stderr line, the view policies, the hand-close fallback.
+    const agent_auth_window_oracles_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_auth_window_oracles_test.py --binary \"$1\"",
+        "agent-auth-window-oracles-e2e",
+    });
+    agent_auth_window_oracles_e2e.addArtifactArg(exe);
     // Rev 16.18.10 (RoseCat 6184): the Secrets window never outlives its parent, and a
     // running sign-in is cancelled exactly once (defence in depth; the gnome-shell crash
     // at the user's part A quit stays open).
@@ -1830,6 +1852,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_exchange_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_login_paste_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_auth_window_e2e.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&agent_auth_window_oracles_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_shutdown_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_watch_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
@@ -1837,6 +1860,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_agent_auth_navigation_tests.step);
+    test_step.dependOn(&run_agent_auth_response_tests.step);
     test_step.dependOn(&run_agent_auth_thirdparty_tests.step);
     test_step.dependOn(&agent_host_win_import.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&run_agent_auth_seam_tests.step);
@@ -1855,6 +1879,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&fake_setup_token_unit.step);
     agent_auth_step.dependOn(&run_agent_login_protocol_tests.step);
     agent_auth_step.dependOn(&run_agent_auth_navigation_tests.step);
+    agent_auth_step.dependOn(&run_agent_auth_response_tests.step);
     agent_auth_step.dependOn(&run_agent_auth_thirdparty_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&run_agent_auth_seam_tests.step);
     if (target.result.os.tag == .linux) agent_auth_step.dependOn(&agent_host_login.step);

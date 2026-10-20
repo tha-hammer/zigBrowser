@@ -198,6 +198,29 @@ export fn zb_auth_decide(authorize: [*:0]const u8, nav: [*:0]const u8, captured:
     return kind;
 }
 
+/// The auth window's response decision (agent_auth.decideResponse, rev 16.20.33): 0 pass (WebKit's
+/// default), 1 capture (`out` holds `<code>#<state>`), 2 block (`out` holds the reason word).
+/// `pending` is the one pending callback's exact URI, or null.
+export fn zb_auth_respond(authorize: [*:0]const u8, pending: ?[*:0]const u8, response: [*:0]const u8, main_frame: c_int, captured: c_int, out: [*]u8, cap: usize) c_int {
+    var buf: [agent_auth.max_code_len + 64]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf); // a captured code passes through here
+    const p: ?[]const u8 = if (pending) |v| std.mem.span(v) else null;
+    const decision = agent_auth.decideResponse(std.mem.span(authorize), p, std.mem.span(response), main_frame != 0, captured != 0, &buf);
+    const kind: c_int, const text: []const u8 = switch (decision) {
+        .pass => .{ 0, "" },
+        .capture => |code| .{ 1, code },
+        .block => |reason| .{ 2, @tagName(reason) },
+    };
+    if (cap == 0) return if (kind == 0) 0 else 2;
+    if (text.len + 1 > cap) {
+        out[0] = 0;
+        return 2;
+    }
+    @memcpy(out[0..text.len], text);
+    out[text.len] = 0;
+    return kind;
+}
+
 test "launch: --command login, the login netd dir, and the CLI seam only with --e2e-protocol" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

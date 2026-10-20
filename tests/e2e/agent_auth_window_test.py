@@ -11,7 +11,8 @@ navigation goes through agent_auth.decideNavigation:
 The fake page's one action fills it, so the test clicks the window's centre with X input.
 
 Cases (run alone or with --only):
-- capture: `AUTH captured`; the code page is never requested; the fake CLI received exactly
+- capture: `AUTH captured`; the code page is requested at most once and never runs (rev
+  16.20.33: captured at its main-frame response); the fake CLI received exactly
   `<code>#<state>`; the token is stored; the window is gone.
 - wrong-state, missing-state (state), other-port (origin), http (scheme), lookalike (origin):
   five of section 9's A2 cases (the sixth, a replay, is a unit case: rev 16.18.19). Each writes
@@ -99,7 +100,10 @@ def case_capture(binary: Path, tmp: Path, check) -> None:
         check(b.wait(lambda: ("captured",) in auth_rows(b), 20), f"AUTH captured ({auth_rows(b)})", b)
         check(b.wait(lambda: lt.endings(b) == ["done"], 30), f"the sign-in ends done ({lt.login_states(b)})", b)
         check(si.codes() == [f"{fp.CODE}#{state}"], f"the fake CLI received exactly the code ({si.codes()})")
-        check(run.prov.callback_loads == [], f"the code page was never requested ({run.prov.callback_loads})")
+        # Rev 16.20.33: captured at its main-frame response, so requested at most once, but
+        # never committed, rendered or run (RoseCat 6466).
+        check(len(run.prov.callback_loads) <= 1 and run.prov.callback_beacons == [],
+              f"the code page was requested at most once and never ran ({run.prov.callback_loads}, {run.prov.callback_beacons})")
         check(b.wait(lambda: lt.statuses(b)[-1:] == ["connected-secret-service"], 20), "the token is stored", b)
         check(b.wait(lambda: window(b) is None, 10), "the auth window is gone", b)
     finally:

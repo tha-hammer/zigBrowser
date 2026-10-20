@@ -6,10 +6,15 @@
  *   policies every browsing window gets (zb_apply_view_policies, webkit_shim.c).
  * - Under --e2e-protocol, an accepted ZIGBROWSER_AGENT_AUTH_TEST gives that context a custom proxy
  *   (no ignore hosts) and allows the seam's certificate for claude.com and platform.claude.com only.
- * - Every main-frame navigation goes through zb_auth_decide (agent_auth.decideNavigation): allow
- *   (loads; `AUTH allowed <origin>`), capture (ignored; `AUTH captured`; the code goes to the
- *   caller; the window closes) or block (ignored; `AUTH blocked <reason>`; the window stays). A new
- *   window is refused (`AUTH blocked popup`).
+ * - Every navigation goes through zb_auth_decide (agent_auth.decideNavigation): allow (loads;
+ *   `AUTH allowed <origin>`) or block (ignored; `AUTH blocked <reason>` and its stderr line; the
+ *   window stays). A would-be capture (rev 16.20.33) becomes the one pending callback and is let
+ *   through, because only a response can tell the main frame from a subframe: its response, via
+ *   zb_auth_respond (agent_auth.decideResponse), is ignored either way (the code page is never
+ *   committed) and captures only in the main frame and only as that exact pending callback
+ *   (`AUTH captured`; the code goes to the caller once; the window closes); a subframe's is
+ *   `AUTH blocked subframe`, any other main-frame callback `unexpected`, a second different
+ *   callback while one is pending `pending`. A new window is refused (`AUTH blocked popup`).
  * - Closing it by hand writes nothing; the sign-in keeps waiting for a pasted code. */
 #include "agent_auth_window.h"
 
@@ -28,6 +33,8 @@ void zb_apply_view_policies(WebKitWebView *view);
 int zb_auth_seam(int e2e, const char *value, unsigned short *port, char *ca, size_t ca_cap, char *line,
                  size_t line_cap);
 int zb_auth_decide(const char *authorize, const char *nav, int captured, char *out, size_t cap);
+int zb_auth_respond(const char *authorize, const char *pending, const char *response, int main_frame, int captured,
+                    char *out, size_t cap);
 
 #define TITLE "Sign in to Claude"
 #define SEAM_ENV "ZIGBROWSER_AGENT_AUTH_TEST"
@@ -35,6 +42,10 @@ int zb_auth_decide(const char *authorize, const char *nav, int captured, char *o
 static struct {
   GtkWidget *window;
   char *authorize_url;
+  /* The one pending callback (rev 16.20.33): the exact URI of a navigation decideNavigation would
+   * capture, let through so its RESPONSE (where WebKit tells the main frame from a subframe)
+   * decides. Never overwritten by a different one; cleared by its response or the close. */
+  char *pending;
   int e2e;
   int captured;
   ZbAuthCaptured on_capture;
@@ -52,12 +63,80 @@ static void on_destroy(GtkWidget *widget, gpointer unused) {
   aw.window = NULL;
   g_free(aw.authorize_url);
   aw.authorize_url = NULL;
+  g_free(aw.pending);
+  aw.pending = NULL;
+}
+
+/* A refusal: the row and the fixed stderr line, the reason word only (never the URL, the code or
+ * the state; rev 16.18; RoseCat 6457 #2). */
+static void blocked(const char *reason) {
+  auth_row("blocked", reason);
+  g_printerr("zigBrowser: agent auth: callback rejected (%s)\n", reason);
+}
+
+/* `AUTH view hw <never|always|on-demand>` (e2e only; rev 16.20.33, RoseCat 6457 #3): the auth
+ * view's hardware policy, read back from its own settings after zb_apply_view_policies. */
+static void auth_view_hw_row(WebKitWebView *view) {
+  WebKitSettings *settings = webkit_web_view_get_settings(view);
+  if (settings == NULL) {
+    return;
+  }
+  const char *hw = "on-demand";
+  switch (webkit_settings_get_hardware_acceleration_policy(settings)) {
+    case WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER:
+      hw = "never";
+      break;
+    case WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS:
+      hw = "always";
+      break;
+    default:
+      break;
+  }
+  const char *fields[] = {"view", "hw", hw};
+  zb_emit_protocol_row(aw.e2e, "AUTH", fields, 3);
 }
 
 static gboolean close_later(gpointer unused) {
   (void)unused;
   zb_auth_window_close();
   return G_SOURCE_REMOVE;
+}
+
+/* A response (rev 16.20.33): agent_auth.decideResponse with the pending record and WebKit's
+ * main-frame flag. Pass: WebKit's default. Capture: the response is ignored (the code page is
+ * never committed), the code goes to the sign-in once, the window closes. Block: ignored before
+ * commit; a subframe's refusal clears only a pending record that is its own. */
+static gboolean on_response(WebKitResponsePolicyDecision *decision) {
+  WebKitURIRequest *request = webkit_response_policy_decision_get_request(decision);
+  const char *uri = request != NULL ? webkit_uri_request_get_uri(request) : NULL;
+  if (uri == NULL || aw.authorize_url == NULL) {
+    return FALSE;
+  }
+  int main_frame = webkit_response_policy_decision_is_main_frame_main_resource(decision) ? 1 : 0;
+  char out[640];
+  int kind = zb_auth_respond(aw.authorize_url, aw.pending, uri, main_frame, aw.captured, out, sizeof out);
+  if (kind == 0) {
+    return FALSE;
+  }
+  webkit_policy_decision_ignore(WEBKIT_POLICY_DECISION(decision));
+  if (kind == 1) {
+    aw.captured = 1;
+    g_free(aw.pending);
+    aw.pending = NULL;
+    auth_row("captured", NULL);
+    if (aw.on_capture != NULL) {
+      aw.on_capture(out, aw.data);
+    }
+    explicit_bzero(out, sizeof out);
+    g_idle_add(close_later, NULL); /* not from inside WebKit's own signal */
+    return TRUE;
+  }
+  if (strcmp(out, "subframe") == 0 && aw.pending != NULL && strcmp(aw.pending, uri) == 0) {
+    g_free(aw.pending);
+    aw.pending = NULL;
+  }
+  blocked(out[0] != '\0' ? out : "unexpected");
+  return TRUE;
 }
 
 static gboolean on_decide_policy(WebKitWebView *view, WebKitPolicyDecision *decision,
@@ -69,8 +148,11 @@ static gboolean on_decide_policy(WebKitWebView *view, WebKitPolicyDecision *deci
     webkit_policy_decision_ignore(decision);
     return TRUE;
   }
+  if (type == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
+    return on_response(WEBKIT_RESPONSE_POLICY_DECISION(decision));
+  }
   if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
-    return FALSE; /* responses: WebKit's default */
+    return FALSE;
   }
   WebKitNavigationPolicyDecision *nav = WEBKIT_NAVIGATION_POLICY_DECISION(decision);
   WebKitNavigationAction *action = webkit_navigation_policy_decision_get_navigation_action(nav);
@@ -87,18 +169,23 @@ static gboolean on_decide_policy(WebKitWebView *view, WebKitPolicyDecision *deci
     webkit_policy_decision_use(decision);
     return TRUE;
   }
-  webkit_policy_decision_ignore(decision);
   if (kind == 1) {
-    aw.captured = 1;
-    auth_row("captured", NULL);
-    if (aw.on_capture != NULL) {
-      aw.on_capture(out, aw.data);
-    }
+    /* A capture at this point could be a subframe's (rev 16.20.33): send nothing yet; record it as
+     * the one pending callback and let it through, so its response decides. */
     explicit_bzero(out, sizeof out);
-    g_idle_add(close_later, NULL); /* not from inside WebKit's own signal */
+    if (aw.pending != NULL && strcmp(aw.pending, uri) != 0) {
+      webkit_policy_decision_ignore(decision);
+      blocked("pending");
+      return TRUE;
+    }
+    if (aw.pending == NULL) {
+      aw.pending = g_strdup(uri);
+    }
+    webkit_policy_decision_use(decision);
     return TRUE;
   }
-  auth_row("blocked", out[0] != '\0' ? out : "origin");
+  webkit_policy_decision_ignore(decision);
+  blocked(out[0] != '\0' ? out : "origin");
   return TRUE;
 }
 
@@ -156,8 +243,11 @@ int zb_auth_window_open(const char *authorize_url, int e2e_protocol, ZbAuthCaptu
   g_object_unref(ucm);
   g_object_unref(context);
   zb_apply_view_policies(view);
+  auth_view_hw_row(view);
 
   aw.authorize_url = g_strdup(authorize_url);
+  g_free(aw.pending);
+  aw.pending = NULL;
   aw.captured = 0;
   aw.on_capture = on_capture;
   aw.data = data;
