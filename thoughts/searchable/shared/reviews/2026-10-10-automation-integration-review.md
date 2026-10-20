@@ -15020,3 +15020,30 @@ network API, remote Mac or Windows host was used. Findings were sent to
 AzureRidge. The linear push-through boundary remains the already-pushed
 **`70317c0`**: `a3750e9` is still blocked, and S6b1 still awaits the user's
 Part-B rerun.
+
+### WS7.5 deep import oracle (`1b25a2d`)
+
+**APPROVED as the unregistered fix-forward red.** The new scanner recursively
+visits import-time control-flow and class bodies, skips function bodies, and
+exempts only the two exact `sys.platform` shapes and ImportError-catching
+tries. Its own 17-positive/8-negative table pins those decisions. The package
+inventory is recursive and includes `__init__.py` and `__main__.py`. The
+controlled child removes and blocks the expanded POSIX-module set, deletes
+the named fork/exec/spawn functions, switches `sys.platform`, and imports
+every package module; its nonzero preloaded/imported assertions prevent an
+empty census.
+
+I ran the four tests with the runtime selected by
+`tools/agent_host_env.sh --check`, with display variables removed and an outer
+timeout: **4/4 passed**. Running under plain system Python correctly failed
+closed because `claude_agent_sdk` was absent, rather than silently shrinking
+the inventory. Python compilation and `git diff-tree --check` passed.
+
+This approval closes the shallow-recursion and incomplete-inventory findings
+on `bb0b4b3`; it does **not** approve `bb0b4b3` or complete WS7.5. The Windows
+entry-point contract remains explicitly open: fork/exec-backed commands must
+be refused before import or replaced, then driven on Windows. The green must
+register this deeper oracle in place of the shallow one and add that command
+test. The controlled import is a Linux approximation (`sys.platform` changes
+but the preloaded standard library remains POSIX); the real Windows gate stays
+authoritative.
