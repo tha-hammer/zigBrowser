@@ -12,6 +12,10 @@
 //!   thread, never the caller's (the GTK thread in the app) (D8). Each gets exactly one answer:
 //!   the engine's, or at the deadline "The browser did not answer in time." (a queued call is
 //!   then never run; a running one's late engine completion is discarded).
+//! - Every reply is a genuine engine error (redacted), a well-formed success, or "the browser
+//!   sent a bad answer" (rev 16.20.36): a malformed success never reaches the model.
+//! - A call's answer is claimed and published under the broker's mutex, which `detach` also
+//!   takes: no sink is called after `detach` returns (rev 16.20.36).
 const std = @import("std");
 const server_mod = @import("automation_server.zig");
 
@@ -66,6 +70,20 @@ pub const Sink = struct {
     done: *const fn (ctx: *anyopaque, id: []const u8, result: Result) void,
 };
 
+/// Test seam (rev 16.20.36): the engine a broker calls in place of the server's
+/// `callInProcess`, so a test can script each reply. Production sets none.
+pub const Engine = struct {
+    ctx: *anyopaque,
+    call: *const fn (ctx: *anyopaque, gpa: std.mem.Allocator, method: []const u8, params: []const u8) error{OutOfMemory}![]u8,
+};
+
+/// Test seam (rev 16.20.36): called on the worker after the engine's answer and before its
+/// locked publication. Production sets none.
+pub const Hook = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque) void,
+};
+
 /// D8: one broker per drawer session. Its calls run one at a time, in order, on its one
 /// worker thread (one in-flight browser call per session); its deadline thread answers a call
 /// whose deadline passes: a queued one is then removed and never runs, a running one's late
@@ -81,11 +99,48 @@ pub const Broker = struct {
     queue: std.ArrayListUnmanaged(*Job) = .empty,
     running: ?*Job = null,
     stopping: bool = false,
+    /// Set by `detach`, under the mutex: nothing is published after it.
+    detached: bool = false,
     worker: ?std.Thread = null,
     timer: ?std.Thread = null,
+    engine: ?Engine = null,
+    before_publish: ?Hook = null,
 
     pub fn init(gpa: std.mem.Allocator, server: *Server, window: u32, deadline_ms: u64) Broker {
         return .{ .gpa = gpa, .server = server, .window = window, .deadline_ms = deadline_ms };
+    }
+
+    /// A broker on the heap, for `detach` (the app's brokers).
+    pub fn create(gpa: std.mem.Allocator, server: *Server, window: u32, deadline_ms: u64) !*Broker {
+        const self = try gpa.create(Broker);
+        self.* = init(gpa, server, window, deadline_ms);
+        return self;
+    }
+
+    /// For a closed window, on the GTK thread: returns at once, never joins (its running call
+    /// may need the GTK thread to finish). Under the mutex it marks the broker detached and
+    /// stopping and drops the queued calls unanswered; `reaper` then joins its threads and
+    /// frees it. A broker that never started a thread is freed here.
+    pub fn detach(self: *Broker, reaper: *Reaper) void {
+        const io = self.server.io;
+        self.mutex.lockUncancelable(io);
+        self.detached = true;
+        self.stopping = true;
+        for (self.queue.items) |job| job.destroy();
+        self.queue.clearRetainingCapacity();
+        self.cond.broadcast(io);
+        const idle = self.worker == null and self.timer == null;
+        self.mutex.unlock(io);
+        if (idle) return self.reap();
+        reaper.adopt(self, io);
+    }
+
+    /// On the reaper (or in `detach` when no thread started): joins and frees a detached broker.
+    fn reap(self: *Broker) void {
+        if (self.worker) |t| t.join();
+        if (self.timer) |t| t.join();
+        self.queue.deinit(self.gpa);
+        self.gpa.destroy(self);
     }
 
     /// Stops both threads (after the running call's engine work ends) and drops the calls
@@ -169,7 +224,7 @@ pub const Broker = struct {
             const job = self.queue.orderedRemove(0);
             self.running = job;
             self.mutex.unlock(io);
-            job.run(self.server);
+            job.run(self);
             self.mutex.lockUncancelable(io);
             self.running = null; // the deadline thread looks at it only under the mutex
             job.destroy();
@@ -196,14 +251,83 @@ pub const Broker = struct {
                     continue;
                 }
                 _ = self.queue.orderedRemove(i); // never runs
-                if (job.claim()) job.sink.done(job.sink.ctx, job.id, .{ .failure = timeout_text });
+                if (!self.detached and job.claim()) job.sink.done(job.sink.ctx, job.id, .{ .failure = timeout_text });
                 job.destroy();
             }
             if (self.running) |job| {
-                if (job.deadline_at <= now and job.claim()) job.sink.done(job.sink.ctx, job.id, .{ .failure = timeout_text });
+                if (job.deadline_at <= now and !self.detached and job.claim()) job.sink.done(job.sink.ctx, job.id, .{ .failure = timeout_text });
             }
             self.mutex.unlock(io);
             io.sleep(.fromMilliseconds(5), .awake) catch {};
+            self.mutex.lockUncancelable(io);
+        }
+        self.mutex.unlock(io);
+    }
+
+    /// The engine's reply to `method` with `params`, owned by the caller.
+    fn call(self: *Broker, method: []const u8, params: []const u8) error{OutOfMemory}![]u8 {
+        if (self.engine) |e| return e.call(e.ctx, self.gpa, method, params);
+        return self.server.callInProcess(self.gpa, method, params);
+    }
+
+    /// The worker's answer for `job`, in one step under the mutex (rev 16.20.36): not after
+    /// `detach`, and only if the deadline has not answered first. The sink must not block or
+    /// call back into the broker.
+    fn publish(self: *Broker, job: *Job, outcome: Outcome) void {
+        defer outcome.deinit(self.gpa);
+        if (self.before_publish) |h| h.run(h.ctx);
+        const io = self.server.io;
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (!self.detached and job.claim()) job.sink.done(job.sink.ctx, job.id, outcome.result);
+    }
+};
+
+/// The app's one reaper thread (rev 16.20.35): it joins each detached broker's threads and
+/// frees it, never on the GTK thread. `deinit` (at app exit) reaps what is left and joins it.
+pub const Reaper = struct {
+    gpa: std.mem.Allocator,
+    io: ?std.Io = null,
+    mutex: std.Io.Mutex = .init,
+    cond: std.Io.Condition = .init,
+    brokers: std.ArrayListUnmanaged(*Broker) = .empty,
+    stopping: bool = false,
+    thread: ?std.Thread = null,
+
+    pub fn init(gpa: std.mem.Allocator) Reaper {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *Reaper) void {
+        if (self.io) |io| {
+            self.mutex.lockUncancelable(io);
+            self.stopping = true;
+            self.cond.broadcast(io);
+            self.mutex.unlock(io);
+        }
+        if (self.thread) |t| t.join();
+        for (self.brokers.items) |b| b.reap(); // only if the thread could not start
+        self.brokers.deinit(self.gpa);
+        self.* = undefined;
+    }
+
+    fn adopt(self: *Reaper, broker: *Broker, io: std.Io) void {
+        if (self.io == null) self.io = io;
+        self.mutex.lockUncancelable(io);
+        const queued = if (self.brokers.append(self.gpa, broker)) |_| true else |_| false;
+        if (queued and self.thread == null) self.thread = std.Thread.spawn(.{}, reapAll, .{ self, io }) catch null;
+        self.cond.broadcast(io);
+        self.mutex.unlock(io);
+        if (!queued) broker.reap(); // out of memory: joined here rather than leaked
+    }
+
+    fn reapAll(self: *Reaper, io: std.Io) void {
+        self.mutex.lockUncancelable(io);
+        while (true) {
+            while (!self.stopping and self.brokers.items.len == 0) self.cond.waitUncancelable(io, &self.mutex);
+            const next = self.brokers.pop() orelse break; // stopping, and none left
+            self.mutex.unlock(io);
+            next.reap();
             self.mutex.lockUncancelable(io);
         }
         self.mutex.unlock(io);
@@ -236,71 +360,74 @@ const Job = struct {
         return self.answered.cmpxchgStrong(false, true, .acq_rel, .acquire) == null;
     }
 
-    /// On the worker: the engine's answer, unless the deadline answered first.
-    fn run(self: *Job, server: *Server) void {
-        if (std.mem.eql(u8, self.method, "page.health")) return self.windowInfo(server);
-        const reply = server.callInProcess(self.gpa, self.method, self.params) catch {
-            if (self.claim()) self.sink.done(self.sink.ctx, self.id, .{ .failure = "out of memory" });
-            return;
+    /// On the worker: the call's answer, published unless the deadline answered first.
+    fn run(self: *Job, broker: *Broker) void {
+        const outcome = if (std.mem.eql(u8, self.method, "page.health")) self.windowInfo(broker) else blk: {
+            const reply = broker.call(self.method, self.params) catch break :blk Outcome.fail("out of memory");
+            defer self.gpa.free(reply);
+            break :blk answer(self.gpa, reply);
         };
-        defer self.gpa.free(reply);
-        if (!self.claim()) return; // the deadline answered first: discarded
-        answer(self.gpa, self.id, reply, self.sink);
+        broker.publish(self, outcome);
     }
 
-    /// window_info (rev 16.20.35, RoseCat 6575): page.health answers for every window and
-    /// takes no params, so only this window's entry is kept, with its page.title. Nothing of
-    /// another window reaches the model.
-    fn windowInfo(self: *Job, server: *Server) void {
+    /// window_info (revs 16.20.35 and 16.20.36; RoseCat 6575, 6585, 6606): page.health answers
+    /// for every window and takes no params, so only this window's entry is kept, and only its
+    /// liveness fields; the URL and title are page.url's and page.title's for this window.
+    /// Nothing of another window reaches the model.
+    fn windowInfo(self: *Job, broker: *Broker) Outcome {
         const gpa = self.gpa;
         var window_id: [24]u8 = undefined;
         const mine = std.fmt.bufPrint(&window_id, "window-{d}", .{self.window}) catch unreachable;
-        const health = server.callInProcess(gpa, "page.health", "{}") catch return self.fail("out of memory");
+        var params_buf: [64]u8 = undefined;
+        const params = std.fmt.bufPrint(&params_buf, "{{\"window_id\":\"{s}\"}}", .{mine}) catch unreachable;
+
+        const health = broker.call("page.health", "{}") catch return Outcome.fail("out of memory");
         defer gpa.free(health);
-        var parsed = std.json.parseFromSlice(std.json.Value, gpa, health, .{}) catch return self.fail("the browser sent a bad answer");
-        defer parsed.deinit();
-        const pages = blk: {
-            const result = if (parsed.value == .object) parsed.value.object.get("result") else null;
-            const r = result orelse break :blk null;
-            if (r != .object) break :blk null;
-            const list = r.object.get("pages") orelse break :blk null;
-            break :blk if (list == .array) list.array.items else null;
-        } orelse {
-            if (self.claim()) answer(gpa, self.id, health, self.sink); // the engine's error, redacted
-            return;
+        var health_parsed = parse(gpa, health) catch return Outcome.fail("out of memory");
+        defer if (health_parsed) |*p| p.deinit();
+        const health_result = switch (replyOf(gpa, if (health_parsed) |p| p.value else null)) {
+            .result => |r| r,
+            .failure => |f| return f,
         };
-        const entry = for (pages) |page| {
+        const pages = field(health_result, "pages", .array) orelse return Outcome.fail(bad_answer);
+        const entry = for (pages.array.items) |page| {
             if (page != .object) continue;
             const wid = page.object.get("window_id") orelse continue;
-            if (wid == .string and std.mem.eql(u8, wid.string, mine)) break page.object;
-        } else return self.fail("this window is gone");
-        var title_params: [64]u8 = undefined;
-        const tp = std.fmt.bufPrint(&title_params, "{{\"window_id\":\"{s}\"}}", .{mine}) catch unreachable;
-        const title_reply = server.callInProcess(gpa, "page.title", tp) catch return self.fail("out of memory");
-        defer gpa.free(title_reply);
-        var title_parsed = std.json.parseFromSlice(std.json.Value, gpa, title_reply, .{}) catch return self.fail("the browser sent a bad answer");
-        defer title_parsed.deinit();
-        const title: []const u8 = blk: {
-            const result = (if (title_parsed.value == .object) title_parsed.value.object.get("result") else null) orelse break :blk "";
-            const t = (if (result == .object) result.object.get("title") else null) orelse break :blk "";
-            break :blk if (t == .string) t.string else "";
+            if (wid == .string and std.mem.eql(u8, wid.string, mine)) break page;
+        } else return Outcome.fail("this window is gone");
+        const responsive = field(entry, "responsive", .bool) orelse return Outcome.fail(bad_answer);
+        const loading = field(entry, "loading", .bool) orelse return Outcome.fail(bad_answer);
+        const dialog_open = field(entry, "dialog_open", .bool) orelse return Outcome.fail(bad_answer);
+        const crashed = entry.object.get("crashed");
+        if (crashed) |c| if (c != .string) return Outcome.fail(bad_answer);
+
+        const url_reply = broker.call("page.url", params) catch return Outcome.fail("out of memory");
+        defer gpa.free(url_reply);
+        var url_parsed = parse(gpa, url_reply) catch return Outcome.fail("out of memory");
+        defer if (url_parsed) |*p| p.deinit();
+        const url = switch (replyOf(gpa, if (url_parsed) |p| p.value else null)) {
+            .result => |r| field(r, "url", .string) orelse return Outcome.fail(bad_answer),
+            .failure => |f| return f,
         };
+
+        const title_reply = broker.call("page.title", params) catch return Outcome.fail("out of memory");
+        defer gpa.free(title_reply);
+        var title_parsed = parse(gpa, title_reply) catch return Outcome.fail("out of memory");
+        defer if (title_parsed) |*p| p.deinit();
+        const title = switch (replyOf(gpa, if (title_parsed) |p| p.value else null)) {
+            .result => |r| field(r, "title", .string) orelse return Outcome.fail(bad_answer),
+            .failure => |f| return f,
+        };
+
         var info: std.json.ObjectMap = .empty;
         defer info.deinit(gpa);
-        info.put(gpa, "window_id", .{ .string = mine }) catch return self.fail("out of memory");
-        info.put(gpa, "title", .{ .string = title }) catch return self.fail("out of memory");
-        for ([_][]const u8{ "url", "responsive", "loading", "dialog_open", "crashed" }) |key| {
-            if (entry.get(key)) |v| info.put(gpa, key, v) catch return self.fail("out of memory");
-        }
-        const text = std.json.Stringify.valueAlloc(gpa, std.json.Value{ .object = info }, .{}) catch return self.fail("out of memory");
-        defer gpa.free(text);
-        const content = std.json.Stringify.valueAlloc(gpa, [_]struct { type: []const u8, text: []const u8 }{.{ .type = "text", .text = text }}, .{}) catch return self.fail("out of memory");
-        defer gpa.free(content);
-        if (self.claim()) self.sink.done(self.sink.ctx, self.id, .{ .content = content });
-    }
-
-    fn fail(self: *Job, text: []const u8) void {
-        if (self.claim()) self.sink.done(self.sink.ctx, self.id, .{ .failure = text });
+        const entries = [_]struct { []const u8, ?std.json.Value }{
+            .{ "window_id", .{ .string = mine } }, .{ "url", url },         .{ "title", title },
+            .{ "responsive", responsive },         .{ "loading", loading }, .{ "dialog_open", dialog_open },
+            .{ "crashed", crashed },
+        };
+        for (entries) |e| if (e[1]) |v| info.put(gpa, e[0], v) catch return Outcome.fail("out of memory");
+        return textBlock(gpa, .{ .object = info });
     }
 
     fn destroy(self: *Job) void {
@@ -310,30 +437,76 @@ const Job = struct {
     }
 };
 
-/// The sink's answer for a JSON-RPC `reply`: its result as one text block, or a fixed text
-/// naming the error (S7.7: the error's data and message never reach the model).
-fn answer(gpa: std.mem.Allocator, id: []const u8, reply: []const u8, sink: Sink) void {
-    var parsed = std.json.parseFromSlice(std.json.Value, gpa, reply, .{}) catch
-        return sink.done(sink.ctx, id, .{ .failure = "the browser sent a bad answer" });
-    defer parsed.deinit();
-    const obj = if (parsed.value == .object) parsed.value.object else return sink.done(sink.ctx, id, .{ .failure = "the browser sent a bad answer" });
-    if (obj.get("result")) |result| {
-        const text = std.json.Stringify.valueAlloc(gpa, result, .{}) catch return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
-        defer gpa.free(text);
-        const content = std.json.Stringify.valueAlloc(gpa, [_]struct { type: []const u8, text: []const u8 }{.{ .type = "text", .text = text }}, .{}) catch
-            return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
-        defer gpa.free(content);
-        return sink.done(sink.ctx, id, .{ .content = content });
+const bad_answer = "the browser sent a bad answer";
+
+/// A call's answer before its publication: the result, and the bytes it holds (if any).
+const Outcome = struct {
+    result: Result,
+    owned: ?[]u8 = null,
+
+    fn fail(text: []const u8) Outcome {
+        return .{ .result = .{ .failure = text } };
     }
-    const err = if (obj.get("error")) |e| (if (e == .object) e.object else null) else null;
-    const code = if (err) |e| (if (e.get("code")) |c| (if (c == .integer) c.integer else 0) else 0) else 0;
-    const name = if (err) |e| (if (e.get("message")) |m| (if (m == .string and isName(m.string)) m.string else "failed") else "failed") else "failed";
-    var buf: [160]u8 = undefined;
-    const text = switch (code) {
-        -32013 => "the page has a dialog open",
-        else => std.fmt.bufPrint(&buf, "the browser could not do that ({s}, {d})", .{ name, code }) catch "the browser could not do that",
+
+    fn deinit(self: Outcome, gpa: std.mem.Allocator) void {
+        if (self.owned) |bytes| gpa.free(bytes);
+    }
+};
+
+/// The parsed reply, or null if it is no JSON.
+fn parse(gpa: std.mem.Allocator, reply: []const u8) error{OutOfMemory}!?std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, gpa, reply, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
     };
-    sink.done(sink.ctx, id, .{ .failure = text });
+}
+
+/// Rev 16.20.36 (RoseCat 6606): a reply is a genuine engine error (an `error` object and no
+/// `result`), mapped to its redacted text; a success (a `result` and no `error`); or anything
+/// else, the fixed bad answer.
+fn replyOf(gpa: std.mem.Allocator, reply: ?std.json.Value) union(enum) { result: std.json.Value, failure: Outcome } {
+    const obj = if (reply) |r| (if (r == .object) r.object else null) else null;
+    const o = obj orelse return .{ .failure = Outcome.fail(bad_answer) };
+    const result, const err = .{ o.get("result"), o.get("error") };
+    if (result != null and err == null) return .{ .result = result.? };
+    if (result == null and err != null and err.? == .object) return .{ .failure = redacted(gpa, err.?.object) };
+    return .{ .failure = Outcome.fail(bad_answer) };
+}
+
+/// `value`'s `key`, if `value` is an object and that key has the tag `tag`.
+fn field(value: std.json.Value, key: []const u8, comptime tag: std.meta.Tag(std.json.Value)) ?std.json.Value {
+    if (value != .object) return null;
+    const v = value.object.get(key) orelse return null;
+    return if (v == tag) v else null;
+}
+
+/// One text block holding `value`'s JSON.
+fn textBlock(gpa: std.mem.Allocator, value: std.json.Value) Outcome {
+    const text = std.json.Stringify.valueAlloc(gpa, value, .{}) catch return Outcome.fail("out of memory");
+    defer gpa.free(text);
+    const content = std.json.Stringify.valueAlloc(gpa, [_]struct { type: []const u8, text: []const u8 }{.{ .type = "text", .text = text }}, .{}) catch
+        return Outcome.fail("out of memory");
+    return .{ .result = .{ .content = content }, .owned = content };
+}
+
+/// A single-method tool's answer for a JSON-RPC `reply`: its result as one text block, or the
+/// failure (S7.7: the error's data and message never reach the model).
+fn answer(gpa: std.mem.Allocator, reply: []const u8) Outcome {
+    var parsed = parse(gpa, reply) catch return Outcome.fail("out of memory");
+    defer if (parsed) |*p| p.deinit();
+    return switch (replyOf(gpa, if (parsed) |p| p.value else null)) {
+        .result => |r| textBlock(gpa, r),
+        .failure => |f| f,
+    };
+}
+
+/// An engine error's fixed text: its name and code, never its data or message text.
+fn redacted(gpa: std.mem.Allocator, err: std.json.ObjectMap) Outcome {
+    const code = if (err.get("code")) |c| (if (c == .integer) c.integer else 0) else 0;
+    const name = if (err.get("message")) |m| (if (m == .string and isName(m.string)) m.string else "failed") else "failed";
+    if (code == -32013) return Outcome.fail("the page has a dialog open");
+    const text = std.fmt.allocPrint(gpa, "the browser could not do that ({s}, {d})", .{ name, code }) catch return Outcome.fail("the browser could not do that");
+    return .{ .result = .{ .failure = text }, .owned = text };
 }
 
 /// An engine error name: lowercase letters, digits, '_' and ' ' only, so no page text rides on it.

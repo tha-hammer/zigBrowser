@@ -1018,9 +1018,9 @@ pub fn build(b: *std.Build) void {
     owner_only_step.dependOn(&run_owner_only_tests.step);
     owner_only_step.dependOn(&run_transport_ws20_tests.step);
     // Chat drawer S7a (revs 16.20.30, 16.20.32): the core in process (callInProcess) and the
-    // drawer's read-only broker over it.
-    var s7a_runs: [3]*std.Build.Step = undefined;
-    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig" }, 0..) |path, i| {
+    // drawer's read-only broker over it; S7b (rev 16.20.36): its reply boundary and detach.
+    var s7a_runs: [5]*std.Build.Step = undefined;
+    for ([_][]const u8{ "tests/automation_inprocess_test.zig", "tests/agent_broker_test.zig", "tests/agent_broker_window_info_test.zig", "tests/agent_broker_reply_test.zig", "tests/agent_broker_detach_test.zig" }, 0..) |path, i| {
         const s7a_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,

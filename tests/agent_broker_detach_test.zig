@@ -30,6 +30,16 @@ fn threadCount() !usize {
     return n;
 }
 
+/// The process is back to `baseline` threads within `ms`. A joined thread can stay listed in
+/// /proc/self/task for a moment after its join returns; a thread left behind never leaves.
+fn expectThreadsBackTo(baseline: usize, ms: i64) !void {
+    const until = fake.nowMs() + ms;
+    while (try threadCount() > baseline) {
+        if (fake.nowMs() > until) return error.TestThreadLeftBehind;
+        testing.io.sleep(.fromMilliseconds(5), .awake) catch {};
+    }
+}
+
 fn waitFor(counter: *std.atomic.Value(u32), n: u32, ms: i64) !void {
     const until = fake.nowMs() + ms;
     while (counter.load(.acquire) < n) {
@@ -69,7 +79,7 @@ test "detach while a call runs: returns at once, answers nothing more, the reape
 
     reaper.deinit(); // joins the reaper, which joined the broker's threads and freed it
     reaped = true;
-    try testing.expect(try threadCount() <= baseline);
+    try expectThreadsBackTo(baseline, 2_000);
 }
 
 test "a broker detached before any call needs no thread and frees at once" {
@@ -132,5 +142,5 @@ test "detach after a call's engine answer and before its publication: the sink i
 
     reaper.deinit();
     reaped = true;
-    try testing.expect(try threadCount() <= baseline);
+    try expectThreadsBackTo(baseline, 2_000);
 }
