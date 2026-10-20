@@ -18,13 +18,26 @@ extern "c" fn zb_keychain_free(token: ?[*:0]u8) void;
 extern "c" fn free(ptr: ?*anyopaque) void; // releases the strdup'd out_err from the C side
 
 /// A token returned by `lookup`, owned by the C side. Release with `deinit` (the C side wipes then frees).
+/// `deinit` takes `*Token` and disarms the owner (ptr -> null), so a second deinit is a no-op and a stale
+/// copy cannot double-free the one C allocation (RoseCat f6b005b).
 pub const Token = struct {
-    ptr: [*:0]u8,
+    /// The owned C buffer, or null once released. Internal — reach it through `slice`/`deinit`, never
+    /// read this field directly (it is only visible to tests, which assert the disarm).
+    ptr: ?[*:0]u8,
+
+    /// The token text. Valid only on a LIVE token (before deinit); it unwraps the owned pointer, so calling
+    /// it after deinit is a programming error (null unwrap), never a read of freed memory.
     pub fn slice(self: Token) [:0]const u8 {
-        return std.mem.span(self.ptr);
+        return std.mem.span(self.ptr.?);
     }
-    pub fn deinit(self: Token) void {
-        zb_keychain_free(self.ptr);
+
+    /// Wipe + free the owned buffer and DISARM the owner (ptr -> null). Takes `*Token` so the live owner is
+    /// invalidated; a second deinit — or a deinit of a disarmed copy — is a no-op (no double-free).
+    pub fn deinit(self: *Token) void {
+        if (self.ptr) |p| {
+            zb_keychain_free(p);
+            self.ptr = null;
+        }
     }
 };
 
@@ -92,12 +105,45 @@ test "macOS keychain port: store/lookup/clear round-trip on a disposable keychai
     try std.testing.expectEqual(Result.absent, lookup(path.ptr, pw, svc, acct).result);
     try std.testing.expectEqual(Result.ok, store(path.ptr, pw, svc, acct, canary));
 
-    const got = lookup(path.ptr, pw, svc, acct);
+    var got = lookup(path.ptr, pw, svc, acct);
     try std.testing.expectEqual(Result.ok, got.result);
     try std.testing.expect(got.token != null);
-    defer if (got.token) |t| t.deinit();
+    defer if (got.token) |*t| t.deinit();
     try std.testing.expectEqualStrings(std.mem.span(canary), got.token.?.slice());
 
     try std.testing.expectEqual(Result.ok, clear(path.ptr, pw, svc, acct));
     try std.testing.expectEqual(Result.absent, lookup(path.ptr, pw, svc, acct).result);
+}
+
+test "macOS keychain port: Token.deinit disarms the owner (no double-free)" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    var buf: [160]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&buf, "/tmp/zb-ms5-zigport-disarm-{d}.keychain", .{std.c.getpid()});
+    const pw = "zb-temp-pw";
+    _ = unlink(path.ptr);
+
+    var kc: SecKeychainRef = null;
+    try std.testing.expectEqual(@as(c_int, 0), SecKeychainCreate(path.ptr, @intCast(pw.len), pw.ptr, 0, null, &kc));
+    defer {
+        _ = SecKeychainDelete(kc);
+        if (kc) |k| CFRelease(k);
+        _ = unlink(path.ptr);
+    }
+    _ = SecKeychainUnlock(kc, @intCast(pw.len), pw.ptr, 1);
+
+    const svc: [*:0]const u8 = "dev.zigbrowser.ClaudeAgentToken.zigtest";
+    const acct: [*:0]const u8 = "default";
+    try std.testing.expectEqual(Result.ok, store(path.ptr, pw, svc, acct, "zb-canary-disarm-11a3"));
+
+    const got = lookup(path.ptr, pw, svc, acct);
+    try std.testing.expectEqual(Result.ok, got.result);
+    try std.testing.expect(got.token != null);
+    var tk = got.token.?;
+    try std.testing.expect(tk.ptr != null); // live before deinit
+    tk.deinit();
+    try std.testing.expect(tk.ptr == null); // DISARMED: the owner is invalidated (fails if deinit takes by value)
+    tk.deinit(); // second deinit is a no-op — no double-free of the one C allocation
+    try std.testing.expect(tk.ptr == null);
+
+    try std.testing.expectEqual(Result.ok, clear(path.ptr, pw, svc, acct));
 }
