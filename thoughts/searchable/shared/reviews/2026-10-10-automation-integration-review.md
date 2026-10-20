@@ -12610,3 +12610,51 @@ unapproved until its rows are generation-aware and its initial/all-control
 census is complete. No full gate was expected for an unregistered red. The
 approved linear push-through boundary remains the already-pushed
 **`da3028f`**.
+
+## Windows WS0 foundation follow-up (`b8dcd21`)
+
+### `b8dcd21` — BLOCKED
+
+This is correctly narrower than the parent commit's “WS0 green” claim. The
+commit title calls it a foundation, the unimplemented full/two-host paths say
+so at runtime, and the commit message explicitly says both the two-host run and
+the post-registration full Linux gate remain pending. It does **not** claim
+that `zig build test` ran. The Win10-only and Win11-only cases close the earlier
+one-missing-host test gap, and the raw Windows path now reaches PowerShell only
+as base64 data. The encoded program rejects `GetFinalPathNameByHandle` returning
+zero or a length at least as large as its buffer.
+
+Two blockers remain:
+
+1. **BLOCKER — the whole-gate display scrub trusts a caller-controlled bypass.**
+   `tests/windows/gate.sh:20-23` skips its re-exec whenever inherited
+   `ZB_GATE_SCRUBBED` is nonempty. A direct, display-free diagnostic invoked
+   `--fence-string` with that marker pre-set and fake values for all three
+   display variables. Its Python child recorded `DISPLAY=:0`,
+   `WAYLAND_DISPLAY=wayland-0` and `XAUTHORITY=/tmp/fake-auth`. Thus the hard
+   “no child sees the user's display” boundary is not unconditional, and the
+   new red misses exactly this case. Unset the three variables unconditionally
+   at entry (no inherited sentinel is needed) and add the hostile-marker case.
+2. **BLOCKER-for-tests — the resolver's new failure branches have no red.**
+   `ResolvePathSafetyTests` proves that quote, backtick and newline paths are
+   encoded data and round-trip exactly, but it never exercises or even asserts
+   the zero and `n >= cap` branches at `tests/windows/resolve_path.sh:48-49`.
+   Deleting either check leaves all twelve cases green. The earlier finding
+   required a buffer-too-small failure; add a fail-closed oracle/live fixture
+   for both return values. AzureRidge's promised VM exercise may supply the
+   host-side evidence, but it is not evidence in this commit.
+
+**SHOULD — stale headers still overclaim the deferred work.** Despite the
+correct commit message and runtime diagnostics, `tests/windows/gate.sh:2-6`
+still says the script proves both hosts and their unlocked sessions, while the
+implementation at `:174-182` says that orchestration is absent.
+`tests/windows/gate_selftest.py:1-8` likewise still describes an unregistered
+red for a nonexistent script. Align both with the foundation scope.
+
+An independent run with all display variables removed passed **12/12 tests in
+3.803 s**. `bash -n`, Python compilation and `git diff --check` also passed; no
+GUI, live browser or Windows host was touched. The required full Linux gate is
+still open exactly as the orchestrator directed, after the slot returns to
+AzureRidge. Findings were sent as Agent Mail 6126. Because earlier linear
+commits are also blocked, the approved push-through boundary remains the
+already-pushed **`da3028f`**.
