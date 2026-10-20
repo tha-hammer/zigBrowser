@@ -25,10 +25,12 @@ REPO="$PWD"
 HERE="tests/windows"
 
 # ---- one ssh/scp opts pair (refactor: shared by every remote step) ------------------------
-KNOWN_HOSTS="${ZB_WIN_KNOWN_HOSTS:-$HERE/known_hosts}"
-ssh_opts() { # NUL-delimited ssh argv; $1=key
+# Per-host identity: each Windows host pins its OWN known_hosts (the Win11 VM and the Win10 file
+# server have different host keys), so the key AND the UserKnownHostsFile are passed in per call —
+# never a single shared file. StrictHostKeyChecking=yes makes a host-key mismatch a hard refusal.
+ssh_opts() { # NUL-delimited ssh argv; $1=key $2=known_hosts
   printf '%s\0' ssh -i "$1" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-    -o UserKnownHostsFile="$KNOWN_HOSTS" -o BatchMode=yes -o ConnectTimeout=15 \
+    -o UserKnownHostsFile="$2" -o BatchMode=yes -o ConnectTimeout=15 \
     -o ServerAliveInterval=10
 }
 
@@ -113,8 +115,9 @@ selftest_stage() {
   local host="${ZB_WIN11_HOST:-${ZB_WIN10_HOST:-}}"
   local port="${ZB_WIN11_PORT:-22}"
   local user="${ZB_GUEST_USER:-}"
-  local key="${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}"
-  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key")
+  local key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
+  local kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
+  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key" "$kh")
   local manifest="$HERE/stage_manifest.txt"
   local -a files=(); mapfile -t files < <(grep -vE '^[[:space:]]*(#|$)' "$manifest" 2>/dev/null)
   # Every child (tar AND ssh) goes through run_remote so none carries the Linux display (WS0.3).
@@ -135,11 +138,18 @@ selftest_stage() {
 }
 
 # ---- WS0.6 + WS0.7 two-host --probe-only -------------------------------------------------
-probe_host() { # $1=user $2=host $3=port -> prints the host's host_probe.ps1 JSON (display-scrubbed)
-  local key="${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}"
-  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$key")
+probe_host() { # $1=user $2=host $3=port $4=key $5=known_hosts -> prints the host's host_probe.ps1 JSON
+  # The probe script is STREAMED over ssh stdin; it is NEVER copied onto the host. This keeps the Win10
+  # file server strictly read-only — nothing is written there, not even in zb\ — and needs no host shell
+  # reconfiguration (works with the default cmd.exe DefaultShell, so no cmd.exe 8191-char cap applies).
+  # We do NOT use `powershell -Command -`: reading commands from stdin mis-tokenizes a multi-line
+  # here-string (the probe's `Add-Type -MemberDefinition @'...'@` block), which silently drops the rest
+  # of the script (verified on the VM: empty output, exit 0). Instead `$input | Out-String | iex` reads
+  # the WHOLE piped script as one string and runs it, so here-strings and Add-Type parse correctly.
+  # -EncodedCommand is not an option: the base64 (~30 KB) exceeds the default cmd.exe command-line cap.
+  local -a SSH; mapfile -d '' SSH < <(ssh_opts "$4" "$5")
   run_remote "${SSH[@]}" -p "$3" "$1@$2" \
-    "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File zb\\host_probe.ps1"
+    'powershell -NoProfile -NonInteractive -Command "$input | Out-String | iex"' < "$HERE/host_probe.ps1"
 }
 
 validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
@@ -183,8 +193,11 @@ if _build_int(v.get("os_build")) < 22621:
     sys.stderr.write("win11: os_build %r is below the Windows 11 22H2 floor (22621)\n" % v.get("os_build")); sys.exit(1)
 if not isinstance(v.get("webview2_pv"), str) or not v.get("webview2_pv").strip():
     sys.stderr.write("win11: webview2_pv missing or empty\n"); sys.exit(1)
-if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb"), bool) or v.get("free_gb") < 20:
-    sys.stderr.write("win11: free_gb %r is below 20\n" % v.get("free_gb")); sys.exit(1)
+# VM free-space bar is 10 GB, not 20: the KVM host disk is ~97% full so the VM image cannot grow, and a
+# zigBrowser build plus the WebView2 runtime fit comfortably in ~13 GB (orchestrator decision 2026-10-20;
+# see the plan's WS0 free-space note). The physical file server keeps the 20 GB bar (it has ample disk).
+if not isinstance(v.get("free_gb"), (int, float)) or isinstance(v.get("free_gb"), bool) or v.get("free_gb") < 10:
+    sys.stderr.write("win11: free_gb %r is below 10\n" % v.get("free_gb")); sys.exit(1)
 if not isinstance(v.get("root"), str) or not v.get("root").strip():
     sys.stderr.write("win11: root missing or empty\n"); sys.exit(1)
 # snapshot_marker is NOT an in-VM probe field — a file inside the VM proves only that someone wrote a
@@ -306,10 +319,16 @@ probe_only() { # WS0.6 (VM identity) + WS0.7 (file-server fence) across both hos
   fi
   echo "WS0.6: Win11 snapshot '$want' state=$sstate created='$screated'" >&2
   local vm_json fs_pre fs_post
-  vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}")
-  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}")
+  # Per-host key + known_hosts (new ZB_WIN11_*/ZB_WIN10_* vars; fall back to the legacy single
+  # ZB_WIN_* then the on-disk defaults). The VM and the file server pin DIFFERENT host keys.
+  local vm_key="${ZB_WIN11_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win11-m8/zb_win_key}}"
+  local vm_kh="${ZB_WIN11_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win11-m8/known_hosts}}"
+  local fs_key="${ZB_WIN10_KEY:-${ZB_WIN_KEY:-/home/maceo/vms/win10-fs/zb_win_key}}"
+  local fs_kh="${ZB_WIN10_KNOWN_HOSTS:-${ZB_WIN_KNOWN_HOSTS:-/home/maceo/vms/win10-fs/known_hosts}}"
+  vm_json=$(probe_host "${ZB_WIN11_USER:-zbtext}" "$ZB_WIN11_HOST" "${ZB_WIN11_PORT:-2222}" "$vm_key" "$vm_kh")
+  fs_pre=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh")
   # A full gate runs the product tests here; --probe-only re-probes to catch any change (WS0.7).
-  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}")
+  fs_post=$(probe_host "${ZB_WIN10_USER:-zbtest}" "$ZB_WIN10_HOST" "${ZB_WIN10_PORT:-22}" "$fs_key" "$fs_kh")
   validate_probes "$vm_json" "$fs_pre" "$fs_post" >/dev/null || return 1
   printf 'WIN11 %s\nWIN10 %s\n' "$vm_json" "$fs_post"
   return 0

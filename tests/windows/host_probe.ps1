@@ -1,4 +1,5 @@
-# host_probe.ps1 — WS0.1 read-only host probe. Emits ONE JSON object (schema 1) to stdout.
+# host_probe.ps1 — WS0.1 read-only host probe. Emits ONE JSON object (schema 2) to stdout.
+# Streamed to the host over ssh stdin (powershell -Command -); never written to disk on the host.
 #
 # Standard-user safe by construction: no WMI/CIM (access-denied 0x80041003 for a standard user),
 # no `tasklist /v`, no scheduled tasks, no writes to the host. It reports console_session_id and

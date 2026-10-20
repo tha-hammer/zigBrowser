@@ -468,7 +468,10 @@ stops the gate before any product test runs.
    sandbox users are denied interactive and network logon (`SeDenyInteractiveLogonRight`,
    `SeDenyNetworkLogonRight`) **only after a spike shows the launcher still works**, and are hidden from
    the sign-in screen (`SpecialAccounts\UserList`) so the owner never sees them.
-6. **Resources.** The probe records free space on `C:` and fails below 20 GB; the gate keeps run artifacts
+6. **Resources.** The probe records free space on `C:`. The bar is **20 GB on the physical file server**
+   but **10 GB on the Win11 VM** (orchestrator decision 2026-10-20): the KVM host disk is ~97% full so the
+   VM image cannot grow, and a zigBrowser build plus the WebView2 runtime fit comfortably in the VM's ~13 GB.
+   The gate keeps run artifacts
    under `zb\runs\<id>\`, deletes them at the end, and caps a run at 30 minutes of wall time; benchmarks
    (item 4) are scheduled with the owner. No test runs while another user is signed in on the console
    (WS0.7).

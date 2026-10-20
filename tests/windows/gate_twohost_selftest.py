@@ -43,6 +43,10 @@ _SSH_STUB = r"""
 argv="$*"
 case "$argv" in
   *host_probe*|*powershell*|*EncodedCommand*)
+    # The real probe streams host_probe.ps1 over ssh stdin (powershell -Command -). Emulate a probe
+    # consuming that stdin, and record it so the transport test can prove the script was streamed
+    # (not copied as a -File). With no file redirected, stdin is /dev/null -> cat returns at once.
+    [ -n "${ZB_SELFTEST_STDIN_LOG:-}" ] && cat >> "$ZB_SELFTEST_STDIN_LOG"
     case "$argv" in
       *127.0.0.1*|*zbtext@*) printf '%s' "${ZB_SELFTEST_PROBE_WIN11:-}" ;;
       *100.123.34.15*|*zbtest@*)
@@ -115,16 +119,22 @@ class _TwoHostCase(unittest.TestCase):
             "ZB_WIN11_SNAPSHOT": "pre-ws0-green-2026-10-19",
             "ZB_WIN10_HOST": "100.123.34.15", "ZB_WIN10_PORT": "22", "ZB_WIN10_USER": "zbtest",
             "ZB_WIN10_MARKER": FS_MARKER,
-            "ZB_WIN_KEY": str(td / "key"), "ZB_WIN_KNOWN_HOSTS": str(td / "kh"),
+            # Per-host key + known_hosts (distinct files — the two hosts pin different host keys).
+            "ZB_WIN11_KEY": str(td / "win11.key"), "ZB_WIN11_KNOWN_HOSTS": str(td / "win11.kh"),
+            "ZB_WIN10_KEY": str(td / "win10.key"), "ZB_WIN10_KNOWN_HOSTS": str(td / "win10.kh"),
             "ZB_SELFTEST_WIN10_CALLS": str(td / "win10.calls"),
             # sensible healthy defaults; cases override
             "ZB_SELFTEST_PROBE_WIN11": _vm_probe(),
             "ZB_SELFTEST_PROBE_WIN10": _fs_probe(),
         }
-        (td / "key").write_text("x"); (td / "kh").write_text("#")
+        for _n in ("win11.key", "win11.kh", "win10.key", "win10.kh"):
+            (td / _n).write_text("x")
         env.update(extra)
+        # stdin=DEVNULL: nothing is piped to the gate itself, so the stub's stdin is /dev/null unless
+        # probe_host explicitly redirects host_probe.ps1 into ssh (the streaming path under test).
         proc = subprocess.run(["bash", str(GATE), "--probe-only"], env=env,
-                              capture_output=True, text=True, timeout=90)
+                              capture_output=True, text=True, timeout=90,
+                              stdin=subprocess.DEVNULL)
         return proc
 
     def _assert_fail_closed(self, proc, needle):
@@ -486,6 +496,78 @@ class SshHygiene(_TwoHostCase):
         # Mirror: `yes` then `no` is effectively YES (first wins) — OpenSSH treats it safe.
         invs, bad = _batchmode_violations("ARGV: -o BatchMode=yes -o BatchMode=no host probe\n")
         self.assertEqual(bad, [], "effective BatchMode=yes (first wins) must be accepted")
+
+
+def _known_hosts_of(tokens):
+    """The UserKnownHostsFile value from one ssh invocation's -o options (or None)."""
+    for o in _o_options(tokens):
+        if o.startswith("-oUserKnownHostsFile="):
+            return o[len("-oUserKnownHostsFile="):]
+    for i, o in enumerate(_o_options(tokens)):
+        if o.startswith("UserKnownHostsFile="):
+            return o[len("UserKnownHostsFile="):]
+    return None
+
+
+class ProbeTransport(_TwoHostCase):
+    def test_probe_streams_script_over_stdin_not_file(self):
+        # Read-only rule: the probe script is NEVER written to a host; it streams over ssh stdin and is
+        # run with `$input | Out-String | iex` (NOT `powershell -Command -`, which silently drops a
+        # multi-line here-string — the probe's Add-Type block — verified on the VM). So no invocation
+        # may use -File, the transport must read $input, and the EXACT host_probe.ps1 text must reach
+        # the stub on stdin. (Red against the old `-File zb\host_probe.ps1` form.)
+        script = (REPO / "tests" / "windows" / "host_probe.ps1").read_text()
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            sshlog = td / "ssh.log"; stdinlog = td / "stdin.log"
+            proc = self._run_probe_only(td, {"ZB_SELFTEST_SSH_LOG": str(sshlog),
+                                             "ZB_SELFTEST_STDIN_LOG": str(stdinlog)})
+            self.assertEqual(proc.returncode, 0, f"healthy probe must pass\n{proc.stderr}")
+            argv = sshlog.read_text() if sshlog.exists() else ""
+            self.assertNotIn("-File", argv, "probe must not place/run a script FILE on the host")
+            self.assertIn("$input", argv, "probe must read the streamed script via $input (Out-String | iex)")
+            streamed = stdinlog.read_text() if stdinlog.exists() else ""
+            self.assertIn(script, streamed, "the exact host_probe.ps1 must be streamed over ssh stdin")
+
+    def test_each_host_pins_its_own_known_hosts(self):
+        # The VM and the file server have different host keys, so each ssh must pin its OWN known_hosts.
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            sshlog = td / "ssh.log"
+            proc = self._run_probe_only(td, {"ZB_SELFTEST_SSH_LOG": str(sshlog)})
+            self.assertEqual(proc.returncode, 0, f"healthy probe must pass\n{proc.stderr}")
+            win11_kh = str(td / "win11.kh"); win10_kh = str(td / "win10.kh")
+            self.assertNotEqual(win11_kh, win10_kh)
+            invs = _ssh_invocations(sshlog.read_text())
+            self.assertTrue(invs, "no ssh invocations to check")
+            saw11 = saw10 = False
+            for tokens in invs:
+                argv = " ".join(tokens); kh = _known_hosts_of(tokens)
+                if "127.0.0.1" in argv or "zbtext@" in argv:
+                    self.assertEqual(kh, win11_kh, f"win11 ssh must pin win11 known_hosts: {argv}"); saw11 = True
+                elif "100.123.34.15" in argv or "zbtest@" in argv:
+                    self.assertEqual(kh, win10_kh, f"win10 ssh must pin win10 known_hosts: {argv}"); saw10 = True
+            self.assertTrue(saw11 and saw10, "expected ssh to both the VM and the file server")
+
+    def test_vm_free_gb_13_passes_new_bar(self):
+        # 13.4 GB is the real VM value; the 10 GB bar (host-disk limit, orchestrator 2026-10-20) accepts it.
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(free_gb=13.4)})
+            self.assertEqual(proc.returncode, 0, f"VM free_gb 13.4 must pass the 10 GB bar\n{proc.stderr}")
+
+    def test_vm_free_gb_below_10_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN11": _vm_probe(free_gb=9.5)})
+            self._assert_fail_closed(proc, "free_gb")
+
+    def test_fs_free_gb_still_needs_20(self):
+        # The file server keeps the 20 GB bar: 13.4 GB must FAIL there (only the VM bar was lowered).
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t),
+                                        {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(free_gb=13.4)})
+            self._assert_fail_closed(proc, "free_gb")
 
 
 if __name__ == "__main__":
