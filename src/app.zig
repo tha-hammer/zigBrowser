@@ -54,10 +54,15 @@ pub fn runWithIo(arena: std.mem.Allocator, io: std.Io, command: cli.Command) err
 /// home's owner lock, then runs the helper's `setup` command synchronously
 /// with an explicit environment (agent_setup.zig) and returns its status.
 fn runAgentSetup(arena: std.mem.Allocator, spec: AgentSetupSpec) errors.BrowserError!u8 {
-    if (comptime builtin.os.tag != .linux) {
-        std.debug.print("zigBrowser: agent-setup: the Claude Agent is Linux-only\n", .{});
-        return 1;
+    switch (agent_setup.platformGate(builtin.os.tag, agent_setup.seatbelt_ready)) {
+        .run => {},
+        .refuse => |line| {
+            std.debug.print("{s}\n", .{line});
+            return 1;
+        },
     }
+    // The macOS port of the rest (rev 14 items 2, 4, 5) is not wired yet; the gate above refuses there.
+    if (comptime builtin.os.tag != .linux) return 1;
     const user_home = getenvOwned(arena, "HOME");
     const home = (agent_setup.defaultHomeDir(arena, getenvOwned(arena, "XDG_DATA_HOME"), user_home) catch null) orelse {
         std.debug.print("zigBrowser: agent-setup: neither XDG_DATA_HOME nor HOME is usable\n", .{});
