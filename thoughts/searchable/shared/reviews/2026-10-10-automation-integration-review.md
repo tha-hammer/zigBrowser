@@ -18677,3 +18677,89 @@ implementation note, not a remaining rev-15 contract defect.
 
 This was a docs-only review. `git diff --check 059268d^..059268d` passed; no
 build, Mac, browser or live display was used.
+
+## WS0 AccessCheck and task-pin follow-up (`62c7805`)
+
+Reviewed at `62c7805` on 2026-10-20 against the four open findings in
+`1e76b29`.
+
+**Verdict: BLOCKED. Do not start the first watched two-host `--probe-only`
+run on this commit.** The production ACL evaluator is materially corrected:
+it now calls Win32 `AccessCheck` with a duplicated impersonation token and the
+object's binary security descriptor, asks independently for all six mutating
+rights, and treats every setup/API failure as writable so the outer gate fails
+closed. The normative plan contradictions about the read-only file server are
+also reconciled. The current display-free hostless suite passes **83/83 with
+12 live skips**, `bash -n`, Python compilation and diff-check pass.
+
+Three blockers and the disclosed owner gate remain:
+
+1. `tests/windows/verify_task.ps1:23-42` does not implement its claimed exact
+   task pin. It counts only `Actions.Exec`, so one valid Exec plus a hostile
+   action of another type passes. It reduces the executable to its leaf, so an
+   attacker-controlled path ending in `powershell.exe` passes. It only searches
+   the argument text for the staged path, so extra commands/arguments pass.
+   Finally, its fallback accepts any principal with the same leaf username,
+   even from another machine/domain. Require exactly one action child, the
+   exact canonical executable and parsed argument tuple, and an exact SID;
+   add a live hostile case for every bypass.
+2. `tests/windows/gate_twohost_selftest.py:761-773` catches every failure while
+   importing the live suite and returns a green suite. In a clean throwaway
+   export, deleting `host_live_test.py` still exited **0**, `Ran 71 tests … OK`,
+   with only a `FileNotFoundError` note. A missing, malformed or unloadable
+   registered suite must make the gate red.
+3. `tests/windows/host_live_test.py:56-100` contradicts its own top-level
+   claim: it constructs only in-memory SDDL, not temporary on-disk DACLs read
+   through production `Get-Acl`. It also does not independently cover
+   `AppendData`, `DeleteChild`, `WRITE_DAC`, `WRITE_OWNER`, or an unreadable or
+   unsupported descriptor. Removing any of those four desired-access checks
+   survives. Add the actual filesystem boundary and per-right mutants.
+4. The locked-console case remains owner-gated and skipped unless
+   `ZB_EXPECT_LOCKED=1`. It must actually pass before the lock detector is
+   accepted.
+
+The verdict and reproducer were mailed to AzureRidge in Agent Mail 6857. No
+Windows host, browser, live socket or display was used.
+
+## S7b acceptance follow-up (`77efea6`, `afadaac`)
+
+Reviewed at `afadaac` on 2026-10-20 against the four open S7b coverage findings
+in `30b773e`.
+
+### `77efea6` — APPROVED for the `30b773e` coverage gaps
+
+The real-binary chain now runs all six read tools with ordinary selectors and
+scans the complete returned blocks, decoded image and persisted transcripts
+for the cookie, automation-token and stored-token canaries. It pins the real
+CLI boundary's exact refusal for all five unregistered write/credential tools.
+The SessionStart hook attempts in-place, rename and truncate planting of both
+`hooks.Stop` and `mcpServers`, then the same session successfully reads the
+page; every attempt is `EROFS`, the configuration hash is unchanged, and no
+planted marker runs. The new drawer assertion is genuinely red before the
+green.
+
+### `afadaac` — APPROVED
+
+For a failed browser tool call, the GTK-thread completion first writes the
+same-session tool result and then shows exactly one drawer error bubble made
+from the broker's already-redacted fixed text. It never receives the engine
+error object/data, and the session/window check retains the existing late-close
+drop. The new e2e is registered in `zig build test`; the reported raw-error
+mutant fails both the model-result and bubble assertions. This cumulatively
+closes all four findings in `30b773e`.
+
+The added deadline case does **not** close the separate `83c9d96` blocker in
+`1e2aacb`. It proves the environment value reaches the real hello, but
+`H=3`, the same fixed timeout text and only `elapsed < 8 s` cannot distinguish
+the broker's required B≈2.25 s from the helper's own H=3 s. Restoring the
+broker to H=120 can therefore still pass. Invalid/no-e2e process-env cases,
+exactly-once completion and the late engine result are also not exercised.
+The authoritative S7.8 wording should later be reconciled with the exact CLI
+refusal now observed, rather than claiming the broker's shorter string on a
+call the CLI rejects first.
+
+Python compilation and `git diff --check 77efea6^..afadaac` passed. Owner
+evidence reports **38 checks, 0 failures**, with three failures on the stated
+pre-green export. I did not take a full-gate slot or run a browser/display.
+Verdicts and the remaining deadline hold were mailed to BlackRobin in Agent
+Mail 6858.
