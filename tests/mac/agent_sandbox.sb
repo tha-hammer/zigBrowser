@@ -1,0 +1,34 @@
+(version 1)
+;; MS6 macOS agent Seatbelt profile (spike; productionization moves this to packaging/macos and wires it into
+;; the MacSeatbeltBackend launcher). Realizes the shared SandboxBackend semantic spec on macOS:
+;;   - deny-default (file, network, mach, process-info, everything);
+;;   - writes confined to the agent WORKSPACE (+ the standard character devices);
+;;   - network denied except the two loopback bridge ports (the per-session egress proxy port is MS6.4,
+;;     added as a -D param then);
+;;   - reads broadly allowed FOR NOW so the helper's dynamic linker/libraries load, with the PROTECTED subpath
+;;     denied (last-match-wins) to prove read containment.
+;; Passed via -D: WORKSPACE (the one writable tree) and PROTECTED (a tree the agent must not read).
+(deny default)
+
+;; The helper may fork/exec its own children; they inherit this profile (containment is proven in the gate).
+(allow process-fork)
+(allow process-exec)
+
+;; TODO(MS6 next increment): flip to deny-default READS with a curated system allowlist (/usr/lib, /System,
+;; the dyld cache, the bundle, WORKSPACE). For this increment reads are broad except the PROTECTED subpath,
+;; which is denied so read containment is still proven. Last matching rule wins in SBPL.
+(allow file-read*)
+(deny file-read* (subpath (param "PROTECTED")))
+
+;; Writes: ONLY the agent workspace + the standard character devices. The user's home, the bundle, and any
+;; /private/tmp path outside the workspace all fail closed.
+(allow file-write*
+  (subpath (param "WORKSPACE"))
+  (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (literal "/dev/tty"))
+
+;; Network: deny-default; only the two loopback bridge ports are reachable. A public IP, LAN, DNS, or any
+;; other port fails closed. (MS6.4 adds the per-session egress proxy port and proves traffic through it.)
+(allow network-outbound (remote ip "localhost:51091") (remote ip "localhost:31337"))
+
+(allow sysctl-read)
+(allow mach-lookup)
