@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 # Reuse the Linux harness pieces (shipped to the Mac by build-on-mac.sh under tests/e2e).
@@ -47,24 +48,24 @@ def eprint(*a):
 def stop_browser_macos(proc: subprocess.Popen) -> None:
     """macOS-safe, orphan-safe teardown: kill the browser's whole process GROUP (no Linux /proc).
 
-    The process is its own session/group leader (start_new_session), so killpg reaches any helper
-    it spawned. SIGTERM then SIGKILL, each bounded, and reap. Safe to call more than once."""
-    if proc.poll() is not None:
-        return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        return
+    start_new_session makes the browser its own session/group leader, so the group id IS its pid and
+    killpg reaches every helper it spawned (WebKit web/network processes). CRITICAL (dd0b456/6206): do
+    NOT early-return when the leader has already exited — surviving group children would then leak.
+    Signal the WHOLE group (SIGTERM, brief grace, SIGKILL) regardless of leader state, and reap the
+    leader only AFTER (so the group id == proc.pid can't be reused by the OS mid-teardown). Idempotent."""
+    pgid = proc.pid  # group leader == pid (start_new_session); valid until we reap, below
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pgid, sig)
         except (ProcessLookupError, OSError):
-            break
-        try:
-            proc.wait(timeout=5)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+            break  # the whole group is gone
+        if sig == signal.SIGTERM:
+            # Brief grace for the group to exit on SIGTERM before escalating; do not reap yet.
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and proc.poll() is None:
+                time.sleep(0.05)
+    # The group has been signalled (children included, even if the leader was already gone). Reap the
+    # leader now, bounded, so we never leave a zombie.
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
