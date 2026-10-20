@@ -12767,6 +12767,54 @@ complete. Verdict and evidence were sent to AzureRidge as Agent Mail 6132.
 The approved linear push-through boundary remains the already-pushed
 **`da3028f`**.
 
+## Plan rev 16.20.14: cap ordering and local-cap completion (`ec92508`)
+
+### `ec92508` — BLOCKED pending the prompt-correlation decision
+
+Two findings from `6d812b4` are closed correctly:
+
+- **Item 2 CLOSED.** The validator now keeps `streamed` per current prompt,
+  initializes it false when that prompt is written, rejects a current-id cap
+  before its first delta, accepts it after the delta, and resets the next
+  prompt to unstreamed. The proposed protocol red covers each transition
+  (`plan:2209-2210`). Prompt identity therefore complements rather than
+  replaces within-prompt ordering.
+- **Item 3 CLOSED.** `drawer-cap-finite` crosses `CONTENT_MAX` using only
+  deltas, deliberately omits `reply_capped`, then sends a shorter
+  `assistant_message` and `result`. Its post-result Ctrl+A/C oracle requires
+  the exact prefix plus one marker (`plan:2211-2214`). This directly covers
+  the drawer-local cap path promised by `plan:2183`.
+
+The completed-bubble contract from rev 16.20.13 remains sound. However:
+
+- **Item 1 remains OPEN and is neither addressed nor deferred to a named
+  slice.** The only new disposition is “Pending the orchestrator's decision”
+  (`plan:2215`). It supplies no slice name, owner, dependency/gate, frame
+  schema, or red suite. The canonical table still leaves
+  `assistant_delta`, `assistant_message`, `tool_call`, `result`, and
+  session-scoped `error` correlated only by session (`plan:418-423`), so a
+  stale prompt frame can still append to, replace, or end a later prompt.
+  The revision also does not state that `result`, session `error`, and
+  `session_ended` clear the active prompt id and its streamed/capped state;
+  without that lifecycle rule, a same-id cap after an ending frame can remain
+  validator-valid even though the app later ignores it. Full prompt-scoped
+  correlation must either land in S5c or be deferred explicitly to a named,
+  owned, ordered slice with stale/missing/future/duplicate-frame reds.
+- **Item 4 remains SHOULD.** The `reply_capped` table row still says the new
+  revision replaces the old ordering rule while retaining that superseded
+  prose verbatim (`plan:420`), and `prompt_id` still lacks an exact integer
+  bound and overflow policy.
+
+Therefore the answer requested by the orchestrator is explicit: **item 1 is
+not addressed, and it is not deferred to a named slice.** It remains a
+protocol blocker pending the scope decision and the corresponding plan
+amendment.
+
+`git diff --check ec92508^ ec92508` passes. No runtime gate was needed for
+this docs-only revision. The verdict was sent to BlackRobin as Agent Mail
+6135. The approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
+
 ## Plan rev 16.20.13: completed capped bubbles and prompt correlation (`e1d44c5`)
 
 ### `e1d44c5` — BLOCKED (plan/tests)
