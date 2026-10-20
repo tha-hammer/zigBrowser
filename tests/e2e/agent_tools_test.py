@@ -14,8 +14,12 @@ through the socket.
 - own-window: the same from window 2's drawer gives "Hello from page 2";
 - tools-listed: the request lists exactly S7.5's six mcp__zigbrowser__ tools;
 - screenshot: the tool_result holds one image whose base64 decodes to a PNG or JPEG;
-- window-fixed: a model-supplied window_id is an error "window is fixed to this drawer";
-- refused: evaluate and cookies_get are errors, and no request body holds the page's cookie;
+- window-fixed: a model-supplied window_id is an error that reads nothing. The SDK's input
+  schema (additionalProperties false) refuses it before the broker sees it; the broker's own
+  refusal, "window is fixed to this drawer", is defence in depth, unit-tested in
+  tests/agent_broker_test.zig, and this case does not reach it;
+- refused: evaluate (no tool of the server: the CLI refuses it) is an error, and no request
+  body holds the page's cookie (the other forbidden calls: agent_tools_acceptance_test.py);
 - detach: closing a window while its call waits closes promptly (the browser answers within
   2 s), the call gets no answer from the browser (only the helper's or the CLI's own ending
   text when its session ends), and no broker thread is left.
@@ -194,8 +198,8 @@ def case_window_fixed(binary: Path, tmp: Path, check) -> None:
         block = ask(b, check, fake, "other-window")
         if block is not None:
             text = result_text(block)
-            check(block.get("is_error") is True and "Hello from page" not in text,
-                  f"a model-supplied window_id is an error and reads nothing ({text[:120]!r})")
+            check(block.get("is_error") is True and "window_id" in text and "Hello from page" not in text,
+                  f"a model-supplied window_id is refused by the tool's input schema and reads nothing ({text[:120]!r})")
     finally:
         finish(b, fake)
 

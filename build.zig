@@ -1329,6 +1329,15 @@ pub fn build(b: *std.Build) void {
         "agent-socket-separation-e2e",
     });
     agent_socket_separation_e2e.addArtifactArg(exe);
+    // RoseCat 3b82071: the rest of S7's real-chain contracts (S7.2's other read tools, S7.6,
+    // S7.7, S7.8) and the drawer-only boundary against a hostile page and the socket.
+    const agent_tools_acceptance_e2e = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "python3 tests/e2e/agent_tools_acceptance_test.py --binary \"$1\"",
+        "agent-tools-acceptance-e2e",
+    });
+    agent_tools_acceptance_e2e.addArtifactArg(exe);
     // Chat drawer S5b (S5.4): one session per window, transcripts in the agent's own home.
     const agent_window_sessions_e2e = b.addSystemCommand(&.{
         "sh",
@@ -2157,6 +2166,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&agent_chat_e2e.step);
     test_step.dependOn(&agent_tools_e2e.step);
     test_step.dependOn(&agent_socket_separation_e2e.step);
+    test_step.dependOn(&agent_tools_acceptance_e2e.step);
     test_step.dependOn(&agent_window_sessions_e2e.step);
     test_step.dependOn(&agent_flood_e2e.step);
     test_step.dependOn(&agent_cap_e2e.step);
