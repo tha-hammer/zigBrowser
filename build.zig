@@ -179,6 +179,20 @@ pub fn build(b: *std.Build) void {
     exe.step.dependOn(pkg_guard);
     b.installArtifact(exe);
 
+    // WS3 step 2 (Windows plan, coordination rev 2.4): the seven zb_* the Windows config arm and
+    // cookie port need, linked with the WebView2 shim and run on Windows
+    // (tests/windows/ws3_shim_test.c). Windows-target builds only; run on the Win11 VM by
+    // `bash tests/windows/build-on-windows.sh ws3-shim-test-win`.
+    if (backend == .webview2_backend) {
+        const ws3_shim_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        configureBackend(ws3_shim_module, b, backend, webview2_paths);
+        ws3_shim_module.addCSourceFile(.{ .file = b.path("tests/windows/ws3_shim_test.c"), .flags = &.{"-std=c11"} });
+        const ws3_shim_exe = b.addExecutable(.{ .name = "ws3-shim-test", .root_module = ws3_shim_module });
+        ws3_shim_exe.step.dependOn(pkg_guard);
+        b.step("ws3-shim-test-win", "WS3: run the WebView2 shim's config setters and cookie store on Windows")
+            .dependOn(&b.addRunArtifact(ws3_shim_exe).step);
+    }
+
     // The Claude Agent helper runtime beside the binary (chat-drawer plan
     // D6, rev 15.2): <prefix>/lib/zigbrowser/agent-host.
     const agent_runtime = b.addSystemCommand(&.{ "sh", "tools/install_agent_runtime.sh", b.install_prefix });
@@ -2012,7 +2026,9 @@ pub fn build(b: *std.Build) void {
 fn guardDisplay(b: *std.Build) void {
     const guard = b.addSystemCommand(&.{ "python3", "tools/display_guard.py" });
     guard.has_side_effects = true; // the environment is read on every run, never cached
-    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate" };
+    // ws3-shim-test-win exists only in Windows-target builds and runs on Windows, which has no X
+    // display to guard (and no python3 to run the guard).
+    const unguarded = [_][]const u8{ "install", "uninstall", "agent-runtime", "mac-gate", "ms1b-gate", "ms2a-gate", "ws3-shim-test-win" };
     next: for (b.top_level_steps.keys(), b.top_level_steps.values()) |name, top| {
         for (unguarded) |skip| if (std.mem.eql(u8, name, skip)) continue :next;
         for (top.step.dependencies.items) |dep| dep.dependOn(&guard.step);
