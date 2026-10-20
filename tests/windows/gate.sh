@@ -143,35 +143,64 @@ probe_host() { # $1=user $2=host $3=port -> prints the host's host_probe.ps1 JSO
 }
 
 validate_probes() { # $1=vm_json $2=fs_pre $3=fs_post ; ALLOW to stdout, fail reason to stderr
-  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" <<'PY'
+  python3 - "$1" "$2" "$3" "${ZB_WIN11_MARKER:-}" "${ZB_WIN10_USER:-zbtest}" "${ZB_WIN10_MARKER:-}" <<'PY'
 import sys, json
-vm, fs_pre, fs_post, win11_marker, win10_user = sys.argv[1:6]
+vm, fs_pre, fs_post, win11_marker, win10_user, win10_marker = sys.argv[1:7]
 def load(s, who):
     try:
         return json.loads(s)
     except Exception:
         sys.stderr.write("FAIL: probe (%s) returned bad JSON\n" % who); sys.exit(1)
 v = load(vm, "win11"); a = load(fs_pre, "win10 pre"); b = load(fs_post, "win10 post")
+
 # WS0.6: the VM's identity marker must match the pinned nonce (missing/empty/wrong => wrong host).
 m = v.get("identity_marker")
 if not m or m != win11_marker:
     sys.stderr.write("wrong host: Win11 identity_marker does not match ZB_WIN11_MARKER\n"); sys.exit(1)
+
+# WS0 is fail CLOSED: before ANY comparison, every file-server field we judge on must be present and
+# well-typed on BOTH probes. Malformed/missing data must be rejected, never silently coerced to a value
+# that compares "undisturbed". A bare `name or []` would let None/""/"bad"/["22"] masquerade as empty.
+def _is_port_list(x):
+    return isinstance(x, list) and all(isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 65535 for p in x)
+def require_schema(probe, who):
+    # identity: the file server must present the pinned Win10 marker (missing/empty/wrong => wrong host).
+    mk = probe.get("identity_marker")
+    if not mk or mk != win10_marker:
+        sys.stderr.write("file-server (%s): identity_marker does not match ZB_WIN10_MARKER\n" % who); sys.exit(1)
+    if not isinstance(probe.get("groups"), list):
+        sys.stderr.write("file-server (%s): groups missing or not a list\n" % who); sys.exit(1)
+    cu = probe.get("console_user")
+    if not isinstance(cu, str) or not cu.strip():
+        sys.stderr.write("file-server (%s): console_user missing or empty\n" % who); sys.exit(1)
+    if not isinstance(probe.get("zbtest_write_paths"), list):
+        sys.stderr.write("file-server (%s): zbtest_write_paths missing or not a list\n" % who); sys.exit(1)
+    if not _is_port_list(probe.get("listeners")):
+        sys.stderr.write("file-server (%s): listeners missing or not a list of ports\n" % who); sys.exit(1)
+    fw = probe.get("fw_rules_hash")
+    if not isinstance(fw, str) or not fw.strip():
+        sys.stderr.write("file-server (%s): fw_rules_hash missing or empty\n" % who); sys.exit(1)
+require_schema(a, "pre"); require_schema(b, "post")
+
 # WS0.7: the file server must be undisturbed.
 FORBIDDEN = {"administrators", "backup operators", "remote desktop users", "remote management users"}
 names = {str(g.get("name", "")).split("\\")[-1].strip().lower() for g in a.get("groups", [])}
 bad = sorted(names & FORBIDDEN)
 if bad:
     sys.stderr.write("file-server: zbtest is in a forbidden group: %s\n" % bad); sys.exit(1)
-wp = a.get("zbtest_write_paths") or []
+wp = a.get("zbtest_write_paths")
 if wp:
     sys.stderr.write("file-server: zbtest can write to %s\n" % wp[0]); sys.exit(1)
 cu = str(a.get("console_user", "")).split("\\")[-1].lower()
 if cu != win10_user.lower():
     sys.stderr.write("file-server: console user is %r, not %s\n" % (a.get("console_user"), win10_user)); sys.exit(1)
-def stable(lst):  # ignore the ephemeral/dynamic range (>=49152), which churns between runs
-    return sorted(p for p in (lst or []) if isinstance(p, int) and p < 49152)
-if stable(a.get("listeners")) != stable(b.get("listeners")):
-    sys.stderr.write("file-server: listening ports changed %s -> %s\n" % (stable(a.get("listeners")), stable(b.get("listeners")))); sys.exit(1)
+# The FULL listening-port set must be identical pre/post. No range exemption: a persistent listener on a
+# high/"ephemeral" port is still a disturbance (a product service binding 50000 would otherwise slip past).
+# Tolerating genuine OS dynamic-port churn needs ownership/PID identity, tracked as a plan item — not by
+# discarding every high-port signal here. See thoughts/.../2026-10-20-ws07-file-server-field-design.md.
+pre_ports = sorted(a.get("listeners")); post_ports = sorted(b.get("listeners"))
+if pre_ports != post_ports:
+    sys.stderr.write("file-server: listening ports changed %s -> %s\n" % (pre_ports, post_ports)); sys.exit(1)
 if a.get("fw_rules_hash") != b.get("fw_rules_hash"):
     sys.stderr.write("file-server: firewall rules changed between pre and post\n"); sys.exit(1)
 print("ALLOW")

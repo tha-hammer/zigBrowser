@@ -183,13 +183,58 @@ class WS07FileServerFence(_TwoHostCase):
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": post})
             self._assert_fail_closed(proc, "file-server")
 
-    def test_ephemeral_listener_churn_is_allowed(self):
-        """A new listener only in the ephemeral/dynamic range (>=49152) is normal churn, not a change."""
+    def test_high_port_listener_change_fails_closed(self):
+        """A persistent NEW listener on a high/"ephemeral" port (50000) is still a disturbance, not churn.
+        There is no range exemption: a product service binding 50000 must not slip past. (Tolerating genuine
+        OS dynamic-port churn needs ownership/PID identity — a tracked plan item, see the WS0.7 field doc.)"""
         with tempfile.TemporaryDirectory() as t:
-            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 50000])  # only an ephemeral port appeared
+            post = _fs_probe(listeners=[22, 135, 139, 445, 3389, 50000])
             proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10_POST": post})
-            detail = f"\nrc={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-            self.assertEqual(proc.returncode, 0, "an ephemeral-only listener change must not fail WS0.7" + detail)
+            self._assert_fail_closed(proc, "listening ports changed")
+
+    # --- fail-closed on malformed/missing probe data (WS0 is fail closed; never coerce to "undisturbed") ---
+    def test_listeners_none_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=None)})
+            self._assert_fail_closed(proc, "file-server")
+
+    def test_listeners_list_of_strings_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": _fs_probe(listeners=["22"])})
+            self._assert_fail_closed(proc, "file-server")
+
+    def test_missing_fw_rules_hash_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = json.loads(_fs_probe()); d.pop("fw_rules_hash", None)
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(d),
+                                                          "ZB_SELFTEST_PROBE_WIN10_POST": json.dumps(d)})
+            self._assert_fail_closed(proc, "file-server")
+
+    def test_missing_console_user_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = json.loads(_fs_probe()); d.pop("console_user", None)
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(d)})
+            self._assert_fail_closed(proc, "file-server")
+
+    def test_missing_groups_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = json.loads(_fs_probe()); d.pop("groups", None)
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(d)})
+            self._assert_fail_closed(proc, "file-server")
+
+    def test_win10_marker_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = json.loads(_fs_probe()); d.pop("identity_marker", None)
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": json.dumps(d),
+                                                          "ZB_SELFTEST_PROBE_WIN10_POST": json.dumps(d)})
+            self._assert_fail_closed(proc, "file-server")
+
+    def test_win10_marker_wrong_fails_closed(self):
+        with tempfile.TemporaryDirectory() as t:
+            bad = _fs_probe(identity_marker="SOMETHING-ELSE")
+            proc = self._run_probe_only(pathlib.Path(t), {"ZB_SELFTEST_PROBE_WIN10": bad,
+                                                          "ZB_SELFTEST_PROBE_WIN10_POST": bad})
+            self._assert_fail_closed(proc, "file-server")
 
 
 if __name__ == "__main__":
