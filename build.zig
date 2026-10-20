@@ -1811,6 +1811,14 @@ pub fn build(b: *std.Build) void {
     });
     const mac_census_step = b.step("test-mac-census", "Run the MS1 off-Mac census/resource-phase mutation suite (pure Python)");
     mac_census_step.dependOn(&mac_census_unit.step);
+    // macOS plan rev 17 (MS5.1c-a): the generated MS5 inventory and its drift check, runtime.json's exact bytes,
+    // and the exact zb_agent_host/ walk (no extra, no symlink, no special file). Pure Python, off-Mac.
+    const mac_ms5_census_unit = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd tests/e2e && env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v mac_ms5_census_test",
+    });
+    mac_census_step.dependOn(&mac_ms5_census_unit.step);
     const agent_host_contract = b.addSystemCommand(&.{
         "sh",
         "-c",
@@ -2107,6 +2115,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) test_step.dependOn(&agent_secrets_watch_e2e.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&fake_setup_token_unit.step);
     if (target.result.os.tag == .linux) test_step.dependOn(&mac_census_unit.step);
+    if (target.result.os.tag == .linux) test_step.dependOn(&mac_ms5_census_unit.step);
     test_step.dependOn(&run_agent_login_protocol_tests.step);
     test_step.dependOn(&run_backend_flag_tests.step);
     test_step.dependOn(&run_backend_flag_startup_tests.step);
