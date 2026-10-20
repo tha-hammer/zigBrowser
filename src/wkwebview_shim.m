@@ -38,6 +38,12 @@ struct ZbWindow {
 
 static ZBAppHost *g_active_app = nil;
 static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automation_set_script)
+// MS2c (RoseCat 6508 #6): the window snapshot is a lock-backed cache. The main thread republishes it on
+// every window state change (create/remove/health tick); page.list/page.health read it under the lock and
+// NEVER dispatch to the main queue, so a backed-up/hung main queue cannot stall them.
+static NSString *g_window_snapshot = nil;
+static pthread_mutex_t g_window_snapshot_lock = PTHREAD_MUTEX_INITIALIZER;
+static void zb_publish_window_snapshot(void);  // defined below; called from the window lifecycle + health tick
 // Associated-object tag marking a WKNavigation that a routed (automation) navigation started. A load
 // failure is suppressed (no app-exit) ONLY for a tagged navigation — scoped by navigation IDENTITY,
 // so a superseded routed nav's late failure is swallowed while an unrelated user/page-initiated
@@ -297,6 +303,7 @@ static void handle_signal(int signo) {
 // on a real commit (the next successful navigation), not by the crash document's own load.
 @property(nonatomic, copy) NSString *terminatedReason;
 @property(nonatomic, assign) BOOL showingCrashDoc;
+@property(nonatomic, assign) BOOL kvoObserving;  // MS2c #6: whether this host currently observes its webView's title/URL/loading
 @property(nonatomic, strong) NSTimer *healthTimer;
 @property(nonatomic, assign) int64_t unresponsiveSinceUs;  // 0 while responsive
 @property(nonatomic, assign) uint32_t incident;            // count of unresponsive stretches (recover identity)
@@ -362,6 +369,7 @@ static void handle_signal(int signo) {
   if (uri.length > 0) {
     [host loadURI:uri];
   }
+  zb_publish_window_snapshot();  // MS2c #6: the new window is visible to page.list/health at once
   return host;
 }
 
@@ -374,6 +382,7 @@ static void handle_signal(int signo) {
     self.mainWindow = nil;
   }
   [self emitWindowCount];
+  zb_publish_window_snapshot();  // MS2c #6: the removed window leaves page.list/health at once
   if (self.windows.count == 0) {
     [self requestExit:self.exitCode];
   }
@@ -409,6 +418,10 @@ static void handle_signal(int signo) {
 
 static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks below; used by didFinish
 
+// MS2c #6: KVO context for a webView's observable fields; a change republishes the window snapshot so
+// page.list/page.health reflect title/url/loading promptly without polling the main queue.
+static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
+
 @implementation ZBWindowHost
 - (instancetype)initWithApp:(ZBAppHost *)app webView:(WKWebView *)webView child:(BOOL)child {
   self = [super init];
@@ -427,6 +440,7 @@ static int zb_auto_test_synth_crash(void);  // defined with the other e2e hooks 
   _webView.UIDelegate = self;
   [_webView.configuration.userContentController removeScriptMessageHandlerForName:@"zbHost"];
   [_webView.configuration.userContentController addScriptMessageHandlerWithReply:self contentWorld:WKContentWorld.pageWorld name:@"zbHost"];
+  [self zbStartObserving];  // MS2c #6: track title/url/loading into the snapshot
 
   NSRect frame = NSMakeRect(120, 120, 1024, 768);
   NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -514,6 +528,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   if (self.pingOutstanding) {
     // The ping issued last tick has not replied within a full interval: the web process is unresponsive.
     if (self.unresponsiveSinceUs == 0) { self.unresponsiveSinceUs = self.pingSentUs; self.incident += 1; }
+    zb_publish_window_snapshot();  // MS2c #6: refresh (unresponsive_ms grows; newly-unresponsive shows)
     return;  // leave the ping outstanding; don't pile on
   }
   WKWebView *view = self.webView;
@@ -527,12 +542,15 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
     if (s == nil) return;
     s.pingOutstanding = NO;
     s.unresponsiveSinceUs = 0;
+    zb_publish_window_snapshot();  // MS2c #6: responsive restored + current url/title/loading
   }];
+  zb_publish_window_snapshot();  // MS2c #6: every tick refreshes url/title/loading/crashed/dialog_open
 }
 
 - (void)close {
   [self.healthTimer invalidate];
   self.healthTimer = nil;
+  [self zbStopObserving];  // MS2c #6: remove KVO before the webView is torn down
   // Never release a held WKWebView dialog completion uncalled (WebKit raises NSException): answer any
   // open dialog with its default (confirm->Cancel, prompt->null, alert->resume) as closing the window does.
   if (self.pendingDialogKind != 0) [self zbRespondDialogAccept:NO text:nil];
@@ -585,6 +603,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   }
   [self.timeoutTimer invalidate];
   self.timeoutTimer = nil;
+  zb_publish_window_snapshot();  // MS2c #6: a real commit refreshes url/title and clears crashed at once (all windows)
 
   NSString *uri = webView.URL.absoluteString ?: @"";
   NSString *title = webView.title ?: @"";
@@ -625,6 +644,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   [webView loadHTMLString:@"<!doctype html><html><head><meta charset=\"utf-8\"><title>zb-crash</title></head>"
                            @"<body>The web page stopped and its process ended.</body></html>"
                   baseURL:base];  // baseURL keeps the committed URL; no reload of the live page
+  zb_publish_window_snapshot();  // MS2c #6: crashed=true visible to page.list/health at once
 }
 
 // MS2c view-replacement recovery (PUBLIC API only — no process kill, no SPI): swap in a FRESH WKWebView,
@@ -644,6 +664,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   // Detach the old (dead/hung) webView so ARC can free it once the window stops referencing it.
   [self.healthTimer invalidate];
   self.healthTimer = nil;
+  [self zbStopObserving];  // MS2c #6: remove KVO from the old webView before swapping
   WKWebView *old = self.webView;
   [old.configuration.userContentController removeScriptMessageHandlerForName:@"zbHost"];
   old.navigationDelegate = nil;
@@ -655,6 +676,7 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   [fresh.configuration.userContentController removeScriptMessageHandlerForName:@"zbHost"];
   [fresh.configuration.userContentController addScriptMessageHandlerWithReply:self contentWorld:WKContentWorld.pageWorld name:@"zbHost"];
   self.webView = fresh;
+  [self zbStartObserving];  // MS2c #6: observe the fresh webView
   self.window.contentView = fresh;
 
   // Clear crash/dialog state; startHealthWatchdog resets the ping/unresponsive/incident counters.
@@ -909,9 +931,34 @@ static int64_t zb_now_us(void) { return (int64_t)([[NSProcessInfo processInfo] s
   return self.pendingDialogKind != 0;
 }
 
+// MS2c #6: observe the webView's title/URL/loading; a change republishes the snapshot. Add/remove are
+// balanced by the kvoObserving flag so a double close/swap never over-removes (which would crash).
+- (void)zbStartObserving {
+  if (self.kvoObserving || self.webView == nil) return;
+  for (NSString *kp in @[ @"title", @"URL", @"loading" ])
+    [self.webView addObserver:self forKeyPath:kp options:0 context:ZBWebViewKVOContext];
+  self.kvoObserving = YES;
+}
+
+- (void)zbStopObserving {
+  if (!self.kvoObserving || self.webView == nil) return;
+  for (NSString *kp in @[ @"title", @"URL", @"loading" ])
+    [self.webView removeObserver:self forKeyPath:kp context:ZBWebViewKVOContext];
+  self.kvoObserving = NO;
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+  if (context == ZBWebViewKVOContext) {
+    zb_publish_window_snapshot();  // title/url/loading changed -> refresh page.list/health
+    return;
+  }
+  [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
 - (void)dealloc {
   // Safety net if -close did not run: a held WKWebView completion must never be released uncalled.
   if (self.pendingDialogKind != 0) [self zbRespondDialogAccept:NO text:nil];
+  [self zbStopObserving];  // MS2c #6: never leave a KVO registration dangling past dealloc
 }
 @end
 
@@ -1617,55 +1664,66 @@ int zb_automation_respond_dialog(uint32_t win, int accept, const char *text, uns
 // state; process_group is the conservative WebContent-process family (the root opener's id, inherited at
 // creation) that recover's at_risk set is built from. Heap-job claim/cancel model, so a timed-out caller
 // builds/leaks nothing (RoseCat 6469 shape). No page script: works with a dialog open.
-int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
-  if (out_json != NULL) *out_json = NULL;
-  if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;
-  ZBAutoJob *job = zb_job_new();
-  if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
-  zb_job_ref(job);
-  dispatch_async(dispatch_get_main_queue(), ^{
-    if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }
-    char *result = NULL;
-    @autoreleasepool {
-      NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
-      ZBAppHost *app = g_active_app;
-      if (app != nil) {
-        NSArray<ZBWindowHost *> *hosts = app.windows != nil ? app.windows
-                                       : (app.mainWindow != nil ? @[ app.mainWindow ] : @[]);
-        [hosts enumerateObjectsUsingBlock:^(ZBWindowHost *h, NSUInteger idx, BOOL *stop) {
-          (void)stop; (void)idx;
-          if (h == nil) return;
-          NSString *url = h.webView.URL.absoluteString ?: @"";
-          NSString *title = h.webView.title ?: @"";
-          BOOL responsive = (h.unresponsiveSinceUs == 0);
-          int64_t unresp_ms = responsive ? 0 : (zb_now_us() - h.unresponsiveSinceUs) / 1000;
-          NSMutableDictionary *w = [@{ @"id": @(h.windowId),
-                            @"url": url,
-                            @"title": title,
-                            @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)
-                            @"opener": @(h.openerId),
-                            @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO,
-                            @"responsive": responsive ? @YES : @NO,       // MS2c page.health (watchdog)
-                            @"unresponsive_ms": @(unresp_ms),
-                            @"loading": (h.webView != nil && h.webView.loading) ? @YES : @NO,  // MS2c: real per-window load state (page.health)
-                            @"process_group": @(h.processGroup),           // MS2c: crash blast-radius family (recover at_risk)
-                            @"incident": @(h.incident) } mutableCopy];
-          if (h.terminatedReason != nil) w[@"crashed"] = h.terminatedReason;  // MS2c crash parity
-          [arr addObject:w];
-        }];
+// MS2c (RoseCat 6508 #6): rebuild the per-window snapshot and publish it under the lock. MAIN THREAD only
+// (reads h.webView etc.); called on every window state change and on each health tick. page.list/page.health
+// then read the published JSON without ever marshalling to the main queue.
+static void zb_publish_window_snapshot(void) {
+  char *json = NULL;
+  @autoreleasepool {
+    NSMutableArray<NSDictionary *> *arr = [NSMutableArray array];
+    ZBAppHost *app = g_active_app;
+    if (app != nil) {
+      NSArray<ZBWindowHost *> *hosts = app.windows != nil ? app.windows
+                                     : (app.mainWindow != nil ? @[ app.mainWindow ] : @[]);
+      for (ZBWindowHost *h in hosts) {
+        if (h == nil) continue;
+        NSString *url = h.webView.URL.absoluteString ?: @"";
+        NSString *title = h.webView.title ?: @"";
+        BOOL responsive = (h.unresponsiveSinceUs == 0);
+        int64_t unresp_ms = responsive ? 0 : (zb_now_us() - h.unresponsiveSinceUs) / 1000;
+        NSMutableDictionary *w = [@{ @"id": @(h.windowId),
+                          @"url": url,
+                          @"title": title,
+                          @"primary": (h == app.mainWindow) ? @YES : @NO,  // @YES/@NO -> JSON true/false (a bare @(int) serializes 0/1)
+                          @"opener": @(h.openerId),
+                          @"dialog_open": (h.pendingDialogKind != 0) ? @YES : @NO,
+                          @"responsive": responsive ? @YES : @NO,       // MS2c page.health (watchdog)
+                          @"unresponsive_ms": @(unresp_ms),
+                          @"loading": (h.webView != nil && h.webView.loading) ? @YES : @NO,  // MS2c: real per-window load state (page.health)
+                          @"process_group": @(h.processGroup),           // MS2c: crash blast-radius family (recover at_risk)
+                          @"incident": @(h.incident) } mutableCopy];
+        if (h.terminatedReason != nil) w[@"crashed"] = h.terminatedReason;  // MS2c crash parity
+        [arr addObject:w];
       }
-      NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
-      NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
-      const char *utf8 = s.UTF8String;
-      result = strdup(utf8 != NULL ? utf8 : "[]");
     }
-    zb_job_complete(job, ZB_AUTO_OK, result, NULL);
-    zb_job_unref(job);
-  });
-  int rc = zb_job_wait(job, timeout_ms);
-  if (rc == ZB_AUTO_OK && out_json != NULL) { *out_json = job->result; job->result = NULL; }
-  zb_job_unref(job);
-  return rc;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:NULL];
+    NSString *s = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"[]";
+    json = strdup(s.UTF8String != NULL ? s.UTF8String : "[]");
+  }
+  pthread_mutex_lock(&g_window_snapshot_lock);
+  g_window_snapshot = (json != NULL) ? [NSString stringWithUTF8String:json] : @"[]";
+  pthread_mutex_unlock(&g_window_snapshot_lock);
+  free(json);
+}
+
+// page.list/page.health answer from the lock-backed snapshot. No main-queue marshal, no wait: a backed-up
+// or hung main queue cannot stall these out-of-band reads (RoseCat 6508 #6; plan :822-824). `timeout_ms`
+// is unused (nothing to wait on).
+int zb_automation_list_windows(unsigned int timeout_ms, char **out_json) {
+  (void)timeout_ms;
+  if (out_json == NULL) return ZB_AUTO_ERR_INTERNAL;
+  *out_json = NULL;
+  char *copy = NULL;
+  @autoreleasepool {
+    pthread_mutex_lock(&g_window_snapshot_lock);
+    NSString *snap = g_window_snapshot;
+    const char *utf8 = (snap != nil && snap.UTF8String != NULL) ? snap.UTF8String : "[]";
+    copy = strdup(utf8);
+    pthread_mutex_unlock(&g_window_snapshot_lock);
+  }
+  if (copy == NULL) return ZB_AUTO_ERR_INTERNAL;
+  *out_json = copy;
+  return ZB_AUTO_OK;
 }
 
 // MS2c: close window `id` (a popup) and return once it is destroyed. The PRIMARY window cannot be closed
