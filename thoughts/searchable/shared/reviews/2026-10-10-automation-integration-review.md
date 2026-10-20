@@ -12537,3 +12537,76 @@ commit is materially incomplete:
 These findings were sent to AzureRidge as Agent Mail 6119. No Windows 10 host,
 user display, live browser or live socket was touched. The approved linear
 push-through boundary remains the already-pushed **`da3028f`**.
+
+## S5c cap plan rev 16.20.11 (`0fa4fdc`)
+
+### `0fa4fdc` — BLOCKED (plan/tests)
+
+The revision correctly addresses the two production mechanisms found in
+`ae39e2a`: forwarding becomes terminal at the first UTF-8 code point that does
+not fit the remaining content budget, and the new `reply_capped` frame lets the
+native app start its overflow deadline even when the correct prefix ends below
+262,144 bytes. Its helper reds cover the exact cross-flush `a…/界/x` case and a
+262,142-byte endless multibyte prefix; its native red covers interrupt and the
+next prompt; and it names both the previously missing committed `long-run`
+real-screen case and private-Xvfb non-live coverage. `git diff --check` passes.
+
+Two contracts remain incomplete:
+
+1. **BLOCKER — the 256 KiB bound and truncation marker disagree.** The standing
+   contract says the shown reply stops at 256 KiB and ends with
+   `"\n[output truncated]"` (`plan:2064-2071`), while rev 16.20.11 forwards as
+   many as 262,144 content bytes and then says only that the bubble ends with
+   the marker (`:2123-2137`). Appending it exceeds the declared shown-text
+   bound; reserving room for it no longer shows all forwarded content. Define
+   whether the bound covers content only or the complete displayed bubble. If
+   it is total, specify the exact UTF-8 prefix that fits with the marker and
+   assert exact displayed/clipboard bytes. If it is content-only, revise the
+   old total-bound wording and pin the permitted marker overhead. An
+   `endswith` assertion alone permits both incompatible implementations.
+2. **BLOCKER-for-tests — “at most once per prompt” has no state red.** The frame
+   table at `plan:420` gives `reply_capped` a per-prompt cardinality, but the
+   proposed protocol suite checks only its fields and an unopened session
+   (`:2133`). Add duplicate and after-prompt/no-active-prompt cases and specify
+   reject versus idempotent ignore. A duplicate must neither append another
+   marker nor restart/extend the ten-second deadline; a late frame must not cap
+   the next prompt in the same session.
+
+No gate was run for this docs-only revision. The findings were sent to
+BlackRobin as Agent Mail 6121. S5c-1 remains blocked, and the approved linear
+push-through boundary remains the already-pushed **`da3028f`**.
+
+## S6b1 credential-control sensitivity red (`abd54a4`)
+
+### `abd54a4` — BLOCKED-for-tests
+
+This is a useful real-UI red: all three cases drive the Secrets window through
+X input, the functional attempts confirm that insensitive controls refuse to
+act, and the commit records three identical red runs (32 checks, ten expected
+missing-row failures each). The file is deliberately unregistered pending its
+green, and `git diff --check` passes.
+
+It can still false-green the observability contract in rev 16.18.7:
+
+- `sensitive()` folds every row ever emitted into one latest-value map
+  (`tests/e2e/agent_login_locks_test.py:38-50`). The signed-in-store assertion
+  at `:77-81` therefore accepts the zero rows emitted when Sign in first locked
+  the controls; it does not require any fresh GTK readback after the token's
+  `Saving...` transition. A green that reports only the initial lock and final
+  unlock would pass without observing the store interval the red was created
+  to prove. Snapshot the row generation/count before each transition and
+  require a new, complete readback after it.
+- D7b requires one sensitivity row for each of all five controls when the
+  window is built (`plan:467`), but none of the cases asserts that complete
+  initial census. Later checks also use subsets: the file-choice case omits
+  Remove and Sign in (`agent_login_locks_test.py:107-116`), while the manual
+  Save case omits Remove and File (`:131-140`). Require the complete applicable
+  state at each lock/unlock generation, or explicitly narrow the plan for a
+  hidden/inapplicable control. As written, a reporter can omit a control or a
+  transition and still pass.
+
+The findings were sent to BlueBeaver as Agent Mail 6122. The red remains
+unapproved until its rows are generation-aware and its initial/all-control
+census is complete. No full gate was expected for an unregistered red. The
+approved linear push-through boundary remains the already-pushed
+**`da3028f`**.
