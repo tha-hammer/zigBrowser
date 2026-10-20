@@ -1285,64 +1285,106 @@ int zb_automation_eval_json(uint32_t win, const char *function_body, const char 
   }
 }
 
-// MS2b 2b-i — native click. Synthesize a TRUSTED NSEvent mouse down/up at the element's viewport
-// CSS px (x, y) and deliver it in-process through -[NSWindow sendEvent:]. The spike proved this path
-// yields event.isTrusted == true on both arches (scratchpad/ms2/spike_nsclick.m) — NO system
-// CGEventPost, NO TCC/Accessibility permission, NO private API. Coordinates: the engine passes
-// viewport CSS px (origin top-left, y down); an unflipped NSView has its origin bottom-left, so y is
-// flipped to the view's space (isFlipped views need no flip) before convertPoint:toView:nil.
+// MS2b native click. Synthesize a TRUSTED NSEvent mouse down/up at the element's viewport CSS px
+// (x, y) and deliver it in-process through -[NSWindow sendEvent:] (the spike proved event.isTrusted
+// on both arches, scratchpad/ms2/spike_nsclick.m) — NO system CGEventPost, NO TCC, NO private API.
+// Coordinates: the engine passes viewport CSS px (origin top-left, y down); an unflipped NSView has
+// its origin bottom-left, so y is flipped to the view's space (isFlipped views need no flip) before
+// convertPoint:toView:nil.
 //
-// "Returns once the page's click dispatch has finished": a round-trip evaluateJavaScript issued
-// AFTER the mouse-up is processed by the web content process only after the mouse events it follows
-// on the same (single, FIFO) UI->web IPC connection — so its completion is a reliable ack that the
-// click's DOM dispatch ran, with no fixed delay and no page-specific counter. `button` (1 = left) and
-// `expected_doc` (the DOC_CHANGED guard) are honored by the MS2b matrix slices (2b-ii+); this
-// click-only spike delivers a left click and does not navigate, so it accepts both without enforcing.
+// Phase model (RoseCat 6287): PREFLIGHT runs the readiness poll and, when expected_doc is given, the
+// documentToken guard (an automation-world eval mirroring webkit_shim.c:3745) — a mismatch returns
+// DOC_CHANGED and delivers NOTHING (6253.2). DISPATCHING delivers the sendEvent; INFLIGHT is the
+// FIFO-ordered ack eval (issued AFTER mouse-up, so the web process processes it only after the click
+// dispatched on the single UI->web IPC connection). The ack's evaluateJavaScript ERROR maps to a
+// failure, never OK (6253.3): a terminated/unresponsive web process cannot acknowledge a click.
+// `button` is left-only for now (right/middle land with the matrix).
 int zb_native_click(uint32_t win, double x, double y, int button,
                     const char *expected_doc, unsigned int timeout_ms, char **out_err) {
   (void)button;
-  (void)expected_doc;
   if (out_err != NULL) *out_err = NULL;
   if ([NSThread isMainThread]) return ZB_AUTO_ERR_INTERNAL;  // deadlock guard
   @autoreleasepool {
-    __block int rc = ZB_AUTO_ERR_TIMEOUT;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSString *expected = expected_doc != NULL ? [NSString stringWithUTF8String:expected_doc] : nil;
+    ZBAutoJob *job = zb_job_new();
+    if (job == NULL) return ZB_AUTO_ERR_INTERNAL;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:(double)timeout_ms / 1000.0];
-    __block void (^poll)(void) = nil;
-    poll = ^{
-      ZBWindowHost *host = zb_auto_window_for_id(win);
-      if (host == nil) { rc = ZB_AUTO_ERR_NO_WINDOW; poll = nil; dispatch_semaphore_signal(sem); return; }
-      if (!host.finishedOrFailed) {
-        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { rc = ZB_AUTO_ERR_TIMEOUT; poll = nil; dispatch_semaphore_signal(sem); return; }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
-        return;
-      }
-      poll = nil;  // ready: deliver the click, then ack via a FIFO-ordered eval round-trip.
+    zb_job_ref(job);
+    __block BOOL entered = NO;
+    // DISPATCHING + INFLIGHT: claim, synthesize + deliver the click, then FIFO-ack. Declared first so
+    // the (optional) doc-guard completion can invoke it. Holds no extra ref; the ack completion (or an
+    // early failure branch) performs the single chain unref.
+    __block void (^deliver)(ZBWindowHost *host) = nil;
+    deliver = ^(ZBWindowHost *host) {
+      if (!zb_job_claim_dispatch(job)) { zb_job_unref(job); return; }  // waiter abandoned: no sendEvent
       NSWindow *window = host.window;
       WKWebView *view = host.webView;
-      if (window == nil || view == nil) { rc = ZB_AUTO_ERR_NO_WINDOW; dispatch_semaphore_signal(sem); return; }
-      CGFloat h = view.bounds.size.height;
-      NSPoint vp = view.isFlipped ? NSMakePoint(x, y) : NSMakePoint(x, h - y);
+      if (window == nil || view == nil) { zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      CGFloat hgt = view.bounds.size.height;
+      NSPoint vp = view.isFlipped ? NSMakePoint(x, y) : NSMakePoint(x, hgt - y);
       NSPoint loc = [view convertPoint:vp toView:nil];
       NSInteger wn = window.windowNumber;
-      NSTimeInterval ts = [[NSProcessInfo processInfo] systemUptime];
+      NSTimeInterval tstamp = [[NSProcessInfo processInfo] systemUptime];
       NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:loc modifierFlags:0
-                                        timestamp:ts windowNumber:wn context:nil eventNumber:0
+                                        timestamp:tstamp windowNumber:wn context:nil eventNumber:0
                                        clickCount:1 pressure:1.0];
       NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:loc modifierFlags:0
-                                      timestamp:ts windowNumber:wn context:nil eventNumber:0
+                                      timestamp:tstamp windowNumber:wn context:nil eventNumber:0
                                      clickCount:1 pressure:0.0];
       [window sendEvent:down];
       [window sendEvent:up];
       [view evaluateJavaScript:@"0" completionHandler:^(id value, NSError *error) {
         (void)value;
-        (void)error;
-        rc = ZB_AUTO_OK;
-        dispatch_semaphore_signal(sem);
+        zb_job_complete(job, error != nil ? ZB_AUTO_ERR_JS : ZB_AUTO_OK, NULL, NULL);  // ack error -> failure
+        zb_job_unref(job);
+      }];
+      zb_job_inflight(job);  // sendEvent + ack issued on the main thread: DISPATCHING -> INFLIGHT
+    };
+    __block void (^poll)(void) = nil;
+    poll = ^{
+      if (!entered) {
+        entered = YES;
+        if (!zb_job_enter_preflight(job)) { poll = nil; deliver = nil; zb_job_unref(job); return; }
+      } else if (!zb_job_in_preflight(job)) {
+        poll = nil; deliver = nil; zb_job_unref(job); return;
+      }
+      ZBWindowHost *host = zb_auto_window_for_id(win);
+      if (host == nil) { poll = nil; deliver = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+      if (!host.finishedOrFailed) {
+        if ([[NSDate date] compare:deadline] != NSOrderedAscending) { poll = nil; deliver = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_TIMEOUT, NULL, NULL); zb_job_unref(job); return; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_MSEC)), dispatch_get_main_queue(), poll);
+        return;
+      }
+      poll = nil;  // ready
+      if (expected == nil) {
+        void (^d)(ZBWindowHost *) = deliver; deliver = nil; d(host);  // no guard: deliver straight away
+        return;
+      }
+      // Doc guard: read the current automation-world documentToken and compare to expected; still in
+      // PREFLIGHT, so the waiter may cancel during this eval. Mirrors webkit_shim.c:3745.
+      WKContentWorld *autoWorld = [WKContentWorld worldWithName:@ZB_AUTOMATION_WORLD];
+      [host.webView callAsyncJavaScript:@"return globalThis.__zbAutomation ? globalThis.__zbAutomation.documentToken : null;"
+                              arguments:@{}
+                                inFrame:nil
+                         inContentWorld:autoWorld
+                      completionHandler:^(id value, NSError *error) {
+        if (!zb_job_in_preflight(job)) { deliver = nil; zb_job_unref(job); return; }  // waiter cancelled
+        if (error != nil) { deliver = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_JS, NULL, NULL); zb_job_unref(job); return; }
+        NSString *token = [value isKindOfClass:[NSString class]] ? (NSString *)value : nil;
+        if (token == nil || ![token isEqualToString:expected]) {
+          deliver = nil;
+          if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_DOC_CHANGED, NULL, NULL);
+          zb_job_unref(job);
+          return;
+        }
+        ZBWindowHost *h2 = zb_auto_window_for_id(win);
+        if (h2 == nil) { deliver = nil; if (zb_job_claim_dispatch(job)) zb_job_complete(job, ZB_AUTO_ERR_NO_WINDOW, NULL, NULL); zb_job_unref(job); return; }
+        void (^d)(ZBWindowHost *) = deliver; deliver = nil; d(h2);
       }];
     };
     dispatch_async(dispatch_get_main_queue(), poll);
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, ((int64_t)timeout_ms + 2000) * NSEC_PER_MSEC));
+    int rc = zb_job_wait(job, timeout_ms);
+    zb_job_unref(job);
     return rc;
   }
 }
