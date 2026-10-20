@@ -44,8 +44,17 @@ pub fn applyBackendFlag(comptime os: std.Target.Os.Tag, flag: []const u8, value:
         // applyRender and applyMediaSource (the renderer's environment needs the policy and the
         // user's own variables), after every present flag was decided: byte-identical to before.
         .linux => {},
-        // MS3.2 (JadeBeacon): the WKWebView arm.
-        .macos => {},
+        // MS3.2 (JadeBeacon): the WKWebView arm. media-source and hardware-acceleration are applied
+        // through the shim's startup setters (the WKWebView created afterward reads them); renderer is
+        // refused upstream by backendFlagDecision, so it never reaches here on macOS. The decision already
+        // accepted the value, so parse cannot be null.
+        .macos => {
+            if (std.mem.eql(u8, flag, "media-source")) {
+                c.zb_app_set_media_source(if (media_config.parse(value).? == .on) 1 else 0);
+            } else if (std.mem.eql(u8, flag, "hardware-acceleration")) {
+                c.zb_app_set_hw_policy(policyCode(render_config.parseHwPolicy(value).?));
+            }
+        },
         // WS3.2 (AzureRidge): the WebView2 arm.
         .windows => {},
         else => {},

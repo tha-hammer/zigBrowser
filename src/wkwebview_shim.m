@@ -44,6 +44,9 @@ static NSString *zb_auto_script = nil;  // MS2a automation.js (set by zb_automat
 static NSString *g_window_snapshot = nil;
 static pthread_mutex_t g_window_snapshot_lock = PTHREAD_MUTEX_INITIALIZER;
 static void zb_publish_window_snapshot(void);  // defined below; called from the window lifecycle + health tick
+// MS3.2 backend-flag config (set at startup by webkit.applyBackendFlag, before any window is created).
+static int g_media_source_enabled = 1;        // 0 = disable window.MediaSource (MSE off) in every new webView
+static int g_hw_policy = ZB_HW_POLICY_WEBKIT;  // stored for read-back; macOS WKWebView manages HW accel itself
 // Associated-object tag marking a WKNavigation that a routed (automation) navigation started. A load
 // failure is suppressed (no app-exit) ONLY for a tagged navigation — scoped by navigation IDENTITY,
 // so a superseded routed nav's late failure is swallowed while an unrelated user/page-initiated
@@ -478,6 +481,15 @@ static void *ZBWebViewKVOContext = &ZBWebViewKVOContext;
                                                       forMainFrameOnly:NO
                                                         inContentWorld:autoWorld];
     [configuration.userContentController addUserScript:autoUserScript];
+  }
+  if (!g_media_source_enabled) {  // MS3.2 --media-source off: remove MSE (window.MediaSource) at document
+    // start so sites fall back to plain media (the Instagram MSE-deadlock mitigation; WKWebView has no
+    // public MSE preference, so a user script is the public-API mechanism).
+    WKUserScript *noMSE = [[WKUserScript alloc] initWithSource:
+        @"try{window.MediaSource=undefined;window.WebKitMediaSource=undefined;}catch(e){}"
+                                               injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                            forMainFrameOnly:NO];
+    [configuration.userContentController addUserScript:noMSE];
   }
   return [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1024, 768) configuration:configuration];
 }
@@ -2646,6 +2658,13 @@ int zb_native_text(uint32_t win, const char *text, const char *expected_doc, uns
     return rc;
   }
 }
+
+// MS3.2 backend-flag startup setters/getters. Called from webkit.applyBackendFlag before zb_app_run;
+// void setters (no error channel — the supported/unsupported decision is upstream in backendFlagDecision).
+void zb_app_set_media_source(int enabled) { g_media_source_enabled = enabled ? 1 : 0; }
+int zb_app_get_media_source(void) { return g_media_source_enabled; }
+void zb_app_set_hw_policy(int policy) { g_hw_policy = policy; }
+int zb_app_get_hw_policy(void) { return g_hw_policy; }
 
 int zb_app_run(const char *uri, int print_title, int e2e_protocol) {
   @autoreleasepool {
