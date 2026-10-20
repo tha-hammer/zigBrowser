@@ -21,6 +21,11 @@ class ContainError(Exception):
     """A path escapes its root, is malformed, or no containment is available — always fail closed."""
 
 
+# Characters Win32 forbids in a path component, plus every control byte. Colon is handled separately (it is
+# the drive separator and, past the drive, an alternate-data-stream marker).
+_ILLEGAL_COMPONENT_CHARS = set('<>:"|?*') | {chr(c) for c in range(0, 32)}
+
+
 # --- Windows path containment (lexical, fail-closed) -----------------------------------------------------
 # Reserved DOS device names: these resolve to a device regardless of directory or extension, so a path
 # component that is one (CON, NUL, COM3, LPT1.txt, ...) is rejected.
@@ -56,15 +61,23 @@ def _check_shape(p: str, who: str) -> None:
             raise ContainError(f"{who}: component {comp!r} has a trailing dot/space")
         if comp.split(".")[0].upper() in _RESERVED:
             raise ContainError(f"{who}: reserved device name in {comp!r}")
+        bad = _ILLEGAL_COMPONENT_CHARS & set(comp)
+        if bad:
+            raise ContainError(f"{who}: illegal character(s) {sorted(bad)!r} in {comp!r}")
 
 
 def normalize_within(root: str, candidate: str) -> str:
-    """Return candidate's normalized form if it is root or strictly inside it; else raise ContainError.
+    """Lexical PREFILTER only: return candidate's normalized form if it is root or strictly inside it.
 
-    Lexical and fail-closed: both paths must be well-formed drive-absolute Windows paths (no UNC, device
-    namespace, drive-relative, ADS, reserved name, or trailing dot/space). `..` is collapsed by normpath
-    and the result must still lie under root, so no `..` can escape. Comparison is case-insensitive, as
-    Windows paths are.
+    Fail-closed on shape: both paths must be well-formed drive-absolute Windows paths (no UNC, device
+    namespace, drive-relative, ADS, reserved name, trailing dot/space, or illegal/control characters). `..`
+    is collapsed by normpath and the result must still lie under root, so no `..` can escape. Comparison is
+    case-insensitive, as Windows paths are.
+
+    IMPORTANT: this is purely lexical. It CANNOT see a junction or symlink: `C:\\root\\j\\x` passes even when
+    `j` reparses to `C:\\Windows`. Before granting access or spawning, the backend MUST resolve the real path
+    and re-check — use `resolved_within`, which runs this prefilter and then an injected handle-based
+    resolver (CreateFileW + GetFinalPathNameByHandle, or a component reparse walk).
     """
     _check_shape(root, "root")
     _check_shape(candidate, "candidate")
@@ -75,6 +88,34 @@ def normalize_within(root: str, candidate: str) -> str:
     if cl == rl or cl.startswith(rl + "\\"):
         return nc
     raise ContainError(f"candidate {candidate!r} escapes root {root!r}")
+
+
+class PathResolver(Protocol):
+    def resolve(self, path: str) -> str:
+        """Return the real, fully-resolved path (reparse points/junctions/symlinks followed); raise on
+        failure. Production binds this to CreateFileW + GetFinalPathNameByHandle (or a reparse walk); tests
+        inject a fake. Resolution MUST fail closed — a junction that cannot be followed is a denial, never an
+        OPEN_REPARSE_POINT that hands back the unresolved link (which would mask the escape)."""
+        ...
+
+
+def resolved_within(root: str, candidate: str, resolver: "PathResolver") -> str:
+    """Full containment check: the lexical prefilter, THEN the injected handle-based resolver, fail-closed.
+
+    `normalize_within` cannot see reparse points, so a lexically-in-root path can still resolve outside root
+    (a junction `C:\\root\\j` targeting `C:\\Windows`). This resolves BOTH root and candidate to their real
+    paths and requires the resolved candidate to lie within the resolved root. Returns the resolved candidate.
+    Any resolver failure is a denial.
+    """
+    normalize_within(root, candidate)        # lexical prefilter (raises on bad shape / lexical escape)
+    try:
+        real_root = resolver.resolve(root)
+        real_cand = resolver.resolve(candidate)
+    except Exception as exc:
+        raise ContainError(f"cannot resolve real path (fail closed): {exc}")
+    if not isinstance(real_root, str) or not isinstance(real_cand, str) or not real_root or not real_cand:
+        raise ContainError("resolver returned an empty/invalid path (fail closed)")
+    return normalize_within(real_root, real_cand)   # re-check containment on the RESOLVED paths
 
 
 # --- Windows argv quoting (CommandLineToArgvW / MSVCRT convention) ---------------------------------------
@@ -119,8 +160,11 @@ def join_argv(args) -> str:
 
 # --- containment choice (fail-closed) -------------------------------------------------------------------
 class Containment(NamedTuple):
-    kind: str                 # "bwrap" (Linux) | "seatbelt" (macOS) | "job-object" (Windows)
-    kill_on_close: bool = False  # Job Object: terminate every child when the job handle closes
+    kind: str                     # "bwrap" (Linux) | "seatbelt" (macOS) | "job-object" (Windows)
+    kill_on_close: bool = False   # Job Object: terminate every child when the job handle closes
+    create_suspended: bool = False  # Job Object: the child MUST be created suspended, assigned to the job,
+    #   and only then resumed — so it cannot spawn or escape before it is inside the job. A boolean
+    #   availability probe is not enough; the backend's launch sequence must honour this flag.
 
 
 class ContainmentProbe(Protocol):
@@ -139,6 +183,6 @@ def choose_containment(platform: str, probe: "ContainmentProbe | None") -> Conta
         return Containment("seatbelt")
     if platform == "win32" or platform.startswith("win") or platform == "cygwin":
         if probe is not None and probe.job_object_available():
-            return Containment("job-object", kill_on_close=True)
+            return Containment("job-object", kill_on_close=True, create_suspended=True)
         raise ContainError("containment unavailable: no usable Job Object (refusing to launch unconfined)")
     raise ContainError(f"containment unavailable: unsupported platform {platform!r}")

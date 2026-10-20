@@ -145,6 +145,53 @@ class PathContainment(unittest.TestCase):
             wc.normalize_within(self.ROOT, r"\Users\zbtext\zb\a")
 
 
+    def test_illegal_characters_rejected(self):
+        for bad in (r"C:\Users\zbtext\zb\a|b", r"C:\Users\zbtext\zb\a<b", 'C:\\Users\\zbtext\\zb\\a\x01b'):
+            with self.assertRaises(wc.ContainError):
+                wc.normalize_within(self.ROOT, bad)
+
+
+class _Resolver:
+    """A fake PathResolver: identity unless a path is remapped; can also fail (resolution error)."""
+    def __init__(self, mapping=None, fail=False):
+        self.mapping = mapping or {}
+        self.fail = fail
+
+    def resolve(self, path):
+        if self.fail:
+            raise OSError("cannot resolve (reparse)")
+        return self.mapping.get(path, path)
+
+
+class ResolvedContainment(unittest.TestCase):
+    ROOT = r"C:\Users\zbtext\zb"
+
+    def test_identity_resolver_passes(self):
+        got = wc.resolved_within(self.ROOT, r"C:\Users\zbtext\zb\build\x", _Resolver())
+        self.assertEqual(got, r"C:\Users\zbtext\zb\build\x")
+
+    def test_junction_escape_fails_closed(self):
+        # lexically in-root, but the junction resolves OUT of root
+        cand = r"C:\Users\zbtext\zb\j\x"
+        resolver = _Resolver({cand: r"C:\Windows\System32\x", self.ROOT: self.ROOT})
+        with self.assertRaises(wc.ContainError):
+            wc.resolved_within(self.ROOT, cand, resolver)
+
+    def test_resolver_failure_fails_closed(self):
+        with self.assertRaises(wc.ContainError):
+            wc.resolved_within(self.ROOT, r"C:\Users\zbtext\zb\x", _Resolver(fail=True))
+
+    def test_resolver_empty_result_fails_closed(self):
+        cand = r"C:\Users\zbtext\zb\x"
+        with self.assertRaises(wc.ContainError):
+            wc.resolved_within(self.ROOT, cand, _Resolver({cand: ""}))
+
+    def test_lexical_prefilter_runs_before_resolver(self):
+        # a lexically-bad candidate must be rejected without ever consulting the resolver
+        with self.assertRaises(wc.ContainError):
+            wc.resolved_within(self.ROOT, r"\\server\share\x", _Resolver(fail=True))
+
+
 class _Probe:
     def __init__(self, available):
         self._a = available
@@ -166,6 +213,7 @@ class ContainmentChoice(unittest.TestCase):
         c = wc.choose_containment("win32", _Probe(True))
         self.assertEqual(c.kind, "job-object")
         self.assertTrue(c.kill_on_close)
+        self.assertTrue(c.create_suspended, "the child must be created suspended, assigned, then resumed")
 
     def test_windows_without_job_object_fails_closed(self):
         with self.assertRaises(wc.ContainError):
