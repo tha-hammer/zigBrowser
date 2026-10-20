@@ -121,7 +121,7 @@ pub const Broker = struct {
             error.OutOfMemory => "out of memory",
         } });
         const io = self.server.io;
-        const job = Job.create(self.gpa, id, method, params, sink, nowMs(io) + @as(i64, @intCast(self.deadline_ms))) catch {
+        const job = Job.create(self.gpa, id, method, params, sink, nowMs(io) + @as(i64, @intCast(self.deadline_ms)), self.window) catch {
             self.gpa.free(params);
             return sink.done(sink.ctx, id, .{ .failure = "out of memory" });
         };
@@ -222,12 +222,13 @@ const Job = struct {
     params: []u8,
     sink: Sink,
     deadline_at: i64,
+    window: u32,
     answered: std.atomic.Value(bool) = .init(false),
 
-    fn create(gpa: std.mem.Allocator, id: []const u8, method: []const u8, params: []u8, sink: Sink, deadline_at: i64) !*Job {
+    fn create(gpa: std.mem.Allocator, id: []const u8, method: []const u8, params: []u8, sink: Sink, deadline_at: i64, window: u32) !*Job {
         const job = try gpa.create(Job);
         errdefer gpa.destroy(job);
-        job.* = .{ .gpa = gpa, .id = try gpa.dupe(u8, id), .method = method, .params = params, .sink = sink, .deadline_at = deadline_at };
+        job.* = .{ .gpa = gpa, .id = try gpa.dupe(u8, id), .method = method, .params = params, .sink = sink, .deadline_at = deadline_at, .window = window };
         return job;
     }
 
@@ -237,6 +238,7 @@ const Job = struct {
 
     /// On the worker: the engine's answer, unless the deadline answered first.
     fn run(self: *Job, server: *Server) void {
+        if (std.mem.eql(u8, self.method, "page.health")) return self.windowInfo(server);
         const reply = server.callInProcess(self.gpa, self.method, self.params) catch {
             if (self.claim()) self.sink.done(self.sink.ctx, self.id, .{ .failure = "out of memory" });
             return;
@@ -244,6 +246,61 @@ const Job = struct {
         defer self.gpa.free(reply);
         if (!self.claim()) return; // the deadline answered first: discarded
         answer(self.gpa, self.id, reply, self.sink);
+    }
+
+    /// window_info (rev 16.20.35, RoseCat 6575): page.health answers for every window and
+    /// takes no params, so only this window's entry is kept, with its page.title. Nothing of
+    /// another window reaches the model.
+    fn windowInfo(self: *Job, server: *Server) void {
+        const gpa = self.gpa;
+        var window_id: [24]u8 = undefined;
+        const mine = std.fmt.bufPrint(&window_id, "window-{d}", .{self.window}) catch unreachable;
+        const health = server.callInProcess(gpa, "page.health", "{}") catch return self.fail("out of memory");
+        defer gpa.free(health);
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, health, .{}) catch return self.fail("the browser sent a bad answer");
+        defer parsed.deinit();
+        const pages = blk: {
+            const result = if (parsed.value == .object) parsed.value.object.get("result") else null;
+            const r = result orelse break :blk null;
+            if (r != .object) break :blk null;
+            const list = r.object.get("pages") orelse break :blk null;
+            break :blk if (list == .array) list.array.items else null;
+        } orelse {
+            if (self.claim()) answer(gpa, self.id, health, self.sink); // the engine's error, redacted
+            return;
+        };
+        const entry = for (pages) |page| {
+            if (page != .object) continue;
+            const wid = page.object.get("window_id") orelse continue;
+            if (wid == .string and std.mem.eql(u8, wid.string, mine)) break page.object;
+        } else return self.fail("this window is gone");
+        var title_params: [64]u8 = undefined;
+        const tp = std.fmt.bufPrint(&title_params, "{{\"window_id\":\"{s}\"}}", .{mine}) catch unreachable;
+        const title_reply = server.callInProcess(gpa, "page.title", tp) catch return self.fail("out of memory");
+        defer gpa.free(title_reply);
+        var title_parsed = std.json.parseFromSlice(std.json.Value, gpa, title_reply, .{}) catch return self.fail("the browser sent a bad answer");
+        defer title_parsed.deinit();
+        const title: []const u8 = blk: {
+            const result = (if (title_parsed.value == .object) title_parsed.value.object.get("result") else null) orelse break :blk "";
+            const t = (if (result == .object) result.object.get("title") else null) orelse break :blk "";
+            break :blk if (t == .string) t.string else "";
+        };
+        var info: std.json.ObjectMap = .empty;
+        defer info.deinit(gpa);
+        info.put(gpa, "window_id", .{ .string = mine }) catch return self.fail("out of memory");
+        info.put(gpa, "title", .{ .string = title }) catch return self.fail("out of memory");
+        for ([_][]const u8{ "url", "responsive", "loading", "dialog_open", "crashed" }) |key| {
+            if (entry.get(key)) |v| info.put(gpa, key, v) catch return self.fail("out of memory");
+        }
+        const text = std.json.Stringify.valueAlloc(gpa, std.json.Value{ .object = info }, .{}) catch return self.fail("out of memory");
+        defer gpa.free(text);
+        const content = std.json.Stringify.valueAlloc(gpa, [_]struct { type: []const u8, text: []const u8 }{.{ .type = "text", .text = text }}, .{}) catch return self.fail("out of memory");
+        defer gpa.free(content);
+        if (self.claim()) self.sink.done(self.sink.ctx, self.id, .{ .content = content });
+    }
+
+    fn fail(self: *Job, text: []const u8) void {
+        if (self.claim()) self.sink.done(self.sink.ctx, self.id, .{ .failure = text });
     }
 
     fn destroy(self: *Job) void {
