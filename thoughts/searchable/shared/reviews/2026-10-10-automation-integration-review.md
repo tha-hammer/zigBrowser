@@ -14439,17 +14439,24 @@ claimed no-dispatch-after-timeout guarantee.
    the main thread and proves that the evaluated function never ran. The
    reported routed and timeout Mac gates exercise eval, but cannot kill this
    race.
-3. SHOULD: `:853-860` increments the live count and dereferences an unchecked
-   `calloc` result. The implementation should also make the malloc-backed
-   `dispatch_semaphore_t` lifetime under `-fobjc-arc` explicit (or prove it in
-   a compiler/runtime test); the job counter alone does not establish that
-   the semaphore allocation was released.
+3. BLOCKER: `:853-860` increments the live count and dereferences an unchecked
+   `calloc` result. More importantly, `build.zig:1804` compiles this file with
+   `-fobjc-arc`; Apple dispatch objects participate in ARC, and the unqualified
+   `dispatch_semaphore_t` field is strong. `zb_job_unref` at `:870-879` frees
+   malloc-backed storage without first deinitializing that strong field. ARC
+   does not automatically destroy objects in malloc storage: the field must be
+   cleared (or an equivalent explicit ownership design used) before `free`.
+   The current code therefore leaks the semaphore and violates the ARC storage
+   lifetime rule even though the job counter decrements. Add a Mac regression
+   which observes dispatch-object release, not only `zb_auto_live_jobs`.
 
 The late-completion result/error ownership is otherwise an improvement, and
 the main-thread `worldWithName:` correction remains. As the commit states,
 navigation, reload and `zb_auto_await` remain outside this slice and their
 earlier blockers stay open. No full gate was run while BlackRobin held the
-private-Xvfb slot. Findings were sent to JadeBeacon in Agent Mail 6298.
+private-Xvfb slot. Findings were sent to JadeBeacon in Agent Mail 6298; the ARC
+lifetime item was corrected from SHOULD to BLOCKER with the Clang/libdispatch
+basis in Agent Mail 6301.
 
 ### Windows resolved-name scope correction (`2a9f2bf`)
 
