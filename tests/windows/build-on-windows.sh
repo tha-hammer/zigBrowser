@@ -86,7 +86,9 @@ remote_rundir="zb\\build\\run-$sha"
 
 # ---- stage: git archive of the exact commit (tracked files only) into a fresh remote run dir ------------
 echo "build-on-windows: staging CLEAN tree of $sha to $user@$host:$remote_rundir" >&2
-"${scrub[@]}" git archive --format=tar "$sha" \
+# Exclude thoughts/ — it holds git symlinks (thoughts/global|maceo|shared) that Windows tar cannot create
+# ("Invalid argument"), and it is docs, never a build input. Everything the build needs stays in the archive.
+"${scrub[@]}" git archive --format=tar "$sha" -- . ':(exclude)thoughts' \
   | "${scrub[@]}" timeout "$stage_to" ssh "${SSH[@]}" -p "$port" "$user@$host" \
       "cmd /c \"if exist %USERPROFILE%\\$remote_rundir rmdir /s /q %USERPROFILE%\\$remote_rundir\" & cmd /c \"mkdir %USERPROFILE%\\$remote_rundir\" & cd $remote_rundir && tar -x -f -"
 rc_arch=${PIPESTATUS[0]} rc_stage=${PIPESTATUS[1]}

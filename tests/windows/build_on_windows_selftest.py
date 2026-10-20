@@ -257,6 +257,16 @@ class CleanSource(_Case):
             self.assertIn("rmdir", ssh_log, "the per-SHA run dir must be re-created fresh each run")
             self.assertNotIn("tar -c", ssh_log + git_log, "must NOT tar the working tree")
 
+    def test_archive_excludes_symlinked_thoughts_tree(self):
+        """thoughts/ holds git symlinks (global/maceo/shared); Windows tar cannot create them and the stage
+        dies with 'Invalid argument' (observed on win11-m8). The clean stage must exclude that tree."""
+        with tempfile.TemporaryDirectory() as t:
+            td = pathlib.Path(t)
+            self._run(td)
+            git_log = self._read(td / "git.log")
+            self.assertRegex(git_log, r"archive[^\n]*exclude\)thoughts",
+                             "git archive must exclude the symlinked thoughts/ tree Windows tar cannot create")
+
 
 class Deadlines(_Case):
     def test_stage_build_fetch_each_bounded_by_timeout(self):
