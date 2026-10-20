@@ -5,6 +5,11 @@
 //! `app.zig`'s `configureAgentSecrets` — that waits on the macOS consumer (the helper / Secrets window),
 //! per the ownership split with BlueBeaver. The test below links `agent_secrets_mac.m` and exercises the
 //! real round-trip against a disposable keychain (macOS only).
+//!
+//! Ownership (RoseCat 81e99b9): the C-side token buffer NEVER escapes this module. `lookup` copies the
+//! bytes into the caller's allocator and frees the C buffer immediately, so there is no raw C pointer for a
+//! caller to alias or double-free. The result is a plain allocator-owned `[]u8` under the standard Zig
+//! single-owner contract — release it exactly once with `freeSecret` (which wipes then frees).
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -16,30 +21,6 @@ extern "c" fn zb_keychain_lookup(keychain_path: ?[*:0]const u8, unlock_password:
 extern "c" fn zb_keychain_clear(keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, service: [*:0]const u8, account: [*:0]const u8, out_err: ?*?[*:0]u8) c_int;
 extern "c" fn zb_keychain_free(token: ?[*:0]u8) void;
 extern "c" fn free(ptr: ?*anyopaque) void; // releases the strdup'd out_err from the C side
-
-/// A token returned by `lookup`, owned by the C side. Release with `deinit` (the C side wipes then frees).
-/// `deinit` takes `*Token` and disarms the owner (ptr -> null), so a second deinit is a no-op and a stale
-/// copy cannot double-free the one C allocation (RoseCat f6b005b).
-pub const Token = struct {
-    /// The owned C buffer, or null once released. Internal — reach it through `slice`/`deinit`, never
-    /// read this field directly (it is only visible to tests, which assert the disarm).
-    ptr: ?[*:0]u8,
-
-    /// The token text. Valid only on a LIVE token (before deinit); it unwraps the owned pointer, so calling
-    /// it after deinit is a programming error (null unwrap), never a read of freed memory.
-    pub fn slice(self: Token) [:0]const u8 {
-        return std.mem.span(self.ptr.?);
-    }
-
-    /// Wipe + free the owned buffer and DISARM the owner (ptr -> null). Takes `*Token` so the live owner is
-    /// invalidated; a second deinit — or a deinit of a disarmed copy — is a no-op (no double-free).
-    pub fn deinit(self: *Token) void {
-        if (self.ptr) |p| {
-            zb_keychain_free(p);
-            self.ptr = null;
-        }
-    }
-};
 
 /// The port does not surface the C error text yet (the consumer that needs it can be extended); it is freed
 /// here so a failure path never leaks the strdup'd message.
@@ -56,14 +37,45 @@ pub fn store(keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, ser
     return r;
 }
 
-pub const Lookup = struct { result: Result, token: ?Token };
+/// The outcome of a lookup. On `.ok`, `secret` is owned by the allocator passed to `lookup`; the caller is
+/// its SOLE owner and releases it exactly once with `freeSecret`. The C-side buffer does not escape.
+pub const LookupResult = union(enum) {
+    ok: []u8,
+    absent,
+    unavailable,
+};
 
-pub fn lookup(keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, service: [*:0]const u8, account: [*:0]const u8) Lookup {
+/// Look up the token for (service, account). On `.ok` the returned slice is owned by `gpa`; free it once
+/// with `freeSecret`. The C buffer is wiped+freed here, so no raw C pointer is exposed to the caller.
+pub fn lookup(gpa: std.mem.Allocator, keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, service: [*:0]const u8, account: [*:0]const u8) error{OutOfMemory}!LookupResult {
     var err: ?[*:0]u8 = null;
-    var tok: ?[*:0]u8 = null;
-    const r: Result = @enumFromInt(zb_keychain_lookup(keychain_path, unlock_password, service, account, &tok, &err));
+    var ctok: ?[*:0]u8 = null;
+    const r: Result = @enumFromInt(zb_keychain_lookup(keychain_path, unlock_password, service, account, &ctok, &err));
     dropErr(err);
-    return .{ .result = r, .token = if (tok) |t| Token{ .ptr = t } else null };
+    switch (r) {
+        .ok => {
+            const cptr = ctok orelse return .unavailable; // OK without a buffer should not happen; treat defensively
+            const span = std.mem.span(cptr);
+            const buf = gpa.alloc(u8, span.len) catch {
+                zb_keychain_free(cptr); // free the C copy even on OOM so it never leaks
+                return error.OutOfMemory;
+            };
+            @memcpy(buf, span);
+            zb_keychain_free(cptr); // wipe+free the C copy at once; only the caller-owned Zig copy remains
+            return .{ .ok = buf };
+        },
+        .absent => return .absent,
+        .unavailable => {
+            if (ctok) |p| zb_keychain_free(p);
+            return .unavailable;
+        },
+    }
+}
+
+/// Wipe then free a secret returned by `lookup`. Single-owner contract: call exactly once; never on a copy.
+pub fn freeSecret(gpa: std.mem.Allocator, secret: []u8) void {
+    @memset(secret, 0);
+    gpa.free(secret);
 }
 
 pub fn clear(keychain_path: ?[*:0]const u8, unlock_password: ?[*:0]const u8, service: [*:0]const u8, account: [*:0]const u8) Result {
@@ -82,68 +94,48 @@ extern "c" fn SecKeychainDelete(kc: SecKeychainRef) c_int;
 extern "c" fn CFRelease(cf: ?*anyopaque) void;
 extern "c" fn unlink(path: [*:0]const u8) c_int;
 
-test "macOS keychain port: store/lookup/clear round-trip on a disposable keychain" {
+const TestKc = struct {
+    kc: SecKeychainRef,
+    path: [:0]const u8,
+    fn make(buf: []u8, tag: []const u8) !TestKc {
+        const path = try std.fmt.bufPrintZ(buf, "/tmp/zb-ms5-zigport-{s}-{d}.keychain", .{ tag, std.c.getpid() });
+        const pw = "zb-temp-pw";
+        _ = unlink(path.ptr);
+        var kc: SecKeychainRef = null;
+        if (SecKeychainCreate(path.ptr, @intCast(pw.len), pw.ptr, 0, null, &kc) != 0) return error.KeychainCreate;
+        _ = SecKeychainUnlock(kc, @intCast(pw.len), pw.ptr, 1);
+        return .{ .kc = kc, .path = path };
+    }
+    fn deinit(self: TestKc) void {
+        _ = SecKeychainDelete(self.kc);
+        if (self.kc) |k| CFRelease(k);
+        _ = unlink(self.path.ptr);
+    }
+};
+const test_pw: [*:0]const u8 = "zb-temp-pw";
+
+test "macOS keychain port: store/lookup/clear round-trip (allocator-owned secret, freed once)" {
     if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
     var buf: [160]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&buf, "/tmp/zb-ms5-zigport-{d}.keychain", .{std.c.getpid()});
-    const pw = "zb-temp-pw";
-    _ = unlink(path.ptr); // remove any stale file so create does not fail
-
-    var kc: SecKeychainRef = null;
-    try std.testing.expectEqual(@as(c_int, 0), SecKeychainCreate(path.ptr, @intCast(pw.len), pw.ptr, 0, null, &kc));
-    defer {
-        _ = SecKeychainDelete(kc);
-        if (kc) |k| CFRelease(k);
-        _ = unlink(path.ptr);
-    }
-    _ = SecKeychainUnlock(kc, @intCast(pw.len), pw.ptr, 1);
+    const t = try TestKc.make(&buf, "roundtrip");
+    defer t.deinit();
 
     const svc: [*:0]const u8 = "dev.zigbrowser.ClaudeAgentToken.zigtest";
     const acct: [*:0]const u8 = "default";
-    const canary: [*:0]const u8 = "zb-canary-zig-9e2f";
+    const canary = "zb-canary-zig-9e2f";
+    const a = std.testing.allocator; // flags a leak if the secret is not freed exactly once
 
-    try std.testing.expectEqual(Result.absent, lookup(path.ptr, pw, svc, acct).result);
-    try std.testing.expectEqual(Result.ok, store(path.ptr, pw, svc, acct, canary));
+    try std.testing.expect(std.meta.activeTag(try lookup(a, t.path.ptr, test_pw, svc, acct)) == .absent);
+    try std.testing.expectEqual(Result.ok, store(t.path.ptr, test_pw, svc, acct, canary));
 
-    var got = lookup(path.ptr, pw, svc, acct);
-    try std.testing.expectEqual(Result.ok, got.result);
-    try std.testing.expect(got.token != null);
-    defer if (got.token) |*t| t.deinit();
-    try std.testing.expectEqualStrings(std.mem.span(canary), got.token.?.slice());
-
-    try std.testing.expectEqual(Result.ok, clear(path.ptr, pw, svc, acct));
-    try std.testing.expectEqual(Result.absent, lookup(path.ptr, pw, svc, acct).result);
-}
-
-test "macOS keychain port: Token.deinit disarms the owner (no double-free)" {
-    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
-    var buf: [160]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&buf, "/tmp/zb-ms5-zigport-disarm-{d}.keychain", .{std.c.getpid()});
-    const pw = "zb-temp-pw";
-    _ = unlink(path.ptr);
-
-    var kc: SecKeychainRef = null;
-    try std.testing.expectEqual(@as(c_int, 0), SecKeychainCreate(path.ptr, @intCast(pw.len), pw.ptr, 0, null, &kc));
-    defer {
-        _ = SecKeychainDelete(kc);
-        if (kc) |k| CFRelease(k);
-        _ = unlink(path.ptr);
+    switch (try lookup(a, t.path.ptr, test_pw, svc, acct)) {
+        .ok => |secret| {
+            try std.testing.expectEqualStrings(canary, secret);
+            freeSecret(a, secret); // sole owner; free exactly once (testing.allocator would flag a leak)
+        },
+        else => return error.TestUnexpectedResult,
     }
-    _ = SecKeychainUnlock(kc, @intCast(pw.len), pw.ptr, 1);
 
-    const svc: [*:0]const u8 = "dev.zigbrowser.ClaudeAgentToken.zigtest";
-    const acct: [*:0]const u8 = "default";
-    try std.testing.expectEqual(Result.ok, store(path.ptr, pw, svc, acct, "zb-canary-disarm-11a3"));
-
-    const got = lookup(path.ptr, pw, svc, acct);
-    try std.testing.expectEqual(Result.ok, got.result);
-    try std.testing.expect(got.token != null);
-    var tk = got.token.?;
-    try std.testing.expect(tk.ptr != null); // live before deinit
-    tk.deinit();
-    try std.testing.expect(tk.ptr == null); // DISARMED: the owner is invalidated (fails if deinit takes by value)
-    tk.deinit(); // second deinit is a no-op — no double-free of the one C allocation
-    try std.testing.expect(tk.ptr == null);
-
-    try std.testing.expectEqual(Result.ok, clear(path.ptr, pw, svc, acct));
+    try std.testing.expectEqual(Result.ok, clear(t.path.ptr, test_pw, svc, acct));
+    try std.testing.expect(std.meta.activeTag(try lookup(a, t.path.ptr, test_pw, svc, acct)) == .absent);
 }
